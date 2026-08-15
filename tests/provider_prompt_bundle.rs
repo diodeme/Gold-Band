@@ -4,7 +4,7 @@ use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
     ColdFileRef, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection,
     PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
-    StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -42,7 +42,7 @@ fn invocation() -> WorkerInvocation {
     WorkerInvocation {
         invocation_kind: InvocationKind::WorkerGeneric,
         turn_control_mode: TurnControlMode::RuntimeControlled,
-        runtime_control_resume_candidate: false,
+        runtime_control_intent: RuntimeControlIntent::Unchanged,
         prompt_envelope: gold_band::dsl::PromptEnvelopeMode::RuntimeManaged,
         execution_surface: PromptExecutionSurface::Workflow,
         profile: Some("developer".to_string()),

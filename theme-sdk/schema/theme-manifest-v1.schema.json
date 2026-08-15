@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gold-band.dev/schemas/theme-manifest-v1.schema.json",
+  "title": "Gold Band Theme Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "id",
+    "version",
+    "source",
+    "name",
+    "author",
+    "schemes",
+    "capabilities"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "contractVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^(builtin|user)\\.[a-z0-9][a-z0-9.-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "source": {
+      "enum": [
+        "builtin",
+        "user"
+      ]
+    },
+    "name": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zh-CN",
+        "en"
+      ],
+      "properties": {
+        "zh-CN": {
+          "type": "string",
+          "minLength": 1
+        },
+        "en": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemes": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "enum": [
+          "light",
+          "dark"
+        ]
+      },
+      "allOf": [
+        {
+          "contains": {
+            "const": "light"
+          }
+        },
+        {
+          "contains": {
+            "const": "dark"
+          }
+        }
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 2,
+      "items": {
+        "enum": [
+          "tokens",
+          "component-recipes",
+          "fonts",
+          "avatars",
+          "textures",
+          "visual-quality-profiles"
+        ]
+      }
+    },
+    "visualQualityProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "supported",
+        "performance"
+      ],
+      "properties": {
+        "default": {
+          "enum": [
+            "full",
+            "performance"
+          ]
+        },
+        "supported": {
+          "const": [
+            "full",
+            "performance"
+          ]
+        },
+        "performance": {
+          "type": "string",
+          "pattern": "^visual-quality/[a-z0-9-]+\\.json$"
+        }
+      }
+    }
+  }
+}

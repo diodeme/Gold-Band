@@ -19,10 +19,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   const { t } = useTranslation();
   const contentExpansion = useOptionalChatContainerContentExpansion();
   const parts = useMemo(() => parseGoldBandHiddenSections(content), [content]);
-  const displayParts = useMemo(() => [
-    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "hidden"),
-    ...parts.map((part, sourceIndex) => ({ part, sourceIndex })).filter(({ part }) => part.type === "visible"),
-  ], [parts]);
+  const displayParts = useMemo(() => projectHiddenPromptDisplayParts(parts), [parts]);
   const rootRef = useRef<HTMLDivElement>(null);
   const labelMeasureRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const visibleMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -147,7 +144,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
                   tabIndex={-1}
                 >
                   <span className="font-medium">{label}</span>
-                  <span className="inline-flex items-center gap-1.5 text-[11px]">
+                  <span className="inline-flex items-center gap-1.5 text-ui-caption">
                     {t("acp.hiddenPromptCharacters", { count: part.text.length })}
                     <ChevronDown className="size-3.5" />
                   </span>
@@ -182,7 +179,34 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 }
 
 export function visiblePromptText(text: string, followsHiddenSection: boolean) {
-  return followsHiddenSection ? text.replace(/^[\r\n]+/, "") : text;
+  return followsHiddenSection
+    ? text.replace(/^(?:[\t ]*\r?\n)+/, "")
+    : text;
+}
+
+export function projectHiddenPromptDisplayParts(
+  parts: ReturnType<typeof parseGoldBandHiddenSections>,
+) {
+  const hiddenParts = parts
+    .map((part, sourceIndex) => ({ part, sourceIndex }))
+    .filter(({ part }) => part.type === "hidden");
+  const visibleText = parts
+    .filter((part) => part.type === "visible")
+    .map((part) => part.text)
+    .join("");
+  const normalizedVisibleText = visiblePromptText(
+    visibleText,
+    hiddenParts.length > 0,
+  );
+  return normalizedVisibleText
+    ? [
+        ...hiddenParts,
+        {
+          part: { type: "visible" as const, text: normalizedVisibleText },
+          sourceIndex: parts.length,
+        },
+      ]
+    : hiddenParts;
 }
 
 function HiddenPromptSection({
@@ -214,7 +238,7 @@ function HiddenPromptSection({
         <span className="min-w-0 truncate font-medium text-foreground/80">
           {label}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="inline-flex shrink-0 items-center gap-1.5 text-ui-caption text-muted-foreground">
           {t("acp.hiddenPromptCharacters", { count: text.length })}
           <ChevronDown
             className={cn(

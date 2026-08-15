@@ -219,7 +219,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               <div className="min-h-0 flex-1" style={{ minHeight: historyBodyMinHeight }}>
                 {pagedRuns.length ? (
                   <div className="overflow-hidden rounded-xl border bg-card/55 shadow-sm shadow-background/10">
-                    <div className={cn(historyRowGridClass, 'hidden border-b bg-muted/20 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid')}>
+                    <div className={cn(historyRowGridClass, 'hidden border-b bg-muted/20 px-4 py-2 text-ui-caption font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid')}>
                       <span>{t('workflow.idGroup')}</span>
                       <span>{t('common.status')}</span>
                       <span>{t('workflow.historyProgress')}</span>
@@ -345,7 +345,7 @@ function workflowLifecycleFor(task: TaskRowVm): WorkflowLifecycle {
 function ControlPill({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex min-h-9 min-w-[176px] flex-1 items-center justify-between gap-3 rounded-lg border bg-card/55 px-3 py-1.5">
-      <span className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+      <span className="text-ui-caption uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
       <strong className="shrink-0 text-sm text-foreground">{value}</strong>
     </div>
   );
@@ -426,7 +426,7 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onStopRun,
 function HistoryCell({ label, value, title, className }: { label: ReactNode; value: ReactNode; title?: string | null; className?: string }) {
   const content = (
     <div className={cn('min-w-0 space-y-0.5', className)}>
-      <span className="block truncate text-[11px] font-medium text-muted-foreground/70">{label}</span>
+      <span className="block truncate text-ui-caption font-medium text-muted-foreground/70">{label}</span>
       <strong className="block min-w-0 truncate text-sm font-medium text-foreground">{value}</strong>
     </div>
   );
@@ -460,7 +460,7 @@ function RoundRow({ runId, graph, round, onOpen, t }: { runId: string; graph: Gr
       <span className={cn('absolute -left-[27px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 ring-4 ring-muted/20', timelineDotClass(round.outcome ?? round.status), running && 'workflow-timeline-dot-running')} />
       <div className="flex min-w-0 items-center gap-2 pl-1">
         <strong className="truncate text-sm text-foreground">{round.id}</strong>
-        <Badge variant="secondary" className="text-[11px]">#{round.index}</Badge>
+        <Badge variant="secondary" className="text-ui-caption">#{round.index}</Badge>
       </div>
       <div className="min-w-0"><StatusBadge value={summaryStatusValue(round.status, round.outcome)} label={displayStatus(t, summaryStatusValue(round.status, round.outcome))} /></div>
       <HistoryCell label={t('workflow.currentNode')} value={running ? <span className="inline-flex min-w-0 items-center gap-2"><span className="workflow-running-dot bg-gold-running" /> <span className="truncate">{currentNode}</span></span> : currentNode} title={currentNode} />

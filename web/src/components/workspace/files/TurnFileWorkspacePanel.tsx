@@ -25,6 +25,9 @@ import type { MarkdownEditorMode } from './file-content-store';
 type FileComparisonWorkspaceResource = TurnFileWorkspaceResource | GitFileComparisonWorkspaceResource;
 type WorkspaceComparisonVm = FileComparisonVm | GitFileComparisonVm;
 
+export const DIFF_VIEW_SCAN_LIMIT = 10_000;
+export const DIFF_VIEW_TIMEOUT_MS = 300;
+
 export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonWorkspaceResource }) {
   const { t } = useTranslation();
   const editorRef = useRef<ReactCodeMirrorRef>(null);
@@ -76,7 +79,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     return () => { cancelled = true; };
   }, [resource, reviewItem]);
 
-  const navigateReviewFile = (offset: number, landing: 'first' | 'last') => {
+  const navigateReviewFile = (offset: number, landing: 'top' | 'first-change' | 'last-change') => {
     if (!('gitSource' in resource) || !reviewSession || reviewItemIndex < 0) return;
     const item = reviewSession.items[reviewItemIndex + offset];
     if (!item) return;
@@ -119,7 +122,10 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
       direction,
     });
     if (target.kind === 'chunk') focusChunk(target.index);
-    if (target.kind === 'file') navigateReviewFile(target.offset, target.landing);
+    if (target.kind === 'file') navigateReviewFile(
+      target.offset,
+      target.landing === 'first' ? 'first-change' : 'last-change',
+    );
   };
 
   useEffect(() => {
@@ -159,6 +165,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
         gutter: true,
         mergeControls: false,
         collapseUnchanged: { margin: 3, minSize: 8 },
+        diffConfig: { scanLimit: DIFF_VIEW_SCAN_LIMIT, timeout: DIFF_VIEW_TIMEOUT_MS },
       }));
     }
     return base;
@@ -189,12 +196,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
               {reviewSession ? `${reviewItemIndex + 1} / ${reviewSession.items.length}` : 'gitSource' in resource ? t('sourceControl.diff') : t('turnFiles.turnDiff')}
             </span>
             {reviewSession ? <>
-              <Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex <= 0} aria-label={t('sourceControl.previousFile')} onClick={() => navigateReviewFile(-1, 'first')}>
-                <ChevronLeft className="size-3.5" />
-              </Button>
-              <Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex >= reviewSession.items.length - 1} aria-label={t('sourceControl.nextFile')} onClick={() => navigateReviewFile(1, 'first')}>
-                <ChevronRight className="size-3.5" />
-              </Button>
+              <Tooltip><TooltipTrigger asChild><Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex <= 0} aria-label={t('sourceControl.previousFile')} onClick={() => navigateReviewFile(-1, 'top')}><ChevronLeft className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('sourceControl.previousFile')}</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild><Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex >= reviewSession.items.length - 1} aria-label={t('sourceControl.nextFile')} onClick={() => navigateReviewFile(1, 'top')}><ChevronRight className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('sourceControl.nextFile')}</TooltipContent></Tooltip>
             </> : null}
             {showDiffChunkNavigation ? <>
               <Tooltip>
@@ -248,11 +251,15 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             onCreateEditor={(view) => {
               const count = getChunks(view.state)?.chunks.length ?? 0;
               setDiffChunkCount(count);
-              const initialIndex = resource.kind === 'file-diff' && 'gitSource' in resource && resource.reviewLanding === 'last'
+              const initialIndex = resource.kind === 'file-diff' && 'gitSource' in resource && resource.reviewLanding === 'last-change'
                 ? Math.max(0, count - 1)
                 : 0;
               setActiveChunkIndex(initialIndex);
-              if (count > 0 && 'gitSource' in resource && resource.reviewSessionId) {
+              const shouldFocusChunk = count > 0
+                && 'gitSource' in resource
+                && resource.reviewSessionId
+                && (resource.reviewLanding === 'first-change' || resource.reviewLanding === 'last-change');
+              if (shouldFocusChunk) {
                 requestAnimationFrame(() => focusChunk(initialIndex));
               }
             }}

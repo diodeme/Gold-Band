@@ -1,6 +1,27 @@
-export type DesktopThemePreference = 'system' | 'light' | 'light-gray' | 'dark' | 'black';
-export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
-export type DesktopThemeMode = 'light' | 'dark';
+export type ColorSchemePreference = 'system' | 'light' | 'dark';
+export type ResolvedColorScheme = Exclude<ColorSchemePreference, 'system'>;
+export type VisualQuality = 'full' | 'performance';
+export interface AppearancePreference {
+  schemaVersion: 2;
+  themeId: string;
+  colorScheme: ColorSchemePreference;
+  visualQualityByTheme: Record<string, VisualQuality>;
+}
+export type FontPreference = { source: 'theme' } | { source: 'local'; family: string };
+export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
+export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
+export interface PersonalizationPreference {
+  schemaVersion: 1;
+  typography: {
+    ui: { font: FontPreference; fontSize: FontSizePreference };
+    editor: { font: FontPreference; fontSize: FontSizePreference };
+  };
+  avatars: {
+    agent: { image: AvatarPreference; shape: AvatarShapePreference };
+    user: { image: AvatarPreference; shape: AvatarShapePreference };
+  };
+}
 export type DesktopFontPreference = string;
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type AvatarKind = 'agent' | 'user';
@@ -10,9 +31,9 @@ export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
-  theme: DesktopThemePreference;
+  appearance: AppearancePreference;
+  personalization: PersonalizationPreference;
   language: DesktopLanguage;
-  font: DesktopFontPreference;
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;
@@ -286,7 +307,6 @@ export interface WorkspaceLayoutVm {
 }
 
 export interface FileWorkspaceLayoutVm {
-  preferredWidth: number;
   splitMinWidth: number;
   treeDefaultWidth: number;
   treeMinWidth: number;
@@ -651,6 +671,8 @@ export interface GitCommitReviewFileVm {
   beforeOid?: string | null;
   beforePath?: string | null;
   afterOid: string;
+  addedLines?: number | null;
+  deletedLines?: number | null;
 }
 
 export interface GitCommitReviewVm {
@@ -845,7 +867,7 @@ export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
   additions: number;
   deletions: number;
   changedFiles: number;
-  files: Array<{ path: string; additions: number; deletions: number }>;
+  files: Array<{ path: string; oldPath?: string | null; kind: GitFileChangeKindVm; additions: number; deletions: number }>;
   latestReviews: Array<{ author?: GitHubActorVm | null; state: string }>;
 }
 
@@ -886,7 +908,7 @@ export interface GitHubIssueQueryVm {
 export type GitComparisonSourceVm =
   | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
   | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; beforePath?: string | null; afterOid: string }
-  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string };
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string; beforePath?: string | null };
 
 export interface GitFileComparisonVm {
   path: string;
@@ -2059,14 +2081,18 @@ export interface ConversationRuntimeFacetVm {
   active: boolean;
   continuable: boolean;
   phase: string;
+  revision?: number | null;
+}
+
+export interface ConversationControlFacetVm {
+  mode: 'runtime-controlled' | 'non-runtime-controlled';
 }
 
 export interface ConversationAcpFacetVm {
-  status?: string | null;
-  phase?: 'starting' | 'running' | 'cancel-requested' | null;
-  active: boolean;
+  sessionAvailability: 'established' | 'restorable' | 'unavailable' | 'closing';
+  liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested';
+  latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
-  terminal: boolean;
 }
 
 export interface ConversationComposerVm {
@@ -2093,7 +2119,19 @@ export interface ConversationQueuedPromptVm {
   id: string;
   content: string;
   attachmentCount: number;
+  quoteCount: number;
   createdAt: string;
+}
+
+export interface UserPromptQuote {
+  id: string;
+  sourceMessageKey: string;
+  text: string;
+}
+
+export interface ConversationPromptInput {
+  displayText: string;
+  quotes: UserPromptQuote[];
 }
 
 export interface ConversationPromptQueueVm {
@@ -2104,10 +2142,11 @@ export interface ConversationPromptQueueVm {
 
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
+  control: ConversationControlFacetVm;
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'action' | null;
+  continueKind?: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
 }

@@ -21,10 +21,10 @@ use crate::acp::commands::AcpCommandItem;
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
-    ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
-    RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
+    AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
+    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
+    RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -36,9 +36,10 @@ use crate::dsl::{
     validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
-    dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
+    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
+    refresh_dynamic_current_leaf_ids,
 };
+use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
@@ -47,8 +48,9 @@ use crate::provider::{
     supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
-    validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
+    NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
+    WorkerRefState, validate_node_state, validate_round_state, validate_run_state,
+    validate_task_state, validate_worker_ref_state,
 };
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
@@ -75,6 +77,7 @@ use self::orchestrator::{
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
+    run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
@@ -1107,6 +1110,16 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.current_attempt.is_some()
 }
 
+pub fn is_completed_attempt_recoverable(run: &RunState, node: &NodeState) -> bool {
+    is_run_continuable(run)
+        && run.current_round.as_deref() == Some(node.round_id.as_str())
+        && run.current_node.as_deref() == Some(node.node_id.as_str())
+        && run.current_attempt.as_deref() == Some(node.attempt_id.as_str())
+        && node.status == RunStatus::Completed
+        && node.outcome == Some(NodeOutcome::Success)
+        && !node.manual_check_pending
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct ProfileUsageCounts {
     template_count: usize,
@@ -1262,6 +1275,69 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transition_runtime_execution_phase(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        inner: Option<(&str, &str)>,
+        phase: RuntimeExecutionPhase,
+    ) -> Result<RunState> {
+        let state_lock = attempt_runtime_state_lock(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let mut run = self.run_status(task_id, run_id)?;
+        if run.status != RunStatus::Running
+            || run.current_round.as_deref() != Some(round_id)
+            || run.current_node.as_deref() != Some(outer_node_id)
+            || run.current_attempt.as_deref() != Some(outer_attempt_id)
+        {
+            bail!("runtime execution locator is no longer current");
+        }
+        let locator = match inner {
+            Some((node_id, attempt_id)) => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: node_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            None => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: outer_node_id.to_string(),
+                attempt_id: outer_attempt_id.to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+        };
+        let phase = if phase == RuntimeExecutionPhase::RunningNode
+            && matches!(
+                run.execution.phase,
+                RuntimeExecutionPhase::FinalizingArtifact
+                    | RuntimeExecutionPhase::RepairingArtifact
+            ) {
+            run.execution.phase
+        } else {
+            phase
+        };
+        run.updated_at = now_rfc3339_like();
+        run.transition_execution(phase, Some(locator), run.updated_at.clone())?;
+        validate_run_state(&run)?;
+        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        Ok(run)
+    }
+
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
     }
@@ -1499,9 +1575,22 @@ impl App {
         Ok(settings)
     }
 
-    pub fn set_user_desktop_theme(&self, theme: DesktopThemePreference) -> Result<SettingsConfig> {
+    pub fn set_user_desktop_appearance(
+        &self,
+        appearance: AppearancePreference,
+    ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_desktop_personalization(
+        &self,
+        personalization: PersonalizationPreference,
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.personalization = Some(personalization);
         self.save_settings(&settings)?;
         Ok(settings)
     }
@@ -1515,38 +1604,24 @@ impl App {
 
     pub fn set_user_desktop_preferences(
         &self,
-        theme: DesktopThemePreference,
+        appearance: AppearancePreference,
+        personalization: PersonalizationPreference,
         language: DesktopLanguage,
-        font: DesktopFontPreference,
+        use_local_claude: bool,
+        verbose_logging: bool,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        settings.personalization = Some(personalization);
         settings.desktop_language = Some(language);
-        settings.desktop_font = Some(font);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
         settings.use_local_claude = Some(use_local_claude);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
-        settings.log_level = Some(log_level);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
-        self.set_user_log_level(if enabled {
+        settings.log_level = Some(if verbose_logging {
             RuntimeLogLevel::Debug
         } else {
             RuntimeLogLevel::Info
-        })
+        });
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -1589,14 +1664,7 @@ impl App {
         Ok(state)
     }
 
-    pub fn set_user_desktop_workspace(
-        &self,
-        workspace: &str,
-    ) -> Result<(SettingsConfig, StateConfig)> {
-        let mut settings = self.load_settings()?;
-        settings.desktop_workspace = Some(workspace.to_string());
-        self.save_settings(&settings)?;
-
+    pub fn record_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
         let mut state = self.load_state()?;
         state
             .recent_desktop_workspaces
@@ -1607,7 +1675,7 @@ impl App {
         state.recent_desktop_workspaces.truncate(8);
         self.save_state(&state)?;
 
-        Ok((settings, state))
+        Ok(state)
     }
 
     pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
@@ -2525,7 +2593,14 @@ impl App {
     }
 
     pub fn run_list(&self, task_id: &str) -> Result<Vec<RunState>> {
-        self.read_json_dir_sorted(&self.paths.runs_dir(task_id))
+        let mut runs: Vec<RunState> = self.read_json_dir_sorted(&self.paths.runs_dir(task_id))?;
+        for run in &mut runs {
+            if run.reconcile_legacy_execution() {
+                write_json(&self.paths.run_file(task_id, &run.id), run)?;
+            }
+            validate_run_state(run)?;
+        }
+        Ok(runs)
     }
 
     pub fn latest_run(&self, task_id: &str) -> Result<Option<RunState>> {
@@ -2915,7 +2990,11 @@ impl App {
     }
 
     pub fn run_status(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        let path = self.paths.run_file(task_id, run_id);
+        let mut run: RunState = read_json(&path)?;
+        if run.reconcile_legacy_execution() {
+            write_json(&path, &run)?;
+        }
         validate_run_state(&run)?;
         Ok(run)
     }
@@ -3012,7 +3091,7 @@ impl App {
             return;
         };
         let _guard = state_lock.lock();
-        let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
+        let Ok(mut graph) = load_dynamic_graph(&graph_path, &self.paths.repo_root) else {
             return;
         };
         let interrupted_nodes = graph
@@ -3132,6 +3211,7 @@ impl App {
             run.outcome = None;
             run.pause_reason = Some(reason);
             run.updated_at = now.clone();
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
             validate_run_state(&run)?;
             write_json(&self.paths.run_file(task_id, run_id), &run)?;
 
@@ -3251,6 +3331,7 @@ impl App {
                 run.outcome = None;
                 run.pause_reason = Some(reason);
                 run.updated_at = now.clone();
+                run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
@@ -3370,13 +3451,18 @@ impl App {
                 .unwrap_or("session");
             serde_json::json!({
                 "sessionId": session_id,
-                "status": "cancelled",
+                "availability": "established",
+                "latestTurnStatus": "cancelled",
                 "restored": false,
                 "createdAt": crate::acp::events::current_timestamp(),
             })
         };
         let now = crate::acp::events::current_timestamp();
-        session["status"] = serde_json::json!("cancelled");
+        if let Some(object) = session.as_object_mut() {
+            object.remove("status");
+        }
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(now.clone());
         if session.get("updated_at").is_some() {
@@ -3434,22 +3520,24 @@ impl App {
     }
 
     fn attempt_has_active_acp_session(&self, attempt_dir: &Utf8Path) -> bool {
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let session_path = attempt_dir.join("acp.session.json");
-        let metadata = if snapshot_path.exists() {
-            read_json::<serde_json::Value>(&snapshot_path).ok()
-        } else if session_path.exists() {
-            read_json::<serde_json::Value>(&session_path).ok()
-        } else {
-            None
-        };
-        let Some(metadata) = metadata else {
-            return false;
-        };
-        let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
-            return false;
-        };
-        is_acp_session_active_status(status)
+        if acp_client::prompt_activity(attempt_dir).is_some() {
+            return true;
+        }
+        let path = ["acp.snapshot.json", "acp.session.json"]
+            .into_iter()
+            .map(|name| attempt_dir.join(name))
+            .find(|path| path.exists());
+        path.and_then(|path| crate::acp::events::load_session_metadata_value(&path, None).ok())
+            .is_some_and(|metadata| {
+                metadata
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                    && metadata
+                        .get("latestTurnStatus")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("none")
+            })
     }
 
     pub fn run_open_session(
@@ -3678,6 +3766,27 @@ impl App {
             attachment_paths,
             model_override,
             permission_mode_override,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_recover_completed_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        expected_revision: u64,
+    ) -> Result<RunState> {
+        orchestrator_run_recover_completed_background(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            expected_revision,
         )
     }
 
@@ -4063,12 +4172,6 @@ impl App {
 
     pub fn find_active_or_resumable_run_id(&self, task_id: &str) -> Result<Option<String>> {
         let runs = self.run_list(task_id)?;
-        if let Some(run) = runs.iter().rev().find(|run| {
-            run.status == RunStatus::Running
-                && self.paths.run_progress_file(task_id, &run.id).exists()
-        }) {
-            return Ok(Some(run.id.clone()));
-        }
         if let Some(run) = runs
             .iter()
             .rev()
@@ -4092,17 +4195,6 @@ impl App {
     }
 }
 
-fn is_acp_session_active_status(status: &str) -> bool {
-    matches!(
-        status
-            .trim()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .as_str(),
-        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -4112,8 +4204,9 @@ mod tests {
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
-        ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
+        AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
+        DesktopUpdateBadgeState, FontPreference, FontSizePreference, PersonalizationPreference,
+        ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel, catalog_agent_default_config,
     };
     use crate::domain::{
         NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
@@ -4129,10 +4222,11 @@ mod tests {
         WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
-    use crate::runtime::{NodeState, RoundState, RunState, TaskState};
+    use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
     use crate::workflow_model_binding::{TaskAuthoringWorkflow, WorkflowModelBindings};
     use camino::Utf8PathBuf;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -4167,6 +4261,7 @@ mod tests {
             pause_reason: reason,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         let round = RoundState {
             version: VERSION.to_string(),
@@ -4211,7 +4306,7 @@ mod tests {
     }
 
     #[test]
-    fn background_continue_reports_prelaunch_failure_without_claiming_running() {
+    fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(
@@ -4233,7 +4328,9 @@ mod tests {
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run.status, RunStatus::Paused);
-        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 3);
     }
 
     #[test]
@@ -4326,7 +4423,7 @@ mod tests {
             !super::state_access::persist_runtime_state_if_execution_current(
                 &app,
                 "task-001",
-                &stale_run,
+                &mut stale_run,
                 &stale_round,
                 &stale_node,
             )
@@ -4347,8 +4444,101 @@ mod tests {
             durable_run.pause_reason,
             Some(PauseReason::ProcessInterrupted)
         );
+        assert_eq!(durable_run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(durable_run.execution.revision, 2);
         assert_eq!(durable_node.status, RunStatus::Paused);
         assert_eq!(durable_node.runtime_execution_id, None);
+    }
+
+    #[test]
+    fn node_completion_preserves_newer_durable_execution_phase() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run = app.run_status("task-001", "run-001").unwrap();
+        let round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        let mut durable_run = stale_run.clone();
+        durable_run
+            .transition_current_execution(
+                RuntimeExecutionPhase::FinalizingArtifact,
+                "2026-08-10T00:00:02Z",
+            )
+            .unwrap();
+        write_json(&app.paths.run_file("task-001", "run-001"), &durable_run).unwrap();
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.finished_at = Some("2026-08-10T00:00:03Z".to_string());
+
+        assert!(
+            super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &mut stale_run,
+                &round,
+                &node,
+            )
+            .unwrap()
+        );
+
+        let persisted: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            persisted.execution.phase,
+            RuntimeExecutionPhase::FinalizingArtifact
+        );
+        assert_eq!(persisted.execution.revision, durable_run.execution.revision);
+    }
+
+    #[test]
+    fn startup_recovery_pauses_running_runtime_execution_authoritatively() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+
+        let recovered = app.recover_interrupted_running_sessions().unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 2);
+    }
+
+    #[test]
+    fn active_or_resumable_run_selection_does_not_depend_on_progress_files() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-999"),
+            &serde_json::json!({ "status": "running" }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.find_active_or_resumable_run_id("task-001").unwrap(),
+            Some("run-001".to_string())
+        );
+        assert!(app.paths.run_progress_file("task-001", "run-001").exists() == false);
     }
 
     fn test_path_config() -> StoragePathConfig {
@@ -4502,7 +4692,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = test_app(repo_root);
+        let app = test_app_with_provider_capabilities(repo_root, serde_json::json!({}));
         let mut workflow = worker_workflow(None, None);
         let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
             panic!("expected worker workflow")
@@ -4580,6 +4770,7 @@ mod tests {
             pause_reason: Some(reason),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         }
     }
 
@@ -5215,6 +5406,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -5256,7 +5448,7 @@ mod tests {
         )
         .unwrap();
         let graph = DynamicGraphState {
-            version: VERSION.to_string(),
+            version: crate::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),
@@ -5340,7 +5532,8 @@ mod tests {
                     &attempt_dir.join("acp.session.json"),
                     &serde_json::json!({
                         "sessionId": format!("{}-session", node.id),
-                        "status": "completed"
+                        "availability": "established",
+                        "latestTurnStatus": "completed"
                     }),
                 )
                 .unwrap();
@@ -5377,7 +5570,9 @@ mod tests {
             let session: serde_json::Value =
                 read_json(&attempt_dir.join("acp.session.json")).unwrap();
             assert_eq!(
-                session.get("status").and_then(|value| value.as_str()),
+                session
+                    .get("latestTurnStatus")
+                    .and_then(|value| value.as_str()),
                 Some("cancelled")
             );
             assert_eq!(
@@ -5431,13 +5626,13 @@ mod tests {
 
         assert_eq!(
             running_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
             completed_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("completed")
         );
@@ -5680,6 +5875,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -5728,7 +5924,8 @@ mod tests {
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
                 "sessionId": "session-follow-up",
-                "status": "running"
+                "availability": "established",
+                "latestTurnStatus": "none"
             }),
         )
         .unwrap();
@@ -5753,7 +5950,9 @@ mod tests {
 
         let session: serde_json::Value = read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert!(
@@ -5761,6 +5960,38 @@ mod tests {
                 .join("acp.elicitation-response.elicit-001.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn runtime_control_only_metadata_is_not_an_active_acp_session() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let attempt_dir = app.paths.attempt_dir(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "availability": "established",
+                "latestTurnStatus": "none",
+                "runtimeControl": {
+                    "currentMode": "non-runtime-controlled",
+                    "transitionId": "runtime-control-test",
+                    "transitionCause": "runtime-interrupted",
+                    "changedAt": "1Z"
+                }
+            }),
+        )
+        .unwrap();
+
+        assert!(!app.attempt_has_active_acp_session(&attempt_dir));
     }
 
     #[test]
@@ -5812,19 +6043,38 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
+        let mut personalization = PersonalizationPreference::default();
+        personalization.typography.ui.font = FontPreference::Local {
+            family: "Microsoft YaHei UI".to_string(),
+        };
+        personalization.typography.ui.font_size = FontSizePreference::Custom { px: 16 };
+        personalization.typography.editor.font = FontPreference::Local {
+            family: "Fira Code".to_string(),
+        };
+        personalization.typography.editor.font_size = FontSizePreference::Custom { px: 13 };
         app.set_user_desktop_preferences(
-            DesktopThemePreference::Dark,
+            AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.tech-neutral".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::new(),
+            },
+            personalization.clone(),
             DesktopLanguage::En,
-            "Fira Code".to_string(),
+            true,
+            true,
         )
         .unwrap();
-        app.set_user_use_local_claude(true).unwrap();
 
         let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_theme, Some(DesktopThemePreference::Dark));
+        let appearance = settings.appearance.expect("appearance should persist");
+        assert_eq!(appearance.theme_id, "builtin.tech-neutral");
+        assert_eq!(appearance.color_scheme, ColorSchemePreference::Dark);
+        assert!(appearance.visual_quality_by_theme.is_empty());
         assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
-        assert_eq!(settings.desktop_font, Some("Fira Code".to_string()));
+        assert_eq!(settings.personalization, Some(personalization));
         assert_eq!(settings.use_local_claude, Some(true));
+        assert!(matches!(settings.log_level, Some(RuntimeLogLevel::Debug)));
 
         let state = app.load_state().unwrap();
         assert!(state.desktop_updater_last_checked_at.is_none());
@@ -5871,19 +6121,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_persists_to_both_files() {
+    fn workspace_selection_only_updates_legacy_recent_list() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/MyRepo")
+        app.record_user_recent_desktop_workspace("D:/Projects/MyRepo")
             .unwrap();
-
-        let settings = app.load_settings().unwrap();
-        assert_eq!(
-            settings.desktop_workspace.as_deref(),
-            Some("D:/Projects/MyRepo")
-        );
 
         let state = app.load_state().unwrap();
         assert!(
@@ -5899,9 +6143,12 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
 
         let state = app.load_state().unwrap();
         // A should be at position 0 (most recent), B at position 1, no duplicates
@@ -5916,16 +6163,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
 
         let state = app
             .remove_user_recent_desktop_workspace("D:/Projects/A")
             .unwrap();
 
         assert_eq!(state.recent_desktop_workspaces, vec!["D:/Projects/B"]);
-        let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_workspace.as_deref(), Some("D:/Projects/B"));
     }
 
     #[test]
@@ -5935,7 +6182,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
         for i in 0..10 {
-            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}"))
+            app.record_user_recent_desktop_workspace(&format!("D:/Projects/Repo{i}"))
                 .unwrap();
         }
 

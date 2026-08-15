@@ -11,7 +11,7 @@ export function SlashCommandInputTag({ prefix, description }: SlashCommandInputT
     <Badge
       variant="secondary"
       data-slot="slash-command-input-tag"
-      className="shrink-0 rounded-md border border-border/70 bg-secondary/85 px-2 py-1 text-[0.75rem] font-medium leading-4 text-secondary-foreground shadow-xs"
+      className="shrink-0 rounded-md border border-border/70 bg-secondary/85 px-2 py-1 text-xs font-medium leading-4 text-secondary-foreground shadow-xs"
     >
       {prefix}
     </Badge>

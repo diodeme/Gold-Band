@@ -28,22 +28,22 @@ describe('avatar preferences', () => {
   it('persists upload, recent selection, shape, and the recent-10 limit through the browser API', async () => {
     let avatars = createDefaultAvatarPreferences();
     for (let index = 0; index < 11; index += 1) {
-      avatars = await browserApi.saveDesktopAvatar({
+      avatars = (await browserApi.saveDesktopAvatar({
         kind: 'agent',
         shape: 'circle',
         mimeType: 'image/webp',
         dataBase64: btoa(`avatar-${index}`),
-      });
+      })).avatars;
     }
     expect(avatars.agent.recentAvatars).toHaveLength(10);
     const selectedId = avatars.agent.recentAvatars[5].id;
-    avatars = await browserApi.selectRecentDesktopAvatar('agent', selectedId);
+    avatars = (await browserApi.selectRecentDesktopAvatar('agent', selectedId)).avatars;
     expect(avatars.agent.selectedAvatarId).toBe(selectedId);
     expect(avatars.agent.recentAvatars[0].id).toBe(selectedId);
-    avatars = await browserApi.saveDesktopAvatarShape('agent', 'square');
+    avatars = (await browserApi.saveDesktopAvatarShape('agent', 'square')).avatars;
     expect(avatars.agent.shape).toBe('square');
     const recentIds = avatars.agent.recentAvatars.map((avatar) => avatar.id);
-    avatars = await browserApi.clearDesktopAvatar('agent');
+    avatars = (await browserApi.clearDesktopAvatar('agent')).avatars;
     expect(avatars.agent.selectedAvatarId).toBeNull();
     expect(avatars.agent.recentAvatars.map((avatar) => avatar.id)).toEqual(recentIds);
   });

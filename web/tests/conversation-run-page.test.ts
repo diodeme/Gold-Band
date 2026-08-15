@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { sessionBelongsToLeaf } from '../src/pages/ConversationRunPage';
+import {
+  resolveConversationContentQueryState,
+  sessionBelongsToLeaf,
+} from '../src/pages/ConversationRunPage';
 import type { AcpSessionVm, ConversationRunVm, ConversationSessionLeafVm } from '../src/types';
 
 function run(partial: Partial<ConversationRunVm> = {}): ConversationRunVm {
@@ -90,5 +93,19 @@ describe('ConversationRunPage session leaf matching', () => {
     });
 
     expect(sessionBelongsToLeaf(selectedSession, run(), selectedLeaf)).toBe(false);
+  });
+});
+
+describe('ConversationRunPage content loading gate', () => {
+  it('shows hydrated cached content immediately while it revalidates', () => {
+    expect(resolveConversationContentQueryState('session-a', null, true)).toBe('success');
+  });
+
+  it('loads an uncached identity and ignores a previous session projection', () => {
+    expect(resolveConversationContentQueryState(
+      'session-b',
+      { identity: 'session-a', state: 'success' },
+      false,
+    )).toBe('loading');
   });
 });

@@ -266,21 +266,23 @@ use crate::acp::connection::{
     SessionEventPump, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
-    elicitation_response_result, remove_elicitation_signal_files,
-    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+    cancel_pending_elicitation_requests, elicitation_response_result,
+    remove_elicitation_signal_files, upsert_elicitation_response_event,
+    wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpPromptRetryState, AcpSessionMetadata, AcpSessionTiming, AcpTimingState,
-    AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
-    cancel_latest_processing_prompt_retry, current_timestamp, latest_timeline_source_seq,
-    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
+    AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
+    append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
+    current_timestamp, latest_timeline_source_seq, load_session_metadata, normalize_session_update,
+    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
-    write_pending_permission,
+    permission_response_file, remove_permission_signal_files,
+    wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
 use crate::acp::usage::{
@@ -1986,7 +1988,7 @@ fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBun
         return Ok(());
     }
 
-    if prompt.runtime_control_resume_candidate
+    if prompt.runtime_control_intent == crate::provider::RuntimeControlIntent::Resume
         && let Some((source_transition_id, transition_id)) =
             crate::acp::control::prepare_workflow_continued(attempt_dir)?
     {
@@ -2323,7 +2325,7 @@ fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
     if !snapshot_path.exists() {
         return PriorAttemptMetrics::default();
     }
-    let Ok(meta) = read_json::<crate::acp::events::AcpSessionMetadata>(snapshot_path) else {
+    let Ok(meta) = load_session_metadata(snapshot_path, None) else {
         return PriorAttemptMetrics::default();
     };
     PriorAttemptMetrics {
@@ -2528,7 +2530,7 @@ impl<'a> AcpRuntime<'a> {
             .iter()
             .map(|item| item.id.clone())
             .collect();
-        let prompt_retry = read_json::<AcpSessionMetadata>(&paths.snapshot)
+        let prompt_retry = load_session_metadata(&paths.snapshot, None)
             .ok()
             .and_then(|metadata| metadata.prompt_retry);
         let pending_retry_prompt_event = prompt_retry
@@ -3491,18 +3493,21 @@ impl<'a> AcpRuntime<'a> {
             prompt_event_timestamp: Some(prompt_event_timestamp.clone()),
             hidden_from_chat,
         });
-        let mut user_event = user_prompt_event(
+        let mut user_event = user_prompt_event_with_quotes(
             prompt_event_seq,
             session_id,
-            session_prompt_text(
-                provider_id,
-                prompt,
-                restored,
-                self.runtime_policy.supports_system_prompt,
-            ),
+            prompt.display_text.clone().unwrap_or_else(|| {
+                session_prompt_text(
+                    provider_id,
+                    prompt,
+                    restored,
+                    self.runtime_policy.supports_system_prompt,
+                )
+            }),
             Some(prompt_id.clone()),
             hidden_from_chat,
             prompt.attachment_metas.clone(),
+            prompt.quotes.clone(),
         );
         if hidden_from_chat
             && let Some(reason) = prompt.hidden_reason.as_deref()
@@ -4330,6 +4335,9 @@ impl<'a> AcpRuntime<'a> {
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
         let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        if self.is_prompt_cancel_requested() {
+            return self.send_cancelled_permission_response(rpc_id, &request_id);
+        }
         self.seq += 1;
         write_pending_permission(
             &self.paths.attempt_dir,
@@ -4349,7 +4357,11 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         self.persist_event(&event)?;
-        let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        let response = wait_for_permission_response_until_cancelled(
+            &self.paths.attempt_dir,
+            &request_id,
+            || self.is_prompt_cancel_requested(),
+        )?;
         self.seq += 1;
         let decision_event = permission_decision_timeline_event(
             self.seq,
@@ -4360,6 +4372,22 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&decision_event)?;
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn send_cancelled_permission_response(&self, rpc_id: Value, request_id: &str) -> Result<()> {
+        let result = acp_permission_response_result(PermissionResponseState {
+            request_id: request_id.to_string(),
+            option_id: None,
+            cancelled: true,
+            decided_at: current_timestamp(),
+        })?;
         let frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id.clone(),
@@ -4432,6 +4460,10 @@ impl<'a> AcpRuntime<'a> {
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+        if self.is_prompt_cancel_requested() {
+            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+        }
         let params = value
             .get("params")
             .cloned()
@@ -4440,8 +4472,6 @@ impl<'a> AcpRuntime<'a> {
             agent_client_protocol_schema::v1::CreateElicitationRequest,
         >(params)
         .context("invalid ACP elicitation/create params")?;
-
-        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
 
         // 1. 持久化请求到 attempt dir
         write_pending_elicitation(
@@ -4464,10 +4494,11 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&event)?;
 
         // 3. 同步阻塞等待用户响应（含超时保护）
-        let response = wait_for_elicitation_response(
+        let response = wait_for_elicitation_response_until_cancelled(
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
+            || self.is_prompt_cancel_requested(),
         )?;
         upsert_elicitation_response_event(
             &self.paths.attempt_dir,
@@ -4500,6 +4531,27 @@ impl<'a> AcpRuntime<'a> {
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
 
         Ok(())
+    }
+
+    fn send_declined_elicitation_response(
+        &self,
+        rpc_id: Value,
+        elicitation_id: &str,
+    ) -> Result<()> {
+        let response = crate::acp::elicitation::ElicitationResponseState {
+            elicitation_id: elicitation_id.to_string(),
+            action: ElicitationAction::Decline,
+            content: None,
+            decided_at: current_timestamp(),
+        };
+        let result = elicitation_response_result(&response);
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {
@@ -4695,9 +4747,9 @@ impl<'a> AcpRuntime<'a> {
     ) -> AcpSessionMetadata {
         let now = current_timestamp();
         let previous_metadata = if self.paths.snapshot.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.snapshot).ok()
+            load_session_metadata(&self.paths.snapshot, self.session_id.clone()).ok()
         } else if self.paths.session.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.session).ok()
+            load_session_metadata(&self.paths.session, self.session_id.clone()).ok()
         } else {
             None
         };
@@ -4716,7 +4768,22 @@ impl<'a> AcpRuntime<'a> {
             adapter_display_name: self.connection.adapter().display_name.clone(),
             cwd: self.paths.attempt_dir.to_string(),
             title: self.session_title.clone(),
-            status: status.to_string(),
+            session_id: self.session_id.clone(),
+            availability: match status {
+                "cancelling" | "cancel-requested" | "closing" => AcpSessionAvailability::Closing,
+                "failed" if self.session_id.is_some() => AcpSessionAvailability::Restorable,
+                _ if self.session_id.is_some() => AcpSessionAvailability::Established,
+                _ => AcpSessionAvailability::Unavailable,
+            },
+            latest_turn_status: match status {
+                "completed" => AcpLatestTurnStatus::Completed,
+                "cancelled" | "canceled" => AcpLatestTurnStatus::Cancelled,
+                "failed" => AcpLatestTurnStatus::Failed,
+                _ => previous_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.latest_turn_status)
+                    .unwrap_or_default(),
+            },
             restored,
             stop_reason,
             capabilities,
@@ -6045,11 +6112,13 @@ mod tests {
         PromptBundle {
             system_prompt: String::new(),
             user_prompt: "clarify".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some(prompt_id.to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::NonRuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -6071,6 +6140,28 @@ mod tests {
         assert!(prompt.runtime_control_transition_id.is_none());
         assert!(prompt.runtime_control_transition_cause.is_none());
     }
+
+    #[test]
+    fn only_explicit_resume_intent_prepares_runtime_control_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.turn_control_mode = TurnControlMode::RuntimeControlled;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_none());
+        assert!(prompt.runtime_control_transition_cause.is_none());
+
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::Resume;
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_some());
+        assert_eq!(
+            prompt.runtime_control_transition_cause,
+            Some(crate::domain::TurnControlTransitionCause::WorkflowContinued)
+        );
+    }
+
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{
@@ -7802,11 +7893,13 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -7831,11 +7924,13 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "follow up".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,
@@ -7858,11 +7953,13 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
             runtime_control_transition_id: None,
             runtime_control_source_transition_id: None,
             runtime_control_transition_cause: None,

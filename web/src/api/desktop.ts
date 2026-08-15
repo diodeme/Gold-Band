@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -285,6 +285,9 @@ export const desktopApi: RuntimeApi = {
   continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
+  recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision) {
+    return invokeCommand('recover_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision });
+  },
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });
   },
@@ -318,8 +321,8 @@ export const desktopApi: RuntimeApi = {
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
-    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
   updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
     return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
@@ -366,8 +369,8 @@ export const desktopApi: RuntimeApi = {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
+    return invokeCommand('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging });
   },
   saveDesktopAvatar(input) {
     return invokeCommand('save_desktop_avatar', { input });
@@ -603,7 +606,11 @@ export const desktopApi: RuntimeApi = {
     const result = await open({ multiple: true });
     if (!result) return [];
     const paths = Array.isArray(result) ? result : [result];
-    return invokeCommand('stat_attachment_files', { paths });
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+    }));
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });

@@ -47,7 +47,7 @@ export function AttachmentChip({ item, compact = false, onRemove, onPreview }: A
         {item.name}
       </span>
       {!compact && (
-        <Badge variant="secondary" className="shrink-0 rounded-full px-1.5 py-0 text-[10px] font-normal">
+        <Badge variant="secondary" className="shrink-0 rounded-full px-1.5 py-0 text-ui-micro font-normal">
           {formatSize(item.size)}
         </Badge>
       )}
@@ -108,7 +108,7 @@ export function AttachmentChipsList({
       <Button
         variant="ghost"
         size="sm"
-        className={cn('text-muted-foreground', compact ? 'h-6 text-[11px]' : 'h-7 text-xs')}
+        className={cn('text-muted-foreground', compact ? 'h-6 text-ui-caption' : 'h-7 text-xs')}
         onClick={onClear}
       >
         {clearLabel}
@@ -118,9 +118,9 @@ export function AttachmentChipsList({
 }
 
 export interface AttachmentPreviewDialogsProps {
-  previewImage: AttachmentItem | null;
+  previewImage?: AttachmentItem | null;
   textPreview: { name: string; content: string } | null;
-  onCloseImage: () => void;
+  onCloseImage?: () => void;
   onCloseText: () => void;
 }
 
@@ -132,7 +132,7 @@ export function AttachmentPreviewDialogs({
 }: AttachmentPreviewDialogsProps) {
   return (
     <>
-      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) onCloseImage(); }}>
+      <Dialog open={!!previewImage} onOpenChange={(open) => { if (!open) onCloseImage?.(); }}>
         <DialogContent
           showCloseButton={false}
           overlayClassName="bg-black/70"

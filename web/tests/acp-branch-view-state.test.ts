@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   applyAcpScrollAnchorCompensation,
+  captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  hasHydratedAcpSessionContent,
+  markAcpSessionContentHydrated,
   resetAcpResourceCache,
   restoreAcpBranchViewState,
   restoreAcpLoadedEvents,
@@ -95,6 +98,17 @@ describe('ACP branch view state cache', () => {
     expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
   });
 
+  it('distinguishes a hydrated content response from a cached session projection', () => {
+    storeAcpSession('hydration-session', session('agent-summary'));
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(false);
+
+    markAcpSessionContentHydrated('hydration-session');
+    storeAcpSession('hydration-session', session('agent-refreshed-summary'));
+
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(true);
+    expect(restoreAcpSession('hydration-session')?.branchId).toBe('agent-refreshed-summary');
+  });
+
   it('evicts session, events, and view state atomically by resource key', () => {
     storeAcpSession('combined-oldest', session('agent-oldest'));
     storeAcpLoadedEvents('combined-oldest', [event('event-oldest')], 100);
@@ -131,5 +145,21 @@ describe('ACP branch view state cache', () => {
     expect(applyAcpScrollAnchorCompensation(scroller, 'message-anchor', 60)).toBe(true);
     expect(scroller.scrollTop).toBe(120);
     expect(applyAcpScrollAnchorCompensation(scroller, 'missing', 60)).toBe(false);
+  });
+
+  it('updates scroll state without reading or scanning message DOM in the scroll hot path', () => {
+    const querySelectorAll = () => {
+      throw new Error('scroll hot path must not scan message DOM');
+    };
+    const scroller = { scrollTop: 240, querySelectorAll };
+
+    expect(captureAcpBranchScrollState(scroller, true, false, true)).toEqual({
+      anchorKey: null,
+      anchorOffset: 0,
+      scrollTop: 240,
+      atBottom: true,
+      hasOlder: false,
+      hasNewer: true,
+    });
   });
 });

@@ -1,0 +1,1940 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gold-band.dev/schemas/theme-package-v1.schema.json",
+  "title": "Gold Band Runtime Theme Package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "id",
+    "version",
+    "source",
+    "name",
+    "author",
+    "capabilities",
+    "schemes",
+    "recipes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "contractVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^(builtin|user)\\.[a-z0-9][a-z0-9.-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "source": {
+      "enum": [
+        "builtin",
+        "user"
+      ]
+    },
+    "name": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zh-CN",
+        "en"
+      ],
+      "properties": {
+        "zh-CN": {
+          "type": "string",
+          "minLength": 1
+        },
+        "en": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "minItems": 2,
+      "items": {
+        "enum": [
+          "tokens",
+          "component-recipes",
+          "fonts",
+          "avatars",
+          "textures",
+          "visual-quality-profiles"
+        ]
+      }
+    },
+    "schemes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "light",
+        "dark"
+      ],
+      "properties": {
+        "light": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "windowSurface",
+            "preview",
+            "semantic",
+            "material",
+            "typography",
+            "avatars"
+          ],
+          "properties": {
+            "windowSurface": {
+              "type": "string",
+              "minLength": 1
+            },
+            "preview": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "background",
+                "surface",
+                "border",
+                "primary",
+                "foreground",
+                "muted",
+                "success",
+                "danger"
+              ],
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "border": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "foreground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "muted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "success": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "danger": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "semantic": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "background",
+                "foreground",
+                "title",
+                "card",
+                "cardForeground",
+                "popover",
+                "popoverForeground",
+                "primary",
+                "primaryForeground",
+                "secondary",
+                "secondaryForeground",
+                "muted",
+                "mutedForeground",
+                "accent",
+                "accentForeground",
+                "destructive",
+                "border",
+                "input",
+                "ring",
+                "selection",
+                "selectionForeground",
+                "messageUser",
+                "messageUserForeground",
+                "contentHeader",
+                "contentHeaderForeground",
+                "conversationBackground",
+                "conversationForeground",
+                "messageAssistant",
+                "messageAssistantForeground",
+                "composer",
+                "composerForeground",
+                "activity",
+                "activityForeground",
+                "toolCard",
+                "toolCardForeground",
+                "permissionCard",
+                "permissionCardForeground",
+                "workspaceTab",
+                "workspaceTabForeground",
+                "resourceHeader",
+                "resourceHeaderForeground",
+                "fileTree",
+                "fileTreeForeground",
+                "editor",
+                "editorForeground",
+                "diffAdded",
+                "diffAddedForeground",
+                "diffRemoved",
+                "diffRemovedForeground",
+                "diffModified",
+                "diffModifiedForeground",
+                "sidebar",
+                "sidebarForeground",
+                "sidebarPrimary",
+                "sidebarPrimaryForeground",
+                "sidebarAccent",
+                "sidebarAccentForeground",
+                "sidebarBorder",
+                "sidebarRing",
+                "workspace",
+                "surfaceLow",
+                "surfaceHigh",
+                "lineSoft",
+                "windowOutline",
+                "windowEdgeShadow",
+                "running",
+                "success",
+                "warning",
+                "danger",
+                "permission",
+                "titlebar",
+                "titlebarForeground",
+                "titlebarMuted",
+                "titlebarBorder",
+                "titlebarHover",
+                "scrollbarTrack",
+                "scrollbarThumb",
+                "scrollbarThumbHover"
+              ],
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "foreground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "card": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "popover": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "popoverForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secondary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secondaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "muted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mutedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "accent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "accentForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "destructive": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "border": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "input": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ring": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "selection": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "selectionForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageUser": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageUserForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentHeader": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentHeaderForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversationBackground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversationForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageAssistant": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageAssistantForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "composer": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "composerForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "activity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "activityForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "toolCard": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "toolCardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permissionCard": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permissionCardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceTab": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceTabForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resourceHeader": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resourceHeaderForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fileTree": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fileTreeForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editor": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editorForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffAdded": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffAddedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffRemoved": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffRemovedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffModified": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffModifiedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebar": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarPrimary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarPrimaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarAccent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarAccentForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarRing": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspace": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surfaceLow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surfaceHigh": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "lineSoft": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "windowOutline": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "windowEdgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "running": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "success": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "warning": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "danger": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permission": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebar": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarMuted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarHover": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarTrack": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarThumb": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarThumbHover": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "material": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surfaceOpacity",
+                "borderHighlight",
+                "surfaceOverlay",
+                "blur",
+                "saturate",
+                "shadow",
+                "radius",
+                "backgroundImage",
+                "textureOpacity",
+                "motionDuration",
+                "motionEasing"
+              ],
+              "properties": {
+                "model": {
+                  "enum": [
+                    "solid",
+                    "frosted",
+                    "liquid"
+                  ]
+                },
+                "surfaceOpacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "borderHighlight": {
+                  "type": "string"
+                },
+                "surfaceOverlay": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "blur": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 60
+                },
+                "saturate": {
+                  "type": "number",
+                  "minimum": 100,
+                  "maximum": 200
+                },
+                "backdropBrightness": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 120
+                },
+                "backdropContrast": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 140
+                },
+                "specularHighlight": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "edgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "shadow": {
+                  "type": "string"
+                },
+                "radius": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "backgroundImage": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "textureOpacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.04
+                },
+                "motionDuration": {
+                  "type": "string",
+                  "pattern": "^\\d+(ms|s)$"
+                },
+                "motionEasing": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "typography": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uiFamily",
+                "uiSize",
+                "editorFamily",
+                "editorSize"
+              ],
+              "properties": {
+                "uiFamily": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uiSize": {
+                  "type": "number",
+                  "minimum": 12,
+                  "maximum": 18
+                },
+                "editorFamily": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editorSize": {
+                  "type": "number",
+                  "minimum": 10,
+                  "maximum": 18
+                }
+              }
+            },
+            "avatars": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agentShape",
+                "userShape",
+                "agentAsset",
+                "userAsset"
+              ],
+              "properties": {
+                "agentShape": {
+                  "enum": [
+                    "circle",
+                    "square"
+                  ]
+                },
+                "userShape": {
+                  "enum": [
+                    "circle",
+                    "square"
+                  ]
+                },
+                "agentAsset": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "userAsset": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "dark": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "windowSurface",
+            "preview",
+            "semantic",
+            "material",
+            "typography",
+            "avatars"
+          ],
+          "properties": {
+            "windowSurface": {
+              "type": "string",
+              "minLength": 1
+            },
+            "preview": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "background",
+                "surface",
+                "border",
+                "primary",
+                "foreground",
+                "muted",
+                "success",
+                "danger"
+              ],
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surface": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "border": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "foreground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "muted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "success": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "danger": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "semantic": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "background",
+                "foreground",
+                "title",
+                "card",
+                "cardForeground",
+                "popover",
+                "popoverForeground",
+                "primary",
+                "primaryForeground",
+                "secondary",
+                "secondaryForeground",
+                "muted",
+                "mutedForeground",
+                "accent",
+                "accentForeground",
+                "destructive",
+                "border",
+                "input",
+                "ring",
+                "selection",
+                "selectionForeground",
+                "messageUser",
+                "messageUserForeground",
+                "contentHeader",
+                "contentHeaderForeground",
+                "conversationBackground",
+                "conversationForeground",
+                "messageAssistant",
+                "messageAssistantForeground",
+                "composer",
+                "composerForeground",
+                "activity",
+                "activityForeground",
+                "toolCard",
+                "toolCardForeground",
+                "permissionCard",
+                "permissionCardForeground",
+                "workspaceTab",
+                "workspaceTabForeground",
+                "resourceHeader",
+                "resourceHeaderForeground",
+                "fileTree",
+                "fileTreeForeground",
+                "editor",
+                "editorForeground",
+                "diffAdded",
+                "diffAddedForeground",
+                "diffRemoved",
+                "diffRemovedForeground",
+                "diffModified",
+                "diffModifiedForeground",
+                "sidebar",
+                "sidebarForeground",
+                "sidebarPrimary",
+                "sidebarPrimaryForeground",
+                "sidebarAccent",
+                "sidebarAccentForeground",
+                "sidebarBorder",
+                "sidebarRing",
+                "workspace",
+                "surfaceLow",
+                "surfaceHigh",
+                "lineSoft",
+                "windowOutline",
+                "windowEdgeShadow",
+                "running",
+                "success",
+                "warning",
+                "danger",
+                "permission",
+                "titlebar",
+                "titlebarForeground",
+                "titlebarMuted",
+                "titlebarBorder",
+                "titlebarHover",
+                "scrollbarTrack",
+                "scrollbarThumb",
+                "scrollbarThumbHover"
+              ],
+              "properties": {
+                "background": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "foreground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "card": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "cardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "popover": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "popoverForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "primaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secondary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "secondaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "muted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mutedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "accent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "accentForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "destructive": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "border": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "input": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "ring": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "selection": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "selectionForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageUser": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageUserForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentHeader": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "contentHeaderForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversationBackground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "conversationForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageAssistant": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "messageAssistantForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "composer": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "composerForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "activity": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "activityForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "toolCard": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "toolCardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permissionCard": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permissionCardForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceTab": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspaceTabForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resourceHeader": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resourceHeaderForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fileTree": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "fileTreeForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editor": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editorForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffAdded": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffAddedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffRemoved": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffRemovedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffModified": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "diffModifiedForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebar": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarPrimary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarPrimaryForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarAccent": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarAccentForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sidebarRing": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "workspace": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surfaceLow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "surfaceHigh": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "lineSoft": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "windowOutline": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "windowEdgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "running": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "success": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "warning": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "danger": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "permission": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebar": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarForeground": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarMuted": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarBorder": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "titlebarHover": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarTrack": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarThumb": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scrollbarThumbHover": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "material": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "surfaceOpacity",
+                "borderHighlight",
+                "surfaceOverlay",
+                "blur",
+                "saturate",
+                "shadow",
+                "radius",
+                "backgroundImage",
+                "textureOpacity",
+                "motionDuration",
+                "motionEasing"
+              ],
+              "properties": {
+                "model": {
+                  "enum": [
+                    "solid",
+                    "frosted",
+                    "liquid"
+                  ]
+                },
+                "surfaceOpacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "borderHighlight": {
+                  "type": "string"
+                },
+                "surfaceOverlay": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "blur": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 60
+                },
+                "saturate": {
+                  "type": "number",
+                  "minimum": 100,
+                  "maximum": 200
+                },
+                "backdropBrightness": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 120
+                },
+                "backdropContrast": {
+                  "type": "number",
+                  "minimum": 80,
+                  "maximum": 140
+                },
+                "specularHighlight": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "edgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "shadow": {
+                  "type": "string"
+                },
+                "radius": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "backgroundImage": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "textureOpacity": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.04
+                },
+                "motionDuration": {
+                  "type": "string",
+                  "pattern": "^\\d+(ms|s)$"
+                },
+                "motionEasing": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "typography": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uiFamily",
+                "uiSize",
+                "editorFamily",
+                "editorSize"
+              ],
+              "properties": {
+                "uiFamily": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uiSize": {
+                  "type": "number",
+                  "minimum": 12,
+                  "maximum": 18
+                },
+                "editorFamily": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "editorSize": {
+                  "type": "number",
+                  "minimum": 10,
+                  "maximum": 18
+                }
+              }
+            },
+            "avatars": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "agentShape",
+                "userShape",
+                "agentAsset",
+                "userAsset"
+              ],
+              "properties": {
+                "agentShape": {
+                  "enum": [
+                    "circle",
+                    "square"
+                  ]
+                },
+                "userShape": {
+                  "enum": [
+                    "circle",
+                    "square"
+                  ]
+                },
+                "agentAsset": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "userAsset": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "recipes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shell",
+        "titlebar",
+        "sidebar",
+        "panel",
+        "composer",
+        "card",
+        "dialog",
+        "sheet",
+        "popover",
+        "input",
+        "button",
+        "editor"
+      ],
+      "properties": {
+        "shell": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "titlebar": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "sidebar": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "panel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "composer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "card": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "dialog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "sheet": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "popover": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "button": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        },
+        "editor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "material"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "visualQualityProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default",
+        "supported",
+        "performance"
+      ],
+      "properties": {
+        "default": {
+          "enum": [
+            "full",
+            "performance"
+          ]
+        },
+        "supported": {
+          "const": [
+            "full",
+            "performance"
+          ]
+        },
+        "performance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "blur",
+            "saturate",
+            "shadow",
+            "textureOpacity",
+            "motionDuration"
+          ],
+          "properties": {
+            "blur": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 24
+            },
+            "saturate": {
+              "type": "number",
+              "minimum": 100,
+              "maximum": 160
+            },
+            "backdropBrightness": {
+              "type": "number",
+              "minimum": 80,
+              "maximum": 120
+            },
+            "backdropContrast": {
+              "type": "number",
+              "minimum": 80,
+              "maximum": 140
+            },
+            "specularHighlight": {
+              "type": "string",
+              "minLength": 1
+            },
+            "edgeShadow": {
+              "type": "string",
+              "minLength": 1
+            },
+            "shadow": {
+              "type": "string"
+            },
+            "textureOpacity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.02
+            },
+            "motionDuration": {
+              "type": "string",
+              "pattern": "^\\d+(ms|s)$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

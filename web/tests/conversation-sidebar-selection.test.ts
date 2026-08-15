@@ -82,7 +82,8 @@ describe('ConversationSidebar run selection identity', () => {
     };
     const lifecycle = {
       runtime: { status: 'completed', resumable: false, current: true, active: false, continuable: false, phase: 'terminal' },
-      acp: { status: 'running', phase: 'running' as const, active: true, stopping: false, terminal: false },
+      control: { mode: 'non-runtime-controlled' as const },
+      acp: { sessionAvailability: 'established' as const, liveTurnActivity: 'running' as const, latestTurnStatus: 'none' as const, stopping: false },
       displayStatus: 'running',
       runtimeDisplay: { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false },
       continueKind: null,
@@ -120,7 +121,8 @@ describe('ConversationSidebar run selection identity', () => {
     };
     const lifecycle = {
       runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
-      acp: { status: 'starting', phase: 'starting' as const, active: true, stopping: false, terminal: false },
+      control: { mode: 'runtime-controlled' as const },
+      acp: { sessionAvailability: 'established' as const, liveTurnActivity: 'starting' as const, latestTurnStatus: 'none' as const, stopping: false },
       displayStatus: 'running',
       runtimeDisplay: { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false },
       continueKind: null,

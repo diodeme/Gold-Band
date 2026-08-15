@@ -1,23 +1,23 @@
 import type React from 'react';
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, isValidElement, memo, useContext, useLayoutEffect, useRef } from 'react';
 import { FileCode2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { code } from '@streamdown/code';
 import {
+  Block,
   defaultUrlTransform,
   Streamdown,
+  type BlockProps,
   type StreamdownProps,
 } from 'streamdown';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
-import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
+import { isExternalUrlHref, isLocalFileHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 import { createIncrementalMarkdownBlockParser } from '@/lib/incremental-markdown-blocks';
 import {
-  advanceStreamingMarkdownPresentation,
-  createStreamingMarkdownPresentation,
-  isStreamingMarkdownPresentationPending,
-  STREAMING_MARKDOWN_FRAME_MS,
-  streamingMarkdownPresentationText,
-  syncStreamingMarkdownPresentation,
-} from '@/lib/streaming-markdown';
+  createStreamingMarkdownPlayback,
+  type StreamingMarkdownPlayback,
+} from '@/lib/streaming-markdown-playback';
 
 export type MarkdownProps = {
   children: string;
@@ -64,10 +64,25 @@ function localHrefFromRenderedHref(href: string | undefined) {
   return isLocalFileHref(href) ? href : null;
 }
 
+function renderedLinkText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(renderedLinkText).join('');
+  if (isValidElement<{ children?: React.ReactNode }>(node)) {
+    return renderedLinkText(node.props.children);
+  }
+  return '';
+}
+
 const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url, key, node) => (
   isLocalFileHref(url) ? url : defaultUrlTransform(url, key, node)
 );
 const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
+const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code };
+const markdownControls: NonNullable<StreamdownProps['controls']> = {
+  code: { copy: true, download: false },
+  table: false,
+  mermaid: false,
+};
 
 function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
   const handler = useContext(MarkdownResourceLinkContext);
@@ -75,6 +90,13 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
   const local = Boolean(localHref);
   const enabledLocal = Boolean(handler && localHref);
   const external = Boolean(href && isExternalUrlHref(href));
+  const target = localHref ? parseLocalFileLinkTarget(localHref) : null;
+  const visibleLabel = target ? renderedLinkText(children).trim() : '';
+  const showTarget = Boolean(
+    target
+    && !visibleLabel.endsWith(target.displayText)
+    && !visibleLabel.endsWith(target.sourceSuffix),
+  );
   return (
     <a
       {...props}
@@ -102,7 +124,17 @@ function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<H
           : props.onClick}
     >
       {enabledLocal ? <FileCode2 className="size-[1em] shrink-0 self-center stroke-[2.35] text-gold-running" aria-hidden="true" /> : null}
-      {children}
+      <span className="min-w-0 [overflow-wrap:anywhere]">
+        {children}
+        {showTarget ? (
+          <span
+            className="whitespace-nowrap"
+            data-gb-file-link-target="true"
+          >
+            {target?.displayText}
+          </span>
+        ) : null}
+      </span>
     </a>
   );
 }
@@ -139,15 +171,10 @@ const markdownComponents = {
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="my-2 border-l-2 border-primary/40 pl-3 text-muted-foreground">{children}</blockquote>,
-  code: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
-    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-mono text-[0.86em] text-foreground', className)} {...props}>
+  inlineCode: ({ className, children, node: _node, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown }) => (
+    <code className={cn('rounded-md bg-muted/50 px-1.5 py-0.5 font-sans text-[1em] font-normal leading-[inherit] tracking-normal text-foreground', className)} {...props}>
       {children}
     </code>
-  ),
-  pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60 bg-muted/35 p-3 font-mono text-xs leading-5 text-foreground shadow-sm shadow-background/20 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[inherit]">
-      {children}
-    </pre>
   ),
   table: ({ children }: { children?: React.ReactNode }) => (
     <div className="my-2 max-w-full overflow-x-auto rounded-xl border border-border/60">
@@ -160,75 +187,79 @@ const markdownComponents = {
   hr: () => <hr className="my-3 border-border/70" />,
 } as NonNullable<StreamdownProps['components']>;
 
-export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
-  const [presentation, setPresentation] = useState(() =>
-    createStreamingMarkdownPresentation(children, streaming),
+const streamdownPlaybackTokens: NonNullable<StreamdownProps['animated']> = {
+  animation: 'fadeIn',
+  duration: 0,
+  easing: 'linear',
+  sep: 'char',
+  stagger: 0,
+};
+
+function StreamingMarkdownBlock(props: BlockProps) {
+  return (
+    <div className="contents" data-gb-stream-block="true">
+      <Block {...props} />
+    </div>
   );
-  const lastFrameAtRef = useRef(0);
-  const hasStreamedRef = useRef(streaming);
-  if (streaming) hasStreamedRef.current = true;
-  const streamdownMode = hasStreamedRef.current ? 'streaming' : 'static';
+}
+
+export const Markdown = memo(function Markdown({ children, className, streaming = false }: MarkdownProps) {
+  const { t } = useTranslation();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const playbackRef = useRef<StreamingMarkdownPlayback | null>(null);
   const blockParserRef = useRef<ReturnType<typeof createIncrementalMarkdownBlockParser> | null>(null);
   if (!blockParserRef.current) {
     blockParserRef.current = createIncrementalMarkdownBlockParser();
   }
 
   useLayoutEffect(() => {
-    setPresentation((current) =>
-      syncStreamingMarkdownPresentation(current, children, streaming),
-    );
-  }, [children, streaming]);
-
-  const pending = isStreamingMarkdownPresentationPending(presentation);
-  useEffect(() => {
-    if (!pending || typeof window === 'undefined') return;
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
-      setPresentation((current) => ({
-        ...current,
-        offset: current.canonical.length,
-        carry: 0,
-      }));
-      return;
-    }
-
-    let frameId = 0;
-    const tick = (now: number) => {
-      const elapsed = lastFrameAtRef.current === 0
-        ? STREAMING_MARKDOWN_FRAME_MS
-        : now - lastFrameAtRef.current;
-      if (elapsed < STREAMING_MARKDOWN_FRAME_MS) {
-        frameId = window.requestAnimationFrame(tick);
-        return;
-      }
-      lastFrameAtRef.current = now;
-      setPresentation((current) =>
-        advanceStreamingMarkdownPresentation(current, elapsed),
-      );
+    const root = rootRef.current;
+    if (!root) return;
+    const playback = createStreamingMarkdownPlayback(root, {
+      canonical: children,
+      streaming,
+    });
+    playbackRef.current = playback;
+    return () => {
+      playback.dispose();
+      if (playbackRef.current === playback) playbackRef.current = null;
     };
-    frameId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frameId);
-  }, [pending, presentation.canonical.length, presentation.offset]);
+  }, []);
 
-  const presentationStreaming = streaming || pending;
-  const visibleChildren = streamingMarkdownPresentationText(
-    presentation,
-    streaming,
-  );
+  useLayoutEffect(() => {
+    playbackRef.current?.setCanonical(children);
+  }, [children]);
+
+  useLayoutEffect(() => {
+    playbackRef.current?.setStreaming(streaming);
+  }, [streaming]);
 
   return (
-    <div className={cn('min-w-0 max-w-full space-y-2 break-words text-sm leading-6 [overflow-wrap:anywhere]', className)}>
+    <div
+      className={cn('min-w-0 max-w-full space-y-2 break-words text-sm leading-6 [overflow-wrap:anywhere]', className)}
+      data-gb-streaming-markdown={streaming ? 'true' : undefined}
+      ref={rootRef}
+    >
       <Streamdown
+        animated={streaming ? streamdownPlaybackTokens : false}
+        BlockComponent={StreamingMarkdownBlock}
         className="space-y-2"
         components={markdownComponents}
-        controls={false}
-        isAnimating={presentationStreaming}
-        mode={streamdownMode}
-        parseIncompleteMarkdown={presentationStreaming}
+        controls={markdownControls}
+        isAnimating={streaming}
+        lineNumbers={false}
+        mode={streaming ? 'streaming' : 'static'}
+        parseIncompleteMarkdown={streaming}
         parseMarkdownIntoBlocksFn={blockParserRef.current}
+        plugins={markdownPlugins}
+        translations={{
+          copied: t('common.copied'),
+          copyCode: t('common.copyCode'),
+        }}
         urlTransform={markdownUrlTransform}
         linkSafety={markdownLinkSafety}
       >
-        {proxyLocalFileLinks(visibleChildren)}
+        {proxyLocalFileLinks(children)}
       </Streamdown>
     </div>
   );

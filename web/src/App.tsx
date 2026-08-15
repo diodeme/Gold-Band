@@ -66,6 +66,7 @@ import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
+import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import {
   planConversationAcpRunUpdate,
@@ -107,7 +108,7 @@ import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversatio
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
+import { applyAppearance, applyPersonalization, defaultPersonalizationPreference, resolveAppearance, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import { useScheduledNotifications } from './lib/use-scheduled-notifications';
 import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
@@ -137,12 +138,14 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
+  beginConversationSessionSelection,
   conversationPageForIntervention,
   conversationPageMatchesRun,
-  resolvePresentedConversationPage,
+  isConversationRunNavigationLoading,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
+import { ConversationRunCache } from '@/lib/conversation-run-cache';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -170,9 +173,9 @@ import type {
   ConversationSidebarVm,
   CreateTaskInput,
   ProfileVm,
-  DesktopFontPreference,
   DesktopLanguage,
-  DesktopThemePreference,
+  AppearancePreference,
+  PersonalizationPreference,
   DesktopUiMode,
   MetricsSettingsVm,
   PreferencesVm,
@@ -232,7 +235,7 @@ function findScheduledLinkedLeaf(
   return null;
 }
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -364,13 +367,11 @@ export function App() {
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
   const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
+  const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationNavigationRequestRef = useRef(0);
-  const presentedConversationPage = useMemo(
-    () => resolvePresentedConversationPage(conversationPage, conversationRun),
-    [conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId],
-  );
+  const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
     selectedSessionKey: null,
@@ -406,9 +407,10 @@ export function App() {
         ...conversationSessionFollowRef.current,
         selectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
       };
+      conversationRunCache.store(merged);
       return merged;
     });
-  }, []);
+  }, [conversationRunCache]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);
@@ -503,6 +505,8 @@ export function App() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
+  const preferenceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<{
@@ -590,20 +594,20 @@ export function App() {
   const { t } = useTranslation();
 
   useEffect(() => {
-    applyTheme(preferences.theme);
-  }, [preferences.theme]);
+    applyAppearance(preferences.appearance);
+  }, [preferences.appearance]);
 
   useEffect(() => {
-    if (preferences.theme !== 'system') return undefined;
+    if (preferences.appearance.colorScheme !== 'system') return undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => applyTheme('system');
+    const syncSystemTheme = () => applyAppearance(preferences.appearance);
     colorScheme.addEventListener('change', syncSystemTheme);
     return () => colorScheme.removeEventListener('change', syncSystemTheme);
-  }, [preferences.theme]);
+  }, [preferences.appearance]);
 
   useEffect(() => {
-    applyFont(preferences.font);
-  }, [preferences.font]);
+    applyPersonalization(preferences.personalization);
+  }, [preferences.personalization]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -616,7 +620,7 @@ export function App() {
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
       if (!windowRevealedRef.current) {
-        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance));
       }
       await syncDesktopWindowMinimum(
         appWindow,
@@ -638,7 +642,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.appearance]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -822,8 +826,7 @@ export function App() {
         const selectedSessionKey = conversationSessionKeyFromParts(leaf);
         return getConversationRun(projectId, taskId, runId, selectedSessionKey);
       })
-      .then(async (run) => {
-        await preloadConversationTurnFileChangeSets(run);
+      .then((run) => {
         if (cancelled || !shouldCommitConversationNavigation(
           requestId,
           conversationNavigationRequestRef.current,
@@ -834,6 +837,7 @@ export function App() {
           selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
           preserveSelectedSession: false,
         });
+        void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
         if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
@@ -1304,6 +1308,12 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key);
+    setConversationRun((current) => {
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const next = beginConversationSessionSelection(base, key);
+      conversationRunRef.current = next;
+      return next;
+    });
     try {
       const switched = await switchConversationSession(
         targetProjectId,
@@ -1494,88 +1504,76 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => {
+  const onSavePreferences = (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => {
+    const generation = ++preferenceSaveGenerationRef.current;
     setBusy(true);
-    try {
-      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
-      setBootstrap((current) => current ? { ...current, preferences: saved } : {
-        repoRoot: '',
-        recentWorkspaces: [],
-        preferences: saved,
-        updaterSettings: defaultUpdaterSettings,
-        updateStatus: defaultUpdateStatus,
-        updateBadges: defaultUpdateBadges,
-        metricsSettings: defaultMetricsSettings,
-        clientVersion: '',
-        platform: 'unknown',
-        windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
-        appInfo: defaultAppInfo,
-        appConfig: defaultAppConfig,
-        needsWorkspace: false,
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        setBootstrap((current) => current ? { ...current, preferences: saved } : current);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      })
+      .finally(() => {
+        if (generation === preferenceSaveGenerationRef.current) setBusy(false);
       });
-      setTaskList(null);
-      setWorkflow(null);
-      setRoundDetail(null);
-    } catch (err) {
-      setError(displayAppError(t, err));
-    } finally {
-      setBusy(false);
-    }
+    preferenceSaveQueueRef.current = save;
   };
 
-  const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {
-    setBootstrap((current) => current
-      ? { ...current, preferences: { ...current.preferences, avatars } }
-      : current);
+  const applySavedPreferences = useCallback((saved: PreferencesVm) => {
+    setBootstrap((current) => current ? { ...current, preferences: saved } : current);
   }, []);
 
   const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatar(input);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatar(input);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
     setError(null);
     try {
-      const avatars = await selectRecentDesktopAvatar(kind, avatarId);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await selectRecentDesktopAvatar(kind, avatarId);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
-  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
+  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape | null) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatarShape(kind, shape);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatarShape(kind, shape);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onClearAvatar = useCallback(async (kind: AvatarKind) => {
     setError(null);
     try {
-      const avatars = await clearDesktopAvatar(kind);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await clearDesktopAvatar(kind);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
@@ -1672,6 +1670,24 @@ export function App() {
 
   const onSelectConversation = (page: ConversationPage) => {
     setWorkspacePickerOpen(false);
+    if (conversationRunRef.current) {
+      conversationRunCache.store(conversationRunRef.current);
+    }
+    if (page.kind === 'conversation-run') {
+      const cached = conversationRunCache.restore(page);
+      const cachedMatchesLinkedTarget = !page.roundId || Boolean(
+        cached && findScheduledLinkedLeaf(cached.sessionTree, page.roundId, page.attemptId),
+      );
+      if (cached && cachedMatchesLinkedTarget) {
+        conversationRunRef.current = cached;
+        conversationSelectedSessionKeyRef.current = cached.sessionTree.selectedSessionKey ?? null;
+        conversationSessionFollowRef.current = {
+          ...conversationSessionFollowRef.current,
+          selectedSessionKey: cached.sessionTree.selectedSessionKey ?? null,
+        };
+        setConversationRun(cached);
+      }
+    }
     setConversationPage(page);
     if (page.kind === 'agents') {
       setPrimaryModule('agent-management');
@@ -1780,11 +1796,11 @@ export function App() {
         const task = tasks.find((t) => t.taskId === taskId);
         const runId = task?.latestRun?.runId;
         if (runId) {
-          setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
         }
       }}
       onConversationSelectRun={(projectId, taskId, runId) => {
-        setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+        onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -2095,11 +2111,9 @@ export function App() {
       );
     }
     if (conversationPage.kind === 'conversation-run') {
-      if (!conversationRun || conversationRun.runId !== conversationPage.runId) {
+      if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {
         return (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t('common.loading')}
-          </div>
+          <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
       return (
@@ -2147,6 +2161,12 @@ export function App() {
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            setConversationRun((current) => {
+              if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
+              const next = beginConversationSessionSelection(current, key);
+              conversationRunRef.current = next;
+              return next;
+            });
             switchConversationSession(
               conversationPage.projectId,
               conversationPage.taskId,

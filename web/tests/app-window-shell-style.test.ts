@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 describe('App window shell style', () => {
   it('uses a viewport-safe Win10 inset frame without duplicating Win11 native rounding', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const generatedThemeStyles = readFileSync(
+      path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'),
+      'utf8',
+    );
 
     expect(styles).toContain('--gold-window-outline');
     expect(styles).toContain('--gold-window-edge-shadow');
@@ -13,8 +17,11 @@ describe('App window shell style', () => {
     expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
     expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
     expect(styles).not.toContain('outline-offset: -1px');
-    expect(styles).not.toContain('.app-window-shell {');
-    expect(styles).not.toContain('.app-window-shell::before');
+    expect(styles).not.toMatch(/^\.app-window-shell \{/mu);
+    expect(styles).not.toMatch(/^\.app-window-shell::before/mu);
+    expect(styles).toContain('@import "./themes/generated/builtin-themes.css"');
+    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.gold-band'] .app-window-shell");
+    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.tech-neutral'] .app-window-shell");
     expect(styles).not.toContain('z-index: 60');
   });
 

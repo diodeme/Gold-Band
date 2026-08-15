@@ -15,6 +15,10 @@ const hiddenPromptSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/HiddenPromptMessageContent.tsx', import.meta.url)),
   'utf8',
 );
+const activitySpinnerSource = readFileSync(
+  fileURLToPath(new URL('../src/components/acp/AcpProcessingSpinner.tsx', import.meta.url)),
+  'utf8',
+);
 const runHeaderSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationRunHeader.tsx', import.meta.url)),
   'utf8',
@@ -42,6 +46,7 @@ describe('ACP message theme contract', () => {
 
   it('sizes the user bubble from every currently visible prompt section', () => {
     expect(hiddenPromptSource).toContain('inline-grid min-w-0 max-w-full gap-2');
+    expect(hiddenPromptSource).toContain('projectHiddenPromptDisplayParts(parts)');
     expect(chatSource).toContain('[container-type:inline-size]');
     expect(chatSource).toContain('data-acp-message-row={isUser ? "user" : "assistant"}');
     expect(stylesSource).toContain(
@@ -66,6 +71,13 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).not.toContain('[contain:inline-size]');
     expect(hiddenPromptSource).not.toContain('w-full min-w-0');
     expect(hiddenPromptSource).not.toContain('open ? "w-full" : "w-fit"');
+  });
+
+  it('uses the compositor-friendly CSS ring for live activity and composer processing', () => {
+    expect(chatSource).toContain('<AcpProcessingSpinner className="size-3.5" />');
+    expect(activitySpinnerSource).toContain('border-t-gold-running');
+    expect(activitySpinnerSource).toContain('motion-safe:animate-spin');
+    expect(activitySpinnerSource).not.toContain('Loader2');
   });
 
   it('keeps assistant prose and main content headers on the page surface', () => {

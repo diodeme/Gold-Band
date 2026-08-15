@@ -68,6 +68,19 @@ impl ProviderAdapter for SuccessProvider {
         })
     }
 
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<gold_band::provider::AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
+    }
+
     fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
         Ok(())
     }

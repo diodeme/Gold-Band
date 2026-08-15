@@ -709,7 +709,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             ]}
             actions={
               <>
-                <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5 text-ui-caption text-muted-foreground">
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-green-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'healthy').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
@@ -884,16 +884,16 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
+                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
                     <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
                       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-ui-caption text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
                         <SkillAgentOverflow
                           sourceAgents={sourceAgents}
                           syncAgents={syncAgents}
@@ -1037,7 +1037,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
               <span className="truncate">{toolsSheetServer?.name ?? ''}</span>
-              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
+              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
             </SheetTitle>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
@@ -1066,8 +1066,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                       </div>
                       {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
-                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
+                          <summary className="cursor-pointer text-ui-caption text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
+                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-ui-caption leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
                         </details>
                       )}
                     </div>
@@ -1638,7 +1638,7 @@ function ImportResultContent({ result, error, onClose, onEdit }: {
                       {record.fallbacks.length ? (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {record.fallbacks.map((fb) => (
-                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">
                               {t(`contextManagement.importFallback.${fb}`)}
                             </Badge>
                           ))}

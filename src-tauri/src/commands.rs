@@ -3,7 +3,9 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
+use gold_band::acp::events::{
+    AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
+};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -27,7 +29,8 @@ use gold_band::app::{
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::scheduler::db::ScheduledTaskDatabase;
 use gold_band::skill::SkillCommandError;
@@ -35,7 +38,7 @@ use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::path::{Component, Path, PathBuf};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -43,10 +46,16 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontPreference,
+    FontSizePreference, ManagedAgentConfig, ManagedAgentId, PersonalizationAvatarShape,
+    PersonalizationPreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
+use gold_band::provider::{
+    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
+    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, conversation_prompt_text,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -55,7 +64,7 @@ use uuid::Uuid;
 
 use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
-    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
+    load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
 use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
@@ -290,14 +299,15 @@ fn dynamic_leaf_runtime_continue_required(
     else {
         return Ok(false);
     };
-    let dynamic_graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+    let dynamic_graph_path = app.paths.dynamic_graph_file(
         &locator.task_id,
         &locator.run_id,
         &locator.round_id,
         outer_node_id,
         outer_attempt_id,
-    ))
-    .map_err(command_error)?;
+    );
+    let dynamic_graph =
+        load_dynamic_graph(&dynamic_graph_path, &app.paths.repo_root).map_err(command_error)?;
     if dynamic_graph.run.status == DynamicRunStatus::Paused
         && !dynamic_graph
             .run
@@ -699,7 +709,7 @@ fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
+) -> Result<ConfiguredConversationApp, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     Ok(configure_conversation_runtime_callbacks(
@@ -709,11 +719,27 @@ fn resolve_command_app_with_emitters(
     ))
 }
 
+pub(crate) struct ConfiguredConversationApp(App);
+
+impl std::ops::Deref for ConfiguredConversationApp {
+    type Target = App;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ConfiguredConversationApp {
+    fn into_inner(self) -> App {
+        self.0
+    }
+}
+
 pub(crate) fn configure_conversation_runtime_callbacks(
     app: App,
     app_handle: AppHandle,
     project_id: Option<String>,
-) -> App {
+) -> ConfiguredConversationApp {
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
     let prompt_turn_lifecycle = prompt_turn_lifecycle_callback(
@@ -721,9 +747,11 @@ pub(crate) fn configure_conversation_runtime_callbacks(
         app.clone_for_background(),
         project_id.clone(),
     );
-    app.with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
-        .with_prompt_turn_lifecycle(prompt_turn_lifecycle)
+    ConfiguredConversationApp(
+        app.with_acp_live_update(live_update)
+            .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
+            .with_prompt_turn_lifecycle(prompt_turn_lifecycle),
+    )
 }
 
 fn prompt_turn_lifecycle_callback(
@@ -745,42 +773,51 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        match event {
-            AcpPromptLifecycleEvent::Accepted { prompt_id } => {
-                let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
-            }
-            AcpPromptLifecycleEvent::Finished {
-                prompt_id,
+        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                app.clone_for_background(),
+                locator,
                 successful,
-            } => {
-                let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
-                    turn_id,
-                    agent_label: acp_turn_agent_label(&app, &locator),
-                });
-                schedule_direct_prompt_queue_drain(
-                    app_handle.clone(),
-                    project_id.clone(),
-                    locator,
-                    successful,
-                    completion,
-                );
-            }
-        }
+                completion,
+            );
+        });
         Ok(())
     })
+}
+
+fn process_prompt_turn_lifecycle(
+    app: &App,
+    locator: AttemptLocator,
+    event: AcpPromptLifecycleEvent,
+    mut schedule_finished: impl FnMut(AttemptLocator, bool, Option<DeferredTurnCompletion>),
+) {
+    match event {
+        AcpPromptLifecycleEvent::Accepted { prompt_id } => {
+            let _ = complete_accepted_prompt(&locator.attempt_dir(app), &prompt_id);
+        }
+        AcpPromptLifecycleEvent::Finished {
+            prompt_id,
+            successful,
+        } => {
+            let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
+                turn_id,
+                agent_label: acp_turn_agent_label(app, &locator),
+            });
+            schedule_finished(locator, successful, completion);
+        }
+    }
 }
 
 fn schedule_direct_prompt_queue_drain(
     app_handle: AppHandle,
     project_id: Option<String>,
+    app: App,
     locator: AttemptLocator,
     successful: bool,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
-    let state = app_handle.state::<DesktopState>();
-    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-        return;
-    };
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -827,9 +864,6 @@ fn schedule_direct_prompt_queue_drain(
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
         let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-            return;
-        };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -864,17 +898,19 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let queued_turn_app = app.clone_for_background().without_scheduled_turn_context();
-        let _result = send_acp_prompt_with_app(
+        let _result = send_acp_prompt(
             app_handle.clone(),
-            queued_turn_app,
+            state,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            claimed.content.clone(),
+            ConversationPromptInput {
+                display_text: claimed.content.clone(),
+                quotes: claimed.quotes.clone(),
+            },
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -2140,6 +2176,7 @@ pub async fn get_git_comparison(
                 base_oid,
                 head_oid,
                 path,
+                before_path,
                 ..
             } => gold_band::git::GitHubCliService::default()
                 .pull_request_revision_comparison(
@@ -2150,6 +2187,7 @@ pub async fn get_git_comparison(
                     base_oid,
                     head_oid,
                     path,
+                    before_path.as_deref(),
                 )
                 .map_err(command_error),
             _ => service
@@ -2617,6 +2655,44 @@ pub async fn continue_conversation_runtime(
         .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-continue-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn recover_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    expected_revision: u64,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_recover_completed_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                expected_revision,
+            )
+            .map(run_summary_vm)
+            .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-recovery-started".to_string(),
             session: None,
             run: Some(run),
             lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
@@ -3798,7 +3874,10 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        claimed.content.clone(),
+        ConversationPromptInput {
+            display_text: claimed.content.clone(),
+            quotes: claimed.quotes.clone(),
+        },
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3820,7 +3899,7 @@ pub async fn submit_conversation_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
@@ -3836,6 +3915,7 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    validate_conversation_prompt_input(&input)?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
@@ -3853,7 +3933,7 @@ pub async fn submit_conversation_prompt(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, prompt, attachment_paths.unwrap_or_default())
+        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
         emit_acp_session_update(
             &app_handle,
@@ -3914,7 +3994,7 @@ pub async fn submit_conversation_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        prompt,
+        input,
         prompt_id,
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3939,14 +4019,15 @@ pub async fn send_acp_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    send_acp_prompt_with_app(
+    validate_conversation_prompt_input(&input)?;
+    send_acp_prompt_with_configured_app(
         app_handle,
         app,
         project_id,
@@ -3955,7 +4036,7 @@ pub async fn send_acp_prompt(
         round_id,
         node_id,
         attempt_id,
-        prompt,
+        input,
         prompt_id,
         outer_node_id,
         outer_attempt_id,
@@ -3964,21 +4045,22 @@ pub async fn send_acp_prompt(
     .await
 }
 
-pub(crate) async fn send_acp_prompt_with_app(
+pub(crate) async fn send_acp_prompt_with_configured_app(
     app_handle: AppHandle,
-    app: App,
+    app: ConfiguredConversationApp,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let app = app.into_inner();
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -4010,6 +4092,11 @@ pub(crate) async fn send_acp_prompt_with_app(
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        let ConversationPromptInput {
+            display_text,
+            quotes,
+        } = input;
+        let prompt = conversation_prompt_text(&display_text, &quotes);
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -4076,6 +4163,8 @@ pub(crate) async fn send_acp_prompt_with_app(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            prompt_bundle.display_text = Some(display_text.clone());
+            prompt_bundle.quotes = quotes.clone();
             // Resolve attachments
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
@@ -4246,6 +4335,8 @@ pub(crate) async fn send_acp_prompt_with_app(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        prompt_bundle.display_text = Some(display_text);
+        prompt_bundle.quotes = quotes;
         // Resolve attachments
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
@@ -4679,8 +4770,6 @@ fn persist_active_session_stop(
         )
         .map_err(command_error)?;
     }
-    app.persist_cancelled_session_snapshot(&attempt_dir)
-        .map_err(command_error)?;
     if runtime_was_controlled {
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
@@ -4999,12 +5088,39 @@ pub fn show_worker_ref(
 #[tauri::command]
 pub fn save_desktop_preferences(
     state: State<'_, DesktopState>,
-    theme: DesktopThemePreference,
+    mut appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
     use_local_claude: bool,
     verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
+    if appearance.schema_version != 2 {
+        return Err(CommandErrorVm::new(
+            "theme.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": appearance.schema_version }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    if !theme_catalog
+        .iter()
+        .any(|theme| theme.id == appearance.theme_id)
+    {
+        return Err(CommandErrorVm::new(
+            "theme.active-package-missing",
+            serde_json::json!({ "themeId": appearance.theme_id }),
+        ));
+    }
+    let personalization = normalize_personalization_preference(personalization)?;
+    appearance.visual_quality_by_theme.retain(|theme_id, _| {
+        theme_catalog.iter().any(|theme| {
+            theme.id == *theme_id
+                && theme
+                    .capabilities
+                    .contains(&gold_band::theme::ThemeCapability::VisualQualityProfiles)
+        })
+    });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
     if context.config.use_local_claude != use_local_claude {
@@ -5012,12 +5128,14 @@ pub fn save_desktop_preferences(
         gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
             .map_err(command_error)?;
     }
-    app.set_user_desktop_preferences(theme, language, font.clone())
-        .map_err(command_error)?;
-    app.set_user_use_local_claude(use_local_claude)
-        .map_err(command_error)?;
     let settings = app
-        .set_user_verbose_logging(verbose_logging)
+        .set_user_desktop_preferences(
+            appearance.clone(),
+            personalization.clone(),
+            language,
+            use_local_claude,
+            verbose_logging,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -5025,22 +5143,79 @@ pub fn save_desktop_preferences(
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
     Ok(preferences_vm(
-        theme,
+        appearance,
+        personalization.clone(),
         language,
-        font,
         use_local_claude,
         log_level,
-        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?,
     ))
+}
+
+fn normalize_personalization_preference(
+    mut preference: PersonalizationPreference,
+) -> CommandResult<PersonalizationPreference> {
+    if preference.schema_version != 1 {
+        return Err(CommandErrorVm::new(
+            "personalization.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": preference.schema_version }),
+        ));
+    }
+    for typography in [
+        &mut preference.typography.ui,
+        &mut preference.typography.editor,
+    ] {
+        if let FontPreference::Local { family } = &mut typography.font {
+            *family = family.trim().to_string();
+            if family.is_empty() {
+                return Err(CommandErrorVm::new(
+                    "personalization.font-invalid",
+                    serde_json::json!({}),
+                ));
+            }
+        }
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.ui.font_size {
+        *px = normalize_desktop_ui_font_size(*px);
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.editor.font_size {
+        *px = normalize_desktop_editor_font_size(*px);
+    }
+    for avatar in [&preference.avatars.agent, &preference.avatars.user] {
+        if matches!(&avatar.image, AvatarPreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.avatar-invalid",
+                serde_json::json!({}),
+            ));
+        }
+    }
+    Ok(preference)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar(
     state: State<'_, DesktopState>,
     input: SaveDesktopAvatarInput,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let kind = input.kind;
+    let shape = input.shape;
+    let avatars =
+        save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)?;
+    let profile = avatar_profile(&avatars, kind);
+    let asset_id = profile.selected_avatar_id.clone().ok_or_else(|| {
+        CommandErrorVm::new("personalization.avatar-invalid", serde_json::json!({}))
+    })?;
+    let mut personalization = context.config.personalization.clone();
+    let target = avatar_personalization_mut(&mut personalization, kind);
+    target.image = AvatarPreference::User { asset_id };
+    target.shape = AvatarShapePreference::Custom {
+        value: personalization_avatar_shape(shape),
+    };
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
@@ -5048,29 +5223,103 @@ pub fn select_recent_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
     avatar_id: String,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
     select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
-        .map_err(avatar_command_error)
+        .map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::User {
+        asset_id: avatar_id,
+    };
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar_shape(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-    shape: AvatarShape,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+    shape: Option<AvatarShape>,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    if let Some(shape) = shape {
+        save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape)
+            .map_err(avatar_command_error)?;
+    }
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).shape =
+        shape.map_or(AvatarShapePreference::Theme, |value| {
+            AvatarShapePreference::Custom {
+                value: personalization_avatar_shape(value),
+            }
+        });
+    persist_avatar_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn clear_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::Theme;
+    persist_avatar_personalization(&state, &context, personalization)
+}
+
+fn avatar_profile(
+    avatars: &AvatarPreferencesVm,
+    kind: AvatarKind,
+) -> &crate::avatar::AvatarProfileVm {
+    match kind {
+        AvatarKind::Agent => &avatars.agent,
+        AvatarKind::User => &avatars.user,
+    }
+}
+
+fn avatar_personalization_mut(
+    personalization: &mut PersonalizationPreference,
+    kind: AvatarKind,
+) -> &mut gold_band::config::AvatarPersonalization {
+    match kind {
+        AvatarKind::Agent => &mut personalization.avatars.agent,
+        AvatarKind::User => &mut personalization.avatars.user,
+    }
+}
+
+fn personalization_avatar_shape(shape: AvatarShape) -> PersonalizationAvatarShape {
+    match shape {
+        AvatarShape::Circle => PersonalizationAvatarShape::Circle,
+        AvatarShape::Square => PersonalizationAvatarShape::Square,
+    }
+}
+
+fn persist_avatar_personalization(
+    state: &DesktopState,
+    context: &crate::state::DesktopContext,
+    personalization: PersonalizationPreference,
+) -> CommandResult<PreferencesVm> {
+    let app = context.app();
+    let settings = app
+        .set_user_desktop_personalization(personalization.clone())
+        .map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let avatars =
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?;
+    Ok(preferences_vm(
+        context.config.appearance.clone(),
+        personalization,
+        context.config.desktop_language,
+        context.config.use_local_claude,
+        context.config.log_level,
+        avatars,
+    ))
 }
 
 fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {
@@ -5232,6 +5481,56 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
     CommandErrorVm::new(code, serde_json::json!({}))
 }
 
+fn validate_conversation_prompt_input(input: &ConversationPromptInput) -> CommandResult<()> {
+    if input.display_text.trim().is_empty() {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-empty",
+            serde_json::json!({}),
+        ));
+    }
+    if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-quote-count-exceeded",
+            serde_json::json!({ "maxQuotes": MAX_USER_PROMPT_QUOTES }),
+        ));
+    }
+    let mut quote_ids = HashSet::with_capacity(input.quotes.len());
+    let mut quote_chars = 0usize;
+    for quote in &input.quotes {
+        if quote.id.trim().is_empty()
+            || quote.source_message_key.trim().is_empty()
+            || quote.text.trim().is_empty()
+            || !quote_ids.insert(quote.id.as_str())
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if quote.id.len() > MAX_USER_PROMPT_QUOTE_ID_BYTES
+            || quote.source_message_key.len() > MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-metadata-too-long",
+                serde_json::json!({
+                    "maxIdBytes": MAX_USER_PROMPT_QUOTE_ID_BYTES,
+                    "maxSourceKeyBytes": MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES,
+                }),
+            ));
+        }
+        let remaining = MAX_USER_PROMPT_QUOTE_CHARS.saturating_sub(quote_chars);
+        let chars = quote.text.chars().take(remaining + 1).count();
+        quote_chars += chars;
+        if quote_chars > MAX_USER_PROMPT_QUOTE_CHARS {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-limit-exceeded",
+                serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
     if error
         .downcast_ref::<gold_band::acp::branches::ConversationBranchError>()
@@ -5388,9 +5687,8 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
     } else {
         return None;
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| {
             value
                 .get(override_key)
@@ -5421,9 +5719,8 @@ fn current_acp_session_config_option_overrides(
     } else {
         return Default::default();
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| value.get("configOptionOverrides").cloned())
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
@@ -5495,13 +5792,13 @@ pub async fn set_acp_session_model(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5612,13 +5909,13 @@ pub async fn set_acp_session_permission_mode(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5729,13 +6026,13 @@ pub async fn set_acp_session_config_option(
     } else {
         return Ok(None);
     };
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -6738,6 +7035,7 @@ mod tests {
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
+    use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::TaskState;
     use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
@@ -6826,6 +7124,80 @@ mod tests {
             &bound_authoring(agent_id, &format!("workflow-{task_id}")),
         )
         .unwrap();
+    }
+
+    fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
+        ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: source_message_key.to_string(),
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
+        let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
+        assert!(validate_conversation_prompt_input(&valid).is_ok());
+
+        let mut duplicate = valid.clone();
+        duplicate.quotes.push(duplicate.quotes[0].clone());
+        assert_eq!(
+            validate_conversation_prompt_input(&duplicate)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-invalid"
+        );
+
+        let over_limit = prompt_with_quote(
+            "textDelta-answer-1",
+            &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        );
+        assert_eq!(
+            validate_conversation_prompt_input(&over_limit)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-limit-exceeded"
+        );
+        let mut too_many = valid.clone();
+        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
+            .map(|index| gold_band::provider::UserPromptQuote {
+                id: format!("quote-{index}"),
+                source_message_key: format!("source-{index}"),
+                text: "x".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            validate_conversation_prompt_input(&too_many)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-count-exceeded"
+        );
+
+        let too_long_id = ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
+                source_message_key: "arbitrary-source".to_string(),
+                text: "用户提供的任意引用内容".to_string(),
+            }],
+        };
+        assert_eq!(
+            validate_conversation_prompt_input(&too_long_id)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-metadata-too-long"
+        );
+
+        assert!(
+            validate_conversation_prompt_input(&prompt_with_quote(
+                "code-selection:anywhere",
+                "引用不需要在消息时间线中存在",
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -7211,7 +7583,11 @@ mod tests {
         assert_eq!(run["status"], "paused");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
-        assert_eq!(snapshot["status"], "cancelled");
+        assert_eq!(snapshot["latestTurnStatus"], "none");
+        assert_eq!(
+            snapshot["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
         assert!(timeline_path.is_dir());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -7735,6 +8111,82 @@ mod tests {
     }
 
     #[test]
+    fn prompt_lifecycle_acceptance_and_completion_drain_every_queued_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-drain-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        let expected_contents = ["first", "second", "third"];
+        for content in expected_contents {
+            enqueue_prompt(&attempt_dir, content.to_string(), Vec::new()).unwrap();
+        }
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        let mut current = match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap()
+        {
+            AutoClaimResult::Claimed(item) => Some(item),
+            result => panic!("expected first queued prompt, got {result:?}"),
+        };
+        let mut dispatched_contents = Vec::new();
+
+        while let Some(item) = current.take() {
+            dispatched_contents.push(item.content.clone());
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: item.prompt_id.clone(),
+                },
+                |_, _, _| panic!("accepted must not schedule the next prompt"),
+            );
+            assert!(
+                load_prompt_queue(&attempt_dir)
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|queued| queued.prompt_id != item.prompt_id),
+                "accepted prompt must leave the queue before its provider turn finishes"
+            );
+
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id: Some(item.prompt_id),
+                    successful: true,
+                },
+                |_, successful, completion| {
+                    assert!(successful);
+                    assert!(completion.is_some());
+                    let queue = load_prompt_queue(&attempt_dir).unwrap();
+                    current =
+                        match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap() {
+                            AutoClaimResult::Claimed(item) => Some(item),
+                            AutoClaimResult::Empty => None,
+                            result => panic!("unexpected automatic claim result: {result:?}"),
+                        };
+                },
+            );
+        }
+
+        assert_eq!(dispatched_contents, expected_contents);
+        assert!(load_prompt_queue(&attempt_dir).unwrap().items.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
@@ -7814,6 +8266,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7912,6 +8365,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7985,6 +8439,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -8031,6 +8486,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -8084,7 +8540,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
@@ -8190,7 +8646,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
@@ -8253,6 +8709,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -8306,7 +8763,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],

@@ -21,7 +21,7 @@ use crate::runtime_error::{
 };
 use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +30,56 @@ use std::str::FromStr;
 use tracing::debug;
 
 use crate::acp::events::AttachmentMeta;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPromptQuote {
+    pub id: String,
+    pub source_message_key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptInput {
+    pub display_text: String,
+    #[serde(default)]
+    pub quotes: Vec<UserPromptQuote>,
+}
+
+impl From<String> for ConversationPromptInput {
+    fn from(prompt: String) -> Self {
+        Self {
+            display_text: prompt.clone(),
+            quotes: Vec::new(),
+        }
+    }
+}
+
+pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
+pub const MAX_USER_PROMPT_QUOTES: usize = 64;
+pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+
+pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
+    let display_text = display_text.trim();
+    if quotes.is_empty() {
+        return display_text.to_string();
+    }
+    let quote_blocks = quotes
+        .iter()
+        .map(|quote| {
+            quote
+                .text
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("{quote_blocks}\n\n{display_text}")
+}
 
 /// Content block types for ACP session/prompt requests.
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +188,18 @@ pub enum UserPromptRenderMode {
     UserMessage,
 }
 
+/// Describes whether the accepted prompt must transfer an existing ACP turn
+/// from free conversation back to Runtime control. This is intentionally
+/// independent from `SessionMode`: resuming an ACP session does not imply a
+/// Runtime control transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeControlIntent {
+    #[default]
+    Unchanged,
+    Resume,
+}
+
 impl Default for UserPromptRenderMode {
     fn default() -> Self {
         Self::RequirementTask
@@ -150,7 +212,7 @@ pub struct WorkerInvocation {
     #[serde(default)]
     pub turn_control_mode: TurnControlMode,
     #[serde(default)]
-    pub runtime_control_resume_candidate: bool,
+    pub runtime_control_intent: RuntimeControlIntent,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub execution_surface: PromptExecutionSurface,
@@ -314,7 +376,13 @@ fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
     ) {
         return Ok(true);
     }
-    let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+    post_turn_projection_checkpoint_is_finalizing(&req.attempt_dir)
+}
+
+pub(crate) fn post_turn_projection_checkpoint_is_finalizing(
+    attempt_dir: &Utf8Path,
+) -> Result<bool> {
+    let state_path = attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
     if !state_path.exists() {
         return Ok(false);
     }
@@ -400,11 +468,13 @@ pub struct OutputArtifactPayload {
 pub struct PromptBundle {
     pub system_prompt: String,
     pub user_prompt: String,
+    pub display_text: Option<String>,
+    pub quotes: Vec<UserPromptQuote>,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
     pub turn_control_mode: TurnControlMode,
-    pub runtime_control_resume_candidate: bool,
+    pub runtime_control_intent: RuntimeControlIntent,
     pub runtime_control_transition_id: Option<String>,
     pub runtime_control_source_transition_id: Option<String>,
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
@@ -675,6 +745,13 @@ pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRuntimePhase {
+    FinalizingArtifact,
+}
+
+pub type ProviderRuntimePhaseUpdate<'a> = &'a dyn Fn(ProviderRuntimePhase) -> Result<()>;
+
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
@@ -694,6 +771,16 @@ pub trait ProviderAdapter: Send + Sync {
         _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
+    }
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        _runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        self.run_worker_with_callbacks(req, live_update, session_update, prompt_accepted)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
@@ -1124,6 +1211,7 @@ impl AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
         let mut contract = req
             .output_contract
@@ -1157,6 +1245,9 @@ impl AcpProvider {
                 phase: ArtifactEmissionPhase::Finalizing,
             },
         )?;
+        if let Some(runtime_phase_update) = runtime_phase_update {
+            runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
+        }
         let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
             .context("post-turn artifact finalization requires durable worker-ref")?;
         ensure!(
@@ -1269,6 +1360,23 @@ impl ProviderAdapter for AcpProvider {
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
+        self.run_worker_with_runtime_callbacks(
+            req,
+            live_update,
+            session_update,
+            prompt_accepted,
+            None,
+        )
+    }
+
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
         if req.turn_control_mode == TurnControlMode::RuntimeControlled
             && req.output_contract.as_ref().is_some_and(|contract| {
                 contract.emission_mode == OutputEmissionMode::PostTurnProjection
@@ -1279,6 +1387,7 @@ impl ProviderAdapter for AcpProvider {
                 live_update,
                 session_update,
                 prompt_accepted,
+                runtime_phase_update,
             )
         } else {
             self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)
@@ -1485,6 +1594,8 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
+        display_text: None,
+        quotes: Vec::new(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -1501,7 +1612,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             _ => None,
         },
         turn_control_mode: req.turn_control_mode,
-        runtime_control_resume_candidate: req.runtime_control_resume_candidate,
+        runtime_control_intent: req.runtime_control_intent,
         runtime_control_transition_id: None,
         runtime_control_source_transition_id: None,
         runtime_control_transition_cause: None,
@@ -1534,11 +1645,18 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
             .to_string(),
         UserPromptRenderMode::WorkflowResume | UserPromptRenderMode::RequirementTask => {
             let hidden_context = render_hidden_context(req);
-            let continue_goal = matches!(req.user_prompt_render_mode, UserPromptRenderMode::WorkflowResume).then(|| {
-                match req.runtime_context.language {
-                    crate::config::DesktopLanguage::ZhCn => "根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。".to_string(),
-                    crate::config::DesktopLanguage::En => "Adjust according to the latest feedback and ensure downstream nodes can succeed. If this node has output format requirements, still strictly follow the output contract in the system prompt.".to_string(),
-                }
+            let continue_goal = matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::WorkflowResume
+            )
+            .then(|| {
+                prompt_by_language(
+                    req.runtime_context.language,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_ZH_CN,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_EN,
+                )
+                .trim()
+                .to_string()
             });
 
             let content = render_template(
@@ -2191,7 +2309,7 @@ mod tests {
         WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -2686,7 +2804,7 @@ mod tests {
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
             turn_control_mode: TurnControlMode::RuntimeControlled,
-            runtime_control_resume_candidate: false,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,

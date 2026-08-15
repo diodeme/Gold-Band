@@ -8,6 +8,7 @@ import React, {
   useCallback,
   createContext,
   useContext,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -40,16 +41,18 @@ function usePromptInput() {
 export function promptInputTextareaSize(
   scrollHeight: number,
   maxHeight: number | string,
+  userMinHeight = 0,
 ): { height: string; overflowY: "auto" | "hidden" } {
+  const requestedHeight = Math.max(scrollHeight, userMinHeight)
   if (typeof maxHeight === "number") {
     return {
-      height: `${Math.min(scrollHeight, maxHeight)}px`,
+      height: `${Math.min(requestedHeight, maxHeight)}px`,
       overflowY: scrollHeight > maxHeight ? "auto" : "hidden",
     }
   }
 
   return {
-    height: `min(${scrollHeight}px, ${maxHeight})`,
+    height: `min(${requestedHeight}px, ${maxHeight})`,
     overflowY: "auto",
   }
 }
@@ -63,6 +66,8 @@ const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
   '[role="button"]',
   '[role="combobox"]',
   '[role="menuitem"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
   '[contenteditable="true"]',
   "[data-prompt-input-interactive]",
 ].join(",")
@@ -135,6 +140,8 @@ function PromptInput({
             className
           )}
           {...props}
+          data-slot="prompt-input"
+          data-theme-role="composer"
         >
           {children}
         </div>
@@ -149,6 +156,7 @@ export type PromptInputTextareaProps = {
   valuePrefix?: string
   leadingAdornment?: React.ReactNode
   containerClassName?: string
+  userResizable?: boolean
 } & React.ComponentProps<typeof Textarea>
 
 function PromptInputTextarea({
@@ -160,7 +168,9 @@ function PromptInputTextarea({
   valuePrefix = "",
   leadingAdornment,
   containerClassName,
+  userResizable = false,
   style,
+  onPointerDown,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
@@ -170,15 +180,57 @@ function PromptInputTextarea({
   const textareaValue = effectiveValuePrefix ? value.slice(effectiveValuePrefix.length) : value
   const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
+  const userMinHeightRef = useRef(0)
+  const resizeStartHeightRef = useRef<number | null>(null)
+  const resizeListenerCleanupRef = useRef<(() => void) | null>(null)
 
   const adjustHeight = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
 
     el.style.height = "auto"
-    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
+    const size = promptInputTextareaSize(
+      el.scrollHeight,
+      maxHeight,
+      userResizable ? userMinHeightRef.current : 0,
+    )
     el.style.height = size.height
     el.style.overflowY = size.overflowY
-  }, [disableAutosize, maxHeight])
+  }, [disableAutosize, maxHeight, userResizable])
+
+  const finishUserResize = useCallback(() => {
+    resizeListenerCleanupRef.current?.()
+    resizeListenerCleanupRef.current = null
+    const el = textareaRef.current
+    const startHeight = resizeStartHeightRef.current
+    resizeStartHeightRef.current = null
+    if (!userResizable || !el || startHeight == null) return
+
+    const nextHeight = el.getBoundingClientRect().height
+    if (Math.abs(nextHeight - startHeight) < 1) return
+    userMinHeightRef.current = nextHeight
+    adjustHeight(el)
+  }, [adjustHeight, textareaRef, userResizable])
+
+  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLTextAreaElement>) => {
+    onPointerDown?.(event)
+    if (!userResizable || event.defaultPrevented) return
+
+    const el = textareaRef.current
+    if (!el) return
+    resizeListenerCleanupRef.current?.()
+    resizeStartHeightRef.current = el.getBoundingClientRect().height
+    const cleanup = () => {
+      window.removeEventListener("pointerup", finishUserResize)
+      window.removeEventListener("pointercancel", finishUserResize)
+    }
+    resizeListenerCleanupRef.current = cleanup
+    window.addEventListener("pointerup", finishUserResize, { once: true })
+    window.addEventListener("pointercancel", finishUserResize, { once: true })
+  }, [finishUserResize, onPointerDown, textareaRef, userResizable])
+
+  useEffect(() => () => {
+    resizeListenerCleanupRef.current?.()
+  }, [])
 
   const handleRef = useCallback((el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
@@ -211,11 +263,17 @@ function PromptInputTextarea({
     <Textarea
       ref={handleRef}
       value={textareaValue}
-      style={{ ...style, ...leadingAdornmentLayout.textareaStyle }}
+      style={{
+        ...style,
+        ...(userResizable ? { maxHeight } : null),
+        ...leadingAdornmentLayout.textareaStyle,
+      }}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
+      onPointerDown={handlePointerDown}
       className={cn(
         "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
+        userResizable && "resize-y",
         hasLeadingAdornment && "px-0 py-0",
         className
       )}

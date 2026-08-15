@@ -64,7 +64,7 @@ export function SkillAgentOverflow({
                     type="button"
                     size="icon"
                     variant="secondary"
-                    className="h-6 w-7 min-w-7 shrink-0 rounded-full p-0 text-[10px] font-medium tabular-nums"
+                    className="h-6 w-7 min-w-7 shrink-0 rounded-full p-0 text-ui-micro font-medium tabular-nums"
                     aria-label={t('contextManagement.skills.moreAgents', { count: layout.hiddenCount, defaultValue: `还有 ${layout.hiddenCount} 个 Agent` })}
                   >
                     +{layout.hiddenCount}
@@ -114,7 +114,7 @@ export function SkillAgentOverflow({
 function AgentGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section>
-      <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="px-2 pb-1 text-ui-micro font-medium uppercase tracking-wide text-muted-foreground">{title}</div>
       <div className="space-y-0.5">{children}</div>
     </section>
   );

@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::acp::events::{current_timestamp, load_timeline_items};
+use crate::acp::events::{current_timestamp, load_session_metadata_value, load_timeline_items};
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
-use crate::storage::{ensure_parent_dir, read_json, write_json};
+use crate::storage::{ensure_parent_dir, write_json};
 
 const SNAPSHOT_FILE: &str = "acp.snapshot.json";
 const SESSION_FILE: &str = "acp.session.json";
@@ -128,7 +128,7 @@ fn load_persisted_cursor_unlocked(
     let mut timeline_scan_complete = false;
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let Ok(value) = read_json::<Value>(&path) else {
+        let Ok(value) = load_session_metadata_value(&path, None) else {
             continue;
         };
         timeline_scan_complete |= value
@@ -214,10 +214,11 @@ fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()>
 
 fn session_value(path: &Utf8Path) -> Result<Value> {
     if path.exists() {
-        return read_json(path);
+        return load_session_metadata_value(path, None);
     }
     Ok(serde_json::json!({
-        "status": "cancelled",
+        "availability": "established",
+        "latestTurnStatus": "none",
         "restored": false,
         "createdAt": current_timestamp(),
     }))
@@ -227,6 +228,46 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::acp::events::{AcpUiEvent, write_timeline_items};
+
+    #[test]
+    fn runtime_control_cursor_does_not_invent_a_terminal_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        for name in [SNAPSHOT_FILE, SESSION_FILE] {
+            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
+            assert_eq!(metadata["latestTurnStatus"], "none");
+            assert_eq!(
+                metadata["runtimeControl"]["currentMode"],
+                "non-runtime-controlled"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_control_cursor_preserves_an_existing_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        write_json(
+            &attempt_dir.join(SNAPSHOT_FILE),
+            &serde_json::json!({
+                "sessionId": "session-existing",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": current_timestamp(),
+            }),
+        )
+        .unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        let metadata = load_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["latestTurnStatus"], "completed");
+        assert_eq!(metadata["sessionId"], "session-existing");
+    }
 
     #[test]
     fn non_runtime_stop_does_not_create_another_transition() {

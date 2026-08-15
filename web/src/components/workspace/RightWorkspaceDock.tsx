@@ -45,7 +45,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   }, [tabs]);
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
+    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true" data-theme-role="panel">
       {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
         <WorkspaceEntryOptions presentation="menu" />
         <div
@@ -203,7 +203,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
                 <Icon className="size-3.5" />
                 <span className="min-w-0">
                   <span className="block font-medium">{option.label}</span>
-                  <span className="block truncate text-[10px] text-muted-foreground">{option.description}</span>
+                  <span className="block truncate text-ui-micro text-muted-foreground">{option.description}</span>
                 </span>
               </DropdownMenuItem>
             );

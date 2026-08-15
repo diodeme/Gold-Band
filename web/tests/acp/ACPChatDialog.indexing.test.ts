@@ -15,6 +15,7 @@ import {
   stabilizeTimelineItems,
   storeAcpLoadedEvents,
   timelineEventKey,
+  timelineRenderKey,
 } from '../../src/components/acp/ACPChatDialog';
 import type { AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
 
@@ -227,6 +228,40 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(timeline.map(timelineEventKey)).toEqual(['activity-1', 'textDelta-text-1', 'activity-4']);
     expect(timeline[0]?.kind === 'activityBatch' ? timeline[0].live : null).toBe(false);
     expect(timeline[2]?.kind === 'activityBatch' ? timeline[2].live : null).toBe(true);
+  });
+
+  it('scopes message render identity to the conversation event window', () => {
+    const message = event({
+      id: 'provider-reused-id',
+      seq: 1,
+      timestamp: '1Z',
+      kind: 'textDelta',
+      content: 'first session',
+    });
+
+    expect(timelineRenderKey('session-a:root', message)).not.toBe(
+      timelineRenderKey('session-b:root', message),
+    );
+  });
+
+  it('keeps an archived activity terminal when a stale active snapshot arrives after stop', () => {
+    const events = [
+      event({ id: 'thought-1', seq: 1, timestamp: '1Z', kind: 'thoughtDelta', content: 'inspect' }),
+      event({ id: 'read-1', seq: 2, timestamp: '2Z', kind: 'toolCall', toolCallId: 'read-1', status: 'completed', title: 'Read file' }),
+    ];
+    const live = buildAcpTimelineProjection(events, 'running').timeline;
+    const archived = stabilizeTimelineItems(
+      buildAcpTimelineProjection(events, 'cancelled').timeline,
+      live,
+    );
+    const staleActive = stabilizeTimelineItems(
+      buildAcpTimelineProjection(events, 'running').timeline,
+      archived,
+    );
+
+    expect(live[0]?.kind === 'activityBatch' ? live[0].live : null).toBe(true);
+    expect(archived[0]?.kind === 'activityBatch' ? archived[0].live : null).toBe(false);
+    expect(staleActive[0]?.kind === 'activityBatch' ? staleActive[0].live : null).toBe(false);
   });
 
   it('keeps permission records out of activity audit rows', () => {

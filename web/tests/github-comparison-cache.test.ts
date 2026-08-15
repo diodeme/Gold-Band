@@ -62,6 +62,18 @@ describe('GitHub comparison cache', () => {
     });
     await first;
   });
+
+  it('isolates renamed files by their base revision path', async () => {
+    const getComparison = vi.fn().mockResolvedValue({ path: 'src/new.ts', stats: { addedLines: 1, deletedLines: 1 } });
+    const cache = new GitHubComparisonCache(getComparison);
+    const source = {
+      kind: 'github-pr' as const, host: 'github.com', repository: 'acme/widgets', prNumber: 42,
+      baseOid: '1'.repeat(40), headOid: '2'.repeat(40), path: 'src/new.ts', beforePath: 'src/old.ts',
+    };
+    await cache.get('project-1', source);
+    await cache.get('project-1', { ...source, beforePath: 'src/other.ts' });
+    expect(getComparison).toHaveBeenCalledTimes(2);
+  });
 });
 
 function deferred<T>() {

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   Check,
   CheckCircle2,
-  ChevronRight,
   CircleX,
   Download,
   GitBranch,
@@ -22,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import type {
   GitFileChangeVm,
@@ -31,16 +31,18 @@ import type {
   GitSourceControlSnapshotVm,
 } from '@/types';
 import {
-  gitFileComparisonWorkspaceResourceKey,
+  gitDiffReviewWorkspaceResourceKey,
   fileWorkspaceResourceKey,
   useRightWorkspace,
   type SourceControlWorkspaceResource,
 } from '../right-workspace-context';
 import { SourceControlRepositoryView } from './SourceControlRepositoryView';
+import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { SourceControlChangesToolbar, SourceControlSyncActions } from './SourceControlChangesToolbar';
 import { SourceControlGitHubView } from './SourceControlGitHubView';
 import { SourceControlHistoryView } from './SourceControlHistoryView';
 import { githubDataStore, githubRepositorySessionKey } from './github-data-store';
+import { diffReviewStore, gitComparisonReviewItemId, type GitDiffReviewItem } from './diff-review-store';
 import { sourceControlStore, useSourceControlSession, type SourceControlSessionSnapshot, type SourceControlTab } from './source-control-store';
 
 const GIT_DOWNLOAD_URL = 'https://git-scm.com/downloads';
@@ -109,19 +111,34 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
   }, [resource.projectId, resource.workspacePath]);
 
   const openDiff = useCallback((change: GitFileChangeVm, area: 'staged' | 'unstaged') => {
-    if (!workspace.scopeKey) return;
-    const source = { kind: 'workspace' as const, workspacePath: resource.workspacePath, path: change.path, area };
+    if (!workspace.scopeKey || !snapshot) return;
+    const changes = area === 'staged'
+      ? snapshot.status.staged
+      : [...snapshot.status.unstaged, ...snapshot.status.untracked];
+    const items = workspaceReviewItems(resource.workspacePath, area, changes);
+    const item = items.find((candidate) => candidate.path === change.path);
+    if (!item) return;
+    const reviewSessionId = `${resource.projectId}:workspace:${resource.workspacePath ?? 'main'}:${area}:${snapshot.repository.revision}`;
+    diffReviewStore.save({
+      id: reviewSessionId,
+      projectId: resource.projectId,
+      revision: snapshot.repository.revision,
+      items,
+    });
     void workspace.openResource({
       kind: 'file-diff',
-      key: gitFileComparisonWorkspaceResourceKey(resource.projectId, source),
+      key: gitDiffReviewWorkspaceResourceKey(resource.projectId, reviewSessionId),
       scopeKey: workspace.scopeKey,
       title: change.path.split('/').at(-1) ?? change.path,
       description: change.path,
       attention: false,
       projectId: resource.projectId,
-      gitSource: source,
+      gitSource: item.source,
+      reviewSessionId,
+      reviewItemId: item.id,
+      reviewLanding: 'top',
     });
-  }, [resource.projectId, resource.workspacePath, workspace]);
+  }, [resource.projectId, resource.workspacePath, snapshot, workspace]);
 
   const openConflictFile = useCallback(async (change: GitFileChangeVm) => {
     if (!workspace.scopeKey) return;
@@ -178,7 +195,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.repository.currentBranch ?? t('sourceControl.detached')}</span>
           <SourceControlSyncActions snapshot={snapshot} busyActionKind={busyActionKind} locked={writeLocked} onOperation={startOperation} />
         </div>
-        {locked ? <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
+        {locked ? <div className="mt-1 text-ui-caption text-amber-600 dark:text-amber-400">{t('sourceControl.locked', { operation: snapshot.repository.lock.operation ?? '' })}</div> : null}
         {activeOperation ? <SourceControlOperationStatus operation={activeOperation} onCancel={cancelOperation} onDismiss={dismissOperation} /> : null}
         {error ? <SourceControlError error={error} /> : null}
         {snapshot.status.operationInProgress?.kind === 'merge' || snapshot.status.operationInProgress?.kind === 'rebase'
@@ -259,7 +276,7 @@ export function SourceControlWorkspacePanel({ resource }: { resource: SourceCont
               className="mt-2 min-h-16 resize-y text-xs"
             />
             <div className="mt-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-muted-foreground">{t('sourceControl.stagedCount', { count: snapshot.status.staged.length })}</span>
+              <span className="text-ui-caption text-muted-foreground">{t('sourceControl.stagedCount', { count: snapshot.status.staged.length })}</span>
               <Button
                 size="sm"
                 disabled={!canCommit || busy}
@@ -329,7 +346,7 @@ function SourceControlOperationStatus({ operation, onCancel, onDismiss }: {
     : t(`sourceControl.operationResults.${operation.status}`, { operation: operationName });
   return (
     <div
-      className={cn('mt-1 flex min-w-0 items-center gap-2 text-[11px]', failed ? 'text-destructive' : operation.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}
+      className={cn('mt-1 flex min-w-0 items-center gap-2 text-ui-caption', failed ? 'text-destructive' : operation.status === 'succeeded' ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground')}
       role={failed ? 'alert' : 'status'}
       aria-live="polite"
       data-source-control-operation-status={operation.status}
@@ -388,7 +405,7 @@ function SourceControlError({ error }: { error: GitOperationErrorVm }) {
   const { t } = useTranslation();
   const reason = typeof error.params.reason === 'string' ? error.params.reason.trim() : '';
   return (
-    <div className="mt-1 text-[11px] text-destructive" role="alert" aria-live="polite">
+    <div className="mt-1 text-ui-caption text-destructive" role="alert" aria-live="polite">
       <div>{t(`errors.${error.code}`, { ...error.params, defaultValue: t('sourceControl.operationFailed') })}</div>
       {reason ? <div className="mt-0.5 whitespace-pre-wrap break-words text-destructive/85">{reason}</div> : null}
     </div>
@@ -418,33 +435,50 @@ function ChangeGroup({
 }) {
   if (changes.length === 0) return null;
   return (
+    <TooltipProvider>
     <section data-source-control-group={tone}>
-      <div className="flex h-7 items-center gap-2 px-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="flex h-7 items-center gap-2 px-3 text-ui-caption font-medium uppercase tracking-wide text-muted-foreground">
         <span>{title}</span><span className="tabular-nums">{changes.length}</span>
       </div>
       {changes.map((change) => {
         const actionPending = pendingPath === change.path;
         return (
-        <div key={`${change.path}:${change.indexStatus ?? ''}:${change.worktreeStatus ?? ''}`} className="group flex min-w-0 items-center px-1.5 hover:bg-muted/45">
-          <button type="button" className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50" onClick={() => onOpen(change)}>
-            <ChangeStatus kind={change.kind} tone={tone} />
-            <span className="min-w-0 flex-1 truncate text-xs">{change.path}</span>
-            {change.oldPath ? <span className="max-w-20 truncate text-[10px] text-muted-foreground">← {change.oldPath}</span> : null}
-            {change.addedLines != null ? <span className="text-[10px] tabular-nums text-emerald-600">+{change.addedLines}</span> : null}
-            {change.deletedLines != null ? <span className="text-[10px] tabular-nums text-destructive">-{change.deletedLines}</span> : null}
-            <ChevronRight className="size-3 text-muted-foreground/60" />
-          </button>
-          {onAction && (!disabled || actionPending) ? <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100 disabled:opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>{actionPending ? <LoaderCircle className="size-3 animate-spin" /> : actionIcon}</Button> : null}
-        </div>
+          <SourceControlDiffFileRow
+            key={`${change.path}:${change.indexStatus ?? ''}:${change.worktreeStatus ?? ''}`}
+            path={change.path}
+            oldPath={change.oldPath}
+            kind={change.kind}
+            addedLines={change.addedLines}
+            deletedLines={change.deletedLines}
+            onClick={() => onOpen(change)}
+            trailing={onAction && (!disabled || actionPending) ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button type="button" size="icon-xs" variant="ghost" className={cn('opacity-0 group-hover:opacity-100 focus-visible:opacity-100', actionPending && 'opacity-100 disabled:opacity-100')} disabled={disabled} aria-busy={actionPending} aria-label={`${actionLabel}: ${change.path}`} onClick={() => onAction(change)}>
+                    {actionPending ? <LoaderCircle className="size-3 animate-spin" /> : actionIcon}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{actionLabel}</TooltipContent>
+              </Tooltip>
+            ) : null}
+          />
         );
       })}
     </section>
+    </TooltipProvider>
   );
 }
 
-function ChangeStatus({ kind, tone }: { kind: GitFileChangeVm['kind']; tone: string }) {
-  const label = kind === 'untracked' ? '?' : kind === 'added' ? 'A' : kind === 'deleted' ? 'D' : kind === 'renamed' ? 'R' : kind === 'unmerged' ? '!' : 'M';
-  return <span className={cn('flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold', tone === 'conflict' ? 'bg-destructive/15 text-destructive' : tone === 'staged' ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground')}>{label}</span>;
+export function workspaceReviewItems(workspacePath: string | null | undefined, area: 'staged' | 'unstaged', changes: GitFileChangeVm[]): GitDiffReviewItem[] {
+  return changes.map((change) => {
+    const source = { kind: 'workspace' as const, workspacePath, path: change.path, area };
+    return {
+      id: gitComparisonReviewItemId(source),
+      path: change.path,
+      source,
+      stats: { addedLines: change.addedLines ?? null, deletedLines: change.deletedLines ?? null },
+    };
+  });
 }
 
 function PanelState({ icon, text, description, action }: { icon?: ReactNode; text: string; description?: string; action?: ReactNode }) {

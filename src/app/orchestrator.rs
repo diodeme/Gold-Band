@@ -9105,6 +9105,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         None,
     )?;
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
+    invocation.runtime_control_intent = RuntimeControlIntent::ManualFollowUp;
     invocation.extra_hidden_sections.clear();
     render_prompt_bundle(&invocation)
 }

@@ -56,6 +56,7 @@ pub enum TurnControlMode {
 #[serde(rename_all = "kebab-case")]
 pub enum TurnControlTransitionCause {
     RuntimeInterrupted,
+    ManualFollowUp,
     WorkflowContinued,
     RuntimeTerminal,
 }

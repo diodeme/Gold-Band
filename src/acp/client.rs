@@ -2043,18 +2043,34 @@ fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBun
     prompt.runtime_control_source_transition_id = None;
     prompt.runtime_control_transition_cause = None;
 
-    if prompt.turn_control_mode == TurnControlMode::NonRuntimeControlled {
-        return Ok(());
-    }
-
-    if prompt.runtime_control_intent == crate::provider::RuntimeControlIntent::Resume
-        && let Some((source_transition_id, transition_id)) =
-            crate::acp::control::prepare_workflow_continued(attempt_dir)?
-    {
-        prompt.runtime_control_source_transition_id = Some(source_transition_id);
-        prompt.runtime_control_transition_id = Some(transition_id);
-        prompt.runtime_control_transition_cause =
-            Some(TurnControlTransitionCause::WorkflowContinued);
+    match prompt.runtime_control_intent {
+        crate::provider::RuntimeControlIntent::Unchanged => {}
+        crate::provider::RuntimeControlIntent::ManualFollowUp => {
+            if prompt.turn_control_mode != TurnControlMode::NonRuntimeControlled {
+                bail!("manual follow-up prompt must be non-runtime-controlled");
+            }
+            if let Some((source_transition_id, transition_id)) =
+                crate::acp::control::prepare_manual_follow_up(attempt_dir)?
+            {
+                prompt.runtime_control_source_transition_id = source_transition_id;
+                prompt.runtime_control_transition_id = Some(transition_id);
+                prompt.runtime_control_transition_cause =
+                    Some(TurnControlTransitionCause::ManualFollowUp);
+            }
+        }
+        crate::provider::RuntimeControlIntent::Resume => {
+            if prompt.turn_control_mode != TurnControlMode::RuntimeControlled {
+                bail!("Runtime resume prompt must be runtime-controlled");
+            }
+            if let Some((source_transition_id, transition_id)) =
+                crate::acp::control::prepare_workflow_continued(attempt_dir)?
+            {
+                prompt.runtime_control_source_transition_id = Some(source_transition_id);
+                prompt.runtime_control_transition_id = Some(transition_id);
+                prompt.runtime_control_transition_cause =
+                    Some(TurnControlTransitionCause::WorkflowContinued);
+            }
+        }
     }
     Ok(())
 }
@@ -2071,6 +2087,11 @@ fn commit_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &PromptBundle) 
         TurnControlTransitionCause::RuntimeInterrupted => {
             bail!("runtime interruption is not committed by an ACP prompt")
         }
+        TurnControlTransitionCause::ManualFollowUp => crate::acp::control::commit_manual_follow_up(
+            attempt_dir,
+            prompt.runtime_control_source_transition_id.as_deref(),
+            transition_id,
+        )?,
         TurnControlTransitionCause::WorkflowContinued => {
             let source_transition_id = prompt
                 .runtime_control_source_transition_id
@@ -6243,21 +6264,60 @@ mod tests {
     }
 
     #[test]
-    fn non_runtime_prompt_stays_unchanged_after_runtime_interruption() {
+    fn repeated_manual_follow_up_keeps_existing_non_runtime_transition() {
         let dir = tempfile::tempdir().unwrap();
         let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
-        crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+        let existing = crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
         let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
 
         super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
 
         assert_eq!(prompt.user_prompt, "clarify");
         assert!(prompt.runtime_control_transition_id.is_none());
         assert!(prompt.runtime_control_transition_cause.is_none());
+        assert_eq!(
+            crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            existing.transition_id
+        );
     }
 
     #[test]
-    fn only_explicit_resume_intent_prepares_runtime_control_transition() {
+    fn manual_follow_up_changes_control_only_after_accepted_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+
+        assert_eq!(
+            prompt.runtime_control_transition_cause,
+            Some(crate::domain::TurnControlTransitionCause::ManualFollowUp)
+        );
+        assert!(prompt.runtime_control_transition_id.is_some());
+        assert!(
+            crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+                .unwrap()
+                .is_none()
+        );
+
+        super::commit_runtime_control_prompt(&attempt_dir, &prompt).unwrap();
+        let cursor = crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.current_mode, TurnControlMode::NonRuntimeControlled);
+        assert_eq!(
+            cursor.transition_cause,
+            crate::domain::TurnControlTransitionCause::ManualFollowUp
+        );
+    }
+
+    #[test]
+    fn only_explicit_intents_prepare_runtime_control_transitions() {
         let dir = tempfile::tempdir().unwrap();
         let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();

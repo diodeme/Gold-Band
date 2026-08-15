@@ -563,7 +563,8 @@ export function ConversationComposer({
           </SlashCommandMenu>
           <div
             data-slot="conversation-composer-toolbar"
-            className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
+            data-layout={isDirect ? 'configured' : 'simple'}
+            className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName} ${isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName}`}
           >
             <div
               data-slot="conversation-composer-leading-actions"
@@ -609,7 +610,7 @@ export function ConversationComposer({
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
-              className={CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName}
+              className={isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName}
             >
               {isDirect ? (
                 <>
@@ -661,9 +662,9 @@ export function ConversationComposer({
                 </>
               ) : null}
               {scheduledMode ? (
-                <div className="flex min-w-0 items-center gap-1">
-                  <div className="flex min-w-0 flex-1 overflow-hidden rounded-full bg-primary text-primary-foreground">
-                    <Button size="sm" className="h-8 min-w-0 flex-1 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} items-center gap-1`}>
+                  <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                    <Button size="sm" className="h-8 min-w-0 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
@@ -672,7 +673,7 @@ export function ConversationComposer({
                   <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
                 </div>
               ) : (
-                <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} overflow-hidden rounded-full bg-primary text-primary-foreground`}>
                   <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>

@@ -12,7 +12,7 @@
 - 消息流使用无头像的轻量结构化行，保留 assistant 结构行的横向位置；不使用大卡片、嵌套面板或粗边框。
 - running 状态展示“正在压缩上下文”、压缩前占用、已耗时和不定进度动画；动画必须遵守 `prefers-reduced-motion`。
 - 运行超过 120 秒后展示“耗时较长，仍在等待 Agent”，但仍不得伪造失败或百分比。
-- completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。provider 若在 completed 信号前上报压缩后的较低正数 usage，runtime 只在 active compaction 内暂存最新候选，completed 到达后才原子确认并写入同一个 canonical item；interrupted 时丢弃候选。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
+- completed 状态原位更新为“上下文压缩完成”和总耗时。压缩条目可以继续只展示压缩前占用与窗口上限；会话底部的“上下文窗口”在 runtime 观察到 reset 后首个有效正数时切换为 compact 后 ACP 当前上下文占用。provider 若在 completed 信号前上报低于压缩前确认值的正数，或先上报 `used=0` reset 再上报正数，runtime 只在 active compaction 内暂存最新候选，completed 到达后才原子确认、写入同一个 canonical item，并复用既有 canonical `usageUpdate` 通道发布确认值；客户端 live reducer 将该隐藏事件投影到当前 session usage，但不把它加入消息流。不得要求用户再发送消息或增加前端轮询才能刷新。interrupted 时丢弃候选。reset 过程中的 `used=0` 不进入 UI，尚未获得有效值时保持上一次确认值或展示 `--`。
 - interrupted 状态展示“上下文压缩已中断”，并由既有 ACP/runtime terminal 生命周期解除 composer 锁定。
 - composer 在 active compaction 期间将泛化 processing kind 切换为 `compacting`，文案为“正在压缩上下文”，停止按钮继续复用现有会话停止语义。
 - 状态变化使用 polite live region 提供无障碍播报。

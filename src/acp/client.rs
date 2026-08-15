@@ -125,7 +125,8 @@ struct AcpContextCompactionState {
     context_size: Option<u64>,
     completed_seq: Option<u64>,
     completed_at: Option<String>,
-    saw_post_completion_reset: bool,
+    saw_context_reset: bool,
+    pending_context_used_after: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,13 +202,22 @@ impl AcpUsageState {
         };
 
         if compaction.completed_seq.is_none() {
+            if used == 0 {
+                compaction.saw_context_reset = true;
+            } else if compaction.saw_context_reset
+                || compaction
+                    .context_used_before
+                    .is_some_and(|before| used < before)
+            {
+                compaction.pending_context_used_after = Some(used);
+            }
             return None;
         }
         if used == 0 {
-            compaction.saw_post_completion_reset = true;
+            compaction.saw_context_reset = true;
             return None;
         }
-        let confirmed_after = compaction.saw_post_completion_reset
+        let confirmed_after = compaction.saw_context_reset
             || compaction
                 .context_used_before
                 .is_some_and(|before| used < before);
@@ -217,6 +227,22 @@ impl AcpUsageState {
 
         self.context.confirmed_used = Some(used);
         Some(used)
+    }
+
+    fn confirm_context_used_after_compaction(
+        &mut self,
+        status: &str,
+        compaction: &AcpContextCompactionState,
+        reported_used_after: Option<u64>,
+    ) -> Option<u64> {
+        if status != "completed" {
+            return None;
+        }
+        let confirmed = reported_used_after
+            .filter(|used| *used > 0)
+            .or(compaction.pending_context_used_after)?;
+        self.context.confirmed_used = Some(confirmed);
+        Some(confirmed)
     }
 
     fn record_prompt_usage(&mut self, prompt_usage: AcpPromptTokenUsage) {
@@ -1017,6 +1043,7 @@ impl AcpPromptOutputAccumulator {
 }
 
 pub const ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE: &str = "acp.unidentified-agent-output";
+const CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE: &str = "contextCompactionCompleted";
 
 fn unidentified_agent_output_failure(
     output_policy: AcpOutputPolicy,
@@ -4097,6 +4124,7 @@ impl<'a> AcpRuntime<'a> {
         let event = normalize_session_update(self.seq, session_id, &update);
         self.capture_turn_file_diffs(&event)?;
         self.prompt_output.observe(&update, &event);
+        let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
         if event.kind == "contextCompaction" {
             append_diagnostic(
@@ -4115,10 +4143,25 @@ impl<'a> AcpRuntime<'a> {
                 })),
             )?;
         }
+        if event.kind == "contextCompaction"
+            && self.usage.context.confirmed_used != confirmed_usage_before_event
+        {
+            self.persist_confirmed_context_usage(event.session_id.clone())?;
+        }
         if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
         Ok(())
+    }
+
+    fn persist_confirmed_context_usage(&mut self, session_id: Option<String>) -> Result<()> {
+        let Some(update) = confirmed_context_usage_update(&self.usage) else {
+            return Ok(());
+        };
+
+        self.seq = self.seq.saturating_add(1);
+        let event = normalize_session_update(self.seq, session_id, &update);
+        self.persist_event(&event)
     }
 
     fn capture_turn_file_diffs(&mut self, event: &AcpUiEvent) -> Result<()> {
@@ -5189,7 +5232,7 @@ impl<'a> AcpRuntime<'a> {
         seq: u64,
         timestamp: &str,
     ) {
-        let status = item.status.as_deref().unwrap_or("running");
+        let status = item.status.clone().unwrap_or_else(|| "running".to_string());
         let context_used_after = item
             .raw
             .as_ref()
@@ -5201,33 +5244,45 @@ impl<'a> AcpRuntime<'a> {
             .and_then(|raw| raw.pointer("/contextCompaction/reason"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let canonical_item_id = item
+            .tool_call_id
+            .as_deref()
+            .filter(|tool_call_id| !tool_call_id.trim().is_empty())
+            .map(|tool_call_id| format!("context-compaction-tool-{tool_call_id}"))
+            .unwrap_or_else(|| format!("context-compaction-{seq}"));
 
         let mut state = if status == "running" {
             AcpContextCompactionState {
-                item_id: format!("context-compaction-{seq}"),
+                item_id: canonical_item_id.clone(),
                 started_seq: seq,
                 started_at: timestamp.to_string(),
                 context_used_before: self.usage.context.confirmed_used,
                 context_size: self.usage.context.window_size,
                 completed_seq: None,
                 completed_at: None,
-                saw_post_completion_reset: false,
+                saw_context_reset: false,
+                pending_context_used_after: None,
             }
         } else {
             self.usage
                 .compaction
                 .clone()
                 .unwrap_or_else(|| AcpContextCompactionState {
-                    item_id: format!("context-compaction-{seq}"),
+                    item_id: canonical_item_id,
                     started_seq: seq,
                     started_at: timestamp.to_string(),
                     context_used_before: self.usage.context.confirmed_used,
                     context_size: self.usage.context.window_size,
                     completed_seq: None,
                     completed_at: None,
-                    saw_post_completion_reset: false,
+                    saw_context_reset: false,
+                    pending_context_used_after: None,
                 })
         };
+
+        let context_used_after =
+            self.usage
+                .confirm_context_used_after_compaction(&status, &state, context_used_after);
 
         item.id = state.item_id.clone();
         item.started_seq = Some(state.started_seq);
@@ -5248,7 +5303,7 @@ impl<'a> AcpRuntime<'a> {
         }
         upsert_context_compaction_raw(
             item,
-            match status {
+            match status.as_str() {
                 "running" => "started",
                 "interrupted" => "interrupted",
                 _ => "completed",
@@ -5266,7 +5321,8 @@ impl<'a> AcpRuntime<'a> {
         {
             compaction.insert("reason".to_string(), Value::String(reason));
         }
-        self.usage.compaction = context_used_after.is_none().then_some(state);
+        self.usage.compaction =
+            (status != "interrupted" && context_used_after.is_none()).then_some(state);
     }
 
     fn timeline_item_for_event(
@@ -5512,6 +5568,29 @@ fn upsert_context_compaction_raw(
     });
 }
 
+fn confirmed_context_usage_update(usage: &AcpUsageState) -> Option<Value> {
+    let used = usage.context.confirmed_used.filter(|used| *used > 0)?;
+    let mut update = json!({
+        "sessionUpdate": "usage_update",
+        "used": used,
+        "_meta": {
+            "goldBand": {
+                "source": CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE,
+            }
+        }
+    });
+    if let Some(size) = usage.context.window_size.filter(|size| *size > 0) {
+        update["size"] = Value::from(size);
+    }
+    if let Some(cost) = usage.total_cost_usd {
+        update["cost"] = json!({
+            "amount": cost,
+            "currency": "USD",
+        });
+    }
+    Some(update)
+}
+
 /// Merge durable input and diff fields from a previous tool-call revision when
 /// a later revision does not replace them.
 fn merge_tool_revision(
@@ -5666,7 +5745,8 @@ fn active_context_compaction(
                 .clone()
                 .unwrap_or_else(|| item.timestamp.clone())
         }),
-        saw_post_completion_reset: false,
+        saw_context_reset: false,
+        pending_context_used_after: None,
     })
 }
 
@@ -6127,17 +6207,18 @@ mod tests {
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
         append_bounded, attached_sync_required, cancel_attempt_prompt,
         canonical_prompt_event_identity, cleanup_doctor_acp_dir_after_success,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
-        is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
-        merge_tool_revision, next_prompt_retry_attempt, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore, prompt_activity,
-        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
+        confirmed_context_usage_update, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
+        is_transport_interruption, latest_visible_turn_id, merge_tool_revision,
+        next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
+        plan_session_restore, prompt_activity, prompt_cancellation_outcome,
+        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, session_resume_params, settle_prompt_event,
+        should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
         unregister_provider_control,
     };
@@ -8472,7 +8553,8 @@ mod tests {
             context_size: Some(1_000_000),
             completed_seq: Some(32),
             completed_at: Some("1785153938Z".to_string()),
-            saw_post_completion_reset: false,
+            saw_context_reset: false,
+            pending_context_used_after: None,
         }
     }
 
@@ -8525,6 +8607,96 @@ mod tests {
             Some(23_825)
         );
         assert_eq!(state.context.confirmed_used, Some(23_825));
+    }
+
+    #[test]
+    fn running_compaction_stages_the_latest_lower_usage_until_completion() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(128_399);
+        state.context.window_size = Some(258_400);
+        state.compaction = Some(AcpContextCompactionState {
+            item_id: "context-compaction-10".to_string(),
+            started_seq: 10,
+            started_at: "1786767175Z".to_string(),
+            context_used_before: Some(128_399),
+            context_size: Some(258_400),
+            completed_seq: None,
+            completed_at: None,
+            saw_context_reset: false,
+            pending_context_used_after: None,
+        });
+
+        assert_eq!(
+            state.observe_provider_usage(Some(124_491), Some(258_400), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(7_920), Some(258_400), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(128_399));
+        assert_eq!(
+            state
+                .compaction
+                .as_ref()
+                .and_then(|compaction| compaction.pending_context_used_after),
+            Some(7_920)
+        );
+
+        let mut compaction = state.compaction.take().expect("running compaction");
+        compaction.completed_seq = Some(20);
+        compaction.completed_at = Some("1786767196Z".to_string());
+        assert_eq!(
+            state.confirm_context_used_after_compaction("completed", &compaction, None),
+            Some(7_920)
+        );
+        assert_eq!(state.context.confirmed_used, Some(7_920));
+
+        state.total_cost_usd = Some(0.42);
+        let update = confirmed_context_usage_update(&state).expect("canonical usage update");
+        assert_eq!(update["sessionUpdate"], "usage_update");
+        assert_eq!(update["used"], 7_920);
+        assert_eq!(update["size"], 258_400);
+        assert_eq!(update.pointer("/cost/amount"), Some(&json!(0.42)));
+        assert_eq!(
+            update.pointer("/_meta/goldBand/source"),
+            Some(&json!("contextCompactionCompleted"))
+        );
+    }
+
+    #[test]
+    fn running_compaction_stages_positive_usage_after_an_early_reset() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(32_606);
+        state.context.window_size = Some(1_000_000);
+        state.compaction = Some(AcpContextCompactionState {
+            item_id: "context-compaction-20".to_string(),
+            started_seq: 20,
+            started_at: "1786767175Z".to_string(),
+            context_used_before: Some(32_606),
+            context_size: Some(1_000_000),
+            completed_seq: None,
+            completed_at: None,
+            saw_context_reset: false,
+            pending_context_used_after: None,
+        });
+
+        assert_eq!(
+            state.observe_provider_usage(Some(0), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(33_792), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(32_606));
+
+        let compaction = state.compaction.take().expect("running compaction");
+        assert_eq!(
+            state.confirm_context_used_after_compaction("completed", &compaction, None),
+            Some(33_792)
+        );
+        assert_eq!(state.context.confirmed_used, Some(33_792));
     }
 
     #[test]

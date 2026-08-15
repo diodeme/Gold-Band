@@ -188,15 +188,16 @@ pub enum UserPromptRenderMode {
     UserMessage,
 }
 
-/// Describes whether the accepted prompt must transfer an existing ACP turn
-/// from free conversation back to Runtime control. This is intentionally
-/// independent from `SessionMode`: resuming an ACP session does not imply a
-/// Runtime control transition.
+/// Describes whether accepting the prompt changes Runtime control ownership.
+/// This is intentionally independent from `SessionMode`: continuing an ACP
+/// session does not by itself imply either a manual follow-up or a Runtime
+/// resume transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeControlIntent {
     #[default]
     Unchanged,
+    ManualFollowUp,
     Resume,
 }
 

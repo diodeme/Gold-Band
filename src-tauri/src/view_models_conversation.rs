@@ -3823,13 +3823,13 @@ mod tests {
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
         ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
-        apply_workflow_interview_preference, build_auto_workflow, build_direct_workflow,
-        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
-        find_leaf_by_key, lifecycle_is_active, scheduled_task_vms_from_sources,
-        switch_conversation_session_vm,
+        apply_workflow_interview_preference, attempt_control_mode, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
+        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
+        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
+        scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -4016,6 +4016,33 @@ mod tests {
         assert!(!lifecycle.runtime.continuable);
         assert_eq!(lifecycle.acp.latest_turn_status, "completed");
         assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+    }
+
+    #[test]
+    fn accepted_manual_follow_up_projects_non_runtime_control_for_orchestrated_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        assert_eq!(
+            attempt_control_mode(attempt_dir, true),
+            TurnControlMode::RuntimeControlled
+        );
+        let (source_id, transition_id) =
+            gold_band::acp::control::prepare_manual_follow_up(attempt_dir)
+                .unwrap()
+                .unwrap();
+        assert!(
+            gold_band::acp::control::commit_manual_follow_up(
+                attempt_dir,
+                source_id.as_deref(),
+                &transition_id,
+            )
+            .unwrap()
+        );
+
+        assert_eq!(
+            attempt_control_mode(attempt_dir, true),
+            TurnControlMode::NonRuntimeControlled
+        );
     }
 
     #[test]

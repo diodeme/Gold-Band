@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://gold-band.dev/schemas/theme-manifest-v1.schema.json",
-  "title": "Gold Band Theme Manifest v1",
+  "$id": "https://gold-band.dev/schemas/theme-manifest-v2.schema.json",
+  "title": "Gold Band Theme Manifest v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,10 +20,10 @@
       "type": "string"
     },
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "contractVersion": {
-      "const": 1
+      "const": 2
     },
     "id": {
       "type": "string",

@@ -101,32 +101,8 @@
 
 @font-face {
   font-family: "Gold Band MiSans";
-  src: url("/fonts/misans/MiSans-Regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Gold Band MiSans";
-  src: url("/fonts/misans/MiSans-Medium.woff2") format("woff2");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Gold Band MiSans";
-  src: url("/fonts/misans/MiSans-Semibold.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Gold Band MiSans";
-  src: url("/fonts/misans/MiSans-Bold.woff2") format("woff2");
-  font-weight: 700;
+  src: url("/fonts/misans/MiSans-VF.ttf") format("truetype-variations");
+  font-weight: 250 520;
   font-style: normal;
   font-display: swap;
 }
@@ -136,9 +112,10 @@
 @theme inline {
   --font-sans: var(--app-font-sans);
   --font-mono: var(--app-font-mono);
-  --font-weight-medium: 400;
-  --font-weight-semibold: 500;
-  --font-weight-bold: 600;
+  --font-weight-normal: 330;
+  --font-weight-medium: 380;
+  --font-weight-semibold: 450;
+  --font-weight-bold: 520;
   --text-ui-nano: calc(var(--app-ui-font-size) * 0.642857);
   --text-ui-micro: calc(var(--app-ui-font-size) * 0.714286);
   --text-ui-caption: calc(var(--app-ui-font-size) * 0.785714);
@@ -346,7 +323,7 @@
 
 :root {
   color-scheme: dark;
-  --app-font-sans: "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  --app-font-sans: "Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
   --app-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --app-editor-font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --app-ui-font-size: 14px;
@@ -458,7 +435,7 @@
   }
 
   body {
-    @apply m-0 overflow-hidden bg-background font-sans text-foreground;
+    @apply m-0 overflow-hidden bg-background font-sans font-normal text-foreground;
     font-size: var(--app-ui-font-size);
   }
 

@@ -28,8 +28,9 @@ describe('sidebar selected-state styles', () => {
     expect(source).toContain('text-sm font-medium text-sidebar-foreground');
     expect(source).not.toContain('text-sm font-medium text-muted-foreground');
     expect(source).not.toContain('text-xs font-medium text-muted-foreground');
-    expect(source).toContain('text-sm font-bold leading-5 text-sidebar-foreground/80');
-    expect(source).toContain('text-sidebar-foreground/85 cursor-pointer');
+    expect(source).toContain('text-sm font-semibold leading-5 text-sidebar-foreground/80');
+    expect(source).toContain('text-sidebar-foreground cursor-pointer');
+    expect(source).not.toContain('text-sidebar-foreground/85 cursor-pointer');
     expect(source).toContain('tabular-nums text-muted-foreground/55');
   });
 

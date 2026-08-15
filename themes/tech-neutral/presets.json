@@ -1,10 +1,16 @@
 {
   "light": {
     "typography": {
-      "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
-      "uiSize": 14,
-      "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
-      "editorSize": 12
+      "ui": {
+        "families": ["Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"],
+        "fallback": "sans-serif",
+        "size": 14
+      },
+      "editor": {
+        "families": ["JetBrains Mono", "SFMono-Regular", "Consolas"],
+        "fallback": "monospace",
+        "size": 12
+      }
     },
     "avatars": {
       "agentShape": "circle",
@@ -15,10 +21,16 @@
   },
   "dark": {
     "typography": {
-      "uiFamily": "\"Gold Band MiSans\", \"MiSans\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", system-ui, sans-serif",
-      "uiSize": 14,
-      "editorFamily": "\"JetBrains Mono\", \"SFMono-Regular\", Consolas, monospace",
-      "editorSize": 12
+      "ui": {
+        "families": ["Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"],
+        "fallback": "sans-serif",
+        "size": 14
+      },
+      "editor": {
+        "families": ["JetBrains Mono", "SFMono-Regular", "Consolas"],
+        "fallback": "monospace",
+        "size": 12
+      }
     },
     "avatars": {
       "agentShape": "circle",

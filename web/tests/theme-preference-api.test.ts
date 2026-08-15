@@ -23,7 +23,7 @@ describe('theme preference API contract', () => {
       typography: {
         ...original.personalization.typography,
         ui: {
-          font: { source: 'local', family: 'Microsoft YaHei UI' },
+          fontStack: { source: 'custom', families: ['Segoe UI', 'Microsoft YaHei UI'] },
           fontSize: { source: 'custom', px: 16 },
         },
       },

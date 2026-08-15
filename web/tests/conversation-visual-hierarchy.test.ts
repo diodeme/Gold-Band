@@ -63,9 +63,10 @@ describe('conversation visual hierarchy contract', () => {
     const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
 
     expect(sidebar).toContain('mb-4');
-    expect(sidebar).toContain('text-sm font-bold leading-5 text-sidebar-foreground/80');
-    expect(sidebar).toContain('truncate text-ui-compact');
-    expect(sidebar).toContain("bg-sidebar-accent/70 font-semibold text-sidebar-accent-foreground");
+    expect(sidebar).toContain('text-sm font-semibold leading-5 text-sidebar-foreground/80');
+    expect(sidebar).toContain('truncate text-sm');
+    expect(sidebar.match(/className="space-y-0\.5"/gu) ?? []).toHaveLength(2);
+    expect(sidebar).toContain("bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground");
     expect(sidebar).toContain('text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55');
     expect(sidebar).not.toContain('text-ui-micro tabular-nums text-muted-foreground');
   });

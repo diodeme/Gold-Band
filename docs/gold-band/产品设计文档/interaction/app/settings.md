@@ -26,7 +26,7 @@
 │   视觉效果：仅主题声明质量档能力时展示                            │
 │                                                              │
 │ 字体                                                         │
-│   界面 UI / 编辑器分别跟随主题或选择本机字体与自定义字号          │
+│   界面 UI / 编辑器分别跟随主题或维护有序字体栈与自定义字号        │
 │                                                              │
 │ 头像                                                         │
 │   Agent / 个人紧凑设置行，主题头像、最近头像、上传裁剪与头像框    │
@@ -92,21 +92,23 @@
 
 ### 5.1 选项
 当前支持：
-- “界面 UI”内置默认字体（`app-default`）：优先使用内置 `Gold Band MiSans`，并在系统缺字时回退到 `MiSans`、`Microsoft YaHei UI`、`PingFang SC`、`Noto Sans CJK SC`、`Source Han Sans SC` 等系统字体。
-- “编辑器”内置默认字体（`editor-default`）：使用 `JetBrains Mono`，并回退到 `SFMono-Regular`、`Consolas` 等系统等宽字体。
-- 本机字体：从系统已安装字体枚举加载，用户可直接选择真实字体 family。
+- “界面 UI”主题默认栈：主题包按顺序声明英文字体、中文字体与 generic fallback；内置主题以应用随包分发的 `Inter Variable → Gold Band MiSans` 为主路径，由 Inter 负责拉丁字符、MiSans 负责中文，继续提供 MiSans 与常见系统 CJK 字体后备，最后落到 `sans-serif`。两套主字体必须随应用分发，不依赖用户系统是否安装。
+- “编辑器”主题默认栈：内置主题使用 `JetBrains Mono → SFMono-Regular → Consolas → monospace`。
+- 自定义有序栈：从系统已安装字体和内置 `Inter Variable / Gold Band MiSans` 中多选，浏览器按用户排序逐字形回退。
 
 ### 5.2 行为
 - 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
-- 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `source: theme | local`，字号分别使用 `source: theme | custom`；不得通过值恰好等于 14/12 推断继承。
+- 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `fontStack: { source: theme } | { source: custom, families: string[] }`，字号分别使用 `source: theme | custom`；不得通过空字符串或值恰好等于 14/12 推断继承。
+- 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
+- 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
 - UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
-- 全局字重语义采用轻量层级：正文 `400`、常规强调 `400`、标题/强强调 `500`、最高强调 `600`。保留视觉层次，不按页面机械替换字重类，也不通过错配字体文件伪造较细字重。
-- 每个展开栏内部提供字号、内置默认字体入口和本机字体下拉列表，避免两个领域的设置混排。
+- 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；最高视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
+- 每个展开栏内部提供字号、主题默认入口和基于 shadcn `Popover + Command` 的可搜索多选器，避免两个领域的设置混排；重排使用可访问的按钮，不为短列表引入拖拽依赖。
 - 选择后立即应用到全局 UI 字体 token。
 - 字体切换必须覆盖导航栏、面包屑、任务 requirement 预览与完整需求正文等常规阅读文本；只有日志、代码块和工作图技术标识允许继续走 mono token。
-- Tauri 桌面端通过 `get_system_fonts` 枚举系统字体；浏览器调试模式优先使用 `queryLocalFonts()`，不可用时回退到常见系统字体探测。
+- Tauri 桌面端通过 `get_system_fonts` 枚举系统字体；浏览器调试模式优先使用 `queryLocalFonts()`，不可用时回退到常见系统字体探测。字体目录只负责去空白、大小写不敏感去重和本地化排序，不应用用户字体栈的 16 项上限；设置页显示的本机字体计数必须全部进入可搜索、可滚动的 shadcn Command 列表。
 - 字体示例区带独立的“字体预览”标签和预览容器，并用彩色示例文本强化它是预览而不是正文内容。
 
 ---
@@ -133,7 +135,7 @@
 ## 7. Tauri 2.x MVP 对应实现
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
-- 个性化权威字段为 `personalization`：`schemaVersion = 1`，显式保存两套排版以及 Agent / 个人头像图片与形状的 `source`。settings schema v7 一次性迁移旧字体、字号和头像选择；主题来源持续跟随当前主题，用户资产历史独立保留。
+- 个性化权威字段为 `personalization`：`schemaVersion = 2`，显式保存两套有序字体栈、字号以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段并将两套字体恢复为主题栈，不保留双读；主题来源持续跟随当前主题，用户资产历史独立保留。
 - 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
@@ -149,6 +151,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 历史实现曾保存 `desktopTheme = system | light | light-gray | dark | black`，现仅由 v5 migration 读取并映射为主题包与明暗模式。
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
 - 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
+- personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
 - `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言、本地 Claude 和日志偏好；前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
 - 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。
@@ -170,12 +173,14 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-07-24 文本选区可见性修正：四套主题新增成对的文本选区 token，深色选区提升为明确中灰层级；移除 Input 对 selection 的局部 primary 覆盖，使普通文本、Markdown、输入框和 composer 呈现一致。
 - 2026-08-02 滚动条视觉层级校准：四套主题继续通过统一的 `gold-scrollbar-track` / `gold-scrollbar-thumb` / `gold-scrollbar-thumb-hover` 语义接口驱动原生滚动容器、主题滚动容器与 shadcn `ScrollArea`。滚动条改用中性前景色的低透明叠加，静止态不得混入品牌 `primary` 或不透明辅助文字色；轨道仅在容器 hover 时提供极弱反馈，thumb 在 hover 时再适度增强。两套浅色采用 3% / 16% / 26% 的轨道、静止、悬浮层级，石墨深色采用 4% / 18% / 30%，终端黑采用 4% / 20% / 32%，保证可发现但不抢占正文与导航的视觉重心。
 - 2026-07-24 胶囊 Tabs 边界收敛：共享 Tabs 新增 `bare` 变体，Agent 选择器和自带边界的 Round 详情 Tabs 不再继承默认 track ring，避免外层轨道与选中胶囊形成双重边界。
-- 2026-05-08 起应用内置默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。
+- 2026-05-08 起应用内置中文默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。2026-08-15 起内置 UI 默认栈在其前增加随包分发的 `Inter Variable`，用于改善拉丁字符并保留 MiSans 中文。
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。
 - 2026-05-07 起设置页从多张独立卡片收敛为一个主工作面，外观、字体、语言通过 section 与低对比分隔线组织；主题摘要、字体选项和本地字体预览降级为低对比选项行，避免盒中盒和浅黑色块过多。
 - 2026-05-25 起设置页改为三个 tab：语言进入通用，主题和字体进入个性化；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。2026-07-30 起原“外观”tab 正式更名为“个性化”，并新增头像设置。
 - 2026-07-30 个性化页顺序调整为“外观 / 字体 / 头像”；头像作为低频设置放在底部，Agent 与个人头像使用 48px 预览、短说明和紧凑形状按钮组成的响应式横向设置行，不再显示冗余“头像框”标签。
 - 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
+- 2026-08-15 字体偏好升级为有序字体栈：Theme SDK v2 以 `families + fallback + size` 声明 UI/编辑器默认栈，设置页通过可搜索多选、取消和上下移动维护用户顺序；自定义栈始终追加主题栈兜底，清空后恢复跟随主题。personalization schema v2 与 settings schema v8 同步替换旧单字体字段。
+- 2026-08-15 字体目录与用户字体栈拆分为两个领域：目录不设数量上限并稳定去重排序，用户栈继续保序且最多 16 项，避免系统字体计数与选择器实际选项不一致。
 - UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。

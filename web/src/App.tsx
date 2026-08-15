@@ -69,6 +69,7 @@ import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import {
+  isRuntimeControlledConversationLifecycle,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -842,6 +843,7 @@ export function App() {
     let refreshInFlight = false;
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
+    let pendingEventRuntimeControlled = false;
     let stopListeningAcp: (() => void) | null = null;
     let stopListeningRun: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
@@ -857,12 +859,19 @@ export function App() {
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
         ?? conversationRunRef.current?.sessionTree.selectedSessionKey
         ?? null;
+      const currentRun = conversationRunRef.current;
+      const currentSelectedLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
+        : null;
       const selectedKey = resolveConversationRefreshSelectedSessionKey({
         followMode: followStateAtRequest.mode,
         pendingEventSessionKey,
         currentSelectedKey,
+        currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
+        pendingEventRuntimeControlled,
       });
       pendingEventSessionKey = null;
+      pendingEventRuntimeControlled = false;
       Promise.all([
         getConversationRun(projectId, taskId, runId, selectedKey),
         getConversationSidebar(),
@@ -870,9 +879,21 @@ export function App() {
         .then(([run, sidebar]) => {
           if (!active) return;
           const latestFollowState = conversationSessionFollowRef.current;
-          const effectiveSelectedKey = latestFollowState.version === followStateAtRequest.version
-            ? selectedKey
-            : (latestFollowState.selectedSessionKey ?? conversationSelectedSessionKeyRef.current ?? selectedKey);
+          const latestSelectedKey = latestFollowState.selectedSessionKey
+            ?? conversationSelectedSessionKeyRef.current
+            ?? null;
+          const latestRun = conversationRunRef.current;
+          const latestSelectedLeaf = latestRun
+            ? findConversationLeafByKey(latestRun.sessionTree, latestSelectedKey)
+            : null;
+          const responseTargetLeaf = findConversationLeafByKey(run.sessionTree, selectedKey);
+          const effectiveSelectedKey = resolveConversationRefreshSelectedSessionKey({
+            followMode: latestFollowState.mode,
+            pendingEventSessionKey: selectedKey,
+            currentSelectedKey: latestSelectedKey,
+            currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
+            pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
+          });
           applyConversationRunSnapshot(run, 'live-refresh', {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
@@ -890,8 +911,15 @@ export function App() {
         });
     };
 
-    const queueConversationRunAndSidebarRefresh = (sessionKey?: string | null, delayMs = 120) => {
-      if (sessionKey !== undefined) pendingEventSessionKey = sessionKey;
+    const queueConversationRunAndSidebarRefresh = (
+      sessionKey?: string | null,
+      runtimeControlled = false,
+      delayMs = 120,
+    ) => {
+      if (sessionKey !== undefined) {
+        pendingEventSessionKey = sessionKey;
+        pendingEventRuntimeControlled = runtimeControlled;
+      }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
           window.clearTimeout(refreshTimer);
@@ -931,6 +959,13 @@ export function App() {
       const currentSelectedLeaf = currentRun
         ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
         : null;
+      const incomingLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
+        : null;
+      const currentSelectedRuntimeControlled = isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle);
+      const incomingRuntimeControlled = isRuntimeControlledConversationLifecycle(
+        event.lifecycle ?? incomingLeaf?.lifecycle,
+      );
       const currentSelectedActive = Boolean(
         currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
@@ -944,7 +979,9 @@ export function App() {
       const followPending = followState.mode === 'auto'
         && Boolean(currentSelectedKey)
         && !currentSelectedActive
-        && incomingActive;
+        && incomingActive
+        && currentSelectedRuntimeControlled
+        && incomingRuntimeControlled;
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
@@ -977,7 +1014,9 @@ export function App() {
         followMode: followState.mode,
         currentSelectedActive,
         incomingActive,
-      }));
+        currentSelectedRuntimeControlled,
+        incomingRuntimeControlled,
+      }), incomingRuntimeControlled);
     })
       .then((dispose) => {
         if (active) {
@@ -992,7 +1031,16 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
-      queueConversationRunAndSidebarRefresh(conversationSessionKeyFromParts(event), 0);
+      const sessionKey = conversationSessionKeyFromParts(event);
+      const currentRun = conversationRunRef.current;
+      const eventLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
+        : null;
+      queueConversationRunAndSidebarRefresh(
+        sessionKey,
+        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        0,
+      );
     })
       .then((dispose) => {
         if (active) {

@@ -17,6 +17,7 @@ import { ConversationSessionSwitcher } from '@/components/conversation/Conversat
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
+import { isRuntimeControlledConversationLifecycle } from '@/lib/conversation-session-follow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
 function activeSessionKey(session: {
@@ -298,7 +299,8 @@ export function ConversationRunPage({
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;
-    return activeSessionKeys.includes(leafKey(leaf)) || isRestorableRuntimeLeaf(leaf);
+    return isRuntimeControlledConversationLifecycle(leaf.lifecycle)
+      && (activeSessionKeys.includes(leafKey(leaf)) || isRestorableRuntimeLeaf(leaf));
   }, [activeSessionKeys]);
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
@@ -310,6 +312,12 @@ export function ConversationRunPage({
     }
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
+    if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
+      pendingAutoFollowRestoreSessionKeyRef.current = null;
+      manualAutoFollowDisabledRef.current = true;
+      onAutoFollowChange?.(false);
+      return;
+    }
     const restorableSelected = isAutoFollowRestorableLeaf(selectedLeaf);
     if (selectedKey && restoreKey === selectedKey && restorableSelected) {
       pendingAutoFollowRestoreSessionKeyRef.current = null;

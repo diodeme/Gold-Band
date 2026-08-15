@@ -35,7 +35,33 @@ describe('conversation session follow helpers', () => {
       followMode: 'auto',
       currentSelectedActive: false,
       incomingActive: true,
+      currentSelectedRuntimeControlled: true,
+      incomingRuntimeControlled: true,
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('does not auto-follow after the selected session enters a manual follow-up turn', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      incomingSessionKey: 'round-001/clean/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: false,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: false,
+      incomingRuntimeControlled: true,
+    })).toBe('round-001/dev/attempt-001');
+  });
+
+  it('does not auto-follow into a non-runtime-controlled session', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      incomingSessionKey: 'round-001/clean/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: false,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: true,
+      incomingRuntimeControlled: false,
+    })).toBe('round-001/dev/attempt-001');
   });
 
   it('keeps the current active session while auto-follow is enabled', () => {
@@ -45,6 +71,8 @@ describe('conversation session follow helpers', () => {
       followMode: 'auto',
       currentSelectedActive: true,
       incomingActive: true,
+      currentSelectedRuntimeControlled: true,
+      incomingRuntimeControlled: true,
     })).toBe('round-001/node-a/attempt-001');
   });
 
@@ -75,9 +103,10 @@ describe('conversation session follow helpers', () => {
   });
 
   it('enables auto-follow only for a running session at the bottom', () => {
-    expect(shouldEnableConversationAutoFollow(true, true)).toBe(true);
-    expect(shouldEnableConversationAutoFollow(true, false)).toBe(false);
-    expect(shouldEnableConversationAutoFollow(false, true)).toBe(false);
+    expect(shouldEnableConversationAutoFollow(true, true, true)).toBe(true);
+    expect(shouldEnableConversationAutoFollow(true, false, true)).toBe(false);
+    expect(shouldEnableConversationAutoFollow(false, true, true)).toBe(false);
+    expect(shouldEnableConversationAutoFollow(true, true, false)).toBe(false);
   });
 
   it('keeps the manual selection when a queued live refresh runs after auto-follow is disabled', () => {
@@ -93,7 +122,48 @@ describe('conversation session follow helpers', () => {
       followMode: 'auto',
       pendingEventSessionKey: 'round-001/node-b/attempt-001',
       currentSelectedKey: 'round-001/node-a/attempt-001',
+      currentSelectedRuntimeControlled: true,
+      pendingEventRuntimeControlled: true,
     })).toBe('round-001/node-b/attempt-001');
+  });
+
+  it('keeps the selected session during a queued refresh after a manual follow-up completes', () => {
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/clean/attempt-001',
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      currentSelectedRuntimeControlled: false,
+      pendingEventRuntimeControlled: true,
+    })).toBe('round-001/dev/attempt-001');
+  });
+
+  it('does not switch a queued refresh into a non-runtime-controlled session', () => {
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/clean/attempt-001',
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      currentSelectedRuntimeControlled: true,
+      pendingEventRuntimeControlled: false,
+    })).toBe('round-001/dev/attempt-001');
+  });
+
+  it('revalidates runtime control before committing an in-flight auto-follow refresh', () => {
+    const requestedKey = resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/clean/attempt-001',
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      currentSelectedRuntimeControlled: true,
+      pendingEventRuntimeControlled: true,
+    });
+    expect(requestedKey).toBe('round-001/clean/attempt-001');
+
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: requestedKey,
+      currentSelectedKey: 'round-001/dev/attempt-001',
+      currentSelectedRuntimeControlled: false,
+      pendingEventRuntimeControlled: true,
+    })).toBe('round-001/dev/attempt-001');
   });
 
   it('refreshes an outer AI-DYNAMIC event with the selected internal session key', () => {
@@ -101,6 +171,8 @@ describe('conversation session follow helpers', () => {
       followMode: 'auto',
       pendingEventSessionKey: 'round-001/ai-dynamic/attempt-001',
       currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+      currentSelectedRuntimeControlled: true,
+      pendingEventRuntimeControlled: true,
     })).toBe('round-001/ai-dynamic/attempt-001/bootstrap/attempt-001');
   });
 

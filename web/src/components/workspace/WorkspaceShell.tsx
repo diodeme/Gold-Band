@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { Layout, LayoutChangedMeta, PanelImperativeHandle, PanelSize } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
-import { ConversationSidebar } from '../conversation/ConversationSidebar';
+import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
@@ -65,6 +65,8 @@ interface WorkspaceShellProps {
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
@@ -208,7 +210,9 @@ function WorkspaceShellLayout({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
-  activeWorkspaceId,
+  activeWorkspaceId: _activeWorkspaceId,
+  defaultExpandedWorkspaceId,
+  workspaceRevealRequest,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -502,7 +506,8 @@ function WorkspaceShellLayout({
             <ConversationSidebar
               vm={vm}
               active={active}
-              activeWorkspaceId={activeWorkspaceId}
+              defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+              workspaceRevealRequest={workspaceRevealRequest}
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}

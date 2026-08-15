@@ -96,7 +96,10 @@ import {
 } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
-import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
+import {
+  prioritizeConversationSidebarWorkspace,
+  type ConversationSidebarWorkspaceRevealRequest,
+} from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
 import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
 import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
@@ -399,6 +402,8 @@ export function App() {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);
   const [draftConversationWorkspaceId, setDraftConversationWorkspaceId] = useState<string | null>(null);
+  const workspaceRevealRequestIdRef = useRef(0);
+  const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<ConversationSidebarWorkspaceRevealRequest | null>(null);
 
   const applyConversationSidebar = useCallback((sidebar: ConversationSidebarVm, projectId?: string | null) => {
     const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? sidebar.lastActiveWorkspaceId ?? null;
@@ -460,6 +465,8 @@ export function App() {
   const rememberConversationWorkspace = useCallback((projectId: string) => {
     activeWorkspaceIdRef.current = projectId;
     setActiveWorkspaceId(projectId);
+    workspaceRevealRequestIdRef.current += 1;
+    setWorkspaceRevealRequest({ projectId, requestId: workspaceRevealRequestIdRef.current });
     setConversationSidebar((prev) => {
       const next = prioritizeConversationSidebarWorkspace(prev, projectId);
       conversationSidebarRef.current = next;
@@ -472,9 +479,12 @@ export function App() {
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
     ?? activeWorkspace
     ?? conversationSidebar.workspaces[0];
-  const sidebarFocusWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+  const conversationWorkspaceContextId = presentedConversationPage.kind === 'conversation-run'
     ? presentedConversationPage.projectId
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
+  const defaultExpandedWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+    ? presentedConversationPage.projectId
+    : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
@@ -1785,7 +1795,9 @@ export function App() {
       active={primaryModule}
       conversationPage={presentedConversationPage}
       conversationSidebar={conversationSidebar}
-      activeWorkspaceId={sidebarFocusWorkspaceId}
+      activeWorkspaceId={conversationWorkspaceContextId}
+      defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+      workspaceRevealRequest={workspaceRevealRequest}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
         && conversationRun?.projectId === presentedConversationPage.projectId

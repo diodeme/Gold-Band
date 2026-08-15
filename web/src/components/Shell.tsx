@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
+import type { ConversationSidebarWorkspaceRevealRequest } from '@/components/conversation/ConversationSidebar';
 import type { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
 import { AppTitleBar } from './AppTitleBar';
 import { cn } from '@/lib/utils';
@@ -40,12 +41,14 @@ interface ShellProps {
   onConversationAddWorkspace?: () => void;
   onConversationRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
   if (uiMode === 'conversation') {
     return (
       <WorkspaceShell
@@ -72,6 +75,8 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         onAddWorkspace={onConversationAddWorkspace}
         onRemoveWorkspace={onConversationRemoveWorkspace}
         activeWorkspaceId={activeWorkspaceId}
+        defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+        workspaceRevealRequest={workspaceRevealRequest}
         conversationTaskUuid={conversationTaskUuid}
         conversationWorkspaceStore={conversationWorkspaceStore}
       >

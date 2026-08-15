@@ -4254,7 +4254,7 @@ export function ACPSessionHeader({
   return (
     <div className={cn(
       "shrink-0 border-b border-border/60 bg-content-header px-5",
-      directSessionHeader ? "py-0.5" : "pb-1 pt-0",
+      directSessionHeader ? "py-1.5" : "pb-1 pt-0",
     )}>
       <div className={cn(
         "flex min-w-0 items-center",

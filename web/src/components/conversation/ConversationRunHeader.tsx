@@ -39,7 +39,7 @@ export function ConversationRunHeader({
   const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
-    <div className="shrink-0 bg-content-header px-5 py-2">
+    <div className="shrink-0 bg-content-header px-5 py-0.5">
       <div className="flex min-w-0 items-center gap-3">
         {run.scheduledTaskId ? (
           <Tooltip>

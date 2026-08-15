@@ -616,6 +616,30 @@
   stroke: transparent;
 }
 
+.workflow-graph .workflow-terminal-node.workflow-node-selected {
+  border-radius: 9999px;
+}
+
+.workflow-graph .react-flow__edgelabel-renderer {
+  z-index: 20;
+}
+
+.workflow-edge-label {
+  isolation: isolate;
+  background-color: var(--background);
+}
+
+.workflow-graph .workflow-handle-success,
+.workflow-graph .workflow-handle-failure {
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+
+.workflow-graph .workflow-handle-success:hover,
+.workflow-graph .workflow-handle-failure:hover {
+  box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 18%, transparent);
+  transform: translate(50%, -50%) scale(1.2);
+}
+
 .workflow-edge-branch .react-flow__edge-path,
 .workflow-edge-branch.react-flow__edge-path {
   opacity: 0.86;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authoringWorkflowGraphSignature } from '@/components/WorkflowEditor';
+import { authoringWorkflowGraphSignature, authoringWorkflowTopologySignature } from '@/components/WorkflowEditor';
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
 
 function worker(id: string, patch: Partial<WorkflowWorkerNodeDsl> = {}): WorkflowWorkerNodeDsl {
@@ -63,5 +63,7 @@ describe('authoringWorkflowGraphSignature', () => {
 
     expect(authoringWorkflowGraphSignature(providerChanged)).not.toBe(authoringWorkflowGraphSignature(before));
     expect(authoringWorkflowGraphSignature(edgeChanged)).not.toBe(authoringWorkflowGraphSignature(before));
+    expect(authoringWorkflowTopologySignature(providerChanged)).toBe(authoringWorkflowTopologySignature(before));
+    expect(authoringWorkflowTopologySignature(edgeChanged)).not.toBe(authoringWorkflowTopologySignature(before));
   });
 });

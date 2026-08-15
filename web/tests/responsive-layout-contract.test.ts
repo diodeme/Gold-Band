@@ -36,6 +36,10 @@ const workflowEditorSource = readFileSync(
   fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)),
   'utf8',
 );
+const runModeManagementSource = readFileSync(
+  fileURLToPath(new URL('../src/pages/RunModeManagementPage.tsx', import.meta.url)),
+  'utf8',
+);
 const acpChatSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
   'utf8',
@@ -123,8 +127,19 @@ describe('responsive desktop layout contracts', () => {
     expect(runDetailSource).toContain('@container/run-detail');
     expect(runDetailSource).toContain('@4xl/run-detail:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]');
     expect(workflowEditorSource).toContain('@container/workflow-editor');
-    expect(workflowEditorSource).toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
+    expect(workflowEditorSource).toContain("data-workflow-editor-layout={isCompact ? 'compact' : 'split'}");
+    expect(workflowEditorSource).toContain('<ResizablePanelGroup orientation="horizontal"');
+    expect(workflowEditorSource).toContain("compactPane === 'canvas' ? canvasSurface : inspectorSurface");
+    expect(workflowEditorSource).not.toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
     expect(workflowEditorSource).toContain('max-w-[calc(100%-1.5rem)] flex-wrap');
+  });
+
+  it('fills the remaining workflow management viewport and keeps inspector scrolling internal', () => {
+    expect(runModeManagementSource).toContain("mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6'");
+    expect(runModeManagementSource).toContain('className="min-h-0 min-w-0 flex-1 overflow-hidden"');
+    expect(runModeManagementSource).toContain('className="h-full min-h-0"');
+    expect(workflowEditorSource).toContain('<ScrollArea className="size-full">');
+    expect(workflowEditorSource).toContain("cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)");
   });
 
   it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {

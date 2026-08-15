@@ -892,8 +892,8 @@ export function RunModeManagementPage({
         title={<span className="text-title">{t('runMode.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-6 pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className={cn('min-h-0 flex-1 px-6 pt-4', mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6')}>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <RunModeTabsToolbar
             mode={mode}
             onModeChange={changeMode}
@@ -1216,8 +1216,9 @@ export function RunModeManagementPage({
             </section>
           </div>
         ) : (
-          <div className="space-y-4">
-            <TemplateActionRow
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="shrink-0">
+              <TemplateActionRow
               label={t('taskList.create.workflowTemplate')}
               picker={(
                 <Popover open={wfTemplatePickerOpen} onOpenChange={setWfTemplatePickerOpen}>
@@ -1289,7 +1290,8 @@ export function RunModeManagementPage({
               onNameChange={setWfSaveName}
               saveAsLabel={t('taskList.create.saveAsWorkflow')}
               onSaveAs={() => void saveWfAsNew()}
-            />
+              />
+            </div>
 
             {wfNotice ? (
               <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600">{wfNotice}</div>
@@ -1299,9 +1301,10 @@ export function RunModeManagementPage({
             ) : null}
 
             {/* Embedded workflow editor */}
-            <div className="min-h-[480px] min-w-0">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {wfEditWorkflow ? (
                   <WorkflowEditor
+                    className="h-full min-h-0"
                     value={wfEditWorkflow}
                     agentRegistry={agentRegistry}
                     profiles={profiles}
@@ -1318,7 +1321,7 @@ export function RunModeManagementPage({
                   />
               ) : null}
               {!wfEditWorkflow ? (
-                <div className="flex h-[480px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+                <div className="flex size-full min-h-0 items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
                   {workflowTemplateList.length > 0
                     ? t('taskList.create.newWorkflowTemplate')
                     : t('taskList.create.noWorkflowTemplate')}

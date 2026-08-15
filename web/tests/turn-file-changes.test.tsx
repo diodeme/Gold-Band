@@ -150,6 +150,47 @@ afterEach(() => {
 });
 
 describe('turn file changes card', () => {
+  it('uses the shared assistant content rail for compaction and file-change timeline items', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const compactionEvent: AcpUiEventVm = {
+      id: 'compaction-1',
+      seq: 3,
+      timestamp: '2026-08-04T01:00:00Z',
+      startedAt: '2026-08-04T01:00:00Z',
+      endedAt: '2026-08-04T01:00:01Z',
+      kind: 'contextCompaction',
+      status: 'completed',
+    };
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider>
+            <TooltipProvider>
+              <ACPMessageList
+                timeline={[compactionEvent, pointerEvent()]}
+                sessionStatus="completed"
+                sending={false}
+                branchLocator={locator}
+              />
+            </TooltipProvider>
+          </RightWorkspaceProvider>,
+        );
+      });
+
+      const compaction = container.querySelector<HTMLElement>('[role="status"]');
+      const fileCard = container.querySelector<HTMLElement>('[data-turn-file-changes-card]');
+      expect(compaction?.parentElement?.className).toContain('max-w-[82%]');
+      expect(fileCard?.parentElement?.className).toContain('max-w-[82%]');
+      expect(compaction?.className).not.toContain('pl-10');
+      expect(fileCard?.className).not.toContain('ml-10');
+      expect(fileCard?.className).not.toContain('calc(100%');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('renders a prefetched change set on the first committed frame without a loading row', async () => {
     const prefetched = changeSet('prefetched');
     getTurnFileChangeSetMock.mockResolvedValue(prefetched);

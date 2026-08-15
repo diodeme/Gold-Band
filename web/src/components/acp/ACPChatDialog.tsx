@@ -4610,9 +4610,21 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
   if (event.kind === "contextCompaction")
-    return <ContextCompactionRow event={event} />;
+    return nested ? (
+      <ContextCompactionRow event={event} />
+    ) : (
+      <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}>
+        <ContextCompactionRow event={event} />
+      </AssistantTimelineRow>
+    );
   if (event.kind === "fileChangeSet")
-    return <TurnFileChangesCard event={event} locator={branchLocator} />;
+    return nested ? (
+      <TurnFileChangesCard event={event} locator={branchLocator} />
+    ) : (
+      <AssistantTimelineRow timestamp={event.timestamp ?? event.startedAt}>
+        <TurnFileChangesCard event={event} locator={branchLocator} />
+      </AssistantTimelineRow>
+    );
   if (isActivityBatch(event))
     return (
       <AcpActivityBatchRow
@@ -4667,9 +4679,9 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
       role="status"
       aria-live="polite"
       aria-atomic="true"
-      className="min-w-0 py-1 pl-10 pr-2"
+      className="min-w-0 py-1"
     >
-      <div className="max-w-[82%] border-l-2 border-primary/25 py-1 pl-3">
+      <div className="w-full border-l-2 border-primary/25 py-1 pl-3">
         <div className="flex min-w-0 items-center gap-2 text-sm">
           <span
             aria-hidden="true"

@@ -202,8 +202,22 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: { toolCallId: 'browser-tool-052', title: '更新工作区文件', status: 'completed' },
       },
       {
-        id: 'browser-file-change-set-052',
+        id: 'browser-context-compaction-052',
         seq: 3,
+        timestamp: '2026-08-04 10:01',
+        startedAt: '2026-08-04 10:01:00',
+        endedAt: '2026-08-04 10:01:02',
+        kind: 'contextCompaction',
+        status: 'completed',
+        raw: {
+          contextCompaction: {
+            usageBefore: { used: 128_000, size: 258_400 },
+          },
+        },
+      },
+      {
+        id: 'browser-file-change-set-052',
+        seq: 4,
         timestamp: '2026-08-04 10:01',
         kind: 'fileChangeSet',
         status: 'finalized',
@@ -214,7 +228,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
       {
         id: 'browser-agent-message-052',
-        seq: 4,
+        seq: 5,
         timestamp: '2026-08-04 10:01',
         kind: 'textDelta',
         content: '配置与说明已更新。',
@@ -223,10 +237,10 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
     ],
     eventPage: {
-      loadedCount: 4,
-      total: 4,
+      loadedCount: 5,
+      total: 5,
       oldestSeq: 1,
-      newestSeq: 4,
+      newestSeq: 5,
       hasOlder: false,
       hasNewer: false,
       oldestCursor: null,

@@ -161,7 +161,7 @@ export function AcpConversationComposer({
           isLoading={sending}
           maxHeight={320}
           className={cn(
-            'bg-card !shadow-none transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
+            'bg-card !shadow-none transition-colors',
             attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
             integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}

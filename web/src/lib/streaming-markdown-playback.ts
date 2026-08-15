@@ -401,7 +401,11 @@ export function createStreamingMarkdownPlayback(
       if (!streaming || reducedMotion) {
         settleAll(reducedMotion ? 'reduced-motion' : 'stream-finished', true);
       } else {
-        reconcile(new Set(), true);
+        // A controller created in static mode already presented its canonical
+        // content in full. Re-entering an active session must establish the
+        // newly generated Streamdown tokens as the visible baseline instead
+        // of replaying that history from character zero.
+        settleAll('stream-resumed-baseline', true);
       }
     },
     dispose() {

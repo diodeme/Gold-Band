@@ -139,6 +139,36 @@ describe('streaming Markdown render budget', () => {
     }
   });
 
+  it('settles a static baseline before animating only content appended after re-entry', async () => {
+    const frames = installFrameHarness();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const baseline = '切换会话前已经完整展示';
+
+    try {
+      await act(async () => root.render(<Markdown>{baseline}</Markdown>));
+      expect(container.textContent).toBe(baseline);
+      expect(container.querySelector('[data-sd-animate]')).toBeNull();
+
+      await act(async () => root.render(<Markdown streaming>{baseline}</Markdown>));
+      await act(async () => Promise.resolve());
+      const baselineTokenCount = tokenStates(container).length;
+      expect(baselineTokenCount).toBeGreaterThan(0);
+      expect(tokenStates(container).every((state) => state === 'settled')).toBe(true);
+      expect(frames.pending()).toBe(0);
+
+      await act(async () => root.render(<Markdown streaming>{`${baseline}，只播放新内容`}</Markdown>));
+      await act(async () => Promise.resolve());
+      const appendedStates = tokenStates(container);
+      expect(appendedStates.slice(0, baselineTokenCount).every((state) => state === 'settled')).toBe(true);
+      expect(appendedStates.slice(baselineTokenCount).every((state) => state === 'pending')).toBe(true);
+      expect(frames.pending()).toBe(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('reuses stable Streamdown block indexes and scans only the replaced tail tokens', async () => {
     installFrameHarness();
     const container = document.createElement('div');

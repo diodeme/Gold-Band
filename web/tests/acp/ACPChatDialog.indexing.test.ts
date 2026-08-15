@@ -6,8 +6,10 @@ import {
   latestLiveSessionTimingFromEvents,
   limitAcpEvents,
   mergeAcpEvents,
+  mergeOptimisticSession,
   nextLiveStreamingMarkdownTarget,
   objectiveActivityDescriptor,
+  optimisticUserEvent,
   planAcpStopResponse,
   queryBlocksFromTool,
   restoreAcpLoadedEvents,
@@ -17,7 +19,7 @@ import {
   timelineEventKey,
   timelineRenderKey,
 } from '../../src/components/acp/ACPChatDialog';
-import type { AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
+import type { AcpSessionVm, AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
   return {
@@ -360,5 +362,59 @@ describe('ACPChatDialog finite branch event cache', () => {
     storeAcpLoadedEvents(oldKey, [makeEvent('old-event', 'deleted task content')], 360);
     expect(restoreAcpLoadedEvents(newKey, [], 360)).toEqual([]);
     expect(restoreAcpLoadedEvents(oldKey, [], 360)).toHaveLength(1);
+  });
+});
+
+describe('ACPChatDialog optimistic prompt placement', () => {
+  it('keeps a pending prompt at its captured canonical boundary when a response arrives first', () => {
+    const previous = event({
+      id: 'previous-answer',
+      seq: 10,
+      timestamp: '10Z',
+      kind: 'textDelta',
+      content: 'previous turn',
+    });
+    const response = event({
+      id: 'current-answer',
+      seq: 12,
+      timestamp: '12Z',
+      kind: 'textDelta',
+      content: 'current turn response',
+    });
+    const optimistic = optimisticUserEvent('current prompt', 'prompt-1', [], 10);
+    const session = { events: [previous, response] } as AcpSessionVm;
+
+    expect(mergeOptimisticSession(session, [optimistic])?.events.map((item) => item.id)).toEqual([
+      'previous-answer',
+      optimistic.id,
+      'current-answer',
+    ]);
+  });
+
+  it('replaces the anchored optimistic prompt with its canonical promptId without moving the turn', () => {
+    const optimistic = optimisticUserEvent('same prompt text', 'prompt-1', [], 10);
+    const canonical = event({
+      id: 'canonical-prompt',
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'userTextDelta',
+      content: 'same prompt text',
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-1' },
+    });
+    const response = event({
+      id: 'current-answer',
+      seq: 12,
+      timestamp: '12Z',
+      kind: 'textDelta',
+      content: 'current turn response',
+    });
+    const session = { events: [canonical, response] } as AcpSessionVm;
+
+    const merged = mergeOptimisticSession(session, [optimistic]);
+    expect(merged).toBe(session);
+    expect(merged?.events.map((item) => item.id)).toEqual([
+      'canonical-prompt',
+      'current-answer',
+    ]);
   });
 });

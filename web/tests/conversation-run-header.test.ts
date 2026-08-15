@@ -59,5 +59,6 @@ describe('ConversationRunHeader', () => {
     expect(html).not.toContain('sonnet-hidden');
     expect(html).not.toContain('bypass-hidden');
     expect(html).not.toContain('title="修改标题"');
+    expect(html).toContain('px-5 py-0.5');
   });
 });

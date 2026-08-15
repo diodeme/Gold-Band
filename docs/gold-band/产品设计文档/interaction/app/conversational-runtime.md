@@ -400,6 +400,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 单行布局：Agent icon + Agent 名称 + 可复制 sessionId + 操作按钮；权限模式属于可变运行配置，不在会话身份栏中展示
 - Agent 名称与 sessionId 必须放在共享的文本基线容器中，并使用一致的行高节奏；外层图标与操作区仍按控件中心对齐，禁止通过单独的 top/margin 像素偏移补偿字号差异
 - Direct 组合页头通过留白区分“会话标题”和“Agent 身份”两组信息：标题末尾保留约 12px 组间距，Agent 名称与 sessionId 保留约 6px 组内距；长 sessionId 默认显示前 8 位与后 4 位，中间使用省略号，Tooltip 与复制操作继续使用完整值
+- Direct 单行组合页头在紧凑基线之上将上下留白提升到 `py-1.5`；Workflow/AUTO 双行页头第一行保持 `py-0.5`，第二行不增加顶部留白并使用 `pb-1`。标题栏是固定密度控件，正常与窄窗口消费同一 Tailwind spacing scale，不针对截图宽度增加断点或任意像素值
 - 会话信息栏与运行标题栏保持同一套紧凑节奏：缩小上下 padding、降低主标题字号、压低按钮高度，减少双层头部对内容区的挤压
 - 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
 - Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头

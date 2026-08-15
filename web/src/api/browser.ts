@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -179,8 +179,23 @@ function browserCompletedConversationRun(): ConversationRunVm {
         seq: 1,
         timestamp: '2026-08-04 10:00',
         kind: 'userTextDelta',
-        content: '请更新工作区配置并补充说明。',
-        raw: { promptId: 'browser-prompt-052' },
+        content: '> 这是用户自己输入的 Markdown 引用。\n\n请更新工作区配置并补充说明。',
+        raw: {
+          promptId: 'browser-prompt-052',
+          quotes: Array.from({ length: 8 }, (_, index) => ({
+            id: `browser-quote-052-${index + 1}`,
+            sourceMessageKey: `textDelta-browser-agent-message-${index + 1}`,
+            text: index === 0
+              ? `请优先检查工作区配置中的权限边界。\n${'这是一段用于验证长引用内部换行与滚动边界的内容。'.repeat(16)}`
+              : `第 ${index + 1} 条引用：补充核对配置项、权限范围和对应说明。`,
+          })),
+          attachments: [{
+            name: 'browser-zoom-fixture.png',
+            path: 'task-inputs/browser-zoom-fixture.png',
+            type: 'image/png',
+            size: 68,
+          }],
+        },
       },
       {
         id: 'browser-tool-call-052',
@@ -278,10 +293,9 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'completed',
-        active: false,
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
         stopping: false,
-        terminal: true,
       },
       displayStatus: 'success',
       composer: {
@@ -328,11 +342,9 @@ function browserQueuedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'running',
-        phase: 'running',
-        active: true,
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
         stopping: false,
-        terminal: false,
       },
       displayStatus: 'running',
       composer: {
@@ -356,6 +368,7 @@ function browserQueuedConversationRun(): ConversationRunVm {
             '最后整理本轮变更摘要。',
           ][index],
           attachmentCount: index === 0 ? 1 : 0,
+          quoteCount: index === 1 ? 2 : 0,
           createdAt: `2026-08-07T08:00:0${index}Z`,
         })),
       },
@@ -598,6 +611,8 @@ export const browserApi: RuntimeApi = {
       oldPath: null,
       kind: 'modified' as const,
       binary: false,
+      addedLines: 24,
+      deletedLines: 6,
     }])).values());
     return Promise.resolve({
       selectedOids: [...query.selectedOids],
@@ -814,7 +829,7 @@ export const browserApi: RuntimeApi = {
       additions: 320,
       deletions: 18,
       changedFiles: 7,
-      files: [{ path: 'src/git/source_control.rs', additions: 240, deletions: 8 }],
+      files: [{ path: 'src/git/source_control.rs', oldPath: null, kind: 'modified', additions: 240, deletions: 8 }],
       latestReviews: [],
     };
   },
@@ -1094,6 +1109,9 @@ export const browserApi: RuntimeApi = {
   continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
   },
+  recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision) {
+    return Promise.reject(new Error('Browser preview does not execute workflow recovery.'));
+  },
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
   },
@@ -1196,7 +1214,7 @@ export const browserApi: RuntimeApi = {
   subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
-  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
   updateConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _content, _outerNodeId, _outerAttemptId) {
@@ -1268,9 +1286,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, useLocalClaude, verboseLogging });
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {
@@ -1291,8 +1309,17 @@ export const browserApi: RuntimeApi = {
         recentAvatars,
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [input.kind]: {
+          image: { source: 'user' as const, assetId: id },
+          shape: { source: 'custom' as const, value: input.shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   selectRecentDesktopAvatar(kind, avatarId) {
     const current = browserPreviewState.getPreferences();
@@ -1307,17 +1334,33 @@ export const browserApi: RuntimeApi = {
         recentAvatars: [selected, ...profile.recentAvatars.filter((avatar) => avatar.id !== avatarId)],
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'user' as const, assetId: avatarId } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   saveDesktopAvatarShape(kind, shape) {
     const current = browserPreviewState.getPreferences();
+    const effectiveShape = shape ?? 'circle';
     const avatars = {
       ...current.avatars,
-      [kind]: { ...current.avatars[kind], shape },
+      [kind]: { ...current.avatars[kind], shape: effectiveShape },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: {
+          ...current.personalization.avatars[kind],
+          shape: shape === null ? { source: 'theme' as const } : { source: 'custom' as const, value: shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   clearDesktopAvatar(kind) {
     const current = browserPreviewState.getPreferences();
@@ -1325,8 +1368,14 @@ export const browserApi: RuntimeApi = {
       ...current.avatars,
       [kind]: { ...current.avatars[kind], selectedAvatarId: null },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'theme' as const } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();

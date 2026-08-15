@@ -81,9 +81,8 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
 }
 
 export function FileWorkspaceSplitLayout({ layout, hasFile, selectedFileKey, content, tree, treeWidth, onTreeWidthChange }: { layout: FileWorkspaceLayoutVm; hasFile: boolean; selectedFileKey: string | null; content: React.ReactNode; tree: React.ReactNode; treeWidth: number | null; onTreeWidthChange: (width: number) => void }) {
-  const { t } = useTranslation(); const workspace = useRightWorkspace(); const { ref, responsiveState, currentWidth } = useWorkspaceResponsiveState(layout.splitMinWidth);
-  const requested = useRef(false); const [compactView, setCompactView] = useState<'content' | 'tree'>(hasFile ? 'content' : 'tree');
-  useEffect(() => { if (requested.current) return; requested.current = true; if (workspace.width < layout.preferredWidth) workspace.setWidth(layout.preferredWidth); }, [layout.preferredWidth, workspace.setWidth, workspace.width]);
+  const { t } = useTranslation(); const { ref, responsiveState, currentWidth } = useWorkspaceResponsiveState(layout.splitMinWidth);
+  const [compactView, setCompactView] = useState<'content' | 'tree'>(hasFile ? 'content' : 'tree');
   useEffect(() => { if (selectedFileKey) setCompactView('content'); }, [selectedFileKey]);
   const width = Math.min(layout.treeMaxWidth, Math.max(layout.treeMinWidth, treeWidth ?? layout.treeDefaultWidth)); const percent = Math.min(60, Math.max(20, responsiveState.widthAtTransition > 0 ? width / responsiveState.widthAtTransition * 100 : 38));
   return <div ref={ref} className="flex min-h-0 flex-1 flex-col" data-file-workspace-panel="true">{!responsiveState.split ? <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/50 px-2"><Button size="sm" variant={compactView === 'content' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('content')} disabled={!hasFile}>{t('workspace.filesPanel.file')}</Button><Button size="sm" variant={compactView === 'tree' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('tree')}>{t('workspace.filesPanel.directory')}</Button></div> : null}<div className="min-h-0 flex-1">{responsiveState.split ? <ResizablePanelGroup orientation="horizontal" className="h-full" onLayoutChanged={(panelLayout, meta) => { if (!meta.isUserInteraction) return; const next = resolveWorkspacePanelWidthFromLayout({ layout: panelLayout, panelId: 'file-tree', groupWidth: currentWidth(), minWidth: layout.treeMinWidth, maxWidth: layout.treeMaxWidth }); if (next != null) onTreeWidthChange(next); }}><ResizablePanel id="file-content" defaultSize={`${100 - percent}%`} minSize={280} className="min-w-0">{content}</ResizablePanel><ResizableHandle className="bg-border/50" /><ResizablePanel id="file-tree" defaultSize={`${percent}%`} minSize={layout.treeMinWidth} maxSize={layout.treeMaxWidth} className="min-w-0">{tree}</ResizablePanel></ResizablePanelGroup> : compactView === 'content' && hasFile ? content : tree}</div></div>;
@@ -122,7 +121,7 @@ function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{resource.title}</p>
-          <p className="truncate text-[10px] text-muted-foreground" title={path}>{path}</p>
+          <p className="truncate text-ui-micro text-muted-foreground" title={path}>{path}</p>
         </div>
         {svgSource ? (
           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void (async () => {
@@ -133,10 +132,10 @@ function FileContent({ resource }: { resource: FileWorkspaceResource }) {
             {t('workspace.filesPanel.viewPreview')}
           </Button>
         ) : null}
-        {entry.saveState.kind === 'scheduled' ? <span className="text-[10px] text-muted-foreground">{t('workspace.filesPanel.pendingSave')}</span> : null}
-        {entry.saveState.kind === 'saving' ? <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />{t('workspace.filesPanel.saving')}</span> : null}
-        {entry.saveState.kind === 'clean' && entry.status === 'ready' && entry.snapshot?.kind === 'text' ? <span className="text-[10px] text-muted-foreground">{t('workspace.filesPanel.saved')}</span> : null}
-        {locationAdjusted ? <span className="text-[10px] text-amber-600 dark:text-amber-400">{t('workspace.filesPanel.locationAdjusted')}</span> : null}
+        {entry.saveState.kind === 'scheduled' ? <span className="text-ui-micro text-muted-foreground">{t('workspace.filesPanel.pendingSave')}</span> : null}
+        {entry.saveState.kind === 'saving' ? <span className="flex items-center gap-1 text-ui-micro text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />{t('workspace.filesPanel.saving')}</span> : null}
+        {entry.saveState.kind === 'clean' && entry.status === 'ready' && entry.snapshot?.kind === 'text' ? <span className="text-ui-micro text-muted-foreground">{t('workspace.filesPanel.saved')}</span> : null}
+        {locationAdjusted ? <span className="text-ui-micro text-amber-600 dark:text-amber-400">{t('workspace.filesPanel.locationAdjusted')}</span> : null}
       </header>
       {entry.status === 'idle' || entry.status === 'loading' ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>
@@ -366,7 +365,7 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
           style={{ width: snapshot.width * zoom, height: snapshot.height * zoom }}
         />
       </div>
-      <div className="shrink-0 border-t border-border/40 px-3 py-1 text-[10px] text-muted-foreground">{snapshot.width} × {snapshot.height} · {Math.round(zoom * 100)}%</div>
+      <div className="shrink-0 border-t border-border/40 px-3 py-1 text-ui-micro text-muted-foreground">{snapshot.width} × {snapshot.height} · {Math.round(zoom * 100)}%</div>
     </div>
   );
 }

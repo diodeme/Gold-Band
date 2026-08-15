@@ -65,6 +65,11 @@ describe('source control session store', () => {
     expect(i18n.t('errors.git.commit-review-patch-identity-failed', { lng: 'en' })).not.toContain('errors.git');
   });
 
+  it('labels history pagination without claiming an unknown total page count', () => {
+    expect(i18n.t('sourceControl.historyCurrentPage', { page: 3, lng: 'zh-CN' })).toBe('第 3 页');
+    expect(i18n.t('sourceControl.historyCurrentPage', { page: 3, lng: 'en' })).toBe('Page 3');
+  });
+
   it('restores repository data and view state after a Diff tab round trip without reloading', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
@@ -73,6 +78,8 @@ describe('source control session store', () => {
     store.setActiveTab('project-1', 'D:/repo', 'history');
     store.setRepositoryTab('project-1', 'D:/repo', 'stashes');
     store.setHistoryPage('project-1', 'D:/repo', 2);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'commit-list', 144);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'review-list', 288, 'review-1');
     store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], { additive: false, range: false });
 
     // Remounting SourceControlWorkspacePanel calls ensureLoaded again.
@@ -88,6 +95,25 @@ describe('source control session store', () => {
       canonicalWorkspacePath: 'D:/repo',
     });
     expect(store.session('project-1', 'D:/repo').selectedCommitOids.has('commit-1')).toBe(true);
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-1')).toEqual({
+      commitList: 144,
+      reviewList: 288,
+    });
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-2').reviewList).toBe(0);
+  });
+
+  it('resets only the commit-list scroll position when changing history pages', async () => {
+    const store = new SourceControlStore(fakeApi());
+    await store.ensureLoaded('project-1', 'D:/repo');
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'commit-list', 720);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'review-list', 240, 'review-1');
+
+    store.setHistoryPage('project-1', 'D:/repo', 1);
+
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-1')).toEqual({
+      commitList: 0,
+      reviewList: 240,
+    });
   });
 
   it('reloads only on explicit refresh and resets stale history navigation', async () => {
@@ -229,6 +255,29 @@ describe('source control session store', () => {
     await Promise.resolve();
 
     expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']);
+  });
+
+  it('publishes commit selection and its loading state before review I/O completes', async () => {
+    const review = deferred<GitCommitReviewVm>();
+    const api = fakeApi();
+    api.getCommitReview.mockReturnValueOnce(review.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], {
+      additive: false,
+      range: false,
+    });
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      focusedCommitOid: 'commit-1',
+      historyDetailLoading: true,
+      commitReview: null,
+    });
+    expect(store.session('project-1', 'D:/repo').selectedCommitOids.has('commit-1')).toBe(true);
+
+    review.resolve(commitReview(['commit-1']));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
   });
 
   it('reuses a commit review result for the same ordered selection and revision', async () => {

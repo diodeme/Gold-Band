@@ -1,0 +1,23 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v1.schema.json",
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "id": "builtin.tech-neutral",
+  "version": "1.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "技术中性",
+    "en": "Tech Neutral"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "fonts",
+    "avatars"
+  ]
+}

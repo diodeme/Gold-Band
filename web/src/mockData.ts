@@ -25,8 +25,9 @@ import type {
 } from './types';
 import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
 import { createDefaultAvatarPreferences } from './lib/avatar';
+import { defaultPersonalizationPreference } from './theme';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,
@@ -225,7 +226,13 @@ const errorBlockedGraph = {
 
 const errorBlockedLifecycle = {
   runtime: { status: 'paused', outcome: null, pauseReason: 'error-blocked', resumable: false, current: true, active: false, continuable: false, phase: 'paused' },
-  acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+  control: { mode: 'non-runtime-controlled' as const },
+  acp: {
+    sessionAvailability: 'restorable' as const,
+    liveTurnActivity: 'idle' as const,
+    latestTurnStatus: 'cancelled' as const,
+    stopping: false,
+  },
   displayStatus: 'paused',
   runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
   continueKind: null,
@@ -472,7 +479,6 @@ export const mockBootstrap: AppBootstrapVm = {
         defaultWidth: 440,
         maxWidth: 1440,
         file: {
-          preferredWidth: 760,
           splitMinWidth: 500,
           treeDefaultWidth: 280,
           treeMinWidth: 200,

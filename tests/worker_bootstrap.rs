@@ -4,8 +4,8 @@ use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, UserPromptRenderMode,
-    WorkerInvocation,
+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, SessionRef,
+    UserPromptRenderMode, WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
 use std::sync::{Arc, Barrier, Mutex};
@@ -523,6 +523,19 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             stream_path: None,
             runtime_error: None,
         })
+    }
+
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<gold_band::provider::AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
     }
 
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
@@ -1370,6 +1383,21 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     assert_eq!(dev_invocations.len(), 3);
     assert_eq!(dev_invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(
+        dev_invocations[1].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[1].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
+    assert!(
+        !dev_invocations[1]
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("用户已选择将当前节点重新交由 Runtime 控制")
+    );
+    assert_eq!(
         dev_invocations[1]
             .continue_ref
             .as_ref()
@@ -1378,6 +1406,14 @@ fn transition_continue_uses_latest_target_attempt_ref() {
         Some("dev-attempt-001"),
     );
     assert_eq!(dev_invocations[2].session_mode, SessionMode::Continue);
+    assert_eq!(
+        dev_invocations[2].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[2].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
     assert_eq!(
         dev_invocations[2]
             .continue_ref
@@ -1874,6 +1910,7 @@ fn error_blocked_run_is_not_continuable() {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        execution: Default::default(),
     };
 
     assert!(!is_run_continuable(&run));

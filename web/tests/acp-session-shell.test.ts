@@ -80,19 +80,51 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('loading');
   });
 
-  it('treats ready session payloads and live shells as available', () => {
+  it('does not let summary, established-session, or live-shell projections bypass the content request', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,
       baseSessionReady: true,
       hasLiveSessionShell: false,
       initialSessionLoading: true,
-    })).toBe('available');
+    })).toBe('loading');
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
       baseSessionReady: false,
       hasLiveSessionShell: true,
       initialSessionLoading: true,
+    })).toBe('loading');
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      hasEstablishedSessionShell: true,
+      initialSessionLoading: true,
+    })).toBe('loading');
+  });
+
+  it('treats content and shell projections as available after the content request succeeds', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
     })).toBe('available');
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: true,
+      initialSessionLoading: false,
+    })).toBe('available');
+  });
+
+  it('shows the request error state when the content request fails', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
+      initialSessionLoadFailed: true,
+    })).toBe('error');
   });
 
   it('reports missing only after loading has completed without a session', () => {

@@ -122,7 +122,8 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('aria-label="复制 session ID"');
     expect(html).toContain('items-baseline');
     expect(html).toContain('gap-1.5');
-    expect(html).toContain('text-[10px] leading-5');
+    expect(html).toContain('text-ui-micro leading-5');
+    expect(html).not.toContain('text-[10px] leading-5');
     expect(html).not.toContain('px-1 py-0.5 text-[10px]');
     expect(html).not.toContain('Bypass Permissions');
     expect(html).not.toContain('权限');

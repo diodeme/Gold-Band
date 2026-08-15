@@ -1,0 +1,23 @@
+{
+  "$schema": "../../theme-sdk/schema/theme-manifest-v1.schema.json",
+  "schemaVersion": 1,
+  "contractVersion": 1,
+  "id": "builtin.gold-band",
+  "version": "1.1.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "Gold Band",
+    "en": "Gold Band"
+  },
+  "author": "Gold Band",
+  "schemes": [
+    "light",
+    "dark"
+  ],
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "fonts",
+    "avatars"
+  ]
+}

@@ -139,7 +139,7 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                     </div>
                   </div>
                   {result.workspaceName ? (
-                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                    <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-micro text-muted-foreground">
                       {result.workspaceName}
                     </span>
                   ) : null}

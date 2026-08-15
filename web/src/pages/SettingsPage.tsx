@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ConcreteDesktopTheme, DesktopFontPreference, DesktopLanguage, DesktopThemeMode, DesktopThemePreference, LocalClaudeStatusVm, MetricsSettingsVm, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopFontPreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
 import {
-  applyFont,
-  applyTheme,
+  appearanceWithQuality,
+  appearanceWithTheme,
+  applyAppearance,
+  applyPersonalization,
   desktopFontOptions,
-  desktopThemeGroups,
+  desktopEditorFontOptions,
+  desktopTypography,
   fontFamilyForPreference,
-  desktopThemeOptions,
-  preferredThemeForMode,
-  rememberConcreteThemePreference,
-  resolveThemePreference,
-  type DesktopThemeOption,
+  editorFontFamilyForPreference,
+  getThemePackage,
+  resolveAppearance,
+  themePackageSummaries,
+  type DesktopFontOption,
   type ThemePreviewPalette,
 } from '../theme';
 import { AppCard } from '@/components/AppCard';
@@ -21,16 +24,49 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Check, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save } from 'lucide-react';
 import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
 
-type ThemeDrawerMode = 'all' | DesktopThemeMode;
+type TypographySection = 'ui' | 'editor';
+
+const typographyDisclosureSessionKey = 'gold-band:settings:typography-disclosure:v1';
+
+function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection) {
+  const preference = personalization.typography[kind].fontSize;
+  if (preference.source === 'custom') return preference.px;
+  const preset = resolveAppearance(appearance).scheme.typography;
+  return kind === 'ui' ? preset.uiSize : preset.editorSize;
+}
+
+function withTypographySize(
+  personalization: PersonalizationPreference,
+  kind: TypographySection,
+  fontSize: PersonalizationPreference['typography']['ui']['fontSize'],
+): PersonalizationPreference {
+  return {
+    ...personalization,
+    typography: {
+      ...personalization.typography,
+      [kind]: { ...personalization.typography[kind], fontSize },
+    },
+  };
+}
+
+function initialTypographyDisclosure(): Record<TypographySection, boolean> {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(typographyDisclosureSessionKey) ?? '{}') as Partial<Record<TypographySection, boolean>>;
+    return { ui: saved.ui ?? true, editor: saved.editor ?? false };
+  } catch {
+    return { ui: true, editor: false };
+  }
+}
 
 interface SettingsPageProps {
   preferences: PreferencesVm;
@@ -44,10 +80,10 @@ interface SettingsPageProps {
   clientVersion: string;
   busy: boolean;
   initialTab?: 'general' | 'appearance' | 'advanced';
-  onSave: (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => void;
+  onSave: (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => void;
   onSaveAvatar: (input: SaveDesktopAvatarInput) => Promise<AvatarPreferencesVm | undefined>;
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
-  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape) => Promise<AvatarPreferencesVm | undefined>;
+  onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
@@ -60,22 +96,25 @@ interface SettingsPageProps {
 
 export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   const { t } = useTranslation();
-  const [theme, setTheme] = useState(preferences.theme);
+  const [appearance, setAppearance] = useState(preferences.appearance);
+  const [personalization, setPersonalization] = useState(preferences.personalization);
   const [language, setLanguage] = useState(preferences.language);
-  const [font, setFont] = useState(preferences.font);
+  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
+  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
   const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
-  const [themeDrawerMode, setThemeDrawerMode] = useState<ThemeDrawerMode>('all');
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
-  const [preferenceVersion, setPreferenceVersion] = useState(0);
+  const [typographyDisclosure, setTypographyDisclosure] = useState(initialTypographyDisclosure);
   const [updaterOverrideUrl, setUpdaterOverrideUrl] = useState(updaterSettings.overrideUrl ?? '');
   const [editingUpdaterUrl, setEditingUpdaterUrl] = useState(false);
   const [activeTab, setActiveTab] = useState<'general' | 'appearance' | 'advanced'>(initialTab ?? 'general');
 
-  useEffect(() => setTheme(preferences.theme), [preferences.theme]);
+  useEffect(() => setAppearance(preferences.appearance), [preferences.appearance]);
+  useEffect(() => setPersonalization(preferences.personalization), [preferences.personalization]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
-  useEffect(() => setFont(preferences.font), [preferences.font]);
+  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
@@ -142,41 +181,60 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     void onViewAdvanced();
   }, [activeTab, onViewAdvanced]);
 
-  const chooseTheme = (value: DesktopThemePreference) => {
-    if (value !== 'system') rememberConcreteThemePreference(value);
-    setTheme(value);
-    onSave(value, language, font, useLocalClaude, verboseLogging);
+  const saveAppearance = (next: AppearancePreference) => {
+    setAppearance(next);
+    applyAppearance(next);
+    applyPersonalization(personalization);
+    onSave(next, personalization, language, useLocalClaude, verboseLogging);
   };
 
-  const chooseConcreteThemeFromSheet = (value: ConcreteDesktopTheme) => {
-    rememberConcreteThemePreference(value);
-    setPreferenceVersion((version) => version + 1);
-    if (theme === 'system') {
-      applyTheme('system');
-      setTheme('system');
-      onSave('system', language, font, useLocalClaude, verboseLogging);
-    } else {
-      setTheme(value);
-      onSave(value, language, font, useLocalClaude, verboseLogging);
-    }
+  const chooseThemeFromSheet = (themeId: string) => {
+    saveAppearance(appearanceWithTheme(appearance, themeId));
     setThemeSheetOpen(false);
   };
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    onSave(theme, value, font, useLocalClaude, verboseLogging);
+    onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
   };
 
   const chooseFont = (value: DesktopFontPreference) => {
-    setFont(value);
-    applyFont(value);
-    onSave(theme, language, value, useLocalClaude, verboseLogging);
+    const next = { ...personalization, typography: { ...personalization.typography, ui: { ...personalization.typography.ui, font: value === desktopFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
+    setPersonalization(next);
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
 
-  const openThemeDrawer = (mode: ThemeDrawerMode) => {
-    setThemeDrawerMode(mode);
-    setThemeSheetOpen(true);
+  const chooseEditorFont = (value: DesktopFontPreference) => {
+    const next = { ...personalization, typography: { ...personalization.typography, editor: { ...personalization.typography.editor, font: value === desktopEditorFontOptions[0].id ? { source: 'theme' as const } : { source: 'local' as const, family: value } } } };
+    setPersonalization(next);
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
+
+  const chooseTypographySize = (kind: 'ui' | 'editor', value: number) => {
+    const next = withTypographySize(personalization, kind, { source: 'custom', px: value });
+    setPersonalization(next);
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
+  };
+
+  const previewTypographySize = (kind: 'ui' | 'editor', value: number) => {
+    if (kind === 'ui') setUiFontSize(value); else setEditorFontSize(value);
+    applyPersonalization(withTypographySize(personalization, kind, { source: 'custom', px: value }));
+  };
+
+  const resetTypographySize = (kind: 'ui' | 'editor') => {
+    const next = withTypographySize(personalization, kind, { source: 'theme' });
+    setPersonalization(next);
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
+    applyPersonalization(next);
+    onSave(appearance, next, language, useLocalClaude, verboseLogging);
+  };
+
 
   const saveUpdaterOverride = async () => {
     const saved = await onSaveUpdaterSettings(updaterOverrideUrl);
@@ -193,19 +251,26 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   };
 
   const installedFontOptions = useMemo(() => {
-    const presetIds = new Set<string>(desktopFontOptions.map((option) => option.id));
+    const presetIds = new Set<string>([...desktopFontOptions, ...desktopEditorFontOptions].map((option) => option.id));
     return systemFonts.filter((family) => !presetIds.has(family));
   }, [systemFonts]);
 
-  const syncWithOs = theme === 'system';
-  const resolvedTheme = resolveThemePreference(theme);
-  const currentTheme = getThemeOption(resolvedTheme);
-  const preferredLightTheme = getThemeOption(preferredThemeForMode('light'));
-  const preferredDarkTheme = getThemeOption(preferredThemeForMode('dark'));
+  const setTypographySectionOpen = (section: TypographySection, open: boolean) => {
+    setTypographyDisclosure((current) => {
+      const next = { ...current, [section]: open };
+      window.sessionStorage.setItem(typographyDisclosureSessionKey, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const effectiveAppearance = resolveAppearance(appearance);
+  const currentTheme = getThemePackage(appearance.themeId);
+  const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
+    ?? themePackageSummaries[0];
   const defaultFontOption = desktopFontOptions[0];
-  const usingBuiltInFont = font === defaultFontOption.id;
-  const selectedLocalFont = usingBuiltInFont ? null : font;
-  void preferenceVersion;
+  const selectedLocalFont = personalization.typography.ui.font.source === 'local' ? personalization.typography.ui.font.family : null;
+  const defaultEditorFontOption = desktopEditorFontOptions[0];
+  const selectedLocalEditorFont = personalization.typography.editor.font.source === 'local' ? personalization.typography.editor.font.family : null;
 
   return (
     <Page flush className="flex flex-col">
@@ -248,123 +313,128 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         <TabsContent value="appearance" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.appearance')}>
-              <div className="flex flex-wrap items-start justify-between gap-4 py-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="text-sm font-semibold">{t('settings.syncWithOs')}</div>
-                  <div className="text-xs text-muted-foreground">{t('settings.syncWithOsDescription')}</div>
+              <div className="space-y-4">
+                <Sheet open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
+                  <CurrentThemeSummary
+                    summary={currentThemeSummary}
+                    scheme={effectiveAppearance.colorScheme}
+                  />
+                  <SheetContent
+                    className="overflow-hidden"
+                    resizeStorageKey="settings/theme-package-drawer"
+                    defaultSize={760}
+                    minSize={480}
+                    maxSize={980}
+                    closeLabel={t('common.close')}
+                  >
+                    <SheetHeader className="border-b px-5 py-4">
+                      <SheetTitle>{t('settings.themeDrawerTitle')}</SheetTitle>
+                    </SheetHeader>
+                    <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto p-5">
+                      <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
+                        {themePackageSummaries.map((summary) => (
+                          <ThemePackageCard
+                            key={summary.id}
+                            summary={summary}
+                            selected={appearance.themeId === summary.id}
+                            scheme={effectiveAppearance.colorScheme}
+                            onSelect={() => chooseThemeFromSheet(summary.id)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </SheetContent>
+                </Sheet>
+                <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t('settings.colorScheme')}</div>
+                    <div className="text-xs text-muted-foreground">{t('settings.colorSchemeDescription')}</div>
+                  </div>
+                  <Select value={appearance.colorScheme} onValueChange={(value) => saveAppearance({ ...appearance, colorScheme: value as ColorSchemePreference })}>
+                    <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="system">{t('settings.schemeSystem')}</SelectItem>
+                      <SelectItem value="light">{t('settings.schemeLight')}</SelectItem>
+                      <SelectItem value="dark">{t('settings.schemeDark')}</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={syncWithOs}
-                  className={cn(
-                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                    syncWithOs ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
-                  )}
-                  onClick={() => chooseTheme(syncWithOs ? resolvedTheme : 'system')}
-                >
-                  <span
-                    className={cn(
-                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
-                      syncWithOs && 'translate-x-5',
-                    )}
-                  />
-                </button>
+                {currentTheme.visualQualityProfiles ? (
+                  <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border/45 p-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{t('settings.visualQuality')}</div>
+                      <div className="text-xs text-muted-foreground">{t('settings.visualQualityDescription')}</div>
+                    </div>
+                    <Select value={effectiveAppearance.visualQuality} onValueChange={(value) => saveAppearance(appearanceWithQuality(appearance, value as VisualQuality))}>
+                      <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="full">{t('settings.visualQualityFull')}</SelectItem>
+                        <SelectItem value="performance">{t('settings.visualQualityPerformance')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
               </div>
-
-              <Sheet modal={false} open={themeSheetOpen} onOpenChange={setThemeSheetOpen}>
-                {syncWithOs ? (
-                  <div className="grid gap-3 @6xl/settings-content:grid-cols-2">
-                    <ThemeSummaryCard
-                      eyebrow={t('settings.lightDefaultTheme')}
-                      option={preferredLightTheme}
-                      active={resolvedTheme === preferredLightTheme.id}
-                      buttonLabel={t('settings.chooseLightTheme')}
-                      onOpen={() => openThemeDrawer('light')}
-                    />
-                    <ThemeSummaryCard
-                      eyebrow={t('settings.darkDefaultTheme')}
-                      option={preferredDarkTheme}
-                      active={resolvedTheme === preferredDarkTheme.id}
-                      buttonLabel={t('settings.chooseDarkTheme')}
-                      onOpen={() => openThemeDrawer('dark')}
-                    />
-                  </div>
-                ) : (
-                  <ThemeSummaryCard
-                    eyebrow={t('settings.currentTheme')}
-                    option={currentTheme}
-                    buttonLabel={t('settings.chooseTheme')}
-                    onOpen={() => openThemeDrawer('all')}
-                  />
-                )}
-                <SheetContent className="overflow-hidden" resizeStorageKey={`settings/theme-drawer/${themeDrawerMode ?? 'all'}`} defaultSize={760} minSize={560} maxSize={980} closeLabel={t('common.close')}>
-                  <SheetHeader className="border-b px-5 py-4">
-                    <SheetTitle>{themeDrawerMode === 'light' ? t('settings.chooseLightTheme') : themeDrawerMode === 'dark' ? t('settings.chooseDarkTheme') : t('settings.themeDrawerTitle')}</SheetTitle>
-                  </SheetHeader>
-                  <div className="@container/theme-drawer min-h-0 flex-1 overflow-y-auto px-5 pb-6 pt-2">
-                    {(themeDrawerMode === 'all' || themeDrawerMode === 'light') ? (
-                      <ThemeOptionGroup
-                        title={t('settings.lightThemes')}
-                        options={desktopThemeGroups.light}
-                        currentTheme={theme}
-                        resolvedTheme={resolvedTheme}
-                        onSelect={chooseConcreteThemeFromSheet}
-                      />
-                    ) : null}
-                    {(themeDrawerMode === 'all' || themeDrawerMode === 'dark') ? (
-                      <ThemeOptionGroup
-                        title={t('settings.darkThemes')}
-                        options={desktopThemeGroups.dark}
-                        currentTheme={theme}
-                        resolvedTheme={resolvedTheme}
-                        onSelect={chooseConcreteThemeFromSheet}
-                      />
-                    ) : null}
-                  </div>
-                </SheetContent>
-              </Sheet>
             </SettingsSection>
 
             <SettingsSection title={t('settings.typography')} divided>
-              <button
-                type="button"
-                aria-pressed={usingBuiltInFont}
-                className={cn(
-                  'max-w-xl rounded-lg border border-border/45 bg-transparent p-3 text-left transition hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  usingBuiltInFont && 'border-primary/65 bg-primary/[0.07]',
-                )}
-                onClick={() => chooseFont(defaultFontOption.id)}
-              >
-                <div className="text-sm font-semibold">{t(defaultFontOption.labelKey)}</div>
-                <FontPreviewSample sample={defaultFontOption.preview} fontFamily={defaultFontOption.stack} />
-              </button>
-              <div className={cn('max-w-xl rounded-lg border border-border/35 bg-transparent p-3', selectedLocalFont && 'border-primary/45 bg-primary/[0.04]')}>
-                <div className="space-y-1">
-                  <div className="text-sm font-semibold">{t('settings.localFonts')}</div>
-                  <div className="text-xs text-muted-foreground">{t('settings.localFontsDescription', { count: installedFontOptions.length })}</div>
-                </div>
-                <div className="relative mt-3">
-                  <select
-                    value={selectedLocalFont ?? ''}
-                    className="h-10 w-full appearance-none rounded-md border border-border/45 bg-background px-3 pr-10 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60"
-                    onChange={(event) => chooseFont(event.target.value as DesktopFontPreference)}
-                    disabled={installedFontOptions.length === 0}
-                  >
-                    <option value="" disabled>{t('settings.chooseLocalFont')}</option>
-                    {installedFontOptions.map((family) => (
-                      <option key={family} value={family}>{family}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-                {selectedLocalFont ? <FontPreviewSample sample="任务编排 / AI Workflow" fontFamily={fontFamilyForPreference(selectedLocalFont)} /> : null}
+              <div className="max-w-2xl divide-y divide-border/45 overflow-hidden rounded-lg border border-border/45">
+                <TypographyDisclosure
+                  title={t('settings.uiTypography')}
+                  description={t('settings.uiTypographyDescription')}
+                  open={typographyDisclosure.ui}
+                  onOpenChange={(open) => setTypographySectionOpen('ui', open)}
+                >
+                  <TypographySizeSetting
+                    label={t('settings.uiFontSize')}
+                    description={t('settings.uiFontSizeDescription')}
+                    value={uiFontSize}
+                    min={desktopTypography.ui.min}
+                    max={desktopTypography.ui.max}
+                    onChange={(value) => previewTypographySize('ui', value)}
+                    onCommit={(value) => chooseTypographySize('ui', value)}
+                    onReset={() => resetTypographySize('ui')}
+                  />
+                  <FontPreferenceSetting
+                    defaultOption={defaultFontOption}
+                    installedFontOptions={installedFontOptions}
+                    selectedLocalFont={selectedLocalFont}
+                    sample="任务编排 / AI Workflow"
+                    onSelect={chooseFont}
+                  />
+                </TypographyDisclosure>
+                <TypographyDisclosure
+                  title={t('settings.editorTypography')}
+                  description={t('settings.editorTypographyDescription')}
+                  open={typographyDisclosure.editor}
+                  onOpenChange={(open) => setTypographySectionOpen('editor', open)}
+                >
+                  <TypographySizeSetting
+                    label={t('settings.editorFontSize')}
+                    description={t('settings.editorFontSizeDescription')}
+                    value={editorFontSize}
+                    min={desktopTypography.editor.min}
+                    max={desktopTypography.editor.max}
+                    onChange={(value) => previewTypographySize('editor', value)}
+                    onCommit={(value) => chooseTypographySize('editor', value)}
+                    onReset={() => resetTypographySize('editor')}
+                  />
+                  <FontPreferenceSetting
+                    defaultOption={defaultEditorFontOption}
+                    installedFontOptions={installedFontOptions}
+                    selectedLocalFont={selectedLocalEditorFont}
+                    sample={'const workflow = "AI";'}
+                    onSelect={chooseEditorFont}
+                    monospace
+                  />
+                </TypographyDisclosure>
               </div>
             </SettingsSection>
 
             <SettingsSection title={t('settings.avatar.title')} divided>
               <AvatarSettings
                 preferences={preferences.avatars}
+                personalization={personalization.avatars}
                 busy={busy}
                 onSaveAvatar={onSaveAvatar}
                 onSelectRecentAvatar={onSelectRecentAvatar}
@@ -392,7 +462,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !useLocalClaude;
                     setUseLocalClaude(next);
-                    onSave(theme, language, font, next, verboseLogging);
+                    onSave(appearance, personalization, language, next, verboseLogging);
                   }}
                 >
                   <span
@@ -420,7 +490,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   onClick={() => {
                     const next = !verboseLogging;
                     setVerboseLogging(next);
-                    onSave(theme, language, font, useLocalClaude, next);
+                    onSave(appearance, personalization, language, useLocalClaude, next);
                   }}
                 >
                   <span
@@ -625,85 +695,58 @@ function SettingInfoTooltip({ content }: { content: string }) {
   );
 }
 
-interface ThemeSummaryCardProps {
-  eyebrow: string;
-  option: DesktopThemeOption;
-  active?: boolean;
-  buttonLabel: string;
-  onOpen: () => void;
+interface ThemePackageCardProps {
+  summary: (typeof themePackageSummaries)[number];
+  selected: boolean;
+  scheme: 'light' | 'dark';
+  onSelect: () => void;
 }
 
-function ThemeSummaryCard({ eyebrow, option, active = false, buttonLabel, onOpen }: ThemeSummaryCardProps) {
-  const { t } = useTranslation();
+function CurrentThemeSummary({ summary, scheme }: {
+  summary: (typeof themePackageSummaries)[number];
+  scheme: 'light' | 'dark';
+}) {
+  const { i18n, t } = useTranslation();
+  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
   return (
     <div className="@container/theme-summary">
-      <div className={cn('grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 transition-colors @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]', active && 'border-primary/45 bg-primary/[0.04]')}>
-        <TerminalPreview palette={option.preview} compact />
+      <div className="grid gap-3 rounded-lg border border-border/35 bg-transparent p-3 @lg/theme-summary:grid-cols-[auto_minmax(0,1fr)] @lg/theme-summary:items-center @xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <TerminalPreview palette={summary.preview[scheme]} compact />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">{eyebrow}</span>
-            {active ? <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{t('settings.activeTheme')}</Badge> : null}
+            <span className="text-xs text-muted-foreground">{t('settings.currentTheme')}</span>
+            <Badge variant="outline" className="px-1.5 py-0 text-ui-micro">{t('settings.activeTheme')}</Badge>
           </div>
-          <div className="text-base font-semibold">{t(option.labelKey)}</div>
+          <div className="truncate text-base font-semibold text-foreground">{summary.name[language]}</div>
         </div>
-        <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto" onClick={onOpen}>{buttonLabel}</Button>
+        <SheetTrigger asChild>
+          <Button variant="outline" className="w-full @lg/theme-summary:col-span-2 @xl/theme-summary:col-span-1 @xl/theme-summary:w-auto">
+            {t('settings.chooseTheme')}
+          </Button>
+        </SheetTrigger>
       </div>
     </div>
   );
 }
 
-interface ThemeOptionGroupProps {
-  title: string;
-  options: readonly DesktopThemeOption[];
-  currentTheme: DesktopThemePreference;
-  resolvedTheme: ConcreteDesktopTheme;
-  onSelect: (theme: ConcreteDesktopTheme) => void;
-}
-
-function ThemeOptionGroup({ title, options, currentTheme, resolvedTheme, onSelect }: ThemeOptionGroupProps) {
-  return (
-    <section className="space-y-3 py-4">
-      <div className="text-sm font-semibold text-muted-foreground">{title}</div>
-      <div className="grid gap-3 @2xl/theme-drawer:grid-cols-2">
-        {options.map((option) => (
-          <ThemeOptionCard
-            key={option.id}
-            option={option}
-            selected={currentTheme === option.id}
-            synced={currentTheme === 'system' && resolvedTheme === option.id}
-            onSelect={() => onSelect(option.id)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-interface ThemeOptionCardProps {
-  option: DesktopThemeOption;
-  selected: boolean;
-  synced: boolean;
-  onSelect: () => void;
-}
-
-function ThemeOptionCard({ option, selected, synced, onSelect }: ThemeOptionCardProps) {
-  const { t } = useTranslation();
-  const active = selected || synced;
+function ThemePackageCard({ summary, selected, scheme, onSelect }: ThemePackageCardProps) {
+  const { i18n, t } = useTranslation();
+  const language = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en';
   return (
     <button
       type="button"
-      aria-pressed={active}
+      aria-pressed={selected}
       className={cn(
-        'group flex min-w-0 items-center gap-4 rounded-xl border border-border/45 bg-card p-3 text-left transition-[background-color,border-color,box-shadow] hover:border-primary/35 hover:bg-accent/20 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        active && 'border-primary/45 bg-primary/[0.045] ring-1 ring-inset ring-primary/15',
+        'group flex min-w-0 flex-col gap-3 rounded-xl border border-border/45 bg-card p-3 text-left transition-[background-color,border-color,box-shadow] hover:border-primary/35 hover:bg-accent/20 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        selected && 'border-primary/45 bg-primary/[0.045] ring-1 ring-inset ring-primary/15',
       )}
       onClick={onSelect}
     >
-      <TerminalPreview palette={option.preview} />
-      <div className="flex min-w-0 flex-1 flex-col items-start justify-center gap-2">
-        <span className="truncate text-base font-semibold text-foreground">{t(option.labelKey)}</span>
-        {active ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">
+      <TerminalPreview palette={summary.preview[scheme]} compact />
+      <div className="flex min-w-0 w-full items-center justify-between gap-2">
+        <span className="truncate text-sm font-semibold text-foreground">{summary.name[language]}</span>
+        {selected ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-ui-micro font-medium text-primary-foreground">
             <Check className="size-3" aria-hidden="true" />
             {t('settings.activeTheme')}
           </span>
@@ -718,7 +761,7 @@ function FontPreviewSample({ sample, fontFamily }: { sample: string; fontFamily:
   const [leading, trailing] = sample.split(' / ');
   return (
     <div className="mt-3 rounded-md border border-border/35 bg-background/60 px-3 py-2">
-      <div className="text-[11px] font-medium text-muted-foreground">{t('settings.fontPreview')}</div>
+      <div className="text-ui-caption font-medium text-muted-foreground">{t('settings.fontPreview')}</div>
       <div className="mt-1 text-sm font-medium" style={{ fontFamily }}>
         {trailing ? (
           <>
@@ -729,6 +772,142 @@ function FontPreviewSample({ sample, fontFamily }: { sample: string; fontFamily:
         ) : (
           <span className="text-primary">{sample}</span>
         )}
+      </div>
+    </div>
+  );
+}
+
+function TypographySizeSetting({
+  label,
+  description,
+  value,
+  min,
+  max,
+  onChange,
+  onCommit,
+  onReset,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  onCommit: (value: number) => void;
+  onReset: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-4 py-3">
+      <div className="min-w-0 space-y-1">
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        <div className="text-xs text-muted-foreground">{description}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Input
+            aria-label={label}
+            className="h-9 w-20 text-center tabular-nums"
+            inputMode="numeric"
+            max={max}
+            min={min}
+            step={1}
+            type="number"
+            value={value}
+            onChange={(event) => {
+              const next = event.currentTarget.valueAsNumber;
+              if (Number.isFinite(next)) onChange(next);
+            }}
+            onBlur={(event) => {
+              const next = event.currentTarget.valueAsNumber;
+              if (Number.isFinite(next)) onCommit(next);
+            }}
+          />
+          <span>px</span>
+        </label>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-sm" aria-label={t('settings.resetFontSize')} onPointerDown={(event) => event.preventDefault()} onClick={onReset}>
+              <RotateCcw className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t('settings.resetFontSize')}</TooltipContent>
+        </Tooltip>
+      </div>
+    </div>
+  );
+}
+
+function TypographyDisclosure({ title, description, open, onOpenChange, children }: {
+  title: string;
+  description: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange}>
+      <CollapsibleTrigger asChild>
+        <button type="button" className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <span className="min-w-0 flex-1 space-y-0.5">
+            <span className="block text-sm font-semibold text-foreground">{title}</span>
+            <span className="block text-xs text-muted-foreground">{description}</span>
+          </span>
+          <ChevronDown className={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden border-t border-border/40 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+        <div className="space-y-4 px-4 pb-4">
+          {children}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function FontPreferenceSetting({ defaultOption, installedFontOptions, selectedLocalFont, sample, onSelect, monospace = false }: {
+  defaultOption: DesktopFontOption;
+  installedFontOptions: string[];
+  selectedLocalFont: string | null;
+  sample: string;
+  onSelect: (font: DesktopFontPreference) => void;
+  monospace?: boolean;
+}) {
+  const { t } = useTranslation();
+  const usingDefault = selectedLocalFont === null;
+  const family = monospace ? editorFontFamilyForPreference : fontFamilyForPreference;
+  return (
+    <div className="space-y-3">
+      <button
+        type="button"
+        aria-pressed={usingDefault}
+        className={cn(
+          'w-full rounded-lg border border-border/45 bg-transparent p-3 text-left transition hover:border-primary/60 hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          usingDefault && 'border-primary/65 bg-primary/[0.07]',
+        )}
+        onClick={() => onSelect(defaultOption.id)}
+      >
+        <div className="text-sm font-semibold">{t(defaultOption.labelKey)}</div>
+        <FontPreviewSample sample={defaultOption.preview} fontFamily={defaultOption.stack} />
+      </button>
+      <div className={cn('rounded-lg border border-border/35 bg-transparent p-3', selectedLocalFont && 'border-primary/45 bg-primary/[0.04]')}>
+        <div className="space-y-1">
+          <div className="text-sm font-semibold">{t('settings.localFonts')}</div>
+          <div className="text-xs text-muted-foreground">{t('settings.localFontsDescription', { count: installedFontOptions.length })}</div>
+        </div>
+        <div className="relative mt-3">
+          <select
+            value={selectedLocalFont ?? ''}
+            className="h-10 w-full appearance-none rounded-md border border-border/45 bg-background px-3 pr-10 text-sm text-foreground shadow-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60"
+            onChange={(event) => onSelect(event.target.value as DesktopFontPreference)}
+            disabled={installedFontOptions.length === 0}
+          >
+            <option value="" disabled>{t('settings.chooseLocalFont')}</option>
+            {installedFontOptions.map((font) => <option key={font} value={font}>{font}</option>)}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        {selectedLocalFont ? <FontPreviewSample sample={sample} fontFamily={family(selectedLocalFont)} /> : null}
       </div>
     </div>
   );
@@ -767,8 +946,4 @@ function TerminalPreview({ palette, compact = false }: { palette: ThemePreviewPa
       </div>
     </div>
   );
-}
-
-function getThemeOption(theme: ConcreteDesktopTheme): DesktopThemeOption {
-  return desktopThemeOptions.find((option) => option.id === theme) ?? desktopThemeOptions[0];
 }

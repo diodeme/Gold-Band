@@ -153,7 +153,7 @@ export function ScheduledTimePicker({
       >
         <div ref={panelRef} className="grid grid-cols-2 gap-1" role="group" aria-label={t('scheduled.dialog.time')}>
           <div data-time-column>
-            <div className="px-2 pb-1 text-center text-[11px] text-muted-foreground">{t('scheduled.dialog.hours')}</div>
+            <div className="px-2 pb-1 text-center text-ui-caption text-muted-foreground">{t('scheduled.dialog.hours')}</div>
             <ScrollArea className="h-52">
               <div className="space-y-0.5 pr-2">
                 {hours.map((option) => (
@@ -174,7 +174,7 @@ export function ScheduledTimePicker({
             </ScrollArea>
           </div>
           <div data-time-column>
-            <div className="px-2 pb-1 text-center text-[11px] text-muted-foreground">{t('scheduled.dialog.minutes')}</div>
+            <div className="px-2 pb-1 text-center text-ui-caption text-muted-foreground">{t('scheduled.dialog.minutes')}</div>
             <ScrollArea className="h-52">
               <div className="space-y-0.5 pr-2">
                 {minutes.map((option) => (

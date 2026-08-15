@@ -12,7 +12,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeOptionalEntryForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, setOptionalEntryPreference, shouldShowOptionalEntryToggle } from '@/lib/conversation-run-mode-config';
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
-import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -35,6 +36,7 @@ import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import {
+  draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
   useOptionalRightWorkspace,
   type RightWorkspaceResource,
@@ -114,12 +116,43 @@ export function ConversationComposer({
     resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
-    previewImage,
-    setPreviewImage,
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
   } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
+
+  const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
+      handlePreviewAttachment(attachment);
+      return;
+    }
+    void rightWorkspace.openResource({
+      kind: 'draft-attachment',
+      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+      scopeKey: rightWorkspace.scopeKey,
+      projectId,
+      title: attachment.name,
+      description: attachment.path,
+      attention: false,
+      attachment,
+    });
+  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+
+  const closeComposerAttachmentPreview = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.closeTab(draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id));
+  }, [rightWorkspace]);
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    const attachment = attachments.find((item) => item.id === id);
+    if (attachment) closeComposerAttachmentPreview(attachment);
+    removeAttachment(id);
+  }, [attachments, closeComposerAttachmentPreview, removeAttachment]);
+
+  const clearComposerAttachments = useCallback(() => {
+    attachments.forEach(closeComposerAttachmentPreview);
+    clearAttachments();
+  }, [attachments, clearAttachments, closeComposerAttachmentPreview]);
 
   useWindowDragGuard();
 
@@ -426,6 +459,7 @@ export function ConversationComposer({
         setRunModeError(submitError);
         return;
       }
+      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.
@@ -466,6 +500,7 @@ export function ConversationComposer({
     try {
       const paths = await resolveAttachmentPaths();
       await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
+      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
       exitScheduledMode();
       setRunModeError(null);
@@ -487,6 +522,7 @@ export function ConversationComposer({
   return (
     <>
       <div
+        data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
@@ -501,6 +537,11 @@ export function ConversationComposer({
           disabled={busy || submittingAttachments}
           className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
         >
+          <ComposerContextArea
+            attachments={attachments}
+            onRemoveAttachment={removeComposerAttachment}
+            onPreviewAttachment={openComposerAttachment}
+          />
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -533,7 +574,6 @@ export function ConversationComposer({
               />
             </div>
           </SlashCommandMenu>
-          <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"
             className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
@@ -555,14 +595,10 @@ export function ConversationComposer({
                 className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
                 onClick={() => { void pickFiles(); }}
                 disabled={busy || submittingAttachments}
+                aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-4" />
               </Button>
-              {attachments.length > 0 ? (
-                <span className="shrink-0 rounded-full border border-border/50 bg-gold-surface-high/30 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                  {attachments.length} file(s)
-                </span>
-              ) : null}
               {workspaces.length > 1 ? (
                 <Select value={projectId} onValueChange={onWorkspaceChange}>
                   <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
@@ -661,15 +697,6 @@ export function ConversationComposer({
           </div>
         </PromptInput>
 
-        {/* Attachment chips */}
-        <AttachmentChipsList
-          attachments={attachments}
-          onRemove={removeAttachment}
-          onPreview={handlePreviewAttachment}
-          onClear={clearAttachments}
-          clearLabel={t('common.clear') ?? 'Clear all'}
-        />
-
         {/* File error */}
         {fileError ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{fileError}</div>
@@ -751,7 +778,7 @@ export function ConversationComposer({
                         <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{a.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -854,9 +881,7 @@ export function ConversationComposer({
         ) : null}
       </div>
       <AttachmentPreviewDialogs
-        previewImage={previewImage}
         textPreview={textPreview}
-        onCloseImage={() => setPreviewImage(null)}
         onCloseText={() => setTextPreview(null)}
       />
     </>

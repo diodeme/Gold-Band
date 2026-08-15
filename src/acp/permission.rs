@@ -175,8 +175,24 @@ pub fn wait_for_permission_response(
     attempt_dir: &Utf8Path,
     request_id: &str,
 ) -> Result<PermissionResponseState> {
+    wait_for_permission_response_until_cancelled(attempt_dir, request_id, || false)
+}
+
+pub fn wait_for_permission_response_until_cancelled(
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+    is_cancel_requested: impl Fn() -> bool,
+) -> Result<PermissionResponseState> {
     let path = permission_response_file(attempt_dir, request_id);
     loop {
+        if is_cancel_requested() {
+            return Ok(PermissionResponseState {
+                request_id: request_id.to_string(),
+                option_id: None,
+                cancelled: true,
+                decided_at: current_timestamp(),
+            });
+        }
         if path.exists() {
             let response = read_json(&path)?;
             let _ = fs::remove_file(path.as_std_path());
@@ -410,6 +426,47 @@ mod tests {
         storage::append_jsonl,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn permission_wait_returns_cancelled_when_turn_cancel_is_requested() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let checks = std::cell::Cell::new(0_u8);
+
+        let response =
+            wait_for_permission_response_until_cancelled(&attempt_dir, "late-after-cancel", || {
+                let next = checks.get().saturating_add(1);
+                checks.set(next);
+                next >= 2
+            })
+            .unwrap();
+
+        assert!(response.cancelled);
+        assert_eq!(response.request_id, "late-after-cancel");
+        assert_eq!(response.option_id, None);
+        assert!(!permission_response_file(&attempt_dir, "late-after-cancel").exists());
+    }
+
+    #[test]
+    fn permission_cancel_wins_over_a_simultaneous_user_response() {
+        let dir = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        write_permission_response(
+            &attempt_dir,
+            "permission-race",
+            Some("allow-once".to_string()),
+            false,
+            current_timestamp(),
+        )
+        .unwrap();
+
+        let response =
+            wait_for_permission_response_until_cancelled(&attempt_dir, "permission-race", || true)
+                .unwrap();
+
+        assert!(response.cancelled);
+        assert_eq!(response.option_id, None);
+    }
 
     #[test]
     fn cancel_pending_permission_updates_timeline_status() {

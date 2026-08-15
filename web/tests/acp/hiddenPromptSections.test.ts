@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { visiblePromptText } from '../../src/components/acp/HiddenPromptMessageContent';
+import { projectHiddenPromptDisplayParts, visiblePromptText } from '../../src/components/acp/HiddenPromptMessageContent';
 import { parseGoldBandHiddenSections } from '../../src/components/acp/hiddenPromptSections';
 
 describe('Gold Band hidden prompt sections', () => {
@@ -49,6 +49,21 @@ describe('Gold Band hidden prompt sections', () => {
 
   it('trims display-only blank lines after hidden sections', () => {
     expect(visiblePromptText('\r\n\n# Requirement', true)).toBe('# Requirement');
+    expect(visiblePromptText('  \r\n\t\n# Requirement', true)).toBe('# Requirement');
     expect(visiblePromptText('\r\n\n# Requirement', false)).toBe('\r\n\n# Requirement');
+  });
+
+  it('coalesces visible fragments after grouped hidden sections without spacer rows', () => {
+    const display = projectHiddenPromptDisplayParts(parseGoldBandHiddenSections([
+      '<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">system</hidden>',
+      '',
+      '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">runtime</hidden>',
+      '',
+      '# Requirement',
+      'hi',
+    ].join('\n')));
+
+    expect(display.map(({ part }) => part.type)).toEqual(['hidden', 'hidden', 'visible']);
+    expect(display[2]?.part).toEqual({ type: 'visible', text: '# Requirement\nhi' });
   });
 });

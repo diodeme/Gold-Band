@@ -186,10 +186,10 @@ impl ScheduledTaskService {
     pub fn desktop(app_handle: AppHandle) -> Self {
         let resolve_handle = app_handle.clone();
         let resolve_workspace = Arc::new(move |project_id: &str| {
-            resolve_desktop_workspace(&resolve_handle, project_id)
+            resolve_conversation_workspace(&resolve_handle, project_id)
         });
         let list_handle = app_handle.clone();
-        let list_workspaces = Arc::new(move || list_desktop_workspaces(&list_handle));
+        let list_workspaces = Arc::new(move || list_conversation_workspaces(&list_handle));
         Self {
             resolve_workspace,
             list_workspaces,
@@ -877,7 +877,7 @@ fn scheduled_job_key_for_definition(
     app_handle: &AppHandle,
     definition: &ScheduledTaskDefinition,
 ) -> ScheduledServiceResult<gold_band::scheduler::coordinator::ScheduledJobKey> {
-    let workspace = resolve_desktop_workspace(app_handle, &definition.project_id)?;
+    let workspace = resolve_conversation_workspace(app_handle, &definition.project_id)?;
     Ok(gold_band::scheduler::coordinator::ScheduledJobKey::new(
         workspace.app.paths.repo_root,
         definition.project_id.clone(),
@@ -885,7 +885,7 @@ fn scheduled_job_key_for_definition(
     ))
 }
 
-fn resolve_desktop_workspace(
+fn resolve_conversation_workspace(
     app_handle: &AppHandle,
     project_id: &str,
 ) -> ScheduledServiceResult<ResolvedWorkspace> {
@@ -916,7 +916,7 @@ fn resolve_desktop_workspace(
     })
 }
 
-fn list_desktop_workspaces(
+fn list_conversation_workspaces(
     app_handle: &AppHandle,
 ) -> ScheduledServiceResult<Vec<ResolvedWorkspace>> {
     let state = app_handle.state::<crate::state::DesktopState>();

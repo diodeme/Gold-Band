@@ -5,7 +5,7 @@ import { tags } from '@lezer/highlight';
 
 export const workspaceEditorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
-  '.cm-scroller': { fontFamily: 'var(--font-mono, ui-monospace)', fontSize: '12px', lineHeight: '1.6' },
+  '.cm-scroller': { fontFamily: 'var(--app-editor-font-family, ui-monospace)', fontSize: 'var(--app-editor-font-size, 12px)', lineHeight: '1.6' },
   '.cm-content': { padding: '12px 0' },
   '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted-foreground)', borderRight: '1px solid color-mix(in srgb, var(--border) 55%, transparent)' },
   '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'color-mix(in srgb, var(--muted) 35%, transparent)' },

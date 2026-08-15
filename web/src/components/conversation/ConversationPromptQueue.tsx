@@ -4,6 +4,7 @@ import {
   CornerDownLeft,
   Paperclip,
   Pencil,
+  MessageSquareQuote,
   Trash2,
   X,
 } from 'lucide-react';
@@ -33,6 +34,8 @@ export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
   sessionActive: boolean;
   mutationPending: boolean;
+  attachedAbove?: boolean;
+  integratedInfoTab?: boolean;
   onEdit: (itemId: string, content: string) => void | Promise<void>;
   onUse: (itemId: string) => void | Promise<void>;
   onDelete: (itemId: string) => void | Promise<void>;
@@ -42,6 +45,8 @@ export function ConversationPromptQueue({
   queue,
   sessionActive,
   mutationPending,
+  attachedAbove = false,
+  integratedInfoTab = false,
   onEdit,
   onUse,
   onDelete,
@@ -82,7 +87,11 @@ export function ConversationPromptQueue({
     <Collapsible
       open={expanded}
       onOpenChange={setExpanded}
-      className="overflow-hidden rounded-t-2xl border border-b-0 border-border/70 bg-muted/35"
+      className={cn(
+        'overflow-hidden border border-b-0 border-border bg-muted/35',
+        attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
+        integratedInfoTab && !attachedAbove && 'rounded-tl-none bg-card',
+      )}
       data-testid="conversation-prompt-queue"
     >
       <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-muted-foreground">
@@ -174,7 +183,7 @@ function QueueItem({
   const { t } = useTranslation();
   return (
     <div className="flex min-h-10 items-center gap-2 px-3 py-1.5" data-queue-item-id={item.id}>
-      <span className="w-4 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+      <span className="w-4 shrink-0 text-center text-ui-caption tabular-nums text-muted-foreground">
         {index + 1}
       </span>
       {editing ? (
@@ -190,11 +199,21 @@ function QueueItem({
           <p className="line-clamp-2 whitespace-pre-wrap break-words text-sm leading-5 text-foreground/90">
             {item.content}
           </p>
-          {item.attachmentCount > 0 ? (
-            <span className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-              <Paperclip className="size-3" />
-              {item.attachmentCount}
-            </span>
+          {item.attachmentCount > 0 || item.quoteCount > 0 ? (
+            <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
+              {item.quoteCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquareQuote className="size-3" />
+                  {t('acp.userQuoteCount', { count: item.quoteCount })}
+                </span>
+              ) : null}
+              {item.attachmentCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <Paperclip className="size-3" />
+                  {item.attachmentCount}
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </div>
       )}

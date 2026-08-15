@@ -23,9 +23,10 @@ import {
   PromptInputActions,
   PromptInputTextarea,
 } from '@/components/prompt-kit/prompt-input';
-import { AttachmentChipsList } from '@/components/shared/AttachmentComponents';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { Button } from '@/components/ui/button';
 import type { AttachmentItem } from '@/lib/attachment-service';
+import type { ComposerQuote } from '@/lib/composer-context';
 import type { AcpCommandItemVm } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -34,8 +35,10 @@ export interface AcpConversationComposerProps {
   onPromptChange: (value: string) => void;
   onSubmit: () => void;
   sending: boolean;
-  status: ReactNode;
   attachments: AttachmentItem[];
+  quotes: readonly ComposerQuote[];
+  contextError: string | null;
+  onRemoveQuote: (id: string) => void;
   onRemoveAttachment: (id: string) => void;
   onPreviewAttachment: (item: AttachmentItem) => void;
   onClearAttachments: () => void;
@@ -61,17 +64,18 @@ export interface AcpConversationComposerProps {
   fileInputRef: Ref<HTMLInputElement>;
   onFilesChange: ChangeEventHandler<HTMLInputElement>;
   onPickFiles: () => void | Promise<void>;
-  inputHint: string;
   canStop: boolean;
   stopInProgress: boolean;
   onStop: () => void | Promise<void>;
   canSubmit: boolean;
   sendButtonBusy: boolean;
   showRuntimeContinue: boolean;
+  runtimeContinueKind: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   runtimeContinueSubmitting: boolean;
   onRuntimeContinue: () => void | Promise<void>;
   configBar: ReactNode;
-  attachedQueueVisible: boolean;
+  attachedPanelVisible: boolean;
+  integratedInfoTab: boolean;
   queueSubmit: boolean;
 }
 
@@ -87,8 +91,10 @@ export function AcpConversationComposer({
   onPromptChange,
   onSubmit,
   sending,
-  status,
   attachments,
+  quotes,
+  contextError,
+  onRemoveQuote,
   onRemoveAttachment,
   onPreviewAttachment,
   onClearAttachments,
@@ -111,17 +117,18 @@ export function AcpConversationComposer({
   fileInputRef,
   onFilesChange,
   onPickFiles,
-  inputHint,
   canStop,
   stopInProgress,
   onStop,
   canSubmit,
   sendButtonBusy,
   showRuntimeContinue,
+  runtimeContinueKind,
   runtimeContinueSubmitting,
   onRuntimeContinue,
   configBar,
-  attachedQueueVisible,
+  attachedPanelVisible,
+  integratedInfoTab,
   queueSubmit,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
@@ -133,18 +140,6 @@ export function AcpConversationComposer({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {attachments.length > 0 ? (
-        <div className="mb-2" data-acp-composer-attachment-row="true">
-          <AttachmentChipsList
-            attachments={attachments}
-            compact
-            onRemove={onRemoveAttachment}
-            onPreview={onPreviewAttachment}
-            onClear={onClearAttachments}
-            clearLabel={t('common.clear') ?? 'Clear'}
-          />
-        </div>
-      ) : null}
       {fileError ? (
         <div className="mb-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
           {fileError}
@@ -163,15 +158,25 @@ export function AcpConversationComposer({
           onValueChange={onPromptChange}
           onSubmit={onSubmit}
           isLoading={sending}
+          maxHeight={320}
           className={cn(
-            'bg-card/80 shadow-sm shadow-background/30 transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
-            attachedQueueVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
+            'bg-card !shadow-none transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
+            attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
+            integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}
         >
-          {status}
+          <ComposerContextArea
+            quotes={quotes}
+            attachments={attachments}
+            error={contextError}
+            onRemoveQuote={onRemoveQuote}
+            onRemoveAttachment={onRemoveAttachment}
+            onPreviewAttachment={onPreviewAttachment}
+          />
           <PromptInputTextarea
             ref={textareaRef}
-            className="min-h-16 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+            className="min-h-12 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+            userResizable
             valuePrefix={committedSlashCommand?.prefix}
             leadingAdornment={committedSlashCommand ? (
               <SlashCommandInputTag
@@ -187,8 +192,8 @@ export function AcpConversationComposer({
             onDrop={onDrop}
             onPaste={onPaste}
           />
-          <div className="mt-1.5 flex items-center justify-between gap-4 px-2 pb-1">
-            <div className="flex items-center gap-2">
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 px-2 py-2" data-acp-composer-command-bar="true">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -196,20 +201,21 @@ export function AcpConversationComposer({
                 className="hidden"
                 onChange={onFilesChange}
               />
-              <PromptInputAction tooltip={t('acp.attachHint') ?? 'Attach files'}>
+              <PromptInputAction tooltip={t('acp.attachHint')}>
                 <Button
                   className="size-7 rounded-full"
                   size="icon"
                   variant="ghost"
                   disabled={inputDisabled}
+                  aria-label={t('acp.attachHint')}
                   onClick={() => { void onPickFiles(); }}
                 >
                   <Paperclip className="size-3.5" />
                 </Button>
               </PromptInputAction>
-              <span className="text-xs text-muted-foreground">{inputHint}</span>
+              <div className="min-w-0 flex-1">{configBar}</div>
             </div>
-            <PromptInputActions className="shrink-0 pl-2">
+            <PromptInputActions className="ml-auto shrink-0 pl-2">
               {canStop ? (
                 <PromptInputAction tooltip={t('acp.stopHint')}>
                   <Button
@@ -229,7 +235,7 @@ export function AcpConversationComposer({
                 </PromptInputAction>
               ) : null}
               {showRuntimeContinue ? (
-                <PromptInputAction tooltip={t('acp.continueWorkflow')}>
+                <PromptInputAction tooltip={t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}>
                   <Button
                     type="button"
                     className="h-8 gap-1.5 rounded-full px-3"
@@ -245,8 +251,8 @@ export function AcpConversationComposer({
                       <Play className="size-3.5" />
                     )}
                     {runtimeContinueSubmitting
-                      ? t('acp.continueWorkflowStarting')
-                      : t('acp.continueWorkflow')}
+                      ? t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflowStarting' : 'acp.continueWorkflowStarting')
+                      : t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}
                   </Button>
                 </PromptInputAction>
               ) : null}
@@ -268,7 +274,6 @@ export function AcpConversationComposer({
               </PromptInputAction>
             </PromptInputActions>
           </div>
-          {configBar}
         </PromptInput>
       </SlashCommandMenu>
     </div>

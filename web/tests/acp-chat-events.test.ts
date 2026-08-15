@@ -931,6 +931,23 @@ describe('ACP chat event handling', () => {
     }))).toBe(false);
   });
 
+  it('keeps a terminal summary with unloaded events behind the readiness loading gate', () => {
+    expect(isAcpSessionReadyForInitialDisplay(session({
+      status: 'completed',
+      events: [],
+      eventPage: {
+        loadedCount: 0,
+        total: 24,
+        oldestSeq: null,
+        newestSeq: null,
+        hasOlder: true,
+        hasNewer: false,
+        oldestCursor: null,
+        newestCursor: null,
+      },
+    }))).toBe(false);
+  });
+
   it('treats a canonical Agent branch VM as ready without root session metadata', () => {
     expect(isAcpSessionReadyForInitialDisplay(session({
       branchId: 'agent-1',

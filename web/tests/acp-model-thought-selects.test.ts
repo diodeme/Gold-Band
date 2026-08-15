@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import '@/i18n';
 import {
   AcpModelThoughtSelects,
+  acpConfigMenuSelectionMode,
   findAcpThoughtLevel,
   formatAcpCompositeSelection,
   nextAcpCompositeSection,
@@ -63,12 +64,26 @@ describe('ACP composite model selector', () => {
     expect(openSection).toBeNull();
   });
 
-  it('keeps the config menu open after selecting a model or thought level', () => {
+  it('keeps the composite config menu open after selecting a model or thought level', () => {
     const event = new Event('select', { cancelable: true });
 
     keepAcpConfigMenuOpenOnSelect(event);
 
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('uses selection capability to distinguish close-on-select and composite menus', () => {
+    expect(acpConfigMenuSelectionMode(null)).toBe('single');
+    expect(acpConfigMenuSelectionMode({
+      id: 'reasoning_effort',
+      category: 'thought_level',
+      options: [],
+    })).toBe('single');
+    expect(acpConfigMenuSelectionMode({
+      id: 'reasoning_effort',
+      category: 'thought_level',
+      options: [{ value: 'high', name: 'High' }],
+    })).toBe('composite');
   });
 
   it('shows one unspecified state until a model or thought level is selected', () => {

@@ -25,9 +25,9 @@ import type {
   ResolveAppExitInput,
   PinRef,
   CreateTaskInput,
-  DesktopFontPreference,
   DesktopLanguage,
-  DesktopThemePreference,
+  PersonalizationPreference,
+  AppearancePreference,
   LocalClaudeStatusVm,
   LogPageVm,
   LogQueryInput,
@@ -37,7 +37,6 @@ import type {
   SkillListVm,
   PreferencesVm,
   AvatarKind,
-  AvatarPreferencesVm,
   AvatarShape,
   SaveDesktopAvatarInput,
   ImportProfilesResult,
@@ -163,7 +162,7 @@ export interface ScheduledOccurrenceUpdatedEventVm {
 }
 
 export interface ConversationPromptSubmitVm {
-  kind: 'acp-session' | 'runtime-continue-started' | 'queued' | 'rejected' | string;
+  kind: 'acp-session' | 'runtime-continue-started' | 'runtime-recovery-started' | 'queued' | 'rejected' | string;
   session?: AcpSessionVm | null;
   run?: RunSummaryVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
@@ -177,6 +176,7 @@ export interface AttachmentFileRef {
   path: string;
   name: string;
   size: number;
+  previewUrl?: string | null;
 }
 
 export interface MaterializeAttachmentFileInput {
@@ -254,6 +254,7 @@ export interface RuntimeApi {
   startRun(taskId: string): Promise<RunSummaryVm>;
   continueRun(projectId: string | null | undefined, taskId: string, runId: string): Promise<RunSummaryVm>;
   continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
+  recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number): Promise<ConversationPromptSubmitVm>;
   pauseRun(taskId: string, runId: string, projectId?: string | null): Promise<RunSummaryVm>;
   stopActiveSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ActiveSessionStopVm>;
   submitManualCheck(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outcome: 'success' | 'failure'): Promise<RunSummaryVm>;
@@ -277,7 +278,7 @@ export interface RuntimeApi {
   subscribeInterventionNavigate?(listener: (event: InterventionNavigateEventVm) => void): Promise<() => void>;
   subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
   takePendingInterventionNavigations(): Promise<InterventionNavigateEventVm[]>;
-  submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
+  submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('../types').ConversationPromptInput, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
   updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
@@ -294,11 +295,11 @@ export interface RuntimeApi {
   showConversationAttachment(projectId: string, taskId: string, name: string): Promise<ContentVm>;
   showConversationMessageAttachment(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, path: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
-  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<AvatarPreferencesVm>;
-  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<AvatarPreferencesVm>;
-  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape): Promise<AvatarPreferencesVm>;
-  clearDesktopAvatar(kind: AvatarKind): Promise<AvatarPreferencesVm>;
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean): Promise<PreferencesVm>;
+  saveDesktopAvatar(input: SaveDesktopAvatarInput): Promise<PreferencesVm>;
+  selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
+  saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
+  clearDesktopAvatar(kind: AvatarKind): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

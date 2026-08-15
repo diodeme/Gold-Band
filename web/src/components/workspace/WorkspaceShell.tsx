@@ -76,12 +76,18 @@ function clamp(value: number, min: number, max: number) {
 
 function loadWidth(prefs: Record<string, unknown> | null | undefined, key: string, fallback: number, min: number, max: number) {
   const value = prefs?.[key];
-  return typeof value === 'number' ? clamp(value, min, max) : fallback;
+  return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
+function loadOptionalWidth(prefs: Record<string, unknown> | null | undefined, key: string, min: number, max: number) {
+  const value = prefs?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : null;
 }
 
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
+const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
 const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
 
@@ -125,6 +131,11 @@ function FileWorkspaceIntegration({
   useEffect(() => workspace.registerResourceRenderer('conversation-asset', (resource: RightWorkspaceResource) => (
     resource.kind === 'conversation-asset'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('draft-attachment', (resource: RightWorkspaceResource) => (
+    resource.kind === 'draft-attachment'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('source-control', (resource: RightWorkspaceResource) => (
@@ -202,11 +213,19 @@ function WorkspaceShellLayout({
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
+  const storedSidebarWidth = loadOptionalWidth(
+    vm.preferences,
+    'sidebar.width',
+    WORKSPACE_SIDEBAR_MIN_WIDTH,
+    WORKSPACE_SIDEBAR_MAX_WIDTH,
+  );
   const shellRef = useRef<HTMLDivElement>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<PanelImperativeHandle | null>(null);
   const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const leftResizeIntentRef = useRef(false);
   const rightResizeIntentRef = useRef(false);
+  const sidebarWidthTouchedRef = useRef(false);
   const resizeFrameRef = useRef<number | null>(null);
   const rightPanelActualWidthRef = useRef(0);
   const rightPanelAtPreferredWidthRef = useRef(false);
@@ -231,13 +250,7 @@ function WorkspaceShellLayout({
     left: false,
     right: false,
   });
-  const sidebarWidth = loadWidth(
-    vm.preferences,
-    'sidebar.width',
-    WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
-    WORKSPACE_SIDEBAR_MIN_WIDTH,
-    WORKSPACE_SIDEBAR_MAX_WIDTH,
-  );
+  const [sidebarWidth, setSidebarWidth] = useState(() => storedSidebarWidth ?? WORKSPACE_SIDEBAR_DEFAULT_WIDTH);
   const profile = useMemo(
     () => workspaceLayoutProfileForPage(active, appConfig.workspaceLayout),
     [active, appConfig.workspaceLayout],
@@ -283,6 +296,15 @@ function WorkspaceShellLayout({
   const endRightPanelResize = useCallback(() => {
     setRightPanelResizeActive(false);
   }, []);
+  const beginLeftPanelResize = useCallback(() => {
+    leftResizeIntentRef.current = true;
+    sidebarWidthTouchedRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (sidebarWidthTouchedRef.current || storedSidebarWidth == null) return;
+    setSidebarWidth(storedSidebarWidth);
+  }, [storedSidebarWidth]);
 
   const evaluateAutoCollapse = useCallback((availableWidth: number) => {
     const current = autoCollapseStateRef.current;
@@ -326,13 +348,14 @@ function WorkspaceShellLayout({
     try {
       if (showLeft) {
         if (panel.isCollapsed()) panel.expand();
+        panel.resize(sidebarWidth);
       } else if (!panel.isCollapsed()) {
         panel.collapse();
       }
     } catch {
       // The panel group may be unmounting while the desktop surface changes.
     }
-  }, [showLeft]);
+  }, [showLeft, sidebarWidth]);
 
   useLayoutEffect(() => {
     const panel = rightPanelRef.current;
@@ -392,15 +415,19 @@ function WorkspaceShellLayout({
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
     if (!meta.isUserInteraction) return;
     const groupWidth = shellRef.current?.clientWidth ?? 0;
-    const nextSidebarWidth = resolveWorkspacePanelWidthFromLayout({
-      layout,
-      panelId: 'workspace-navigation',
-      groupWidth,
-      minWidth: WORKSPACE_SIDEBAR_MIN_WIDTH,
-      maxWidth: WORKSPACE_SIDEBAR_MAX_WIDTH,
-    });
-    if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
-      void saveConversationPreference('sidebar.width', nextSidebarWidth);
+    if (leftResizeIntentRef.current) {
+      leftResizeIntentRef.current = false;
+      const nextSidebarWidth = resolveWorkspacePanelWidthFromLayout({
+        layout,
+        panelId: 'workspace-navigation',
+        groupWidth,
+        minWidth: WORKSPACE_SIDEBAR_MIN_WIDTH,
+        maxWidth: WORKSPACE_SIDEBAR_MAX_WIDTH,
+      });
+      if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
+        setSidebarWidth(nextSidebarWidth);
+        void saveConversationPreference('sidebar.width', nextSidebarWidth);
+      }
     }
     if (shouldPersistRightWorkspaceWidth(meta.isUserInteraction, rightResizeIntentRef.current)) {
       rightResizeIntentRef.current = false;
@@ -497,6 +524,8 @@ function WorkspaceShellLayout({
           data-testid="workspace-left-resize-handle"
           disabled={!showLeft}
           aria-hidden={!showLeft}
+          onPointerDown={beginLeftPanelResize}
+          onKeyDown={beginLeftPanelResize}
         />
         <ResizablePanel
           id="workspace-center"

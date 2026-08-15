@@ -54,7 +54,7 @@ export function EditableConversationTitle({
       <input
         ref={inputRef}
         className={cn(
-          'min-w-0 rounded-md border border-primary/40 bg-background px-2 py-0.5 text-sm font-semibold text-foreground outline-none ring-2 ring-primary/10',
+          'min-w-0 rounded-md border border-primary/40 bg-background px-2 py-0.5 text-sm font-semibold leading-5 text-foreground outline-none ring-2 ring-primary/10',
           className,
         )}
         value={value}
@@ -76,8 +76,8 @@ export function EditableConversationTitle({
           )}
           onClick={startEditing}
         >
-          <h1 className="min-w-0 truncate text-sm font-semibold leading-6 text-foreground">{title}</h1>
-          {metadata ? <span className="shrink-0 text-[10px] text-muted-foreground/60">{metadata}</span> : null}
+          <h1 className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground">{title}</h1>
+          {metadata ? <span className="shrink-0 text-ui-caption leading-4 text-muted-foreground/55">{metadata}</span> : null}
           {showEditIcon ? (
             <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
           ) : null}

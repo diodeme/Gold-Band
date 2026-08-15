@@ -49,6 +49,17 @@ struct RecentWrite {
 }
 
 impl WorkspaceFileRuntime {
+    pub(crate) fn issue_attachment_preview(
+        &self,
+        project_id: String,
+        path: PathBuf,
+        revision: FileRevisionVm,
+        mime_type: String,
+        ttl_seconds: u64,
+    ) -> CommandResult<WorkspaceFilePreviewGrantVm> {
+        self.issue_preview(project_id, path, revision, mime_type, false, ttl_seconds)
+    }
+
     pub(crate) fn issue_external_grant(
         &self,
         project_id: String,
@@ -414,6 +425,34 @@ mod tests {
                 .status(),
             StatusCode::CONFLICT
         );
+    }
+
+    #[test]
+    fn attachment_picker_preview_uses_the_same_revision_bound_protocol() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("selected.png");
+        image::DynamicImage::new_rgba8(2, 2)
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let revision = super::super::service::revision_for_path(&path).unwrap();
+        let preview = runtime
+            .issue_attachment_preview(
+                "attachment-picker".to_string(),
+                path,
+                revision,
+                "image/png".to_string(),
+                30,
+            )
+            .unwrap();
+
+        let response = runtime.preview_protocol_response(&preview.token, false);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert!(response.body().starts_with(&[0x89, b'P', b'N', b'G']));
     }
 
     #[test]

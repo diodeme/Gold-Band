@@ -123,6 +123,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
     <TooltipProvider>
       <div
         className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+        data-theme-role="shell"
         data-window-frame-style={windowFrameStyle}
         onContextMenu={(event) => event.preventDefault()}
       >
@@ -142,6 +143,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
             style={{ width: sidebarCollapsed ? 0 : 256 }}
           >
             <aside
+              data-theme-role="sidebar"
               className={cn(
                 'flex min-h-0 h-full w-64 flex-col gap-5 bg-sidebar px-5 py-7 text-sidebar-foreground transition-opacity duration-200 ease-out',
                 sidebarCollapsed ? 'opacity-0' : 'opacity-100',

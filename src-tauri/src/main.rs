@@ -45,9 +45,10 @@ use commands::{
     list_mcp_tools, list_project_skills, list_skills, mark_settings_advanced_update_seen,
     mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
     open_in_file_manager, pause_run, preflight_github_pull_request,
-    read_conversation_directory_file, read_skill, remove_recent_workspace, renew_acp_session_lease,
-    replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    read_conversation_directory_file, read_skill, recover_conversation_runtime,
+    remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
@@ -80,7 +81,7 @@ use metrics::start_heartbeat_polling;
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
-use tracing::info;
+use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -110,6 +111,10 @@ fn run() -> anyhow::Result<()> {
         // application-owned inset outline instead.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
+        // WRY maps this setting to both WebView2 IsZoomControlEnabled and
+        // IsPinchZoomEnabled. The renderer prevents page-level zoom and routes
+        // precision-touchpad pinch events only to zoom-aware surfaces.
+        window.zoom_hotkeys_enabled = true;
         #[cfg(debug_assertions)]
         {
             window.additional_browser_args =
@@ -165,7 +170,29 @@ fn run() -> anyhow::Result<()> {
             scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                let _ = runtime_app.recover_interrupted_running_sessions();
+            }
+            match state.recover_interrupted_conversation_workspaces() {
+                Ok(report) => {
+                    info!(
+                        workspace_count = report.workspace_count,
+                        recovered_run_count = report.recovered_run_count,
+                        skipped_workspace_count = report.skipped_workspace_count,
+                        failure_count = report.failures.len(),
+                        "conversation workspace startup recovery completed"
+                    );
+                    for failure in report.failures {
+                        warn!(
+                            workspace_path = %failure.workspace_path,
+                            error_code = failure.code,
+                            error = %failure.message,
+                            "conversation workspace startup recovery failed"
+                        );
+                    }
+                }
+                Err(error) => warn!(
+                    error = %error,
+                    "failed to load conversation workspaces for startup recovery"
+                ),
             }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
@@ -295,6 +322,7 @@ fn run() -> anyhow::Result<()> {
             list_github_issues,
             get_github_issue,
             continue_conversation_runtime,
+            recover_conversation_runtime,
             continue_run,
             pause_run,
             stop_active_session,

@@ -130,7 +130,7 @@ function pullRequestDetail(): GitHubPullRequestDetailVm {
     additions: 1,
     deletions: 1,
     changedFiles: 1,
-    files: [{ path: 'src/app.ts', additions: 1, deletions: 1 }],
+    files: [{ path: 'src/app.ts', oldPath: null, kind: 'modified', additions: 1, deletions: 1 }],
     latestReviews: [],
   };
 }

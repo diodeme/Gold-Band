@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { createAgent, deleteAgent, doctorAgent, updateAgent } from '../api';
+import { createAgent, deleteAgent, doctorAgent, getAgentBindingUsage, updateAgent } from '../api';
 import { displayAppError } from '../i18n';
-import type { AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
+import type { AgentBindingUsageVm, AgentCatalogEntryVm, AgentRegistryVm, ManagedAgentInput, ManagedAgentVm } from '../types';
 import { AppCard } from '@/components/AppCard';
 import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -50,6 +50,14 @@ export type AgentDeleteDialogState = {
   open: boolean;
   target: ManagedAgentVm | null;
 };
+
+export function agentDeleteActionDisabled(
+  loading: boolean,
+  usage: AgentBindingUsageVm | null,
+  error: string | null,
+) {
+  return loading || usage === null || error !== null;
+}
 type Notice = { tone: 'success' | 'error'; message: string };
 
 const ACP_REGISTRY_URL = 'https://agentclientprotocol.com/get-started/registry';
@@ -117,6 +125,10 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   const [diagnosingType, setDiagnosingType] = useState<string | null>(null);
   const [automaticDiagnosingType, setAutomaticDiagnosingType] = useState<string | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<AgentDeleteDialogState>({ open: false, target: null });
+  const [deleteUsage, setDeleteUsage] = useState<AgentBindingUsageVm | null>(null);
+  const [deleteUsageLoading, setDeleteUsageLoading] = useState(false);
+  const [deleteUsageError, setDeleteUsageError] = useState<string | null>(null);
+  const deleteUsageRequestIdRef = useRef(0);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const iconFileInputRef = useRef<HTMLInputElement>(null);
@@ -274,14 +286,44 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
 
   const confirmDelete = async () => {
     const target = deleteDialog.target;
-    if (!target) return;
+    if (!target || agentDeleteActionDisabled(deleteUsageLoading, deleteUsage, deleteUsageError)) return;
     try {
       onRegistryChange(await deleteAgent(target.agentType));
+      deleteUsageRequestIdRef.current += 1;
       setDeleteDialog(closeAgentDeleteDialogState);
     } catch (nextError) {
       setError(displayAppError(t, nextError));
+      deleteUsageRequestIdRef.current += 1;
       setDeleteDialog(closeAgentDeleteDialogState);
     }
+  };
+
+  const loadDeleteUsage = async (target: ManagedAgentVm) => {
+    const requestId = deleteUsageRequestIdRef.current + 1;
+    deleteUsageRequestIdRef.current = requestId;
+    setDeleteUsage(null);
+    setDeleteUsageError(null);
+    setDeleteUsageLoading(true);
+    try {
+      const usage = await getAgentBindingUsage(target.agentType);
+      if (deleteUsageRequestIdRef.current === requestId) setDeleteUsage(usage);
+    } catch (nextError) {
+      if (deleteUsageRequestIdRef.current === requestId) {
+        setDeleteUsageError(displayAppError(t, nextError));
+      }
+    } finally {
+      if (deleteUsageRequestIdRef.current === requestId) setDeleteUsageLoading(false);
+    }
+  };
+
+  const openDeleteDialog = (target: ManagedAgentVm) => {
+    setDeleteDialog({ open: true, target });
+    void loadDeleteUsage(target);
+  };
+
+  const closeDeleteDialog = () => {
+    deleteUsageRequestIdRef.current += 1;
+    setDeleteDialog(closeAgentDeleteDialogState);
   };
 
   return (
@@ -364,7 +406,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
               agent={agent}
               diagnosing={diagnosingType === agent.agentType || automaticDiagnosingType === agent.agentType}
               onEdit={() => openEdit(agent)}
-              onDelete={() => setDeleteDialog({ open: true, target: agent })}
+              onDelete={() => openDeleteDialog(agent)}
               onDoctor={() => void runDoctor(agent.agentType)}
             />
           ))}
@@ -567,16 +609,42 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
       </Sheet>
 
       <AlertDialog open={deleteDialog.open} onOpenChange={(open) => {
-        if (!open) setDeleteDialog(closeAgentDeleteDialogState);
+        if (!open) closeDeleteDialog();
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t('agentManagement.deleteTitle')}</AlertDialogTitle>
             <AlertDialogDescription>{t('agentManagement.deleteDescription', { agent: deleteDialog.target?.displayName ?? deleteDialog.target?.agentType ?? '' })}</AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="rounded-md border bg-muted/20 p-3 text-sm">
+            {deleteUsageLoading ? <div className="flex items-center gap-2 text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{t('agentManagement.deleteUsageLoading')}</div> : null}
+            {deleteUsage ? (
+              <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2">
+                <dt>{t('agentManagement.deleteUsageTemplates')}</dt><dd className="tabular-nums">{deleteUsage.workflowTemplateCount}</dd>
+                <dt>{t('agentManagement.deleteUsageTasks')}</dt><dd className="tabular-nums">{deleteUsage.taskCount}</dd>
+                <dt>{t('agentManagement.deleteUsageSchedules')}</dt><dd className="tabular-nums">{deleteUsage.scheduledTaskCount}</dd>
+              </dl>
+            ) : null}
+            {deleteUsageError ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="alert" className="min-w-0 flex-1 text-destructive">{t('agentManagement.deleteUsageFailed', { reason: deleteUsageError })}</p>
+                <Button type="button" variant="outline" size="sm" onClick={() => {
+                  if (deleteDialog.target) void loadDeleteUsage(deleteDialog.target);
+                }}>
+                  <RefreshCw />
+                  {t('agentManagement.deleteUsageRetry')}
+                </Button>
+              </div>
+            ) : null}
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('common.close')}</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void confirmDelete()}>{t('agentManagement.deleteAction')}</AlertDialogAction>
+            <AlertDialogAction
+              disabled={agentDeleteActionDisabled(deleteUsageLoading, deleteUsage, deleteUsageError)}
+              onClick={() => void confirmDelete()}
+            >
+              {t('agentManagement.deleteAction')}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

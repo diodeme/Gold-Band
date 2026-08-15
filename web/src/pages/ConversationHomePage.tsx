@@ -2,7 +2,7 @@ import { ConversationComposer } from '@/components/conversation/ConversationComp
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { cn } from '@/lib/utils';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -20,6 +20,7 @@ interface ConversationHomePageProps {
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
+  onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
   onScheduledModeExit?: () => void;
 }
@@ -40,6 +41,7 @@ export function ConversationHomePage({
   onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
+  onWorkflowRepairTargetChange,
   onWorkspaceChange,
   onScheduledModeExit,
 }: ConversationHomePageProps) {
@@ -68,6 +70,7 @@ export function ConversationHomePage({
           onCreateScheduledTask={onCreateScheduledTask}
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
+          onWorkflowRepairTargetChange={onWorkflowRepairTargetChange}
           onWorkspaceChange={onWorkspaceChange}
           onScheduledModeExit={onScheduledModeExit}
         />

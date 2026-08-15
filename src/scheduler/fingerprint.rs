@@ -260,7 +260,11 @@ fn sorted_strings(values: &[String]) -> Value {
 }
 
 fn canonical_workflow_authoring(value: &Value) -> Value {
-    normalize_workflow_value(value, None)
+    let workflow = value
+        .as_object()
+        .and_then(|object| object.get("workflow"))
+        .unwrap_or(value);
+    normalize_workflow_value(workflow, None)
 }
 
 fn normalize_workflow_value(value: &Value, parent_key: Option<&str>) -> Value {
@@ -332,6 +336,8 @@ fn is_execution_option(key: &str) -> bool {
             | "acp_options"
             | "executionConfig"
             | "execution_config"
+            | "executionSlotId"
+            | "execution_slot_id"
     )
 }
 

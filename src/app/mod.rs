@@ -32,8 +32,8 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
-    workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
+    validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicGraphState, DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus,
@@ -44,7 +44,7 @@ use crate::process::recover_persisted_process_group;
 use crate::provider::{
     DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
     ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
@@ -53,6 +53,10 @@ use crate::runtime::{
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
     write_json,
+};
+use crate::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
+    migrate_authoring_workflow, validate_and_inject,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -235,6 +239,7 @@ fn default_workflow_template(
             default_enabled: true,
         }),
         workflow: default_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -255,6 +260,7 @@ fn default_lightweight_workflow_template(
             default_enabled: true,
         }),
         workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -302,7 +308,7 @@ fn default_workflow_dsl(
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        provider: &str,
+        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -313,7 +319,8 @@ fn default_workflow_dsl(
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
-            provider: Some(provider.to_string()),
+            execution_slot_id: None,
+            provider: None,
             model: None,
             profile: Some(
                 profiles
@@ -333,7 +340,7 @@ fn default_workflow_dsl(
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: Some("bypassPermissions".to_string()),
+            permission_mode: None,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -494,7 +501,7 @@ fn default_lightweight_workflow_dsl(
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        provider: &str,
+        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -504,7 +511,8 @@ fn default_lightweight_workflow_dsl(
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
-            provider: Some(provider.to_string()),
+            execution_slot_id: None,
+            provider: None,
             model: None,
             profile: Some(
                 profiles
@@ -524,7 +532,7 @@ fn default_lightweight_workflow_dsl(
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: Some("bypassPermissions".to_string()),
+            permission_mode: None,
             config_options: Default::default(),
             manual_check: None,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -640,12 +648,21 @@ fn upsert_built_in_workflow_template(
         .iter()
         .position(|template| template.id == built_in.id)
     {
-        templates[current_index] = built_in;
+        let mut next = built_in;
+        next.model_bindings = templates[current_index].model_bindings.clone();
+        migrate_authoring_workflow(&mut next.workflow, &mut next.model_bindings, Some(&next.id));
+        templates[current_index] = next;
         if current_index != index {
             let template = templates.remove(current_index);
             templates.insert(index.min(templates.len()), template);
         }
     } else {
+        let mut built_in = built_in;
+        migrate_authoring_workflow(
+            &mut built_in.workflow,
+            &mut built_in.model_bindings,
+            Some(&built_in.id),
+        );
         templates.insert(index.min(templates.len()), built_in);
     }
 }
@@ -762,6 +779,8 @@ pub struct WorkflowTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: WorkflowModelBindings,
     #[serde(alias = "created_at")]
     pub created_at: String,
     #[serde(alias = "updated_at")]
@@ -1161,13 +1180,14 @@ fn validate_ai_dynamic_allowed_workflows(
                 }
                 .into());
             }
-            let validated = validate_workflow(template.workflow.clone()).map_err(|error| {
-                WorkflowValidationError::AiDynamicInvalidWorkflow {
-                    node_id: dynamic.id.clone(),
-                    workflow_name: template.name.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            let validated =
+                validate_authoring_workflow(template.workflow.clone()).map_err(|error| {
+                    WorkflowValidationError::AiDynamicInvalidWorkflow {
+                        node_id: dynamic.id.clone(),
+                        workflow_name: template.name.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
             if !dynamic.control.allow_nested_dynamic && workflow_contains_ai_dynamic(&validated.raw)
             {
                 return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
@@ -1239,58 +1259,6 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
                 .collect(),
         },
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelConfigNormalization {
-    pub node_id: String,
-    pub scope: String,
-    pub provider: Option<String>,
-    pub previous_model: String,
-}
-
-fn provider_model_is_stale(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    provider: &str,
-    model: &str,
-) -> bool {
-    let supported_models = diagnostics
-        .get(provider)
-        .filter(|diagnostic| diagnostic.available)
-        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
-        .unwrap_or_default();
-    !supported_models.is_empty()
-        && !supported_models
-            .iter()
-            .any(|option| option.id == model || option.name.as_deref() == Some(model))
-}
-
-fn clear_stale_model(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    node_id: &str,
-    scope: &str,
-    provider: &str,
-    model: &mut Option<String>,
-    normalizations: &mut Vec<ModelConfigNormalization>,
-) {
-    let Some(configured) = model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    if !provider_model_is_stale(diagnostics, provider, configured) {
-        return;
-    }
-    normalizations.push(ModelConfigNormalization {
-        node_id: node_id.to_string(),
-        scope: scope.to_string(),
-        provider: Some(provider.to_string()),
-        previous_model: configured.to_string(),
-    });
-    *model = None;
 }
 
 impl App {
@@ -1874,15 +1842,25 @@ impl App {
     pub fn save_workflow_template(
         &self,
         name: String,
-        workflow: WorkflowDsl,
+        mut workflow: WorkflowDsl,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        self.save_workflow_template_with_bindings(name, workflow, model_bindings)
+    }
+
+    pub fn save_workflow_template_with_bindings(
+        &self,
+        name: String,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
     ) -> Result<WorkflowTemplateStore> {
         let name = name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
         }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1896,8 +1874,7 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
@@ -1910,6 +1887,7 @@ impl App {
             is_built_in: false,
             optional_entry_stage: None,
             workflow: validated.raw,
+            model_bindings,
             created_at: now.clone(),
             updated_at: now,
         });
@@ -1921,7 +1899,18 @@ impl App {
     pub fn update_workflow_template(
         &self,
         template_id: &str,
-        workflow: WorkflowDsl,
+        mut workflow: WorkflowDsl,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        self.update_workflow_template_with_bindings(template_id, workflow, model_bindings)
+    }
+
+    pub fn update_workflow_template_with_bindings(
+        &self,
+        template_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
     ) -> Result<WorkflowTemplateStore> {
         let template_id = template_id.trim();
         if template_id.is_empty() {
@@ -1936,10 +1925,8 @@ impl App {
         {
             return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
         }
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
             &store,
@@ -1955,6 +1942,36 @@ impl App {
             .find(|template| template.id == template_id)
             .with_context(|| format!("workflow template `{template_id}` not found"))?;
         template.workflow = validated.raw;
+        template.model_bindings = model_bindings;
+        template.updated_at = now_rfc3339_like();
+        store.last_used_template_id = Some(template_id.to_string());
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn update_built_in_workflow_template_bindings(
+        &self,
+        template_id: &str,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut store = self.load_workflow_template_store()?;
+        let template = store
+            .templates
+            .iter_mut()
+            .find(|template| template.id == template_id && template.is_built_in)
+            .ok_or(WorkflowTemplateCommandError::ReadonlyBuiltIn)?;
+        migrate_authoring_workflow(
+            &mut template.workflow,
+            &mut model_bindings,
+            Some(template_id),
+        );
+        validate_and_inject(
+            &template.workflow,
+            &model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?;
+        template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
         self.save_workflow_template_store(&store)?;
@@ -2123,9 +2140,19 @@ impl App {
         }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
+            for template in &mut store.templates {
+                migrate_authoring_workflow(
+                    &mut template.workflow,
+                    &mut template.model_bindings,
+                    template.is_built_in.then_some(template.id.as_str()),
+                );
+            }
             upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0);
             upsert_built_in_workflow_template(&mut store.templates, default_template, 0);
-            self.normalize_workflow_template_store_models(&mut store);
+            if let Some(workflow) = store.last_created_workflow.as_mut() {
+                let mut ignored = WorkflowModelBindings::default();
+                migrate_authoring_workflow(workflow, &mut ignored, None);
+            }
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
@@ -2135,29 +2162,55 @@ impl App {
             last_created_workflow: None,
             templates: vec![default_template, lightweight_template],
         };
-        self.normalize_workflow_template_store_models(&mut store);
+        for template in &mut store.templates {
+            migrate_authoring_workflow(
+                &mut template.workflow,
+                &mut template.model_bindings,
+                template.is_built_in.then_some(template.id.as_str()),
+            );
+        }
         self.save_workflow_template_store(&store)?;
         Ok(store)
-    }
-
-    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
-        let now = now_rfc3339_like();
-        for template in &mut store.templates {
-            if !self
-                .normalize_workflow_models(&mut template.workflow)
-                .is_empty()
-            {
-                template.updated_at = now.clone();
-            }
-        }
-        if let Some(workflow) = store.last_created_workflow.as_mut() {
-            self.normalize_workflow_models(workflow);
-        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
         fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
         write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
+        let path = self.paths.workflow_file(task_id);
+        let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+        let (mut current, legacy) = compat.into_current();
+        if legacy
+            || migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)
+        {
+            write_json(&path, &current)?;
+        }
+        Ok(current)
+    }
+
+    pub fn task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        Ok(self.task_authoring_workflow(task_id)?.workflow)
+    }
+
+    pub fn executable_task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        let authoring = self.task_authoring_workflow(task_id)?;
+        Ok(validate_and_inject(
+            &authoring.workflow,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?)
+    }
+
+    fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        mut authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None);
+        write_json(&self.paths.workflow_file(task_id), &authoring)
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -2180,10 +2233,9 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        mut workflow: WorkflowDsl,
+        workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
-        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -2327,9 +2379,22 @@ impl App {
         }
 
         let mut workflow = input.workflow.clone();
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        self.create_task_from_requirement_with_bindings(input, workflow, model_bindings)
+    }
+
+    pub fn create_task_from_requirement_with_bindings(
+        &self,
+        input: CreateTaskInput,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        if input.requirement_content.trim().is_empty() {
+            bail!("requirement content cannot be empty");
+        }
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         let selected_template = input
@@ -2367,7 +2432,13 @@ impl App {
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
-        write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            &task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw.clone(),
+                model_bindings,
+            },
+        )?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
@@ -2393,16 +2464,32 @@ impl App {
     }
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
-        self.task_show(task_id)?;
         let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        self.save_task_workflow_with_bindings(task_id, workflow, model_bindings)
+    }
+
+    pub fn save_task_workflow_with_bindings(
+        &self,
+        task_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.task_show(task_id)?;
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
-        write_json(&self.paths.workflow_file(task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw,
+                model_bindings,
+            },
+        )?;
         self.task_summary(task_id)
     }
 
@@ -3720,77 +3807,6 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn normalize_workflow_models(
-        &self,
-        workflow: &mut WorkflowDsl,
-    ) -> Vec<ModelConfigNormalization> {
-        let diagnostics = self.provider_diagnostics();
-        let mut normalizations = Vec::new();
-        for node in &mut workflow.nodes {
-            match node {
-                NodeDsl::Worker(worker) => {
-                    if let Some(provider) = worker.provider.as_deref() {
-                        clear_stale_model(
-                            &diagnostics,
-                            &worker.id,
-                            "worker",
-                            provider,
-                            &mut worker.model,
-                            &mut normalizations,
-                        );
-                    }
-                }
-                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed {
-                        provider, model, ..
-                    } => clear_stale_model(
-                        &diagnostics,
-                        &dynamic.id,
-                        "fixed",
-                        provider,
-                        model,
-                        &mut normalizations,
-                    ),
-                    AiDynamicAgentStrategy::Dynamic {
-                        bootstrap_provider,
-                        bootstrap_model,
-                        acceptance_model,
-                        available_agents,
-                        ..
-                    } => {
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "bootstrap",
-                            bootstrap_provider,
-                            bootstrap_model,
-                            &mut normalizations,
-                        );
-                        for agent in available_agents.iter_mut() {
-                            clear_stale_model(
-                                &diagnostics,
-                                &dynamic.id,
-                                "available-agent",
-                                &agent.provider,
-                                &mut agent.model,
-                                &mut normalizations,
-                            );
-                        }
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "acceptance",
-                            bootstrap_provider,
-                            acceptance_model,
-                            &mut normalizations,
-                        );
-                    }
-                },
-            }
-        }
-        normalizations
-    }
-
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
         for node in workflow.nodes_by_id.values() {
             for provider in providers_for_node(node) {
@@ -3865,7 +3881,7 @@ impl App {
 
             let workflow_path = self.paths.workflow_file(task_id);
             if workflow_path.exists() {
-                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                let workflow = self.task_workflow(task_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.task_count += 1;
                 }
@@ -4011,15 +4027,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let mut workflow: WorkflowDsl = match read_json(&path) {
-            Ok(workflow) => workflow,
+        let authoring = match self.task_authoring_workflow(task_id) {
+            Ok(authoring) => authoring,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
-        if !self.normalize_workflow_models(&mut workflow).is_empty() {
-            write_json(&path, &workflow)?;
-        }
+        let workflow = authoring.workflow;
 
-        let validated = match validate_workflow(workflow.clone()) {
+        let validated = match validate_authoring_workflow(workflow.clone()) {
             Ok(validated) => validated,
             Err(err) => {
                 let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
@@ -4027,8 +4041,18 @@ impl App {
             }
         };
 
-        if let Err(err) = self.validate_workflow_agents(&validated) {
-            return Ok((Some(err.to_string()), None));
+        let executable = match validate_and_inject(
+            &validated.raw,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        ) {
+            Ok(executable) => executable,
+            Err(err) => return Ok((Some(err.to_string()), None)),
+        };
+        if let Err(err) = validate_workflow(executable) {
+            let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
+            return Ok((Some(err.to_string()), validation_error));
         }
 
         match resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language) {
@@ -4107,6 +4131,7 @@ mod tests {
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
+    use crate::workflow_model_binding::{TaskAuthoringWorkflow, WorkflowModelBindings};
     use camino::Utf8PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
@@ -4405,6 +4430,7 @@ mod tests {
             entry: "dev".to_string(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
@@ -4699,11 +4725,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
+    fn ai_dynamic_stale_models_are_preserved_for_explicit_validation() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app_with_provider_capabilities(
+        let _app = test_app_with_provider_capabilities(
             repo_root,
             serde_json::json!({
                 "configOptions": [
@@ -4751,13 +4777,7 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let mut normalized_workflow = workflow;
-        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
-        assert_eq!(normalizations.len(), 1);
-        assert_eq!(normalizations[0].scope, "available-agent");
-        assert_eq!(normalizations[0].previous_model, "future-model");
-
-        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+        let NodeDsl::AiDynamic(dynamic) = &workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4766,12 +4786,12 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        assert!(validate_workflow(normalized_workflow).is_ok());
+        assert_eq!(available_agents[0].model.as_deref(), Some("future-model"));
+        assert!(validate_workflow(workflow).is_ok());
     }
 
     #[test]
-    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+    fn workflow_template_and_task_authoring_preserve_stale_model_ids() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -4856,6 +4876,7 @@ mod tests {
                 is_built_in: false,
                 optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
+                model_bindings: WorkflowModelBindings::default(),
                 created_at: "2026-07-28T00:00:00Z".to_string(),
                 updated_at: "2026-07-28T00:00:00Z".to_string(),
             }],
@@ -4881,14 +4902,14 @@ mod tests {
             else {
                 unreachable!();
             };
-            assert_eq!(available_agents[0].model, None);
+            assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
             let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
                 unreachable!();
             };
             let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
                 unreachable!();
             };
-            assert_eq!(*model, None);
+            assert_eq!(model.as_deref(), Some("gpt-5.4"));
         }
 
         let task = app
@@ -4901,9 +4922,9 @@ mod tests {
                 workflow_template_id: None,
             })
             .unwrap();
-        let persisted_authoring: WorkflowDsl =
+        let persisted_authoring: TaskAuthoringWorkflow =
             read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
-        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4912,14 +4933,14 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+        assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.workflow.nodes[1] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
             unreachable!();
         };
-        assert_eq!(*model, None);
+        assert_eq!(model.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]

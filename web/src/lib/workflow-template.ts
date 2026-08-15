@@ -1,4 +1,4 @@
-import type { WorkflowDsl, WorkflowTemplate } from '@/types';
+import type { WorkflowDsl, WorkflowModelBindings, WorkflowTemplate } from '@/types';
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Translate): string {
@@ -21,6 +21,28 @@ export function shouldShowDefaultWorkflowSaveAsNotice(
 ): boolean {
   return Boolean(template?.isBuiltIn)
     && hasWorkflowDraftChanges(workflow, baseline);
+}
+
+export function hasWorkflowBindingDraftChanges(
+  bindings: WorkflowModelBindings | null | undefined,
+  baseline: WorkflowModelBindings | null | undefined,
+): boolean {
+  return Boolean(bindings && baseline && JSON.stringify(bindings.bindings) !== JSON.stringify(baseline.bindings));
+}
+
+export function restoreBuiltInWorkflowDefinition(
+  baseline: WorkflowDsl,
+  bindings: WorkflowModelBindings,
+): { workflow: WorkflowDsl; modelBindings: WorkflowModelBindings } {
+  const workflow = JSON.parse(JSON.stringify(baseline)) as WorkflowDsl;
+  const slots = new Set(workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [node.executionSlotId] : []));
+  return {
+    workflow,
+    modelBindings: {
+      ...bindings,
+      bindings: bindings.bindings.filter((binding) => slots.has(binding.executionSlotId)),
+    },
+  };
 }
 
 export function createBlankWorkflowDraft(): WorkflowDsl {

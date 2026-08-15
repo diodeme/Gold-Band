@@ -95,13 +95,13 @@ const defaultWorkflow: WorkflowDsl = {
   entry: 'interview',
   control: { max_attempts: 10, max_rounds: 3 },
   nodes: [
-    { type: 'worker', id: 'interview', provider: 'claude-acp', profile: 'pf-builtin-interview', goal: 'Clarify the requirement.', permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', permission_mode: 'bypassPermissions', manual_check: true },
-    { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.', permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'review', provider: 'claude-acp', profile: 'pf-builtin-review', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'test', provider: 'claude-acp', profile: 'pf-builtin-test', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-builtin-accept', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'cleanup', provider: 'claude-acp', profile: 'pf-builtin-cleanup', goal: 'Clean up resources, finalize handoff notes, clean up Git workspace', permission_mode: 'bypassPermissions' },
+    { type: 'worker', id: 'interview', executionSlotId: 'builtin:default:interview', profile: 'pf-builtin-interview', goal: 'Clarify the requirement.' },
+    { type: 'worker', id: 'plan', executionSlotId: 'builtin:default:plan', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', manual_check: true },
+    { type: 'worker', id: 'dev', executionSlotId: 'builtin:default:dev', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.' },
+    { type: 'worker', id: 'review', executionSlotId: 'builtin:default:review', profile: 'pf-builtin-review', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'test', executionSlotId: 'builtin:default:test', profile: 'pf-builtin-test', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'accept', executionSlotId: 'builtin:default:accept', profile: 'pf-builtin-accept', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'cleanup', executionSlotId: 'builtin:default:cleanup', profile: 'pf-builtin-cleanup', goal: 'Clean up resources, finalize handoff notes, clean up Git workspace' },
   ],
   edges: [
     { from: 'interview', to: 'plan', on: 'success' },
@@ -123,9 +123,9 @@ const lightweightWorkflow: WorkflowDsl = {
   entry: 'grill',
   control: { max_attempts: 10, max_rounds: 3 },
   nodes: [
-    { type: 'worker', id: 'grill', provider: 'claude-acp', profile: 'pf-builtin-grill', goal: 'Challenge the requirement until shared understanding is reached.', permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'dev-test', provider: 'claude-acp', profile: 'pf-builtin-dev-test', goal: 'Implement the requirement and run automated verification.', permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-builtin-accept', goal: 'Validate acceptance.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
+    { type: 'worker', id: 'grill', executionSlotId: 'builtin:default-lightweight:grill', profile: 'pf-builtin-grill', goal: 'Challenge the requirement until shared understanding is reached.' },
+    { type: 'worker', id: 'dev-test', executionSlotId: 'builtin:default-lightweight:dev-test', profile: 'pf-builtin-dev-test', goal: 'Implement the requirement and run automated verification.' },
+    { type: 'worker', id: 'accept', executionSlotId: 'builtin:default-lightweight:accept', profile: 'pf-builtin-accept', goal: 'Validate acceptance.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
   ],
   edges: [
     { from: 'grill', to: 'dev-test', on: 'success' },
@@ -135,13 +135,25 @@ const lightweightWorkflow: WorkflowDsl = {
   ],
 };
 
+function mockBindings(workflow: WorkflowDsl) {
+  return {
+    definitionRevision: 'browser-preview',
+    bindingRevision: 1,
+    bindings: workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [{
+      executionSlotId: node.executionSlotId,
+      agentId: 'claude-acp',
+      permissionModeId: 'bypassPermissions',
+    }] : []),
+  };
+}
+
 export const mockWorkflowTemplates: WorkflowTemplateStore = {
   version: '0.1',
   lastUsedTemplateId: 'default',
   lastCreatedWorkflow: null,
   templates: [
-    { id: 'default', name: '默认完整工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'interview', labelKey: 'conversation.home.includeInterview', defaultEnabled: true }, workflow: defaultWorkflow, createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
-    { id: 'default-lightweight', name: '默认轻量工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'grill', labelKey: 'conversation.home.includeGrill', defaultEnabled: true }, workflow: lightweightWorkflow, createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
+    { id: 'default', name: '默认完整工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'interview', labelKey: 'conversation.home.includeInterview', defaultEnabled: true }, workflow: defaultWorkflow, modelBindings: mockBindings(defaultWorkflow), createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
+    { id: 'default-lightweight', name: '默认轻量工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'grill', labelKey: 'conversation.home.includeGrill', defaultEnabled: true }, workflow: lightweightWorkflow, modelBindings: mockBindings(lightweightWorkflow), createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
   ],
 };
 
@@ -602,6 +614,7 @@ export const mockWorkflow: WorkflowVm = {
     ...Array.from({ length: 8 }, (_, index) => ({ run: { ...latestRun, id: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure', resumable: false, currentNode: null }, rounds: rounds.map((round) => ({ ...round, id: `${round.id}-${index}`, runId: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure' })) })),
   ],
   workflowJson: JSON.stringify(defaultWorkflow, null, 2),
+  modelBindings: mockBindings(defaultWorkflow),
 };
 
 export const mockRunDetail: RunDetailVm = {

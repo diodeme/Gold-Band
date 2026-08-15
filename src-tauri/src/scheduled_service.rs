@@ -334,6 +334,7 @@ impl ScheduledTaskService {
             attachment_paths: input.attachment_paths.clone(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -503,6 +504,7 @@ impl ScheduledTaskService {
             attachment_paths: Some(attachment_paths),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -1172,10 +1174,13 @@ fn copy_attachments(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use chrono::{TimeZone, Utc};
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
+    use gold_band::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
+    use gold_band::dsl::NodeDsl;
     use gold_band::scheduler::db::ScheduledTaskDatabase;
     use gold_band::scheduler::occurrence::{
         OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
@@ -1184,6 +1189,7 @@ mod tests {
         LocalTimeDisambiguation, OverlapPolicy, RepeatPreset, ScheduleKind, ScheduledMode,
         ScheduledTaskDefinition, SessionPolicy,
     };
+    use gold_band::workflow_model_binding::{WorkerModelBinding, WorkflowModelBindings};
     use tempfile::TempDir;
 
     use super::{
@@ -1274,9 +1280,54 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_configured_workflow(true)
+        }
+
+        fn with_configured_workflow(configured: bool) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-            let app = App::new(root);
+            let config = RuntimeConfig::default().with_provider_diagnostics(BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-14T00:00:00Z".to_string(),
+                    capabilities: None,
+                },
+            )]));
+            let app = App::with_config(root, config);
+            if configured {
+                let template = app
+                    .workflow_templates()
+                    .unwrap()
+                    .templates
+                    .into_iter()
+                    .find(|template| template.id == DEFAULT_WORKFLOW_TEMPLATE_ID)
+                    .unwrap();
+                let bindings = template
+                    .workflow
+                    .nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        NodeDsl::Worker(worker) => Some(WorkerModelBinding {
+                            execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                            agent_id: "claude-acp".to_string(),
+                            model_id: None,
+                            permission_mode_id: None,
+                            config_options: BTreeMap::new(),
+                        }),
+                        NodeDsl::AiDynamic(_) => None,
+                    })
+                    .collect();
+                app.update_built_in_workflow_template_bindings(
+                    DEFAULT_WORKFLOW_TEMPLATE_ID,
+                    WorkflowModelBindings {
+                        bindings,
+                        ..WorkflowModelBindings::default()
+                    },
+                )
+                .unwrap();
+            }
             let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
             let coordinator = Arc::new(CoordinatorSpy::with_database(database.clone()));
             let service =
@@ -1477,17 +1528,33 @@ mod tests {
             created.definition.execution_config["includeOptionalEntry"],
             serde_json::json!(false)
         );
-        let workflow: gold_band::dsl::WorkflowDsl = serde_json::from_value(
-            created
-                .definition
-                .content_snapshot
-                .workflow_authoring
-                .clone()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(workflow.entry, "plan");
-        assert!(!workflow.nodes.iter().any(|node| node.id() == "interview"));
+        let authoring: gold_band::workflow_model_binding::TaskAuthoringWorkflow =
+            serde_json::from_value(
+                created
+                    .definition
+                    .content_snapshot
+                    .workflow_authoring
+                    .clone()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(authoring.workflow.entry, "plan");
+        assert!(
+            !authoring
+                .workflow
+                .nodes
+                .iter()
+                .any(|node| node.id() == "interview")
+        );
+        assert_eq!(
+            authoring.model_bindings.bindings.len(),
+            authoring
+                .workflow
+                .nodes
+                .iter()
+                .filter(|node| matches!(node, gold_band::dsl::NodeDsl::Worker(_)))
+                .count()
+        );
 
         let mut default_input = fixture.create_input();
         default_input.include_optional_entry = None;
@@ -1495,6 +1562,22 @@ mod tests {
         assert_eq!(
             defaulted.definition.execution_config["includeOptionalEntry"],
             serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn workflow_schedule_rejects_an_unconfigured_model_binding() {
+        let fixture = Fixture::with_configured_workflow(false);
+
+        let error = fixture.service.create(fixture.create_input()).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert!(
+            error.params["details"]["codes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|code| code == "workflow-model-binding.agent-required")
         );
     }
 

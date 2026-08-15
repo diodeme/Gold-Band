@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import '@/i18n';
+import i18n from '@/i18n';
 import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor } from '@/components/WorkflowEditor';
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
 import type { AgentRegistryVm, WorkflowDsl } from '@/types';
@@ -53,16 +53,15 @@ describe('workflow and AUTO model configuration', () => {
       nodes: [{
         type: 'worker',
         id: 'interview',
-        provider: 'claude-acp',
+        executionSlotId: 'slot-interview',
         profile: 'interview',
-        model: 'sonnet',
-        config_options: { reasoning_effort: 'high' },
       }],
       edges: [{ from: 'interview', to: '$end', on: 'success' }],
     };
 
     const html = renderToStaticMarkup(React.createElement(WorkflowEditor, {
       value: workflow,
+      modelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot-interview', agentId: 'claude-acp', modelId: 'sonnet', configOptions: { reasoning_effort: 'high' } }] },
       agentRegistry,
       profiles: [{ id: 'interview', name: 'Interview' }],
       onSave: () => undefined,
@@ -71,6 +70,18 @@ describe('workflow and AUTO model configuration', () => {
 
     expect(html).toContain('Sonnet · High');
     expect(html).toContain('data-slot="dropdown-menu-trigger"');
+    const modelConfigIndex = html.indexOf('data-slot="worker-model-config"');
+    const workflowControlIndex = html.indexOf('data-slot="workflow-control-config"');
+    const nodeConfigIndex = html.indexOf('data-slot="worker-node-config"');
+    expect(modelConfigIndex).toBeGreaterThan(-1);
+    expect(workflowControlIndex).toBeGreaterThan(modelConfigIndex);
+    expect(nodeConfigIndex).toBeGreaterThan(workflowControlIndex);
+    expect(html).toContain('data-slot="worker-inspector"');
+  });
+
+  it('states that model synchronization is limited to the current workflow', () => {
+    expect(i18n.getResource('zh-CN', 'translation', 'workflowEditor.syncDialogDescription')).toContain('仅在当前工作流内');
+    expect(i18n.getResource('en', 'translation', 'workflowEditor.syncDialogDescription')).toContain('current workflow only');
   });
 
   it('replays an AUTO fixed-agent model and thought level through the same selector', () => {

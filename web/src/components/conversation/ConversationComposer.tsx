@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -10,7 +10,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeOptionalEntryForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, setOptionalEntryPreference, shouldShowOptionalEntryToggle } from '@/lib/conversation-run-mode-config';
-import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
@@ -56,6 +56,7 @@ interface ConversationComposerProps {
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
+  onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
   onScheduledModeExit?: () => void;
 }
@@ -76,6 +77,7 @@ export function ConversationComposer({
   onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
+  onWorkflowRepairTargetChange,
   onWorkspaceChange,
   onScheduledModeExit,
 }: ConversationComposerProps) {
@@ -402,6 +404,15 @@ export function ConversationComposer({
           t,
         );
       if (localIssues.length > 0) {
+        if (!isDirect && !isAuto) {
+          onWorkflowRepairTargetChange?.(workflowRepairTargetForTemplate(
+            inputBase.workflowTemplateId,
+            agentRegistry,
+            profiles,
+            workflowTemplates,
+            t,
+          ));
+        }
         setRunModeError(localIssues.join('\n'));
         return;
       }

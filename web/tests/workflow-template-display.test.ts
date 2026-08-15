@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { hasWorkflowDraftChanges, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 
 const defaultTemplate = {
   id: 'default',
   name: '默认完整工作流',
   isBuiltIn: true,
   workflow: { version: '0.1', id: 'default-workflow', entry: '', control: {}, nodes: [], edges: [] },
+  modelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
   createdAt: '2026-08-07T00:00:00Z',
   updatedAt: '2026-08-07T00:00:00Z',
 };
@@ -35,5 +36,31 @@ describe('workflow template display names', () => {
     expect(shouldShowDefaultWorkflowSaveAsNotice(defaultTemplate, baseline, baseline)).toBe(false);
     expect(shouldShowDefaultWorkflowSaveAsNotice(defaultTemplate, restored, baseline)).toBe(false);
     expect(shouldShowDefaultWorkflowSaveAsNotice({ ...defaultTemplate, id: 'custom', isBuiltIn: false }, changed, baseline)).toBe(false);
+  });
+
+  it('classifies binding changes independently from definition changes', () => {
+    const baseline = { definitionRevision: 'a', bindingRevision: 1, bindings: [{ executionSlotId: 'slot-a', agentId: 'agent-a' }] };
+    const changed = { ...baseline, bindingRevision: 2, bindings: [{ executionSlotId: 'slot-a', agentId: 'agent-b' }] };
+    expect(hasWorkflowBindingDraftChanges({ ...baseline, bindingRevision: 99 }, baseline)).toBe(false);
+    expect(hasWorkflowBindingDraftChanges(changed, baseline)).toBe(true);
+  });
+
+  it('restores a built-in definition while preserving only bindings owned by its slots', () => {
+    const workflow = {
+      ...defaultTemplate.workflow,
+      entry: 'worker',
+      nodes: [{ id: 'worker', type: 'worker' as const, executionSlotId: 'slot-a', profile: 'developer' }],
+    };
+    const restored = restoreBuiltInWorkflowDefinition(workflow, {
+      definitionRevision: 'draft',
+      bindingRevision: 3,
+      bindings: [
+        { executionSlotId: 'slot-a', agentId: 'agent-a' },
+        { executionSlotId: 'temporary-slot', agentId: 'agent-b' },
+      ],
+    });
+    expect(restored.workflow).toEqual(workflow);
+    expect(restored.workflow).not.toBe(workflow);
+    expect(restored.modelBindings.bindings).toEqual([{ executionSlotId: 'slot-a', agentId: 'agent-a' }]);
   });
 });

@@ -910,6 +910,7 @@ export interface WorkflowVm {
   runs: RunGroupVm[];
   control?: WorkflowControlVm | null;
   workflowJson?: string | null;
+  modelBindings: WorkflowModelBindings;
 }
 
 export interface WorkflowDsl {
@@ -931,6 +932,7 @@ export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
   id: string;
+  executionSlotId?: string | null;
   provider?: string | null;
   model?: string | null;
   profile?: string | null;
@@ -1019,6 +1021,7 @@ export interface CreateTaskInput {
   requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   workflowTemplateId?: string | null;
 }
 
@@ -1039,8 +1042,29 @@ export interface WorkflowTemplate {
     defaultEnabled: boolean;
   } | null;
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentBindingUsageVm {
+  workflowTemplateCount: number;
+  taskCount: number;
+  scheduledTaskCount: number;
+}
+
+export interface WorkflowModelBindings {
+  definitionRevision: string;
+  bindingRevision: number;
+  bindings: WorkerModelBinding[];
+}
+
+export interface WorkerModelBinding {
+  executionSlotId: string;
+  agentId: string;
+  modelId?: string | null;
+  permissionModeId?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface AutoTemplateStore {
@@ -2245,6 +2269,12 @@ export interface ConversationMissingItemVm {
   code: string;
   label: string;
   recoveryPath: string;
+  params: Record<string, unknown>;
+}
+
+export interface WorkflowRepairTarget {
+  workflowTemplateId: string;
+  nodeId: string;
 }
 
 export interface ConversationSearchResultVm {

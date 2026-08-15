@@ -150,6 +150,7 @@ fn validate_direct_capabilities(
                 code: "direct.agent.unavailable".to_string(),
                 label: "Selected Direct Agent is unavailable".to_string(),
                 recovery_path: "/chat/agents".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let models =
@@ -167,6 +168,7 @@ fn validate_direct_capabilities(
                 code: "direct.model.not-found".to_string(),
                 label: "Selected model is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let modes =
@@ -184,6 +186,7 @@ fn validate_direct_capabilities(
                 code: "direct.permission.not-found".to_string(),
                 label: "Selected permission mode is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     result.valid = result.missing_items.is_empty();

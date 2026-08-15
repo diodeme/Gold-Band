@@ -1,12 +1,14 @@
 use camino::Utf8PathBuf;
 use gold_band::app::{App, CreateTaskInput, ProfileCommandError, ProfileInput, is_run_continuable};
-use gold_band::config::{DesktopLanguage, RuntimeConfig};
+use gold_band::config::{DesktopLanguage, ProviderDiagnosticSnapshot, RuntimeConfig};
 use gold_band::domain::{RunStatus, SessionMode};
 use gold_band::dsl::{WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderRunResult,
     ProviderRunStatus, SessionRef, WorkerInvocation,
 };
+use gold_band::workflow_model_binding::{WorkerModelBinding, WorkflowModelBindings};
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -165,6 +167,43 @@ fn workflow(app: &App, entry: &str) -> WorkflowDsl {
     workflow
 }
 
+fn configured_bindings(workflow: &WorkflowDsl) -> WorkflowModelBindings {
+    WorkflowModelBindings {
+        definition_revision: String::new(),
+        binding_revision: 1,
+        bindings: workflow
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+                    return None;
+                };
+                Some(WorkerModelBinding {
+                    execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                    agent_id: "claude-acp".to_string(),
+                    model_id: None,
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                })
+            })
+            .collect(),
+    }
+}
+
+fn with_available_claude_diagnostics(app: App) -> App {
+    app.with_provider_diagnostics_source(std::sync::Arc::new(|| {
+        Ok(BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-08-14T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )]))
+    }))
+}
+
 #[test]
 fn create_task_from_requirement_writes_authoring_files() {
     let temp = tempdir().unwrap();
@@ -186,6 +225,70 @@ fn create_task_from_requirement_writes_authoring_files() {
     assert!(app.paths.task_file("task-001").exists());
     assert!(app.paths.requirement_file("task-001").exists());
     assert!(app.paths.workflow_file("task-001").exists());
+}
+
+#[test]
+fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let template = app
+        .workflow_templates()
+        .unwrap()
+        .templates
+        .into_iter()
+        .find(|template| template.id == "default-lightweight")
+        .unwrap();
+    let bindings = WorkflowModelBindings {
+        definition_revision: template.model_bindings.definition_revision,
+        binding_revision: template.model_bindings.binding_revision + 1,
+        bindings: template
+            .workflow
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+                    return None;
+                };
+                Some(WorkerModelBinding {
+                    execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                    agent_id: "claude-acp".to_string(),
+                    model_id: Some("claude-sonnet-4-6".to_string()),
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                })
+            })
+            .collect(),
+    };
+
+    let summary = app
+        .create_task_from_requirement_with_bindings(
+            CreateTaskInput {
+                title: Some("Configured lightweight task".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "Implement the configured task".to_string(),
+                workflow: template.workflow.clone(),
+                workflow_template_id: Some(template.id),
+            },
+            template.workflow,
+            bindings,
+        )
+        .expect("configured authoring workflow should create a task");
+
+    let authoring = app.task_authoring_workflow(&summary.task.id).unwrap();
+    let grill = authoring
+        .workflow
+        .nodes
+        .iter()
+        .find(|node| node.id() == "grill")
+        .unwrap();
+    let gold_band::dsl::NodeDsl::Worker(grill) = grill else {
+        panic!("grill should be a worker node");
+    };
+    assert!(grill.provider.is_none());
+    assert!(grill.model.is_none());
+    assert_eq!(authoring.model_bindings.bindings.len(), 3);
 }
 
 #[test]
@@ -653,7 +756,10 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
 fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(InterruptThenSuccessProvider::new()),
+    ));
     let created = app
         .create_profile(ProfileInput {
             name: "可恢复运行角色".to_string(),
@@ -674,14 +780,19 @@ fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
     };
     plan.profile = Some(created.id.clone());
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Actionable run".to_string()),
-        description: None,
-        requirement_file_name: None,
-        requirement_content: "Task workflow uses resumable role".to_string(),
-        workflow: run_workflow,
-        workflow_template_id: None,
-    })
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Actionable run".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "Task workflow uses resumable role".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     let paused = app.run_start("task-001", None).unwrap();
@@ -728,8 +839,7 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
     })
     .unwrap();
 
-    let persisted_workflow: WorkflowDsl =
-        gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
+    let persisted_workflow = app.task_workflow("task-001").unwrap();
 
     let profiles = app.delete_profile(&created.id, true).unwrap();
     assert!(
@@ -752,7 +862,10 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
 fn force_deleting_referenced_profile_breaks_run_continue() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(InterruptThenSuccessProvider::new()),
+    ));
     let created = app
         .create_profile(ProfileInput {
             name: "继续运行删除角色".to_string(),
@@ -773,14 +886,19 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
     };
     plan.profile = Some(created.id.clone());
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Force delete continue task".to_string()),
-        description: None,
-        requirement_file_name: None,
-        requirement_content: "Task workflow uses resumable profile".to_string(),
-        workflow: run_workflow,
-        workflow_template_id: None,
-    })
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Force delete continue task".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "Task workflow uses resumable profile".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     let paused = app.run_start("task-001", None).unwrap();
@@ -984,16 +1102,23 @@ fn creating_task_with_template_duplicate_workflow_id_fails() {
 fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(SuccessProvider));
+    let app =
+        with_available_claude_diagnostics(App::with_provider(repo_root, Box::new(SuccessProvider)));
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Snapshot task".to_string()),
-        description: None,
-        requirement_file_name: Some("requirement.txt".to_string()),
-        requirement_content: "Keep snapshot stable".to_string(),
-        workflow: workflow(&app, "plan"),
-        workflow_template_id: None,
-    })
+    let run_workflow = workflow(&app, "plan");
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Snapshot task".to_string()),
+            description: None,
+            requirement_file_name: Some("requirement.txt".to_string()),
+            requirement_content: "Keep snapshot stable".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     app.run_start("task-001", None).unwrap();
@@ -1003,8 +1128,7 @@ fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
     let snapshot: WorkflowDsl =
         gold_band::storage::read_json(&app.paths.workflow_snapshot_file("task-001", "run-001"))
             .unwrap();
-    let authoring: WorkflowDsl =
-        gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
+    let authoring = app.task_workflow("task-001").unwrap();
     assert_eq!(snapshot.entry, "plan");
     assert_eq!(authoring.entry, "dev");
 }

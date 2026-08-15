@@ -522,7 +522,7 @@ export function ConversationComposer({
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
           disabled={busy || submittingAttachments}
-          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm"
         >
           <ComposerContextArea
             attachments={attachments}

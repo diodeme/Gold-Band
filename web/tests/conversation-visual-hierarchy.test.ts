@@ -25,7 +25,8 @@ describe('conversation visual hierarchy contract', () => {
     expect(dialog).toContain('max-w-[var(--conversation-content-rail-max-inline-size)] space-y-1 px-5 py-5');
     expect(dialog).toContain('<div className="min-w-0 space-y-1">');
     expect(dialog).toContain('<div className="px-5 pt-1 pb-2">');
-    expect(dialog).toContain('className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"');
+    expect(dialog).toContain('[filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]');
+    expect(dialog).not.toContain('focus-within:[filter:');
     expect(dialog).toContain('absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full');
     expect(dialog).toContain('rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
     expect(dialog).toContain("before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']");
@@ -35,6 +36,10 @@ describe('conversation visual hierarchy contract', () => {
     expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "composer"}');
     expect(composer).toContain("integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none'");
     expect(composer).toContain('bg-card !shadow-none transition-colors');
+    expect(composer).not.toContain('focus-within:border-primary/40');
+    expect(composer).not.toContain('focus-within:ring-2 focus-within:ring-primary/10');
+    expect(quickComposer).not.toContain('focus-within:border-primary/40');
+    expect(quickComposer).not.toContain('focus-within:ring-2 focus-within:ring-primary/10');
     expect(dialog).not.toContain('absolute -top-1 left-3 z-20 w-max max-w-[calc(100%-1.5rem)] -translate-y-full');
     expect(dialog).not.toContain('className="mb-1"');
     expect(dialog).not.toContain('<div className="px-5 py-3">');

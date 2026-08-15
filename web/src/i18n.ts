@@ -918,25 +918,34 @@ const resources = {
       workflowEditor: {
         title: "工作流编辑器",
         subtitle:
-          "通过画布创建节点和边，并为每个节点绑定 Agent；右键画布可添加结束或新 Round 节点。",
+          "通过画布创建节点和边，并为每个节点绑定 Agent。",
         canvas: "画布",
+        undo: "撤销",
+        redo: "重做",
         defaultTemplate: "默认模板",
         saveWorkflow: "保存工作流",
         inspector: "配置面板",
         addNode: "新增节点",
-        addWorkerNode: "新增模型节点",
+        addWorkerNode: "Agent 节点",
         addAiDynamicNode: "AI 动态节点",
-        aiDynamicHelp:
-          "AI动态节点，节点内部由AI自行设计动态工作流来实现节点目标",
         deleteNode: "删除节点",
         addEndTarget: "添加结束节点",
         addNewRoundTarget: "添加新 Round 节点",
+        endTarget: "结束节点",
+        newRoundTarget: "New Round 节点",
+        quickAddSuccessor: "快速新增后继",
         deleteEdge: "删除边",
         noAgents: "请先在 Agent 管理页配置并通过 doctor 检查。",
         noDoctorReadyAgents:
           "暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。",
         agentDoctorUnavailable: "Agent 未通过 doctor",
         selectHint: "选择画布中的节点或边进行配置。",
+        terminalSelectionHint: "终点节点无需配置，可通过画布上方的删除操作移除。",
+        currentSelection: "当前选择",
+        currentSelectionHelp: "节点和边的配置优先显示在这里。",
+        workflowSettings: "工作流设置",
+        validationSummary: "发现 {{count}} 个待处理问题",
+        moreValidationIssues: "另有 {{count}} 个问题，请继续检查对应配置。",
         workflowControls: "工作流控制",
         workflowControlsHelp: "未填写表示不限制；限制超出后当前工作流失败。",
         maxAttempts: "Attempt 最大次数",
@@ -1125,6 +1134,8 @@ const resources = {
         validationEdgeTargetRequired: "第 {{index}} 条边缺少目标节点。",
         validationEdgeTargetMissing: "边的目标节点 {{node}} 不存在。",
         validationEdgeOutcomeRequired: "第 {{index}} 条边类型无效。",
+        validationFailureOutcomeRequiresOutputValidation:
+          "{{node}} 只有开启 AI 输出验证后才能配置失败分支。",
         validationDuplicateEdgeOutcome:
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
@@ -2956,19 +2967,22 @@ const resources = {
       workflowEditor: {
         title: "Workflow Editor",
         subtitle:
-          "Create nodes and edges on the canvas, bind each node to an agent, and right-click the canvas to add end or new-round nodes.",
+          "Create nodes and edges on the canvas, then bind each node to an agent.",
         canvas: "Canvas",
+        undo: "Undo",
+        redo: "Redo",
         defaultTemplate: "Default Template",
         saveWorkflow: "Save Workflow",
         inspector: "Inspector",
         addNode: "Add Node",
-        addWorkerNode: "Add Model Node",
+        addWorkerNode: "Agent node",
         addAiDynamicNode: "AI Dynamic Node",
-        aiDynamicHelp:
-          "AI dynamic node. Inside the node, AI designs a dynamic workflow to achieve the node goal.",
         deleteNode: "Delete Node",
         addEndTarget: "Add End node",
         addNewRoundTarget: "Add New Round node",
+        endTarget: "End node",
+        newRoundTarget: "New Round node",
+        quickAddSuccessor: "Quick add successor",
         deleteEdge: "Delete Edge",
         noAgents:
           "Configure an agent and pass doctor in Agent Management first.",
@@ -2976,6 +2990,13 @@ const resources = {
           "No doctor-ready agents yet. Run doctor in Agent Management first.",
         agentDoctorUnavailable: "Agent has not passed doctor",
         selectHint: "Select a node or edge on the canvas to configure it.",
+        terminalSelectionHint:
+          "Terminal nodes need no configuration and can be removed with the delete action above the canvas.",
+        currentSelection: "Current Selection",
+        currentSelectionHelp: "Node and edge configuration appears here first.",
+        workflowSettings: "Workflow Settings",
+        validationSummary: "{{count}} issues need attention",
+        moreValidationIssues: "{{count}} more issues remain in the configuration.",
         workflowControls: "Workflow Controls",
         workflowControlsHelp:
           "Blank means unlimited. The workflow fails when a limit is exceeded.",
@@ -3181,6 +3202,8 @@ const resources = {
         validationEdgeTargetMissing:
           "Edge target node {{node}} does not exist.",
         validationEdgeOutcomeRequired: "Edge {{index}} has an invalid outcome.",
+        validationFailureOutcomeRequiresOutputValidation:
+          "{{node}} can only have a failure branch when AI output validation is enabled.",
         validationDuplicateEdgeOutcome:
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:

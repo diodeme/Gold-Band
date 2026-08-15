@@ -91,17 +91,21 @@
 - control 规则条展示 `max_attempts` 与 `max_rounds`；未配置时显示“不限制”。
 - 有效状态显示查看；未创建状态显示新建工作流；无效或校验失败状态显示修复。
 - 工作流校验错误在桌面 VM 中以 `code + params` 结构返回，前端按 i18n 渲染可见文案；后端不返回直接展示给用户的本地化句子，也不要求前端解析后端英文错误字符串。
-- 新建 / 修改 / 修复模式进入作者态画布编辑器，基于 `@xyflow/react` 支持新增节点、连接边、选择节点/边并在右侧 Inspector 配置；节点坐标不写入 workflow DSL，由系统根据节点和边自动排布为规整的从左到右结构。
-- 画布左上角提供浮动结构工具条，用于新增节点与删除当前选中节点；右侧 Inspector 只承载工作流控制、节点配置和边配置。
-- 工作流编辑器通过 `allowAiDynamic` 能力开关控制是否允许新增 `AI-DYNAMIC` 节点；开启后工具条显示本地化的 AI 动态节点新增按钮，旁侧问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 展示“AI动态节点，节点内部由AI自行设计动态工作流来实现节点目标”，关闭时只允许新增普通 worker 节点。
+- 新建 / 修改 / 修复模式进入作者态画布编辑器，基于 `@xyflow/react` 支持新增节点、连接边、选择节点/边并在右侧 Inspector 配置；节点坐标不写入 workflow DSL，由系统根据节点和边自动排布为规整的从左到右结构。拓扑布局只依赖入口、节点身份和边关系，Inspector 中的 Agent、goal、模型、角色、权限与工作流控制变化不得重新执行整图布局；Agent icon 等画布展示信息只刷新轻量展示投影。
+- 画布左上角提供浮动结构工具条：单个 `+` icon 使用 shadcn/ui `DropdownMenu` 展开 Agent 节点、可用时的 AI-DYNAMIC 节点、结束节点和 New Round 节点；统一删除操作支持当前选中的真实节点、终点节点或边，并按选择对象显示“删除节点”或“删除边”，边 Inspector 不再提供重复删除入口。所有真实节点提供 success 语义化出线把手，单出口在节点右侧垂直居中；只有开启 AI 输出验证的 worker 节点额外提供 failure 把手，此时 success / failure 在节点右侧上下对称。扩大连线命中半径并支持点击后再点目标完成连接。选中真实节点时使用 React Flow `NodeToolbar` 提供与节点能力一致的快速新增后继与删除操作，终点节点不显示快捷操作栏。
+- 工作流编辑器通过 `allowAiDynamic` 能力开关控制是否允许新增 `AI-DYNAMIC` 节点；开启后 `+` 下拉菜单显示本地化的 AI 动态节点选项，关闭时不显示该选项。
 - `AI-DYNAMIC` 节点 Inspector 默认展示节点 ID，并提供两个默认收起的编辑块：基础信息、Fan-out Agent。基础信息包含 allowed workflows 与动态控制限制；agent 块只配置 provider，角色和目标由 runtime 内置 prompt 提供。
 - allowed workflows 使用可搜索多选下拉栏，分为“可选择的工作流”和“不可选择的工作流”。不可选择项禁用并展示原因，例如 `workflow.id` 重复、`workflow.id` 为空、包含 AI-DYNAMIC 但未允许嵌套；默认工作流不做重复 ID 豁免。触发器内以标签展示已选 workflow 名称与 DSL `workflow.id`，标签可直接删除。`allowedWorkflows.workflowId` 存储 workflow 定义内的 `id`，不使用模板外层 `template.id`。
 - 保存 workflow 时，前端校验 AI-DYNAMIC 的控制限制必须为正整数、allowed workflow 必须存在且不重复、`allowNestedDynamic=false` 时不得选择包含 AI-DYNAMIC 的 workflow；后端保存和 run start 时会再次校验并冻结 snapshot。
-- 作者态画布右键菜单提供“添加结束节点”和“添加新 Round 节点”；添加后会在画布中出现对应虚拟目标节点，普通节点可拖拽连线到该目标，用于补齐结束流向或开启新 round 的流向。
+- 作者态画布的 `+` 菜单直接提供“结束节点”和“New Round 节点”；添加后会在画布中出现对应虚拟终点。终点支持点击选中，并通过画布顶部统一删除操作移除；删除终点时同步删除所有指向该终点的边并纳入 Undo / Redo。画布右键菜单保留相同能力作为次要快捷方式，不作为唯一入口。
 - 初始入口不提供独立选择器，由画布拓扑自动派生：真实节点中没有初始拓扑入边的节点显示“入口”标识；初始拓扑入边包含 success 主链入边和非回退的前向分支入边，不包含指回 success 主链前序节点的 failure 回退边，也不包含 `$new-round.new_round_entry`。唯一入口候选会自动写入 `workflow.entry`，多个或零个入口候选均不能保存。`$new-round.new_round_entry` 仍必须在边 Inspector 中显式选择下一轮 Round 起点。
-- 作者态画布自动整形使用 success 主链拓扑顺序，不使用 `workflow.nodes` 数组追加顺序判断前后；当用户新增前置节点并连出 success 边时，该节点应自动排到原入口前方，failure 边仍按主链顺序作为分支/回退线处理。
-- Inspector 顶部提供工作流级控制项：`max_attempts` 与 `max_rounds`，均为可选正整数；留空表示不限制。
-- 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。
+- 作者态画布自动整形使用 success 主链拓扑顺序，不使用 `workflow.nodes` 数组追加顺序判断前后；当用户新增前置节点并连出 success 边时，该节点应自动排到原入口前方。success 主链保持紧凑直连，failure、回退和其他跨节点分支边使用障碍感知的正交路由，节点矩形及其安全间距必须作为不可穿越区域。边标签同样属于布局障碍物：分支边必须避开主链标签，分支标签优先放在能够完整容纳标签且不与节点、其他标签重叠的清晰正交线段上；作者态与运行态使用同一规则。
+- Inspector 按“当前选择 → 工作流设置”组织：选中节点或边的配置始终优先展示，节点配置与边配置自身均可点击标题折叠；工作流设置作为其后的可折叠区域，提供 `max_attempts` 与 `max_rounds` 两个可选正整数，留空表示不限制。配置块使用弱背景与单条内容分隔线表达层级，不叠加完整卡片边框。折叠状态仅属于当前编辑会话，不新增 DSL 字段。进入编辑态后，抽屉外层不再重复展示 Attempt / Round 摘要。
+- 新增节点后画布自动聚焦到该节点，用户只维护节点、边和属性逻辑，不需要手动整理画布位置。首次打开需等待容器尺寸稳定后执行 fit，最小缩放允许到 `0.3`；用户 pan / zoom 在画布与 JSON、窄屏面板和宽屏分栏切换时保持不变。
+- 编辑器宽容器使用 shadcn/ui `ResizablePanelGroup` 展示可调宽画布 / Inspector；宽屏只保留两者之间一条可拖拽分隔线，画布与 Inspector surface 不再分别绘制完整外框。容器不足时切换为“画布 / 配置面板”单面板标签，不允许把 Inspector 纵向堆到画布下方形成超长滚动页。工作流模板管理中的编辑工作区占满页面标题、模式栏和模板操作栏以下的视口剩余高度，取消工作流模式的页面底部留白，使画布与 Inspector 直接延伸到页面底部；页面本身不产生第二层纵向滚动，Inspector 标题固定，配置内容在面板内部独立滚动。`WorkflowEditor` 的高度由使用方容器控制，其他 Sheet / 工作区可以继续使用自身的高度策略。ResizeObserver 只发布单面板 / 双面板离散状态，不逐像素提交根 React state。真实节点与终点节点共用同一选中颜色、外发光和渐变语义，仅按节点形状保持不同圆角。
+- 作者态支持节点 / 边键盘选择、Delete / Backspace 删除、Ctrl/Cmd+Z 撤销和 Ctrl/Cmd+Y 或 Ctrl/Cmd+Shift+Z 重做；历史只保留最近 50 个 canonical workflow 草稿，不持久化为第二套业务图模型。打开或替换 workflow、撤销、重做以及删除当前节点后，画布统一清空瞬时选择和编辑器内焦点，不得自动选择第一个节点；只有用户显式点击、创建新节点或定位校验问题时才主动选择对象。节点较多时显示可平移、可缩放的 MiniMap。
+- 编辑器在用户停止输入后持续执行保存前校验，并在 Inspector 顶部保留可点击的问题摘要；点击问题应选择并聚焦对应节点或边，同时标记相关字段。保存时的阻断弹窗继续作为最终防线，不能成为发现问题的唯一入口。
+- Inspector 高频文本与数字输入先保存在局部草稿，短暂空闲后合并写回 canonical `WorkflowDsl`；父级草稿通知与 `onChange` 同样合并发布。JSON 文本只在进入 JSON 模式时从 canonical workflow 生成，画布输入不得反复序列化完整 DSL。
 - 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置且 doctor 成功的 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。
 - 工作流创建、修改和模板保存只允许使用最近一次 doctor 成功的 managed agent；未诊断、诊断失败或诊断缓存缺失的 agent 不出现在下拉框中，保存时也视为不可用。
 - 节点 id 输入框使用本地草稿编辑，中文输入法组合输入期间不更新 workflow DSL；失焦、Enter 或组合输入结束后再提交到节点与关联边。作者态画布普通节点直接展示原始节点 id，不把 `test` 等默认模板节点名翻译成本地化文案。
@@ -111,7 +115,7 @@
 - 内置角色可打开并编辑草稿，但不能直接保存覆盖，只能另存为新的普通角色；删除角色时若仍被 workflow 模板、任务 workflow 或可继续运行快照引用，首次点击删除时在确认弹窗内提示影响范围与后续修复成本，二次确认后仍允许删除；删除后被引用的 workflow 会进入需要重新选择角色的修复态，可继续运行快照也可能无法继续，需人工修复。
 - worker 节点结果判定方式支持 AI 输出验证与人工 check 二选一；开启其中一种会自动关闭另一种，避免同一节点同时存在机器判定和人工判定。
 - worker 节点配置支持开启人工 check；开启后，ACP 会话自然结束时不直接进入后续 edge，而是将当前 node / run / round 暂停为 `WaitingForUserInput`。
-- 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`，并继续走现有 success / failure 分支。
+- 人工 check 节点的会话面板提供“成功”“失败”两个按钮；用户点击后把该节点结果强制写为 `success` 或 `failure`。作者态仅为 AI 输出验证节点开放可配置的 failure 分支；人工 check 的 failure 未配置分支时直接按当前工作流失败处理。
 - 默认模板来自后端持久化的内置 workflow JSON，前端“默认模板”按钮只应用该模板，不维护独立业务默认 schema/expression，也不会在模板缺失时本地合成默认 workflow；默认模板生成顺序为先同步默认角色，再把生成出的角色 ID 写入默认节点 profile。
 - 默认模板为 `interview -> plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；interview 是普通节点，通过深度访谈产出 `interview-spec.md` 作为 plan 节点输入，节点完成即默认成功、无需人工判定；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
 - 默认模板为 `plan -> dev -> review -> test -> accept -> cleanup -> $end`，不再默认生成 `worker` 节点或 `节点输出产物` 产物；review/test/accept 使用 worker JSON 输出验证决定 success/failure 分支，accept failure 开启新 Round 且下一轮从 `dev` 节点开始，cleanup 是普通 worker 节点，不启用 AI 输出验证。默认节点 goal 跟随桌面语言生成中文或英文文案，不允许继续硬编码单一语言。默认模板的 `max_attempts` 与 `max_rounds` 为空，表示默认不限制。
@@ -123,9 +127,9 @@
 - AI 输出验证由输出产物 key、简化 JSON 输出约束和成功表达式组成；新建节点不会自动填写 schema/expression，输入项旁的问号说明统一使用圆形问号 icon + 随主题变化的浅色 shadcn/ui `Tooltip` 指导用户填写，悬浮或聚焦即可出现；profile 标签旁帮助也使用同一问号入口。原本带明确语义的其他说明 icon（如 profile summary）保持原语义；schema 输出不合法时 runtime 会同 attempt 隐藏追问修复，隐藏追问最多 3 次。声明 JSON 输出的 worker 只有在最近 assistant 输出中提取到可解析 JSON 时才允许落盘 canonical artifact，不得把普通自然语言回复 fallback 成 `.json` 产物；进入隐藏修复前必须清理本轮非法 output artifact，避免修复中断后产物列表展示旧的无效产物。
 - JSON 输出约束输入框不在输入过程中自动格式化；输入停止约 2 秒或失焦后再做 JSON 格式判断并写入 DSL。输入框右上角提供悬浮美化按钮，用户主动点击时才格式化当前 JSON 文本。
 - 成功表达式采用受限 JSONPath-like 形式，例如 `$.result == true`、`$.result=="true"`，支持多级路径和数组下标（如 `$.xx.yy[0].zz`）；保存时校验表达式路径必须存在于 JSON 输出约束中。
-- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边：创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。所有回退边都会自动分配独立 lane 路由，避免回指到前序节点时与主成功路径或彼此重合。
+- 作者态画布允许编辑过程中临时存在多条同类型出边，便于先拖拽连线再修改边类型；持久化 workflow 时校验同一来源节点的同一结果类型只能有一条出边，并校验 failure 边的来源节点必须已开启 AI 输出验证。关闭节点的 AI 输出验证时同步移除该节点既有的 failure 边，避免保留不可执行的旁路状态。创建任务 Sheet 标题栏的保存任务按钮与模板保存/另存按钮都会触发创建态校验，任务详情编辑抽屉的保存工作流按钮触发任务 workflow 校验。作者态与运行态复用 `@tisoap/react-flow-smart-edge` 的障碍感知路径搜索；路由失败时回退 React Flow 原生 smooth-step，不能让边消失。
 - 工作流图节点长文本默认优先展示前部内容，尾部截断；鼠标悬浮节点标题或元信息时展示完整全文。
-- 工作流图边必须直接展示 success / failure 等分支 label，label 随当前语言本地化；边保持虚线流动效果，运行中边可使用更高亮的流动节奏，但动画只能由 CSS 完成，不得触发画布重新布局。
+- 工作流图边必须直接展示 success / failure 等分支 label，label 随当前语言本地化；作者态所有边统一使用同一个 routed edge renderer，作者态与运行态 label 都使用不透明主题背景并固定在连线前景层，标签跟随实际绕行路径中心，任何路径方向都不得让线条覆盖标签。边持续保持虚线流动效果，运行中边可使用更高亮的流动节奏，但动画只能由 CSS 完成，不得触发路径搜索或画布重新布局。
 - 工作流图节点中的 agent icon 使用固定浅色底座，并按 SVG 内部留白做视觉缩放，保证 Claude、Codex、Cursor、Gemini、OpenCode 的图标面积接近。
 
 ---

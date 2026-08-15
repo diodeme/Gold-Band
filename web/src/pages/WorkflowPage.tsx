@@ -286,7 +286,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-4 p-5">
-              {vm.control && vm.task.workflowExists ? (
+              {vm.control && vm.task.workflowExists && !editingWorkflow ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
                   <ControlPill label={t('workflow.maxAttempts')} value={vm.control.maxAttempts ?? t('workflow.unlimited')} />
                   <ControlPill label={t('workflow.maxRounds')} value={vm.control.maxRounds ?? t('workflow.unlimited')} />

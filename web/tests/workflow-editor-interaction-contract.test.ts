@@ -291,6 +291,17 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).not.toContain('setJsonDraft(JSON.stringify(normalizedNext, null, 2))');
   });
 
+  it('renders a compact, legible minimap for larger workflows', () => {
+    expect(editorSource).toContain('const showMiniMap = nodes.length >= 6;');
+    expect(editorSource).toContain('const WORKFLOW_EDITOR_MINIMAP_SIZE = { width: 168, height: 112 } as const;');
+    expect(editorSource).toContain('nodeColor={workflowMiniMapNodeColor}');
+    expect(editorSource).toContain('nodeStrokeColor="var(--background)"');
+    expect(editorSource).toContain('maskStrokeColor="var(--primary)"');
+    expect(editorSource).toContain('maskColor="color-mix(in srgb, var(--background) 28%, transparent)"');
+    expect(editorSource).toContain('!overflow-hidden !rounded-lg !border !border-border/80 !bg-background/95 !shadow-sm');
+    expect(editorSource).not.toContain('nodeColor="var(--muted)"');
+  });
+
   it('keeps authoring and runtime labels in the same opaque foreground layer without disabling edge flow', () => {
     const foregroundClass = 'workflow-edge-label pointer-events-none absolute z-20 rounded-full border bg-background';
     expect(editorSource).toContain(foregroundClass);

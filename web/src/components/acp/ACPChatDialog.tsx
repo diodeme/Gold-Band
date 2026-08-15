@@ -3548,25 +3548,24 @@ export function ACPChatDialog(
                   />
                 ) : null}
               </InterventionLayer>
-          </ConversationViewport>
-        )}
-        {canvasMode === "chat" && hasNewerEvents ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="absolute right-4 bottom-4 z-20 gap-1.5 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur"
-            disabled={loadingLatest}
-            onClick={() => void returnToLatestEvents()}
-            data-acp-return-to-latest="true"
-          >
-            <ChevronDown className="size-3.5" />
-            {t("acp.returnToLatest")}
-          </Button>
-        ) : null}
-      </div>
-      {canvasMode === "chat" ? (
-        <div className="shrink-0 bg-background">
+              <div
+                className="sticky bottom-0 z-20 mt-auto shrink-0 bg-background"
+                data-acp-conversation-footer="sticky"
+              >
+                {hasNewerEvents ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)] gap-1.5 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur"
+                    disabled={loadingLatest}
+                    onClick={() => void returnToLatestEvents()}
+                    data-acp-return-to-latest="true"
+                  >
+                    <ChevronDown className="size-3.5" />
+                    {t("acp.returnToLatest")}
+                  </Button>
+                ) : null}
           <div className="px-5 pt-1 pb-2">
             <div
               className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"
@@ -3676,8 +3675,10 @@ export function ACPChatDialog(
             )}
             </div>
           </div>
-        </div>
-      ) : null}
+              </div>
+          </ConversationViewport>
+        )}
+      </div>
       <AttachmentPreviewDialogs
         textPreview={textPreview}
         onCloseText={() => setTextPreview(null)}

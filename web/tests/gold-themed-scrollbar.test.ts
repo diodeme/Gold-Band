@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ACP_RAW_SCROLL_AREA_CLASS_NAME, ACP_SESSION_SCROLL_AREA_CLASS_NAME } from '../src/components/acp/ACPChatDialog';
-import { GOLD_THEMED_SCROLLBAR_CLASS, goldThemedScrollbarClassName } from '../src/lib/themed-scrollbar';
+import {
+  GOLD_CONVERSATION_SCROLLBAR_CLASS,
+  GOLD_THEMED_SCROLLBAR_CLASS,
+  goldThemedScrollbarClassName,
+} from '../src/lib/themed-scrollbar';
 import { builtinThemes } from '../src/themes/builtin-themes';
 
 function parseRgba(value: string) {
@@ -39,6 +43,10 @@ describe('Gold themed scrollbar', () => {
     expect(styles).toContain('--gold-scrollbar-thumb-hover');
     expect(styles).toContain(`.${GOLD_THEMED_SCROLLBAR_CLASS}::-webkit-scrollbar-thumb`);
     expect(styles).toContain(`.${GOLD_THEMED_SCROLLBAR_CLASS}::-webkit-scrollbar-button`);
+    expect(styles).toContain('@supports not (scrollbar-width: thin)');
+    expect(styles).not.toContain('scrollbar-width: auto');
+    expect(styles).not.toContain('scrollbar-color: auto');
+    expect(styles).not.toContain('@supports selector(::-webkit-scrollbar)');
   });
 
   it('keeps every theme scrollbar neutral and low contrast until hover', () => {
@@ -71,11 +79,39 @@ describe('Gold themed scrollbar', () => {
     expect(scrollArea).not.toContain('bg-border');
   });
 
-  it('keeps the right workspace Tab scrollbar compact without native end buttons', () => {
+  it('keeps the conversation viewport scrollbar quieter than the global scrollbar', () => {
+    const viewport = readFileSync(path.resolve(__dirname, '../src/components/conversation/ConversationViewport.tsx'), 'utf8');
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
 
-    expect(styles).toContain('.gold-themed-scrollbar.right-workspace-tab-scrollbar');
-    expect(styles).toContain('height: 4px');
-    expect(styles).toContain('.gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button');
+    expect(viewport).toContain('cn(GOLD_CONVERSATION_SCROLLBAR_CLASS, scrollClassName)');
+    expect(GOLD_CONVERSATION_SCROLLBAR_CLASS).toBe('gold-conversation-scrollbar');
+    expect(styles).not.toContain('--gold-conversation-scrollbar-track');
+    expect(styles).toContain('--gold-conversation-scrollbar-thumb: color-mix(in srgb, var(--foreground) 11%, transparent)');
+    expect(styles).toContain('--gold-conversation-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 22%, transparent)');
+    expect(styles).toMatch(/\.gold-themed-scrollbar\.gold-conversation-scrollbar:hover::-webkit-scrollbar-track \{\s*background: transparent;/u);
+    expect(styles).toContain('.gold-themed-scrollbar.gold-conversation-scrollbar::-webkit-scrollbar-thumb');
+    expect(styles).toMatch(/\.gold-themed-scrollbar\.gold-conversation-scrollbar \{\s*scrollbar-color: var\(--gold-conversation-scrollbar-thumb\) transparent;/u);
+  });
+
+  it('keeps the conversation scrollbar full-height while the composer stays pinned inside it', () => {
+    const dialog = readFileSync(path.resolve(__dirname, '../src/components/acp/ACPChatDialog.tsx'), 'utf8');
+    const viewportStart = dialog.indexOf('<ConversationViewport');
+    const viewportEnd = dialog.indexOf('</ConversationViewport>', viewportStart);
+    const stickyFooter = dialog.indexOf('data-acp-conversation-footer="sticky"');
+
+    expect(viewportStart).toBeGreaterThanOrEqual(0);
+    expect(stickyFooter).toBeGreaterThan(viewportStart);
+    expect(stickyFooter).toBeLessThan(viewportEnd);
+    expect(dialog).toContain('className="sticky bottom-0 z-20 mt-auto shrink-0 bg-background"');
+    expect(dialog).toContain('className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)]');
+  });
+
+  it('keeps the right workspace Tab on the same themed native scrollbar path', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const dock = readFileSync(path.resolve(__dirname, '../src/components/workspace/RightWorkspaceDock.tsx'), 'utf8');
+
+    expect(dock).toContain('className="gold-themed-scrollbar flex min-w-0 flex-1');
+    expect(dock).not.toContain('right-workspace-tab-scrollbar');
+    expect(styles).not.toContain('.gold-themed-scrollbar.right-workspace-tab-scrollbar');
   });
 });

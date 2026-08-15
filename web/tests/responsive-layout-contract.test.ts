@@ -46,19 +46,33 @@ const acpChatSource = readFileSync(
 );
 
 describe('responsive desktop layout contracts', () => {
-  it('uses explicit container-query rows for the narrow composer toolbar', () => {
+  it('keeps simple composer submit actions beside the workspace when space allows', () => {
     expect(composerSource).toContain('data-slot="conversation-composer-toolbar"');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName');
-    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName');
+    expect(composerSource).toContain("data-layout={isDirect ? 'configured' : 'simple'}");
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid grid-cols-1');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('grid-cols-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('@sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName).toContain('justify-end');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).not.toContain('@2xl/conversation-composer:flex');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('w-full max-w-none');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('w-full');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('@lg/conversation-composer:w-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('w-fit');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('justify-self-end');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('@sm/conversation-composer:col-start-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('@lg/conversation-composer:col-start-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('h-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('w-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).not.toContain('w-full');
+    expect(composerSource.match(/CONVERSATION_HOME_COMPOSER_LAYOUT\.submitActionsClassName/gu)).toHaveLength(2);
     expect(composerSource).not.toContain('basis-[15rem]');
     expect(composerSource).not.toContain('basis-[22rem]');
   });

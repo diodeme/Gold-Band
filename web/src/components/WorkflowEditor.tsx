@@ -120,10 +120,16 @@ const WORKFLOW_EDITOR_COMPACT_WIDTH = 820;
 const WORKFLOW_EDITOR_MIN_ZOOM = 0.3;
 const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
 const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
+const WORKFLOW_EDITOR_MINIMAP_SIZE = { width: 168, height: 112 } as const;
 const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
 const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
 const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
 const WORKFLOW_NODE_SPLIT_OUTCOME_RATIO = { success: 0.34, failure: 0.66 } as const;
+
+function workflowMiniMapNodeColor(node: Node<EditorNodeData>): string {
+  if (node.selected) return 'var(--primary)';
+  return node.data.terminal ? 'var(--foreground)' : 'var(--muted-foreground)';
+}
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
 
@@ -892,7 +898,23 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
               </Panel>
               <Controls showInteractive={false} fitViewOptions={{ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }} position="bottom-right" />
-              {showMiniMap ? <MiniMap position="bottom-left" pannable zoomable className="!border !border-border !bg-card/90" nodeColor="var(--muted)" maskColor="color-mix(in srgb, var(--background) 72%, transparent)" /> : null}
+              {showMiniMap ? (
+                <MiniMap<Node<EditorNodeData>>
+                  position="bottom-left"
+                  pannable
+                  zoomable
+                  style={WORKFLOW_EDITOR_MINIMAP_SIZE}
+                  className="!m-3 !overflow-hidden !rounded-lg !border !border-border/80 !bg-background/95 !shadow-sm"
+                  bgColor="var(--background)"
+                  nodeColor={workflowMiniMapNodeColor}
+                  nodeStrokeColor="var(--background)"
+                  nodeStrokeWidth={2}
+                  nodeBorderRadius={6}
+                  maskColor="color-mix(in srgb, var(--background) 28%, transparent)"
+                  maskStrokeColor="var(--primary)"
+                  maskStrokeWidth={1.5}
+                />
+              ) : null}
             </ReactFlow>
           </div>
         ) : (

@@ -652,7 +652,7 @@ describe('ACP chat event handling', () => {
     });
   });
 
-  it('keeps live-only timing updates out of the timeline event merge', () => {
+  it('keeps live-only timing and usage updates out of the timeline event merge', () => {
     const updates = [
       event({
         seq: 3,
@@ -668,7 +668,12 @@ describe('ACP chat event handling', () => {
           reason: 'tick',
         },
       }),
-      event({ seq: 4, kind: 'textDelta', content: 'hello' }),
+      event({
+        seq: 4,
+        kind: 'usageUpdate',
+        raw: { sessionUpdate: 'usage_update', used: 7_920, size: 258_400 },
+      }),
+      event({ seq: 5, kind: 'textDelta', content: 'hello' }),
     ];
 
     expect(latestSessionTimingFromEvents(updates)?.sessionElapsedSeconds).toBe(13);

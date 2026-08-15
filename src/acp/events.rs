@@ -1479,7 +1479,8 @@ pub fn normalize_session_update(
         status: compaction_phase
             .map(|phase| match phase {
                 "started" => "running".to_string(),
-                _ => "completed".to_string(),
+                "completed" => "completed".to_string(),
+                _ => "interrupted".to_string(),
             })
             .or_else(|| extract_status(update)),
         started_seq: None,
@@ -1503,16 +1504,34 @@ pub fn normalize_session_update(
     event
 }
 
-/// Claude-compatible ACP adapters currently expose context compaction as two
-/// standalone agent control messages. Normalize them at the provider boundary
-/// so consumers do not need to interpret assistant prose.
+const CLAUDE_COMPACTION_STARTED_MESSAGE: &str = "Compacting...";
+const CLAUDE_COMPACTION_COMPLETED_MESSAGE: &str = "Compacting completed.";
+const PROVIDER_CONTEXT_COMPACTION_META_POINTER: &str = "/_meta/contextCompaction";
+
+/// Normalize provider compaction signals at the ACP boundary so consumers only
+/// observe the canonical context-compaction lifecycle. Structured metadata is
+/// preferred; Claude-compatible standalone control messages remain a narrow
+/// compatibility fallback until ACP standardizes compaction updates.
 pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
-    if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
+    let update_kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    if matches!(update_kind, "tool_call" | "tool_call_update")
+        && update
+            .pointer(PROVIDER_CONTEXT_COMPACTION_META_POINTER)
+            .is_some_and(Value::is_object)
+    {
+        return match extract_status(update)?.to_ascii_lowercase().as_str() {
+            "in_progress" => Some("started"),
+            "completed" | "success" | "succeeded" => Some("completed"),
+            "failed" | "error" | "cancelled" | "canceled" => Some("interrupted"),
+            _ => None,
+        };
+    }
+    if update_kind != "agent_message_chunk" {
         return None;
     }
     match extract_text(update)?.trim() {
-        "Compacting..." => Some("started"),
-        "Compacting completed." => Some("completed"),
+        CLAUDE_COMPACTION_STARTED_MESSAGE => Some("started"),
+        CLAUDE_COMPACTION_COMPLETED_MESSAGE => Some("completed"),
         _ => None,
     }
 }
@@ -2208,6 +2227,74 @@ mod tests {
         assert_eq!(completed.kind, "contextCompaction");
         assert_eq!(completed.status.as_deref(), Some("completed"));
         assert_eq!(completed.content, None);
+    }
+
+    #[test]
+    fn normalizes_structured_tool_compaction_as_the_same_typed_lifecycle() {
+        let started_update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "compact-1",
+            "kind": "think",
+            "title": "Compact conversation",
+            "status": "in_progress",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+        let completed_update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "compact-1",
+            "title": "Compact conversation",
+            "status": "completed",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+
+        assert_eq!(context_compaction_phase(&started_update), Some("started"));
+        assert_eq!(
+            context_compaction_phase(&completed_update),
+            Some("completed")
+        );
+
+        let started = normalize_session_update(10, Some("session-1".to_string()), &started_update);
+        assert_eq!(started.kind, "contextCompaction");
+        assert_eq!(started.status.as_deref(), Some("running"));
+        assert_eq!(started.tool_call_id.as_deref(), Some("compact-1"));
+        assert_eq!(started.content, None);
+
+        let completed =
+            normalize_session_update(20, Some("session-1".to_string()), &completed_update);
+        assert_eq!(completed.kind, "contextCompaction");
+        assert_eq!(completed.status.as_deref(), Some("completed"));
+        assert_eq!(completed.tool_call_id.as_deref(), Some("compact-1"));
+        assert_eq!(completed.content, None);
+    }
+
+    #[test]
+    fn does_not_infer_compaction_from_a_tool_title_without_structured_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "ordinary-tool",
+            "title": "Compact conversation",
+            "status": "in_progress",
+        });
+
+        assert_eq!(context_compaction_phase(&update), None);
+        let event = normalize_session_update(11, None, &update);
+        assert_eq!(event.kind, "toolCall");
+        assert_eq!(event.status.as_deref(), Some("in_progress"));
+    }
+
+    #[test]
+    fn maps_structured_failed_compaction_to_interrupted() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "compact-1",
+            "status": "failed",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+
+        assert_eq!(context_compaction_phase(&update), Some("interrupted"));
+        let event = normalize_session_update(21, None, &update);
+        assert_eq!(event.kind, "contextCompaction");
+        assert_eq!(event.status.as_deref(), Some("interrupted"));
     }
 
     #[test]

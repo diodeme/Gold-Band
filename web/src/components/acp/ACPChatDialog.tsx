@@ -171,6 +171,7 @@ import {
   mergeAcpEventWindows,
   mergeRawObject,
   permissionRequestIdFromEvent,
+  projectLatestAcpUsageUpdate,
 } from "@/lib/acp-event-reducer";
 import {
   deriveAcpRuntimeComposerState,
@@ -1777,10 +1778,11 @@ export function ACPChatDialog(
     if (normalizedEvents.length === 0) return;
     const latestTiming = latestLiveSessionTimingFromEvents(normalizedEvents);
     const branchResult = latestAgentBranchResult(normalizedEvents);
+    const hasUsageUpdate = normalizedEvents.some((event) => event.kind === "usageUpdate");
     const hasElicitationLifecycleUpdate = normalizedEvents.some(
       (event) => event.kind === "elicitationRequest" || event.kind === "elicitationResponse",
     );
-    if (latestTiming || branchResult || hasElicitationLifecycleUpdate) {
+    if (latestTiming || branchResult || hasUsageUpdate || hasElicitationLifecycleUpdate) {
       setCurrentSession((current) => {
         const latest = latestSessionRef.current;
         const base =
@@ -1792,6 +1794,9 @@ export function ACPChatDialog(
           : (base ?? null);
         if (branchResult) {
           updated = applyAgentBranchResultToSession(updated, branchResult);
+        }
+        if (hasUsageUpdate) {
+          updated = projectLatestAcpUsageUpdate(updated, normalizedEvents);
         }
         if (hasElicitationLifecycleUpdate) {
           updated = applyPendingElicitationEventsToSession(updated, normalizedEvents);

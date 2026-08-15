@@ -44,7 +44,8 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
-  activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
@@ -63,7 +64,8 @@ interface ConversationSidebarProps {
 export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
-  activeWorkspaceId,
+  defaultExpandedWorkspaceId,
+  workspaceRevealRequest,
   onSelect,
   onNewConversation,
   onSearch,
@@ -110,33 +112,31 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
-  const prevExpandTargetRef = useRef<string | null>(null);
+  const workspaceExpansionInitializedRef = useRef(false);
+  const handledWorkspaceRevealRequestRef = useRef(workspaceRevealRequest?.requestId ?? null);
   const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
+  const initialWorkspaceId = active.kind === 'conversation-run'
+    ? active.projectId
+    : (defaultExpandedWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
 
   useEffect(() => {
-    const targetWorkspaceId: string | null = active.kind === 'conversation-run'
-      ? active.projectId
-      : (activeWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
+    const initialize = !workspaceExpansionInitializedRef.current && vm.workspaces.length > 0;
+    setExpandedWorkspaces((current) => reconcileConversationSidebarExpandedWorkspaces(
+      current,
+      vm.workspaces.map((workspace) => workspace.projectId),
+      initialize ? initialWorkspaceId : null,
+    ));
+    if (initialize) workspaceExpansionInitializedRef.current = true;
+  }, [initialWorkspaceId, vm.workspaces]);
 
-    const prevTarget = prevExpandTargetRef.current;
-    prevExpandTargetRef.current = targetWorkspaceId;
-    const targetChanged = targetWorkspaceId !== prevTarget;
-
-    setExpandedWorkspaces((prev) => {
-      const next: Record<string, boolean> = {};
-      vm.workspaces.forEach((ws) => {
-        if (!targetChanged && prev[ws.projectId] != null) {
-          next[ws.projectId] = prev[ws.projectId];
-          return;
-        }
-        next[ws.projectId] = ws.projectId === targetWorkspaceId || targetWorkspaceId == null;
-      });
-      if (targetWorkspaceId && next[targetWorkspaceId] === false) {
-        next[targetWorkspaceId] = true;
-      }
-      return next;
-    });
-  }, [active, activeWorkspaceId, vm.workspaces, vm.lastActiveWorkspaceId]);
+  useEffect(() => {
+    if (!workspaceRevealRequest
+      || handledWorkspaceRevealRequestRef.current === workspaceRevealRequest.requestId) return;
+    handledWorkspaceRevealRequestRef.current = workspaceRevealRequest.requestId;
+    setExpandedWorkspaces((current) => current[workspaceRevealRequest.projectId]
+      ? current
+      : { ...current, [workspaceRevealRequest.projectId]: true });
+  }, [workspaceRevealRequest]);
 
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
@@ -335,6 +335,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
                   <button
                     type="button"
+                    data-conversation-workspace-id={ws.projectId}
+                    aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
                     className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
@@ -844,6 +846,28 @@ export function prioritizeConversationSidebarWorkspace(sidebar: ConversationSide
     ...sidebar.workspaces.slice(workspaceIndex + 1),
   ];
   return { ...sidebar, workspaces, lastActiveWorkspaceId: projectId };
+}
+
+export interface ConversationSidebarWorkspaceRevealRequest {
+  projectId: string;
+  requestId: number;
+}
+
+export function reconcileConversationSidebarExpandedWorkspaces(
+  current: Record<string, boolean>,
+  projectIds: string[],
+  initialWorkspaceId: string | null,
+): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  let changed = Object.keys(current).length !== projectIds.length;
+  for (const projectId of projectIds) {
+    const expanded = Object.prototype.hasOwnProperty.call(current, projectId)
+      ? current[projectId]
+      : initialWorkspaceId == null || projectId === initialWorkspaceId;
+    next[projectId] = expanded;
+    if (current[projectId] !== expanded) changed = true;
+  }
+  return changed ? next : current;
 }
 
 export function conversationSidebarTaskKey(projectId: string, taskId: string) {

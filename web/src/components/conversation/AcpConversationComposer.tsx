@@ -29,6 +29,7 @@ import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ComposerQuote } from '@/lib/composer-context';
 import type { AcpCommandItemVm } from '@/types';
 import { cn } from '@/lib/utils';
+import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 
 export interface AcpConversationComposerProps {
   prompt: string;
@@ -192,8 +193,8 @@ export function AcpConversationComposer({
             onDrop={onDrop}
             onPaste={onPaste}
           />
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 px-2 py-2" data-acp-composer-command-bar="true">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className={ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName} data-acp-composer-command-bar="true">
+            <div className={ACP_SESSION_COMPOSER_LAYOUT.leadingActionsClassName}>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -215,11 +216,11 @@ export function AcpConversationComposer({
               </PromptInputAction>
               <div className="min-w-0 flex-1">{configBar}</div>
             </div>
-            <PromptInputActions className="ml-auto shrink-0 pl-2">
+            <PromptInputActions className={ACP_SESSION_COMPOSER_LAYOUT.trailingActionsClassName}>
               {canStop ? (
                 <PromptInputAction tooltip={t('acp.stopHint')}>
                   <Button
-                    className="h-8 gap-1.5 rounded-full px-3"
+                    className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
                     disabled={stopInProgress}
@@ -238,7 +239,7 @@ export function AcpConversationComposer({
                 <PromptInputAction tooltip={t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}>
                   <Button
                     type="button"
-                    className="h-8 gap-1.5 rounded-full px-3"
+                    className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
                     disabled={runtimeContinueSubmitting}
@@ -258,7 +259,7 @@ export function AcpConversationComposer({
               ) : null}
               <PromptInputAction tooltip={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.send')}>
                 <Button
-                  className="h-8 gap-1.5 rounded-full px-3"
+                  className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                   size="sm"
                   disabled={!canSubmit}
                   onClick={onSubmit}

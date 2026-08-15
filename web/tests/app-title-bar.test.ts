@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { AppTitleBar } from '../src/components/AppTitleBar';
+import { APP_TITLE_BAR_LAYOUT, AppTitleBar } from '../src/components/AppTitleBar';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -12,6 +12,27 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('AppTitleBar', () => {
+  it('uses the compact shared desktop titlebar dimensions', () => {
+    const html = renderToStaticMarkup(createElement(AppTitleBar, {
+      appName: 'Gold Band',
+      feedbackEnabled: true,
+      platform: 'windows',
+      sidebarCollapsed: false,
+      onToggleSidebar: () => {},
+    }));
+
+    expect(APP_TITLE_BAR_LAYOUT.rootClassName).toContain('h-9');
+    expect(APP_TITLE_BAR_LAYOUT.brandMarkClassName).toContain('h-6 w-9');
+    expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('text-base');
+    expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('font-[700]');
+    expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).not.toContain('font-bold');
+    expect(APP_TITLE_BAR_LAYOUT.helpActionClassName).toContain('h-7');
+    expect(html).toContain(APP_TITLE_BAR_LAYOUT.rootClassName);
+    expect(html).toContain(APP_TITLE_BAR_LAYOUT.brandTitleClassName);
+    expect(html).not.toContain('h-11');
+    expect(html).not.toContain('font-semibold');
+  });
+
   it('shows Help only when the channel capability is enabled', () => {
     const enabledHtml = renderToStaticMarkup(createElement(AppTitleBar, {
       appName: 'MALING',

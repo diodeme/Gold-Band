@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_LAYOUT,
+  CONVERSATION_HOME_COMPOSER_LAYOUT,
+} from '@/lib/conversation-composer-layout';
 
 const composerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
@@ -54,6 +57,14 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('@lg/conversation-composer:w-auto');
     expect(composerSource).not.toContain('basis-[15rem]');
     expect(composerSource).not.toContain('basis-[22rem]');
+  });
+
+  it('keeps the session composer command bar compact without shrinking the responsive home toolbar', () => {
+    expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('mt-1');
+    expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('px-1 py-1');
+    expect(ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName).toContain('h-8');
+    expect(acpChatSource.match(/triggerClassName=\{ACP_SESSION_COMPOSER_LAYOUT\.configTriggerClassName\}/gu)).toHaveLength(2);
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('mt-3');
   });
 
   it('stacks run-mode and Agent controls before their composer container is wide enough', () => {

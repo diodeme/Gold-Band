@@ -225,3 +225,14 @@ function formatTime(isoTimestamp: string): string {
 - [ ] 流式输出过程中，tool call / thought 行一旦出现即展示头像和时间（不等待完整输出）。
 - [ ] 合并后的 thought block 时间取第一条 delta 的时间戳。
 - [ ] 无效时间戳时显示 `--:--` 而不报错或空白。
+
+---
+
+## 7. 2026-08-15 消息内容轨道收口
+
+- 当前结构化 timeline 行统一复用 prompt-kit `Message` 外层的共享 Assistant 内容轨道；头像是否可见只影响占位内容，不改变业务卡片的横向坐标。
+- `contextCompaction` 与 `fileChangeSet` 顶层投影接入同一共享轨道，删除各自的 `pl-10`、`ml-10` 与 rail 宽度 `calc(...)`；嵌套 transcript 只消费父级局部宽度，不重复增加占位。
+- renderer 分支审计确认 Assistant 正文、Thought、Tool、Activity、Agent link 已使用共享轨道；attempt separator 是刻意跨越完整 rail 的边界元素，不纳入普通消息对齐。
+- 浏览器完成态会话 fixture 同时保留 compact 状态行和文件变更卡片，作为共享轨道的可重复视觉验收入口。
+- 接口回归从渲染结果固定 compact 状态行与文件变更卡片拥有同一个内容宽度父级，并禁止业务组件恢复手写横向偏移。
+- 性能与过度设计评审：仅复用现有无状态布局组件，没有新增依赖、状态、监听、缓存或测量；单项渲染仍为 O(1)，渲染范围和内存占用不变。

@@ -327,6 +327,15 @@ const mockNodeDetail: NodeDetailVm = {
     stopReason: null,
     systemPromptAppend: '你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: mock-project\n- Node: dev\n\nGold Band 文件规则：\n- 当前节点所需上下文已在本 prompt 中给出。',
     diagnostics: { rawFrameCount: 18, eventCount: 7, errorCount: 0, lastError: null, lastErrorTimestamp: null },
+    usage: {
+      used: 25_400,
+      size: 258_400,
+      inputTokens: 18_760,
+      outputTokens: 2_140,
+      cachedReadTokens: 4_200,
+      cachedWriteTokens: 300,
+      totalTokens: 25_400,
+    },
     eventPage: { loadedCount: 5, total: 7, oldestSeq: 1, newestSeq: 5, hasOlder: false, hasNewer: false },
     pendingPermissions: [
       {

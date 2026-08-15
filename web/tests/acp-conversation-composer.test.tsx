@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AcpConversationComposer } from '@/components/conversation/AcpConversationComposer';
+import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import '@/i18n';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -99,6 +100,8 @@ describe('AcpConversationComposer', () => {
     expect(commandBar?.contains(continueButton)).toBe(true);
     expect(commandBar?.contains(sendButton)).toBe(true);
     expect(commandBar?.contains(config)).toBe(true);
+    expect(commandBar?.className).toBe(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName);
+    expect(sendButton?.className).toContain(ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName);
   });
 
   it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {

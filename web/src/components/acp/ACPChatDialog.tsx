@@ -217,6 +217,7 @@ import {
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
+import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import {
@@ -4094,6 +4095,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         compact
         contentSide="top"
         align="start"
+        triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
         models={availableModels}
         modelValue={modelOverrideId}
         thoughtLevel={thoughtLevel ? {
@@ -4120,6 +4122,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             compact
             contentSide="top"
             align="start"
+            triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
             label={t('acp.permissionMode')}
             value={permissionModeOverrideId}
             valueLabel={permissionModeLabel}
@@ -4129,7 +4132,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             onValueChange={handlePermissionModeSelect}
           />
         ) : (
-          <Badge variant="outline" className="max-w-full gap-1.5 rounded-full bg-background/50 px-2 py-0.5 font-normal">
+          <Badge variant="outline" className={cn("max-w-full gap-1.5 rounded-full bg-background/50 font-normal", ACP_SESSION_COMPOSER_LAYOUT.staticConfigClassName)}>
             <span className="shrink-0 text-muted-foreground">{t('acp.permissionMode')}</span>
             <span className="min-w-0 truncate text-foreground">{permissionModeLabel}</span>
           </Badge>

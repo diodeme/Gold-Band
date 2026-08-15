@@ -47,7 +47,7 @@ describe('conversation visual hierarchy contract', () => {
     expect(dialog).toContain('data-acp-conversation-rail="timeline"');
     expect(dialog).toContain('data-acp-conversation-rail="composer"');
     expect(dialog.match(/max-w-\[var\(--conversation-content-rail-max-inline-size\)\]/g)).toHaveLength(2);
-    expect(composer).toContain('mt-2 flex min-w-0 flex-wrap items-center gap-2 px-2 py-2');
+    expect(composer).toContain('ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName');
     expect(composer).not.toContain('data-acp-composer-command-bar="true">\n            <div className="min-w-0 flex-1">');
     expect(composer).not.toContain('promptInputHint');
     expect(quickComposer).not.toContain('promptInputHint');

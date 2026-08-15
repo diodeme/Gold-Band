@@ -158,7 +158,7 @@ Agent 管理
 - 小窗口下优先保证中间页面核心内容；左侧导航和右侧辅助工作区按统一状态机自动收起，并保留显式恢复入口
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
-- 顶栏左侧按“品牌 icon+标题、左侧导航开关”排列，右侧工作区开关放在顶栏尾部操作区。Windows/Linux 中它位于自定义窗口控制组之前；macOS 的原生 traffic lights 仍由品牌前方安全区占位，右栏开关通过正常 flex 流停在顶栏右端，不使用绝对坐标。两个开关统一使用 28px 点击区、14px 对称 `PanelLeft/PanelRight` 图标，打开态仅使用低对比 titlebar hover surface，不增加强边框。右栏按钮只在快速对话与会话详情页展示，观察期内不展示 Workbench / Conversation 形态切换控件。
+- 共享顶栏统一使用 36px 紧凑高度；品牌图标容器为 24×36px，应用品牌标题使用独立的 16px/700 字重，不继承全局界面强调所用的 520 `font-bold` 映射。左右栏开关继续使用 28px 点击区和 14px 对称 `PanelLeft/PanelRight` 图标。顶栏左侧按“品牌 icon+标题、左侧导航开关”排列，右侧工作区开关放在顶栏尾部操作区。Windows/Linux 中它位于自定义窗口控制组之前，自定义窗口按钮填满顶栏高度但保留既有横向点击宽度；macOS 的原生 traffic lights 仍由品牌前方安全区占位，右栏开关通过正常 flex 流停在顶栏右端，不使用绝对坐标。打开态仅使用低对比 titlebar hover surface，不增加强边框。右栏按钮只在快速对话与会话详情页展示，观察期内不展示 Workbench / Conversation 形态切换控件。
 - 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；鼠标拖拽与双击最大化统一由 Tauri `data-tauri-drag-region` 注入脚本管理，WebView2 `app-region: drag` 仅作为 Windows 触摸/触控笔补充。禁止 React `mousedown` 再手动调用 `startDragging()`，避免同一手势重复进入 TAO 原生拖拽生命周期；交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用更弱的 top/left 边界与左上圆角衔接，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块
@@ -235,6 +235,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-15：左右栏宽度恢复统一以全局 `sidebar.width` / `rightWorkspace.width` 为唯一持久化事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；异步 preference hydrate 到达且对应分隔条尚未被用户操作时，通过 Panel imperative `resize(width)` 应用有界像素宽度。用户操作后由本地偏好投影立即接管，并仅在对应分隔条的完成事件持久化一次。工作空间、运行目录及其他右侧资源只能按当前实际宽度响应，禁止请求推荐宽度或改写外层右栏偏好。
 - 2026-08-11：中间工作区顶边、左边与右侧工作区 separator 统一使用不透明语义色 `workspace-divider`。该 token 由当前主题的 `sidebar-border` 与 `gold-workspace` 预混合，禁止在不同底色上分别叠加半透明 `sidebar-border/70`，避免高 DPI 下横竖边线交点出现色阶断层。Dock 展示时，中间 Panel 与右侧 Panel 必须各自绘制同为 1 CSS px 的顶边，使边界连续横跨两个区域，separator 从顶边下方形成 T 形交点；separator 的 1px 布局宽度、4px 命中区和 hover 状态保持不变。
 - 2026-08-14：应用壳主题材质从手写 Glass 专用选择器迁到 Theme SDK 编译的包级 recipe CSS。Shell、标题栏、侧栏、工作区、Composer 与共享控件仍只暴露稳定 `data-theme-role`；新增合规主题包通过 DTCG token、封闭 recipe 和构建 Catalog 接入，不修改壳层 DOM、导航状态或 React 生命周期。
+- 2026-08-15：共享顶栏从 44px 收紧为 36px，品牌图标容器同步收紧为 24×36px，应用标题由 14px 提升为 16px，并使用独立 700 字重而不是全局映射为 520 的 `font-bold`；帮助入口为 28px 高，左右栏开关保持 28px，Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。改动只调整共享 `AppTitleBar` 的静态布局 token，不改变拖拽区、平台控制策略和窗口生命周期。
 
 ---
 

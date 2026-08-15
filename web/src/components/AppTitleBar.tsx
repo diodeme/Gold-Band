@@ -20,6 +20,13 @@ interface AppTitleBarProps {
   onToggleRightWorkspace?: () => void;
 }
 
+export const APP_TITLE_BAR_LAYOUT = {
+  rootClassName: 'app-titlebar-drag-region flex h-9 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground',
+  brandMarkClassName: 'grid h-6 w-9 shrink-0 place-items-center rounded-[7px] border border-titlebar-border bg-background/55 p-0.5',
+  brandTitleClassName: 'text-base font-[700] tracking-[0.01em] text-titlebar-foreground',
+  helpActionClassName: 'flex h-7 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground',
+} as const;
+
 export function AppTitleBar({
   appName,
   feedbackEnabled = false,
@@ -88,16 +95,16 @@ export function AppTitleBar({
     <>
     <header
       data-tauri-drag-region
-      className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
+      className={APP_TITLE_BAR_LAYOUT.rootClassName}
       data-theme-role="titlebar"
     >
       <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
-          <span data-tauri-drag-region className="grid h-7 w-10 shrink-0 place-items-center rounded-lg border border-titlebar-border bg-background/55 p-1">
+          <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
             <img src="/logo.svg" alt="" className="h-full w-full object-contain pointer-events-none" />
           </span>
-          <span data-tauri-drag-region className="text-sm font-semibold tracking-[0.01em] text-titlebar-foreground">
+          <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandTitleClassName}>
             {appName}
           </span>
         </div>
@@ -138,7 +145,7 @@ export function AppTitleBar({
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex h-8 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+                  className={APP_TITLE_BAR_LAYOUT.helpActionClassName}
                   aria-label={t('common.help')}
                   title={t('common.help')}
                 >

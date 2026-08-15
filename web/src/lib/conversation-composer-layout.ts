@@ -16,3 +16,12 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   agentTabsClassName: 'gold-scrollbar-hidden w-full min-w-0 overflow-x-auto overflow-y-hidden py-1 @sm/conversation-composer:w-auto @sm/conversation-composer:flex-1',
   agentTabsListClassName: 'h-10 w-max max-w-none',
 } as const;
+
+export const ACP_SESSION_COMPOSER_LAYOUT = {
+  commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
+  leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
+  trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',
+  configTriggerClassName: 'h-8 px-2.5',
+  staticConfigClassName: 'h-8 px-2.5 py-0',
+  actionButtonClassName: 'h-8 gap-1.5 rounded-full px-3',
+} as const;

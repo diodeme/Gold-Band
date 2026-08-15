@@ -467,7 +467,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 后续同一 ACP session 的每次追问和 runtime continue 只复用 Gold Band 的显式覆盖：`modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`。不得从 Agent 返回的 `currentModelId/currentModeId/currentValue` 反推用户覆盖；未指定时继续交由 Agent 决定默认值。
 - 运行时应用顺序固定为模型、权限模式、其余通用 config option。模型切换后以 Agent 返回的新 `configOptions` 作为后续配置事实源，通用选项必须按实际 option ID 和可选值校验。
 - 复合下拉第一层未选择的子栏不显示占位值，触发器和已选态只展示名称；长描述只在具体选项中换行展示，不允许撑破触发器或越出窗口边界。协议解析统一收敛在 ACP session config 工具中，展示组件只消费归一化后的 id/name/description。
-- 新建对话与会话详情中的模型、权限触发器统一使用“弱化配置名 + 主值”结构，例如 `模型  GPT-5.6-Sol · High`、`权限  不指定`；两类触发器共享同一套 36px composer 配置触发器视觉规范，统一宽度策略、间距、无阴影表面、边框、深色背景、箭头尺寸与焦点态。Composer 配置单选与复合选择统一使用非模态 Radix DropdownMenu，保证相邻菜单双向一次点击切换。
+- 新建对话与会话详情中的模型、权限触发器统一使用“弱化配置名 + 主值”结构，例如 `模型  GPT-5.6-Sol · High`、`权限  不指定`；两类触发器共享同一套 composer 配置触发器视觉语言，统一宽度策略、无阴影表面、边框、深色背景、箭头尺寸与焦点态。快速对话保留 36px 触控规格和容器响应式换行；会话详情的模型、权限、停止/继续与发送位于同一 32px 紧凑操作行，操作行只保留 4px 顶部间隔和 4px 上下内边距，减少长期占用消息阅读区，但不得压缩 textarea 的两行默认高度或用户拖拽高度。Composer 配置单选与复合选择统一使用非模态 Radix DropdownMenu，保证相邻菜单双向一次点击切换。
 
 ## 工具调用参数展示
 

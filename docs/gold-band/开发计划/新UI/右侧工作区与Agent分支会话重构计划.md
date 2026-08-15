@@ -106,7 +106,7 @@ interface RightWorkspaceState {
 
 Tab 描述只保存资源定位与所属 `scopeKey`，不直接保存 timeline、文件内容等大对象。快速对话使用 draft scope，具体会话使用 project/task/run scope；轻量状态按 scope 进入 24 项运行期 LRU。宽度属于全局 UI preference，不放入 scope state；资源缓存、实时状态和 DOM 生命周期独立管理。
 
-共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。两个开关复用 shadcn `Button`，统一使用 28px 点击区、14px 图标和低对比打开态。右栏开关只在快速对话与会话详情展示，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在应用运行期记忆；像素宽度单独跨重启持久化。
+共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。顶栏统一使用 36px 紧凑高度，品牌图标容器为 24×36px，应用标题使用独立的 16px/700 字重，不复用全局映射为 520 的 `font-bold`；两个开关复用 shadcn `Button`，继续使用 28px 点击区、14px 图标和低对比打开态。Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。右栏开关只在快速对话与会话详情展示，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在应用运行期记忆；像素宽度单独跨重启持久化。
 
 ### 5.3 会话 scope 与 LRU
 
@@ -484,6 +484,7 @@ ACP live event(branchId)
 - 建立布局 profile、自动折叠状态机、迟滞和宽度 preference。
 - 共享顶栏改为品牌在前、左右栏开关在后；右栏开关与资源 Tab 解耦，无资源时呈现空白入口页。
 - 左右栏开关缩小按钮与图标尺寸并保留独立打开态；左栏入口留在品牌后，右栏入口通过尾部 flex 操作区靠近窗口右侧，降低识别成本并兼容 macOS 原生 traffic lights。
+- 共享顶栏由 44px 收紧为 36px，品牌图标容器同步收紧，应用标题由 14px 提升为 16px 并使用独立 700 字重，绕开全局 520 `font-bold` 映射；帮助入口与左右栏开关统一落在 28px 操作节奏，Windows/Linux 自定义窗口控制只收紧纵向高度，保留既有横向命中宽度和原生拖拽/最大化生命周期。
 - 修正右栏宽度恢复：Provider 接收异步 preference hydrate，拖动结束使用 group layout 用户事件持久化真实像素宽度。
 - 统一 Shell 边界线：中间区顶部/左侧边界、右侧 Panel 顶边与右栏 separator 共享不透明 `workspace-divider` 主题 token；中间区和右侧区分别绘制同为 1 CSS px 的顶边，保证横向边界连续并与 separator 形成 T 形交点，消除半透明叠色与右侧缺线造成的交点色差/粗细错觉；不修改 Resizable 拖拽命中区和宽度热路径。
 - 实现通用 Tab model、激活、关闭、去重、溢出列表。

@@ -43,7 +43,7 @@ export const semanticThemeTokensSchema = z.object({
   sidebarPrimaryForeground: z.string(), sidebarAccent: z.string(), sidebarAccentForeground: z.string(),
   sidebarBorder: z.string(), sidebarRing: z.string(), workspace: z.string(),
   surfaceLow: z.string(), surfaceHigh: z.string(), lineSoft: z.string(),
-  windowOutline: z.string(), windowEdgeShadow: z.string(), running: z.string(),
+  windowOutline: z.string(), windowEdgeShadow: z.string(), link: z.string(), running: z.string(),
   success: z.string(), warning: z.string(), danger: z.string(), permission: z.string(),
   titlebar: z.string(), titlebarForeground: z.string(), titlebarMuted: z.string(),
   titlebarBorder: z.string(), titlebarHover: z.string(),

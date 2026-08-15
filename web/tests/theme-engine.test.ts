@@ -74,6 +74,8 @@ describe('theme package contract', () => {
     expect(techNeutral.recipes).not.toEqual(goldBand.recipes);
     expect(techNeutral.schemes.light.semantic.primary)
       .not.toBe(goldBand.schemes.light.semantic.primary);
+    expect(techNeutral.schemes.light.semantic.link)
+      .not.toBe(goldBand.schemes.light.semantic.link);
     expect(techNeutral.schemes.dark.material.shadow)
       .not.toBe(goldBand.schemes.dark.material.shadow);
   });
@@ -158,6 +160,7 @@ describe('theme package contract', () => {
       'diffAdded',
       'diffRemoved',
       'diffModified',
+      'link',
     ];
 
     for (const theme of builtinThemes) {
@@ -255,6 +258,7 @@ describe('appearance resolver', () => {
     expect(classes.has('dark')).toBe(false);
     expect(documentElement.style.colorScheme).toBe('light');
     expect(properties.get('--background')).toBe(effective.scheme.semantic.background);
+    expect(properties.get('--link')).toBe(effective.scheme.semantic.link);
     expect(properties.get('--gb-material-blur')).toBe(`${effective.material.blur}px`);
     expect(properties.get('--gb-material-backdrop-contrast')).toBe(`${effective.material.backdropContrast}%`);
     expect(properties.get('--gb-material-specular-highlight')).toBe(effective.material.specularHighlight);

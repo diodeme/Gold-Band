@@ -215,6 +215,7 @@
                 "lineSoft",
                 "windowOutline",
                 "windowEdgeShadow",
+                "link",
                 "running",
                 "success",
                 "warning",
@@ -487,6 +488,10 @@
                   "minLength": 1
                 },
                 "windowEdgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "link": {
                   "type": "string",
                   "minLength": 1
                 },
@@ -877,6 +882,7 @@
                 "lineSoft",
                 "windowOutline",
                 "windowEdgeShadow",
+                "link",
                 "running",
                 "success",
                 "warning",
@@ -1149,6 +1155,10 @@
                   "minLength": 1
                 },
                 "windowEdgeShadow": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "link": {
                   "type": "string",
                   "minLength": 1
                 },

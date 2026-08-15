@@ -128,6 +128,7 @@ pub struct SemanticThemeTokens {
     pub line_soft: String,
     pub window_outline: String,
     pub window_edge_shadow: String,
+    pub link: String,
     pub running: String,
     pub success: String,
     pub warning: String,

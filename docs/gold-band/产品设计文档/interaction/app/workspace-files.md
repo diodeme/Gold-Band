@@ -19,7 +19,7 @@
 - 单栏状态的“文件 / 目录”视图由当前选中文件的稳定 identity 驱动；无论此前是否已有文件，目录树选择新文件后都必须自动切回“文件”。用户附件的只读 CodeMirror 启用原生折行并约束内部最小宽度，长行只能在内容区内换行，不得撑宽右侧工作区。
 - 项目工作空间始终只有一个稳定的 `file-browser:<projectId>` 文件 Tab；树点击、搜索结果和会话文件链接均在该 Tab 内更新当前选中文件。`projectId + canonicalPath` 仅作为 `FileContentStore` 的文档身份；再次点击同一文件的不同链接位置只更新 `target/targetRevision`，不创建任何文件级 Tab。
 - 关闭最后一个资源 Tab 时右侧工作区同步收起。接口级验收必须按稳定 file-browser key 查询资源，并从 `selectedFile` 读取当前文件与定位 revision；连续打开任意数量的项目文件后 Tab 数仍为 1，测试和消费者不得继续依赖旧的 file key 或“每文件一 Tab”结构。
-- 会话中的本地文件链接使用轻量主题底色，文件类型图标单独使用语义强调色以保证对比度；不能只依赖下划线表达可点击。链接目标带 `:line[:column]` 或 `#Lline[-LendLine]` 时，可见名称必须连续显示为紧凑的 `文件名:位置`，位置与文件名完全继承同一字号、字体、字重和颜色；不得用间隙、独立颜色、独立 badge、小号等宽文本或第二层底色把位置拆成附属标签。Markdown label 已含等价位置时不得重复追加。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
+- 会话中的本地文件链接使用“文件图标 + 语义链接文字”的轻量文本按钮形态，不使用背景、边框或阴影；图标与文字统一消费主题包的 `link` 语义色，不得复用“运行中”状态色，保留主题 `font-medium` 层级，默认不显示下划线，hover 时显示下划线，键盘 focus 使用同一 `link` 语义色保留清晰 focus ring，不可用时统一切换为 `muted-foreground`。链接目标带 `:line[:column]` 或 `#Lline[-LendLine]` 时，可见名称必须连续显示为紧凑的 `文件名:位置`，位置与文件名完全继承同一字号、字体、字重和颜色；不得用间隙、独立颜色、独立 badge、小号等宽文本或第二层底色把位置拆成附属标签。Markdown label 已含等价位置时不得重复追加。路径解析得到的 `target/targetRevision` 属于绑定 `projectId + canonicalPath` 的一次定位意图：相同链接每次点击都产生新 revision。Adapter 以 `documentKey + contentRevision + 当前 EditorView ref` 判断文档实例，不得用全文字符串相等判断，因为 CodeMirror 会规范化 CRLF。`onCreateEditor` 只初始化 View 插件；外部定位必须等受控 `value` 同步后的 React effect，再在同一个 CodeMirror transaction 中提交 selection 与官方 `EditorView.scrollIntoView(range, { y: 'center' })` effect。滚动测量、虚拟高度换算与视口更新完全交给 CodeMirror，不得用 rAF/ResizeObserver 轮询、`coordsAtPos`、估算块高度或直接写 `scrollTop` 实现第二套滚动器。transaction 成功 dispatch 后按文档身份消费 revision，文件切换不能沿用其他文件的已消费 revision。
 - 工作空间外文件仅能由用户显式点击会话本地文件链接打开。详情显示不可点击的绝对路径，右侧目录树仍属于当前工作空间；文本、代码、配置和 SVG 源码允许编辑，图片保持只读。
 
 ## 3. 查看格式
@@ -35,7 +35,7 @@
 
 文件识别以签名、BOM 和内容探测为权威事实，扩展名只辅助选择图标与语言能力；PDF、压缩包等二进制即使碰巧可按 UTF-8 解码也不得进入文本编辑器。文本编码保证 UTF-8、UTF-8 BOM、带 BOM 的 UTF-16 LE/BE，保存时保留 BOM 与 CRLF/LF 语义；无法可靠解码的内容不做有损猜测，也不自动写回。大文件读取和 revision 计算使用流式处理，不为识别或哈希重复完整载入文件。
 
-CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号、选区、活动行和语法高亮统一引用 Gold Band 语义色 token，应用主题切换后立即继承当前浅色或深色外观，不维护独立 IDE 主题状态。`primary` 在深色主题中属于表面色，不能作为链接或代码前景色；源码与 Markdown 的链接/重点语法使用 `gold-running`，代码背景使用 `gold-surface-high + background` 混合色。
+CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号、选区、活动行和语法高亮统一引用 Gold Band 语义色 token，应用主题切换后立即继承当前浅色或深色外观，不维护独立 IDE 主题状态。`primary` 在深色主题中属于表面色，不能作为链接或代码前景色；源码与 Markdown 的链接使用主题包 `link`，其他状态/重点语法按用途使用 `gold-running`，代码背景使用 `gold-surface-high + background` 混合色。
 
 ### 3.1 Markdown 实时预览编辑
 

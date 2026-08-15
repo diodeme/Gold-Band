@@ -30,6 +30,9 @@ use gold_band::dsl::{
 use gold_band::dynamic::{DynamicGraphState, DynamicRunPhase, DynamicRunStatus};
 use gold_band::runtime::RunState;
 use gold_band::storage::{read_json, write_json};
+use gold_band::workflow_model_binding::{
+    TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -748,6 +751,8 @@ pub struct ConversationCreateInputVm {
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
     pub scheduled_content_fingerprint: Option<String>,
+    #[serde(default)]
+    pub workflow_authoring: Option<TaskAuthoringWorkflow>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -801,7 +806,12 @@ pub fn scheduled_content_snapshot(
                 .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
             let mut workflow = template.workflow.clone();
             apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
-            snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
+            let mut model_bindings = template.model_bindings.clone();
+            migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+            snapshot.workflow_authoring = Some(serde_json::to_value(TaskAuthoringWorkflow {
+                workflow,
+                model_bindings,
+            })?);
         }
         ScheduledMode::Auto => {
             let config = input
@@ -821,11 +831,11 @@ pub fn scheduled_content_snapshot(
                 .iter()
                 .map(|workflow| workflow.workflow_id.clone());
             snapshot.auto_authoring = Some(AutoAuthoringIdentity::new(
+                config.agent_type.clone(),
                 config
                     .agent_strategy
                     .clone()
                     .unwrap_or_else(|| "fixed".to_string()),
-                config.agent_type.clone(),
                 config.bootstrap_agent_type.clone(),
                 available_agent_types,
                 config.global_goal.clone(),
@@ -850,6 +860,7 @@ pub struct ConversationMissingItemVm {
     pub code: String,
     pub label: String,
     pub recovery_path: String,
+    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2979,6 +2990,26 @@ fn missing_item(code: &str, label: &str, recovery_path: &str) -> ConversationMis
         code: code.to_string(),
         label: label.to_string(),
         recovery_path: recovery_path.to_string(),
+        params: serde_json::json!({}),
+    }
+}
+
+fn workflow_binding_missing_item(
+    error: &gold_band::workflow_model_binding::WorkflowModelBindingError,
+    workflow_template_id: &str,
+) -> ConversationMissingItemVm {
+    let mut params = error.params();
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "workflowTemplateId".to_string(),
+            serde_json::Value::String(workflow_template_id.to_string()),
+        );
+    }
+    ConversationMissingItemVm {
+        code: error.code().to_string(),
+        label: error.code().to_string(),
+        recovery_path: "/chat/run-modes".to_string(),
+        params,
     }
 }
 
@@ -3101,11 +3132,44 @@ pub fn validate_conversation_create_vm(
                 "/chat/run-modes",
             ));
         } else if let Some(ref tid) = input.workflow_template_id {
-            let store = app.workflow_templates().ok();
-            let found = store
-                .as_ref()
-                .and_then(|s| s.templates.iter().find(|t| t.id == *tid));
-            if found.is_none() {
+            let authoring = if let Some(authoring) = input.workflow_authoring.as_ref() {
+                Some(authoring.clone())
+            } else {
+                app.workflow_templates().ok().and_then(|store| {
+                    store
+                        .templates
+                        .iter()
+                        .find(|template| template.id == *tid)
+                        .and_then(|template| {
+                            let mut workflow = template.workflow.clone();
+                            apply_optional_entry_preference(
+                                template,
+                                input.include_optional_entry,
+                                &mut workflow,
+                            )
+                            .ok()?;
+                            Some(TaskAuthoringWorkflow {
+                                workflow,
+                                model_bindings: template.model_bindings.clone(),
+                            })
+                        })
+                })
+            };
+            if let Some(mut authoring) = authoring {
+                migrate_authoring_workflow(
+                    &mut authoring.workflow,
+                    &mut authoring.model_bindings,
+                    None,
+                );
+                if let Err(error) = validate_and_inject(
+                    &authoring.workflow,
+                    &authoring.model_bindings,
+                    &app.config.agents,
+                    &app.provider_diagnostics(),
+                ) {
+                    missing.push(workflow_binding_missing_item(&error, tid));
+                }
+            } else {
                 missing.push(missing_item(
                     "workflow.not-found",
                     "Selected workflow template not found",
@@ -3301,6 +3365,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
         control: Default::default(),
         nodes: vec![NodeDsl::Worker(WorkerNode {
             id: "direct-agent".to_string(),
+            execution_slot_id: None,
             provider: Some(config.agent_type.clone()),
             model: config.model_id.clone(),
             profile: None,
@@ -3369,16 +3434,30 @@ pub fn prepare_conversation_task_vm(
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
     // Build workflow
-    let (workflow, effective_include_optional_entry) = if input.run_mode
+    let (mut workflow, mut model_bindings, effective_include_optional_entry) = if input.run_mode
         == ConversationRunMode::Direct.as_str()
     {
         let config = input
             .direct_config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
-        (build_direct_workflow(config), None)
+        (
+            build_direct_workflow(config),
+            WorkflowModelBindings::default(),
+            None,
+        )
     } else if input.run_mode == ConversationRunMode::Auto.as_str() {
-        (build_auto_workflow(input.auto_config.as_ref()), None)
+        (
+            build_auto_workflow(input.auto_config.as_ref()),
+            gold_band::workflow_model_binding::WorkflowModelBindings::default(),
+            None,
+        )
+    } else if let Some(authoring) = input.workflow_authoring.as_ref() {
+        (
+            authoring.workflow.clone(),
+            authoring.model_bindings.clone(),
+            input.include_optional_entry,
+        )
     } else {
         // Load from template
         let store = app.workflow_templates()?;
@@ -3394,8 +3473,13 @@ pub fn prepare_conversation_task_vm(
         let mut workflow = template.workflow.clone();
         let include_optional_entry =
             apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
-        (workflow, include_optional_entry)
+        (
+            workflow,
+            template.model_bindings.clone(),
+            include_optional_entry,
+        )
     };
+    migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
 
     // Git is an authoritative prerequisite for Auto and every workflow that
     // directly contains AI-DYNAMIC. Check before creating either the task or run.
@@ -3404,14 +3488,16 @@ pub fn prepare_conversation_task_vm(
     }
 
     // Create task
-    let summary = app.create_task_from_requirement(CreateTaskInput {
+    let task_input = CreateTaskInput {
         title: Some(title.clone()),
         description: None,
         requirement_file_name: None,
         requirement_content: input.content.clone(),
-        workflow,
+        workflow: workflow.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
-    })?;
+    };
+    let summary =
+        app.create_task_from_requirement_with_bindings(task_input, workflow, model_bindings)?;
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
@@ -3658,7 +3744,8 @@ mod tests {
         conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
         create_conversation_task_vm, derive_conversation_attempt_lifecycle, find_leaf_by_key,
-        lifecycle_is_active, scheduled_task_vms_from_sources, switch_conversation_session_vm,
+        lifecycle_is_active, scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        switch_conversation_session_vm, workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -3666,7 +3753,25 @@ mod tests {
     use gold_band::app::{App, CreateTaskInput, OptionalEntryStage, WorkflowTemplate};
     use gold_band::config::ConversationRunMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
+    use gold_band::workflow_model_binding::WorkflowModelBindings;
     use serde_json::json;
+
+    #[test]
+    fn workflow_binding_missing_item_preserves_repair_locator_params() {
+        let item = workflow_binding_missing_item(
+            &gold_band::workflow_model_binding::WorkflowModelBindingError::AgentRequired {
+                execution_slot_id: "slot-dev".to_string(),
+                node_id: "dev".to_string(),
+            },
+            "default",
+        );
+
+        assert_eq!(item.code, "workflow-model-binding.agent-required");
+        assert_eq!(item.recovery_path, "/chat/run-modes");
+        assert_eq!(item.params["workflowTemplateId"], "default");
+        assert_eq!(item.params["executionSlotId"], "slot-dev");
+        assert_eq!(item.params["nodeId"], "dev");
+    }
 
     fn workflow_with_interview() -> gold_band::dsl::WorkflowDsl {
         serde_json::from_value(json!({
@@ -3695,6 +3800,7 @@ mod tests {
             is_built_in: false,
             optional_entry_stage: None,
             workflow: custom.clone(),
+            model_bindings: WorkflowModelBindings::default(),
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -3719,6 +3825,7 @@ mod tests {
                 default_enabled: true,
             }),
             workflow: default.clone(),
+            model_bindings: WorkflowModelBindings::default(),
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -3746,6 +3853,7 @@ mod tests {
                 default_enabled: true,
             }),
             workflow: workflow.clone(),
+            model_bindings: WorkflowModelBindings::default(),
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -4664,6 +4772,59 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run this automatically".to_string(),
+            run_mode: ConversationRunMode::Auto.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: Some(ConversationAutoConfigVm {
+                agent_strategy: Some("dynamic".to_string()),
+                agent_type: "agent-primary".to_string(),
+                bootstrap_agent_type: Some("agent-bootstrap".to_string()),
+                bootstrap_model_id: None,
+                bootstrap_config_options: Default::default(),
+                acceptance_model_id: None,
+                acceptance_config_options: Default::default(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+                available_agents: Some(vec![ConversationDynamicAgentRefVm {
+                    provider: "agent-worker".to_string(),
+                    model: None,
+                    permission_mode: None,
+                    config_options: Default::default(),
+                }]),
+                routing_prompt: None,
+                allowed_workflows: None,
+                allowed_profiles: None,
+                global_goal: None,
+                control: None,
+                active_template_id: None,
+                active_template_name: None,
+            }),
+            attachment_paths: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
+        let auto = snapshot.auto_authoring.unwrap();
+
+        assert_eq!(auto.agent_type, "agent-primary");
+        assert_eq!(auto.agent_strategy, "dynamic");
+        assert_eq!(
+            auto.bootstrap_agent_type.as_deref(),
+            Some("agent-bootstrap")
+        );
+        assert_eq!(auto.available_agent_types, vec!["agent-worker"]);
+    }
+
+    #[test]
     fn build_direct_workflow_uses_one_raw_agent_worker() {
         let workflow = build_direct_workflow(&ConversationDirectConfigVm {
             agent_type: "codex-acp".to_string(),
@@ -4728,6 +4889,7 @@ mod tests {
             attachment_paths: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -4754,6 +4916,7 @@ mod tests {
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());

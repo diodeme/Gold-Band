@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronsUpDown, CircleHelp, Info, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronsUpDown, CircleHelp, Copy, Info, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import {
   Background,
   BaseEdge,
@@ -18,7 +18,7 @@ import {
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
-import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkerModelBinding, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowModelBindings, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   ENTRY_NODE,
@@ -49,6 +49,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -62,6 +63,7 @@ import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { normalizeWorkflowModelBindings } from '@/lib/workflow-model-bindings';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
@@ -73,6 +75,7 @@ type EditorTab = 'canvas' | 'json';
 
 export interface WorkflowEditorSessionDraft {
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   tab: EditorTab;
   jsonDraft: string;
 }
@@ -91,6 +94,70 @@ type TerminalMenu = { x: number; y: number };
 const edgeTypes = { workflowRouted: WorkflowRoutedEdge };
 const editorNodeTypes = { editorCanvas: EditorCanvasNode };
 const SCHEMA_VALIDATION_DELAY_MS = 2000;
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
+
+export interface WorkerBindingSyncPlan {
+  fillCount: number;
+  overwriteCount: number;
+  skipCount: number;
+  targetSlotIds: string[];
+}
+
+export function planWorkerBindingSync(
+  workflow: WorkflowDsl,
+  modelBindings: WorkflowModelBindings,
+  sourceSlotId: string,
+  overwriteConfigured: boolean,
+): WorkerBindingSyncPlan {
+  const bindingBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  let fillCount = 0;
+  let overwriteCount = 0;
+  let skipCount = 0;
+  const targetSlotIds: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.type !== 'worker' || !node.executionSlotId || node.executionSlotId === sourceSlotId) continue;
+    const configured = Boolean(bindingBySlot.get(node.executionSlotId)?.agentId.trim());
+    if (!configured) {
+      fillCount += 1;
+      targetSlotIds.push(node.executionSlotId);
+    } else if (overwriteConfigured) {
+      overwriteCount += 1;
+      targetSlotIds.push(node.executionSlotId);
+    } else {
+      skipCount += 1;
+    }
+  }
+  return { fillCount, overwriteCount, skipCount, targetSlotIds };
+}
+
+export function applyWorkerBindingSync(
+  workflow: WorkflowDsl,
+  modelBindings: WorkflowModelBindings,
+  sourceSlotId: string,
+  overwriteConfigured: boolean,
+): WorkflowModelBindings {
+  const source = modelBindings.bindings.find((binding) => binding.executionSlotId === sourceSlotId);
+  if (!source?.agentId.trim()) return modelBindings;
+  const plan = planWorkerBindingSync(workflow, modelBindings, sourceSlotId, overwriteConfigured);
+  if (!plan.targetSlotIds.length) return modelBindings;
+  const targetSlots = new Set(plan.targetSlotIds);
+  const nextBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  for (const executionSlotId of targetSlots) {
+    nextBySlot.set(executionSlotId, {
+      ...source,
+      executionSlotId,
+      configOptions: source.configOptions ? { ...source.configOptions } : undefined,
+    });
+  }
+  const workflowSlots = new Set(workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [node.executionSlotId] : []));
+  return {
+    ...modelBindings,
+    bindings: Array.from(nextBySlot.values()).filter((binding) => workflowSlots.has(binding.executionSlotId)),
+  };
+}
 
 export function isWorkflowAgentDoctorReady(agent: ManagedAgentVm): boolean {
   return agent.diagnostic?.available === true;
@@ -160,30 +227,35 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
 
 interface WorkflowEditorProps {
   value: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   agentRegistry: AgentRegistryVm | null;
   profiles?: ProfileVm[];
   onOpenProfileManagement?: () => void;
-  onSave: (workflow: WorkflowDsl) => Promise<void> | void;
+  onSave: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
+  onModelBindingsChange?: (modelBindings: WorkflowModelBindings) => void;
   onApplyDefaultTemplate?: (workflow: WorkflowDsl) => void;
   defaultWorkflow?: WorkflowDsl | null;
   workflowTemplates?: WorkflowTemplateStore | null;
   currentTemplateId?: string | null;
   currentTemplateName?: string | null;
   validateTemplateDuplicateId?: boolean;
+  validateModelBindings?: boolean;
   allowAiDynamic?: boolean;
   saving?: boolean;
   showSaveAction?: boolean;
   validationRequestId?: number;
+  focusNodeId?: string | null;
   initialSessionDraft?: WorkflowEditorSessionDraft | null;
   onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+export function WorkflowEditor({ value, modelBindings: modelBindingsValue, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
   const [workflow, setWorkflow] = useState<WorkflowDsl>(restoredWorkflow);
+  const [modelBindings, setModelBindings] = useState<WorkflowModelBindings>(() => normalizeWorkflowModelBindings(initialSessionDraft?.modelBindings ?? modelBindingsValue));
   const [tab, setTab] = useState<EditorTab>(initialSessionDraft?.tab ?? 'canvas');
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(restoredWorkflow.nodes[0]?.id ?? null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -199,6 +271,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(restoredWorkflow));
   const handledValidationRequestIdRef = useRef(0);
+  const handledFocusNodeIdRef = useRef<string | null>(null);
   const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
   const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
   const agentIconKeys = useMemo(() => workflowAgentIconKeys(agents), [agents]);
@@ -210,14 +283,28 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const workflowGraphSignature = useMemo(() => authoringWorkflowGraphSignature(workflow), [workflow]);
   const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
   const visibleTerminalSignature = useMemo(() => stringSetSignature(visibleTerminalIds), [visibleTerminalIds]);
-  const { nodes, edges } = useMemo(
-    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, agentIconKeys, t),
-    [agentIconKeys, invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
+  const baseFlow = useMemo(
+    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, t),
+    [invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
   );
+  const nodeAgentIds = useMemo(
+    () => authoringWorkflowNodeAgentIds(workflow, modelBindings),
+    [modelBindings, workflow],
+  );
+  const nodeAgentSignature = JSON.stringify(nodeAgentIds);
+  const nodes = useMemo(
+    () => baseFlow.nodes.map((node) => {
+      const agentId = nodeAgentIds[node.id];
+      const iconKey = agentId ? agentIconKeys.get(agentId) : undefined;
+      return iconKey === node.data.iconKey ? node : { ...node, data: { ...node.data, iconKey } };
+    }),
+    [agentIconKeys, baseFlow.nodes, nodeAgentSignature],
+  );
+  const edges = baseFlow.edges;
 
   useEffect(() => {
-    onSessionDraftChange?.({ workflow, tab, jsonDraft });
-  }, [jsonDraft, onSessionDraftChange, tab, workflow]);
+    onSessionDraftChange?.({ workflow, modelBindings, tab, jsonDraft });
+  }, [jsonDraft, modelBindings, onSessionDraftChange, tab, workflow]);
 
   useEffect(() => {
     if (restoredDraftAppliedRef.current) {
@@ -236,13 +323,31 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   }, [initialWorkflow]);
 
   useEffect(() => {
+    if (!modelBindingsValue) return;
+    setModelBindings(normalizeWorkflowModelBindings(modelBindingsValue));
+  }, [modelBindingsValue]);
+
+  useEffect(() => {
+    if (!focusNodeId) {
+      handledFocusNodeIdRef.current = null;
+      return;
+    }
+    if (handledFocusNodeIdRef.current === focusNodeId || !workflow.nodes.some((node) => node.id === focusNodeId)) return;
+    handledFocusNodeIdRef.current = focusNodeId;
+    setTab('canvas');
+    setSelectedNodeId(focusNodeId);
+    setSelectedEdgeId(null);
+    setPendingFocusNodeId(focusNodeId);
+  }, [focusNodeId, workflow.nodes]);
+
+  useEffect(() => {
     if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
-  }, [doctorReadyAgents, profiles, t, validationRequestId, workflow, workflowTemplates]);
+  }, [doctorReadyAgents, modelBindings, profiles, t, validationRequestId, workflow, workflowTemplates]);
 
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
@@ -264,6 +369,31 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setWorkflow(normalizedNext);
     setJsonDraft(JSON.stringify(normalizedNext, null, 2));
     onChange?.(normalizedNext);
+  };
+
+  const syncModelBindings = (next: WorkflowModelBindings) => {
+    setModelBindings(next);
+    onModelBindingsChange?.(next);
+  };
+
+  const updateWorkerBinding = (executionSlotId: string, patch: Partial<WorkerModelBinding>) => {
+    const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
+    const nextBinding: WorkerModelBinding = {
+      executionSlotId,
+      agentId: current?.agentId ?? '',
+      ...current,
+      ...patch,
+    };
+    syncModelBindings({
+      ...modelBindings,
+      bindings: current
+        ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
+        : [...modelBindings.bindings, nextBinding],
+    });
+  };
+
+  const syncWorkerBindingToOthers = (executionSlotId: string, overwriteConfigured: boolean) => {
+    syncModelBindings(applyWorkerBindingSync(workflow, modelBindings, executionSlotId, overwriteConfigured));
   };
 
   const closeValidationDialog = (open: boolean) => {
@@ -334,7 +464,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       onChange?.(workflowToSave);
     }
-    const validation = validateWorkflowForSave(workflowToSave, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflowToSave, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -343,7 +473,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     try {
-      await onSave(validation.sanitizedWorkflow);
+      await onSave(validation.sanitizedWorkflow, modelBindings);
       setWorkflow(validation.sanitizedWorkflow);
       setJsonDraft(JSON.stringify(validation.sanitizedWorkflow, null, 2));
     } catch (error) {
@@ -363,7 +493,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     const node: WorkflowWorkerNodeDsl = {
       type: 'worker',
       id,
-      provider: null,
+      executionSlotId: crypto.randomUUID(),
       goal: null,
     };
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
@@ -611,9 +741,8 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
         <CardContent className="min-h-0 p-0">
           <ScrollArea className="h-[620px]">
             <div className="space-y-4 p-4">
-              <WorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />
               {!agents.length ? <EmptyState>{t('workflowEditor.noAgents')}</EmptyState> : null}
-              {selectedNode ? <NodeInspector node={selectedNode} agents={agents} profiles={profiles} workflow={workflow} workflowTemplates={workflowTemplates ?? null} fieldErrors={fieldErrors} onUpdate={updateNode} onOpenProfileManagement={onOpenProfileManagement} t={t} /> : null}
+              {selectedNode ? <NodeInspector node={selectedNode} binding={selectedNode.type === 'worker' ? modelBindings.bindings.find((binding) => binding.executionSlotId === selectedNode.executionSlotId) ?? null : null} modelBindings={modelBindings} agents={agents} profiles={profiles} workflow={workflow} workflowTemplates={workflowTemplates ?? null} fieldErrors={fieldErrors} onUpdate={updateNode} onBindingUpdate={updateWorkerBinding} onBindingSync={syncWorkerBindingToOthers} workflowControl={<WorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />} onOpenProfileManagement={onOpenProfileManagement} t={t} /> : <WorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />}
               {selectedEdge ? <EdgeInspector edge={selectedEdge} index={selectedEdgeIndex} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateEdge} onDelete={deleteSelectedEdge} t={t} /> : null}
               {!selectedNode && !selectedEdge ? <EmptyState>{t('workflowEditor.selectHint')}</EmptyState> : null}
             </div>
@@ -634,7 +763,7 @@ function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { contr
     return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
   };
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
+    <section data-slot="workflow-control-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
       <div className="space-y-1">
         <strong className="text-sm">{t('workflowEditor.workflowControls')}</strong>
         <p className="text-xs leading-5 text-muted-foreground">{t('workflowEditor.workflowControlsHelp')}</p>
@@ -661,34 +790,68 @@ function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { contr
           onChange={(event) => onUpdate({ max_rounds: parseLimit(event.target.value) })}
         />
       </Field>
-    </div>
+    </section>
   );
 }
 
-function NodeInspector(props: { node: WorkflowNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function NodeInspector(props: { node: WorkflowNodeDsl; binding: WorkerModelBinding | null; modelBindings: WorkflowModelBindings; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onBindingUpdate: (executionSlotId: string, patch: Partial<WorkerModelBinding>) => void; onBindingSync: (executionSlotId: string, overwriteConfigured: boolean) => void; workflowControl: ReactNode; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   if (props.node.type === 'ai-dynamic') {
-    return <AiDynamicNodeInspector {...props} node={props.node} />;
+    return <>{props.workflowControl}<AiDynamicNodeInspector {...props} node={props.node} /></>;
   }
   return <WorkerNodeInspector {...props} node={props.node} />;
 }
 
-function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, onOpenProfileManagement, t }: { node: WorkflowWorkerNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function FragmentRow({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-words">{value}</dd>
+    </>
+  );
+}
+
+function SyncCount({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="rounded-md border px-2 py-3">
+      <strong className="block text-base tabular-nums">{count}</strong>
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, workflow, fieldErrors, onUpdate, onBindingUpdate, onBindingSync, workflowControl, onOpenProfileManagement, t }: { node: WorkflowWorkerNodeDsl; binding: WorkerModelBinding | null; modelBindings: WorkflowModelBindings; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onBindingUpdate: (executionSlotId: string, patch: Partial<WorkerModelBinding>) => void; onBindingSync: (executionSlotId: string, overwriteConfigured: boolean) => void; workflowControl: ReactNode; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   const [nodeIdDraft, setNodeIdDraft] = useState(node.id);
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const [schemaDraft, setSchemaDraft] = useState('');
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [schemaDirty, setSchemaDirty] = useState(false);
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [overwriteConfigured, setOverwriteConfigured] = useState(false);
   const schemaSelfUpdateNodeId = useRef<string | null>(null);
 
   const validationEnabled = Boolean(node.output || node.success_condition);
   const manualCheckEnabled = Boolean(node.manual_check);
   const resultMode = validationEnabled ? 'ai' : manualCheckEnabled ? 'manual' : 'none';
   const expression = conditionExpression(node.success_condition);
-  const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
+  const selectedAgent = agents.find((agent) => agent.agentType === binding?.agentId) ?? null;
   const updateWorker = (patch: Partial<WorkflowWorkerNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
+  const updateBinding = (patch: Partial<WorkerModelBinding>) => {
+    if (!node.executionSlotId) return;
+    onBindingUpdate(node.executionSlotId, patch);
+  };
   const modelOptions = selectedAgent?.supportedModels ?? [];
   const thoughtLevel = findAcpThoughtLevel(selectedAgent?.configOptions);
   const permissionModes = selectedAgent?.supportedModes ?? [];
+  const syncPlan = planWorkerBindingSync(workflow, modelBindings, node.executionSlotId ?? '', overwriteConfigured);
+  const selectedModelName = modelOptions.find((model) => model.id === binding?.modelId)?.name ?? binding?.modelId ?? t('workflowEditor.permissionModeUnspecified');
+  const selectedPermissionName = permissionModes.find((mode) => mode.id === binding?.permissionModeId)?.name ?? binding?.permissionModeId ?? t('workflowEditor.permissionModeUnspecified');
+  const selectedConfigOptions = Object.entries(binding?.configOptions ?? {}).map(([optionId, value]) => {
+    const option = selectedAgent?.configOptions?.find((item) => item.id === optionId);
+    return {
+      id: option?.name ?? optionId,
+      value: option?.options.find((item) => item.value === value)?.name ?? value,
+    };
+  });
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null };
   const updateOutput = useCallback((patch: Partial<WorkflowOutputContractDsl>) => {
@@ -766,11 +929,88 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
     updateWorker({ id: value });
   };
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
+    <div data-slot="worker-inspector" className="space-y-4">
+    <section data-slot="worker-model-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
       <div className="flex items-center justify-between gap-2">
-        <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
-        <Badge variant="outline">worker</Badge>
+        <strong className="text-sm">{t('workflowEditor.modelConfig')}</strong>
+        <Button type="button" size="sm" variant="outline" disabled={!binding?.agentId.trim() || syncPlan.fillCount + syncPlan.overwriteCount + syncPlan.skipCount === 0} onClick={() => { setOverwriteConfigured(false); setSyncDialogOpen(true); }}>
+          <Copy className="size-3.5" />
+          {t('workflowEditor.syncToOtherNodes')}
+        </Button>
       </div>
+      <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
+        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, configOptions: undefined })}>
+          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+          <SelectContent>{agents.map((agent) => (
+            <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
+              <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
+            </SelectItem>
+          ))}</SelectContent>
+        </Select>
+        {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
+      </Field>
+      {modelOptions.length > 0 || thoughtLevel ? (
+        <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
+          <AcpModelThoughtSelects
+            models={modelOptions}
+            modelValue={binding?.modelId}
+            thoughtLevel={thoughtLevel}
+            thoughtValue={thoughtLevel ? binding?.configOptions?.[thoughtLevel.id] : null}
+            compact
+            triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
+            onModelChange={(modelId) => updateBinding({ modelId: modelId ?? undefined })}
+            onThoughtChange={(optionId, value) => updateBinding({
+              configOptions: optionalWorkerConfigOptions(
+                updateAcpConfigOptionOverride(binding?.configOptions, optionId, value),
+              ),
+            })}
+          />
+        </Field>
+      ) : null}
+      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
+        <Select value={binding?.permissionModeId ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateBinding({ permissionModeId: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
+          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
+            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
+            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t('workflowEditor.syncDialogTitle')}</DialogTitle>
+            <DialogDescription>{t('workflowEditor.syncDialogDescription')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-md border bg-muted/20 p-3">
+              <dt className="text-muted-foreground">{t('workflowEditor.agent')}</dt><dd className="min-w-0 break-words">{selectedAgent?.displayName ?? binding?.agentId}</dd>
+              <dt className="text-muted-foreground">{t('workflowEditor.model')}</dt><dd className="min-w-0 break-words">{selectedModelName}</dd>
+              <dt className="text-muted-foreground">{t('workflowEditor.permissionMode')}</dt><dd className="min-w-0 break-words">{selectedPermissionName}</dd>
+              {selectedConfigOptions.map((option) => <FragmentRow key={option.id} label={option.id} value={option.value} />)}
+            </dl>
+            <label className="flex items-start gap-3 rounded-md border p-3">
+              <Checkbox checked={overwriteConfigured} onCheckedChange={(checked) => setOverwriteConfigured(checked === true)} />
+              <span className="space-y-1"><span className="block font-medium">{t('workflowEditor.syncOverwriteConfigured')}</span><span className="block text-xs text-muted-foreground">{t('workflowEditor.syncOverwriteDescription')}</span></span>
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <SyncCount label={t('workflowEditor.syncFillCount')} count={syncPlan.fillCount} />
+              <SyncCount label={t('workflowEditor.syncOverwriteCount')} count={syncPlan.overwriteCount} />
+              <SyncCount label={t('workflowEditor.syncSkipCount')} count={syncPlan.skipCount} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSyncDialogOpen(false)}>{t('common.cancel')}</Button>
+            <Button type="button" disabled={!syncPlan.targetSlotIds.length} onClick={() => { if (node.executionSlotId) onBindingSync(node.executionSlotId, overwriteConfigured); setSyncDialogOpen(false); }}>{t('workflowEditor.syncConfirm')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+    {workflowControl}
+    <section data-slot="worker-node-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
+      <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
       <Field label={t('workflowEditor.nodeId')} required errors={errorsFor('id')}>
         <Input
           className={errorClass(errorsFor('id'))}
@@ -789,48 +1029,8 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
           }}
         />
       </Field>
-      <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker(workerAgentSelectionPatch(provider))}>
-          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-          <SelectContent>{agents.map((agent) => (
-            <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
-              <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
-            </SelectItem>
-          ))}</SelectContent>
-        </Select>
-        {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
-      </Field>
-      {modelOptions.length > 0 || thoughtLevel ? (
-        <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
-          <AcpModelThoughtSelects
-            models={modelOptions}
-            modelValue={node.model}
-            thoughtLevel={thoughtLevel}
-            thoughtValue={thoughtLevel ? node.config_options?.[thoughtLevel.id] : null}
-            compact
-            triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
-            onModelChange={(model) => updateWorker({ model: model ?? undefined })}
-            onThoughtChange={(optionId, value) => updateWorker({
-              config_options: optionalWorkerConfigOptions(
-                updateAcpConfigOptionOverride(node.config_options, optionId, value),
-              ),
-            })}
-          />
-        </Field>
-      ) : null}
       <Field label={<ProfileLabel t={t} onOpenProfileManagement={onOpenProfileManagement} />} required errors={errorsFor('profile')}>
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
-      </Field>
-      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
-          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
       </Field>
       <Field label={t('workflowEditor.goal')} errors={errorsFor('goal')}>
         <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} placeholder={t('workflowEditor.defaultNodeGoal')} onChange={(event) => updateWorker({ goal: event.target.value })} />
@@ -913,6 +1113,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
           </div>
         ) : null}
       </div>
+    </section>
     </div>
   );
 }
@@ -1954,13 +2155,28 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
 export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [
-      node.id,
-      node.type,
-      'provider' in node ? node.provider ?? null : null,
-    ]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
   });
+}
+
+export function authoringWorkflowNodeAgentIds(
+  workflow: Pick<WorkflowDsl, 'nodes'>,
+  modelBindings: WorkflowModelBindings,
+): Record<string, string> {
+  const bindingBySlot = new Map(
+    modelBindings.bindings.map((binding) => [binding.executionSlotId, binding.agentId]),
+  );
+  return Object.fromEntries(workflow.nodes.flatMap((node) => {
+    if (node.type === 'worker') {
+      const agentId = node.executionSlotId ? bindingBySlot.get(node.executionSlotId) : undefined;
+      return agentId ? [[node.id, agentId]] : [];
+    }
+    const agentId = node.agentStrategy.mode === 'fixed'
+      ? node.agentStrategy.provider
+      : node.agentStrategy.bootstrapProvider;
+    return agentId ? [[node.id, agentId]] : [];
+  }));
 }
 
 function stringSetSignature(values: Set<string>): string {
@@ -1973,7 +2189,7 @@ function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl 
   return workflow.entry === entry ? workflow : { ...workflow, entry };
 }
 
-function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, agentIconKeys: ReadonlyMap<string, string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
+function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
   const allNodes = [
@@ -1998,8 +2214,6 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
     const node = workflow.nodes.find((n) => n.id === item.id);
     const detail = node && 'goal' in node ? node.goal ?? '' : node?.type ?? item.id;
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
-    const provider = node && 'provider' in node ? node.provider : undefined;
-    const iconKey = provider ? agentIconKeys.get(provider) : undefined;
     return {
       id: item.id,
       type: 'editorCanvas',
@@ -2011,7 +2225,6 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
         kind: item.terminal ? 'terminal' : node?.type ?? 'node',
         detail,
         terminal: item.terminal,
-        iconKey,
         entryCandidate: !item.terminal && entryCandidateIds.has(item.id),
         entryLabel: t('workflowEditor.entryBadge'),
       },
@@ -2282,6 +2495,8 @@ export function validateWorkflowForSave(
   currentTemplateId: string | null = null,
   currentTemplateName: string | null = null,
   validateTemplateDuplicateId = true,
+  modelBindings: WorkflowModelBindings = emptyWorkflowModelBindings(),
+  validateModelBindings = true,
 ): WorkflowValidationResult {
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
@@ -2316,6 +2531,12 @@ export function validateWorkflowForSave(
     counts[node.id] = (counts[node.id] ?? 0) + 1;
     return counts;
   }, {});
+  const bindingBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  const slotNodeIds = new Map<string, string[]>();
+  workflow.nodes.forEach((node) => {
+    if (node.type !== 'worker' || !node.executionSlotId?.trim()) return;
+    slotNodeIds.set(node.executionSlotId, [...(slotNodeIds.get(node.executionSlotId) ?? []), node.id]);
+  });
 
   const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number, nodeIds?: string[]) => {
     issues.push({ message, fieldKey, nodeId, edgeIndex, nodeIds });
@@ -2361,13 +2582,27 @@ export function validateWorkflowForSave(
       validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, agentIds, agentById, nodeField, addIssue, t);
       return;
     }
-    if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (!agentIds.has(node.provider)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (node.permission_mode?.trim()) {
-      const supportedModeIds = new Set((agentById.get(node.provider)?.supportedModes ?? []).map((mode) => mode.id));
-      if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
+    const slotId = node.executionSlotId?.trim();
+    const binding = slotId ? bindingBySlot.get(slotId) : null;
+    if (!slotId) addIssue(t('workflowEditor.validationSlotRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if ((slotNodeIds.get(slotId)?.length ?? 0) > 1) addIssue(t('workflowEditor.validationSlotDuplicate', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && !binding?.agentId.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && binding && !agentIds.has(binding.agentId)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && binding) {
+      const agent = agentById.get(binding.agentId);
+      if (binding.modelId?.trim() && !(agent?.supportedModels ?? []).some((model) => model.id === binding.modelId)) {
+        addIssue(t('workflowEditor.validationModelUnavailable', { node: nodeLabel }), nodeField(node, 'model'), node.id);
+      }
+      const supportedModeIds = new Set((agent?.supportedModes ?? []).map((mode) => mode.id));
+      if (binding.permissionModeId?.trim() && !supportedModeIds.has(binding.permissionModeId)) {
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
+      Object.entries(binding.configOptions ?? {}).forEach(([optionId, value]) => {
+        const option = agent?.configOptions?.find((item) => item.id === optionId);
+        if (!option?.options.some((item) => item.value === value)) {
+          addIssue(t('workflowEditor.validationConfigOptionUnavailable', { node: nodeLabel, option: optionId }), nodeField(node, 'model'), node.id);
+        }
+      });
     }
 
     const workerNode = node as WorkflowWorkerNodeDsl;

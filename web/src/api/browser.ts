@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -18,6 +18,10 @@ const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
 const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
@@ -903,6 +907,9 @@ export const browserApi: RuntimeApi = {
   deleteAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },
+  getAgentBindingUsage(_agentType: string) {
+    return Promise.resolve({ workflowTemplateCount: 0, taskCount: 0, scheduledTaskCount: 0 });
+  },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },
@@ -981,15 +988,15 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowError: null,
     };
-    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2) });
+    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2), modelBindings: input.modelBindings ?? emptyWorkflowModelBindings() });
   },
-  saveTaskWorkflow(_projectId, taskId, workflow) {
-    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2) });
+  saveTaskWorkflow(_projectId, taskId, workflow, modelBindings = emptyWorkflowModelBindings()) {
+    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2), modelBindings });
   },
   getWorkflowTemplates() {
     return Promise.resolve(browserPreviewState.getWorkflowTemplates());
   },
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
     let nextWorkflow = workflow;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1004,6 +1011,7 @@ export const browserApi: RuntimeApi = {
       name,
       isBuiltIn: false,
       workflow: nextWorkflow,
+      modelBindings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1013,15 +1021,19 @@ export const browserApi: RuntimeApi = {
       templates: [...current.templates, template],
     }));
   },
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
     if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
-      return Promise.reject(browserCommandError('workflow-template.readonly-built-in'));
+      return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+        ...current,
+        lastUsedTemplateId: templateId,
+        templates: current.templates.map((template) => template.id === templateId ? { ...template, modelBindings, updatedAt: new Date().toISOString() } : template),
+      }));
     }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: templateId,
-      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, updatedAt: new Date().toISOString() } : template),
+      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, modelBindings, updatedAt: new Date().toISOString() } : template),
     }));
   },
   deleteWorkflowTemplate(templateId: string) {

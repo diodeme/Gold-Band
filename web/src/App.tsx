@@ -185,12 +185,28 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   WorkflowDsl,
+  WorkflowModelBindings,
   WorkflowVm,
   InterventionNavigateEventVm,
   AvatarKind,
   AvatarShape,
   SaveDesktopAvatarInput,
+  WorkflowRepairTarget,
 } from './types';
+
+export function workflowRepairTargetFromMissingItems(
+  missingItems: Array<{ params: Record<string, unknown> }>,
+): WorkflowRepairTarget | null {
+  for (const item of missingItems) {
+    const workflowTemplateId = item.params.workflowTemplateId;
+    const nodeId = item.params.nodeId;
+    if (typeof workflowTemplateId === 'string' && workflowTemplateId.trim()
+      && typeof nodeId === 'string' && nodeId.trim()) {
+      return { workflowTemplateId, nodeId };
+    }
+  }
+  return null;
+}
 
 function findScheduledLinkedLeaf(
   tree: ConversationSessionTreeVm,
@@ -334,6 +350,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const [workflowRepairTarget, setWorkflowRepairTarget] = useState<WorkflowRepairTarget | null>(null);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
   const conversationRunStopPendingRef = useRef(false);
@@ -1419,11 +1436,11 @@ export function App() {
     return created;
   };
 
-  const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl) => {
+  const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setBusy(true);
     setError(null);
     try {
-      const saved = await saveTaskWorkflow(undefined, taskId, workflow);
+      const saved = await saveTaskWorkflow(undefined, taskId, workflow, modelBindings);
       setWorkflow(saved);
       return saved;
     } finally {
@@ -1972,8 +1989,10 @@ export function App() {
             try {
               const validation = await validateConversationCreate(input);
               if (!validation.valid) {
+                setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
+              setWorkflowRepairTarget(null);
               const run = await createConversationRun(input);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
@@ -2022,6 +2041,7 @@ export function App() {
           }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
@@ -2064,6 +2084,7 @@ export function App() {
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
+          repairTarget={workflowRepairTarget}
           onProjectChange={(projectId) => {
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);

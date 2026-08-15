@@ -1173,6 +1173,7 @@ mod tests {
     fn workflow_output_contract_uses_post_turn_projection() {
         let worker = WorkerNode {
             id: "review".to_string(),
+            execution_slot_id: None,
             provider: Some("claude-acp".to_string()),
             model: None,
             profile: None,
@@ -1400,6 +1401,7 @@ mod tests {
             control: Default::default(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 model: None,
                 profile: None,

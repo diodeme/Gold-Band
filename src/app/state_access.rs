@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 
 use crate::dsl::{WorkflowDsl, normalize_legacy_workflow_snapshot};
-use crate::observability::{ExecutionContext, append_run_event_best_effort, run_event_data};
 use crate::runtime::{NodeState, RoundState, RunState};
 use crate::storage::{read_json, write_json};
 
@@ -35,26 +34,9 @@ pub(crate) fn current_attempt_state(
 
 pub(crate) fn load_run_workflow(app: &App, task_id: &str, run_id: &str) -> Result<WorkflowDsl> {
     let snapshot_path = app.paths.workflow_snapshot_file(task_id, run_id);
-    let mut workflow = normalize_legacy_workflow_snapshot(read_json(&snapshot_path)?);
-    let normalizations = app.normalize_workflow_models(&mut workflow);
-    if !normalizations.is_empty() {
-        write_json(&snapshot_path, &workflow)?;
-        let ctx = ExecutionContext::for_run(task_id, run_id);
-        for normalization in normalizations {
-            let mut event_data = run_event_data(&ctx, None, None, None, None);
-            event_data.details =
-                Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
-            append_run_event_best_effort(
-                &app.paths,
-                task_id,
-                run_id,
-                "model_config_normalized",
-                super::ids::now_rfc3339_like(),
-                event_data,
-            );
-        }
-    }
-    Ok(workflow)
+    Ok(normalize_legacy_workflow_snapshot(read_json(
+        &snapshot_path,
+    )?))
 }
 
 pub(crate) fn persist_runtime_state(

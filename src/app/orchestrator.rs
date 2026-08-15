@@ -678,14 +678,10 @@ pub(crate) fn prepare_run(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
-    let workflow_path = workflow_override
-        .map(|path| path.to_owned())
-        .unwrap_or_else(|| app.paths.workflow_file(task_id));
-    let mut workflow: WorkflowDsl = read_json(&workflow_path)?;
-    let model_normalizations = app.normalize_workflow_models(&mut workflow);
-    if workflow_override.is_none() && !model_normalizations.is_empty() {
-        write_json(&workflow_path, &workflow)?;
-    }
+    let workflow: WorkflowDsl = match workflow_override {
+        Some(path) => read_json(path)?,
+        None => app.executable_task_workflow(task_id)?,
+    };
     let validated = validate_workflow_snapshot(workflow)?;
     if workflow_contains_ai_dynamic(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
@@ -808,19 +804,6 @@ pub(crate) fn prepare_run(
             None,
         ),
     );
-    for normalization in model_normalizations {
-        let mut event_data = run_event_data(&ctx, None, None, None, None);
-        event_data.details =
-            Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
-        append_run_event_best_effort(
-            &app.paths,
-            task_id,
-            &run.id,
-            "model_config_normalized",
-            now_rfc3339_like(),
-            event_data,
-        );
-    }
     write_progress_hint(
         &app.paths,
         task_id,
@@ -3241,8 +3224,12 @@ fn freeze_allowed_workflow_snapshots(
             .iter()
             .find(|template| template.workflow.id.trim() == workflow_id)
             .ok_or_else(|| anyhow!("allowed workflow `{workflow_id}` not found"))?;
-        let mut workflow = template.workflow.clone();
-        app.normalize_workflow_models(&mut workflow);
+        let workflow = crate::workflow_model_binding::validate_and_inject(
+            &template.workflow,
+            &template.model_bindings,
+            &app.config.agents,
+            &app.provider_diagnostics(),
+        )?;
         let validated = validate_workflow(workflow)?;
         app.validate_workflow_agents(&validated)?;
         let contains_ai_dynamic = workflow_contains_ai_dynamic(&validated.raw);

@@ -23,3 +23,4 @@ pub mod runtime_error;
 pub mod scheduler;
 pub mod skill;
 pub mod storage;
+pub mod workflow_model_binding;

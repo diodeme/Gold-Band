@@ -55,6 +55,7 @@ import type {
   UpdaterSettingsVm,
   MetricsSettingsVm,
   WorkflowDsl,
+  WorkflowModelBindings,
   ConversationAttemptLifecycleVm,
   ConversationTaskActivityVm,
   WorkflowTemplateStore,
@@ -223,6 +224,7 @@ export interface RuntimeApi {
   createAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   deleteAgent(agentType: string): Promise<AgentRegistryVm>;
+  getAgentBindingUsage(agentType: string): Promise<import('../types').AgentBindingUsageVm>;
   doctorAgent(agentType: string): Promise<AgentRegistryVm>;
   getTaskList(): Promise<TaskListVm>;
   getProfiles(): Promise<ProfileListVm>;
@@ -237,10 +239,10 @@ export interface RuntimeApi {
   getTaskDetail(taskId: string): Promise<TaskDetailVm>;
   getWorkflow(taskId: string): Promise<WorkflowVm>;
   createTask(input: CreateTaskInput): Promise<WorkflowVm>;
-  saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl): Promise<WorkflowVm>;
+  saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowVm>;
   getWorkflowTemplates(): Promise<WorkflowTemplateStore>;
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowTemplateStore>;
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowTemplateStore>;
   deleteWorkflowTemplate(templateId: string): Promise<WorkflowTemplateStore>;
   getAutoTemplates(): Promise<AutoTemplateStore>;
   saveAutoTemplate(name: string, config: ConversationAutoConfigVm): Promise<AutoTemplateStore>;

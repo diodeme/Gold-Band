@@ -32,14 +32,30 @@ function worker(id: string) {
   return {
     type: 'worker' as const,
     id,
-    provider: 'claude-acp',
+    executionSlotId: `slot-${id}`,
     profile: 'developer',
     goal: `Run ${id}`,
   };
 }
 
 function validate(workflow: WorkflowDsl) {
-  return validateWorkflowForSave(workflow, profiles, agents, t, null, null, null, false);
+  return validateWorkflowForSave(
+    workflow,
+    profiles,
+    agents,
+    t,
+    null,
+    null,
+    null,
+    false,
+    {
+      definitionRevision: '',
+      bindingRevision: 0,
+      bindings: workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId
+        ? [{ executionSlotId: node.executionSlotId, agentId: 'claude-acp' }]
+        : []),
+    },
+  );
 }
 
 describe('WorkflowEditor new round entry validation', () => {

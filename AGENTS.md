@@ -77,7 +77,7 @@ system prompt / user prompt 的固定区分标准：
 
 ## 状态、生命周期与数据完整性详细规则
 
-涉及实体身份与作用域、canonical state、生命周期状态机、异步竞态、持久化、原子写入、幂等、并发冲突、结构化错误、能力发现或资源信任边界时，开始分析、设计或修改前必须完整读取并遵守：
+涉及实体身份与作用域、canonical state、生命周期状态机、authoring definition 与 executable snapshot 分层校验、异步竞态、持久化、原子写入、幂等、并发冲突、结构化错误、能力发现或资源信任边界时，开始分析、设计或修改前必须完整读取并遵守：
 
 - `docs/gold-band/rules/state-lifecycle-and-data-integrity.md`
 

@@ -50,7 +50,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
         <WorkspaceEntryOptions presentation="menu" />
         <div
           ref={tabStripRef}
-          className="gold-themed-scrollbar right-workspace-tab-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
+          className="gold-themed-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
           data-right-workspace-tab-strip="true"
         >
           {tabs.map((tab) => (

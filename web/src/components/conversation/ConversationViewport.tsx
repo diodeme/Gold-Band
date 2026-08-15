@@ -5,6 +5,7 @@ import {
   ChatContainerRoot,
   type ChatContainerRootProps,
 } from '@/components/prompt-kit/chat-container';
+import { GOLD_CONVERSATION_SCROLLBAR_CLASS } from '@/lib/themed-scrollbar';
 import { cn } from '@/lib/utils';
 
 interface ConversationViewportProps {
@@ -41,7 +42,7 @@ export function ConversationViewport({
     >
       <ChatContainerContent
         className={cn('min-h-full', contentClassName)}
-        scrollClassName={scrollClassName}
+        scrollClassName={cn(GOLD_CONVERSATION_SCROLLBAR_CLASS, scrollClassName)}
       >
         {children}
       </ChatContainerContent>

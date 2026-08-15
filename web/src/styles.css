@@ -305,9 +305,10 @@
   --conversation-content-rail-max-inline-size: 56rem;
   --workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace));
   --workspace-main-surface-shadow:
-    0 0 16px color-mix(in srgb, var(--gold-window-edge-shadow) 85%, transparent),
-    var(--gb-material-shadow),
-    var(--gb-material-edge-shadow);
+    0 -8px 16px -8px color-mix(in srgb, var(--gold-window-edge-shadow) 85%, transparent),
+    0 0 16px color-mix(in srgb, var(--gold-window-edge-shadow) 45%, transparent);
+  --gold-conversation-scrollbar-thumb: color-mix(in srgb, var(--foreground) 11%, transparent);
+  --gold-conversation-scrollbar-thumb-hover: color-mix(in srgb, var(--foreground) 22%, transparent);
   --gb-material-model: solid;
   --gb-material-opacity: 1;
   --gb-material-border-highlight: transparent;
@@ -398,40 +399,42 @@
     scrollbar-width: thin;
   }
 
-  *::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
+  @supports not (scrollbar-width: thin) {
+    *::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
 
-  *::-webkit-scrollbar-track {
-    background: transparent;
-  }
+    *::-webkit-scrollbar-track {
+      background: transparent;
+    }
 
-  *:hover::-webkit-scrollbar-track {
-    background: var(--gold-scrollbar-track);
-  }
+    *:hover::-webkit-scrollbar-track {
+      background: var(--gold-scrollbar-track);
+    }
 
-  *::-webkit-scrollbar-thumb {
-    min-height: 40px;
-    border: 3px solid transparent;
-    border-radius: 999px;
-    background: var(--gold-scrollbar-thumb);
-    background-clip: content-box;
-  }
+    *::-webkit-scrollbar-thumb {
+      min-height: 40px;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background: var(--gold-scrollbar-thumb);
+      background-clip: content-box;
+    }
 
-  *::-webkit-scrollbar-thumb:hover {
-    background: var(--gold-scrollbar-thumb-hover);
-    background-clip: content-box;
-  }
+    *::-webkit-scrollbar-thumb:hover {
+      background: var(--gold-scrollbar-thumb-hover);
+      background-clip: content-box;
+    }
 
-  *::-webkit-scrollbar-button {
-    display: none;
-    width: 0;
-    height: 0;
-  }
+    *::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
 
-  *::-webkit-scrollbar-corner {
-    background: transparent;
+    *::-webkit-scrollbar-corner {
+      background: transparent;
+    }
   }
 
   html {
@@ -499,63 +502,60 @@
     scrollbar-width: thin;
   }
 
-  .gold-themed-scrollbar::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+  .gold-themed-scrollbar.gold-conversation-scrollbar {
+    scrollbar-color: var(--gold-conversation-scrollbar-thumb) transparent;
   }
 
-  .gold-themed-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-  }
+  @supports not (scrollbar-width: thin) {
+    .gold-themed-scrollbar::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
 
-  .gold-themed-scrollbar:hover::-webkit-scrollbar-track {
-    background: var(--gold-scrollbar-track);
-  }
+    .gold-themed-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
 
-  .gold-themed-scrollbar::-webkit-scrollbar-thumb {
-    min-height: 40px;
-    border: 3px solid transparent;
-    border-radius: 999px;
-    background: var(--gold-scrollbar-thumb);
-    background-clip: content-box;
-  }
+    .gold-themed-scrollbar:hover::-webkit-scrollbar-track {
+      background: var(--gold-scrollbar-track);
+    }
 
-  .gold-themed-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: var(--gold-scrollbar-thumb-hover);
-    background-clip: content-box;
-  }
+    .gold-themed-scrollbar::-webkit-scrollbar-thumb {
+      min-height: 40px;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background: var(--gold-scrollbar-thumb);
+      background-clip: content-box;
+    }
 
-  .gold-themed-scrollbar::-webkit-scrollbar-button {
-    display: none;
-    width: 0;
-    height: 0;
-  }
+    .gold-themed-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: var(--gold-scrollbar-thumb-hover);
+      background-clip: content-box;
+    }
 
-  .gold-themed-scrollbar::-webkit-scrollbar-corner {
-    background: transparent;
-  }
+    .gold-themed-scrollbar::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
 
-  .gold-themed-scrollbar.right-workspace-tab-scrollbar {
-    /* Chromium ignores ::-webkit-scrollbar sizing when standards-based thin wins. */
-    scrollbar-color: auto;
-    scrollbar-width: auto;
-  }
+    .gold-themed-scrollbar::-webkit-scrollbar-corner {
+      background: transparent;
+    }
 
-  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
-  }
+    .gold-themed-scrollbar.gold-conversation-scrollbar:hover::-webkit-scrollbar-track {
+      background: transparent;
+    }
 
-  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-thumb {
-    min-width: 32px;
-    border: 0;
-  }
+    .gold-themed-scrollbar.gold-conversation-scrollbar::-webkit-scrollbar-thumb {
+      background: var(--gold-conversation-scrollbar-thumb);
+      background-clip: content-box;
+    }
 
-  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button,
-  .gold-themed-scrollbar.right-workspace-tab-scrollbar::-webkit-scrollbar-button:horizontal {
-    display: none;
-    width: 0;
-    height: 0;
+    .gold-themed-scrollbar.gold-conversation-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: var(--gold-conversation-scrollbar-thumb-hover);
+      background-clip: content-box;
+    }
   }
 }
 

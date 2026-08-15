@@ -59,7 +59,7 @@ describe('App window shell style', () => {
     expect(shell).not.toContain('mouseup');
   });
 
-  it('elevates the shared main workspace surface with the composer material shadow', () => {
+  it('elevates the shared workspace surfaces with directional theme shadows', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
     const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
     const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
@@ -76,8 +76,8 @@ describe('App window shell style', () => {
     expect(conversationShell).not.toContain("showLeft && 'rounded-tl-2xl border-l'");
     expect(workbenchShell).toContain('relative z-10 flex min-w-0');
     expect(styles).toContain('--workspace-main-surface-shadow:');
-    expect(styles).toMatch(/--workspace-main-surface-shadow:\s*0 0 16px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 85%, transparent\),\s*var\(--gb-material-shadow\),\s*var\(--gb-material-edge-shadow\);/u);
-    expect(styles).not.toMatch(/--workspace-main-surface-shadow:[^;]*\d+px\s+\d+px/u);
+    expect(styles).toMatch(/--workspace-main-surface-shadow:\s*0 -8px 16px -8px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 85%, transparent\),\s*0 0 16px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 45%, transparent\);/u);
+    expect(styles).not.toMatch(/--workspace-main-surface-shadow:[^;]*var\(--gb-material-shadow\)/u);
   });
 
   it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {

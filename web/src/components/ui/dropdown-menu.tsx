@@ -32,20 +32,30 @@ DropdownMenuTrigger.displayName = "DropdownMenuTrigger"
 
 function DropdownMenuContent({
   className,
+  children,
   sideOffset = 4,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
-        data-slot="dropdown-menu-content"
+        data-slot="dropdown-menu-content-positioner"
         sideOffset={sideOffset}
-        className={cn(
-          "z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          className
-        )}
+        className="group/dropdown-menu-positioner z-50 outline-none"
         {...props}
-      />
+      >
+        <div
+          data-slot="dropdown-menu-content"
+          data-theme-role="popover"
+          data-theme-material-layer="isolated"
+          className={cn(
+            "relative max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md group-data-[side=bottom]/dropdown-menu-positioner:slide-in-from-top-2 group-data-[side=left]/dropdown-menu-positioner:slide-in-from-right-2 group-data-[side=right]/dropdown-menu-positioner:slide-in-from-left-2 group-data-[side=top]/dropdown-menu-positioner:slide-in-from-bottom-2 group-data-[state=closed]/dropdown-menu-positioner:animate-out group-data-[state=closed]/dropdown-menu-positioner:fade-out-0 group-data-[state=closed]/dropdown-menu-positioner:zoom-out-95 group-data-[state=open]/dropdown-menu-positioner:animate-in group-data-[state=open]/dropdown-menu-positioner:fade-in-0 group-data-[state=open]/dropdown-menu-positioner:zoom-in-95",
+            className
+          )}
+        >
+          {children}
+        </div>
+      </DropdownMenuPrimitive.Content>
     </DropdownMenuPrimitive.Portal>
   )
 }
@@ -223,17 +233,27 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
   return (
     <DropdownMenuPrimitive.SubContent
-      data-slot="dropdown-menu-sub-content"
-      className={cn(
-        "z-50 min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-        className
-      )}
+      data-slot="dropdown-menu-sub-content-positioner"
+      className="group/dropdown-menu-sub-positioner z-50 outline-none"
       {...props}
-    />
+    >
+      <div
+        data-slot="dropdown-menu-sub-content"
+        data-theme-role="popover"
+        data-theme-material-layer="isolated"
+        className={cn(
+          "relative min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg group-data-[side=bottom]/dropdown-menu-sub-positioner:slide-in-from-top-2 group-data-[side=left]/dropdown-menu-sub-positioner:slide-in-from-right-2 group-data-[side=right]/dropdown-menu-sub-positioner:slide-in-from-left-2 group-data-[side=top]/dropdown-menu-sub-positioner:slide-in-from-bottom-2 group-data-[state=closed]/dropdown-menu-sub-positioner:animate-out group-data-[state=closed]/dropdown-menu-sub-positioner:fade-out-0 group-data-[state=closed]/dropdown-menu-sub-positioner:zoom-out-95 group-data-[state=open]/dropdown-menu-sub-positioner:animate-in group-data-[state=open]/dropdown-menu-sub-positioner:fade-in-0 group-data-[state=open]/dropdown-menu-sub-positioner:zoom-in-95",
+          className
+        )}
+      >
+        {children}
+      </div>
+    </DropdownMenuPrimitive.SubContent>
   )
 }
 

@@ -1,0 +1,86 @@
+{
+  "shape": {
+    "radiusControl": {
+      "$type": "string",
+      "$value": "{primitive.radius}"
+    },
+    "radiusSurface": {
+      "$type": "string",
+      "$value": "{primitive.radius}"
+    },
+    "radiusOverlay": {
+      "$type": "string",
+      "$value": "{primitive.radius}"
+    },
+    "radiusAvatar": {
+      "$type": "string",
+      "$value": "{primitive.radiusPill}"
+    },
+    "radiusPill": {
+      "$type": "string",
+      "$value": "{primitive.radiusPill}"
+    },
+    "borderHairline": {
+      "$type": "string",
+      "$value": "1px"
+    },
+    "borderDefault": {
+      "$type": "string",
+      "$value": "1px"
+    },
+    "borderStrong": {
+      "$type": "string",
+      "$value": "2px"
+    }
+  },
+  "motion": {
+    "mode": { "$type": "string", "$value": "smooth" },
+    "durationFast": { "$type": "string", "$value": "120ms" },
+    "durationNormal": { "$type": "string", "$value": "200ms" },
+    "durationSlow": { "$type": "string", "$value": "260ms" },
+    "easingStandard": { "$type": "string", "$value": "{primitive.motionEasing}" },
+    "easingEnter": { "$type": "string", "$value": "{primitive.motionEasing}" },
+    "easingPress": { "$type": "string", "$value": "cubic-bezier(.2,0,.2,1)" }
+  },
+  "scrollbar": {
+    "width": { "$type": "string", "$value": "10px" },
+    "thumbRadius": { "$type": "string", "$value": "{primitive.radiusPill}" },
+    "thumbInset": { "$type": "string", "$value": "3px" },
+    "minLength": { "$type": "string", "$value": "24px" },
+    "buttons": { "$type": "string", "$value": "none" }
+  },
+  "preview": {
+    "background": {
+      "$type": "color",
+      "$value": "{semantic.workspace}"
+    },
+    "surface": {
+      "$type": "color",
+      "$value": "{semantic.card}"
+    },
+    "border": {
+      "$type": "color",
+      "$value": "{semantic.border}"
+    },
+    "primary": {
+      "$type": "color",
+      "$value": "{semantic.primary}"
+    },
+    "foreground": {
+      "$type": "color",
+      "$value": "{semantic.foreground}"
+    },
+    "muted": {
+      "$type": "color",
+      "$value": "{semantic.mutedForeground}"
+    },
+    "success": {
+      "$type": "color",
+      "$value": "{semantic.success}"
+    },
+    "danger": {
+      "$type": "color",
+      "$value": "{semantic.danger}"
+    }
+  }
+}

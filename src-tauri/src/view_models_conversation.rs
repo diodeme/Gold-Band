@@ -6,25 +6,398 @@ use std::path::Path;
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
+use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError, ScheduleSpec};
+
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
     workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
+use gold_band::acp::control::load_runtime_control_cursor;
 use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
 use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
+use gold_band::domain::TurnControlMode;
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::DynamicGraphState;
-use gold_band::runtime::RunState;
+use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
+use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
 use gold_band::storage::{read_json, write_json};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskVm {
+    pub id: String,
+    pub project_id: String,
+    pub workspace_name: String,
+    pub title: String,
+    pub enabled: bool,
+    pub mode: String,
+    pub session_policy: String,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub next_at: Option<String>,
+    pub status: String,
+    pub last_trigger_at: Option<String>,
+    pub last_trigger_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrenceVm {
+    pub id: String,
+    pub scheduled_task_id: String,
+    pub scheduled_at: String,
+    pub trigger_kind: String,
+    pub status: String,
+    pub attempt: u32,
+    pub error_code: Option<String>,
+    pub error_params: Option<serde_json::Value>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+impl ScheduledOccurrenceVm {
+    pub fn from_occurrence(
+        occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,
+    ) -> Self {
+        Self {
+            id: occurrence.id.clone(),
+            scheduled_task_id: occurrence.job_id.clone(),
+            scheduled_at: occurrence.scheduled_at.to_rfc3339(),
+            trigger_kind: occurrence.trigger_kind.to_string(),
+            status: occurrence.status.to_string(),
+            attempt: occurrence.attempt,
+            error_code: occurrence.error_code.map(|value| value.to_string()),
+            error_params: occurrence.error_params.clone(),
+            task_id: occurrence.task_id.clone(),
+            run_id: occurrence.run_id.clone(),
+            round_id: occurrence.round_id.clone(),
+            attempt_id: occurrence.attempt_id.clone(),
+            started_at: occurrence.started_at.map(|value| value.to_rfc3339()),
+            finished_at: occurrence.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskDiagnosticsVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub next_at: Option<String>,
+    pub last_status: Option<String>,
+    pub last_error: Option<String>,
+    pub run_count: u64,
+    pub retry_count: u8,
+    pub occurrences: Vec<ScheduledOccurrenceVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsVm {
+    pub keep_awake_enabled: bool,
+    pub keep_awake_effective: bool,
+    pub completion_notifications_enabled: bool,
+    pub enabled_job_count: usize,
+    pub occurrence_retention_days: u16,
+    pub power_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledRuntimeSettingsInputVm {
+    pub keep_awake_enabled: bool,
+    pub completion_notifications_enabled: bool,
+    pub occurrence_retention_days: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScheduledTaskResultVm {
+    pub occurrence: ScheduledOccurrenceVm,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateScheduledTaskInputVm {
+    pub project_id: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: ScheduledScheduleInputVm,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: Option<gold_band::scheduler::SessionPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind")]
+#[serde(rename_all_fields = "camelCase")]
+pub enum ScheduledScheduleInputVm {
+    At {
+        local_date: String,
+        local_time: String,
+        timezone: String,
+        disambiguation: LocalTimeDisambiguation,
+    },
+    Repeat {
+        preset: RepeatPreset,
+        hour: u32,
+        minute: u32,
+        timezone: String,
+    },
+    Every {
+        every: ScheduledEveryInputVm,
+        anchor_at: chrono::DateTime<chrono::Utc>,
+        timezone: String,
+    },
+    Cron {
+        expression: String,
+        timezone: String,
+    },
+}
+
+impl ScheduledScheduleInputVm {
+    pub fn try_into_schedule_spec(self) -> Result<ScheduleSpec, ScheduleError> {
+        match self {
+            Self::At {
+                local_date,
+                local_time,
+                timezone,
+                disambiguation,
+            } => ScheduleSpec::at_local(&local_date, &local_time, &timezone, disambiguation),
+            Self::Repeat {
+                preset,
+                hour,
+                minute,
+                timezone,
+            } => ScheduleSpec::repeat(preset, hour, minute, &timezone),
+            Self::Every {
+                every,
+                anchor_at,
+                timezone,
+            } => ScheduleSpec::every_in_timezone(every.value, &every.unit, anchor_at, &timezone),
+            Self::Cron {
+                expression,
+                timezone,
+            } => ScheduleSpec::cron(&expression, &timezone),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledEveryInputVm {
+    pub value: u64,
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTaskEditVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub content: String,
+    pub attachment_names: Vec<String>,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub schedule: gold_band::scheduler::ScheduleSpec,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+    pub direct_agent_type: Option<String>,
+    pub expected_updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScheduledTaskInputVm {
+    pub scheduled_task_id: String,
+    pub project_id: String,
+    pub expected_updated_at: String,
+    pub content: String,
+    pub run_mode: String,
+    pub workflow_template_id: Option<String>,
+    pub include_interview: Option<bool>,
+    pub direct_config: Option<ConversationDirectConfigVm>,
+    pub auto_config: Option<ConversationAutoConfigVm>,
+    pub attachment_paths: Option<Vec<String>>,
+    pub schedule: ScheduledScheduleInputVm,
+    pub overlap_policy: gold_band::scheduler::OverlapPolicy,
+    pub session_policy: gold_band::scheduler::SessionPolicy,
+}
+
+impl ScheduledTaskVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        Self::from_definition_in_workspace(definition, &definition.project_id)
+    }
+
+    pub fn from_definition_in_workspace(
+        definition: &gold_band::scheduler::ScheduledTaskDefinition,
+        workspace_name: &str,
+    ) -> Self {
+        Self {
+            id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            workspace_name: workspace_name.to_string(),
+            title: scheduled_task_title(&definition.instruction),
+            enabled: definition.enabled,
+            mode: serde_json::to_value(definition.mode)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            session_policy: serde_json::to_value(definition.session_policy)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            schedule: definition.schedule.clone(),
+            next_at: definition
+                .enabled
+                .then(|| {
+                    definition
+                        .schedule
+                        .next_occurrence_after(chrono::Utc::now())
+                })
+                .flatten()
+                .map(|value| value.to_rfc3339()),
+            status: scheduled_task_status(definition),
+            last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
+            last_trigger_status: definition.last_trigger_status.clone(),
+            created_at: definition.created_at.to_rfc3339(),
+            updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+impl ScheduledTaskEditVm {
+    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
+        let run_mode = definition
+            .execution_config
+            .get("runMode")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| match definition.mode {
+                gold_band::scheduler::ScheduledMode::Direct => "direct".to_string(),
+                gold_band::scheduler::ScheduledMode::Workflow => "workflow".to_string(),
+                gold_band::scheduler::ScheduledMode::Auto => "auto".to_string(),
+            });
+        let workflow_template_id = definition
+            .execution_config
+            .get("workflowTemplateId")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let include_interview = definition
+            .execution_config
+            .get("includeInterview")
+            .and_then(serde_json::Value::as_bool);
+        let direct_config = definition
+            .execution_config
+            .get("directConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        let auto_config = definition
+            .execution_config
+            .get("autoConfig")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
+        Self {
+            scheduled_task_id: definition.id.clone(),
+            project_id: definition.project_id.clone(),
+            content: definition.instruction.clone(),
+            attachment_names: definition.attachment_names.clone(),
+            run_mode,
+            workflow_template_id,
+            include_interview,
+            direct_config,
+            auto_config,
+            schedule: definition.schedule.clone(),
+            overlap_policy: definition.overlap_policy,
+            session_policy: definition.session_policy,
+            direct_agent_type: definition.content_snapshot.direct_agent_id.clone(),
+            expected_updated_at: definition.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+pub fn scheduled_task_vms_from_sources(
+    sources: &[ConversationWorkspaceSource],
+    project_id: Option<&str>,
+) -> anyhow::Result<Vec<ScheduledTaskVm>> {
+    let mut tasks = Vec::new();
+    for source in sources {
+        if project_id.is_some_and(|value| value != source.workspace.project_id) {
+            continue;
+        }
+        let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(
+            source.app.paths.scheduler_db_path(),
+        )?;
+        tasks.extend(
+            database
+                .list_job_definitions_for_project(&source.workspace.project_id)?
+                .iter()
+                .map(|definition| {
+                    ScheduledTaskVm::from_definition_in_workspace(
+                        definition,
+                        &source.workspace.name,
+                    )
+                }),
+        );
+    }
+    tasks.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(tasks)
+}
+
+pub fn scheduled_task_title(instruction: &str) -> String {
+    let first_line = instruction
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title = normalized.chars().take(48).collect::<String>();
+    if normalized.chars().count() > 48 {
+        title.push('…');
+    }
+    title
+}
+
+fn scheduled_task_status(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> String {
+    if !definition.enabled {
+        return "paused".to_string();
+    }
+    if definition.last_trigger_status.as_deref() == Some("failed") {
+        return "failed".to_string();
+    }
+    if definition
+        .schedule
+        .next_occurrence_after(chrono::Utc::now())
+        .is_none()
+    {
+        return "completed".to_string();
+    }
+    "enabled".to_string()
+}
 
 // ── Conversation View Models ──
 
@@ -62,6 +435,7 @@ pub struct ConversationTaskRowVm {
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
+    pub scheduled_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -133,6 +507,7 @@ pub struct ConversationRunVm {
     pub resumable: bool,
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
+    pub scheduled_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +573,7 @@ pub struct ConversationSessionLeafVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAttemptLifecycleVm {
     pub runtime: ConversationRuntimeFacetVm,
+    pub control: ConversationControlFacetVm,
     pub acp: ConversationAcpFacetVm,
     pub display_status: String,
     pub runtime_display: RuntimeDisplayVm,
@@ -220,6 +596,7 @@ pub struct ConversationQueuedPromptVm {
     pub id: String,
     pub content: String,
     pub attachment_count: usize,
+    pub quote_count: usize,
     pub created_at: String,
 }
 
@@ -234,16 +611,22 @@ pub struct ConversationRuntimeFacetVm {
     pub active: bool,
     pub continuable: bool,
     pub phase: String,
+    pub revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationControlFacetVm {
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAcpFacetVm {
-    pub status: Option<String>,
-    pub phase: Option<String>,
-    pub active: bool,
+    pub session_availability: String,
+    pub live_turn_activity: String,
+    pub latest_turn_status: String,
     pub stopping: bool,
-    pub terminal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,6 +752,101 @@ pub struct ConversationCreateInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub scheduled_content_fingerprint: Option<String>,
+}
+
+pub fn scheduled_content_snapshot(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<gold_band::scheduler::ScheduledTaskContentSnapshot> {
+    use gold_band::scheduler::{AutoAuthoringIdentity, ScheduledMode};
+
+    let mode = match input.run_mode.as_str() {
+        "direct" => ScheduledMode::Direct,
+        "workflow" => ScheduledMode::Workflow,
+        "auto" => ScheduledMode::Auto,
+        other => anyhow::bail!("unsupported scheduled task mode: {other}"),
+    };
+    let attachment_hashes = input
+        .attachment_paths
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|path| gold_band::scheduler::fingerprint::attachment_file_hash(Path::new(path)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut snapshot = gold_band::scheduler::ScheduledTaskContentInput::new(
+        mode,
+        input.content.clone(),
+        attachment_hashes,
+        input.project_id.clone(),
+    );
+
+    match mode {
+        ScheduledMode::Direct => {
+            snapshot.direct_agent_id = Some(
+                input
+                    .direct_config
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("direct config is required"))?
+                    .agent_type
+                    .trim()
+                    .to_string(),
+            );
+        }
+        ScheduledMode::Workflow => {
+            let store = app.workflow_templates()?;
+            let template_id = input
+                .workflow_template_id
+                .as_deref()
+                .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+            let mut workflow = store
+                .templates
+                .iter()
+                .find(|template| template.id == template_id)
+                .map(|template| template.workflow.clone())
+                .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+            apply_workflow_interview_preference(
+                template_id,
+                input.include_interview,
+                &mut workflow,
+            )?;
+            snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
+        }
+        ScheduledMode::Auto => {
+            let config = input
+                .auto_config
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("auto config is required"))?;
+            let available_agent_types = config
+                .available_agents
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|agent| agent.provider.clone());
+            let allowed_workflow_ids = config
+                .allowed_workflows
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|workflow| workflow.workflow_id.clone());
+            snapshot.auto_authoring = Some(AutoAuthoringIdentity::new(
+                config
+                    .agent_strategy
+                    .clone()
+                    .unwrap_or_else(|| "fixed".to_string()),
+                config.agent_type.clone(),
+                config.bootstrap_agent_type.clone(),
+                available_agent_types,
+                config.global_goal.clone(),
+                allowed_workflow_ids,
+            ));
+        }
+    }
+
+    Ok(snapshot)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -417,6 +895,10 @@ pub(crate) struct ConversationMetadata {
     pub(crate) initial_attachment_names: Option<Vec<String>>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_task_id: Option<String>,
+    #[serde(default)]
+    pub(crate) scheduled_content_fingerprint: Option<String>,
 }
 
 fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMetadata> {
@@ -429,13 +911,29 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
     .ok()
 }
 
-pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
-    read_conversation_metadata(app, task_id).and_then(|metadata| match metadata.run_mode.as_str() {
+pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -> Option<String> {
+    read_conversation_metadata(app, task_id)
+        .and_then(|metadata| metadata.scheduled_content_fingerprint)
+}
+
+fn conversation_run_mode_from_label(value: &str) -> Option<ConversationRunMode> {
+    match value {
         "direct" => Some(ConversationRunMode::Direct),
         "workflow" => Some(ConversationRunMode::Workflow),
         "auto" => Some(ConversationRunMode::Auto),
         _ => None,
-    })
+    }
+}
+
+pub(crate) fn conversation_run_mode(app: &App, task_id: &str) -> Option<ConversationRunMode> {
+    read_conversation_metadata(app, task_id)
+        .and_then(|metadata| conversation_run_mode_from_label(&metadata.run_mode))
+}
+
+pub(crate) fn conversation_is_orchestrated(app: &App, task_id: &str) -> bool {
+    conversation_run_mode(app, task_id)
+        .unwrap_or(ConversationRunMode::Workflow)
+        .is_orchestrated()
 }
 
 fn direct_prompt_queue_vm(
@@ -457,6 +955,7 @@ fn direct_prompt_queue_vm(
                 id: item.id,
                 content: item.content,
                 attachment_count: item.attachment_paths.len(),
+                quote_count: item.quotes.len(),
                 created_at: item.created_at,
             })
             .collect(),
@@ -655,6 +1154,9 @@ pub fn conversation_sidebar_vm_from_sources(
                     runs,
                     pinned,
                     pinned_order: pin_order,
+                    scheduled_task_id: metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.scheduled_task_id.clone()),
                 };
 
                 if pinned {
@@ -783,20 +1285,18 @@ fn display_pause_reason_for_dynamic_attempt(
 }
 
 fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
-    read_json::<serde_json::Value>(path)
+    gold_band::acp::events::load_session_metadata_value(path, None)
         .ok()
         .and_then(|session| {
-            let status = session
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
             let stop_reason = session
                 .get("stopReason")
                 .or_else(|| session.get("stop_reason"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            (status.eq_ignore_ascii_case("cancelled")
-                || status.eq_ignore_ascii_case("canceled")
+            (session
+                .get("latestTurnStatus")
+                .and_then(serde_json::Value::as_str)
+                == Some("cancelled")
                 || stop_reason.eq_ignore_ascii_case("cancelled")
                 || stop_reason.eq_ignore_ascii_case("canceled"))
             .then_some(())
@@ -824,17 +1324,20 @@ fn acp_session_presence(attempt_dir: &Utf8Path) -> AcpSessionPresence {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let established = session_id.is_some()
-        || [
-            "acp.snapshot.json",
-            "acp.session.json",
-            "acp.timeline.jsonl",
-        ]
+    let metadata_session_id = ["acp.snapshot.json", "acp.session.json"]
         .iter()
-        .any(|name| {
-            fs::metadata(attempt_dir.join(name).as_std_path())
-                .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        .find_map(|name| read_json::<serde_json::Value>(&attempt_dir.join(name)).ok())
+        .and_then(|value| {
+            value
+                .get("sessionId")
+                .or_else(|| value.get("acpSessionId"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
         });
+    let session_id = session_id.or(metadata_session_id);
+    let established = session_id.is_some();
     AcpSessionPresence {
         session_id,
         established,
@@ -1091,8 +1594,10 @@ fn runtime_error_message(
     run_outcome: Option<&str>,
 ) -> Option<String> {
     if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("error-blocked") {
-        let progress = app.run_progress(task_id, run_id).ok().flatten()?;
-        return runtime_error_message_from_summary(progress.get("summary")?.as_str()?);
+        return latest_control_failure_vm(app, task_id, run_id)
+            .ok()
+            .flatten()
+            .map(|failure| failure.message);
     }
 
     if !matches!(
@@ -1131,7 +1636,7 @@ fn dynamic_leaf_runtime_error_message(
         outer_node_id,
         outer_attempt_id,
     );
-    let graph = read_json::<DynamicGraphState>(&graph_path).ok()?;
+    let graph = load_dynamic_graph(&graph_path, &app.paths.repo_root).ok()?;
     let diagnostic = graph
         .nodes
         .iter()
@@ -1143,6 +1648,7 @@ fn dynamic_leaf_runtime_error_message(
     (!diagnostic.is_empty()).then(|| format_runtime_error_reason(diagnostic))
 }
 
+#[cfg(test)]
 fn runtime_error_message_from_summary(summary: &str) -> Option<String> {
     let summary = summary.trim();
     if summary.is_empty() {
@@ -1217,27 +1723,6 @@ fn is_active_session_status(status: &str) -> bool {
     )
 }
 
-fn is_stopping_session_status(status: &str) -> bool {
-    matches!(
-        normalize_lifecycle_code(status).as_str(),
-        "cancelling" | "cancel-requested"
-    )
-}
-
-fn is_terminal_session_status(status: &str) -> bool {
-    matches!(
-        normalize_lifecycle_code(status).as_str(),
-        "completed"
-            | "complete"
-            | "cancelled"
-            | "canceled"
-            | "failed"
-            | "failure"
-            | "error"
-            | "killed"
-    )
-}
-
 fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
     matches!(
         pause_reason.map(normalize_lifecycle_code).as_deref(),
@@ -1247,61 +1732,110 @@ fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
 
 fn runtime_continue_kind(
     runtime_status: &str,
+    runtime_outcome: Option<&str>,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
+    is_orchestrated: bool,
 ) -> Option<String> {
-    if manual_check_pending
-        || !runtime_resumable
-        || normalize_lifecycle_code(runtime_status) != "paused"
-    {
+    if !is_orchestrated || manual_check_pending || !runtime_resumable {
         return None;
     }
-    match pause_reason.map(normalize_lifecycle_code).as_deref() {
-        Some("process-interrupted" | "runtime-abnormal") => Some("input".to_string()),
+    if !matches!(
+        pause_reason.map(normalize_lifecycle_code).as_deref(),
+        Some("process-interrupted" | "runtime-abnormal")
+    ) {
+        return None;
+    }
+    match (
+        normalize_lifecycle_code(runtime_status).as_str(),
+        runtime_outcome.map(normalize_lifecycle_code).as_deref(),
+    ) {
+        ("paused", None) => Some("continue-current-attempt".to_string()),
+        ("completed", Some("success")) => Some("recover-completed-attempt".to_string()),
         _ => None,
     }
 }
 
-fn runtime_phase_for_lifecycle(
-    runtime_status: &str,
-    runtime_active: bool,
-    runtime_terminal: bool,
-    acp_status: Option<&str>,
-    acp_active: bool,
-    acp_stopping: bool,
-    acp_terminal: bool,
-) -> String {
-    if runtime_terminal && (acp_active || acp_stopping) {
-        let session_status = acp_status.map(normalize_lifecycle_code);
-        return if matches!(session_status.as_deref(), Some("pending" | "starting")) {
-            "launching-session".to_string()
+fn runtime_execution_phase_code(phase: RuntimeExecutionPhase) -> &'static str {
+    match phase {
+        RuntimeExecutionPhase::StartingNode => "starting-node",
+        RuntimeExecutionPhase::RunningNode => "running-node",
+        RuntimeExecutionPhase::FinalizingArtifact => "finalizing-artifact",
+        RuntimeExecutionPhase::RepairingArtifact => "repairing-artifact",
+        RuntimeExecutionPhase::AwaitingManualCheck => "awaiting-manual-check",
+        RuntimeExecutionPhase::Transitioning => "transitioning",
+        RuntimeExecutionPhase::LaunchingNextNode => "launching-next-node",
+        RuntimeExecutionPhase::PreparingWorkspace => "preparing-workspace",
+        RuntimeExecutionPhase::Paused => "paused",
+        RuntimeExecutionPhase::Terminal => "terminal",
+    }
+}
+
+fn runtime_execution_applies_to_attempt(
+    execution: &RuntimeExecutionState,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> bool {
+    execution.locator.as_ref().is_some_and(|locator| {
+        locator.round_id == round_id
+            && match (outer_node_id, outer_attempt_id) {
+                (Some(outer_node_id), Some(outer_attempt_id)) => {
+                    (locator.node_id == node_id
+                        && locator.attempt_id == attempt_id
+                        && locator.outer_node_id.as_deref() == Some(outer_node_id)
+                        && locator.outer_attempt_id.as_deref() == Some(outer_attempt_id))
+                        || (locator.node_id == outer_node_id
+                            && locator.attempt_id == outer_attempt_id
+                            && locator.outer_node_id.is_none()
+                            && locator.outer_attempt_id.is_none())
+                }
+                _ => {
+                    locator.node_id == node_id
+                        && locator.attempt_id == attempt_id
+                        && locator.outer_node_id.is_none()
+                        && locator.outer_attempt_id.is_none()
+                }
+            }
+    })
+}
+
+fn acp_session_availability(session_status: Option<&str>, established: bool) -> String {
+    let normalized = session_status.map(normalize_lifecycle_code);
+    if matches!(normalized.as_deref(), Some("closing")) {
+        "closing".to_string()
+    } else if matches!(normalized.as_deref(), Some("restorable")) {
+        "restorable".to_string()
+    } else if established || matches!(normalized.as_deref(), Some("established")) {
+        "established".to_string()
+    } else {
+        "unavailable".to_string()
+    }
+}
+
+fn acp_latest_turn_status(session_status: Option<&str>) -> String {
+    match session_status.map(normalize_lifecycle_code).as_deref() {
+        Some("completed" | "complete") => "completed",
+        Some("cancelled" | "canceled") => "cancelled",
+        Some("failed" | "failure" | "error" | "killed") => "failed",
+        _ => "none",
+    }
+    .to_string()
+}
+
+fn attempt_control_mode(attempt_dir: &Utf8Path, is_orchestrated: bool) -> TurnControlMode {
+    load_runtime_control_cursor(attempt_dir)
+        .ok()
+        .flatten()
+        .map(|cursor| cursor.current_mode)
+        .unwrap_or(if is_orchestrated {
+            TurnControlMode::RuntimeControlled
         } else {
-            "provider-running".to_string()
-        };
-    }
-    if runtime_terminal && !acp_active && !acp_stopping {
-        return "terminal".to_string();
-    }
-    if normalize_lifecycle_code(runtime_status) == "paused" {
-        return "paused".to_string();
-    }
-    if runtime_active && acp_terminal {
-        let session_status = acp_status.map(normalize_lifecycle_code);
-        return if matches!(session_status.as_deref(), Some("completed" | "complete")) {
-            "launching-next-node".to_string()
-        } else {
-            "provider-running".to_string()
-        };
-    }
-    if runtime_active {
-        let session_status = acp_status.map(normalize_lifecycle_code);
-        if !acp_active || matches!(session_status.as_deref(), Some("pending")) {
-            return "launching-session".to_string();
-        }
-        return "provider-running".to_string();
-    }
-    "idle".to_string()
+            TurnControlMode::NonRuntimeControlled
+        })
 }
 
 fn composer_for_lifecycle(
@@ -1309,6 +1843,7 @@ fn composer_for_lifecycle(
     runtime_active: bool,
     acp_active: bool,
     acp_stopping: bool,
+    live_turn_activity: &str,
     continue_kind: Option<&str>,
     runtime_display: &RuntimeDisplayVm,
 ) -> ConversationComposerVm {
@@ -1316,22 +1851,22 @@ fn composer_for_lifecycle(
         "stopping"
     } else if runtime_active || acp_active {
         "runtime-active"
-    } else if continue_kind == Some("input") {
-        "interrupted-input"
+    } else if continue_kind.is_some() {
+        "normal"
     } else if runtime_display.blocking_error {
         "runtime-error"
     } else {
         "normal"
     };
     let submit_target = match mode {
-        "interrupted-input" => "runtime-continue",
         "normal" => "acp-prompt",
         _ => "none",
     };
     let processing_kind = match mode {
         "stopping" => "stopping",
         "runtime-active" if runtime_phase == "launching-next-node" => "launching-next-node",
-        "runtime-active" if runtime_phase == "launching-session" => "launching",
+        "runtime-active" if runtime_phase == "preparing-workspace" => "preparing-workspace",
+        "runtime-active" if !runtime_active && live_turn_activity == "starting" => "launching",
         "runtime-active" => "processing",
         _ => "processing",
     };
@@ -1339,6 +1874,9 @@ fn composer_for_lifecycle(
         "stopping" => Some("acp.stopping"),
         "runtime-active" if runtime_phase == "launching-next-node" => {
             Some("conversation.runtime.launchingNextNode")
+        }
+        "runtime-active" if runtime_phase == "preparing-workspace" => {
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
         }
         "runtime-active" => Some("conversation.runtime.runtimeActive"),
         _ => None,
@@ -1350,11 +1888,21 @@ fn composer_for_lifecycle(
         processing_kind: processing_kind.to_string(),
         status_key: status_key.map(str::to_string),
         can_stop: runtime_active || acp_active || acp_stopping,
-        lock_input: !matches!(mode, "normal" | "interrupted-input"),
+        lock_input: mode != "normal",
     }
 }
 
-fn derive_conversation_attempt_lifecycle(
+fn dynamic_runtime_owns_completed_leaf(graph: &DynamicGraphState, node_id: &str) -> bool {
+    graph.run.status == DynamicRunStatus::Running
+        && graph.run.current_node_ids.is_empty()
+        && graph.nodes.last().is_some_and(|node| {
+            node.id == node_id
+                && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
+                && node.outcome.is_some()
+        })
+}
+
+fn derive_conversation_attempt_lifecycle_with_facets(
     session_status: Option<&str>,
     prompt_activity: Option<PromptActivity>,
     runtime_status: &str,
@@ -1363,6 +1911,11 @@ fn derive_conversation_attempt_lifecycle(
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
+    is_orchestrated: bool,
+    runtime_execution: Option<&RuntimeExecutionState>,
+    execution_current: bool,
+    control_mode: TurnControlMode,
+    session_established: bool,
 ) -> ConversationAttemptLifecycleVm {
     let session_status = session_status
         .map(str::trim)
@@ -1370,17 +1923,27 @@ fn derive_conversation_attempt_lifecycle(
         .map(str::to_string);
     let normalized_runtime_status = normalize_lifecycle_code(runtime_status);
     let runtime_paused = normalized_runtime_status == "paused";
-    let unexplained_provider_failure = runtime_paused
-        && runtime_outcome.is_none()
-        && pause_reason.is_none()
-        && matches!(
-            session_status
-                .as_deref()
-                .map(normalize_lifecycle_code)
-                .as_deref(),
-            Some("failed" | "failure" | "error")
-        );
-    let runtime_active = is_active_session_status(runtime_status) || unexplained_provider_failure;
+    let runtime_pause_releases_control = runtime_paused
+        && (runtime_resumable
+            || manual_check_pending
+            || matches!(
+                pause_reason.map(normalize_lifecycle_code).as_deref(),
+                Some("error-blocked" | "waiting-for-user-input")
+            ));
+    let runtime_active = runtime_execution.is_some_and(|execution| {
+        execution_current
+            && !runtime_pause_releases_control
+            && !matches!(
+                normalized_runtime_status.as_str(),
+                "completed" | "complete" | "failed" | "failure" | "cancelled" | "canceled"
+            )
+            && !matches!(
+                execution.phase,
+                RuntimeExecutionPhase::Paused
+                    | RuntimeExecutionPhase::AwaitingManualCheck
+                    | RuntimeExecutionPhase::Terminal
+            )
+    });
     let live_phase = prompt_activity.map(|activity| match activity {
         PromptActivity::Starting => "starting",
         PromptActivity::Accepted => "accepted",
@@ -1391,35 +1954,16 @@ fn derive_conversation_attempt_lifecycle(
         prompt_activity,
         Some(PromptActivity::Starting | PromptActivity::Accepted | PromptActivity::Running)
     );
-    let acp_stopping = matches!(prompt_activity, Some(PromptActivity::CancelRequested))
-        || session_status
-            .as_deref()
-            .is_some_and(is_stopping_session_status);
-    let runtime_terminal = !runtime_active
-        && !acp_stopping
-        && matches!(
-            normalized_runtime_status.as_str(),
-            "completed"
-                | "complete"
-                | "failed"
-                | "failure"
-                | "error"
-                | "killed"
-                | "cancelled"
-                | "canceled"
-        );
+    // Only the in-process prompt registry can prove that a turn is currently
+    // active. Persisted session status is history/session availability and may
+    // survive a restart or arrive late; it must not recreate live activity.
+    let acp_stopping = matches!(prompt_activity, Some(PromptActivity::CancelRequested));
+    let runtime_terminal = runtime_execution.is_some_and(|execution| {
+        execution_current && execution.phase == RuntimeExecutionPhase::Terminal
+    });
     let suppress_stale_acp_active =
         runtime_terminal && !runtime_resumable && prompt_activity.is_none();
-    let acp_active = live_active
-        || (!suppress_stale_acp_active
-            && session_status
-                .as_deref()
-                .is_some_and(is_active_session_status));
-    let acp_terminal = prompt_activity.is_none()
-        && (suppress_stale_acp_active
-            || session_status
-                .as_deref()
-                .is_some_and(is_terminal_session_status));
+    let acp_active = live_active;
     let runtime_pause_overrides_session = runtime_paused
         && runtime_outcome.is_none()
         && (pause_reason.is_none()
@@ -1467,27 +2011,32 @@ fn derive_conversation_attempt_lifecycle(
     );
     let continue_kind = runtime_continue_kind(
         runtime_status,
+        runtime_outcome,
         pause_reason,
         runtime_resumable,
         manual_check_pending,
+        is_orchestrated,
     );
-    let runtime_phase = runtime_phase_for_lifecycle(
-        runtime_status,
-        runtime_active,
-        runtime_terminal,
-        live_phase.or(session_status.as_deref()),
-        acp_active,
-        acp_stopping,
-        acp_terminal,
-    );
+    let runtime_phase = runtime_execution
+        .filter(|_| execution_current)
+        .map(|execution| runtime_execution_phase_code(execution.phase).to_string())
+        .unwrap_or_else(|| "idle".to_string());
     let composer = composer_for_lifecycle(
         &runtime_phase,
         runtime_active,
         acp_active,
         acp_stopping,
+        live_phase.unwrap_or("idle"),
         continue_kind.as_deref(),
         &runtime_display,
     );
+
+    let effective_control_mode =
+        if runtime_pause_releases_control || manual_check_pending || runtime_terminal {
+            TurnControlMode::NonRuntimeControlled
+        } else {
+            control_mode
+        };
 
     ConversationAttemptLifecycleVm {
         runtime: ConversationRuntimeFacetVm {
@@ -1499,13 +2048,25 @@ fn derive_conversation_attempt_lifecycle(
             active: runtime_active,
             continuable: continue_kind.is_some(),
             phase: runtime_phase,
+            revision: runtime_execution
+                .filter(|_| execution_current)
+                .map(|execution| execution.revision),
+        },
+        control: ConversationControlFacetVm {
+            mode: match effective_control_mode {
+                TurnControlMode::RuntimeControlled => "runtime-controlled",
+                TurnControlMode::NonRuntimeControlled => "non-runtime-controlled",
+            }
+            .to_string(),
         },
         acp: ConversationAcpFacetVm {
-            status: session_status,
-            phase: live_phase.map(str::to_string),
-            active: acp_active,
+            session_availability: acp_session_availability(
+                session_status.as_deref(),
+                session_established,
+            ),
+            live_turn_activity: live_phase.unwrap_or("idle").to_string(),
+            latest_turn_status: acp_latest_turn_status(session_status.as_deref()),
             stopping: acp_stopping,
-            terminal: acp_terminal,
         },
         display_status,
         runtime_display,
@@ -1513,6 +2074,52 @@ fn derive_conversation_attempt_lifecycle(
         composer,
         prompt_queue: None,
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn derive_conversation_attempt_lifecycle(
+    session_status: Option<&str>,
+    prompt_activity: Option<PromptActivity>,
+    runtime_status: &str,
+    runtime_outcome: Option<&str>,
+    current: bool,
+    pause_reason: Option<&str>,
+    runtime_resumable: bool,
+    manual_check_pending: bool,
+    is_orchestrated: bool,
+) -> ConversationAttemptLifecycleVm {
+    let execution_phase = match normalize_lifecycle_code(runtime_status).as_str() {
+        "running" | "pending" | "active" => RuntimeExecutionPhase::RunningNode,
+        "paused" if manual_check_pending => RuntimeExecutionPhase::AwaitingManualCheck,
+        "paused" => RuntimeExecutionPhase::Paused,
+        _ => RuntimeExecutionPhase::Terminal,
+    };
+    let execution = RuntimeExecutionState {
+        revision: 1,
+        phase: execution_phase,
+        locator: None,
+        updated_at: String::new(),
+    };
+    derive_conversation_attempt_lifecycle_with_facets(
+        session_status,
+        prompt_activity,
+        runtime_status,
+        runtime_outcome,
+        current,
+        pause_reason,
+        runtime_resumable,
+        manual_check_pending,
+        is_orchestrated,
+        is_orchestrated.then_some(&execution),
+        is_orchestrated,
+        if is_orchestrated {
+            TurnControlMode::RuntimeControlled
+        } else {
+            TurnControlMode::NonRuntimeControlled
+        },
+        session_status.is_some(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1529,6 +2136,7 @@ pub fn conversation_attempt_lifecycle_vm(
     let run = app.run_status(task_id, run_id)?;
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
     let runtime_resumable = is_run_continuable(&run);
+    let is_orchestrated = conversation_is_orchestrated(app, task_id);
 
     if let (Some(outer_node_id), Some(outer_attempt_id)) = (outer_node_id, outer_attempt_id) {
         let session_status = dynamic_acp_session_status(
@@ -1548,7 +2156,7 @@ pub fn conversation_attempt_lifecycle_vm(
             outer_node_id,
             outer_attempt_id,
         );
-        let dynamic_graph = read_json::<DynamicGraphState>(&dynamic_path)?;
+        let dynamic_graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
         let dynamic_node = dynamic_graph
             .nodes
             .iter()
@@ -1567,7 +2175,11 @@ pub fn conversation_attempt_lifecycle_vm(
             dynamic_node,
             run_pause_reason.as_deref(),
         );
-        let runtime_status = if run.status == RunStatus::Paused
+        let dynamic_runtime_owns_leaf =
+            dynamic_runtime_owns_completed_leaf(&dynamic_graph, node_id);
+        let runtime_status = if dynamic_runtime_owns_leaf {
+            "running".to_string()
+        } else if run.status == RunStatus::Paused
             && raw_runtime_status == "running"
             && dynamic_node.outcome.is_none()
             && is_runtime_continue_pause_reason(pause_reason.as_deref())
@@ -1589,6 +2201,7 @@ pub fn conversation_attempt_lifecycle_vm(
                 .current_node_ids
                 .iter()
                 .any(|id| id == node_id)
+                || dynamic_runtime_owns_leaf
                 || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
@@ -1604,7 +2217,8 @@ pub fn conversation_attempt_lifecycle_vm(
             node_id,
             attempt_id,
         );
-        let mut lifecycle = derive_conversation_attempt_lifecycle(
+        let session_presence = acp_session_presence(&attempt_dir);
+        let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
             session_status.as_deref(),
             prompt_activity(&attempt_dir),
             &runtime_status,
@@ -1613,6 +2227,18 @@ pub fn conversation_attempt_lifecycle_vm(
             pause_reason.as_deref(),
             leaf_resumable,
             false,
+            is_orchestrated,
+            is_orchestrated.then_some(&run.execution),
+            runtime_execution_applies_to_attempt(
+                &run.execution,
+                round_id,
+                node_id,
+                attempt_id,
+                Some(outer_node_id),
+                Some(outer_attempt_id),
+            ),
+            attempt_control_mode(&attempt_dir, is_orchestrated),
+            session_presence.established,
         );
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
         return Ok(lifecycle);
@@ -1640,7 +2266,8 @@ pub fn conversation_attempt_lifecycle_vm(
     let attempt_dir = app
         .paths
         .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-    let mut lifecycle = derive_conversation_attempt_lifecycle(
+    let session_presence = acp_session_presence(&attempt_dir);
+    let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
         session_status.as_deref(),
         prompt_activity(&attempt_dir),
         &runtime_status,
@@ -1649,6 +2276,19 @@ pub fn conversation_attempt_lifecycle_vm(
         pause_reason.as_deref(),
         runtime_resumable,
         node.manual_check_pending,
+        is_orchestrated,
+        is_orchestrated.then_some(&run.execution),
+        current
+            && runtime_execution_applies_to_attempt(
+                &run.execution,
+                round_id,
+                node_id,
+                attempt_id,
+                None,
+                None,
+            ),
+        attempt_control_mode(&attempt_dir, is_orchestrated),
+        session_presence.established,
     );
     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
     Ok(lifecycle)
@@ -1670,6 +2310,7 @@ fn conversation_status_from_session(
         run_pause_reason,
         runtime_resumable,
         false,
+        true,
     )
     .display_status
 }
@@ -1680,7 +2321,7 @@ fn lifecycle_is_active(
 ) -> bool {
     manual_check_pending
         || lifecycle.runtime.active
-        || lifecycle.acp.active
+        || lifecycle.acp.live_turn_activity != "idle"
         || lifecycle.acp.stopping
 }
 
@@ -1753,6 +2394,9 @@ pub fn conversation_run_vm(
         .as_ref()
         .map(|metadata| (metadata.run_mode.clone(), metadata.title_auto_generated))
         .unwrap_or_else(|| ("workflow".to_string(), false));
+    let is_orchestrated = conversation_run_mode_from_label(&run_mode)
+        .unwrap_or(ConversationRunMode::Workflow)
+        .is_orchestrated();
 
     // Build the session tree from rounds/nodes/attempts
     // Read workflow snapshot once for node order + validity + raw JSON
@@ -1820,7 +2464,9 @@ pub fn conversation_run_vm(
                         &node.node_id,
                         &latest_attempt.attempt_id,
                     );
-                    if let Ok(dynamic_graph) = read_json::<DynamicGraphState>(&dynamic_path) {
+                    if let Ok(dynamic_graph) =
+                        load_dynamic_graph(&dynamic_path, &app.paths.repo_root)
+                    {
                         let mut dynamic_tree_nodes: Vec<ConversationTreeNodeVm> = Vec::new();
                         for dyn_node in &dynamic_graph.nodes {
                             // Find the latest attempt for this dynamic child node
@@ -1927,16 +2573,30 @@ pub fn conversation_run_vm(
                                     &dyn_node.id,
                                     dyn_attempt_id,
                                 );
-                                let mut lifecycle = derive_conversation_attempt_lifecycle(
-                                    dyn_session_status.as_deref(),
-                                    prompt_activity(&dyn_attempt_dir),
-                                    &dyn_status,
-                                    dyn_outcome.as_deref(),
-                                    dyn_current,
-                                    dyn_pause_reason.as_deref(),
-                                    dyn_leaf_resumable,
-                                    false,
-                                );
+                                let session_presence = acp_session_presence(&dyn_attempt_dir);
+                                let mut lifecycle =
+                                    derive_conversation_attempt_lifecycle_with_facets(
+                                        dyn_session_status.as_deref(),
+                                        prompt_activity(&dyn_attempt_dir),
+                                        &dyn_status,
+                                        dyn_outcome.as_deref(),
+                                        dyn_current,
+                                        dyn_pause_reason.as_deref(),
+                                        dyn_leaf_resumable,
+                                        false,
+                                        is_orchestrated,
+                                        is_orchestrated.then_some(&run.execution),
+                                        runtime_execution_applies_to_attempt(
+                                            &run.execution,
+                                            &round.id,
+                                            &dyn_node.id,
+                                            dyn_attempt_id,
+                                            Some(&node.node_id),
+                                            Some(&latest_attempt.attempt_id),
+                                        ),
+                                        attempt_control_mode(&dyn_attempt_dir, is_orchestrated),
+                                        session_presence.established,
+                                    );
                                 attach_direct_prompt_queue(
                                     app,
                                     task_id,
@@ -2065,7 +2725,8 @@ pub fn conversation_run_vm(
                         &node.node_id,
                         &attempt.attempt_id,
                     );
-                    let mut lifecycle = derive_conversation_attempt_lifecycle(
+                    let session_presence = acp_session_presence(&attempt_dir);
+                    let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
                         session_status.as_deref(),
                         prompt_activity(&attempt_dir),
                         &runtime_status,
@@ -2074,6 +2735,19 @@ pub fn conversation_run_vm(
                         display_pause_reason.as_deref(),
                         runtime_resumable,
                         manual_check_pending,
+                        is_orchestrated,
+                        is_orchestrated.then_some(&run.execution),
+                        current
+                            && runtime_execution_applies_to_attempt(
+                                &run.execution,
+                                &round.id,
+                                &node.node_id,
+                                &attempt.attempt_id,
+                                None,
+                                None,
+                            ),
+                        attempt_control_mode(&attempt_dir, is_orchestrated),
+                        session_presence.established,
                     );
                     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
                     let status = lifecycle.display_status.clone();
@@ -2350,6 +3024,9 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
+        scheduled_task_id: conversation_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
     })
 }
 
@@ -2761,10 +3438,49 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
     }
 }
 
-pub fn create_conversation_run_vm(
+pub struct PreparedConversationTask {
+    task_id: String,
+    task_uuid: Option<String>,
+    title: String,
+    task_dir: camino::Utf8PathBuf,
+    armed: bool,
+}
+
+impl PreparedConversationTask {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+
+    pub fn task_uuid(&self) -> Option<&str> {
+        self.task_uuid.as_deref()
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn accept(mut self) -> (String, Option<String>, String) {
+        self.armed = false;
+        (
+            std::mem::take(&mut self.task_id),
+            self.task_uuid.take(),
+            std::mem::take(&mut self.title),
+        )
+    }
+}
+
+impl Drop for PreparedConversationTask {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.task_dir.as_std_path());
+        }
+    }
+}
+
+pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<ConversationRunVm> {
+) -> anyhow::Result<PreparedConversationTask> {
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -2817,6 +3533,13 @@ pub fn create_conversation_run_vm(
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
+    let prepared = PreparedConversationTask {
+        task_id: task_id.clone(),
+        task_uuid,
+        title,
+        task_dir: app.paths.task_dir(&task_id),
+        armed: true,
+    };
 
     // Save conversation metadata
     let authoring_dir = app.paths.task_dir(&task_id).join("authoring");
@@ -2856,6 +3579,8 @@ pub fn create_conversation_run_vm(
         ),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
+        scheduled_task_id: input.scheduled_task_id.clone(),
+        scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
     write_json(&authoring_dir.join("conversation.json"), &meta)?;
 
@@ -2867,10 +3592,26 @@ pub fn create_conversation_run_vm(
             let src_path = Path::new(src);
             if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
                 let dest = attach_dir.join(name);
-                let _ = fs::copy(src_path, &dest);
+                fs::copy(src_path, &dest)?;
             }
         }
     }
+
+    Ok(prepared)
+}
+
+pub fn create_conversation_task_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<(String, Option<String>, String)> {
+    Ok(prepare_conversation_task_vm(app, input)?.accept())
+}
+
+pub fn create_conversation_run_vm(
+    app: &App,
+    input: &ConversationCreateInputVm,
+) -> anyhow::Result<ConversationRunVm> {
+    let (task_id, task_uuid, title) = create_conversation_task_vm(app, input)?;
 
     // Start the workflow in the background so the conversation surface can
     // display the session as soon as the first ACP events arrive.
@@ -2913,6 +3654,7 @@ pub fn create_conversation_run_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: input.scheduled_task_id.clone(),
         })
     })
 }
@@ -3032,6 +3774,7 @@ pub fn rerun_conversation_task_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            scheduled_task_id: None,
         })
     })
 }
@@ -3077,19 +3820,25 @@ pub fn switch_conversation_session_vm(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationDynamicAgentRefVm,
-        ConversationRunSummaryVm, ConversationTaskActivityVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm, PromptActivity, apply_workflow_interview_preference,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
+        ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
+        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
+        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
+        apply_workflow_interview_preference, attempt_control_mode, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
-        derive_conversation_attempt_lifecycle, find_leaf_by_key, lifecycle_is_active,
-        switch_conversation_session_vm,
+        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
+        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
+        scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
+    use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
     use gold_band::app::{App, CreateTaskInput};
+    use gold_band::config::ConversationRunMode;
+    use gold_band::domain::TurnControlMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
+    use gold_band::runtime::{RuntimeExecutionPhase, RuntimeExecutionState};
     use serde_json::json;
 
     fn workflow_with_interview() -> gold_band::dsl::WorkflowDsl {
@@ -3170,12 +3919,13 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
         assert!(lifecycle.runtime.active);
-        assert_eq!(lifecycle.runtime.phase, "provider-running");
-        assert!(!lifecycle.acp.active);
+        assert_eq!(lifecycle.runtime.phase, "running-node");
+        assert_eq!(lifecycle.acp.live_turn_activity, "idle");
         assert!(lifecycle_is_active(&lifecycle, false));
         assert_eq!(lifecycle.composer.mode, "runtime-active");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
@@ -3186,7 +3936,7 @@ mod tests {
     }
 
     #[test]
-    fn running_runtime_with_completed_session_launches_next_node() {
+    fn running_runtime_with_completed_session_stays_in_authoritative_node_phase() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("completed"),
             None,
@@ -3196,14 +3946,126 @@ mod tests {
             None,
             false,
             false,
+            true,
+        );
+
+        assert_eq!(lifecycle.runtime.phase, "running-node");
+        assert_eq!(lifecycle.composer.processing_kind, "processing");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.runtimeActive")
+        );
+    }
+
+    #[test]
+    fn launching_next_node_requires_explicit_runtime_execution_phase() {
+        let execution = RuntimeExecutionState {
+            revision: 7,
+            phase: RuntimeExecutionPhase::LaunchingNextNode,
+            locator: None,
+            updated_at: "t1".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "running",
+            None,
+            true,
+            None,
+            false,
+            false,
+            true,
+            Some(&execution),
+            true,
+            TurnControlMode::RuntimeControlled,
+            true,
         );
 
         assert_eq!(lifecycle.runtime.phase, "launching-next-node");
+        assert_eq!(lifecycle.runtime.revision, Some(7));
+        assert_eq!(lifecycle.acp.latest_turn_status, "completed");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
-        assert_eq!(
-            lifecycle.composer.status_key.as_deref(),
-            Some("conversation.runtime.launchingNextNode")
+    }
+
+    #[test]
+    fn manual_check_follow_up_completion_keeps_authoritative_waiting_phase() {
+        let execution = RuntimeExecutionState {
+            revision: 4,
+            phase: RuntimeExecutionPhase::AwaitingManualCheck,
+            locator: None,
+            updated_at: "t1".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "paused",
+            None,
+            true,
+            Some("waiting-for-user-input"),
+            false,
+            true,
+            true,
+            Some(&execution),
+            true,
+            TurnControlMode::NonRuntimeControlled,
+            true,
         );
+
+        assert_eq!(lifecycle.runtime.phase, "awaiting-manual-check");
+        assert!(!lifecycle.runtime.active);
+        assert!(!lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.acp.latest_turn_status, "completed");
+        assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+    }
+
+    #[test]
+    fn accepted_manual_follow_up_projects_non_runtime_control_for_orchestrated_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        assert_eq!(
+            attempt_control_mode(attempt_dir, true),
+            TurnControlMode::RuntimeControlled
+        );
+        let (source_id, transition_id) =
+            gold_band::acp::control::prepare_manual_follow_up(attempt_dir)
+                .unwrap()
+                .unwrap();
+        assert!(
+            gold_band::acp::control::commit_manual_follow_up(
+                attempt_dir,
+                source_id.as_deref(),
+                &transition_id,
+            )
+            .unwrap()
+        );
+
+        assert_eq!(
+            attempt_control_mode(attempt_dir, true),
+            TurnControlMode::NonRuntimeControlled
+        );
+    }
+
+    #[test]
+    fn direct_lifecycle_ignores_workflow_runtime_execution_phase() {
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            true,
+            None,
+            false,
+            false,
+            false,
+            None,
+            false,
+            TurnControlMode::NonRuntimeControlled,
+            true,
+        );
+
+        assert_eq!(lifecycle.runtime.phase, "idle");
+        assert_eq!(lifecycle.runtime.revision, None);
+        assert!(!lifecycle.runtime.active);
     }
 
     #[test]
@@ -3219,7 +4081,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_cancelling_keeps_leaf_active_and_stopping() {
+    fn persisted_acp_cancelling_does_not_recreate_live_turn_after_restart() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("cancelling"),
             None,
@@ -3229,16 +4091,16 @@ mod tests {
             Some("process-interrupted"),
             true,
             false,
+            true,
         );
 
-        assert_eq!(lifecycle.display_status, "cancelling");
-        assert!(lifecycle.acp.active);
-        assert!(lifecycle.acp.stopping);
-        assert!(lifecycle_is_active(&lifecycle, false));
-        assert_eq!(lifecycle.composer.mode, "stopping");
-        assert_eq!(lifecycle.composer.submit_target, "none");
-        assert_eq!(lifecycle.composer.processing_kind, "stopping");
-        assert!(lifecycle.composer.lock_input);
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.acp.live_turn_activity, "idle");
+        assert!(!lifecycle.acp.stopping);
+        assert!(!lifecycle_is_active(&lifecycle, false));
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+        assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -3252,12 +4114,14 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "completed");
         assert!(!lifecycle.runtime.active);
-        assert!(!lifecycle.acp.active);
-        assert!(lifecycle.acp.terminal);
+        assert_eq!(lifecycle.runtime.status, "completed");
+        assert_eq!(lifecycle.acp.live_turn_activity, "idle");
+        assert_eq!(lifecycle.acp.latest_turn_status, "none");
         assert!(!lifecycle_is_active(&lifecycle, false));
     }
 
@@ -3272,13 +4136,13 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
-        assert_eq!(lifecycle.acp.phase.as_deref(), Some("running"));
-        assert!(lifecycle.acp.active);
-        assert!(!lifecycle.acp.terminal);
-        assert_eq!(lifecycle.runtime.phase, "provider-running");
+        assert_eq!(lifecycle.acp.live_turn_activity, "running");
+        assert_eq!(lifecycle.acp.latest_turn_status, "none");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
         assert_eq!(lifecycle.composer.mode, "runtime-active");
         assert!(lifecycle.composer.can_stop);
         assert!(lifecycle.composer.lock_input);
@@ -3295,12 +4159,13 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "starting");
-        assert_eq!(lifecycle.runtime.phase, "launching-session");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
         assert_eq!(lifecycle.composer.processing_kind, "launching");
-        assert!(lifecycle.acp.active);
+        assert_eq!(lifecycle.acp.live_turn_activity, "starting");
     }
 
     #[test]
@@ -3314,11 +4179,11 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "running");
-        assert_eq!(lifecycle.acp.phase.as_deref(), Some("accepted"));
-        assert!(lifecycle.acp.active);
+        assert_eq!(lifecycle.acp.live_turn_activity, "accepted");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
     }
 
@@ -3333,10 +4198,11 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "cancelling");
-        assert_eq!(lifecycle.acp.phase.as_deref(), Some("cancel-requested"));
+        assert_eq!(lifecycle.acp.live_turn_activity, "cancel-requested");
         assert!(lifecycle.acp.stopping);
         assert_eq!(lifecycle.composer.mode, "stopping");
     }
@@ -3352,17 +4218,18 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "completed");
         assert_eq!(lifecycle.runtime_display.tone, "danger");
         assert!(!lifecycle.runtime_display.blocking_error);
-        assert!(!lifecycle.acp.active);
+        assert_eq!(lifecycle.acp.live_turn_activity, "idle");
         assert!(!lifecycle_is_active(&lifecycle, false));
     }
 
     #[test]
-    fn interrupted_runtime_pause_is_input_continue() {
+    fn interrupted_runtime_pause_has_explicit_continue_action_and_free_conversation() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("cancelled"),
             None,
@@ -3372,19 +4239,69 @@ mod tests {
             Some("process-interrupted"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(lifecycle.runtime_display.tone, "warning");
+        assert_eq!(lifecycle.runtime_display.icon, "pause");
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.runtime.phase, "paused");
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
-    fn runtime_abnormal_pause_is_input_continue_even_when_acp_failed() {
+    fn interrupted_completed_attempt_has_recovery_action() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("recover-completed-attempt")
+        );
+        assert!(lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.composer.mode, "normal");
+    }
+
+    #[test]
+    fn interrupted_direct_attempt_has_free_conversation_without_runtime_continue() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(lifecycle.display_status, "paused");
+        assert_eq!(lifecycle.continue_kind, None);
+        assert!(!lifecycle.runtime.continuable);
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn runtime_abnormal_pause_has_explicit_continue_action_even_when_acp_failed() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             None,
@@ -3394,22 +4311,26 @@ mod tests {
             Some("runtime-abnormal"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
-    fn current_unexplained_paused_provider_failure_stays_runtime_active() {
+    fn unexplained_paused_provider_failure_does_not_invent_runtime_activity() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             None,
@@ -3419,18 +4340,19 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime.active);
         assert!(!lifecycle.runtime_display.blocking_error);
-        assert_eq!(lifecycle.composer.mode, "runtime-active");
-        assert_eq!(lifecycle.composer.submit_target, "none");
-        assert!(lifecycle.composer.lock_input);
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+        assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
-    fn unexplained_paused_provider_failure_stays_runtime_active_without_current_marker() {
+    fn unexplained_paused_provider_failure_without_current_marker_is_not_runtime_active() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("failed"),
             None,
@@ -3440,14 +4362,15 @@ mod tests {
             None,
             false,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
-        assert!(lifecycle.runtime.active);
+        assert!(!lifecycle.runtime.active);
         assert!(!lifecycle.runtime_display.blocking_error);
-        assert_eq!(lifecycle.composer.mode, "runtime-active");
-        assert_eq!(lifecycle.composer.submit_target, "none");
-        assert!(lifecycle.composer.lock_input);
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+        assert!(!lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -3459,6 +4382,7 @@ mod tests {
             None,
             true,
             Some("waiting-for-user-input"),
+            true,
             true,
             true,
         );
@@ -3483,6 +4407,7 @@ mod tests {
             Some("error-blocked"),
             true,
             false,
+            true,
         );
 
         assert_eq!(lifecycle.display_status, "paused");
@@ -3528,9 +4453,12 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3563,8 +4491,11 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("process-interrupted")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]
@@ -3594,7 +4525,10 @@ mod tests {
         assert_eq!(lifecycle.runtime.status, "paused");
         assert_eq!(lifecycle.runtime.phase, "paused");
         assert_eq!(lifecycle.composer.processing_kind, "processing");
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
     }
 
     #[test]
@@ -3627,9 +4561,12 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.continue_kind.as_deref(), Some("input"));
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
-        assert_eq!(lifecycle.composer.submit_target, "runtime-continue");
+        assert_eq!(
+            lifecycle.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
     }
 
@@ -3666,7 +4603,7 @@ mod tests {
             lifecycle.runtime.pause_reason.as_deref(),
             Some("runtime-abnormal")
         );
-        assert_eq!(lifecycle.composer.mode, "interrupted-input");
+        assert_eq!(lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -3747,16 +4684,10 @@ mod tests {
     }
 
     #[test]
-    fn running_dynamic_leaf_with_terminal_acp_still_launches_next_node() {
+    fn running_dynamic_leaf_with_terminal_acp_keeps_authoritative_starting_phase() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
-        write_dynamic_lifecycle_fixture(
-            &app,
-            "running",
-            json!(null),
-            "running",
-            vec!["good-morning"],
-        );
+        write_dynamic_lifecycle_fixture(&app, "running", json!(null), "completed", Vec::new());
         gold_band::storage::write_json(
             &app.paths
                 .dynamic_node_attempt_dir(
@@ -3790,9 +4721,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(lifecycle.runtime.status, "running");
-        assert_eq!(lifecycle.runtime.phase, "launching-next-node");
-        assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
+        assert_eq!(lifecycle.runtime.phase, "starting-node");
+        assert_eq!(lifecycle.composer.processing_kind, "processing");
         assert_eq!(lifecycle.continue_kind, None);
+    }
+
+    #[test]
+    fn preparing_workspace_projects_runtime_owned_composer_state() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "running",
+            json!(null),
+            "running",
+            vec!["good-morning"],
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["run"]["phase"] = json!("preparing-workspace");
+        graph["run"]["currentNodeIds"] = json!([]);
+        graph["nodes"][0]["status"] = json!("completed");
+        graph["nodes"][0]["outcome"] = json!("success");
+        graph["nodes"][0]["finishedAt"] = json!("2026-06-15T00:00:02Z");
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+        let run_path = app.paths.run_file("task-dyn", "run-dyn");
+        let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
+        run["execution"]["phase"] = json!("preparing-workspace");
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert!(lifecycle.runtime.active);
+        assert_eq!(lifecycle.runtime.status, "running");
+        assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
+        assert_eq!(lifecycle.composer.mode, "runtime-active");
+        assert_eq!(lifecycle.composer.submit_target, "none");
+        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+        assert!(lifecycle.composer.can_stop);
+        assert!(lifecycle.composer.lock_input);
     }
 
     #[test]
@@ -3806,6 +4793,25 @@ mod tests {
             "paused",
             Vec::new(),
         );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["nodes"][0]["pauseReason"] = json!("error-blocked");
+        graph["nodes"][0]["runtimeError"] = json!({
+            "code": { "domain": "provider", "code": "provider.acp-error" },
+            "domain": "provider",
+            "recovery": "blocked",
+            "retryPolicy": null,
+            "params": {},
+            "diagnostic": "ACP prompt cancelled",
+            "raw": null
+        });
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
         gold_band::storage::write_json(
             &app.paths.run_progress_file("task-dyn", "run-dyn"),
             &json!({
@@ -3848,6 +4854,58 @@ mod tests {
     }
 
     #[test]
+    fn conversation_run_vm_migrates_legacy_dynamic_graph_and_restores_session_tree() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "paused",
+            Vec::new(),
+        );
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut legacy: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        legacy["version"] = json!("0.1");
+        legacy.as_object_mut().unwrap().remove("workspaces");
+        let node = legacy["nodes"][0].as_object_mut().unwrap();
+        node.remove("workspaceId");
+        node.insert("workspace".to_string(), json!({ "mode": "readonly" }));
+        node.insert(
+            "workspacePath".to_string(),
+            json!(app.paths.repo_root.clone()),
+        );
+        gold_band::storage::write_json(&graph_path, &legacy).unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+
+        let outer_nodes = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap();
+        assert_eq!(outer_nodes.len(), 1);
+        assert_eq!(outer_nodes[0].node_id, "good-morning");
+        assert_eq!(outer_nodes[0].attempts.len(), 1);
+        assert_eq!(
+            vm.session_tree.selected_session_key.as_deref(),
+            Some("round-001/ai-dynamic/attempt-001/good-morning/attempt-001")
+        );
+        let persisted: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        assert_eq!(
+            persisted["version"],
+            json!(gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION)
+        );
+        assert_eq!(persisted["nodes"][0]["workspaceId"], "workspace-main");
+        assert!(persisted["workspaces"].is_array());
+    }
+
+    #[test]
     fn ready_dynamic_child_without_attempt_is_active_launching_leaf() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -3868,10 +4926,7 @@ mod tests {
         assert_eq!(child.attempts.len(), 1);
         assert_eq!(child.attempts[0].attempt_id, "attempt-001");
         assert_eq!(child.attempts[0].lifecycle.runtime.status, "ready");
-        assert_eq!(
-            child.attempts[0].lifecycle.runtime.phase,
-            "launching-session"
-        );
+        assert_eq!(child.attempts[0].lifecycle.runtime.phase, "starting-node");
         assert!(vm.active_sessions.iter().any(|session| {
             session.node_id == "good-morning" && session.attempt_id == "attempt-001"
         }));
@@ -4003,6 +5058,57 @@ mod tests {
         });
 
         assert!(created.is_ok(), "{created:?}");
+    }
+
+    #[test]
+    fn scheduled_task_materialization_creates_task_without_starting_run() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run this later".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+        assert!(app.paths.task_file(&task_id).exists());
+        assert!(!app.paths.runs_dir(&task_id).exists());
+    }
+
+    #[test]
+    fn conversation_task_creation_rolls_back_when_attachment_copy_fails() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "task must roll back".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        assert!(create_conversation_task_vm(&app, &input).is_err());
+        assert!(app.task_list().unwrap().is_empty());
     }
 
     #[test]
@@ -4322,6 +5428,9 @@ mod tests {
         let queue = leaf.lifecycle.prompt_queue.as_ref().unwrap();
 
         assert_eq!(leaf.lifecycle.composer.mode, "normal");
+        assert_eq!(leaf.lifecycle.composer.submit_target, "acp-prompt");
+        assert_eq!(leaf.lifecycle.continue_kind, None);
+        assert!(!leaf.lifecycle.runtime.continuable);
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].content, "persist after stop");
     }
@@ -4586,6 +5695,13 @@ mod tests {
         Utf8PathBuf::from_path_buf(root).unwrap()
     }
 
+    fn short_temp_repo_root() -> Utf8PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!("gb-vm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        Utf8PathBuf::from_path_buf(root).unwrap()
+    }
+
     fn write_sidebar_task_fixture(
         app: &App,
         task_id: &str,
@@ -4732,7 +5848,17 @@ mod tests {
                 "current_node": outer_node_id,
                 "current_attempt": outer_attempt_id,
                 "new_rounds_opened": 0,
-                "pause_reason": run_pause_reason.clone()
+                "pause_reason": run_pause_reason.clone(),
+                "execution": {
+                    "revision": 1,
+                    "phase": if run_status == "paused" { "paused" } else { "starting-node" },
+                    "locator": {
+                        "roundId": round_id,
+                        "nodeId": outer_node_id,
+                        "attemptId": outer_attempt_id
+                    },
+                    "updatedAt": "2026-06-15T00:00:02Z"
+                }
             }),
         )
         .unwrap();
@@ -4794,7 +5920,7 @@ mod tests {
             "title": "Good morning",
             "task": "Say good morning",
             "status": dynamic_node_status,
-            "outcome": null,
+            "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,
@@ -4810,7 +5936,7 @@ mod tests {
             "workflowSnapshotId": null,
             "childRunId": null,
             "startedAt": "2026-06-15T00:00:00Z",
-            "finishedAt": if dynamic_node_status == "paused" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
+            "finishedAt": if dynamic_node_status == "paused" || dynamic_node_status == "completed" { json!("2026-06-15T00:00:02Z") } else { json!(null) }
         });
         gold_band::storage::write_json(
             &app.paths.dynamic_graph_file(
@@ -4821,7 +5947,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
@@ -5178,6 +6304,111 @@ mod tests {
             }),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn scheduled_task_title_uses_first_instruction_line_and_truncates() {
+        assert_eq!(
+            super::scheduled_task_title("  每天整理日报  \n补充说明"),
+            "每天整理日报"
+        );
+        assert_eq!(super::scheduled_task_title(""), "");
+        assert_eq!(
+            super::scheduled_task_title(&"x".repeat(60)).chars().count(),
+            49
+        );
+    }
+
+    #[test]
+    fn scheduled_task_management_returns_typed_schedule_without_display_labels() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::repeat(
+                gold_band::scheduler::RepeatPreset::Daily,
+                9,
+                0,
+                "Asia/Shanghai",
+            )
+            .unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let value =
+            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition)).unwrap();
+        assert_eq!(value["schedule"]["kind"], "Repeat");
+        assert_eq!(value["schedule"]["timezone"], "Asia/Shanghai");
+        assert!(value.get("scheduleLabel").is_none());
+        assert!(value.get("timezoneLabel").is_none());
+        assert!(value.get("lastTriggerLabel").is_none());
+    }
+
+    #[test]
+    fn scheduled_task_management_aggregates_all_workspaces_and_can_filter_one() {
+        let app_a = App::new(short_temp_repo_root());
+        let app_b = App::new(short_temp_repo_root());
+        let definition_a = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-a",
+            "scheduled-a",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 1, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let definition_b = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "workspace-b",
+            "scheduled-b",
+            "workflow",
+            gold_band::scheduler::ScheduleSpec::at(
+                chrono::Utc.with_ymd_and_hms(2026, 8, 2, 1, 0, 0).unwrap(),
+            ),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_a.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_a,
+                gold_band::scheduler::db::derived_next_run_at(&definition_a),
+            )
+            .unwrap();
+        gold_band::scheduler::db::ScheduledTaskDatabase::open(app_b.paths.scheduler_db_path())
+            .unwrap()
+            .create_job(
+                &definition_b,
+                gold_band::scheduler::db::derived_next_run_at(&definition_b),
+            )
+            .unwrap();
+        let sources = vec![
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-a".to_string(),
+                    workspace_path: app_a.paths.repo_root.to_string(),
+                    name: "Workspace A".to_string(),
+                },
+                app: app_a,
+            },
+            ConversationWorkspaceSource {
+                workspace: ConversationWorkspaceVm {
+                    project_id: "workspace-b".to_string(),
+                    workspace_path: app_b.paths.repo_root.to_string(),
+                    name: "Workspace B".to_string(),
+                },
+                app: app_b,
+            },
+        ];
+
+        let all = scheduled_task_vms_from_sources(&sources, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].workspace_name, "Workspace A");
+        assert_eq!(all[1].workspace_name, "Workspace B");
+
+        let filtered = scheduled_task_vms_from_sources(&sources, Some("workspace-b")).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "scheduled-b");
     }
 }
 

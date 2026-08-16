@@ -17,7 +17,6 @@ export const FALLBACK_WORKSPACE_LAYOUT: WorkspaceLayoutVm = {
     defaultWidth: 440,
     maxWidth: 1440,
     file: {
-      preferredWidth: 760,
       splitMinWidth: 500,
       treeDefaultWidth: 280,
       treeMinWidth: 200,
@@ -69,6 +68,30 @@ export interface FileWorkspaceResponsiveState {
 }
 
 export type FileWorkspaceResizeDirection = 'growing' | 'shrinking' | 'stationary';
+
+export interface RightWorkspacePanelController {
+  collapse: () => void;
+  expand: () => void;
+  isCollapsed: () => boolean;
+  resize: (size: number | string) => void;
+}
+
+export function syncRightWorkspacePanelPresentation({
+  panel,
+  visible,
+  preferredWidth,
+}: {
+  panel: RightWorkspacePanelController;
+  visible: boolean;
+  preferredWidth: number;
+}) {
+  if (!visible) {
+    if (!panel.isCollapsed()) panel.collapse();
+    return;
+  }
+  if (panel.isCollapsed()) panel.expand();
+  panel.resize(preferredWidth);
+}
 
 export function resolveFileWorkspaceResizeDirection({
   previousShellWidth,
@@ -241,7 +264,7 @@ export function workspaceLayoutProfileForPage(
   page: ConversationPage,
   layout: WorkspaceLayoutVm,
 ): WorkspaceLayoutProfileVm {
-  if (page.kind === 'conversation-home' || page.kind === 'conversation-run') return layout.conversation;
+  if (page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' || page.kind === 'conversation-run') return layout.conversation;
   if (page.kind === 'contexts') return layout.contextCards;
   if (page.kind === 'settings') return layout.settings;
   return layout.workflowCanvas;

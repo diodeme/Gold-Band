@@ -8,9 +8,12 @@ mod commands_conversation;
 mod conversation_workspace;
 mod desktop_lifecycle;
 mod feedback;
+mod git_state_monitor;
 mod i18n;
 mod metrics;
 mod notifications;
+mod scheduled_runtime;
+mod scheduled_service;
 mod state;
 mod updater;
 mod view_models;
@@ -22,51 +25,63 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_acp_session, check_local_claude, check_mcp_server_health,
-    check_skill_name_conflict, check_update_manual, choose_workspace, clear_desktop_avatar,
-    continue_run, create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    add_mcp_server, cancel_acp_session, cancel_git_operation, cancel_github_operation,
+    check_local_claude, check_mcp_server_health, check_skill_name_conflict, check_update_manual,
+    choose_workspace, clear_desktop_avatar, continue_conversation_runtime, continue_run,
+    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
     delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_skill,
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
-    download_and_install_update, get_acp_activity_detail, get_acp_raw_frames, get_acp_session,
-    get_acp_tool_detail, get_agent_command_catalog, get_agent_registry, get_app_bootstrap,
-    get_auto_templates, get_file_comparison, get_git_capability, get_log_page,
-    get_metrics_settings, get_profile, get_profiles, get_round_detail, get_run_detail,
-    get_skill_sync_status, get_system_fonts, get_task_detail, get_task_list,
+    download_and_install_update, execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames,
+    get_acp_session, get_acp_tool_detail, get_agent_command_catalog, get_agent_registry,
+    get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_capability,
+    get_git_commit_detail, get_git_commit_reachability, get_git_commit_review, get_git_comparison,
+    get_git_history, get_git_operation, get_github_capability, get_github_issue,
+    get_github_operation, get_github_pull_request, get_log_page, get_metrics_settings, get_profile,
+    get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
+    get_source_control_snapshot, get_system_fonts, get_task_detail, get_task_list,
     get_turn_file_change_set, get_update_status, get_workflow, get_workflow_templates,
     import_profiles_from_folder, initialize_git_repository, list_conversation_directory,
-    list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
-    mark_settings_advanced_update_seen, mark_settings_update_seen,
-    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
-    read_conversation_directory_file, read_skill, record_activity, remove_recent_workspace, renew_acp_session_lease,
-    replace_auto_templates, respond_acp_permission, respond_elicitation, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
+    list_github_issues, list_github_pull_requests, list_mcp_servers, list_mcp_tools,
+    list_project_skills, list_skills, mark_settings_advanced_update_seen,
+    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
+    open_in_file_manager, pause_run, preflight_github_pull_request,
+    read_conversation_directory_file, read_skill, record_activity, recover_conversation_runtime,
+    remove_recent_workspace, renew_acp_session_lease, replace_auto_templates,
+    respond_acp_permission, respond_elicitation, retry_run, save_auto_template,
+    save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
     save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
     search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref, start_run,
-    stop_active_session, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_conversation_queued_prompt, update_mcp_server,
+    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
+    start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
+    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
+    update_auto_template, update_conversation_queued_prompt, update_mcp_server,
     update_notification_attention, update_profile, update_skill_sync_targets,
     update_workflow_template, use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
     add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
-    delete_conversation_task, get_conversation_run, get_conversation_run_mode,
-    get_conversation_sidebar, get_conversation_workspaces, get_supported_attachment_extensions,
+    create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
+    get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
+    get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
+    get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
-    reorder_pinned_conversations, rerun_conversation_task, save_conversation_preference,
-    save_conversation_run_mode, save_desktop_ui_mode, save_last_conversation_workspace,
-    search_conversation_tasks, show_conversation_attachment, show_conversation_message_attachment,
+    reorder_pinned_conversations, rerun_conversation_task, run_scheduled_task_now,
+    save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
+    save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
+    set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
     stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
-    unpin_conversation, update_task_metadata, validate_conversation_create,
+    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
 // Heartbeat reporter is event-driven; initialized via DesktopState::reevaluate_heartbeat_config().
+use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
-use tracing::info;
+use tracing::{info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -96,6 +111,10 @@ fn run() -> anyhow::Result<()> {
         // application-owned inset outline instead.
         window.transparent = true;
         window.shadow = desktop_window_chrome.native_shadow;
+        // WRY maps this setting to both WebView2 IsZoomControlEnabled and
+        // IsPinchZoomEnabled. The renderer prevents page-level zoom and routes
+        // precision-touchpad pinch events only to zoom-aware surfaces.
+        window.zoom_hotkeys_enabled = true;
         #[cfg(debug_assertions)]
         {
             window.additional_browser_args =
@@ -119,6 +138,7 @@ fn run() -> anyhow::Result<()> {
         .manage(DesktopState::new(context))
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
+        .manage(git_state_monitor::GitStateMonitorRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default());
     #[cfg(all(debug_assertions, target_os = "windows"))]
@@ -144,9 +164,35 @@ fn run() -> anyhow::Result<()> {
         .setup(|app| {
             let state = app.state::<DesktopState>();
             let _ = state.cleanup_agent_diagnostic_processes();
+            state.install_scheduled_service(std::sync::Arc::new(
+                scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
+            ))?;
+            scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
-                let _ = runtime_app.recover_interrupted_running_sessions();
+            }
+            match state.recover_interrupted_conversation_workspaces() {
+                Ok(report) => {
+                    info!(
+                        workspace_count = report.workspace_count,
+                        recovered_run_count = report.recovered_run_count,
+                        skipped_workspace_count = report.skipped_workspace_count,
+                        failure_count = report.failures.len(),
+                        "conversation workspace startup recovery completed"
+                    );
+                    for failure in report.failures {
+                        warn!(
+                            workspace_path = %failure.workspace_path,
+                            error_code = failure.code,
+                            error = %failure.message,
+                            "conversation workspace startup recovery failed"
+                        );
+                    }
+                }
+                Err(error) => warn!(
+                    error = %error,
+                    "failed to load conversation workspaces for startup recovery"
+                ),
             }
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
@@ -180,8 +226,8 @@ fn run() -> anyhow::Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
-            // 启动后台线程预探�?MCP 服务健康状态（独立线程，避免阻�?webview 主线程）�?
-            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断�?
+            // 启动后台线程预探测 MCP 服务健康状态（独立线程，避免阻塞 webview 主线程）。
+            // 客户端启动后即开始检测，进入 MCP 管理页时状态已就绪，无需手动诊断。
             let health_handle = app.handle().clone();
             std::thread::spawn(move || {
                 let state = health_handle.state::<DesktopState>();
@@ -252,6 +298,30 @@ fn run() -> anyhow::Result<()> {
             start_run,
             get_git_capability,
             initialize_git_repository,
+            get_source_control_snapshot,
+            get_git_history,
+            get_git_commit_detail,
+            get_git_commit_review,
+            get_git_commit_reachability,
+            execute_git_mutation,
+            get_git_comparison,
+            start_git_operation,
+            start_git_state_monitor,
+            stop_git_state_monitor,
+            get_git_operation,
+            cancel_git_operation,
+            get_github_capability,
+            start_github_login,
+            get_github_operation,
+            cancel_github_operation,
+            list_github_pull_requests,
+            get_github_pull_request,
+            preflight_github_pull_request,
+            start_github_pull_request_create,
+            list_github_issues,
+            get_github_issue,
+            continue_conversation_runtime,
+            recover_conversation_runtime,
             continue_run,
             pause_run,
             stop_active_session,
@@ -268,6 +338,7 @@ fn run() -> anyhow::Result<()> {
             save_updater_settings,
             get_metrics_settings,
             update_notification_attention,
+            send_scheduled_native_notification,
             save_metrics_settings,
             record_activity,
             get_update_status,
@@ -282,6 +353,17 @@ fn run() -> anyhow::Result<()> {
             // Conversation UI
             save_desktop_ui_mode,
             get_conversation_sidebar,
+            list_scheduled_tasks,
+            list_scheduled_task_occurrences,
+            get_scheduled_task_diagnostics,
+            get_scheduled_runtime_settings,
+            save_scheduled_runtime_settings,
+            run_scheduled_task_now,
+            create_scheduled_task,
+            get_scheduled_task,
+            update_scheduled_task,
+            delete_scheduled_task,
+            set_scheduled_task_enabled,
             get_conversation_workspaces,
             get_conversation_run,
             validate_conversation_create,

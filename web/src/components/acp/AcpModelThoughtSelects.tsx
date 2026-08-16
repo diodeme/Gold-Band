@@ -12,6 +12,7 @@ import {
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
+  useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
   AcpSingleConfigMenu,
@@ -27,6 +28,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
 
@@ -36,6 +38,12 @@ export function findAcpThoughtLevel(
   configOptions: AcpSelectConfigOptionVm[] | null | undefined,
 ) {
   return configOptions?.find((option) => option.category === ACP_THOUGHT_LEVEL_CATEGORY) ?? null;
+}
+
+export function acpConfigMenuSelectionMode(
+  thoughtLevel: AcpSelectConfigOptionVm | null | undefined,
+) {
+  return thoughtLevel && thoughtLevel.options.length > 0 ? 'composite' : 'single';
 }
 
 export function updateAcpConfigOptionOverride(
@@ -105,7 +113,14 @@ export function AcpModelThoughtSelects({
   const triggerClass = acpComposerConfigTriggerVariants({ compact });
   const selectedModel = models.find((model) => model.id === modelValue);
   const selectedThought = thoughtLevel?.options.find((option) => option.value === thoughtValue);
-  const hasThoughtLevel = Boolean(thoughtLevel && thoughtLevel.options.length > 0);
+  const selectionMode = acpConfigMenuSelectionMode(thoughtLevel);
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useAcpComposerConfigOverflowTooltip();
   const handleConfigOptionSelect = (event: Event) => {
     keepAcpConfigMenuOpenOnSelect(event);
     keepMenuOpenRef.current = true;
@@ -123,7 +138,7 @@ export function AcpModelThoughtSelects({
     if (!open) setOpenSection(null);
   };
 
-  if (!hasThoughtLevel) {
+  if (selectionMode === 'single') {
     return models.length > 0 ? (
       <AcpSingleConfigMenu
         label={t('acp.currentModel')}
@@ -152,11 +167,35 @@ export function AcpModelThoughtSelects({
       modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}
       onOpenChange={handleMenuOpenChange}
     >
-      <DropdownMenuTrigger className={cn(triggerClass, triggerClassName)}>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{compositeLabel}</span>
-        <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-      </DropdownMenuTrigger>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        <DropdownMenuTrigger
+          className={cn(triggerClass, triggerClassName)}
+          onPointerEnter={showTooltipIfOverflowing}
+          onPointerLeave={hideTooltip}
+          onPointerDown={hideTooltip}
+          onFocus={showTooltipIfOverflowing}
+          onBlur={hideTooltip}
+        >
+          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
+          <TooltipTrigger asChild>
+            <span
+              ref={valueRef}
+              className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
+              data-acp-config-value="true"
+            >
+              {compositeLabel}
+            </span>
+          </TooltipTrigger>
+          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+        </DropdownMenuTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {compositeLabel}
+        </TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side={contentSide}
         sideOffset={8}
@@ -188,7 +227,7 @@ export function AcpModelThoughtSelects({
                 <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{model.name}</span>
-                    {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{model.description}</span> : null}
+                    {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{model.description}</span> : null}
                   </span>
                 </DropdownMenuRadioItem>
               ))}
@@ -224,7 +263,7 @@ export function AcpModelThoughtSelects({
                 <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{option.name}</span>
-                    {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">{option.description}</span> : null}
+                    {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}
                   </span>
                 </DropdownMenuRadioItem>
               ))}

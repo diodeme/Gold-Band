@@ -1,5 +1,5 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, ProfileInput, ResolveAppExitInput, RoundSelection, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi } from './client';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -23,6 +23,93 @@ export const desktopApi: RuntimeApi = {
   },
   initializeGitRepository(projectId) {
     return invokeCommand('initialize_git_repository', { projectId });
+  },
+  getSourceControlSnapshot(projectId, workspacePath) {
+    return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  },
+  getGitHistory(projectId, workspacePath, query) {
+    return invokeCommand('get_git_history', { projectId, workspacePath, query });
+  },
+  getGitCommitDetail(projectId, workspacePath, oid) {
+    return invokeCommand('get_git_commit_detail', { projectId, workspacePath, oid });
+  },
+  getGitCommitReview(projectId, workspacePath, query) {
+    return invokeCommand('get_git_commit_review', { projectId, workspacePath, query });
+  },
+  getGitCommitReachability(projectId, workspacePath, query) {
+    return invokeCommand('get_git_commit_reachability', { projectId, workspacePath, query });
+  },
+  executeGitMutation(projectId, workspacePath, input) {
+    return invokeCommand('execute_git_mutation', { projectId, workspacePath, input });
+  },
+  getGitComparison(projectId, source) {
+    return invokeCommand('get_git_comparison', { projectId, source });
+  },
+  startGitOperation(projectId, workspacePath, input) {
+    return invokeCommand('start_git_operation', { projectId, workspacePath, input });
+  },
+  getGitOperation(operationId) {
+    return invokeCommand('get_git_operation', { operationId });
+  },
+  cancelGitOperation(operationId) {
+    return invokeCommand('cancel_git_operation', { operationId });
+  },
+  startGitStateMonitor(projectId, workspacePath) {
+    return invokeCommand('start_git_state_monitor', { projectId, workspacePath });
+  },
+  stopGitStateMonitor(projectId, workspacePath) {
+    return invokeCommand('stop_git_state_monitor', { projectId, workspacePath });
+  },
+  async subscribeGitOperationUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<GitOperationVm>('gold-band://git-operation-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeGitStateChanges(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<GitStateChangedEventVm>('gold-band://git-state-changed', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  getGitHubCapability(projectId, workspacePath) {
+    return invokeCommand('get_github_capability', { projectId, workspacePath });
+  },
+  startGitHubLogin(projectId, workspacePath, host) {
+    return invokeCommand('start_github_login', { projectId, workspacePath, host });
+  },
+  getGitHubOperation(operationId) {
+    return invokeCommand('get_github_operation', { operationId });
+  },
+  cancelGitHubOperation(operationId) {
+    return invokeCommand('cancel_github_operation', { operationId });
+  },
+  async subscribeGitHubOperationUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<import('../types').GitHubOperationVm>('gold-band://github-operation-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  preflightGitHubPullRequest(projectId, workspacePath, input) {
+    return invokeCommand('preflight_github_pull_request', { projectId, workspacePath, input });
+  },
+  startGitHubPullRequestCreate(projectId, workspacePath, input) {
+    return invokeCommand('start_github_pull_request_create', { projectId, workspacePath, input });
+  },
+  listGitHubPullRequests(projectId, workspacePath, host, repository, query) {
+    return invokeCommand('list_github_pull_requests', { projectId, workspacePath, host, repository, query });
+  },
+  getGitHubPullRequest(projectId, workspacePath, host, repository, number) {
+    return invokeCommand('get_github_pull_request', { projectId, workspacePath, host, repository, number });
+  },
+  listGitHubIssues(projectId, workspacePath, host, repository, query) {
+    return invokeCommand('list_github_issues', { projectId, workspacePath, host, repository, query });
+  },
+  getGitHubIssue(projectId, workspacePath, host, repository, number) {
+    return invokeCommand('get_github_issue', { projectId, workspacePath, host, repository, number });
   },
   completeMainWindowClose() {
     return invokeCommand('complete_main_window_close');
@@ -185,8 +272,14 @@ export const desktopApi: RuntimeApi = {
   startRun(taskId: string) {
     return invokeCommand('start_run', { taskId });
   },
-  continueRun(projectId, taskId, runId, promptId, prompt) {
-    return invokeCommand('continue_run', { projectId, taskId, runId, promptId, prompt });
+  continueRun(projectId, taskId, runId) {
+    return invokeCommand('continue_run', { projectId, taskId, runId });
+  },
+  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
+    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  },
+  recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision) {
+    return invokeCommand('recover_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision });
   },
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });
@@ -221,8 +314,8 @@ export const desktopApi: RuntimeApi = {
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
-    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
   updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
     return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
@@ -269,8 +362,8 @@ export const desktopApi: RuntimeApi = {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
+    return invokeCommand('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging });
   },
   saveDesktopAvatar(input) {
     return invokeCommand('save_desktop_avatar', { input });
@@ -324,6 +417,63 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  async subscribeScheduledNotifications(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledNotificationEventVm>('gold-band://scheduled-notification', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  sendScheduledNativeNotification(input: ScheduledNativeNotificationInputVm) {
+    return invokeCommand('send_scheduled_native_notification', { input });
+  },
+  getScheduledRuntimeSettings() {
+    return invokeCommand('get_scheduled_runtime_settings');
+  },
+  saveScheduledRuntimeSettings(input) {
+    return invokeCommand('save_scheduled_runtime_settings', { input });
+  },
+  async subscribeScheduledTaskUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledTaskUpdatedEventVm>('gold-band://scheduled-task-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeScheduledOccurrenceUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ScheduledOccurrenceUpdatedEventVm>('gold-band://scheduled-occurrence-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  listScheduledTasks(projectId) {
+    return invokeCommand<import('../types').ScheduledTaskVm[]>('list_scheduled_tasks', { projectId });
+  },
+  setScheduledTaskEnabled(projectId, scheduledTaskId, enabled) {
+    return invokeCommand<import('../types').ScheduledTaskVm>('set_scheduled_task_enabled', { projectId, scheduledTaskId, enabled });
+  },
+  createScheduledTask(input) {
+    return invokeCommand<import('../types').ScheduledTaskVm>('create_scheduled_task', { input });
+  },
+  getScheduledTask(projectId, scheduledTaskId) {
+    return invokeCommand<import('../types').ScheduledTaskEditVm>('get_scheduled_task', { projectId, scheduledTaskId });
+  },
+  updateScheduledTask(input) {
+    return invokeCommand<import('../types').ScheduledTaskEditVm>('update_scheduled_task', { input });
+  },
+  deleteScheduledTask(projectId, scheduledTaskId) {
+    return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
+  },
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit) {
+    return invokeCommand<ScheduledOccurrenceVm[]>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, limit });
+  },
+  getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
+    return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
+  },
+  runScheduledTaskNow(projectId, scheduledTaskId) {
+    return invokeCommand<RunScheduledTaskResultVm>('run_scheduled_task_now', { projectId, scheduledTaskId });
   },
   setAcpSessionConfigOption(projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_config_option', { projectId, taskId, runId, roundId, nodeId, attemptId, optionId, optionValue, outerNodeId, outerAttemptId });
@@ -452,7 +602,11 @@ export const desktopApi: RuntimeApi = {
     const result = await open({ multiple: true });
     if (!result) return [];
     const paths = Array.isArray(result) ? result : [result];
-    return invokeCommand('stat_attachment_files', { paths });
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+    }));
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });
@@ -544,4 +698,3 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };
-

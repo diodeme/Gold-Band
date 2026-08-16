@@ -10,7 +10,10 @@ import {
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
+  gitFileComparisonWorkspaceResourceKey,
   rightWorkspaceReducer,
+  scheduledTaskConfigWorkspaceResourceKey,
+  draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
   type RightWorkspaceResource,
@@ -61,6 +64,33 @@ describe('right workspace resource model', () => {
     expect(state.tabs[0]).toMatchObject({ title: 'Agent A updated', attention: true });
     expect(state.requestedOpen).toBe(true);
     expect(state.openRevision).toBe(3);
+  });
+
+  it('models scheduled authoring as one stable tab per draft scope', () => {
+    const scopeKey = 'draft:project-1';
+    const key = scheduledTaskConfigWorkspaceResourceKey(scopeKey);
+    const resource: RightWorkspaceResource = {
+      kind: 'scheduled-task-config',
+      key,
+      scopeKey,
+      title: 'Scheduled task settings',
+      attention: false,
+    };
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: { ...resource, title: 'Updated settings' } });
+
+    expect(key).toBe('scheduled-task-config:draft:project-1');
+    expect(state.tabs).toEqual([{ ...resource, title: 'Updated settings' }]);
+    expect(state).toMatchObject({ activeTabKey: key, requestedOpen: true });
+  });
+
+  it('keys draft attachment previews by draft scope and stable attachment identity', () => {
+    expect(draftAttachmentWorkspaceResourceKey('draft:project-1', 'attachment-1')).toBe(
+      'draft-attachment:draft:project-1:attachment-1',
+    );
+    expect(draftAttachmentWorkspaceResourceKey('draft:project-2', 'attachment-1')).not.toBe(
+      draftAttachmentWorkspaceResourceKey('draft:project-1', 'attachment-1'),
+    );
   });
 
   it('closes the active tab to its adjacent tab and collapses after the last tab closes', () => {
@@ -121,6 +151,34 @@ describe('right workspace resource model', () => {
       selectedFile: file,
     });
     expect(state.tabs[0]).not.toHaveProperty('content');
+  });
+
+  it('keeps Git comparison tabs isolated by worktree and GitHub pull request', () => {
+    const first = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'workspace',
+      workspacePath: 'D:/repo/worktree-a',
+      path: 'src/main.rs',
+      area: 'unstaged',
+    });
+    const second = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'workspace',
+      workspacePath: 'D:/repo/worktree-b',
+      path: 'src/main.rs',
+      area: 'unstaged',
+    });
+    const pullRequest = gitFileComparisonWorkspaceResourceKey('project-1', {
+      kind: 'github-pr',
+      workspacePath: 'D:/repo/worktree-a',
+      host: 'github.com',
+      repository: 'acme/widgets',
+      prNumber: 42,
+      baseOid: '1111111111111111111111111111111111111111',
+      headOid: '2222222222222222222222222222222222222222',
+      path: 'src/main.rs',
+    });
+
+    expect(first).not.toBe(second);
+    expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222::src/main.rs');
   });
 
   it('isolates lightweight workspace state by conversation scope', () => {

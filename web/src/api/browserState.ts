@@ -1,4 +1,4 @@
-import type { AppBootstrapVm, AutoTemplateStore, PreferencesVm, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
+import type { AppBootstrapVm, AutoTemplateStore, PersonalizationPreference, PreferencesVm, ProfileListVm, ProfileVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowTemplateStore } from '../types';
 import { mockBootstrap, mockProfileList, mockUpdateBadges, mockUpdateStatus, mockUpdaterSettings, mockWorkflowTemplates } from '../mockData';
 
 export class BrowserPreviewState {
@@ -121,6 +121,21 @@ function cloneProfiles(profiles: ProfileVm[]): ProfileVm[] {
 function clonePreferences(preferences: PreferencesVm): PreferencesVm {
   return {
     ...preferences,
+    appearance: {
+      ...preferences.appearance,
+      visualQualityByTheme: { ...preferences.appearance.visualQualityByTheme },
+    },
+    personalization: {
+      ...preferences.personalization,
+      typography: {
+        ui: { fontStack: cloneFontStack(preferences.personalization.typography.ui.fontStack), fontSize: { ...preferences.personalization.typography.ui.fontSize } },
+        editor: { fontStack: cloneFontStack(preferences.personalization.typography.editor.fontStack), fontSize: { ...preferences.personalization.typography.editor.fontSize } },
+      },
+      avatars: {
+        agent: { image: { ...preferences.personalization.avatars.agent.image }, shape: { ...preferences.personalization.avatars.agent.shape } },
+        user: { image: { ...preferences.personalization.avatars.user.image }, shape: { ...preferences.personalization.avatars.user.shape } },
+      },
+    },
     avatars: {
       agent: {
         ...preferences.avatars.agent,
@@ -132,6 +147,10 @@ function clonePreferences(preferences: PreferencesVm): PreferencesVm {
       },
     },
   };
+}
+
+function cloneFontStack(fontStack: PersonalizationPreference['typography']['ui']['fontStack']) {
+  return fontStack.source === 'theme' ? { source: 'theme' as const } : { source: 'custom' as const, families: [...fontStack.families] };
 }
 
 function cloneUpdaterSettings(settings: UpdaterSettingsVm): UpdaterSettingsVm {

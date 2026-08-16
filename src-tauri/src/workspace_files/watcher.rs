@@ -42,7 +42,8 @@ impl WorkspaceFileWatchRuntime {
         debounce_ms: u64,
     ) -> CommandResult<()> {
         let mut inner = self.lock()?;
-        if let Some(handle) = inner.workspace.get_mut(&project_id) {
+        let key = workspace_watch_key(&project_id, &root);
+        if let Some(handle) = inner.workspace.get_mut(&key) {
             handle.refs = handle.refs.saturating_add(1);
             return Ok(());
         }
@@ -57,7 +58,7 @@ impl WorkspaceFileWatchRuntime {
             None,
         )?;
         inner.workspace.insert(
-            project_id,
+            key,
             WatchHandle {
                 _watcher: watcher,
                 refs: 1,
@@ -67,14 +68,15 @@ impl WorkspaceFileWatchRuntime {
         Ok(())
     }
 
-    pub(crate) fn stop_workspace(&self, project_id: &str) -> CommandResult<()> {
+    pub(crate) fn stop_workspace(&self, project_id: &str, root: &Path) -> CommandResult<()> {
         let mut inner = self.lock()?;
-        let remove = inner.workspace.get_mut(project_id).is_some_and(|handle| {
+        let key = workspace_watch_key(project_id, root);
+        let remove = inner.workspace.get_mut(&key).is_some_and(|handle| {
             handle.refs = handle.refs.saturating_sub(1);
             handle.refs == 0
         });
         if remove {
-            inner.workspace.remove(project_id);
+            inner.workspace.remove(&key);
         }
         Ok(())
     }
@@ -138,6 +140,13 @@ impl WorkspaceFileWatchRuntime {
             .lock()
             .map_err(|_| CommandErrorVm::new("workspace-file.watch-failed", serde_json::json!({})))
     }
+}
+
+fn workspace_watch_key(project_id: &str, root: &Path) -> String {
+    let path = display_path(root).replace('\\', "/");
+    #[cfg(target_os = "windows")]
+    let path = path.to_lowercase();
+    format!("{project_id}\0{path}")
 }
 
 fn create_watcher(
@@ -269,6 +278,14 @@ mod tests {
             "renamed"
         );
         assert_eq!(event_kind(&EventKind::Modify(ModifyKind::Any)), "modified");
+    }
+
+    #[test]
+    fn workspace_watch_identity_includes_the_canonical_root() {
+        assert_ne!(
+            workspace_watch_key("project-1", Path::new("D:/repo/worktree-a")),
+            workspace_watch_key("project-1", Path::new("D:/repo/worktree-b")),
+        );
     }
 
     #[test]

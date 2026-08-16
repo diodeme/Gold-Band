@@ -22,8 +22,15 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
+    if (segments[1] === 'scheduled-tasks') {
+      if (segments[2] === 'new') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-create' } };
+      if (segments[2]) return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: '', scheduledTaskId: segments[2] } };
+      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-tasks' } };
+    }
     if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
-      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[6] } };
+      const roundId = segments[7] === 'rounds' ? segments[8] : undefined;
+      const attemptId = roundId && segments[9] === 'attempts' ? segments[10] : undefined;
+      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[6], roundId, attemptId } };
     }
     return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: conversationHomePage };
   }
@@ -48,7 +55,15 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
     if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';
-    if (conversationPage.kind === 'conversation-run') return `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}`;
+    if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
+    if (conversationPage.kind === 'scheduled-task-create') return '/chat/scheduled-tasks/new';
+    if (conversationPage.kind === 'scheduled-task-detail') return `/chat/scheduled-tasks/${encodeURIComponent(conversationPage.scheduledTaskId)}`;
+    if (conversationPage.kind === 'conversation-run') {
+      const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}`;
+      if (!conversationPage.roundId) return base;
+      const round = `${base}/rounds/${encodeURIComponent(conversationPage.roundId)}`;
+      return conversationPage.attemptId ? `${round}/attempts/${encodeURIComponent(conversationPage.attemptId)}` : round;
+    }
     return '/chat';
   }
   // ── Workbench paths ──

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus } from 'lucide-react';
+import { displayAppError } from '@/i18n';
+import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -10,7 +12,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
-import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
@@ -25,9 +28,19 @@ import {
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
+import { ScheduledTaskDialog, type ScheduledTaskConfig } from '@/components/conversation/ScheduledTaskDialog';
+import type { ScheduledScheduleInput } from '@/types';
+import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
+import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import {
+  draftAttachmentWorkspaceResourceKey,
+  scheduledTaskConfigWorkspaceResourceKey,
+  useOptionalRightWorkspace,
+  type RightWorkspaceResource,
+} from '@/components/workspace/right-workspace-context';
 
 interface ConversationComposerProps {
   projectId: string;
@@ -38,12 +51,15 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  initialScheduledMode?: boolean;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
+  onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onScheduledModeExit?: () => void;
 }
 
 export function ConversationComposer({
@@ -55,12 +71,15 @@ export function ConversationComposer({
   workflowTemplates,
   profiles,
   busy,
+  initialScheduledMode = false,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
+  onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onScheduledModeExit,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const composerDraft = useConversationComposerDraft();
@@ -78,6 +97,11 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [scheduledMode, setScheduledMode] = useState(initialScheduledMode);
+  const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
+  const previousInitialScheduledModeRef = useRef(initialScheduledMode);
+  const initialScheduledModeOpenedRef = useRef(false);
+  const rightWorkspace = useOptionalRightWorkspace();
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const {
     attachments,
@@ -90,12 +114,43 @@ export function ConversationComposer({
     resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
-    previewImage,
-    setPreviewImage,
     textPreview,
     setTextPreview,
     handlePreviewAttachment,
   } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
+
+  const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
+      handlePreviewAttachment(attachment);
+      return;
+    }
+    void rightWorkspace.openResource({
+      kind: 'draft-attachment',
+      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+      scopeKey: rightWorkspace.scopeKey,
+      projectId,
+      title: attachment.name,
+      description: attachment.path,
+      attention: false,
+      attachment,
+    });
+  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+
+  const closeComposerAttachmentPreview = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.closeTab(draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id));
+  }, [rightWorkspace]);
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    const attachment = attachments.find((item) => item.id === id);
+    if (attachment) closeComposerAttachmentPreview(attachment);
+    removeAttachment(id);
+  }, [attachments, closeComposerAttachmentPreview, removeAttachment]);
+
+  const clearComposerAttachments = useCallback(() => {
+    attachments.forEach(closeComposerAttachmentPreview);
+    clearAttachments();
+  }, [attachments, clearAttachments, closeComposerAttachmentPreview]);
 
   useWindowDragGuard();
 
@@ -104,7 +159,74 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
+  const scheduledSummary = scheduledConfig
+    ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
+    : t('scheduled.composer.unconfigured');
   const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
+  const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
+  const scheduledConfigResourceKey = rightWorkspace?.scopeKey
+    ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
+    : null;
+
+  const closeScheduledConfig = useCallback(() => {
+    if (scheduledConfigResourceKey) void rightWorkspace?.closeTab(scheduledConfigResourceKey);
+  }, [rightWorkspace?.closeTab, scheduledConfigResourceKey]);
+
+  const openScheduledConfig = useCallback(() => {
+    if (!rightWorkspace?.scopeKey || !scheduledConfigResourceKey) return;
+    setScheduledMode(true);
+    void rightWorkspace.openResource({
+      kind: 'scheduled-task-config',
+      key: scheduledConfigResourceKey,
+      scopeKey: rightWorkspace.scopeKey,
+      title: t('scheduled.dialog.title'),
+      description: t('scheduled.composer.configure'),
+      attention: false,
+    });
+  }, [rightWorkspace, scheduledConfigResourceKey, t]);
+
+  const exitScheduledMode = useCallback(() => {
+    setScheduledMode(false);
+    setScheduledConfig(null);
+    closeScheduledConfig();
+    onScheduledModeExit?.();
+  }, [closeScheduledConfig, onScheduledModeExit]);
+
+  useEffect(() => {
+    const wasInitiallyScheduled = previousInitialScheduledModeRef.current;
+    previousInitialScheduledModeRef.current = initialScheduledMode;
+    if (!initialScheduledMode) {
+      initialScheduledModeOpenedRef.current = false;
+      if (wasInitiallyScheduled) {
+        setScheduledMode(false);
+        setScheduledConfig(null);
+        closeScheduledConfig();
+      }
+      return;
+    }
+    setScheduledMode(true);
+    if (initialScheduledModeOpenedRef.current || !rightWorkspace?.scopeKey) return;
+    initialScheduledModeOpenedRef.current = true;
+    openScheduledConfig();
+  }, [closeScheduledConfig, initialScheduledMode, openScheduledConfig, rightWorkspace?.scopeKey]);
+
+  const renderScheduledConfig = useCallback((resource: RightWorkspaceResource) => (
+    resource.kind === 'scheduled-task-config' ? (
+      <ScheduledTaskDialog
+        allowContinuous={isDirect}
+        open
+        presentation="workspace"
+        onOpenChange={(open) => { if (!open) closeScheduledConfig(); }}
+        draftConfig={scheduledConfig}
+        onSave={async (config) => { setScheduledConfig(config); }}
+      />
+    ) : null
+  ), [closeScheduledConfig, isDirect, scheduledConfig]);
+
+  useEffect(() => {
+    if (!rightWorkspace) return;
+    return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
+  }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
@@ -324,9 +446,53 @@ export function ConversationComposer({
         setRunModeError(submitError);
         return;
       }
+      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.
+    } finally {
+      setSubmittingAttachments(false);
+    }
+  };
+
+  const scheduledConversationInput = () => ({
+    projectId,
+    content: content.trim(),
+    runMode: runMode.mode,
+    workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
+    includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+    directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
+    autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
+  });
+
+  const createScheduledTask = async () => {
+    if (!canCreateScheduledTask || !onCreateScheduledTask) return;
+    if (!scheduledConfig) {
+      openScheduledConfig();
+      return;
+    }
+    const inputBase = scheduledConversationInput();
+    const localIssues = await validateScheduledConversationInput(inputBase, {
+      agentRegistry,
+      workflowTemplates,
+      profiles,
+      loadProfiles: onLoadProfiles,
+      t,
+    });
+    if (localIssues.length > 0) {
+      setRunModeError(localIssues.join('\n'));
+      return;
+    }
+    setSubmittingAttachments(true);
+    try {
+      const paths = await resolveAttachmentPaths();
+      await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
+      attachments.forEach(closeComposerAttachmentPreview);
+      composerDraft.reset();
+      exitScheduledMode();
+      setRunModeError(null);
+    } catch (error) {
+      setRunModeError(displayAppError(t, error));
     } finally {
       setSubmittingAttachments(false);
     }
@@ -336,17 +502,30 @@ export function ConversationComposer({
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void handleSubmit();
+      void (scheduledMode ? createScheduledTask() : handleSubmit());
     }
   };
 
   return (
     <>
       <div
+        data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
+        {scheduledMode ? (
+          <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
+            <AlarmClock className="size-4 text-foreground" />
+            <span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('scheduled.composer.exit')}</TooltipContent>
+            </Tooltip>
+          </div>
+        ) : null}
         {/* Main text input */}
         <PromptInput
           value={visibleContent}
@@ -354,8 +533,13 @@ export function ConversationComposer({
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
           disabled={busy || submittingAttachments}
-          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm"
         >
+          <ComposerContextArea
+            attachments={attachments}
+            onRemoveAttachment={removeComposerAttachment}
+            onPreviewAttachment={openComposerAttachment}
+          />
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -388,10 +572,10 @@ export function ConversationComposer({
               />
             </div>
           </SlashCommandMenu>
-          <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"
-            className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
+            data-layout={isDirect ? 'configured' : 'simple'}
+            className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName} ${isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName}`}
           >
             <div
               data-slot="conversation-composer-leading-actions"
@@ -410,14 +594,10 @@ export function ConversationComposer({
                 className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
                 onClick={() => { void pickFiles(); }}
                 disabled={busy || submittingAttachments}
+                aria-label={t('acp.attachHint')}
               >
                 <Paperclip className="size-4" />
               </Button>
-              {attachments.length > 0 ? (
-                <span className="shrink-0 rounded-full border border-border/50 bg-gold-surface-high/30 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                  {attachments.length} file(s)
-                </span>
-              ) : null}
               {workspaces.length > 1 ? (
                 <Select value={projectId} onValueChange={onWorkspaceChange}>
                   <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
@@ -441,7 +621,7 @@ export function ConversationComposer({
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
-              className={CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName}
+              className={isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName}
             >
               {isDirect ? (
                 <>
@@ -492,22 +672,34 @@ export function ConversationComposer({
                   />
                 </>
               ) : null}
-              <Button size="sm" className={CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}>
-                <Send className="size-3.5" />
-                {t('acp.send')}
-              </Button>
+              {scheduledMode ? (
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} items-center gap-1`}>
+                  <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                    <Button size="sm" className="h-8 min-w-0 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('scheduled.composer.configure')}</TooltipContent>
+                  </Tooltip>
+                </div>
+              ) : (
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} overflow-hidden rounded-full bg-primary text-primary-foreground`}>
+                  <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); openScheduledConfig(); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              )}
             </div>
           </div>
         </PromptInput>
-
-        {/* Attachment chips */}
-        <AttachmentChipsList
-          attachments={attachments}
-          onRemove={removeAttachment}
-          onPreview={handlePreviewAttachment}
-          onClear={clearAttachments}
-          clearLabel={t('common.clear') ?? 'Clear all'}
-        />
 
         {/* File error */}
         {fileError ? (
@@ -590,7 +782,7 @@ export function ConversationComposer({
                         <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{a.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -692,11 +884,8 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-
       <AttachmentPreviewDialogs
-        previewImage={previewImage}
         textPreview={textPreview}
-        onCloseImage={() => setPreviewImage(null)}
         onCloseText={() => setTextPreview(null)}
       />
     </>
@@ -712,17 +901,21 @@ export function DirectAgentEmptyState({
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="truncate text-xs text-muted-foreground">{t('conversation.home.noAgent')}</span>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
-        aria-label={t('agentManagement.addAgent')}
-        title={t('agentManagement.addAgent')}
-        onClick={onOpenAgentManagement}
-      >
-        <Plus className="size-3.5" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
+            aria-label={t('agentManagement.addAgent')}
+            onClick={onOpenAgentManagement}
+          >
+            <Plus className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('agentManagement.addAgent')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

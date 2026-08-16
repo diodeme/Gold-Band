@@ -66,7 +66,6 @@ const bootstrap = (needsWorkspace: boolean): AppBootstrapVm => ({
         defaultWidth: 440,
         maxWidth: 1440,
         file: {
-          preferredWidth: 760,
           splitMinWidth: 500,
           treeDefaultWidth: 280,
           treeMinWidth: 200,

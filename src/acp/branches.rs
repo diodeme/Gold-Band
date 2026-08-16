@@ -27,7 +27,6 @@ pub enum ConversationBranchError {
     #[error("invalid conversation branch id")]
     InvalidBranchId,
 }
-
 impl ConversationBranchError {
     pub const fn code(self) -> &'static str {
         match self {
@@ -2073,4 +2072,3 @@ mod tests {
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 }
-

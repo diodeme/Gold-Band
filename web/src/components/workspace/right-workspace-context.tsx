@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
+import type { AttachmentItem } from '@/lib/attachment-service';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 
 export interface AgentTranscriptLocator {
@@ -75,12 +76,33 @@ export type TurnFileWorkspaceResource = RightWorkspaceResourceBase & {
   changeId: string;
 };
 
+export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'file-diff';
+  projectId: string;
+  gitSource: import('@/types').GitComparisonSourceVm;
+  reviewSessionId?: string | null;
+  reviewItemId?: string | null;
+  reviewLanding?: 'top' | 'first-change' | 'last-change' | null;
+};
+
+export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'source-control';
+  projectId: string;
+  workspacePath?: string | null;
+};
+
 export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'conversation-asset';
   locator: AcpAttemptWorkspaceLocator;
   assetKind: 'artifact' | 'message-attachment' | 'input-attachment';
   name: string;
   path?: string | null;
+};
+
+export type DraftAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'draft-attachment';
+  projectId: string;
+  attachment: AttachmentItem;
 };
 
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
@@ -104,17 +126,25 @@ export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   locator: AcpAttemptWorkspaceLocator;
 };
 
+export type ScheduledTaskConfigWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'scheduled-task-config';
+};
+
 export type RightWorkspaceResource =
   | AgentTranscriptResource
   | FileBrowserWorkspaceResource
   | ConversationDirectoryWorkspaceResource
   | FileWorkspaceResource
   | TurnFileWorkspaceResource
+  | GitFileComparisonWorkspaceResource
+  | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
+  | DraftAttachmentWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
-  | RawFramesWorkspaceResource;
+  | RawFramesWorkspaceResource
+  | ScheduledTaskConfigWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
@@ -147,6 +177,7 @@ export interface RightWorkspaceCommands {
   scopeKey: string | null;
   projectId: string | null;
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
+  closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
 }
 
@@ -452,8 +483,9 @@ export function RightWorkspaceProvider({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
     openResource,
+    closeTab,
     getResource,
-  }), [getResource, openResource, scope?.key, scope?.projectId]);
+  }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
   return (
     <RightWorkspaceCommandsContext.Provider value={commands}>
       <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
@@ -503,6 +535,30 @@ export function fileBrowserWorkspaceResourceKey(projectId: string) {
   return `file-browser:${projectId}`;
 }
 
+export function sourceControlWorkspaceResourceKey(projectId: string, workspacePath?: string | null) {
+  const normalizedPath = workspacePath?.replaceAll('\\', '/');
+  return `source-control:${projectId}:${normalizedPath ?? 'main'}`;
+}
+
+export function scheduledTaskConfigWorkspaceResourceKey(scopeKey: string) {
+  return `scheduled-task-config:${scopeKey}`;
+}
+
+export function gitFileComparisonWorkspaceResourceKey(projectId: string, source: import('@/types').GitComparisonSourceVm) {
+  const workspacePath = source.workspacePath?.replaceAll('\\', '/') ?? 'main';
+  if (source.kind === 'workspace') {
+    return `git-diff:${projectId}:${workspacePath}:workspace:${source.area}:${source.path}`;
+  }
+  if (source.kind === 'commit') {
+    return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.beforePath ?? ''}:${source.afterOid}:${source.path}`;
+  }
+  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.baseOid}:${source.headOid}:${source.beforePath ?? ''}:${source.path}`;
+}
+
+export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessionId: string) {
+  return `git-diff-review:${projectId}:${reviewSessionId}`;
+}
+
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
   return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
@@ -548,4 +604,8 @@ export function conversationAssetWorkspaceResourceKey(
     locator.branchId,
     path ?? name,
   ].join(':');
+}
+
+export function draftAttachmentWorkspaceResourceKey(scopeKey: string, attachmentId: string) {
+  return ['draft-attachment', scopeKey, attachmentId].join(':');
 }

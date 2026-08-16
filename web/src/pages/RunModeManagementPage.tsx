@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
 import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
@@ -159,7 +159,7 @@ export function RunModeProjectSelector({
               <SelectItem key={workspace.projectId} value={workspace.projectId}>
                 <span className="block min-w-0">
                   <span className="block truncate">{workspace.name}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{workspace.workspacePath}</span>
+                  <span className="mt-0.5 block truncate text-ui-caption text-muted-foreground">{workspace.workspacePath}</span>
                 </span>
               </SelectItem>
             ))}
@@ -887,11 +887,13 @@ export function RunModeManagementPage({
   return (
     <Page flush className="flex flex-col">
       <PageHeader
+        variant="integrated"
+        icon={<Route />}
         title={<span className="text-title">{t('runMode.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5 xl:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className={cn('min-h-0 flex-1 px-6 pt-4', mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6')}>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <RunModeTabsToolbar
             mode={mode}
             onModeChange={changeMode}
@@ -1027,7 +1029,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -1043,7 +1045,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -1214,8 +1216,9 @@ export function RunModeManagementPage({
             </section>
           </div>
         ) : (
-          <div className="space-y-4">
-            <TemplateActionRow
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="shrink-0">
+              <TemplateActionRow
               label={t('taskList.create.workflowTemplate')}
               picker={(
                 <Popover open={wfTemplatePickerOpen} onOpenChange={setWfTemplatePickerOpen}>
@@ -1287,7 +1290,8 @@ export function RunModeManagementPage({
               onNameChange={setWfSaveName}
               saveAsLabel={t('taskList.create.saveAsWorkflow')}
               onSaveAs={() => void saveWfAsNew()}
-            />
+              />
+            </div>
 
             {wfNotice ? (
               <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600">{wfNotice}</div>
@@ -1297,9 +1301,10 @@ export function RunModeManagementPage({
             ) : null}
 
             {/* Embedded workflow editor */}
-            <div className="min-h-[480px] min-w-0">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {wfEditWorkflow ? (
                   <WorkflowEditor
+                    className="h-full min-h-0"
                     value={wfEditWorkflow}
                     agentRegistry={agentRegistry}
                     profiles={profiles}
@@ -1316,7 +1321,7 @@ export function RunModeManagementPage({
                   />
               ) : null}
               {!wfEditWorkflow ? (
-                <div className="flex h-[480px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+                <div className="flex size-full min-h-0 items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
                   {workflowTemplateList.length > 0
                     ? t('taskList.create.newWorkflowTemplate')
                     : t('taskList.create.noWorkflowTemplate')}
@@ -1383,15 +1388,18 @@ function MultiToggle({ items, selected, onChange, emptyLabel }: { items: Array<{
         {selectableItems.map((item, index) => {
           const active = selectedSet.has(item.id);
           return (
-            <button
-              key={`${item.id}-${index}`}
-              type="button"
-              className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
-              onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
-              title={item.id}
-            >
-              <span className="block max-w-52 truncate">{item.label}</span>
-            </button>
+            <Tooltip key={`${item.id}-${index}`}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
+                  onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
+                >
+                  <span className="block max-w-52 truncate">{item.label}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[360px] break-all">{item.id}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>

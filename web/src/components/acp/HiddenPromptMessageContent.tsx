@@ -19,6 +19,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
   const { t } = useTranslation();
   const contentExpansion = useOptionalChatContainerContentExpansion();
   const parts = useMemo(() => parseGoldBandHiddenSections(content), [content]);
+  const displayParts = useMemo(() => projectHiddenPromptDisplayParts(parts), [parts]);
   const rootRef = useRef<HTMLDivElement>(null);
   const labelMeasureRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const visibleMeasureRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -76,7 +77,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [measurementRevision, openSections, parts]);
+  }, [displayParts, measurementRevision, openSections]);
 
   if (parts.length === 0) return null;
 
@@ -101,27 +102,27 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
       className="inline-grid min-w-0 max-w-full gap-2"
       style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}
     >
-      {parts.map((part, index) => {
+      {displayParts.map(({ part, sourceIndex }, index) => {
         if (part.type === "hidden") {
           return (
             <HiddenPromptSection
-              key={`${index}:hidden`}
+              key={`${sourceIndex}:hidden`}
               title={part.title}
               text={part.text}
-              open={Boolean(openSections[index])}
-              onOpenChange={(open) => handleSectionOpenChange(index, open)}
+              open={Boolean(openSections[sourceIndex])}
+              onOpenChange={(open) => handleSectionOpenChange(sourceIndex, open)}
             />
           );
         }
 
         const displayText = visiblePromptText(
           part.text,
-          parts[index - 1]?.type === "hidden",
+          displayParts[index - 1]?.part.type === "hidden",
         );
 
         return (
           <div
-            key={`${index}:visible`}
+            key={`${sourceIndex}:visible`}
             className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
           >
             {displayText}
@@ -132,24 +133,24 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
         aria-hidden="true"
         className="pointer-events-none fixed left-0 top-0 -z-50 invisible grid h-0 overflow-visible"
       >
-        {parts.map((part, index) => {
+        {displayParts.map(({ part, sourceIndex }, index) => {
           if (part.type === "hidden") {
             const label = hiddenPromptTitle(part.title, t);
             return (
-              <div key={`${index}:hidden-measure`}>
+              <div key={`${sourceIndex}:hidden-measure`}>
                 <button
-                  ref={(element) => { labelMeasureRefs.current[index] = element; }}
-                  className="grid w-max grid-cols-[max-content_auto] items-center gap-3 rounded-lg border px-3 py-2 text-xs"
+                  ref={(element) => { labelMeasureRefs.current[sourceIndex] = element; }}
+                  className="grid w-max grid-cols-[max-content_auto] items-center gap-3 px-2.5 py-1.5 text-xs"
                   tabIndex={-1}
                 >
                   <span className="font-medium">{label}</span>
-                  <span className="inline-flex items-center gap-1.5 text-[11px]">
+                  <span className="inline-flex items-center gap-1.5 text-ui-caption">
                     {t("acp.hiddenPromptCharacters", { count: part.text.length })}
                     <ChevronDown className="size-3.5" />
                   </span>
                 </button>
                 <pre
-                  ref={(element) => { hiddenMeasureRefs.current[index] = element; }}
+                  ref={(element) => { hiddenMeasureRefs.current[sourceIndex] = element; }}
                   className="w-[calc(var(--conversation-message-max-inline-size)-2rem)] whitespace-pre-wrap break-words px-3 py-2 font-sans text-xs leading-5 [overflow-wrap:anywhere]"
                 >
                   {part.text.trim()}
@@ -160,12 +161,12 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 
           const displayText = visiblePromptText(
             part.text,
-            parts[index - 1]?.type === "hidden",
+            displayParts[index - 1]?.part.type === "hidden",
           );
           return (
             <div
-              key={`${index}:visible-measure`}
-              ref={(element) => { visibleMeasureRefs.current[index] = element; }}
+              key={`${sourceIndex}:visible-measure`}
+              ref={(element) => { visibleMeasureRefs.current[sourceIndex] = element; }}
               className="w-[calc(var(--conversation-message-max-inline-size)-2rem)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]"
             >
               {displayText}
@@ -178,7 +179,34 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
 }
 
 export function visiblePromptText(text: string, followsHiddenSection: boolean) {
-  return followsHiddenSection ? text.replace(/^[\r\n]+/, "") : text;
+  return followsHiddenSection
+    ? text.replace(/^(?:[\t ]*\r?\n)+/, "")
+    : text;
+}
+
+export function projectHiddenPromptDisplayParts(
+  parts: ReturnType<typeof parseGoldBandHiddenSections>,
+) {
+  const hiddenParts = parts
+    .map((part, sourceIndex) => ({ part, sourceIndex }))
+    .filter(({ part }) => part.type === "hidden");
+  const visibleText = parts
+    .filter((part) => part.type === "visible")
+    .map((part) => part.text)
+    .join("");
+  const normalizedVisibleText = visiblePromptText(
+    visibleText,
+    hiddenParts.length > 0,
+  );
+  return normalizedVisibleText
+    ? [
+        ...hiddenParts,
+        {
+          part: { type: "visible" as const, text: normalizedVisibleText },
+          sourceIndex: parts.length,
+        },
+      ]
+    : hiddenParts;
 }
 
 function HiddenPromptSection({
@@ -197,31 +225,35 @@ function HiddenPromptSection({
 
   return (
     <Collapsible
-      className="grid min-w-0 max-w-full"
+      data-theme-role="message-disclosure"
+      className="grid min-w-0 max-w-full overflow-hidden"
       open={open}
       onOpenChange={onOpenChange}
     >
-      <CollapsibleTrigger
-        className={cn(
-          "group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.045]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
-        )}
-      >
-        <span className="min-w-0 truncate font-medium text-foreground/80">
-          {label}
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-          {t("acp.hiddenPromptCharacters", { count: text.length })}
-          <ChevronDown
-            className={cn(
-              "size-3.5 transition-transform duration-150",
-              open && "rotate-180",
-            )}
-          />
-        </span>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.04]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          )}
+        >
+          <span className="min-w-0 truncate font-medium text-foreground/80">
+            {label}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-ui-caption text-muted-foreground">
+            {t("acp.hiddenPromptCharacters", { count: text.length })}
+            <ChevronDown
+              className={cn(
+                "size-3.5 transition-transform duration-150",
+                open && "rotate-180",
+              )}
+            />
+          </span>
+        </button>
       </CollapsibleTrigger>
       <CollapsibleContent className="min-w-0 max-w-full">
-        <pre className="mt-2 max-h-72 w-max min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
+        <pre className="max-h-72 w-max min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words border-t border-foreground/10 px-2.5 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
           {text.trim()}
         </pre>
       </CollapsibleContent>

@@ -3,6 +3,7 @@ import {
   canOpenConversationSidebarRunMenu,
   canPauseConversationSidebarRun,
   conversationSidebarIdentityKind,
+  conversationSidebarNavigationKey,
   conversationSidebarRunKey,
   conversationSidebarTaskKey,
   isConversationSidebarRunListScopeActive,
@@ -16,12 +17,24 @@ import {
   updateConversationSidebarExpandedTaskKeys,
 } from '@/components/conversation/ConversationSidebar';
 import {
+  applyConversationSidebarRunLifecycle,
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from '@/lib/conversation-sidebar-activity';
 
 describe('ConversationSidebar run selection identity', () => {
+  it('selects quick chat while authoring a new scheduled task', () => {
+    expect(conversationSidebarNavigationKey({ kind: 'conversation-home' })).toBe('quick-chat');
+    expect(conversationSidebarNavigationKey({ kind: 'scheduled-task-create' })).toBe('quick-chat');
+    expect(conversationSidebarNavigationKey({ kind: 'scheduled-tasks' })).toBe('scheduled-tasks');
+    expect(conversationSidebarNavigationKey({
+      kind: 'scheduled-task-detail',
+      projectId: 'project-a',
+      scheduledTaskId: 'scheduled-a',
+    })).toBe('scheduled-tasks');
+  });
+
   it('uses a reduced-motion-safe breathing effect for active Direct Agent icons', () => {
     expect(conversationSidebarActivityIconClass).toContain('motion-safe:animate-pulse');
     expect(conversationSidebarActivityIconClass).not.toContain('animate-spin');
@@ -69,7 +82,8 @@ describe('ConversationSidebar run selection identity', () => {
     };
     const lifecycle = {
       runtime: { status: 'completed', resumable: false, current: true, active: false, continuable: false, phase: 'terminal' },
-      acp: { status: 'running', phase: 'running' as const, active: true, stopping: false, terminal: false },
+      control: { mode: 'non-runtime-controlled' as const },
+      acp: { sessionAvailability: 'established' as const, liveTurnActivity: 'running' as const, latestTurnStatus: 'none' as const, stopping: false },
       displayStatus: 'running',
       runtimeDisplay: { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false },
       continueKind: null,
@@ -85,6 +99,48 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.pinnedTasks[0].activity).toEqual({ phase: 'running', stopping: false });
     expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
   });
+
+  it('projects a continued runtime into both task and run sidebar dots immediately', () => {
+    const run = {
+      runId: 'run-001',
+      status: 'paused',
+      outcome: null,
+      startedAt: '2026-08-12T00:00:00Z',
+      updatedAt: '2026-08-12T00:01:00Z',
+      resumable: true,
+    };
+    const task = {
+      projectId: 'project-a',
+      taskId: 'task-a',
+      title: 'Workflow task',
+      autoTitle: false,
+      runMode: 'workflow' as const,
+      latestRun: run,
+      runs: [run],
+      pinned: true,
+    };
+    const lifecycle = {
+      runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
+      control: { mode: 'runtime-controlled' as const },
+      acp: { sessionAvailability: 'established' as const, liveTurnActivity: 'starting' as const, latestTurnStatus: 'none' as const, stopping: false },
+      displayStatus: 'running',
+      runtimeDisplay: { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode: null, blockingError: false },
+      continueKind: null,
+      composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'launching', statusKey: null, canStop: true, lockInput: true },
+    };
+
+    const sidebar = applyConversationSidebarRunLifecycle({
+      workspaces: [],
+      pinnedTasks: [task],
+      tasksByWorkspace: { 'project-a': [task] },
+    }, 'project-a', 'task-a', 'run-001', lifecycle);
+
+    expect(sidebar.pinnedTasks[0].latestRun?.status).toBe('running');
+    expect(sidebar.pinnedTasks[0].runs[0].status).toBe('running');
+    expect(sidebar.tasksByWorkspace['project-a'][0].latestRun?.status).toBe('running');
+    expect(sidebar.tasksByWorkspace['project-a'][0].runs[0].resumable).toBe(false);
+  });
+
 
   it('projects lightweight ACP activity without requiring a lifecycle snapshot and clears it explicitly', () => {
     const event = {

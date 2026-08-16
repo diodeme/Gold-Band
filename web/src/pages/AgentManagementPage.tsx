@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { AlertTriangle, Bot, CheckCircle2, CircleHelp, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, RotateCcw, Split, Stethoscope, Trash2 } from 'lucide-react';
@@ -287,16 +286,18 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
   return (
     <Page flush className="flex flex-col">
       <PageHeader
+        variant="integrated"
+        icon={<Bot />}
         title={<span className="text-title">{t('agentManagement.title')}</span>}
         actions={(
           <>
-            <Button variant="outline" disabled={loading} onClick={onRefresh}>
+            <Button variant="outline" size="sm" disabled={loading} onClick={onRefresh}>
               <RefreshCw className={cn(loading && 'animate-spin')} />
               {t('common.refresh')}
             </Button>
             <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
               <PopoverTrigger asChild>
-                <Button>
+                <Button size="sm">
                   <Plus />
                   {t('agentManagement.addAgent')}
                 </Button>
@@ -336,7 +337,7 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
         )}
       />
 
-      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4 xl:p-5">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6 pt-4">
         {notice ? (
         <Alert
           className={cn(
@@ -524,37 +525,6 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 onChange={(event) => setEditor((current) => ({ ...current, compatibleAgentDirsText: event.target.value }))}
               />
             </Field>
-            <CapabilitySwitch
-              id="external-session-sync-support"
-              label={t('agentManagement.externalSessionSyncSupport')}
-              description={t('agentManagement.externalSessionSyncSupportDescription')}
-              checked={editor.form.externalSessionSyncSupported}
-              onCheckedChange={(checked) => setEditor((current) => ({
-                ...current,
-                form: {
-                  ...current.form,
-                  externalSessionSyncSupported: checked,
-                  externalSessionSyncEnabled: checked ? current.form.externalSessionSyncEnabled : false,
-                },
-              }))}
-            />
-            <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
-              <div className="min-w-0 space-y-1">
-                <ExternalSessionSyncHeading
-                  label={t('agentManagement.externalSessionSync')}
-                  betaLabel={t('agentManagement.externalSessionSyncBeta')}
-                  helpLabel={t('agentManagement.externalSessionSyncHelpLabel')}
-                  helpText={t('agentManagement.externalSessionSyncHelp')}
-                />
-                <div className="text-xs leading-5 text-muted-foreground">{t('agentManagement.externalSessionSyncDescription')}</div>
-              </div>
-              <Switch
-                id="external-session-sync"
-                disabled={!editor.form.externalSessionSyncSupported}
-                checked={editor.form.externalSessionSyncEnabled}
-                onCheckedChange={(checked) => setEditor((current) => ({ ...current, form: { ...current.form, externalSessionSyncEnabled: checked } }))}
-              />
-            </div>
             {error ? <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</div> : null}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setEditor(closeAgentEditorState)}>{t('common.close')}</Button>
@@ -596,9 +566,9 @@ function AgentCard({ agent, diagnosing, onEdit, onDelete, onDoctor }: { agent: M
           <div className="min-w-0 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-sm font-semibold text-foreground">{agent.displayName}</h3>
-              <Badge variant="secondary" className="rounded-full px-2 py-0 text-[11px]">{agent.agentType}</Badge>
+              <Badge variant="secondary" className="rounded-full px-2 py-0 text-ui-caption">{agent.agentType}</Badge>
             </div>
-            <div className="min-h-10 overflow-hidden font-mono text-[11px] leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{agent.command} {agent.args.join(' ')}</div>
+            <div className="min-h-10 overflow-hidden font-mono text-ui-caption leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]">{agent.command} {agent.args.join(' ')}</div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -644,7 +614,7 @@ function RegistryHelp({ reason }: { reason?: string | null }) {
             <CircleHelp className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={8} className="w-56 space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-[12px] leading-[1.45]">
+        <TooltipContent side="left" sideOffset={8} className="w-56 space-y-1.5 whitespace-pre-wrap break-words px-2.5 py-2 text-xs leading-[1.45]">
           {reason ? (
             <div className="w-full space-y-1">
               <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t('status.error')}</div>
@@ -740,71 +710,8 @@ function ConfigTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
 function Info({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="min-h-[84px] rounded-xl border border-border/60 bg-muted/10 px-3 py-2.5">
-      <div className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
-      <div className={cn('mt-1 min-w-0 overflow-hidden text-[13px] leading-5 text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]', mono && 'font-mono text-[11px]')}>{value}</div>
-    </div>
-  );
-}
-
-function CapabilitySwitch({
-  id,
-  label,
-  description,
-  checked,
-  onCheckedChange,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-5 rounded-xl border border-border/60 bg-muted/10 px-4 py-3">
-      <div className="min-w-0 space-y-1">
-        <label htmlFor={id} className="text-sm font-semibold text-foreground">{label}</label>
-        <div className="text-xs leading-5 text-muted-foreground">{description}</div>
-      </div>
-      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
-    </div>
-  );
-}
-
-export function ExternalSessionSyncHeading({
-  label,
-  betaLabel,
-  helpLabel,
-  helpText,
-}: {
-  label: string;
-  betaLabel: string;
-  helpLabel: string;
-  helpText: string;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <label htmlFor="external-session-sync" className="text-sm font-semibold text-foreground">{label}</label>
-      <Badge variant="secondary" className="h-5 rounded-full px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide">
-        {betaLabel}
-      </Badge>
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-5 rounded-full text-muted-foreground hover:text-foreground"
-              aria-label={helpLabel}
-            >
-              <CircleHelp className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={6} className="max-w-64 text-xs leading-5">
-            {helpText}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <div className="text-ui-micro uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
+      <div className={cn('mt-1 min-w-0 overflow-hidden text-ui-compact leading-5 text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]', mono && 'font-mono text-ui-caption')}>{value}</div>
     </div>
   );
 }
@@ -925,5 +832,5 @@ function DiagnosticBadge({ diagnostic }: { diagnostic?: ManagedAgentVm['diagnost
     : status === 'unhealthy'
       ? <AlertTriangle className="size-4 text-destructive" />
       : <CircleHelp className="size-4 text-muted-foreground" />;
-  return <Badge variant="outline" className="rounded-full px-2 py-0 text-[11px]">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
+  return <Badge variant="outline" className="rounded-full px-2 py-0 text-ui-caption">{icon}<span className="ml-1">{t(`agentManagement.status.${status}`)}</span></Badge>;
 }

@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::process::background_command;
 
+mod github;
+mod source_control;
+
+pub use github::*;
+pub use source_control::*;
+
 const CHECKPOINT_AUTHOR_NAME: &str = "Gold Band Runtime";
 const CHECKPOINT_AUTHOR_EMAIL: &str = "runtime@gold-band.local";
 
@@ -234,6 +240,21 @@ impl GitWorkspaceManager {
         workspace_id: &str,
         group_id: Option<&str>,
     ) -> Result<Option<String>> {
+        let identity = GitSourceControlService::default().repository_identity(workspace)?;
+        GitCoordinationService.with_runtime_write(
+            &identity.common_dir,
+            Some(&identity.workspace_path),
+            "runtime-checkpoint",
+            || self.checkpoint_unlocked(workspace, workspace_id, group_id),
+        )
+    }
+
+    fn checkpoint_unlocked(
+        &self,
+        workspace: &Utf8Path,
+        workspace_id: &str,
+        group_id: Option<&str>,
+    ) -> Result<Option<String>> {
         if self.repository.status_porcelain(workspace)?.is_empty() {
             return Ok(None);
         }
@@ -282,6 +303,22 @@ impl GitWorkspaceManager {
         branch: &str,
         fork_commit: &str,
     ) -> Result<()> {
+        let identity = GitSourceControlService::default().repository_identity(repository_root)?;
+        GitCoordinationService.with_runtime_write(
+            &identity.common_dir,
+            None,
+            "runtime-worktree-create",
+            || self.create_worktree_unlocked(repository_root, path, branch, fork_commit),
+        )
+    }
+
+    fn create_worktree_unlocked(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        branch: &str,
+        fork_commit: &str,
+    ) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent.as_std_path())?;
         }
@@ -298,6 +335,22 @@ impl GitWorkspaceManager {
     }
 
     pub fn remove_worktree(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        branch: &str,
+    ) -> Result<()> {
+        let repository = GitSourceControlService::default().repository_identity(repository_root)?;
+        let workspace = GitSourceControlService::default().repository_identity(path)?;
+        GitCoordinationService.with_runtime_write(
+            &repository.common_dir,
+            Some(&workspace.workspace_path),
+            "runtime-worktree-remove",
+            || self.remove_worktree_unlocked(repository_root, path, branch),
+        )
+    }
+
+    fn remove_worktree_unlocked(
         &self,
         repository_root: &Utf8Path,
         path: &Utf8Path,

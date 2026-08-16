@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import {
   Background,
   BaseEdge,
-  Controls,
   EdgeLabelRenderer,
   Handle,
   MarkerType,
@@ -15,6 +14,7 @@ import {
   type EdgeProps,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
   type Viewport,
 } from '@xyflow/react';
 import type { GraphNodeVm, GraphVm } from '../types';
@@ -23,14 +23,16 @@ import {
   NODE_WIDTH,
   NODE_HEIGHT,
   runtimeNodeOrder,
-  computeBackwardLanes,
+  isBackwardEdge,
   isRuntimePrimaryEdge,
   layoutSuccessPath,
+  routeWorkflowBranchEdges,
   runtimeGraphEdgeClassName,
   runtimeGraphEdgeDisplayLabel,
   runtimeGraphTopologySignature,
   runtimeEdgeColor,
   topLeft,
+  type WorkflowGraphBranchRoute,
 } from './workflowGraph';
 import { displayStatus } from '../i18n';
 import { Badge } from '@/components/ui/badge';
@@ -38,6 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { EmptyState } from '@/components/PageScaffold';
 import { cn } from '@/lib/utils';
 import { statusBadgeClass } from '@/lib/status';
+import { GraphControls } from '@/components/GraphControls';
 
 /** Runtime graph nodes use a slightly taller card for status badges. */
 const RUNTIME_NODE_HEIGHT = 138;
@@ -87,7 +90,7 @@ const edgeTypes = {
 
 type RuntimeGraphLayout = {
   layoutPositions: Map<string, { x: number; y: number }>;
-  backwardLanes: Map<number, number>;
+  branchRouteByEdgeIndex: Map<number, WorkflowGraphBranchRoute>;
   bounds: { x: number; y: number; width: number; height: number } | null;
 };
 
@@ -102,6 +105,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const contextMenuTimerRef = useRef<number | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<WorkflowNodeData>, Edge> | null>(null);
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   const viewportHorizontalAnchor = variant === 'actual' ? 0.40 : 0.5;
   const viewportVerticalAnchor = variant === 'actual' ? 0.32 : 0.5;
@@ -201,10 +205,16 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeContextMenu={handleNodeContextMenu}
+        onInit={setFlowInstance}
         className="workflow-graph"
       >
         <Background color="var(--border)" gap={28} size={1} />
-        <Controls showInteractive={false} fitViewOptions={fitViewOptions} position="bottom-right" />
+        <GraphControls
+          disabled={!flowInstance}
+          onZoomIn={() => { void flowInstance?.zoomIn(); }}
+          onZoomOut={() => { void flowInstance?.zoomOut(); }}
+          onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
+        />
       </ReactFlow>
       <div className="pointer-events-none absolute left-4 top-4 rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur">
         {mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}
@@ -254,19 +264,29 @@ function calculateCenteredViewport(bounds: { x: number; y: number; width: number
 function createRuntimeGraphLayout(graph: GraphVm): RuntimeGraphLayout {
   const nodeOrder = runtimeNodeOrder(graph.nodes);
   const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  const nodeSpecs = graph.nodes.map((node) => ({ id: node.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT }));
   const layoutPositions = layoutSuccessPath(
-    graph.nodes.map((n) => ({ id: n.id, width: NODE_WIDTH, height: RUNTIME_NODE_HEIGHT })),
+    nodeSpecs,
     graph.edges.map((e) => ({ from: e.from, to: e.to, on: isRuntimePrimaryEdge(e, nodeOrder) ? 'success' : e.label?.toLowerCase() ?? '' })),
     nodeIds,
     nodeOrder,
   );
-  const backwardLanes = computeBackwardLanes(
-    graph.edges.map((edge) => ({ from: edge.from, to: edge.to, on: edge.label?.toLowerCase() ?? '' })),
-    nodeOrder,
+  const branchRouteByEdgeIndex = routeWorkflowBranchEdges(
+    nodeSpecs,
+    layoutPositions,
+    graph.edges.map((edge, index) => {
+      const label = edge.label?.toLowerCase() ?? '';
+      return {
+        index,
+        sourceId: edge.from,
+        targetId: edge.to,
+        branch: label !== 'success' || isBackwardEdge(edge.from, edge.to, nodeOrder),
+      };
+    }),
   );
   return {
     layoutPositions,
-    backwardLanes,
+    branchRouteByEdgeIndex,
     bounds: boundsForPositions(layoutPositions),
   };
 }
@@ -310,7 +330,8 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
   const edges: Edge[] = graph.edges.map((edge, index) => {
     const activeEdge = Boolean(runningActiveNode && activeNodeKey && edge.to === activeNodeKey);
     const color = runtimeEdgeColor(edge, activeEdge);
-    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || layout.backwardLanes.has(index);
+    const branchRoute = layout.branchRouteByEdgeIndex.get(index);
+    const branch = (edge.label?.toLowerCase() ?? '') !== 'success' || branchRoute !== undefined;
     const label = runtimeGraphEdgeDisplayLabel(edge, (value) => displayStatus(t, value));
     const edgeClassName = runtimeGraphEdgeClassName(activeEdge, branch);
     return {
@@ -325,7 +346,7 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
       data: {
         color,
         label,
-        lane: layout.backwardLanes.get(index),
+        route: branchRoute,
         edgeClassName,
       },
     };
@@ -335,26 +356,21 @@ function createLayoutedGraph(graph: GraphVm, layout: RuntimeGraphLayout, selecte
 }
 
 function RuntimeEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data }: EdgeProps) {
-  const lane = typeof data?.lane === 'number' ? data.lane : null;
+  const route = data?.route as WorkflowGraphBranchRoute | undefined;
   const color = typeof data?.color === 'string' ? data.color : style?.stroke;
   const label = typeof data?.label === 'string' ? data.label : null;
   const edgeClassName = typeof data?.edgeClassName === 'string' ? data.edgeClassName : null;
   const [smoothPath, smoothLabelX, smoothLabelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-  const laneY = lane === null ? null : Math.min(sourceY, targetY) - 88 - lane * 38;
-  const sourceOffsetX = sourceX + 34;
-  const targetOffsetX = targetX - 34;
-  const path = laneY === null
-    ? smoothPath
-    : `M ${sourceX},${sourceY} L ${sourceOffsetX},${sourceY} L ${sourceOffsetX},${laneY} L ${targetOffsetX},${laneY} L ${targetOffsetX},${targetY} L ${targetX},${targetY}`;
-  const labelX = laneY === null ? smoothLabelX : (sourceOffsetX + targetOffsetX) / 2;
-  const labelY = laneY === null ? smoothLabelY : laneY;
+  const path = route?.path ?? smoothPath;
+  const labelX = route?.labelX ?? smoothLabelX;
+  const labelY = route?.labelY ?? smoothLabelY;
   return (
     <>
       <BaseEdge path={path} markerEnd={markerEnd} style={style} className={cn('workflow-edge-flow', edgeClassName)} />
       {label ? (
         <EdgeLabelRenderer>
           <span
-            className="workflow-edge-label pointer-events-none absolute z-10 rounded-full border bg-background/95 px-2 py-0.5 font-mono text-[11px] font-semibold shadow-sm"
+            className="workflow-edge-label pointer-events-none absolute z-20 rounded-full border bg-background px-2 py-0.5 font-mono text-[11px] font-semibold shadow-sm"
             style={{ color, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {label}

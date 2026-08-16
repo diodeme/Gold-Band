@@ -104,6 +104,27 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
   });
 
+  it('forwards scheduled occurrence diagnostics commands', async () => {
+    await desktopApi.listScheduledTaskOccurrences('project-1', 'scheduled-1', 25);
+    expect(invokeCommand).toHaveBeenCalledWith('list_scheduled_task_occurrences', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+      limit: 25,
+    });
+
+    await desktopApi.getScheduledTaskDiagnostics('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('get_scheduled_task_diagnostics', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
+
+    await desktopApi.runScheduledTaskNow('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('run_scheduled_task_now', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
+  });
+
   it('queries a captured turn change set with the complete branch locator', async () => {
     const locator = {
       projectId: 'project-1', taskId: 'task-1', runId: 'run-1', roundId: 'round-1',

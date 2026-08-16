@@ -82,6 +82,52 @@ pub struct ViewActionPayload {
     pub dedup_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledViewActionPayload {
+    pub kind: String,
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: Option<String>,
+    pub task_id: Option<String>,
+    pub run_id: Option<String>,
+    pub round_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub dedup_key: String,
+}
+
+/// A native notification can navigate either to an ordinary conversation
+/// attempt or to scheduler-owned history/detail. Keep the ownership explicit
+/// while preserving the payload fields consumed by the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "targetType", rename_all = "camelCase")]
+pub enum InterventionNavigationTarget {
+    Conversation(ViewActionPayload),
+    Scheduled(ScheduledViewActionPayload),
+}
+
+impl InterventionNavigationTarget {
+    fn dedup_key(&self) -> &str {
+        match self {
+            Self::Conversation(payload) => &payload.dedup_key,
+            Self::Scheduled(payload) => &payload.dedup_key,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledNativeNotificationInputVm {
+    pub event_id: String,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: Option<String>,
+    pub links: gold_band::scheduler::occurrence::OccurrenceLinks,
+}
+
 /// Toast「忽略」按钮只需清后端去重 key。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,21 +137,21 @@ pub struct DismissActionPayload {
 
 #[derive(Debug, Default)]
 pub struct PendingInterventionNavigations {
-    queue: Mutex<VecDeque<ViewActionPayload>>,
+    queue: Mutex<VecDeque<InterventionNavigationTarget>>,
 }
 
 impl PendingInterventionNavigations {
-    fn push(&self, payload: ViewActionPayload) {
+    fn push(&self, target: InterventionNavigationTarget) {
         if let Ok(mut queue) = self.queue.lock()
             && !queue
                 .iter()
-                .any(|pending| pending.dedup_key == payload.dedup_key)
+                .any(|pending| pending.dedup_key() == target.dedup_key())
         {
-            queue.push_back(payload);
+            queue.push_back(target);
         }
     }
 
-    fn take_all(&self) -> Vec<ViewActionPayload> {
+    fn take_all(&self) -> Vec<InterventionNavigationTarget> {
         self.queue
             .lock()
             .map(|mut queue| queue.drain(..).collect())
@@ -116,7 +162,7 @@ impl PendingInterventionNavigations {
 #[tauri::command]
 pub fn take_pending_intervention_navigations(
     pending: tauri::State<'_, PendingInterventionNavigations>,
-) -> Vec<ViewActionPayload> {
+) -> Vec<InterventionNavigationTarget> {
     pending.take_all()
 }
 
@@ -124,6 +170,19 @@ pub fn take_pending_intervention_navigations(
 pub fn encode_view_action(payload: &ViewActionPayload) -> String {
     let json = serde_json::to_string(payload).unwrap_or_default();
     format!("{ACTION_VIEW}{}", URL_SAFE_NO_PAD.encode(json.as_bytes()))
+}
+
+pub fn encode_scheduled_view_action(payload: &ScheduledViewActionPayload) -> String {
+    let json = serde_json::to_string(payload).unwrap_or_default();
+    format!("{ACTION_VIEW}{}", URL_SAFE_NO_PAD.encode(json.as_bytes()))
+}
+
+pub fn scheduled_notification_dedup_key(
+    occurrence_id: Option<&str>,
+    kind: &str,
+    event_id: &str,
+) -> String {
+    format!("scheduled:{}:{kind}", occurrence_id.unwrap_or(event_id))
 }
 
 /// 编码 `dismiss:` + base64(json(payload))。
@@ -154,7 +213,7 @@ pub fn decode_action(raw: &str) -> Option<(bool, serde_json::Value)> {
 fn handle_toast_action(
     app_handle: &AppHandle,
     raw_action: Option<&str>,
-    default_view: &ViewActionPayload,
+    default_target: InterventionNavigationTarget,
 ) {
     let Some(state) = app_handle.try_state::<DesktopState>() else {
         warn!("DesktopState unavailable when handling toast action");
@@ -164,6 +223,20 @@ fn handle_toast_action(
     match raw_action {
         Some(action) => match decode_action(action) {
             Some((true, value)) => {
+                if value.get("scheduledTaskId").is_some() {
+                    let payload: ScheduledViewActionPayload = match serde_json::from_value(value) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            warn!(?error, "decode scheduled view action payload failed");
+                            return;
+                        }
+                    };
+                    route_intervention_navigation(
+                        app_handle,
+                        InterventionNavigationTarget::Scheduled(payload),
+                    );
+                    return;
+                }
                 let payload: ViewActionPayload = match serde_json::from_value(value) {
                     Ok(p) => p,
                     Err(error) => {
@@ -171,7 +244,10 @@ fn handle_toast_action(
                         return;
                     }
                 };
-                route_intervention_navigation(app_handle, payload);
+                route_intervention_navigation(
+                    app_handle,
+                    InterventionNavigationTarget::Conversation(payload),
+                );
             }
             Some((false, value)) => {
                 let payload: DismissActionPayload = match serde_json::from_value(value) {
@@ -185,8 +261,46 @@ fn handle_toast_action(
             }
             None => warn!(action, "unrecognized toast action, ignored"),
         },
-        None => route_intervention_navigation(app_handle, default_view.clone()),
+        None => route_intervention_navigation(app_handle, default_target),
     }
+}
+
+#[tauri::command]
+pub fn send_scheduled_native_notification(
+    app_handle: AppHandle,
+    state: tauri::State<'_, DesktopState>,
+    input: ScheduledNativeNotificationInputVm,
+) -> crate::commands::CommandResult<()> {
+    let dedup_key = scheduled_notification_dedup_key(
+        input.occurrence_id.as_deref(),
+        &input.kind,
+        &input.event_id,
+    );
+    let dedup = state.notification_dedup();
+    if !dedup.try_send(&dedup_key) {
+        tracing::debug!(%dedup_key, "scheduled notification deduplicated");
+        return Ok(());
+    }
+    let payload = ScheduledViewActionPayload {
+        kind: input.kind,
+        project_id: input.project_id,
+        scheduled_task_id: input.scheduled_task_id,
+        occurrence_id: input.occurrence_id,
+        task_id: input.links.task_id,
+        run_id: input.links.run_id,
+        round_id: input.links.round_id,
+        attempt_id: input.links.attempt_id,
+        dedup_key: dedup_key.clone(),
+    };
+    send_scheduled_os_notification(
+        &app_handle,
+        10,
+        &input.title,
+        &input.body,
+        &dedup_key,
+        &payload,
+    );
+    Ok(())
 }
 
 fn clear_notification_dedup(app_handle: &AppHandle, dedup_key: &str) {
@@ -195,13 +309,13 @@ fn clear_notification_dedup(app_handle: &AppHandle, dedup_key: &str) {
     }
 }
 
-fn route_intervention_navigation(app_handle: &AppHandle, payload: ViewActionPayload) {
+fn route_intervention_navigation(app_handle: &AppHandle, target: InterventionNavigationTarget) {
     let Some(pending) = app_handle.try_state::<PendingInterventionNavigations>() else {
         warn!("pending intervention navigation state unavailable");
         return;
     };
-    pending.push(payload.clone());
-    clear_notification_dedup(app_handle, &payload.dedup_key);
+    pending.push(target.clone());
+    clear_notification_dedup(app_handle, target.dedup_key());
     if let Err(error) = crate::desktop_lifecycle::ensure_main_window(app_handle) {
         warn!(
             ?error,
@@ -254,6 +368,65 @@ fn send_os_notification(
     }
 }
 
+fn send_scheduled_os_notification(
+    app_handle: &AppHandle,
+    auto_dismiss_target_secs: u64,
+    title: &str,
+    body: &str,
+    dedup_key: &str,
+    payload: &ScheduledViewActionPayload,
+) {
+    #[cfg(windows)]
+    {
+        use tauri_winrt_notification::{IconCrop, Toast};
+
+        ensure_notification_registry();
+        let view_action = encode_scheduled_view_action(payload);
+        let dismiss_action = encode_dismiss_action(&DismissActionPayload {
+            dedup_key: dedup_key.to_string(),
+        });
+        let handle = app_handle.clone();
+        let default_target = InterventionNavigationTarget::Scheduled(payload.clone());
+        let toast = Toast::new(WINDOWS_AUMID)
+            .title(&format!("{} - {}", APP_DISPLAY_NAME, title))
+            .text1(body)
+            .add_button("查看详情", &view_action)
+            .add_button("忽略", &dismiss_action)
+            .on_activated(move |action: Option<String>| {
+                handle_toast_action(&handle, action.as_deref(), default_target.clone());
+                Ok(())
+            });
+        let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
+        if let Some(icon_path) = resolve_app_icon_path(app_handle) {
+            toast = toast.icon(&icon_path, IconCrop::Square, APP_DISPLAY_NAME);
+        }
+        if let Err(error) = toast.show() {
+            warn!(?error, %dedup_key, "windows scheduled toast failed");
+        }
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app_handle;
+        let _ = payload;
+        #[cfg(feature = "native-notification")]
+        {
+            use notify_rust::{Notification, Timeout};
+            if let Err(error) = Notification::new()
+                .appname(APP_DISPLAY_NAME)
+                .summary(&format!("{} - {}", APP_DISPLAY_NAME, title))
+                .body(body)
+                .timeout(Timeout::from(std::time::Duration::from_secs(
+                    auto_dismiss_target_secs,
+                )))
+                .show()
+            {
+                warn!(?error, %dedup_key, "scheduled notify-rust notification failed");
+            }
+        }
+    }
+}
+
 #[cfg(windows)]
 fn send_windows_toast(
     app_handle: &AppHandle,
@@ -280,14 +453,14 @@ fn send_windows_toast(
     let dismiss_action = encode_dismiss_action(&dismiss_payload);
 
     let handle = app_handle.clone();
-    let default_view = payload.clone();
+    let default_target = InterventionNavigationTarget::Conversation(payload.clone());
     let toast = Toast::new(WINDOWS_AUMID)
         .title(&format!("{} - {}", APP_DISPLAY_NAME, notification.title))
         .text1(&notification.body)
         .add_button("查看详情", &view_action)
         .add_button("忽略", &dismiss_action)
         .on_activated(move |action: Option<String>| {
-            handle_toast_action(&handle, action.as_deref(), &default_view);
+            handle_toast_action(&handle, action.as_deref(), default_target.clone());
             Ok(())
         });
     let mut toast = apply_windows_toast_display_policy(toast, auto_dismiss_target_secs);
@@ -536,7 +709,10 @@ fn send_notify_rust(
             if let Err(error) = handle.wait_for_response(move |response: &NotificationResponse| {
                 match native_notification_response_disposition(response) {
                     NativeNotificationResponseDisposition::Navigate => {
-                        route_intervention_navigation(&response_app, response_payload)
+                        route_intervention_navigation(
+                            &response_app,
+                            InterventionNavigationTarget::Conversation(response_payload),
+                        )
                     }
                     NativeNotificationResponseDisposition::ClearDedup => {
                         clear_notification_dedup(&response_app, &response_payload.dedup_key)
@@ -582,6 +758,124 @@ fn native_notification_response_disposition(
     }
 }
 
+fn intervention_notification_for_event(
+    event: &RuntimeLifecycleEvent,
+) -> Option<InterventionNotification> {
+    let scheduled_occurrence_id = match event {
+        RuntimeLifecycleEvent::InterventionRequested {
+            scheduled_occurrence_id,
+            ..
+        }
+        | RuntimeLifecycleEvent::RunCompleted {
+            scheduled_occurrence_id,
+            ..
+        }
+        | RuntimeLifecycleEvent::AcpTurnFinished {
+            scheduled_occurrence_id,
+            ..
+        } => scheduled_occurrence_id.as_deref(),
+        _ => None,
+    };
+    if scheduled_occurrence_id.is_some() {
+        return None;
+    }
+
+    match event {
+        RuntimeLifecycleEvent::InterventionRequested {
+            event_id,
+            project_id,
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            node_label,
+            kind,
+            ..
+        } => Some(InterventionNotification::from_intervention_event(
+            &event_id,
+            &project_id,
+            &task_id,
+            task_title.as_deref(),
+            &run_id,
+            &round_id,
+            &node_id,
+            &attempt_id,
+            &node_label,
+            *kind,
+        )),
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id,
+            project_id,
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            node_label,
+            outcome,
+            completion_agent_label,
+            ..
+        } => {
+            if should_defer_direct_run_completion_notification(
+                *outcome,
+                completion_agent_label.as_deref(),
+            ) {
+                None
+            } else {
+                InterventionNotification::from_run_completion(
+                    &event_id,
+                    &project_id,
+                    &task_id,
+                    task_title.as_deref(),
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &node_label,
+                    *outcome,
+                    completion_agent_label.as_deref(),
+                )
+            }
+        }
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            project_id,
+            task_id,
+            task_title,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            turn_id,
+            agent_label,
+            outcome,
+            batch_progress,
+            ..
+        } => {
+            if !should_send_acp_turn_notification(*outcome, *batch_progress) {
+                None
+            } else {
+                InterventionNotification::agent_turn_finished(
+                    &project_id,
+                    &task_id,
+                    task_title.as_deref(),
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &turn_id,
+                    &agent_label,
+                    *outcome,
+                    batch_progress.completed_reply_count,
+                )
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn create_intervention_notification_subscriber(
     app_handle: AppHandle,
     auto_dismiss_target_secs: u64,
@@ -591,100 +885,7 @@ pub fn create_intervention_notification_subscriber(
             warn!("DesktopState unavailable; intervention notification dropped");
             return;
         };
-        let notification = match event {
-            RuntimeLifecycleEvent::InterventionRequested {
-                event_id,
-                project_id,
-                task_id,
-                task_title,
-                run_id,
-                round_id,
-                node_id,
-                attempt_id,
-                node_label,
-                kind,
-                ..
-            } => Some(InterventionNotification::from_intervention_event(
-                &event_id,
-                &project_id,
-                &task_id,
-                task_title.as_deref(),
-                &run_id,
-                &round_id,
-                &node_id,
-                &attempt_id,
-                &node_label,
-                kind,
-            )),
-            RuntimeLifecycleEvent::RunCompleted {
-                event_id,
-                project_id,
-                task_id,
-                task_title,
-                run_id,
-                round_id,
-                node_id,
-                attempt_id,
-                node_label,
-                outcome,
-                completion_agent_label,
-                ..
-            } => {
-                if should_defer_direct_run_completion_notification(
-                    outcome,
-                    completion_agent_label.as_deref(),
-                ) {
-                    None
-                } else {
-                    InterventionNotification::from_run_completion(
-                        &event_id,
-                        &project_id,
-                        &task_id,
-                        task_title.as_deref(),
-                        &run_id,
-                        &round_id,
-                        &node_id,
-                        &attempt_id,
-                        &node_label,
-                        outcome,
-                        completion_agent_label.as_deref(),
-                    )
-                }
-            }
-            RuntimeLifecycleEvent::AcpTurnFinished {
-                project_id,
-                task_id,
-                task_title,
-                run_id,
-                round_id,
-                node_id,
-                attempt_id,
-                turn_id,
-                agent_label,
-                outcome,
-                batch_progress,
-                ..
-            } => {
-                if !should_send_acp_turn_notification(outcome, batch_progress) {
-                    None
-                } else {
-                    InterventionNotification::agent_turn_finished(
-                        &project_id,
-                        &task_id,
-                        task_title.as_deref(),
-                        &run_id,
-                        &round_id,
-                        &node_id,
-                        &attempt_id,
-                        &turn_id,
-                        &agent_label,
-                        outcome,
-                        batch_progress.completed_reply_count,
-                    )
-                }
-            }
-            _ => None,
-        };
+        let notification = intervention_notification_for_event(&event);
         let Some(notification) = notification else {
             return;
         };
@@ -792,11 +993,69 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_view_action_roundtrip_keeps_detail_and_run_links() {
+        let payload = ScheduledViewActionPayload {
+            kind: "failed".to_string(),
+            project_id: "project-a".to_string(),
+            scheduled_task_id: "scheduled-a".to_string(),
+            occurrence_id: Some("occurrence-a".to_string()),
+            task_id: Some("task-a".to_string()),
+            run_id: Some("run-a".to_string()),
+            round_id: Some("round-a".to_string()),
+            attempt_id: Some("attempt-a".to_string()),
+            dedup_key: scheduled_notification_dedup_key(Some("occurrence-a"), "failed", "event-a"),
+        };
+
+        let encoded = encode_scheduled_view_action(&payload);
+        let (is_view, value) = decode_action(&encoded).unwrap();
+        let decoded: ScheduledViewActionPayload = serde_json::from_value(value).unwrap();
+
+        assert!(is_view);
+        assert_eq!(decoded.project_id, "project-a");
+        assert_eq!(decoded.scheduled_task_id, "scheduled-a");
+        assert_eq!(decoded.run_id.as_deref(), Some("run-a"));
+        assert_eq!(decoded.dedup_key, "scheduled:occurrence-a:failed");
+    }
+
+    fn run_completed_event(scheduled_occurrence_id: Option<&str>) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-completed-a".to_string(),
+            occurred_at: "2026-08-09T08:00:00Z".to_string(),
+            scheduled_occurrence_id: scheduled_occurrence_id.map(str::to_string),
+            project_id: "project-a".to_string(),
+            task_id: "task-a".to_string(),
+            run_id: "run-a".to_string(),
+            round_id: "round-a".to_string(),
+            node_id: "node-a".to_string(),
+            attempt_id: "attempt-a".to_string(),
+            node_label: "Node A".to_string(),
+            outcome: gold_band::domain::RunOutcome::Success,
+            task_title: Some("Task A".to_string()),
+            completion_agent_label: None,
+        }
+    }
+
+    #[test]
+    fn scheduled_lifecycle_completion_is_owned_by_scheduled_notification_policy() {
+        let event = run_completed_event(Some("occurrence-a"));
+
+        assert!(intervention_notification_for_event(&event).is_none());
+    }
+
+    #[test]
+    fn ordinary_lifecycle_completion_still_creates_intervention_notification() {
+        let event = run_completed_event(None);
+
+        assert!(intervention_notification_for_event(&event).is_some());
+    }
+
+    #[test]
     fn pending_navigation_queue_is_ordered_and_deduplicated() {
         let pending = PendingInterventionNavigations::default();
-        let first = sample_view();
+        let first = InterventionNavigationTarget::Conversation(sample_view());
         let mut second = sample_view();
         second.dedup_key = "second".to_string();
+        let second = InterventionNavigationTarget::Conversation(second);
         pending.push(first.clone());
         pending.push(first.clone());
         pending.push(second.clone());

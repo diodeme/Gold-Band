@@ -125,7 +125,8 @@ struct AcpContextCompactionState {
     context_size: Option<u64>,
     completed_seq: Option<u64>,
     completed_at: Option<String>,
-    saw_post_completion_reset: bool,
+    saw_context_reset: bool,
+    pending_context_used_after: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -201,13 +202,22 @@ impl AcpUsageState {
         };
 
         if compaction.completed_seq.is_none() {
+            if used == 0 {
+                compaction.saw_context_reset = true;
+            } else if compaction.saw_context_reset
+                || compaction
+                    .context_used_before
+                    .is_some_and(|before| used < before)
+            {
+                compaction.pending_context_used_after = Some(used);
+            }
             return None;
         }
         if used == 0 {
-            compaction.saw_post_completion_reset = true;
+            compaction.saw_context_reset = true;
             return None;
         }
-        let confirmed_after = compaction.saw_post_completion_reset
+        let confirmed_after = compaction.saw_context_reset
             || compaction
                 .context_used_before
                 .is_some_and(|before| used < before);
@@ -217,6 +227,22 @@ impl AcpUsageState {
 
         self.context.confirmed_used = Some(used);
         Some(used)
+    }
+
+    fn confirm_context_used_after_compaction(
+        &mut self,
+        status: &str,
+        compaction: &AcpContextCompactionState,
+        reported_used_after: Option<u64>,
+    ) -> Option<u64> {
+        if status != "completed" {
+            return None;
+        }
+        let confirmed = reported_used_after
+            .filter(|used| *used > 0)
+            .or(compaction.pending_context_used_after)?;
+        self.context.confirmed_used = Some(confirmed);
+        Some(confirmed)
     }
 
     fn record_prompt_usage(&mut self, prompt_usage: AcpPromptTokenUsage) {
@@ -230,6 +256,38 @@ impl AcpUsageState {
         }
         self.attempt_totals = recovery.totals;
         self.latest_prompt = recovery.latest_prompt;
+    }
+
+    /// Carry the latest context-window gauge across Gold Band attempts that
+    /// continue the same provider session. Consumptive token totals and timing
+    /// intentionally remain owned by the current attempt.
+    fn inherit_continued_session_context(&mut self, continue_ref: Option<&Value>) {
+        let Some(continue_ref) = continue_ref else {
+            return;
+        };
+        let Some(expected_session_id) = continue_ref
+            .get("acpSessionId")
+            .or_else(|| continue_ref.get("sessionId"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let Some(snapshot_file) = continue_ref.get("snapshotFile").and_then(Value::as_str) else {
+            return;
+        };
+        let snapshot_path = Utf8Path::new(snapshot_file);
+        let Ok(metadata) = load_session_metadata(snapshot_path, None) else {
+            return;
+        };
+        if metadata.session_id.as_deref() != Some(expected_session_id) {
+            return;
+        }
+        if self.context.confirmed_used.is_none() {
+            self.context.confirmed_used = metadata.used_tokens.filter(|used| *used > 0);
+        }
+        if self.context.window_size.is_none() {
+            self.context.window_size = metadata.context_window_size.filter(|size| *size > 0);
+        }
     }
 
     fn normalize_timeline_usage(&self, update: &mut Value) {
@@ -266,21 +324,23 @@ use crate::acp::connection::{
     SessionEventPump, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, PendingElicitationState, cancel_pending_elicitation_requests,
-    elicitation_response_result, remove_elicitation_signal_files,
-    upsert_elicitation_response_event, wait_for_elicitation_response, write_pending_elicitation,
+    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+    cancel_pending_elicitation_requests, elicitation_response_result,
+    remove_elicitation_signal_files, upsert_elicitation_response_event,
+    wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpPromptRetryState, AcpSessionMetadata, AcpSessionTiming, AcpTimingState,
-    AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
-    cancel_latest_processing_prompt_retry, current_timestamp, latest_timeline_source_seq,
-    normalize_session_update, permission_request_event, user_prompt_event, write_session_metadata,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
+    AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
+    append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
+    current_timestamp, latest_timeline_source_seq, load_session_metadata, normalize_session_update,
+    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
-    permission_response_file, remove_permission_signal_files, wait_for_permission_response,
-    write_pending_permission,
+    permission_response_file, remove_permission_signal_files,
+    wait_for_permission_response_until_cancelled, write_pending_permission,
 };
 use crate::acp::timeline::{TimelineCompactionPolicy, TimelineStore};
 use crate::acp::usage::{
@@ -288,7 +348,7 @@ use crate::acp::usage::{
     append_prompt_started, repair_attempt_usage,
 };
 use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
-use crate::domain::{SessionMode, VERSION};
+use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
     ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
     gold_band_hidden_block, prepare_acp_mcp_servers,
@@ -815,10 +875,14 @@ pub struct RuntimeStopProbe {
     pub node_id: String,
     pub attempt_id: String,
     pub attempt_state_file: Option<Utf8PathBuf>,
+    pub turn_control_mode: TurnControlMode,
 }
 
 impl RuntimeStopProbe {
     fn is_stopped(&self) -> bool {
+        if self.turn_control_mode == TurnControlMode::NonRuntimeControlled {
+            return false;
+        }
         self.attempt_state_file
             .as_ref()
             .is_some_and(|path| self.attempt_state_is_stopped(path))
@@ -979,6 +1043,7 @@ impl AcpPromptOutputAccumulator {
 }
 
 pub const ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE: &str = "acp.unidentified-agent-output";
+const CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE: &str = "contextCompactionCompleted";
 
 fn unidentified_agent_output_failure(
     output_policy: AcpOutputPolicy,
@@ -1695,6 +1760,9 @@ pub fn run_prompt(
     let _prompt_guard = prompt_lock
         .lock()
         .map_err(|_| anyhow!("ACP session prompt lock poisoned"))?;
+    let mut prompt = prompt.clone();
+    prepare_runtime_control_prompt(&attempt_dir, &mut prompt)?;
+    let prompt = &prompt;
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
@@ -1787,6 +1855,7 @@ pub fn run_prompt(
         true,
     )?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
+    commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
     runtime.control.mark_accepted();
     if let Some(prompt_accepted) = prompt_accepted {
         let _ = prompt_accepted(&prompt_turn.id);
@@ -1967,6 +2036,79 @@ pub fn run_prompt(
         runtime.release_managed_session();
     }
     Ok(run)
+}
+
+fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBundle) -> Result<()> {
+    prompt.runtime_control_transition_id = None;
+    prompt.runtime_control_source_transition_id = None;
+    prompt.runtime_control_transition_cause = None;
+
+    match prompt.runtime_control_intent {
+        crate::provider::RuntimeControlIntent::Unchanged => {}
+        crate::provider::RuntimeControlIntent::ManualFollowUp => {
+            if prompt.turn_control_mode != TurnControlMode::NonRuntimeControlled {
+                bail!("manual follow-up prompt must be non-runtime-controlled");
+            }
+            if let Some((source_transition_id, transition_id)) =
+                crate::acp::control::prepare_manual_follow_up(attempt_dir)?
+            {
+                prompt.runtime_control_source_transition_id = source_transition_id;
+                prompt.runtime_control_transition_id = Some(transition_id);
+                prompt.runtime_control_transition_cause =
+                    Some(TurnControlTransitionCause::ManualFollowUp);
+            }
+        }
+        crate::provider::RuntimeControlIntent::Resume => {
+            if prompt.turn_control_mode != TurnControlMode::RuntimeControlled {
+                bail!("Runtime resume prompt must be runtime-controlled");
+            }
+            if let Some((source_transition_id, transition_id)) =
+                crate::acp::control::prepare_workflow_continued(attempt_dir)?
+            {
+                prompt.runtime_control_source_transition_id = Some(source_transition_id);
+                prompt.runtime_control_transition_id = Some(transition_id);
+                prompt.runtime_control_transition_cause =
+                    Some(TurnControlTransitionCause::WorkflowContinued);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn commit_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &PromptBundle) -> Result<()> {
+    let Some(cause) = prompt.runtime_control_transition_cause else {
+        return Ok(());
+    };
+    let transition_id = prompt
+        .runtime_control_transition_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("runtime control transition is missing its identity"))?;
+    let committed = match cause {
+        TurnControlTransitionCause::RuntimeInterrupted => {
+            bail!("runtime interruption is not committed by an ACP prompt")
+        }
+        TurnControlTransitionCause::ManualFollowUp => crate::acp::control::commit_manual_follow_up(
+            attempt_dir,
+            prompt.runtime_control_source_transition_id.as_deref(),
+            transition_id,
+        )?,
+        TurnControlTransitionCause::WorkflowContinued => {
+            let source_transition_id = prompt
+                .runtime_control_source_transition_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("runtime continue transition is missing its source"))?;
+            crate::acp::control::commit_workflow_continued(
+                attempt_dir,
+                source_transition_id,
+                transition_id,
+            )?
+        }
+        TurnControlTransitionCause::RuntimeTerminal => true,
+    };
+    if !committed {
+        bail!("runtime control transition changed before prompt acceptance");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2263,7 +2405,7 @@ fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
     if !snapshot_path.exists() {
         return PriorAttemptMetrics::default();
     }
-    let Ok(meta) = read_json::<crate::acp::events::AcpSessionMetadata>(snapshot_path) else {
+    let Ok(meta) = load_session_metadata(snapshot_path, None) else {
         return PriorAttemptMetrics::default();
     };
     PriorAttemptMetrics {
@@ -2468,7 +2610,7 @@ impl<'a> AcpRuntime<'a> {
             .iter()
             .map(|item| item.id.clone())
             .collect();
-        let prompt_retry = read_json::<AcpSessionMetadata>(&paths.snapshot)
+        let prompt_retry = load_session_metadata(&paths.snapshot, None)
             .ok()
             .and_then(|metadata| metadata.prompt_retry);
         let pending_retry_prompt_event = prompt_retry
@@ -2634,6 +2776,8 @@ impl<'a> AcpRuntime<'a> {
         let desired_config_fingerprint =
             session_config_fingerprint(provider_id, &cwd, adapter_system_prompt, mcp_servers)?;
         self.attached_config_fingerprint = Some(desired_config_fingerprint);
+        self.usage
+            .inherit_continued_session_context(continue_ref.as_ref());
         let mut skipped_mcp_diagnostic_recorded = false;
         if let Some(session_id) = continue_ref
             .as_ref()
@@ -3431,24 +3575,42 @@ impl<'a> AcpRuntime<'a> {
             prompt_event_timestamp: Some(prompt_event_timestamp.clone()),
             hidden_from_chat,
         });
-        let mut user_event = user_prompt_event(
+        let mut user_event = user_prompt_event_with_quotes(
             prompt_event_seq,
             session_id,
-            session_prompt_text(
-                provider_id,
-                prompt,
-                restored,
-                self.runtime_policy.supports_system_prompt,
-            ),
+            prompt.display_text.clone().unwrap_or_else(|| {
+                session_prompt_text(
+                    provider_id,
+                    prompt,
+                    restored,
+                    self.runtime_policy.supports_system_prompt,
+                )
+            }),
             Some(prompt_id.clone()),
             hidden_from_chat,
             prompt.attachment_metas.clone(),
+            prompt.quotes.clone(),
         );
         if hidden_from_chat
             && let Some(reason) = prompt.hidden_reason.as_deref()
             && let Some(raw) = user_event.raw.as_mut()
         {
             raw["reason"] = Value::String(reason.to_string());
+        }
+        if let Some(raw) = user_event.raw.as_mut() {
+            raw["turnControlMode"] = serde_json::to_value(prompt.turn_control_mode)?;
+            if let (Some(transition_id), Some(transition_cause)) = (
+                prompt.runtime_control_transition_id.as_deref(),
+                prompt.runtime_control_transition_cause,
+            ) {
+                let runtime_control = json!({
+                    "currentMode": prompt.turn_control_mode,
+                    "transitionId": transition_id,
+                    "transitionCause": transition_cause,
+                    "changedAt": user_event.timestamp,
+                });
+                raw["runtimeControl"] = runtime_control;
+            }
         }
         user_event.id = prompt_event_id.clone();
         user_event.timestamp = prompt_event_timestamp;
@@ -3983,6 +4145,7 @@ impl<'a> AcpRuntime<'a> {
         let event = normalize_session_update(self.seq, session_id, &update);
         self.capture_turn_file_diffs(&event)?;
         self.prompt_output.observe(&update, &event);
+        let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
         if event.kind == "contextCompaction" {
             append_diagnostic(
@@ -4001,10 +4164,25 @@ impl<'a> AcpRuntime<'a> {
                 })),
             )?;
         }
+        if event.kind == "contextCompaction"
+            && self.usage.context.confirmed_used != confirmed_usage_before_event
+        {
+            self.persist_confirmed_context_usage(event.session_id.clone())?;
+        }
         if let Some(used) = usage_after_compaction {
             self.maybe_persist_context_compaction_usage(used)?;
         }
         Ok(())
+    }
+
+    fn persist_confirmed_context_usage(&mut self, session_id: Option<String>) -> Result<()> {
+        let Some(update) = confirmed_context_usage_update(&self.usage) else {
+            return Ok(());
+        };
+
+        self.seq = self.seq.saturating_add(1);
+        let event = normalize_session_update(self.seq, session_id, &update);
+        self.persist_event(&event)
     }
 
     fn capture_turn_file_diffs(&mut self, event: &AcpUiEvent) -> Result<()> {
@@ -4255,6 +4433,9 @@ impl<'a> AcpRuntime<'a> {
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
         let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
+        if self.is_prompt_cancel_requested() {
+            return self.send_cancelled_permission_response(rpc_id, &request_id);
+        }
         self.seq += 1;
         write_pending_permission(
             &self.paths.attempt_dir,
@@ -4274,7 +4455,11 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         self.persist_event(&event)?;
-        let response = wait_for_permission_response(&self.paths.attempt_dir, &request_id)?;
+        let response = wait_for_permission_response_until_cancelled(
+            &self.paths.attempt_dir,
+            &request_id,
+            || self.is_prompt_cancel_requested(),
+        )?;
         self.seq += 1;
         let decision_event = permission_decision_timeline_event(
             self.seq,
@@ -4285,6 +4470,22 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&decision_event)?;
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
+    }
+
+    fn send_cancelled_permission_response(&self, rpc_id: Value, request_id: &str) -> Result<()> {
+        let result = acp_permission_response_result(PermissionResponseState {
+            request_id: request_id.to_string(),
+            option_id: None,
+            cancelled: true,
+            decided_at: current_timestamp(),
+        })?;
         let frame = json!({
             "jsonrpc": "2.0",
             "id": rpc_id.clone(),
@@ -4357,6 +4558,10 @@ impl<'a> AcpRuntime<'a> {
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
+        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+        if self.is_prompt_cancel_requested() {
+            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+        }
         let params = value
             .get("params")
             .cloned()
@@ -4365,8 +4570,6 @@ impl<'a> AcpRuntime<'a> {
             agent_client_protocol_schema::v1::CreateElicitationRequest,
         >(params)
         .context("invalid ACP elicitation/create params")?;
-
-        let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
 
         // 1. 持久化请求到 attempt dir
         write_pending_elicitation(
@@ -4389,10 +4592,11 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&event)?;
 
         // 3. 同步阻塞等待用户响应（含超时保护）
-        let response = wait_for_elicitation_response(
+        let response = wait_for_elicitation_response_until_cancelled(
             &self.paths.attempt_dir,
             &elicitation_id,
             ELICITATION_DEFAULT_TIMEOUT,
+            || self.is_prompt_cancel_requested(),
         )?;
         upsert_elicitation_response_event(
             &self.paths.attempt_dir,
@@ -4425,6 +4629,27 @@ impl<'a> AcpRuntime<'a> {
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
 
         Ok(())
+    }
+
+    fn send_declined_elicitation_response(
+        &self,
+        rpc_id: Value,
+        elicitation_id: &str,
+    ) -> Result<()> {
+        let response = crate::acp::elicitation::ElicitationResponseState {
+            elicitation_id: elicitation_id.to_string(),
+            action: ElicitationAction::Decline,
+            content: None,
+            decided_at: current_timestamp(),
+        };
+        let result = elicitation_response_result(&response);
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id.clone(),
+            "result": result.clone(),
+        });
+        self.append_outbound_frame(&frame)?;
+        self.connection.send_response(rpc_id, result)
     }
 
     fn drain_available_inbound(&mut self) -> Result<()> {
@@ -4619,23 +4844,44 @@ impl<'a> AcpRuntime<'a> {
         capabilities: Value,
     ) -> AcpSessionMetadata {
         let now = current_timestamp();
-        let created_at = if self.paths.snapshot.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.snapshot)
-                .map(|session| session.created_at)
-                .unwrap_or_else(|_| now.clone())
+        let previous_metadata = if self.paths.snapshot.exists() {
+            load_session_metadata(&self.paths.snapshot, self.session_id.clone()).ok()
         } else if self.paths.session.exists() {
-            read_json::<AcpSessionMetadata>(&self.paths.session)
-                .map(|session| session.created_at)
-                .unwrap_or_else(|_| now.clone())
+            load_session_metadata(&self.paths.session, self.session_id.clone()).ok()
         } else {
-            now.clone()
+            None
         };
+        let created_at = previous_metadata
+            .as_ref()
+            .map(|session| session.created_at.clone())
+            .unwrap_or_else(|| now.clone());
+        let runtime_control = previous_metadata
+            .as_ref()
+            .and_then(|session| session.runtime_control.clone());
+        let runtime_control_timeline_scan_complete = previous_metadata
+            .as_ref()
+            .is_some_and(|session| session.runtime_control_timeline_scan_complete);
         AcpSessionMetadata {
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
             cwd: self.paths.attempt_dir.to_string(),
             title: self.session_title.clone(),
-            status: status.to_string(),
+            session_id: self.session_id.clone(),
+            availability: match status {
+                "cancelling" | "cancel-requested" | "closing" => AcpSessionAvailability::Closing,
+                "failed" if self.session_id.is_some() => AcpSessionAvailability::Restorable,
+                _ if self.session_id.is_some() => AcpSessionAvailability::Established,
+                _ => AcpSessionAvailability::Unavailable,
+            },
+            latest_turn_status: match status {
+                "completed" => AcpLatestTurnStatus::Completed,
+                "cancelled" | "canceled" => AcpLatestTurnStatus::Cancelled,
+                "failed" => AcpLatestTurnStatus::Failed,
+                _ => previous_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.latest_turn_status)
+                    .unwrap_or_default(),
+            },
             restored,
             stop_reason,
             capabilities,
@@ -4647,6 +4893,8 @@ impl<'a> AcpRuntime<'a> {
             config_option_overrides: self.config_option_overrides.clone(),
             system_prompt_append: self.system_prompt_append.clone(),
             prompt_retry: self.prompt_retry.clone(),
+            runtime_control,
+            runtime_control_timeline_scan_complete,
             used_tokens: self.usage.context.confirmed_used,
             context_window_size: self.usage.context.window_size,
             total_cost_usd: self.usage.total_cost_usd,
@@ -5005,7 +5253,7 @@ impl<'a> AcpRuntime<'a> {
         seq: u64,
         timestamp: &str,
     ) {
-        let status = item.status.as_deref().unwrap_or("running");
+        let status = item.status.clone().unwrap_or_else(|| "running".to_string());
         let context_used_after = item
             .raw
             .as_ref()
@@ -5017,33 +5265,45 @@ impl<'a> AcpRuntime<'a> {
             .and_then(|raw| raw.pointer("/contextCompaction/reason"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        let canonical_item_id = item
+            .tool_call_id
+            .as_deref()
+            .filter(|tool_call_id| !tool_call_id.trim().is_empty())
+            .map(|tool_call_id| format!("context-compaction-tool-{tool_call_id}"))
+            .unwrap_or_else(|| format!("context-compaction-{seq}"));
 
         let mut state = if status == "running" {
             AcpContextCompactionState {
-                item_id: format!("context-compaction-{seq}"),
+                item_id: canonical_item_id.clone(),
                 started_seq: seq,
                 started_at: timestamp.to_string(),
                 context_used_before: self.usage.context.confirmed_used,
                 context_size: self.usage.context.window_size,
                 completed_seq: None,
                 completed_at: None,
-                saw_post_completion_reset: false,
+                saw_context_reset: false,
+                pending_context_used_after: None,
             }
         } else {
             self.usage
                 .compaction
                 .clone()
                 .unwrap_or_else(|| AcpContextCompactionState {
-                    item_id: format!("context-compaction-{seq}"),
+                    item_id: canonical_item_id,
                     started_seq: seq,
                     started_at: timestamp.to_string(),
                     context_used_before: self.usage.context.confirmed_used,
                     context_size: self.usage.context.window_size,
                     completed_seq: None,
                     completed_at: None,
-                    saw_post_completion_reset: false,
+                    saw_context_reset: false,
+                    pending_context_used_after: None,
                 })
         };
+
+        let context_used_after =
+            self.usage
+                .confirm_context_used_after_compaction(&status, &state, context_used_after);
 
         item.id = state.item_id.clone();
         item.started_seq = Some(state.started_seq);
@@ -5064,7 +5324,7 @@ impl<'a> AcpRuntime<'a> {
         }
         upsert_context_compaction_raw(
             item,
-            match status {
+            match status.as_str() {
                 "running" => "started",
                 "interrupted" => "interrupted",
                 _ => "completed",
@@ -5082,7 +5342,8 @@ impl<'a> AcpRuntime<'a> {
         {
             compaction.insert("reason".to_string(), Value::String(reason));
         }
-        self.usage.compaction = context_used_after.is_none().then_some(state);
+        self.usage.compaction =
+            (status != "interrupted" && context_used_after.is_none()).then_some(state);
     }
 
     fn timeline_item_for_event(
@@ -5328,6 +5589,29 @@ fn upsert_context_compaction_raw(
     });
 }
 
+fn confirmed_context_usage_update(usage: &AcpUsageState) -> Option<Value> {
+    let used = usage.context.confirmed_used.filter(|used| *used > 0)?;
+    let mut update = json!({
+        "sessionUpdate": "usage_update",
+        "used": used,
+        "_meta": {
+            "goldBand": {
+                "source": CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE,
+            }
+        }
+    });
+    if let Some(size) = usage.context.window_size.filter(|size| *size > 0) {
+        update["size"] = Value::from(size);
+    }
+    if let Some(cost) = usage.total_cost_usd {
+        update["cost"] = json!({
+            "amount": cost,
+            "currency": "USD",
+        });
+    }
+    Some(update)
+}
+
 /// Merge durable input and diff fields from a previous tool-call revision when
 /// a later revision does not replace them.
 fn merge_tool_revision(
@@ -5482,7 +5766,8 @@ fn active_context_compaction(
                 .clone()
                 .unwrap_or_else(|| item.timestamp.clone())
         }),
-        saw_post_completion_reset: false,
+        saw_context_reset: false,
+        pending_context_used_after: None,
     })
 }
 
@@ -5929,6 +6214,8 @@ mod tests {
 
     use serde_json::{Value, json};
 
+    use crate::domain::TurnControlMode;
+
     use super::{
         ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE, AcpCancelDrainTimeout, AcpContextCompactionState,
         AcpOutputPolicy, AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
@@ -5941,20 +6228,115 @@ mod tests {
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
         append_bounded, attached_sync_required, cancel_attempt_prompt,
         canonical_prompt_event_identity, cleanup_doctor_acp_dir_after_success,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
-        is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
-        merge_tool_revision, next_prompt_retry_attempt, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore, prompt_activity,
-        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
+        confirmed_context_usage_update, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
+        is_transport_interruption, latest_visible_turn_id, merge_tool_revision,
+        next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
+        plan_session_restore, prompt_activity, prompt_cancellation_outcome,
+        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, session_resume_params, settle_prompt_event,
+        should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
         unregister_provider_control,
     };
+
+    fn non_runtime_control_test_prompt(prompt_id: &str) -> PromptBundle {
+        PromptBundle {
+            system_prompt: String::new(),
+            user_prompt: "clarify".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
+            prompt_id: Some(prompt_id.to_string()),
+            visibility: PromptVisibility::Visible,
+            hidden_reason: None,
+            turn_control_mode: TurnControlMode::NonRuntimeControlled,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
+            attachment_metas: Vec::new(),
+            content_blocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn repeated_manual_follow_up_keeps_existing_non_runtime_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let existing = crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+
+        assert_eq!(prompt.user_prompt, "clarify");
+        assert!(prompt.runtime_control_transition_id.is_none());
+        assert!(prompt.runtime_control_transition_cause.is_none());
+        assert_eq!(
+            crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            existing.transition_id
+        );
+    }
+
+    #[test]
+    fn manual_follow_up_changes_control_only_after_accepted_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+
+        assert_eq!(
+            prompt.runtime_control_transition_cause,
+            Some(crate::domain::TurnControlTransitionCause::ManualFollowUp)
+        );
+        assert!(prompt.runtime_control_transition_id.is_some());
+        assert!(
+            crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+                .unwrap()
+                .is_none()
+        );
+
+        super::commit_runtime_control_prompt(&attempt_dir, &prompt).unwrap();
+        let cursor = crate::acp::control::load_runtime_control_cursor(&attempt_dir)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cursor.current_mode, TurnControlMode::NonRuntimeControlled);
+        assert_eq!(
+            cursor.transition_cause,
+            crate::domain::TurnControlTransitionCause::ManualFollowUp
+        );
+    }
+
+    #[test]
+    fn only_explicit_intents_prepare_runtime_control_transitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        crate::acp::control::mark_runtime_interrupted(&attempt_dir).unwrap();
+        let mut prompt = non_runtime_control_test_prompt("prompt-1");
+        prompt.turn_control_mode = TurnControlMode::RuntimeControlled;
+
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_none());
+        assert!(prompt.runtime_control_transition_cause.is_none());
+
+        prompt.runtime_control_intent = crate::provider::RuntimeControlIntent::Resume;
+        super::prepare_runtime_control_prompt(&attempt_dir, &mut prompt).unwrap();
+        assert!(prompt.runtime_control_transition_id.is_some());
+        assert_eq!(
+            prompt.runtime_control_transition_cause,
+            Some(crate::domain::TurnControlTransitionCause::WorkflowContinued)
+        );
+    }
+
     use crate::acp::{
         connection::AcpConnectionUnavailable,
         events::{
@@ -6251,6 +6633,96 @@ mod tests {
         assert_eq!(state.attempt_totals.output_tokens, Some(330));
         assert_eq!(state.attempt_totals.cached_read_tokens, Some(24_576));
         assert_eq!(state.attempt_totals.total_tokens, Some(41_416));
+    }
+
+    #[test]
+    fn continued_session_inherits_only_context_gauge_from_previous_attempt_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": ".",
+                "sessionId": "session-1",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "usedTokens": 38_223,
+                "contextWindowSize": 1_000_000,
+                "attemptInputTokens": 9_000,
+                "attemptOutputTokens": 500,
+                "attemptTotalTokens": 9_500,
+                "createdAt": "1Z",
+                "updatedAt": "2Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut usage = AcpUsageState::default();
+        usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+
+        assert_eq!(usage.context.confirmed_used, Some(38_223));
+        assert_eq!(usage.context.window_size, Some(1_000_000));
+        assert_eq!(usage.attempt_totals.input_tokens, None);
+        assert_eq!(usage.attempt_totals.output_tokens, None);
+        assert_eq!(usage.attempt_totals.total_tokens, None);
+        assert_eq!(usage.latest_prompt.total_tokens, None);
+
+        let mut current_usage = AcpUsageState::from_prior(
+            PriorAttemptMetrics {
+                used_tokens: Some(41_008),
+                context_window_size: Some(2_000_000),
+                ..Default::default()
+            },
+            None,
+        );
+        current_usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+        assert_eq!(current_usage.context.confirmed_used, Some(41_008));
+        assert_eq!(current_usage.context.window_size, Some(2_000_000));
+    }
+
+    #[test]
+    fn continued_session_context_rejects_a_snapshot_for_another_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let snapshot_path = temp.path().join("acp.snapshot.json");
+        std::fs::write(
+            &snapshot_path,
+            serde_json::to_vec_pretty(&json!({
+                "adapterId": "npx",
+                "adapterDisplayName": "Codex",
+                "cwd": ".",
+                "sessionId": "session-other",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "usedTokens": 38_223,
+                "contextWindowSize": 1_000_000,
+                "createdAt": "1Z",
+                "updatedAt": "2Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut usage = AcpUsageState::default();
+        usage.inherit_continued_session_context(Some(&json!({
+            "acpSessionId": "session-1",
+            "snapshotFile": snapshot_path.to_string_lossy()
+        })));
+
+        assert_eq!(usage.context.confirmed_used, None);
+        assert_eq!(usage.context.window_size, None);
     }
 
     #[test]
@@ -7686,9 +8158,16 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-001".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7710,9 +8189,16 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "follow up".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: Some("prompt-002".to_string()),
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7732,9 +8218,16 @@ mod tests {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
             user_prompt: "do the task".to_string(),
+            display_text: None,
+            quotes: Vec::new(),
             prompt_id: None,
             visibility: PromptVisibility::Visible,
             hidden_reason: None,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_intent: crate::provider::RuntimeControlIntent::Unchanged,
+            runtime_control_transition_id: None,
+            runtime_control_source_transition_id: None,
+            runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         };
@@ -7846,6 +8339,7 @@ mod tests {
         .unwrap();
 
         let outer_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file: run_file.clone(),
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic1".to_string(),
@@ -7853,6 +8347,7 @@ mod tests {
             attempt_state_file: None,
         };
         let inner_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "bootstrap".to_string(),
@@ -7903,6 +8398,7 @@ mod tests {
         .unwrap();
 
         let running_leaf_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file: run_file.clone(),
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic".to_string(),
@@ -7910,6 +8406,7 @@ mod tests {
             attempt_state_file: Some(own_state),
         };
         let paused_leaf_probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "ai-dynamic".to_string(),
@@ -7950,11 +8447,41 @@ mod tests {
         .unwrap();
 
         let probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::RuntimeControlled,
             run_file,
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: Some(manual_check_state),
+        };
+
+        assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_does_not_cancel_non_runtime_conversation_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        std::fs::write(
+            run_file.as_std_path(),
+            serde_json::to_string(&json!({
+                "status": "paused",
+                "pause_reason": "process-interrupted",
+                "current_round": "round-001",
+                "current_node": "dev",
+                "current_attempt": "attempt-001"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::NonRuntimeControlled,
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
         };
 
         assert!(!probe.is_stopped());
@@ -8086,7 +8613,8 @@ mod tests {
             context_size: Some(1_000_000),
             completed_seq: Some(32),
             completed_at: Some("1785153938Z".to_string()),
-            saw_post_completion_reset: false,
+            saw_context_reset: false,
+            pending_context_used_after: None,
         }
     }
 
@@ -8139,6 +8667,96 @@ mod tests {
             Some(23_825)
         );
         assert_eq!(state.context.confirmed_used, Some(23_825));
+    }
+
+    #[test]
+    fn running_compaction_stages_the_latest_lower_usage_until_completion() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(128_399);
+        state.context.window_size = Some(258_400);
+        state.compaction = Some(AcpContextCompactionState {
+            item_id: "context-compaction-10".to_string(),
+            started_seq: 10,
+            started_at: "1786767175Z".to_string(),
+            context_used_before: Some(128_399),
+            context_size: Some(258_400),
+            completed_seq: None,
+            completed_at: None,
+            saw_context_reset: false,
+            pending_context_used_after: None,
+        });
+
+        assert_eq!(
+            state.observe_provider_usage(Some(124_491), Some(258_400), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(7_920), Some(258_400), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(128_399));
+        assert_eq!(
+            state
+                .compaction
+                .as_ref()
+                .and_then(|compaction| compaction.pending_context_used_after),
+            Some(7_920)
+        );
+
+        let mut compaction = state.compaction.take().expect("running compaction");
+        compaction.completed_seq = Some(20);
+        compaction.completed_at = Some("1786767196Z".to_string());
+        assert_eq!(
+            state.confirm_context_used_after_compaction("completed", &compaction, None),
+            Some(7_920)
+        );
+        assert_eq!(state.context.confirmed_used, Some(7_920));
+
+        state.total_cost_usd = Some(0.42);
+        let update = confirmed_context_usage_update(&state).expect("canonical usage update");
+        assert_eq!(update["sessionUpdate"], "usage_update");
+        assert_eq!(update["used"], 7_920);
+        assert_eq!(update["size"], 258_400);
+        assert_eq!(update.pointer("/cost/amount"), Some(&json!(0.42)));
+        assert_eq!(
+            update.pointer("/_meta/goldBand/source"),
+            Some(&json!("contextCompactionCompleted"))
+        );
+    }
+
+    #[test]
+    fn running_compaction_stages_positive_usage_after_an_early_reset() {
+        let mut state = AcpUsageState::default();
+        state.context.confirmed_used = Some(32_606);
+        state.context.window_size = Some(1_000_000);
+        state.compaction = Some(AcpContextCompactionState {
+            item_id: "context-compaction-20".to_string(),
+            started_seq: 20,
+            started_at: "1786767175Z".to_string(),
+            context_used_before: Some(32_606),
+            context_size: Some(1_000_000),
+            completed_seq: None,
+            completed_at: None,
+            saw_context_reset: false,
+            pending_context_used_after: None,
+        });
+
+        assert_eq!(
+            state.observe_provider_usage(Some(0), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(
+            state.observe_provider_usage(Some(33_792), Some(1_000_000), None),
+            None
+        );
+        assert_eq!(state.context.confirmed_used, Some(32_606));
+
+        let compaction = state.compaction.take().expect("running compaction");
+        assert_eq!(
+            state.confirm_context_used_after_compaction("completed", &compaction, None),
+            Some(33_792)
+        );
+        assert_eq!(state.context.confirmed_used, Some(33_792));
     }
 
     #[test]

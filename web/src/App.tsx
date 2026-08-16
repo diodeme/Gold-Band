@@ -6,6 +6,7 @@ import {
   chooseWorkspace,
   continueRun,
   createConversationRun,
+  createScheduledTask,
   createTask,
   deleteConversationTask,
   dismissUpdateAnnouncement,
@@ -46,11 +47,14 @@ import {
   saveLastConversationWorkspace,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
+  subscribeScheduledTaskUpdates,
   updateNotificationAttention,
   recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
 import {
+  applyConversationSidebarRunLifecycle,
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
@@ -64,8 +68,10 @@ import { WindowCloseCoordinator } from '@/components/WindowCloseCoordinator';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
+import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import {
+  isRuntimeControlledConversationLifecycle,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -92,8 +98,13 @@ import {
 } from '@/components/conversation/ConversationComposerDraftBoundary';
 import { ConversationRunPage } from './pages/ConversationRunPage';
 import { ConversationSearchDialog } from './components/conversation/ConversationSearchDialog';
-import { prioritizeConversationSidebarWorkspace } from './components/conversation/ConversationSidebar';
+import {
+  prioritizeConversationSidebarWorkspace,
+  type ConversationSidebarWorkspaceRevealRequest,
+} from './components/conversation/ConversationSidebar';
 import { RunModeManagementPage } from './pages/RunModeManagementPage';
+import { ScheduledTaskManagementPage } from './pages/ScheduledTaskManagementPage';
+import { ScheduledTaskDetailPage } from './pages/ScheduledTaskDetailPage';
 import { RoundDetailPage } from './pages/RoundDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
@@ -103,8 +114,10 @@ import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversatio
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyFont, applyTheme, resolveThemePreference, syncDesktopWindowSurface } from './theme';
+import { applyAppearance, applyPersonalization, defaultPersonalizationPreference, resolveAppearance, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
+import { useScheduledNotifications } from './lib/use-scheduled-notifications';
+import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
 import {
   shouldRunWorkbenchBackgroundRefresh,
   WORKBENCH_BACKGROUND_REFRESH_HIDDEN_INTERVAL_MS,
@@ -131,12 +144,14 @@ import {
 } from '@/components/workspace/right-workspace-context';
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
+  beginConversationSessionSelection,
   conversationPageForIntervention,
   conversationPageMatchesRun,
-  resolvePresentedConversationPage,
+  isConversationRunNavigationLoading,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
+import { ConversationRunCache } from '@/lib/conversation-run-cache';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -164,9 +179,9 @@ import type {
   ConversationSidebarVm,
   CreateTaskInput,
   ProfileVm,
-  DesktopFontPreference,
   DesktopLanguage,
-  DesktopThemePreference,
+  AppearancePreference,
+  PersonalizationPreference,
   DesktopUiMode,
   MetricsSettingsVm,
   PreferencesVm,
@@ -186,7 +201,31 @@ import type {
   SaveDesktopAvatarInput,
 } from './types';
 
-const defaultPreferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+function findScheduledLinkedLeaf(
+  tree: ConversationSessionTreeVm,
+  roundId: string,
+  attemptId?: string,
+): ConversationSessionLeafVm | null {
+  const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
+    const leaf = node.attempts.find((attempt) =>
+      attempt.roundId === roundId && (!attemptId || attempt.attemptId === attemptId));
+    if (leaf) return leaf;
+    for (const child of node.outerNodes ?? []) {
+      const nested = walkNode(child);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      const leaf = walkNode(node);
+      if (leaf) return leaf;
+    }
+  }
+  return null;
+}
+
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -287,7 +326,10 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 export function App() {
   const initialRoute = routeFromPath(window.location.pathname);
   const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    const stored = typeof localStorage !== 'undefined' && localStorage.getItem('gold-band-sidebar-collapsed') === 'true';
+    return stored;
+  });
   const [bootstrap, setBootstrap] = useState<AppBootstrapVm | null>(null);
   const windowRevealedRef = useRef(false);
   const windowLayoutSyncRef = useRef<Promise<void>>(Promise.resolve());
@@ -314,13 +356,11 @@ export function App() {
     () => new ConversationRunModePersistence(saveConversationRunMode),
   );
   const [conversationWorkspaceStore] = useState(() => new ConversationWorkspaceStore());
+  const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
   const conversationNavigationRequestRef = useRef(0);
-  const presentedConversationPage = useMemo(
-    () => resolvePresentedConversationPage(conversationPage, conversationRun),
-    [conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId],
-  );
+  const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
     mode: 'auto',
     selectedSessionKey: null,
@@ -356,13 +396,16 @@ export function App() {
         ...conversationSessionFollowRef.current,
         selectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
       };
+      conversationRunCache.store(merged);
       return merged;
     });
-  }, []);
+  }, [conversationRunCache]);
 
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const activeWorkspaceIdRef = useRef<string | null>(null);
   const [draftConversationWorkspaceId, setDraftConversationWorkspaceId] = useState<string | null>(null);
+  const workspaceRevealRequestIdRef = useRef(0);
+  const [workspaceRevealRequest, setWorkspaceRevealRequest] = useState<ConversationSidebarWorkspaceRevealRequest | null>(null);
 
   const applyConversationSidebar = useCallback((sidebar: ConversationSidebarVm, projectId?: string | null) => {
     const activeProjectId = projectId ?? activeWorkspaceIdRef.current ?? sidebar.lastActiveWorkspaceId ?? null;
@@ -388,6 +431,32 @@ export function App() {
     });
   }, []);
 
+  const applyConversationLifecycleSnapshotToSidebar = useCallback((
+    projectId: string,
+    taskId: string,
+    runId: string,
+    lifecycle: Parameters<typeof conversationTaskActivityFromLifecycle>[0],
+    activity = conversationTaskActivityFromLifecycle(lifecycle),
+  ) => {
+    setConversationSidebar((current) => {
+      const withActivity = applyConversationSidebarTaskActivity(
+        current,
+        projectId,
+        taskId,
+        activity,
+      );
+      const next = applyConversationSidebarRunLifecycle(
+        withActivity,
+        projectId,
+        taskId,
+        runId,
+        lifecycle,
+      );
+      conversationSidebarRef.current = next;
+      return next;
+    });
+  }, []);
+
   // Derive active workspace: explicit local state > persisted lastActiveWorkspaceId > first workspace
   const effectiveWorkspaceId =
     activeWorkspaceId
@@ -398,6 +467,8 @@ export function App() {
   const rememberConversationWorkspace = useCallback((projectId: string) => {
     activeWorkspaceIdRef.current = projectId;
     setActiveWorkspaceId(projectId);
+    workspaceRevealRequestIdRef.current += 1;
+    setWorkspaceRevealRequest({ projectId, requestId: workspaceRevealRequestIdRef.current });
     setConversationSidebar((prev) => {
       const next = prioritizeConversationSidebarWorkspace(prev, projectId);
       conversationSidebarRef.current = next;
@@ -410,9 +481,12 @@ export function App() {
   const draftWorkspace = conversationSidebar.workspaces.find((w) => w.projectId === draftConversationWorkspaceId)
     ?? activeWorkspace
     ?? conversationSidebar.workspaces[0];
-  const sidebarFocusWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+  const conversationWorkspaceContextId = presentedConversationPage.kind === 'conversation-run'
     ? presentedConversationPage.projectId
     : (draftConversationWorkspaceId ?? effectiveWorkspaceId);
+  const defaultExpandedWorkspaceId = presentedConversationPage.kind === 'conversation-run'
+    ? presentedConversationPage.projectId
+    : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
@@ -427,6 +501,8 @@ export function App() {
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
+  const preferenceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<{
@@ -475,22 +551,10 @@ export function App() {
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
 
-  // Global activity listener: pointerdown + keydown with 60s debounce.
-  // The Rust layer's 15-minute throttle is the authoritative gate.
-  const activityDebounceRef = useRef(0);
   useEffect(() => {
-    const onActivity = () => {
-      const now = Date.now();
-      if (now - activityDebounceRef.current < 60_000) return;
-      activityDebounceRef.current = now;
+    return registerHeartbeatActivityListeners(() => {
       recordActivity().catch(() => {});
-    };
-    window.addEventListener('pointerdown', onActivity);
-    window.addEventListener('keydown', onActivity);
-    return () => {
-      window.removeEventListener('pointerdown', onActivity);
-      window.removeEventListener('keydown', onActivity);
-    };
+    });
   }, []);
 
   const loadProfiles = useCallback(async () => {
@@ -532,20 +596,20 @@ export function App() {
   const { t } = useTranslation();
 
   useEffect(() => {
-    applyTheme(preferences.theme);
-  }, [preferences.theme]);
+    applyAppearance(preferences.appearance, preferences.language);
+  }, [preferences.appearance, preferences.language]);
 
   useEffect(() => {
-    if (preferences.theme !== 'system') return undefined;
+    if (preferences.appearance.colorScheme !== 'system') return undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => applyTheme('system');
+    const syncSystemTheme = () => applyAppearance(preferences.appearance, preferences.language);
     colorScheme.addEventListener('change', syncSystemTheme);
     return () => colorScheme.removeEventListener('change', syncSystemTheme);
-  }, [preferences.theme]);
+  }, [preferences.appearance, preferences.language]);
 
   useEffect(() => {
-    applyFont(preferences.font);
-  }, [preferences.font]);
+    applyPersonalization(preferences.personalization);
+  }, [preferences.appearance, preferences.language, preferences.personalization]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -558,7 +622,7 @@ export function App() {
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
       if (!windowRevealedRef.current) {
-        await syncDesktopWindowSurface(resolveThemePreference(preferences.theme));
+        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance, preferences.language));
       }
       await syncDesktopWindowMinimum(
         appWindow,
@@ -580,7 +644,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.theme]);
+  }, [activeWorkspaceLayoutProfile, appConfig.workspaceLayout, bootstrap, preferences.appearance]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -714,6 +778,26 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeScheduledTaskUpdates(() => {
+      void getConversationSidebar()
+        .then((sidebar) => {
+          if (active) applyConversationSidebar(sidebar);
+        })
+        .catch(() => {});
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [applyConversationSidebar, bootstrap, uiMode]);
+
+  useEffect(() => {
     if (!bootstrap) return;
     getAgentRegistry().then(setAgentRegistry).catch(() => {});
   }, [bootstrap]);
@@ -732,20 +816,30 @@ export function App() {
   // Load conversation run when navigating to a run page
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
-    const { projectId, taskId, runId } = conversationPage;
+    const { projectId, taskId, runId, roundId, attemptId } = conversationPage;
     const requestId = conversationNavigationRequestRef.current + 1;
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
     getConversationRun(projectId, taskId, runId)
       .then(async (run) => {
-        await preloadConversationTurnFileChangeSets(run);
+        if (!roundId) return run;
+        const leaf = findScheduledLinkedLeaf(run.sessionTree, roundId, attemptId);
+        if (!leaf) return run;
+        const selectedSessionKey = conversationSessionKeyFromParts(leaf);
+        return getConversationRun(projectId, taskId, runId, selectedSessionKey);
+      })
+      .then((run) => {
         if (cancelled || !shouldCommitConversationNavigation(
           requestId,
           conversationNavigationRequestRef.current,
           conversationPageRef.current,
           run,
         )) return;
-        applyConversationRunSnapshot(run, 'initial-load');
+        applyConversationRunSnapshot(run, 'initial-load', {
+          selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+          preserveSelectedSession: false,
+        });
+        void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
         if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
@@ -767,6 +861,7 @@ export function App() {
     let refreshInFlight = false;
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
+    let pendingEventRuntimeControlled = false;
     let stopListeningAcp: (() => void) | null = null;
     let stopListeningRun: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
@@ -782,12 +877,19 @@ export function App() {
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
         ?? conversationRunRef.current?.sessionTree.selectedSessionKey
         ?? null;
+      const currentRun = conversationRunRef.current;
+      const currentSelectedLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
+        : null;
       const selectedKey = resolveConversationRefreshSelectedSessionKey({
         followMode: followStateAtRequest.mode,
         pendingEventSessionKey,
         currentSelectedKey,
+        currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
+        pendingEventRuntimeControlled,
       });
       pendingEventSessionKey = null;
+      pendingEventRuntimeControlled = false;
       Promise.all([
         getConversationRun(projectId, taskId, runId, selectedKey),
         getConversationSidebar(),
@@ -795,9 +897,21 @@ export function App() {
         .then(([run, sidebar]) => {
           if (!active) return;
           const latestFollowState = conversationSessionFollowRef.current;
-          const effectiveSelectedKey = latestFollowState.version === followStateAtRequest.version
-            ? selectedKey
-            : (latestFollowState.selectedSessionKey ?? conversationSelectedSessionKeyRef.current ?? selectedKey);
+          const latestSelectedKey = latestFollowState.selectedSessionKey
+            ?? conversationSelectedSessionKeyRef.current
+            ?? null;
+          const latestRun = conversationRunRef.current;
+          const latestSelectedLeaf = latestRun
+            ? findConversationLeafByKey(latestRun.sessionTree, latestSelectedKey)
+            : null;
+          const responseTargetLeaf = findConversationLeafByKey(run.sessionTree, selectedKey);
+          const effectiveSelectedKey = resolveConversationRefreshSelectedSessionKey({
+            followMode: latestFollowState.mode,
+            pendingEventSessionKey: selectedKey,
+            currentSelectedKey: latestSelectedKey,
+            currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
+            pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
+          });
           applyConversationRunSnapshot(run, 'live-refresh', {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
@@ -815,8 +929,15 @@ export function App() {
         });
     };
 
-    const queueConversationRunAndSidebarRefresh = (sessionKey?: string | null, delayMs = 120) => {
-      if (sessionKey !== undefined) pendingEventSessionKey = sessionKey;
+    const queueConversationRunAndSidebarRefresh = (
+      sessionKey?: string | null,
+      runtimeControlled = false,
+      delayMs = 120,
+    ) => {
+      if (sessionKey !== undefined) {
+        pendingEventSessionKey = sessionKey;
+        pendingEventRuntimeControlled = runtimeControlled;
+      }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
           window.clearTimeout(refreshTimer);
@@ -831,7 +952,17 @@ export function App() {
       if (!active) return;
       if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
       const sidebarActivity = conversationTaskActivityFromUpdate(event);
-      if (sidebarActivity !== undefined) {
+      if (event.lifecycle) {
+        applyConversationLifecycleSnapshotToSidebar(
+          projectId,
+          taskId,
+          runId,
+          event.lifecycle,
+          sidebarActivity === undefined
+            ? conversationTaskActivityFromLifecycle(event.lifecycle)
+            : sidebarActivity,
+        );
+      } else if (sidebarActivity !== undefined) {
         applyConversationTaskActivity(projectId, taskId, sidebarActivity);
       }
       const sessionKey = conversationSessionKeyFromParts(event);
@@ -846,6 +977,13 @@ export function App() {
       const currentSelectedLeaf = currentRun
         ? findConversationLeafByKey(currentRun.sessionTree, currentSelectedKey)
         : null;
+      const incomingLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
+        : null;
+      const currentSelectedRuntimeControlled = isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle);
+      const incomingRuntimeControlled = isRuntimeControlledConversationLifecycle(
+        event.lifecycle ?? incomingLeaf?.lifecycle,
+      );
       const currentSelectedActive = Boolean(
         currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
@@ -859,7 +997,9 @@ export function App() {
       const followPending = followState.mode === 'auto'
         && Boolean(currentSelectedKey)
         && !currentSelectedActive
-        && incomingActive;
+        && incomingActive
+        && currentSelectedRuntimeControlled
+        && incomingRuntimeControlled;
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
@@ -892,7 +1032,9 @@ export function App() {
         followMode: followState.mode,
         currentSelectedActive,
         incomingActive,
-      }));
+        currentSelectedRuntimeControlled,
+        incomingRuntimeControlled,
+      }), incomingRuntimeControlled);
     })
       .then((dispose) => {
         if (active) {
@@ -907,7 +1049,16 @@ export function App() {
       if (!active) return;
       if (event.taskId !== taskId || event.runId !== runId) return;
       if (event.projectId && event.projectId !== projectId) return;
-      queueConversationRunAndSidebarRefresh(conversationSessionKeyFromParts(event), 0);
+      const sessionKey = conversationSessionKeyFromParts(event);
+      const currentRun = conversationRunRef.current;
+      const eventLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
+        : null;
+      queueConversationRunAndSidebarRefresh(
+        sessionKey,
+        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        0,
+      );
     })
       .then((dispose) => {
         if (active) {
@@ -924,7 +1075,7 @@ export function App() {
       stopListeningAcp?.();
       stopListeningRun?.();
     };
-  }, [applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -1138,6 +1289,32 @@ export function App() {
   // 干预弹窗「查看详情」导航：按 uiMode deep link 到对应节点。
   const handleInterventionNavigate = useCallback(async (event: InterventionNavigateEventVm) => {
     setWorkspacePickerOpen(false);
+    if ('scheduledTaskId' in event) {
+      const target = scheduledNotificationNavigation(event);
+      if (target.kind === 'scheduled-detail') {
+        const page: ConversationPage = {
+          kind: 'scheduled-task-detail',
+          projectId: target.projectId,
+          scheduledTaskId: target.scheduledTaskId,
+        };
+        setPrimaryModule('task-orchestration');
+        setConversationPage(page);
+        pushRoute('task-orchestration', taskPage, page);
+        return;
+      }
+      const page: ConversationPage = {
+        kind: 'conversation-run',
+        projectId: target.projectId,
+        taskId: target.taskId,
+        runId: target.runId,
+        roundId: target.roundId ?? undefined,
+        attemptId: target.attemptId ?? undefined,
+      };
+      setPrimaryModule('task-orchestration');
+      setConversationPage(page);
+      pushRoute('task-orchestration', taskPage, page);
+      return;
+    }
     if (uiMode !== 'conversation') {
       // 工作台模式：定位到 round-detail 并选中节点。
       setPrimaryModule('task-orchestration');
@@ -1180,6 +1357,12 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key);
+    setConversationRun((current) => {
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const next = beginConversationSessionSelection(base, key);
+      conversationRunRef.current = next;
+      return next;
+    });
     try {
       const switched = await switchConversationSession(
         targetProjectId,
@@ -1215,6 +1398,7 @@ export function App() {
   ]);
 
   useInterventionNotifications(handleInterventionNavigate);
+  useScheduledNotifications();
 
   const runAction = async <T,>(
     action: () => Promise<T>,
@@ -1369,88 +1553,76 @@ export function App() {
     }
   };
 
-  const onSavePreferences = async (theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) => {
+  const onSavePreferences = (appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) => {
+    const generation = ++preferenceSaveGenerationRef.current;
     setBusy(true);
-    try {
-      const saved = await saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
-      setBootstrap((current) => current ? { ...current, preferences: saved } : {
-        repoRoot: '',
-        recentWorkspaces: [],
-        preferences: saved,
-        updaterSettings: defaultUpdaterSettings,
-        updateStatus: defaultUpdateStatus,
-        updateBadges: defaultUpdateBadges,
-        metricsSettings: defaultMetricsSettings,
-        clientVersion: '',
-        platform: 'unknown',
-        windowChrome: { frameStyle: 'native-compositor', nativeShadow: true },
-        appInfo: defaultAppInfo,
-        appConfig: defaultAppConfig,
-        needsWorkspace: false,
+    const save = preferenceSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging))
+      .then((saved) => {
+        if (generation !== preferenceSaveGenerationRef.current) return;
+        setBootstrap((current) => current ? { ...current, preferences: saved } : current);
+      })
+      .catch((err) => {
+        if (generation === preferenceSaveGenerationRef.current) setError(displayAppError(t, err));
+      })
+      .finally(() => {
+        if (generation === preferenceSaveGenerationRef.current) setBusy(false);
       });
-      setTaskList(null);
-      setWorkflow(null);
-      setRoundDetail(null);
-    } catch (err) {
-      setError(displayAppError(t, err));
-    } finally {
-      setBusy(false);
-    }
+    preferenceSaveQueueRef.current = save;
   };
 
-  const applyAvatarPreferences = useCallback((avatars: PreferencesVm['avatars']) => {
-    setBootstrap((current) => current
-      ? { ...current, preferences: { ...current.preferences, avatars } }
-      : current);
+  const applySavedPreferences = useCallback((saved: PreferencesVm) => {
+    setBootstrap((current) => current ? { ...current, preferences: saved } : current);
   }, []);
 
   const onSaveAvatar = useCallback(async (input: SaveDesktopAvatarInput) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatar(input);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatar(input);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSelectRecentAvatar = useCallback(async (kind: AvatarKind, avatarId: string) => {
     setError(null);
     try {
-      const avatars = await selectRecentDesktopAvatar(kind, avatarId);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await selectRecentDesktopAvatar(kind, avatarId);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
-  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape) => {
+  const onSaveAvatarShape = useCallback(async (kind: AvatarKind, shape: AvatarShape | null) => {
     setError(null);
     try {
-      const avatars = await saveDesktopAvatarShape(kind, shape);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await saveDesktopAvatarShape(kind, shape);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onClearAvatar = useCallback(async (kind: AvatarKind) => {
     setError(null);
     try {
-      const avatars = await clearDesktopAvatar(kind);
-      applyAvatarPreferences(avatars);
-      return avatars;
+      const saved = await clearDesktopAvatar(kind);
+      applySavedPreferences(saved);
+      return saved.avatars;
     } catch (err) {
       setError(displayAppError(t, err));
       return undefined;
     }
-  }, [applyAvatarPreferences, t]);
+  }, [applySavedPreferences, t]);
 
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
@@ -1545,6 +1717,37 @@ export function App() {
     }
   };
 
+  const onSelectConversation = (page: ConversationPage) => {
+    setWorkspacePickerOpen(false);
+    if (conversationRunRef.current) {
+      conversationRunCache.store(conversationRunRef.current);
+    }
+    if (page.kind === 'conversation-run') {
+      const cached = conversationRunCache.restore(page);
+      const cachedMatchesLinkedTarget = !page.roundId || Boolean(
+        cached && findScheduledLinkedLeaf(cached.sessionTree, page.roundId, page.attemptId),
+      );
+      if (cached && cachedMatchesLinkedTarget) {
+        conversationRunRef.current = cached;
+        conversationSelectedSessionKeyRef.current = cached.sessionTree.selectedSessionKey ?? null;
+        conversationSessionFollowRef.current = {
+          ...conversationSessionFollowRef.current,
+          selectedSessionKey: cached.sessionTree.selectedSessionKey ?? null,
+        };
+        setConversationRun(cached);
+      }
+    }
+    setConversationPage(page);
+    if (page.kind === 'agents') {
+      setPrimaryModule('agent-management');
+    } else if (page.kind === 'contexts') {
+      setPrimaryModule('knowledge-base');
+    } else {
+      setPrimaryModule('task-orchestration');
+    }
+    pushRoute(primaryModule, taskPage, page);
+  };
+
   const content = uiMode === 'conversation'
     ? renderConversationContent()
     : shouldRenderWorkspacePicker(uiMode, workspacePickerOpen)
@@ -1592,19 +1795,6 @@ export function App() {
           ? <ContextManagementPage agentRegistry={agentRegistry} onAgentRegistryChange={setAgentRegistry} />
           : renderTaskContent();
 
-  const onSelectConversation = (page: ConversationPage) => {
-    setWorkspacePickerOpen(false);
-    setConversationPage(page);
-    if (page.kind === 'agents') {
-      setPrimaryModule('agent-management');
-    } else if (page.kind === 'contexts') {
-      setPrimaryModule('knowledge-base');
-    } else {
-      setPrimaryModule('task-orchestration');
-    }
-    pushRoute(primaryModule, taskPage, page);
-  };
-
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
@@ -1613,7 +1803,9 @@ export function App() {
       active={primaryModule}
       conversationPage={presentedConversationPage}
       conversationSidebar={conversationSidebar}
-      activeWorkspaceId={sidebarFocusWorkspaceId}
+      activeWorkspaceId={conversationWorkspaceContextId}
+      defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+      workspaceRevealRequest={workspaceRevealRequest}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
         && conversationRun?.projectId === presentedConversationPage.projectId
@@ -1655,11 +1847,11 @@ export function App() {
         const task = tasks.find((t) => t.taskId === taskId);
         const runId = task?.latestRun?.runId;
         if (runId) {
-          setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+          onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
         }
       }}
       onConversationSelectRun={(projectId, taskId, runId) => {
-        setConversationPage({ kind: 'conversation-run', projectId, taskId, runId });
+        onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -1825,7 +2017,7 @@ export function App() {
         </TooltipProvider>
       );
     }
-    if (conversationPage.kind === 'conversation-home') {
+    if (conversationPage.kind === 'conversation-home' || conversationPage.kind === 'scheduled-task-create') {
       return (
         <>
         <ConversationHomePage
@@ -1837,6 +2029,7 @@ export function App() {
           workflowTemplates={conversationWorkflowTemplates}
           profiles={profiles}
           busy={busy}
+          initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
@@ -1904,8 +2097,14 @@ export function App() {
               setBusy(false);
             }
           }}
+          onCreateScheduledTask={async (input) => {
+            await createScheduledTask(input);
+          }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
+            ? () => onSelectConversation({ kind: 'conversation-home' })
+            : undefined}
           onWorkspaceChange={(projectId) => {
             resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
@@ -1930,6 +2129,12 @@ export function App() {
         </>
       );
     }
+    if (conversationPage.kind === 'scheduled-tasks') {
+      return <ScheduledTaskManagementPage projectId={defaultProjectId} onCreate={() => onSelectConversation({ kind: 'scheduled-task-create' })} onOpenDetail={(task) => onSelectConversation({ kind: 'scheduled-task-detail', projectId: task.projectId, scheduledTaskId: task.id })} />;
+    }
+    if (conversationPage.kind === 'scheduled-task-detail') {
+      return <ScheduledTaskDetailPage projectId={conversationPage.projectId} scheduledTaskId={conversationPage.scheduledTaskId} onBack={() => onSelectConversation({ kind: 'scheduled-tasks' })} onOpenOccurrence={onSelectConversation} />;
+    }
     if (conversationPage.kind === 'run-mode-management') {
       return (
         <RunModeManagementPage
@@ -1949,11 +2154,9 @@ export function App() {
       );
     }
     if (conversationPage.kind === 'conversation-run') {
-      if (!conversationRun || conversationRun.runId !== conversationPage.runId) {
+      if (isConversationRunNavigationLoading(conversationPage, conversationRun) || !conversationRun) {
         return (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            {t('common.loading')}
-          </div>
+          <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
       return (
@@ -2001,6 +2204,12 @@ export function App() {
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            setConversationRun((current) => {
+              if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
+              const next = beginConversationSessionSelection(current, key);
+              conversationRunRef.current = next;
+              return next;
+            });
             switchConversationSession(
               conversationPage.projectId,
               conversationPage.taskId,
@@ -2040,10 +2249,11 @@ export function App() {
             }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
-            applyConversationTaskActivity(
+            applyConversationLifecycleSnapshotToSidebar(
               conversationPage.projectId,
               snapshot.taskId,
-              conversationTaskActivityFromLifecycle(snapshot.lifecycle),
+              snapshot.runId,
+              snapshot.lifecycle,
             );
             setConversationRun((current) => {
               const selectedPatched = applyConversationSelectedSessionSnapshot(current, snapshot);

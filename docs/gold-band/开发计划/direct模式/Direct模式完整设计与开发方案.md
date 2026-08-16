@@ -1341,10 +1341,12 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - [x] 修复 completed Direct session 进入 follow-up `session/resume` 时的会话壳竞态：同 attempt 快照合并不再降级已持久化的 `sessionEstablished / sessionId`；详细 session payload 短暂缺失时由持久化引用保持历史会话壳、composer 和待发送队列，不再误显示“ACP 会话失败”。
 - [x] 根因修正：排队的 lifecycle-only 更新不再被认为 session 清空；订阅层只在带有非空 authoritative session payload 时替换当前会话，从根上避免排队操作在 `session/resume` 窗口清掉 composer。
 - [x] 首轮自动出队根因修正：创建/重跑与继续入口统一装配 ACP live、session snapshot、prompt lifecycle callback；首轮 `end_turn` 现在也会产生后继的 Direct 队列调度。
+- [x] 连续自动出队生命周期断链修正：自动队列恢复走标准 `send_acp_prompt` 入口；底层发送接口只接受 `ConfiguredConversationApp`，从类型边界禁止裸 `App` 绕过 callbacks。drain 保留触发 turn 的生命周期上下文，后继用户消息再显式切回普通会话上下文；scheduled continuous 统一安装 live/session/prompt lifecycle callbacks 并保留 occurrence identity。
 
 接口级回归：
 
 - [x] Rust：容量、FIFO/编辑位置、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、prompt lifecycle accepted identity、durable accepted 精确出队、普通 prompt 不创建队列存储、取消不回队、接受前失败恢复、v1 迁移和重启孤儿恢复。
+- [x] Rust lifecycle 集成回归：三条队列逐轮执行 `claim -> Accepted 立即出队 -> Finished 调度下一条`，固定连续 FIFO 排空和消息进入 timeline 后不再留在队列的接口契约；底层发送的受控类型同时提供编译期回归门禁。
 - [x] Web semantic composer：Direct active 可输入/可入队、容量满、非 Direct active 仍锁定。
 - [x] Web semantic composer：Direct 首次发送过渡期即使 lifecycle 尚未携带 queue，也可输入并入队。
 - [x] Rust conversation run VM：停止态 selected leaf 仍投影持久化队列。

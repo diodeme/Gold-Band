@@ -16,6 +16,7 @@ import {
 } from './editor-extensions';
 import { isMarkdownDocumentPath } from './markdown-document';
 import type { MarkdownEditorMode } from './file-content-store';
+import { WorkspaceImageCanvas } from './WorkspaceImageCanvas';
 
 export function ConversationAssetWorkspacePanel({ resource }: { resource: ConversationAssetWorkspaceResource }) {
   const { t } = useTranslation();
@@ -74,15 +75,13 @@ export function ConversationAssetWorkspacePanel({ resource }: { resource: Conver
   return (
     <section className="flex min-h-0 flex-1 flex-col" data-conversation-asset-workspace={resource.assetKind}>
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-3 text-xs">
-        <FileText className="size-3.5 text-primary" />
+        <FileText className="size-3.5 text-foreground" />
         <span className="min-w-0 flex-1 truncate font-mono">{content.title || resource.name}</span>
         <span className="text-muted-foreground">{content.kind}</span>
       </header>
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {imageSrc ? (
-          <div className="flex size-full items-center justify-center overflow-auto bg-muted/10 p-4">
-            <img src={imageSrc} alt={resource.name} className="max-h-full max-w-full object-contain" />
-          </div>
+          <WorkspaceImageCanvas src={imageSrc} alt={resource.name} />
         ) : markdown ? (
           <WorkspaceFileEditor
             documentKey={resource.key}

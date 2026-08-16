@@ -3,13 +3,14 @@ import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { Layout, LayoutChangedMeta, PanelImperativeHandle, PanelSize } from 'react-resizable-panels';
 import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
-import { ConversationSidebar } from '../conversation/ConversationSidebar';
+import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { RightWorkspaceDock } from './RightWorkspaceDock';
 import {
   ConversationWorkspaceStore,
@@ -30,6 +31,7 @@ import {
   FALLBACK_WORKSPACE_FILES,
   shouldOpenRightWorkspaceSheet,
   shouldPersistRightWorkspaceWidth,
+  syncRightWorkspacePanelPresentation,
   WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
   WORKSPACE_SIDEBAR_MIN_WIDTH,
@@ -64,6 +66,8 @@ interface WorkspaceShellProps {
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
   activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
@@ -75,13 +79,20 @@ function clamp(value: number, min: number, max: number) {
 
 function loadWidth(prefs: Record<string, unknown> | null | undefined, key: string, fallback: number, min: number, max: number) {
   const value = prefs?.[key];
-  return typeof value === 'number' ? clamp(value, min, max) : fallback;
+  return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : fallback;
+}
+
+function loadOptionalWidth(prefs: Record<string, unknown> | null | undefined, key: string, min: number, max: number) {
+  const value = prefs?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? clamp(value, min, max) : null;
 }
 
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
+const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
+const LazySourceControlWorkspacePanel = lazy(() => import('./source-control/SourceControlWorkspacePanel').then((module) => ({ default: module.SourceControlWorkspacePanel })));
 
 function FileWorkspaceIntegration({
   config = FALLBACK_WORKSPACE_FILES,
@@ -125,6 +136,16 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('draft-attachment', (resource: RightWorkspaceResource) => (
+    resource.kind === 'draft-attachment'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('source-control', (resource: RightWorkspaceResource) => (
+    resource.kind === 'source-control'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazySourceControlWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
@@ -134,6 +155,7 @@ function FileWorkspaceIntegration({
 }
 
 export function WorkspaceShell(props: WorkspaceShellProps) {
+  useThemeWallpaperSurface();
   const rightWorkspaceLayout = props.appConfig.workspaceLayout.rightWorkspace;
   const initialRightWidth = loadWidth(
     props.vm.preferences,
@@ -143,7 +165,7 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     rightWorkspaceLayout.maxWidth,
   );
   const rightWorkspaceScope = useMemo(() => {
-    if (props.active.kind === 'conversation-home') {
+    if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
     if (props.active.kind === 'conversation-run') {
@@ -190,16 +212,26 @@ function WorkspaceShellLayout({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
-  activeWorkspaceId,
+  activeWorkspaceId: _activeWorkspaceId,
+  defaultExpandedWorkspaceId,
+  workspaceRevealRequest,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
+  const storedSidebarWidth = loadOptionalWidth(
+    vm.preferences,
+    'sidebar.width',
+    WORKSPACE_SIDEBAR_MIN_WIDTH,
+    WORKSPACE_SIDEBAR_MAX_WIDTH,
+  );
   const shellRef = useRef<HTMLDivElement>(null);
   const compactSheetContentRef = useRef<HTMLDivElement>(null);
   const leftPanelRef = useRef<PanelImperativeHandle | null>(null);
   const rightPanelRef = useRef<PanelImperativeHandle | null>(null);
+  const leftResizeIntentRef = useRef(false);
   const rightResizeIntentRef = useRef(false);
+  const sidebarWidthTouchedRef = useRef(false);
   const resizeFrameRef = useRef<number | null>(null);
   const rightPanelActualWidthRef = useRef(0);
   const rightPanelAtPreferredWidthRef = useRef(false);
@@ -224,13 +256,7 @@ function WorkspaceShellLayout({
     left: false,
     right: false,
   });
-  const sidebarWidth = loadWidth(
-    vm.preferences,
-    'sidebar.width',
-    WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
-    WORKSPACE_SIDEBAR_MIN_WIDTH,
-    WORKSPACE_SIDEBAR_MAX_WIDTH,
-  );
+  const [sidebarWidth, setSidebarWidth] = useState(() => storedSidebarWidth ?? WORKSPACE_SIDEBAR_DEFAULT_WIDTH);
   const profile = useMemo(
     () => workspaceLayoutProfileForPage(active, appConfig.workspaceLayout),
     [active, appConfig.workspaceLayout],
@@ -276,6 +302,15 @@ function WorkspaceShellLayout({
   const endRightPanelResize = useCallback(() => {
     setRightPanelResizeActive(false);
   }, []);
+  const beginLeftPanelResize = useCallback(() => {
+    leftResizeIntentRef.current = true;
+    sidebarWidthTouchedRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (sidebarWidthTouchedRef.current || storedSidebarWidth == null) return;
+    setSidebarWidth(storedSidebarWidth);
+  }, [storedSidebarWidth]);
 
   const evaluateAutoCollapse = useCallback((availableWidth: number) => {
     const current = autoCollapseStateRef.current;
@@ -319,27 +354,28 @@ function WorkspaceShellLayout({
     try {
       if (showLeft) {
         if (panel.isCollapsed()) panel.expand();
+        panel.resize(sidebarWidth);
       } else if (!panel.isCollapsed()) {
         panel.collapse();
       }
     } catch {
       // The panel group may be unmounting while the desktop surface changes.
     }
-  }, [showLeft]);
+  }, [showLeft, sidebarWidth]);
 
   useLayoutEffect(() => {
     const panel = rightPanelRef.current;
     if (!panel) return;
     try {
-      if (showRightDock) {
-        if (panel.isCollapsed()) panel.expand();
-      } else if (!panel.isCollapsed()) {
-        panel.collapse();
-      }
+      syncRightWorkspacePanelPresentation({
+        panel,
+        visible: showRightDock,
+        preferredWidth: workspace.width,
+      });
     } catch {
       // The panel group may be unmounting while the desktop surface changes.
     }
-  }, [showRightDock]);
+  }, [showRightDock, workspace.width]);
 
   useEffect(() => {
     if (handledWorkspaceScopeRef.current !== workspace.scopeKey) {
@@ -385,15 +421,19 @@ function WorkspaceShellLayout({
   const saveWorkspaceLayout = useCallback((layout: Layout, meta: LayoutChangedMeta) => {
     if (!meta.isUserInteraction) return;
     const groupWidth = shellRef.current?.clientWidth ?? 0;
-    const nextSidebarWidth = resolveWorkspacePanelWidthFromLayout({
-      layout,
-      panelId: 'workspace-navigation',
-      groupWidth,
-      minWidth: WORKSPACE_SIDEBAR_MIN_WIDTH,
-      maxWidth: WORKSPACE_SIDEBAR_MAX_WIDTH,
-    });
-    if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
-      void saveConversationPreference('sidebar.width', nextSidebarWidth);
+    if (leftResizeIntentRef.current) {
+      leftResizeIntentRef.current = false;
+      const nextSidebarWidth = resolveWorkspacePanelWidthFromLayout({
+        layout,
+        panelId: 'workspace-navigation',
+        groupWidth,
+        minWidth: WORKSPACE_SIDEBAR_MIN_WIDTH,
+        maxWidth: WORKSPACE_SIDEBAR_MAX_WIDTH,
+      });
+      if (nextSidebarWidth != null && nextSidebarWidth !== Math.round(sidebarWidth)) {
+        setSidebarWidth(nextSidebarWidth);
+        void saveConversationPreference('sidebar.width', nextSidebarWidth);
+      }
     }
     if (shouldPersistRightWorkspaceWidth(meta.isUserInteraction, rightResizeIntentRef.current)) {
       rightResizeIntentRef.current = false;
@@ -436,6 +476,8 @@ function WorkspaceShellLayout({
     <div
       ref={shellRef}
       className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+      data-theme-role="shell"
+      data-theme-wallpaper-slot="app"
       data-window-frame-style={windowFrameStyle}
       onContextMenu={(event) => event.preventDefault()}
     >
@@ -452,7 +494,7 @@ function WorkspaceShellLayout({
         rightWorkspaceOpen={rightWorkspacePresented}
         onToggleRightWorkspace={rightWorkspaceAvailable ? toggleRightWorkspace : undefined}
       />
-      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar" onLayoutChanged={saveWorkspaceLayout}>
+      <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible" onLayoutChanged={saveWorkspaceLayout}>
         <ResizablePanel
           panelRef={leftPanelRef}
           id="workspace-navigation"
@@ -468,7 +510,8 @@ function WorkspaceShellLayout({
             <ConversationSidebar
               vm={vm}
               active={active}
-              activeWorkspaceId={activeWorkspaceId}
+              defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
+              workspaceRevealRequest={workspaceRevealRequest}
               onSelect={onSelect}
               onNewConversation={onNewConversation}
               onSearch={onSearch}
@@ -490,20 +533,25 @@ function WorkspaceShellLayout({
           data-testid="workspace-left-resize-handle"
           disabled={!showLeft}
           aria-hidden={!showLeft}
+          onPointerDown={beginLeftPanelResize}
+          onKeyDown={beginLeftPanelResize}
         />
         <ResizablePanel
           id="workspace-center"
           minSize={profile.centerMinWidth}
-          className="min-w-0"
+          className={cn(
+            'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]',
+            showLeft && 'rounded-tl-2xl',
+          )}
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border/70 bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
+          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl')}>
             {children}
           </main>
         </ResizablePanel>
         <ResizableHandle
           className={cn(
-            'z-20 bg-sidebar-border/70 hover:bg-primary/30',
+            'z-20 bg-workspace-divider hover:bg-primary/30',
             !showRightDock && 'pointer-events-none opacity-0',
           )}
           data-testid="workspace-right-resize-handle"
@@ -527,7 +575,10 @@ function WorkspaceShellLayout({
           collapsible
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}
           onResize={trackRightPanelSize}
-          className={cn(!showRightDock && 'pointer-events-none overflow-hidden')}
+          className={cn(
+            'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]',
+            !showRightDock && 'pointer-events-none overflow-hidden',
+          )}
         >
           {showRightDock ? <RightWorkspaceDock /> : null}
         </ResizablePanel>

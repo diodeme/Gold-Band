@@ -6,6 +6,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/component
 import { cn } from '@/lib/utils';
 import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { listConversationDirectory, openConversationDirectoryPathInFileManager, readConversationDirectoryFile, workspaceFilePreviewUrl } from '@/api';
+import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
 import type { WorkspaceDirectoryEntryVm, WorkspaceFileSnapshotVm } from '@/types';
 import type { FileWorkspaceLayoutVm } from '@/types';
 import type { ConversationDirectoryWorkspaceResource } from './right-workspace-context';
@@ -51,10 +52,7 @@ function ConversationDirectoryTreeRow({ node, style }: NodeRendererProps<Node>) 
           type="button"
           className={cn(
             'group flex h-full w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs outline-none transition-[background-color,color,box-shadow]',
-            selectedFile
-              ? 'bg-gold-running/12 text-foreground shadow-[inset_2px_0_0_var(--gold-running)]'
-              : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-            node.isFocused && !selectedFile && 'bg-accent/45 text-foreground',
+            fileTreeRowStateClassName(selectedFile, node.isFocused),
           )}
           onClick={() => {
             if (directory) {
@@ -69,7 +67,7 @@ function ConversationDirectoryTreeRow({ node, style }: NodeRendererProps<Node>) 
           {directory ? (
             node.data.loading ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />
           ) : <span className="size-3" />}
-          <Icon className={cn('size-3.5 shrink-0', selectedFile ? 'text-gold-running' : 'text-foreground/65 group-hover:text-foreground')} />
+          <Icon className={cn('size-3.5 shrink-0', fileTreeIconStateClassName(selectedFile))} />
           <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
         </button>
       </ContextMenuTrigger>

@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { useMeasuredElementHeight } from '@/hooks/use-measured-element-height';
 import { openWorkspacePathInFileManager } from '@/api';
+import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
 import type { WorkspaceDirectoryEntryVm } from '@/types';
 import {
   fileExplorerStore,
@@ -110,10 +111,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
       }}
       className={cn(
         'group flex h-full w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-xs outline-none transition-[background-color,color,box-shadow]',
-        context.selectedPath === entry.canonicalPath
-          ? 'bg-gold-running/12 text-foreground shadow-[inset_2px_0_0_var(--gold-running)]'
-          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-        node.isFocused && context.selectedPath !== entry.canonicalPath && 'bg-accent/45 text-foreground',
+        fileTreeRowStateClassName(context.selectedPath === entry.canonicalPath, node.isFocused),
       )}
       onClick={(event) => {
         event.stopPropagation();
@@ -129,12 +127,7 @@ function TreeNodeRow({ style, node, dragHandle }: NodeRendererProps<FileTreeView
           {entry.loading ? <LoaderCircle className="size-3 animate-spin" /> : node.isOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
       ) : <span className="size-4 shrink-0" />}
-      <Icon className={cn(
-        'size-3.5 shrink-0',
-        context.selectedPath === entry.canonicalPath
-          ? 'text-gold-running'
-          : 'text-foreground/65 group-hover:text-foreground',
-      )} />
+      <Icon className={cn('size-3.5 shrink-0', fileTreeIconStateClassName(context.selectedPath === entry.canonicalPath))} />
       <span className={cn(
         context.displayMode === 'compact'
           ? 'shrink-0 whitespace-nowrap pr-2'

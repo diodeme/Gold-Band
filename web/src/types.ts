@@ -1818,7 +1818,17 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 export type ConversationPage =
   | { kind: 'conversation-home' }
   | { kind: 'scheduled-task-create' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
+  | {
+      kind: 'conversation-run';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      roundId?: string;
+      nodeId?: string;
+      attemptId?: string;
+      outerNodeId?: string;
+      outerAttemptId?: string;
+    }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -2071,6 +2081,16 @@ export interface ConversationComposerVm {
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+  supersededBy?: ConversationSessionTargetVm | null;
+}
+
+export interface ConversationSessionTargetVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
 }
 
 export interface AppExitRequestVm {

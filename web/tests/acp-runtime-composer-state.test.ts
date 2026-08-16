@@ -237,6 +237,40 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(false);
   });
 
+  it('keeps a superseded session locked even when stale ACP activity still appears active', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
+          stopping: false,
+        },
+        composer: {
+          mode: 'session-superseded',
+          submitTarget: 'none',
+          lockInput: true,
+          canStop: false,
+          supersededBy: {
+            roundId: 'round-001',
+            nodeId: 'review',
+            attemptId: 'attempt-003',
+            pathLabel: 'review/attempt-003',
+          },
+        },
+      }),
+      acpStatus: 'running',
+      localTurnInFlight: true,
+    }));
+
+    expect(state.mode).toBe('session-superseded');
+    expect(state.submitTarget).toBe('none');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.showStatus).toBe(false);
+  });
+
   it('restores a completed-run live follow-up from backend lifecycle without optimistic state', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

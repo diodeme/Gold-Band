@@ -272,6 +272,10 @@ export type AcpRuntimeComposerContext = {
   pauseMessage?: string | null;
   runtimeError?: string | null;
   onRepair?: () => void;
+  supersededSessionNavigation?: {
+    href: string;
+    onNavigate: () => void;
+  };
 };
 
 export interface AcpDirectSessionHeaderProps {
@@ -1458,6 +1462,15 @@ export function ACPChatDialog(
   const showComposerStatus = composerState.showStatus;
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
   const composerPlaceholder = composerPlaceholderText(composerState, t);
+  const supersededBy = localLifecycle?.composer.supersededBy;
+  const supersededSession = composerState.mode === 'session-superseded'
+    && supersededBy
+    && runtimeComposerContext?.supersededSessionNavigation
+    ? {
+        label: `${supersededBy.nodeId} / ${supersededBy.attemptId}`,
+        ...runtimeComposerContext.supersededSessionNavigation,
+      }
+    : null;
   const canSubmitPrompt = composerState.canSubmit;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
@@ -3671,6 +3684,7 @@ export function ACPChatDialog(
                 attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
                 integratedInfoTab={composerInfoTabTarget === "composer"}
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
+                supersededSession={supersededSession}
               />
             )}
             </div>

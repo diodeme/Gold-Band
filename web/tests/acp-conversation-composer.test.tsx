@@ -50,6 +50,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     canSubmit: true,
     sendButtonBusy: false,
     showRuntimeContinue: false,
+    runtimeContinueKind: null,
     runtimeContinueSubmitting: false,
     onRuntimeContinue: vi.fn(),
     configBar: null,
@@ -171,5 +172,38 @@ describe('AcpConversationComposer', () => {
     const imageChip = contextArea?.querySelector('[data-composer-attachment-chip="true"]');
     expect(imageChip?.querySelector('img')).toBeTruthy();
     expect(imageChip?.textContent).not.toContain('image.png');
+  });
+
+  it('replaces the textarea with a linked read-only notice for a superseded session', async () => {
+    const onNavigate = vi.fn();
+    const onDrop = vi.fn();
+    await renderComposer({
+      inputDisabled: true,
+      canSubmit: false,
+      queueSubmit: false,
+      onDrop,
+      supersededSession: {
+        label: 'node-x / attempt-003',
+        href: '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/nodes/node-x/attempts/attempt-003',
+        onNavigate,
+      },
+    });
+
+    const notice = host.querySelector('[data-acp-session-superseded="true"]');
+    const link = notice?.querySelector<HTMLAnchorElement>('a');
+    const attachmentButton = host.querySelector<HTMLButtonElement>('button[aria-label="添加附件"]');
+    const sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(host.querySelector('textarea')).toBeNull();
+    expect(notice?.textContent).toContain('此会话已由 node-x / attempt-003 接续');
+    expect(link?.getAttribute('href')).toContain('/nodes/node-x/attempts/attempt-003');
+    expect(link?.className).toContain('text-link');
+    expect(link?.className).toContain('text-xs');
+    expect(attachmentButton?.disabled).toBe(true);
+    expect(sendButton?.disabled).toBe(true);
+
+    await act(async () => link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })));
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    await act(async () => notice?.closest('[data-attachment-dropzone]')?.dispatchEvent(new Event('drop', { bubbles: true })));
+    expect(onDrop).not.toHaveBeenCalled();
   });
 });

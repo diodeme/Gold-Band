@@ -6,7 +6,12 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { TurnFileChangesCard } from '@/components/acp/TurnFileChangesCard';
+import {
+  TURN_FILE_HOVER_CLOSE_DELAY_MS,
+  TURN_FILE_HOVER_DEBUG_STORAGE_KEY,
+  TURN_FILE_HOVER_OPEN_DELAY_MS,
+  TurnFileChangesCard,
+} from '@/components/acp/TurnFileChangesCard';
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
 import {
   DIFF_VIEW_SCAN_LIMIT,
@@ -17,6 +22,11 @@ import {
   clearTurnFileChangeSetCacheForTests,
   loadTurnFileChangeSet,
 } from '@/lib/turn-file-change-set-cache';
+import {
+  clearTurnFileComparisonCacheForTests,
+  loadTurnFileComparison,
+  TURN_FILE_COMPARISON_CACHE_LIMIT,
+} from '@/lib/turn-file-comparison-cache';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   RightWorkspaceProvider,
@@ -28,11 +38,18 @@ import type {
   TurnFileLocatorVm,
 } from '@/types';
 
-const { getTurnFileChangeSetMock } = vi.hoisted(() => ({
+const turnFileDiffPreviewSource = readFileSync(
+  resolve(process.cwd(), 'web/src/components/acp/TurnFileDiffPreview.tsx'),
+  'utf8',
+);
+
+const { getFileComparisonMock, getTurnFileChangeSetMock } = vi.hoisted(() => ({
+  getFileComparisonMock: vi.fn(),
   getTurnFileChangeSetMock: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
+  getFileComparison: getFileComparisonMock,
   getTurnFileChangeSet: getTurnFileChangeSetMock,
 }));
 
@@ -109,6 +126,18 @@ function pointerEvent(id = 'change-set-1'): AcpUiEventVm {
   };
 }
 
+function comparison(changeId = 'modified-1') {
+  return {
+    changeSetId: 'change-set-1',
+    changeId,
+    path: `src/${changeId}.ts`,
+    stats: { addedLines: 2, deletedLines: 1 },
+    before: { content: 'const value = 1;\n' },
+    after: { content: 'const value = 2;\n' },
+    limitationCode: null,
+  };
+}
+
 function WorkspaceProbe() {
   const workspace = useRightWorkspace();
   const active = workspace.tabs.find((tab) => tab.key === workspace.activeTabKey);
@@ -141,11 +170,15 @@ async function renderCard(container: HTMLElement, event = pointerEvent()) {
 
 beforeEach(() => {
   clearTurnFileChangeSetCacheForTests();
+  clearTurnFileComparisonCacheForTests();
+  getFileComparisonMock.mockReset();
+  getFileComparisonMock.mockImplementation((_locator, _changeSetId, changeId: string) => Promise.resolve(comparison(changeId)));
   getTurnFileChangeSetMock.mockReset();
   getTurnFileChangeSetMock.mockImplementation((_locator, id: string) => Promise.resolve(changeSet(id)));
 });
 
 afterEach(() => {
+  window.localStorage.removeItem(TURN_FILE_HOVER_DEBUG_STORAGE_KEY);
   document.body.replaceChildren();
 });
 
@@ -204,7 +237,8 @@ describe('turn file changes card', () => {
     try {
       expect(container.textContent).not.toContain('正在加载文件变化');
       expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
-      expect(container.querySelector('[data-slot="tooltip-trigger"]')).not.toBeNull();
+      expect(container.querySelectorAll('[data-slot="hover-card-trigger"]')).toHaveLength(3);
+      expect(container.querySelector('[data-slot="tooltip-trigger"]')).toBeNull();
       expect(container.querySelector('[title]')).toBeNull();
       expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
     } finally {
@@ -212,7 +246,7 @@ describe('turn file changes card', () => {
     }
   });
 
-  it('opens added and modified captures in the right workspace, while deleted files remain non-interactive', async () => {
+  it('keeps added and modified click navigation while deleted files expose preview focus without becoming clickable', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const limitedChangeSet = changeSet();
@@ -225,7 +259,8 @@ describe('turn file changes card', () => {
       expect(rows[0]?.tagName).toBe('BUTTON');
       expect(rows[1]?.tagName).toBe('BUTTON');
       expect(rows[2]?.tagName).toBe('DIV');
-      expect(rows[2]?.getAttribute('tabindex')).toBeNull();
+      expect(rows[2]?.getAttribute('tabindex')).toBe('0');
+      expect(rows[2]?.getAttribute('aria-label')).toContain('预览已删除文件');
 
       await act(async () => rows[0]?.click());
       const probe = container.querySelector('output');
@@ -239,6 +274,8 @@ describe('turn file changes card', () => {
       expect(probe?.dataset.tabCount).toBe('2');
       expect(probe?.dataset.activeAttention).toBe('false');
       expect(rows[1]?.querySelector('svg')?.className.baseVal).toContain('text-gold-running');
+      await act(async () => rows[2]?.click());
+      expect(probe?.dataset.tabCount).toBe('2');
     } finally {
       await act(async () => root.unmount());
     }
@@ -303,6 +340,173 @@ describe('turn file changes card', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('uses a deliberate hover delay and a bounded cache that deduplicates comparison reads', async () => {
+    expect(TURN_FILE_HOVER_OPEN_DELAY_MS).toBeGreaterThanOrEqual(300);
+    expect(TURN_FILE_HOVER_CLOSE_DELAY_MS).toBeGreaterThan(0);
+    expect(TURN_FILE_COMPARISON_CACHE_LIMIT).toBe(2);
+
+    let resolveComparison!: (value: ReturnType<typeof comparison>) => void;
+    getFileComparisonMock.mockImplementationOnce(() => new Promise((resolvePromise) => {
+      resolveComparison = resolvePromise;
+    }));
+    const first = loadTurnFileComparison(locator, 'change-set-1', 'modified-1');
+    const second = loadTurnFileComparison(locator, 'change-set-1', 'modified-1');
+    expect(first).toBe(second);
+    expect(getFileComparisonMock).toHaveBeenCalledTimes(1);
+
+    resolveComparison(comparison());
+    await expect(first).resolves.toMatchObject({ changeId: 'modified-1' });
+    await expect(loadTurnFileComparison(locator, 'change-set-1', 'modified-1')).resolves.toMatchObject({ changeId: 'modified-1' });
+    expect(getFileComparisonMock).toHaveBeenCalledTimes(1);
+
+    await loadTurnFileComparison({ ...locator, branchId: 'agent-2' }, 'change-set-1', 'modified-1');
+    expect(getFileComparisonMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the hover diff preview compact while retaining viewport bounds', () => {
+    expect(turnFileDiffPreviewSource).toContain('h-[clamp(10rem,44vh,24rem)]');
+    expect(turnFileDiffPreviewSource).toContain('w-[min(40rem,calc(100vw-2rem))]');
+    expect(turnFileDiffPreviewSource).toContain('h-9 shrink-0');
+    expect(turnFileDiffPreviewSource).not.toContain('h-[clamp(12rem,52vh,30rem)]');
+    expect(turnFileDiffPreviewSource).not.toContain('w-[min(46rem,calc(100vw-2rem))]');
+  });
+
+  it('opens the same lazy diff preview from keyboard focus without preloading other rows', async () => {
+    getFileComparisonMock.mockImplementation(() => new Promise(() => undefined));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[role="listitem"]'));
+      expect(getFileComparisonMock).not.toHaveBeenCalled();
+      await act(async () => rows[1]?.focus());
+      await act(async () => { await Promise.resolve(); });
+
+      const preview = document.body.querySelector<HTMLElement>('[data-turn-file-diff-preview="modified-1"]');
+      expect(preview).not.toBeNull();
+      expect(preview?.textContent).toContain('正在加载文件差异');
+      expect(getFileComparisonMock).toHaveBeenCalledTimes(1);
+      expect(getFileComparisonMock).toHaveBeenCalledWith(locator, 'change-set-1', 'modified-1');
+      await act(async () => rows[1]?.click());
+      await act(async () => { await Promise.resolve(); });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not reopen the hover preview when pointer down moves focus into the row', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    const pointerEvent = (type: 'pointerdown' | 'pointerup') => {
+      const event = new MouseEvent(type, { bubbles: true, clientX: 80, clientY: 40 });
+      Object.defineProperty(event, 'pointerType', { value: 'mouse' });
+      return event;
+    };
+    try {
+      const row = container.querySelectorAll<HTMLElement>('[role="listitem"]')[1];
+      await act(async () => {
+        row?.dispatchEvent(pointerEvent('pointerdown'));
+        row?.focus();
+        await Promise.resolve();
+      });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).toBeNull();
+
+      await act(async () => {
+        row?.dispatchEvent(pointerEvent('pointerup'));
+        row?.blur();
+        row?.focus();
+        await Promise.resolve();
+      });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps a clicked hover preview closed until the pointer leaves and enters the row again', async () => {
+    vi.useFakeTimers();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    const pointerEvent = (
+      type: 'pointerover' | 'pointerout' | 'pointermove',
+      x: number,
+      y: number,
+      relatedTarget: EventTarget | null = null,
+      movementX = 0,
+      movementY = 0,
+    ) => {
+      const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, relatedTarget });
+      Object.defineProperty(event, 'pointerType', { value: 'mouse' });
+      Object.defineProperty(event, 'movementX', { value: movementX });
+      Object.defineProperty(event, 'movementY', { value: movementY });
+      return event;
+    };
+    try {
+      const row = container.querySelectorAll<HTMLElement>('[role="listitem"]')[1];
+      expect(row).not.toBeNull();
+
+      await act(async () => {
+        row?.dispatchEvent(pointerEvent('pointerover', 80, 40));
+        await vi.advanceTimersByTimeAsync(TURN_FILE_HOVER_OPEN_DELAY_MS);
+      });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).not.toBeNull();
+
+      await act(async () => {
+        row?.dispatchEvent(new MouseEvent('click', {
+          bubbles: true,
+          clientX: 80,
+          clientY: 40,
+          detail: 1,
+        }));
+        row?.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+        row?.dispatchEvent(pointerEvent('pointerout', 80, 40, document.body));
+        row?.dispatchEvent(pointerEvent('pointerover', 120, 60, document.body));
+        row?.dispatchEvent(pointerEvent('pointermove', 80, 40, document.body, 40, 20));
+        await vi.advanceTimersByTimeAsync(TURN_FILE_HOVER_OPEN_DELAY_MS + TURN_FILE_HOVER_CLOSE_DELAY_MS);
+      });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).toBeNull();
+
+      await act(async () => {
+        row?.dispatchEvent(pointerEvent('pointerout', 140, 70, document.body));
+        row?.dispatchEvent(pointerEvent('pointerover', 150, 80, document.body));
+        row?.dispatchEvent(pointerEvent('pointermove', 150, 80, document.body, 10, 10));
+        await vi.advanceTimersByTimeAsync(TURN_FILE_HOVER_OPEN_DELAY_MS);
+      });
+      expect(document.body.querySelector('[data-turn-file-diff-preview="modified-1"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
+  it('emits copyable opt-in hover diagnostics without file paths', async () => {
+    window.localStorage.setItem(TURN_FILE_HOVER_DEBUG_STORAGE_KEY, '1');
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = await renderCard(container);
+    try {
+      const row = container.querySelectorAll<HTMLElement>('[role="listitem"]')[1];
+      await act(async () => row?.focus());
+      await act(async () => row?.click());
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => root.unmount());
+
+      const lines = info.mock.calls.map(([line]) => String(line));
+      expect(lines.some((line) => line.includes('[GoldBand][Turn file hover]'))).toBe(true);
+      expect(lines.some((line) => line.includes('"event":"row-mount"'))).toBe(true);
+      expect(lines.some((line) => line.includes('"event":"open-request"'))).toBe(true);
+      expect(lines.some((line) => line.includes('"event":"click"'))).toBe(true);
+      expect(lines.some((line) => line.includes('"event":"row-unmount"'))).toBe(true);
+      expect(lines.join('\n')).not.toContain('src/existing.ts');
+    } finally {
+      info.mockRestore();
+    }
+  });
 });
 
 describe('conversation artifact workspace entry', () => {
@@ -363,7 +567,7 @@ describe('turn file viewer contract', () => {
 
   it('uses a read-only unified CodeMirror merge view', () => {
     const source = readFileSync(
-      resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
+      resolve(process.cwd(), 'web/src/components/workspace/files/ReadonlyUnifiedDiff.tsx'),
       'utf8',
     );
     expect(source).toContain('unifiedMergeView({');
@@ -374,9 +578,19 @@ describe('turn file viewer contract', () => {
     expect(source).toContain('width="100%"');
     expect(source).toContain('[&_.cm-scroller]:overflow-x-hidden');
     expect(source).toContain('mergeControls: false');
+    expect(source).toContain('highlightChanges: true');
     expect(source).toContain('collapseUnchanged:');
     expect(source).toContain('diffConfig: { scanLimit: DIFF_VIEW_SCAN_LIMIT, timeout: DIFF_VIEW_TIMEOUT_MS }');
-    expect(source).toContain('getChunks(view.state)?.chunks.length');
+    const workspaceSource = readFileSync(
+      resolve(process.cwd(), 'web/src/components/workspace/files/TurnFileWorkspacePanel.tsx'),
+      'utf8',
+    );
+    expect(workspaceSource).toContain('getChunks(view.state)?.chunks.length');
+    expect(workspaceSource).toContain('<ReadonlyUnifiedDiff');
+    expect(workspaceSource).toContain('const range = EditorSelection.range(to, from)');
+    expect(workspaceSource).toContain('EditorView.scrollIntoView(range)');
+    expect(workspaceSource).toContain('goToNextChunk');
+    expect(workspaceSource).toContain('goToPreviousChunk');
   });
 
   it('keeps large source diffs precise within a bounded main-thread budget', () => {

@@ -94,6 +94,7 @@
 - 当前选中 session 的顶部 trigger 也显示同一枚状态标记，与下拉树中的 attempt 行保持一致
 - 点击展开 round → node → attempt 层级树
 - 用户可切换具体 session
+- Session Switcher 只有 attempt leaf 可以成为当前 session；round/node 只负责展开。round、node 与未选中 leaf 的 hover 统一使用较弱的 `sidebar-accent` 层级，当前 leaf 使用完整 `sidebar-accent / sidebar-accent-foreground` 并暴露 `aria-current`，顶部 trigger 暴露展开态。键盘 focus 继续使用主题 ring，不得用另一套填充色把 hover、focus 或展开态伪装成第二个选中项。
 - 每个 attempt 前仅显示轻量状态圆点，颜色只来自后端 `runtimeDisplay.tone`：绿色成功、红色失败/错误阻塞、黄色暂停、灰色待处理/未知；运行中统一使用 `gold-running` 蓝色圆点的低强度呼吸动画，并遵守 reduced-motion，不叠加另一套外圈 ping halo。
 - 已选中的 session 行仍保留同一枚状态标记，不能因为选中高亮而丢失运行态/结果态识别
 - `status / outcome / pauseReason` 只作为运行事实字段保留；Session Switcher、顶部选中栏、工作流查看 Sheet 不在前端自行推断成功/失败/暂停，而是统一消费后端派生的 `runtimeDisplay.code / tone / icon / terminal / resumable / reasonCode`

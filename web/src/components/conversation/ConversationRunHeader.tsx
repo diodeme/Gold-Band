@@ -63,6 +63,7 @@ export function ConversationRunHeader({
           variant="ghost"
           size="sm"
           className="h-7 gap-1.5 px-2 text-xs font-normal"
+          aria-expanded={sessionSwitcherOpen}
           onClick={onToggleSessionSwitcher}
         >
           {selectedSessionLeaf ? (

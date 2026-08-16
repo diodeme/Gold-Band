@@ -724,6 +724,7 @@ pub struct SettingsConfig {
 }
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
+const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
 const CURRENT_CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp@latest";
@@ -1461,7 +1462,7 @@ impl Default for RuntimeConfig {
             desktop_update_badges: DesktopUpdateBadgeState::default(),
             desktop_available_update: None,
             agents,
-            use_local_claude: false,
+            use_local_claude: USE_LOCAL_CLAUDE,
             require_local_claude_executable: false,
             desktop_metrics_enabled: false,
             desktop_metrics_base_url: None,
@@ -1524,9 +1525,7 @@ impl RuntimeConfig {
         if let Some(agents) = &settings.agents {
             self.agents = agents.clone();
         }
-        if let Some(use_local_claude) = settings.use_local_claude {
-            self.use_local_claude = use_local_claude;
-        }
+        self.use_local_claude = USE_LOCAL_CLAUDE;
         if let Some(desktop_metrics_enabled) = settings.desktop_metrics_enabled {
             self.desktop_metrics_enabled = desktop_metrics_enabled;
         }
@@ -2221,7 +2220,7 @@ mod tests {
             custom_personalization("Fira Code", "Iosevka", 15, 13)
         );
         assert!(matches!(config.log_level, RuntimeLogLevel::Trace));
-        assert!(config.use_local_claude);
+        assert!(!config.use_local_claude);
         assert_eq!(
             config.desktop_updater_url_override.as_deref(),
             Some("https://updates.example/latest.json")

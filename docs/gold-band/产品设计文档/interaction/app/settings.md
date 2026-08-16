@@ -165,7 +165,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
 - 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
 - personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
-- `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言和日志偏好；现阶段前端固定提交 `useLocalClaude = false`，设置页不向用户暴露本地 Claude 开关，Claude 默认使用 ACP npm 包内版本。前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
+- `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言和日志偏好；现阶段前端固定提交 `useLocalClaude = false`，后端 `RuntimeConfig` 加载入口也固定投影为 `false`，不接受历史持久化值覆盖。设置页不向用户暴露本地 Claude 开关，旧用户升级后同样立即使用 ACP npm 包内版本。前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
 - 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
@@ -198,7 +198,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
-- 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，默认使用 ACP npm 包内版本。后端既有字段与 ACP 本地解析能力暂不在本次最小改动中删除。
+- 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。
 - 桌面端启动后后台定时检查更新，发现新版本只更新状态并提示用户，不自动下载或安装；用户可在高级页手动检查，有新版本时再点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。

@@ -4974,7 +4974,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           <Button
             ref={triggerRef}
             variant="ghost"
-            className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none px-1 py-0.5 text-left font-normal text-muted-foreground"
+            className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5 text-left font-normal text-muted-foreground hover:bg-transparent hover:text-accent-foreground focus-visible:bg-transparent focus-visible:text-accent-foreground data-[state=open]:bg-transparent data-[state=open]:text-accent-foreground"
           >
             {event.live ? (
               <AcpProcessingSpinner className="size-3.5" />
@@ -5864,7 +5864,7 @@ export function PermissionRequestCard({
                       className={cn(
                         "h-8 min-w-0 max-w-full justify-center rounded-lg border-border/65 bg-transparent px-3 text-xs font-medium shadow-none",
                         isAllowOption
-                          ? "text-foreground hover:bg-muted/45"
+                          ? "text-accent-foreground hover:border-accent-foreground/35 hover:bg-accent/60 hover:text-accent-foreground focus-visible:border-accent-foreground/35 focus-visible:bg-accent/60"
                           : "text-muted-foreground hover:bg-muted/45 hover:text-foreground",
                       )}
                       aria-label={label}

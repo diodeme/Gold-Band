@@ -21,6 +21,10 @@ dividers, borderless surfaces, deliberate shadows, pills, circles, joined contro
 transitions without preventing another theme from choosing different role defaults. Use `radius: "none"` with
 `borderWidth: "none"` for structural surfaces that do not own a perimeter:
 
+Conversation packages declare `message-user`, `message-assistant`, `message-disclosure`, `runtime-control`,
+`activity`, `tool-card`, and `permission-card` separately. Disclosure state, joined-control topology, focus
+rings, and destructive/invalid variants remain application-owned and must not be encoded as theme-specific DOM.
+
 ```json
 {
   "faces": [

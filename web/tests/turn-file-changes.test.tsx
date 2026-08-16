@@ -183,9 +183,12 @@ describe('turn file changes card', () => {
       const fileCard = container.querySelector<HTMLElement>('[data-turn-file-changes-card]');
       expect(compaction?.parentElement?.className).toContain('max-w-[82%]');
       expect(fileCard?.parentElement?.className).toContain('max-w-[82%]');
+      expect(fileCard?.getAttribute('data-theme-role')).toBe('card');
       expect(compaction?.className).not.toContain('pl-10');
       expect(fileCard?.className).not.toContain('ml-10');
       expect(fileCard?.className).not.toContain('calc(100%');
+      expect(fileCard?.className).not.toContain('bg-muted/10');
+      expect(fileCard?.className).not.toContain('border-border/60');
     } finally {
       await act(async () => root.unmount());
     }

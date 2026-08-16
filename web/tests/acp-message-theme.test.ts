@@ -37,11 +37,26 @@ describe('ACP message theme contract', () => {
     expect(chatSource).not.toContain('var(--primary)_26%');
   });
 
-  it('keeps hidden runtime context inside the same tonal surface instead of nesting a white card', () => {
-    expect(hiddenPromptSource).toContain('bg-foreground/[0.025]');
-    expect(hiddenPromptSource).toContain('border-foreground/10');
-    expect(hiddenPromptSource).not.toContain('bg-background/35');
-    expect(hiddenPromptSource).not.toContain('bg-background/45');
+  it('delegates hidden runtime context and runtime control surfaces to the theme package', () => {
+    expect(hiddenPromptSource).toContain('data-theme-role="message-disclosure"');
+    expect(chatSource).toContain('data-theme-role="runtime-control"');
+    expect(hiddenPromptSource).not.toContain('bg-foreground/[0.025]');
+    expect(chatSource).not.toContain('border-primary/20 bg-primary/5');
+    expect(chatSource).not.toContain('hover:bg-primary/10');
+  });
+
+  it('routes thought, activity, and intervention surfaces through existing theme roles', () => {
+    expect(chatSource).toContain('data-theme-role="activity"');
+    expect(chatSource).toContain('data-theme-role={compact ? undefined : "activity"}');
+    expect(chatSource).toContain('data-theme-role="permission-card"');
+    expect(chatSource).not.toContain('bg-card/65 px-4 py-3.5 shadow-');
+  });
+
+  it('keeps activity summaries and assistant copy actions compact', () => {
+    expect(chatSource).toContain('min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none px-1 py-0.5');
+    expect(chatSource).toContain('data-agent-message-actions="true"');
+    expect(chatSource).toContain('className="h-5 px-1 leading-none opacity-100');
+    expect(chatSource).toContain('className="size-5 text-muted-foreground');
   });
 
   it('sizes the user bubble from every currently visible prompt section', () => {
@@ -60,7 +75,7 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).toContain('style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}');
     expect(hiddenPromptSource).not.toContain('max-w-4xl');
     expect(hiddenPromptSource).not.toContain('max-w-6xl');
-    expect(hiddenPromptSource).toContain('className="grid min-w-0 max-w-full"');
+    expect(hiddenPromptSource).toContain('className="grid min-w-0 max-w-full overflow-hidden"');
     expect(hiddenPromptSource).toContain(
       'group grid min-w-0 grid-cols-[minmax(0,1fr)_auto]',
     );

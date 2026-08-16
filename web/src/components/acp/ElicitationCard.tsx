@@ -477,7 +477,10 @@ export function ElicitationCard({
     ) : null;
 
   return (
-    <Card className="my-2 gap-0 border-border/70 py-0">
+    <Card
+      data-theme-role="permission-card"
+      className="my-2 gap-0 bg-[var(--gb-recipe-background)] text-[var(--gb-recipe-foreground)] py-0"
+    >
       <CardContent className="space-y-2.5 px-5 py-4">
         {/* 进度指示器 */}
         {ProgressDots}

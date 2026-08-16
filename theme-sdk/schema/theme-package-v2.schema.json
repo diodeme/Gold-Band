@@ -1776,6 +1776,8 @@
         "composer",
         "message-user",
         "message-assistant",
+        "message-disclosure",
+        "runtime-control",
         "activity",
         "tool-card",
         "permission-card",
@@ -5627,6 +5629,964 @@
           }
         },
         "message-assistant": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "borderWidth",
+            "borderStyle",
+            "radius",
+            "elevation",
+            "material",
+            "motion"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "background",
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "accent",
+                "primary",
+                "message-user",
+                "message-assistant",
+                "composer",
+                "activity",
+                "tool-card",
+                "permission-card",
+                "workspace-tab",
+                "editor",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground",
+                "accent-foreground",
+                "primary-foreground",
+                "message-user-foreground",
+                "message-assistant-foreground",
+                "composer-foreground",
+                "activity-foreground",
+                "tool-card-foreground",
+                "permission-card-foreground",
+                "workspace-tab-foreground",
+                "editor-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight",
+                "ring",
+                "primary",
+                "transparent"
+              ]
+            },
+            "borderWidth": {
+              "enum": [
+                "none",
+                "hairline",
+                "default",
+                "strong"
+              ]
+            },
+            "borderStyle": {
+              "enum": [
+                "solid",
+                "double",
+                "dashed"
+              ]
+            },
+            "radius": {
+              "enum": [
+                "none",
+                "control",
+                "surface",
+                "overlay",
+                "avatar",
+                "pill"
+              ]
+            },
+            "elevation": {
+              "enum": [
+                "none",
+                "surface",
+                "overlay",
+                "floating"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            },
+            "motion": {
+              "enum": [
+                "none",
+                "color",
+                "surface",
+                "press"
+              ]
+            },
+            "states": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "hover": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "active": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "selected": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "focus": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "disabled": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "message-disclosure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "background",
+            "foreground",
+            "border",
+            "borderWidth",
+            "borderStyle",
+            "radius",
+            "elevation",
+            "material",
+            "motion"
+          ],
+          "properties": {
+            "background": {
+              "enum": [
+                "background",
+                "card",
+                "popover",
+                "sidebar",
+                "surface-low",
+                "surface-high",
+                "accent",
+                "primary",
+                "message-user",
+                "message-assistant",
+                "composer",
+                "activity",
+                "tool-card",
+                "permission-card",
+                "workspace-tab",
+                "editor",
+                "transparent"
+              ]
+            },
+            "foreground": {
+              "enum": [
+                "foreground",
+                "muted-foreground",
+                "card-foreground",
+                "accent-foreground",
+                "primary-foreground",
+                "message-user-foreground",
+                "message-assistant-foreground",
+                "composer-foreground",
+                "activity-foreground",
+                "tool-card-foreground",
+                "permission-card-foreground",
+                "workspace-tab-foreground",
+                "editor-foreground"
+              ]
+            },
+            "border": {
+              "enum": [
+                "border",
+                "sidebar-border",
+                "highlight",
+                "ring",
+                "primary",
+                "transparent"
+              ]
+            },
+            "borderWidth": {
+              "enum": [
+                "none",
+                "hairline",
+                "default",
+                "strong"
+              ]
+            },
+            "borderStyle": {
+              "enum": [
+                "solid",
+                "double",
+                "dashed"
+              ]
+            },
+            "radius": {
+              "enum": [
+                "none",
+                "control",
+                "surface",
+                "overlay",
+                "avatar",
+                "pill"
+              ]
+            },
+            "elevation": {
+              "enum": [
+                "none",
+                "surface",
+                "overlay",
+                "floating"
+              ]
+            },
+            "material": {
+              "enum": [
+                "flat",
+                "subtle",
+                "elevated"
+              ]
+            },
+            "motion": {
+              "enum": [
+                "none",
+                "color",
+                "surface",
+                "press"
+              ]
+            },
+            "states": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "hover": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "active": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "selected": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "focus": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "disabled": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "minProperties": 1,
+                  "properties": {
+                    "background": {
+                      "enum": [
+                        "background",
+                        "card",
+                        "popover",
+                        "sidebar",
+                        "surface-low",
+                        "surface-high",
+                        "accent",
+                        "primary",
+                        "message-user",
+                        "message-assistant",
+                        "composer",
+                        "activity",
+                        "tool-card",
+                        "permission-card",
+                        "workspace-tab",
+                        "editor",
+                        "transparent"
+                      ]
+                    },
+                    "foreground": {
+                      "enum": [
+                        "foreground",
+                        "muted-foreground",
+                        "card-foreground",
+                        "accent-foreground",
+                        "primary-foreground",
+                        "message-user-foreground",
+                        "message-assistant-foreground",
+                        "composer-foreground",
+                        "activity-foreground",
+                        "tool-card-foreground",
+                        "permission-card-foreground",
+                        "workspace-tab-foreground",
+                        "editor-foreground"
+                      ]
+                    },
+                    "border": {
+                      "enum": [
+                        "border",
+                        "sidebar-border",
+                        "highlight",
+                        "ring",
+                        "primary",
+                        "transparent"
+                      ]
+                    },
+                    "elevation": {
+                      "enum": [
+                        "none",
+                        "surface",
+                        "overlay",
+                        "floating",
+                        "pressed"
+                      ]
+                    },
+                    "opacity": {
+                      "type": "number",
+                      "minimum": 0.25,
+                      "maximum": 1
+                    },
+                    "press": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "runtime-control": {
           "type": "object",
           "additionalProperties": false,
           "required": [

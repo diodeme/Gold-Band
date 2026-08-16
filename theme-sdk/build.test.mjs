@@ -174,6 +174,19 @@ test('rejects visual-quality overrides outside the closed effect whitelist', asy
   assert.match(`${result.stderr}\n${result.stdout}`, /additional properties|uiSize/u);
 });
 
+test('requires the conversation disclosure and runtime control recipe roles', async () => {
+  const result = await withBuildFixture(async (directory) => {
+    const path = join(directory, 'themes', 'tech-neutral', 'recipes.json');
+    await updateJson(path, (recipes) => {
+      delete recipes['message-disclosure'];
+      delete recipes['runtime-control'];
+    });
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(buildOutput(result), /message-disclosure|runtime-control|required property/u);
+});
+
 test('rejects an unknown material model', async () => {
   const result = await withBuildFixture(async (directory) => {
     const path = join(directory, 'themes', 'gold-band', 'tokens', 'light.tokens.json');

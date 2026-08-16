@@ -54,6 +54,9 @@ describe('ElicitationCard question text', () => {
     expect(source).toContain('aria-pressed={selected}');
     expect(source).not.toContain('border-primary bg-primary/5');
     expect(source).not.toContain('text-primary shrink-0');
+    expect(source).toContain('data-theme-role="permission-card"');
+    expect(source).toContain('bg-[var(--gb-recipe-background)]');
+    expect(source).not.toContain('bg-permission-card');
   });
 
   it('uses the schema field description as the visible question', () => {

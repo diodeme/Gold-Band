@@ -50,6 +50,7 @@ describe('hidden prompt content expansion', () => {
 
       const contentRoot = container.firstElementChild;
       expect(contentRoot?.firstElementChild?.getAttribute('data-slot')).toBe('collapsible');
+      expect(contentRoot?.firstElementChild?.getAttribute('data-theme-role')).toBe('message-disclosure');
       expect(contentRoot?.children[1]?.textContent).toContain('本次目标变更');
     } finally {
       await act(async () => root.unmount());

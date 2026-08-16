@@ -90,7 +90,7 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   };
 
   return (
-    <Card className="w-full max-w-[46rem] gap-0 overflow-hidden rounded-xl border-border/60 bg-muted/10 py-0 shadow-none" data-turn-file-changes-card={changeSetId}>
+    <Card className="w-full max-w-[46rem] gap-0 overflow-hidden py-0" data-turn-file-changes-card={changeSetId}>
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <FileDiff className="size-4 shrink-0 text-foreground" />

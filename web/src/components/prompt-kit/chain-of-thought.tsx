@@ -124,16 +124,13 @@ export const ChainOfThoughtContent = ({
   )
 }
 
-export type ChainOfThoughtProps = {
-  children: React.ReactNode
-  className?: string
-}
+export type ChainOfThoughtProps = React.ComponentProps<"div">
 
-export function ChainOfThought({ children, className }: ChainOfThoughtProps) {
+export function ChainOfThought({ children, className, ...props }: ChainOfThoughtProps) {
   const childrenArray = React.Children.toArray(children)
 
   return (
-    <div className={cn("space-y-0", className)}>
+    <div className={cn("space-y-0", className)} {...props}>
       {childrenArray.map((child, index) => (
         <React.Fragment key={index}>
           {React.isValidElement(child) &&

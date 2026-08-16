@@ -140,7 +140,7 @@ export function HiddenPromptMessageContent({ content }: { content: string }) {
               <div key={`${sourceIndex}:hidden-measure`}>
                 <button
                   ref={(element) => { labelMeasureRefs.current[sourceIndex] = element; }}
-                  className="grid w-max grid-cols-[max-content_auto] items-center gap-3 rounded-lg border px-3 py-2 text-xs"
+                  className="grid w-max grid-cols-[max-content_auto] items-center gap-3 px-2.5 py-1.5 text-xs"
                   tabIndex={-1}
                 >
                   <span className="font-medium">{label}</span>
@@ -225,31 +225,35 @@ function HiddenPromptSection({
 
   return (
     <Collapsible
-      className="grid min-w-0 max-w-full"
+      data-theme-role="message-disclosure"
+      className="grid min-w-0 max-w-full overflow-hidden"
       open={open}
       onOpenChange={onOpenChange}
     >
-      <CollapsibleTrigger
-        className={cn(
-          "group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.045]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
-        )}
-      >
-        <span className="min-w-0 truncate font-medium text-foreground/80">
-          {label}
-        </span>
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-ui-caption text-muted-foreground">
-          {t("acp.hiddenPromptCharacters", { count: text.length })}
-          <ChevronDown
-            className={cn(
-              "size-3.5 transition-transform duration-150",
-              open && "rotate-180",
-            )}
-          />
-        </span>
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.04]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          )}
+        >
+          <span className="min-w-0 truncate font-medium text-foreground/80">
+            {label}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-ui-caption text-muted-foreground">
+            {t("acp.hiddenPromptCharacters", { count: text.length })}
+            <ChevronDown
+              className={cn(
+                "size-3.5 transition-transform duration-150",
+                open && "rotate-180",
+              )}
+            />
+          </span>
+        </button>
       </CollapsibleTrigger>
       <CollapsibleContent className="min-w-0 max-w-full">
-        <pre className="mt-2 max-h-72 w-max min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-lg border border-foreground/10 bg-foreground/[0.025] px-3 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
+        <pre className="max-h-72 w-max min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words border-t border-foreground/10 px-2.5 py-2 font-sans text-xs leading-5 text-foreground/80 [overflow-wrap:anywhere]">
           {text.trim()}
         </pre>
       </CollapsibleContent>

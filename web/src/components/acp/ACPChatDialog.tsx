@@ -4682,7 +4682,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({
       aria-atomic="true"
       className="min-w-0 py-1"
     >
-      <div className="w-full border-l-2 border-primary/25 py-1 pl-3">
+      <div data-theme-role="activity" className="w-full border-l-2 border-foreground/10 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2 text-sm">
           <span
             aria-hidden="true"
@@ -4965,6 +4965,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <Collapsible
+        data-theme-role="activity"
         open={open}
         onOpenChange={handleOpenChange}
         className="min-w-0 max-w-full"
@@ -4973,7 +4974,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           <Button
             ref={triggerRef}
             variant="ghost"
-            className="h-auto min-h-8 w-full min-w-0 justify-start gap-2 rounded-lg px-2 py-1.5 text-left font-normal text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+            className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none px-1 py-0.5 text-left font-normal text-muted-foreground"
           >
             {event.live ? (
               <AcpProcessingSpinner className="size-3.5" />
@@ -5369,22 +5370,22 @@ const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
   return (
     <MessageActions
       data-agent-message-actions="true"
-      className="min-h-6 px-1 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+      className="h-5 px-1 leading-none opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/message:opacity-100 group-focus-within/message:opacity-100"
     >
       <MessageAction tooltip={label} side="bottom">
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="size-6 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
+          className="size-5 text-muted-foreground hover:bg-muted/45 hover:text-foreground"
           aria-label={label}
           data-agent-message-copy="true"
           onClick={() => void copyMarkdown()}
         >
           {copied ? (
-            <Check className="size-3.5 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+            <Check className="size-3 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
           ) : (
-            <Copy className="size-3.5" aria-hidden="true" />
+            <Copy className="size-3" aria-hidden="true" />
           )}
         </Button>
       </MessageAction>
@@ -5415,11 +5416,10 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
   const Icon = isInvalid ? CircleAlert : ListTodo;
   return (
     <Collapsible
+      data-theme-role="runtime-control"
       className={cn(
-        "min-w-0 max-w-full overflow-hidden rounded-lg border",
-        isInvalid
-          ? "border-destructive/25 bg-destructive/5"
-          : "border-primary/20 bg-primary/5",
+        "min-w-0 max-w-full overflow-hidden",
+        isInvalid && "border border-destructive/25 bg-destructive/5",
       )}
     >
       <div className="flex min-w-0 items-stretch">
@@ -5428,7 +5428,7 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
             variant="ghost"
             className={cn(
               "group h-9 min-w-0 flex-1 justify-between rounded-none px-3 py-1.5 text-left font-normal",
-              isInvalid ? "hover:bg-destructive/10" : "hover:bg-primary/10",
+              isInvalid && "hover:bg-destructive/10",
             )}
           >
             <span className="flex min-w-0 items-center gap-2 overflow-hidden">
@@ -5437,7 +5437,7 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
                   "flex size-6 shrink-0 items-center justify-center rounded-md",
                   isInvalid
                     ? "bg-destructive/10 text-destructive"
-                    : "bg-primary/10 text-primary",
+                    : "bg-foreground/[0.06] text-foreground",
                 )}
               >
                 <Icon className="size-3.5" />
@@ -5467,8 +5467,8 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
       </div>
       <CollapsibleContent
         className={cn(
-          "border-t bg-background/60 px-3 py-2",
-          isInvalid ? "border-destructive/15" : "border-primary/15",
+          "border-t border-foreground/10 px-3 py-2",
+          isInvalid && "border-destructive/15",
         )}
       >
         <pre className="max-h-64 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground [overflow-wrap:anywhere]">
@@ -5633,11 +5633,12 @@ const ThoughtBlock = memo(function ThoughtBlock({
   return (
     <AssistantTimelineRow timestamp={event.timestamp} nested={nested}>
       <ChainOfThought
+        data-theme-role={compact ? undefined : "activity"}
         className={cn(
           "min-w-0 max-w-full overflow-hidden",
           compact
             ? "px-1.5 py-1"
-            : "rounded-lg border border-border/45 bg-transparent px-2.5 py-1.5",
+            : "px-2.5 py-1.5",
         )}
       >
         <ChainOfThoughtStep
@@ -5824,10 +5825,10 @@ export function PermissionRequestCard({
 
   return (
     <AssistantTimelineRow nested={nested}>
-      <div className="acp-permission-request-card w-full max-w-2xl overflow-hidden rounded-2xl border border-border/55 bg-card/65 px-4 py-3.5 shadow-[0_16px_40px_-32px_rgba(15,23,42,0.65)] ring-1 ring-foreground/[0.025] backdrop-blur-sm">
+      <div data-theme-role="permission-card" className="acp-permission-request-card w-full max-w-2xl overflow-hidden px-4 py-3.5">
         <div className="flex min-w-0 flex-col gap-3">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-border/50 bg-accent/65 text-accent-foreground shadow-sm shadow-background/20">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-transparent text-muted-foreground">
               <ShieldQuestion className="size-4" />
             </span>
             <div className="min-w-0">
@@ -5840,7 +5841,7 @@ export function PermissionRequestCard({
             </div>
           </div>
           {decisionSummary ? (
-            <div className="ml-11 min-w-0 rounded-lg bg-muted/35 px-3 py-2">
+            <div className="ml-11 min-w-0 border-l border-border/60 py-1 pl-3">
               <div className="mb-1 text-ui-micro font-medium uppercase tracking-[0.08em] text-muted-foreground">
                 {t("acp.toolParameters")}
               </div>
@@ -5861,10 +5862,10 @@ export function PermissionRequestCard({
                       size="sm"
                       variant="outline"
                       className={cn(
-                        "h-8 min-w-0 max-w-full justify-center rounded-xl px-3 text-xs font-medium shadow-none",
+                        "h-8 min-w-0 max-w-full justify-center rounded-lg border-border/65 bg-transparent px-3 text-xs font-medium shadow-none",
                         isAllowOption
-                          ? "border-transparent bg-accent/65 text-accent-foreground hover:border-primary/10 hover:bg-accent"
-                          : "border-border/65 bg-background/45 text-muted-foreground hover:bg-muted/65 hover:text-foreground",
+                          ? "text-foreground hover:bg-muted/45"
+                          : "text-muted-foreground hover:bg-muted/45 hover:text-foreground",
                       )}
                       aria-label={label}
                       onClick={() => onSelect(option.optionId)}

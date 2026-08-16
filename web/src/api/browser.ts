@@ -923,7 +923,13 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(mockAgentRegistry);
   },
   getAgentBindingUsage(_agentType: string) {
-    return Promise.resolve({ workflowTemplateCount: 0, taskCount: 0, scheduledTaskCount: 0 });
+    return Promise.resolve({
+      workflowTemplateCount: 0,
+      taskCount: 0,
+      scheduledTaskCount: 0,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
+    });
   },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);

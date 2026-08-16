@@ -64,6 +64,8 @@ describe('Agent deletion usage confirmation', () => {
         workflowTemplateCount: 1,
         taskCount: 2,
         scheduledTaskCount: 3,
+        unknownTaskCount: 0,
+        unknownScheduledTaskCount: 0,
       });
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -100,6 +102,40 @@ describe('Agent deletion usage confirmation', () => {
 
     expect(api.getAgentBindingUsage).toHaveBeenCalledTimes(2);
     expect(document.body.textContent).toContain('受影响的定时任务');
+    expect((button('确认删除') as HTMLButtonElement | undefined)?.disabled).toBe(false);
+  });
+
+  it('shows unknown references without blocking explicit deletion', async () => {
+    await i18n.changeLanguage('zh-CN');
+    api.getAgentBindingUsage.mockResolvedValue({
+      workflowTemplateCount: 0,
+      taskCount: 1,
+      scheduledTaskCount: 0,
+      unknownTaskCount: 2,
+      unknownScheduledTaskCount: 1,
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    cleanup = () => {
+      act(() => root.unmount());
+      container.remove();
+    };
+
+    await act(async () => root.render(
+      <AgentManagementPage
+        vm={registry}
+        loading={false}
+        onRefresh={() => undefined}
+        onRegistryChange={() => undefined}
+      />,
+    ));
+    await act(async () => {
+      button('删除')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain('无法确认的 Task');
+    expect(document.body.textContent).toContain('引用关系无法完全确认');
     expect((button('确认删除') as HTMLButtonElement | undefined)?.disabled).toBe(false);
   });
 });

@@ -591,7 +591,15 @@ export function AgentManagementPage({ vm, loading, onRefresh, onRegistryChange }
                 <dt>{t('agentManagement.deleteUsageTemplates')}</dt><dd className="tabular-nums">{deleteUsage.workflowTemplateCount}</dd>
                 <dt>{t('agentManagement.deleteUsageTasks')}</dt><dd className="tabular-nums">{deleteUsage.taskCount}</dd>
                 <dt>{t('agentManagement.deleteUsageSchedules')}</dt><dd className="tabular-nums">{deleteUsage.scheduledTaskCount}</dd>
+                <dt>{t('agentManagement.deleteUsageUnknownTasks')}</dt><dd className="tabular-nums">{deleteUsage.unknownTaskCount}</dd>
+                <dt>{t('agentManagement.deleteUsageUnknownSchedules')}</dt><dd className="tabular-nums">{deleteUsage.unknownScheduledTaskCount}</dd>
               </dl>
+            ) : null}
+            {deleteUsage && (deleteUsage.unknownTaskCount > 0 || deleteUsage.unknownScheduledTaskCount > 0) ? (
+              <Alert className="mt-3 border-gold-warning/40 bg-gold-warning/5 text-foreground">
+                <AlertTriangle className="text-gold-warning" />
+                <AlertDescription>{t('agentManagement.deleteUsageUnknownWarning')}</AlertDescription>
+              </Alert>
             ) : null}
             {deleteUsageError ? (
               <div className="flex flex-wrap items-center justify-between gap-2">

@@ -24,7 +24,8 @@ use crate::domain::{
 };
 use crate::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, NodeDsl, ValidatedWorkflow, WorkflowDsl,
-    validate_workflow, validate_workflow_snapshot, workflow_contains_ai_dynamic,
+    validate_authoring_workflow, validate_workflow, validate_workflow_snapshot,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
@@ -77,6 +78,7 @@ use crate::runtime_error::{
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{append_jsonl, read_json, write_json};
+use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
 
 use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
@@ -719,6 +721,29 @@ pub(crate) fn prepare_run(
         Some(path) => read_json(path)?,
         None => app.executable_task_workflow(task_id)?,
     };
+    prepare_run_from_workflow(app, task_id, workflow)
+}
+
+pub(crate) fn prepare_run_with_authoring(
+    app: &App,
+    task_id: &str,
+    authoring: &TaskAuthoringWorkflow,
+) -> Result<PreparedRun> {
+    let validated_authoring = validate_authoring_workflow(authoring.workflow.clone())?;
+    let workflow = validate_and_inject(
+        &validated_authoring.raw,
+        &authoring.model_bindings,
+        &app.config.agents,
+        &app.provider_diagnostics(),
+    )?;
+    prepare_run_from_workflow(app, task_id, workflow)
+}
+
+fn prepare_run_from_workflow(
+    app: &App,
+    task_id: &str,
+    workflow: WorkflowDsl,
+) -> Result<PreparedRun> {
     let validated = validate_workflow_snapshot(workflow)?;
     if workflow_contains_ai_dynamic(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;

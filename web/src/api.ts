@@ -437,6 +437,22 @@ export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntime
   return getRuntimeApi().clearDesktopAvatar(kind);
 }
 
+export function importDesktopWallpaper() {
+  return getRuntimeApi().importDesktopWallpaper();
+}
+
+export function selectRecentDesktopWallpaper(wallpaperId: string) {
+  return getRuntimeApi().selectRecentDesktopWallpaper(wallpaperId);
+}
+
+export function saveDesktopWallpaperOpacity(opacityPercent: number) {
+  return getRuntimeApi().saveDesktopWallpaperOpacity(opacityPercent);
+}
+
+export function restoreThemeDesktopWallpaper() {
+  return getRuntimeApi().restoreThemeDesktopWallpaper();
+}
+
 export function saveUpdaterSettings(overrideUrl: string | null) {
   return getRuntimeApi().saveUpdaterSettings(overrideUrl);
 }

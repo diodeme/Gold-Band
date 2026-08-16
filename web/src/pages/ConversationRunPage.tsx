@@ -14,6 +14,7 @@ import {
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
+import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
@@ -93,6 +94,7 @@ export function ConversationRunPage({
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
+  useThemeWallpaperSurface();
   const workspace = useRightWorkspace();
   const translatePauseReason = (reason?: string | null) => {
     if (!reason) return t('conversation.runtime.sessionPaused');
@@ -422,8 +424,8 @@ export function ConversationRunPage({
 
   return (
     <TooltipProvider>
-      <div className="relative h-full min-h-0 bg-background">
-      <div className={`flex h-full min-h-0 flex-col bg-background ${showPageLoadingState ? 'invisible' : ''}`}>
+      <div data-theme-wallpaper-slot="conversation" className="relative h-full min-h-0 bg-background">
+      <div className={`flex h-full min-h-0 flex-col bg-transparent ${showPageLoadingState ? 'invisible' : ''}`}>
         <div ref={headerAreaRef} className="shrink-0 relative">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
@@ -513,6 +515,7 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             showInitializingSessionShell={selectedLeaf.current}
+            wallpaperSurface
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}
@@ -551,7 +554,7 @@ export function ConversationRunPage({
       {showPageLoadingState ? (
         <BrandLoadingState
           label={t('conversation.runtime.loadingSession')}
-          className="absolute inset-0"
+          className="absolute inset-0 bg-background/88 backdrop-blur-sm"
         />
       ) : null}
     </div>
@@ -561,7 +564,7 @@ export function ConversationRunPage({
 
 function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
   if (active) {
-    return <BrandLoadingState label={label} />;
+    return <BrandLoadingState label={label} className="bg-background/88 backdrop-blur-sm" />;
   }
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

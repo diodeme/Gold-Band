@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::avatar::{AvatarPreferencesVm, load_resolved_avatar_preferences};
+use crate::wallpaper::{WallpaperPreferencesVm, load_resolved_wallpaper_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,7 @@ pub struct PreferencesVm {
     pub use_local_claude: bool,
     pub verbose_logging: bool,
     pub avatars: AvatarPreferencesVm,
+    pub wallpapers: WallpaperPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1178,6 +1180,7 @@ pub fn preferences_vm(
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
     avatars: AvatarPreferencesVm,
+    wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
         appearance,
@@ -1186,6 +1189,7 @@ pub fn preferences_vm(
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
         avatars,
+        wallpapers,
     }
 }
 
@@ -1299,6 +1303,11 @@ pub fn bootstrap_vm(
             app.config.use_local_claude,
             app.config.log_level,
             load_resolved_avatar_preferences(
+                &app.paths.user_gold_band_dir(),
+                &app.config.personalization,
+            )
+            .unwrap_or_default(),
+            load_resolved_wallpaper_preferences(
                 &app.paths.user_gold_band_dir(),
                 &app.config.personalization,
             )

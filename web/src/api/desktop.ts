@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -16,6 +16,28 @@ export interface MetricsSettingsVm {
 }
 
 const noopUnlisten = () => {};
+
+export function wallpaperAssetUrl(token: string): string {
+  return convertFileSrc(token, 'gold-band-wallpaper');
+}
+
+function withWallpaperAssetUrls(preferences: PreferencesVm): PreferencesVm {
+  return {
+    ...preferences,
+    wallpapers: {
+      ...preferences.wallpapers,
+      recentWallpapers: preferences.wallpapers.recentWallpapers.map((wallpaper) => ({
+        ...wallpaper,
+        imageUrl: wallpaperAssetUrl(wallpaper.imageUrl),
+        thumbnailUrl: wallpaperAssetUrl(wallpaper.thumbnailUrl),
+      })),
+    },
+  };
+}
+
+function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstrapVm {
+  return { ...bootstrap, preferences: withWallpaperAssetUrls(bootstrap.preferences) };
+}
 
 export const desktopApi: RuntimeApi = {
   getGitCapability(projectId) {
@@ -167,8 +189,9 @@ export const desktopApi: RuntimeApi = {
   checkLocalClaude() {
     return invokeCommand('check_local_claude');
   },
-  getAppBootstrap() {
-    return invokeCommand('get_app_bootstrap');
+  async getAppBootstrap() {
+    const bootstrap = await invokeCommand<AppBootstrapVm>('get_app_bootstrap');
+    return withWallpaperBootstrapAssetUrls(bootstrap);
   },
   getSystemFonts() {
     return invokeCommand('get_system_fonts');
@@ -216,13 +239,13 @@ export const desktopApi: RuntimeApi = {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const path = await open({ directory: true });
     if (!path) return null;
-    return invokeCommand('choose_workspace', { path });
+    return invokeCommand<AppBootstrapVm>('choose_workspace', { path }).then(withWallpaperBootstrapAssetUrls);
   },
   selectRecentWorkspace(workspace: string) {
-    return invokeCommand('select_recent_workspace', { workspace });
+    return invokeCommand<AppBootstrapVm>('select_recent_workspace', { workspace }).then(withWallpaperBootstrapAssetUrls);
   },
   removeRecentWorkspace(workspace: string) {
-    return invokeCommand('remove_recent_workspace', { workspace });
+    return invokeCommand<AppBootstrapVm>('remove_recent_workspace', { workspace }).then(withWallpaperBootstrapAssetUrls);
   },
   getTaskDetail(taskId: string) {
     return invokeCommand('get_task_detail', { taskId });
@@ -363,19 +386,40 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging });
+    return invokeCommand<PreferencesVm>('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging }).then(withWallpaperAssetUrls);
   },
   saveDesktopAvatar(input) {
-    return invokeCommand('save_desktop_avatar', { input });
+    return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
   },
   selectRecentDesktopAvatar(kind, avatarId) {
-    return invokeCommand('select_recent_desktop_avatar', { kind, avatarId });
+    return invokeCommand<PreferencesVm>('select_recent_desktop_avatar', { kind, avatarId }).then(withWallpaperAssetUrls);
   },
   saveDesktopAvatarShape(kind, shape) {
-    return invokeCommand('save_desktop_avatar_shape', { kind, shape });
+    return invokeCommand<PreferencesVm>('save_desktop_avatar_shape', { kind, shape }).then(withWallpaperAssetUrls);
   },
   clearDesktopAvatar(kind) {
-    return invokeCommand('clear_desktop_avatar', { kind });
+    return invokeCommand<PreferencesVm>('clear_desktop_avatar', { kind }).then(withWallpaperAssetUrls);
+  },
+  async importDesktopWallpaper() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const sourcePath = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (!sourcePath || Array.isArray(sourcePath)) return null;
+    return invokeCommand<PreferencesVm>('import_desktop_wallpaper', {
+      input: { sourcePath },
+    }).then(withWallpaperAssetUrls);
+  },
+  selectRecentDesktopWallpaper(wallpaperId) {
+    return invokeCommand<PreferencesVm>('select_recent_desktop_wallpaper', { wallpaperId }).then(withWallpaperAssetUrls);
+  },
+  saveDesktopWallpaperOpacity(opacityPercent) {
+    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { opacityPercent }).then(withWallpaperAssetUrls);
+  },
+  restoreThemeDesktopWallpaper() {
+    return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper').then(withWallpaperAssetUrls);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;

@@ -25,6 +25,7 @@ import {
   getTaskList,
   getWorkflow,
   clearDesktopAvatar,
+  importDesktopWallpaper,
   pauseRun,
   pinConversation,
   rerunConversationTask,
@@ -32,10 +33,13 @@ import {
   saveDesktopPreferences,
   saveDesktopAvatar,
   saveDesktopAvatarShape,
+  saveDesktopWallpaperOpacity,
   saveUpdaterSettings,
   saveTaskWorkflow,
   selectRecentWorkspace,
   selectRecentDesktopAvatar,
+  selectRecentDesktopWallpaper,
+  restoreThemeDesktopWallpaper,
   startRun,
   unpinConversation,
   updateTaskMetadata,
@@ -112,7 +116,7 @@ import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversatio
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
 import { pushRoute, replaceRoute, routeFromPath, taskListPage, conversationHomePage } from './routes';
-import { applyAppearance, applyPersonalization, defaultPersonalizationPreference, resolveAppearance, syncDesktopWindowSurface } from './theme';
+import { applyAppearance, applyPersonalization, applyWallpaperPersonalization, defaultPersonalizationPreference, resolveAppearance, syncDesktopWindowSurface } from './theme';
 import { useInterventionNotifications } from './lib/use-intervention-notifications';
 import { useScheduledNotifications } from './lib/use-scheduled-notifications';
 import { scheduledNotificationNavigation } from './lib/scheduled-task-notifications';
@@ -134,6 +138,7 @@ import {
 } from '@/lib/conversation-run-mode-config';
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
 import { createDefaultAvatarPreferences } from '@/lib/avatar';
+import { createDefaultWallpaperPreferences } from '@/lib/wallpaper';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
 import {
   ConversationWorkspaceStore,
@@ -199,8 +204,10 @@ import type {
   AvatarKind,
   AvatarShape,
   SaveDesktopAvatarInput,
+  WallpaperPreferencesVm,
 } from './types';
-const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+
+const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
   builtInUrl: 'https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json',
@@ -578,7 +585,8 @@ export function App() {
 
   useEffect(() => {
     applyPersonalization(preferences.personalization);
-  }, [preferences.appearance, preferences.language, preferences.personalization]);
+    applyWallpaperPersonalization(preferences.personalization.wallpaper, preferences.wallpapers);
+  }, [preferences.appearance, preferences.language, preferences.personalization, preferences.wallpapers]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -1593,6 +1601,55 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
+  const onImportWallpaper = useCallback(async (): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await importDesktopWallpaper();
+      if (!saved) return undefined;
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onSelectRecentWallpaper = useCallback(async (wallpaperId: string): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await selectRecentDesktopWallpaper(wallpaperId);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onSaveWallpaperOpacity = useCallback(async (opacityPercent: number): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await saveDesktopWallpaperOpacity(opacityPercent);
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
+  const onRestoreThemeWallpaper = useCallback(async (): Promise<WallpaperPreferencesVm | undefined> => {
+    setError(null);
+    try {
+      const saved = await restoreThemeDesktopWallpaper();
+      applySavedPreferences(saved);
+      return saved.wallpapers;
+    } catch (err) {
+      setError(displayAppError(t, err));
+      return undefined;
+    }
+  }, [applySavedPreferences, t]);
+
   const onSaveUpdaterSettings = async (overrideUrl: string | null) => {
     setBusy(true);
     try {
@@ -1758,6 +1815,10 @@ export function App() {
           onSelectRecentAvatar={onSelectRecentAvatar}
           onSaveAvatarShape={onSaveAvatarShape}
           onClearAvatar={onClearAvatar}
+          onImportWallpaper={onImportWallpaper}
+          onSelectRecentWallpaper={onSelectRecentWallpaper}
+          onSaveWallpaperOpacity={onSaveWallpaperOpacity}
+          onRestoreThemeWallpaper={onRestoreThemeWallpaper}
           onSaveUpdaterSettings={onSaveUpdaterSettings}
           onCheckUpdate={onCheckUpdate}
           onInstallUpdate={onInstallUpdate}
@@ -1984,6 +2045,10 @@ export function App() {
             onSelectRecentAvatar={onSelectRecentAvatar}
             onSaveAvatarShape={onSaveAvatarShape}
             onClearAvatar={onClearAvatar}
+            onImportWallpaper={onImportWallpaper}
+            onSelectRecentWallpaper={onSelectRecentWallpaper}
+            onSaveWallpaperOpacity={onSaveWallpaperOpacity}
+            onRestoreThemeWallpaper={onRestoreThemeWallpaper}
             onSaveUpdaterSettings={onSaveUpdaterSettings}
             onCheckUpdate={onCheckUpdate}
             onInstallUpdate={onInstallUpdate}

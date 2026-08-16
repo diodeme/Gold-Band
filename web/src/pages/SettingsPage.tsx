@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -40,6 +40,7 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
+import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 
 type TypographySection = 'ui' | 'editor';
 
@@ -91,6 +92,10 @@ interface SettingsPageProps {
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
   onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
+  onImportWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperOpacity: (opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
+  onRestoreThemeWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -100,7 +105,7 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   useThemeWallpaperSurface();
   const { t } = useTranslation();
   const [appearance, setAppearance] = useState(preferences.appearance);
@@ -428,6 +433,19 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
               </div>
             </SettingsSection>
 
+            <SettingsSection title={t('settings.wallpaper.title')} divided>
+              <WallpaperSettings
+                preferences={preferences.wallpapers}
+                personalization={personalization.wallpaper}
+                themeWallpaper={effectiveAppearance.wallpapers.settings}
+                busy={busy}
+                onImportWallpaper={onImportWallpaper}
+                onSelectRecentWallpaper={onSelectRecentWallpaper}
+                onSaveWallpaperOpacity={onSaveWallpaperOpacity}
+                onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+              />
+            </SettingsSection>
+
             <SettingsSection title={t('settings.avatar.title')} divided>
               <AvatarSettings
                 preferences={preferences.avatars}
@@ -679,7 +697,7 @@ function withTypographyFontStack(
   const normalized = normalizeFontFamilies(families);
   return {
     ...personalization,
-    schemaVersion: 2,
+    schemaVersion: 3,
     typography: {
       ...personalization.typography,
       [kind]: {

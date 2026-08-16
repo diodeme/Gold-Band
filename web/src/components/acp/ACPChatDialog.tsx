@@ -3233,6 +3233,7 @@ export function ACPChatDialog(
     elicitationId: string,
     content?: Record<string, unknown>,
   ) => {
+    setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
       next.set(elicitationId, content ?? {});
@@ -3252,16 +3253,18 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-    } catch {
+    } catch (error) {
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
         return next;
       });
+      setSendError(displayAppError(t, error));
     }
   };
 
   const declineElicitation = async (elicitationId: string) => {
+    setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
       next.set(elicitationId, { __declined: true });
@@ -3281,12 +3284,13 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-    } catch {
+    } catch (error) {
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
         return next;
       });
+      setSendError(displayAppError(t, error));
     }
   };
 

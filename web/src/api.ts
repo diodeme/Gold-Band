@@ -537,8 +537,8 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, limit);
+export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
+  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {

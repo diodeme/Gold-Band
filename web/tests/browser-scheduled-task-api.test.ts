@@ -89,16 +89,31 @@ describe('browser scheduled task API', () => {
       updates.push(event.status);
     });
     const result = await browserApi.runScheduledTaskNow('default', task.id);
-    const occurrences = await browserApi.listScheduledTaskOccurrences('default', task.id);
+    const occurrencePage = await browserApi.listScheduledTaskOccurrences('default', task.id);
     const diagnostics = await browserApi.getScheduledTaskDiagnostics('default', task.id);
     unlisten?.();
 
     expect(result.occurrence.triggerKind).toBe('manual');
     expect(result.occurrence.status).toBe('succeeded');
-    expect(occurrences[0]?.id).toBe(result.occurrence.id);
+    expect(occurrencePage.items[0]?.id).toBe(result.occurrence.id);
     expect(diagnostics.runCount).toBe(1);
     expect(diagnostics.occurrences[0]?.status).toBe('succeeded');
     expect(updates).toContain('running');
     expect(updates).toContain('succeeded');
+  });
+
+  it('keeps cursor pages stable when a newer occurrence is inserted', async () => {
+    const task = await browserApi.createScheduledTask(input('paged history'));
+    for (let index = 0; index < 21; index += 1) {
+      await browserApi.runScheduledTaskNow('default', task.id);
+    }
+
+    const first = await browserApi.listScheduledTaskOccurrences('default', task.id);
+    await browserApi.runScheduledTaskNow('default', task.id);
+    const second = await browserApi.listScheduledTaskOccurrences('default', task.id, first.nextCursor);
+
+    expect(first.items).toHaveLength(20);
+    expect(second.items).toHaveLength(1);
+    expect(second.items.some((item) => first.items.some((firstItem) => firstItem.id === item.id))).toBe(false);
   });
 });

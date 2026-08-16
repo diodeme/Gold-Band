@@ -3,10 +3,11 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gold_band::app::App;
+use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
 use gold_band::scheduler::db::{
     ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
+use gold_band::scheduler::fingerprint::canonical_content_json;
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
 use gold_band::scheduler::{
     ScheduleError, ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy,
@@ -328,12 +329,13 @@ impl ScheduledTaskService {
             content: input.content.clone(),
             run_mode: input.run_mode.clone(),
             workflow_template_id: input.workflow_template_id.clone(),
-            include_interview: input.include_interview,
+            include_optional_entry: input.include_optional_entry,
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -385,10 +387,16 @@ impl ScheduledTaskService {
                 serde_json::json!({ "projectId": resolved_project_id }),
             )
         })?;
+        let effective_optional_entry = effective_optional_entry_choice(
+            &workspace.app,
+            &input.run_mode,
+            input.workflow_template_id.as_deref(),
+            input.include_optional_entry,
+        )?;
         definition.execution_config = serde_json::json!({
             "runMode": input.run_mode,
             "workflowTemplateId": input.workflow_template_id,
-            "includeInterview": input.include_interview,
+            "includeOptionalEntry": effective_optional_entry,
             "directConfig": input.direct_config,
             "autoConfig": input.auto_config,
         });
@@ -491,12 +499,13 @@ impl ScheduledTaskService {
             content: input.content.clone(),
             run_mode: input.run_mode.clone(),
             workflow_template_id: input.workflow_template_id.clone(),
-            include_interview: input.include_interview,
+            include_optional_entry: input.include_optional_entry,
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
         let validation = validate_conversation_create_vm(&workspace.app, &validation_input)
             .map_err(|_| {
@@ -547,14 +556,17 @@ impl ScheduledTaskService {
                     serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
                 )
             })?;
-        let content_changed = new_snapshot != definition.content_snapshot;
+        let content_changed = canonical_content_json(&new_snapshot)
+            != canonical_content_json(&definition.content_snapshot);
         definition.content_snapshot = new_snapshot;
-        definition.recompute_content_fingerprint().map_err(|_| {
-            ScheduledServiceError::invalid(
-                "fingerprint-content",
-                serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
-            )
-        })?;
+        if content_changed || definition.content_fingerprint.trim().is_empty() {
+            definition.recompute_content_fingerprint().map_err(|_| {
+                ScheduledServiceError::invalid(
+                    "fingerprint-content",
+                    serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
+                )
+            })?;
+        }
         definition.instruction = input.content;
         definition.schedule = schedule;
         definition.overlap_policy = input.overlap_policy;
@@ -581,10 +593,16 @@ impl ScheduledTaskService {
         ) {
             definition.task_id = None;
         }
+        let effective_optional_entry = effective_optional_entry_choice(
+            &workspace.app,
+            &input.run_mode,
+            input.workflow_template_id.as_deref(),
+            input.include_optional_entry,
+        )?;
         definition.execution_config = serde_json::json!({
             "runMode": input.run_mode,
             "workflowTemplateId": input.workflow_template_id,
-            "includeInterview": input.include_interview,
+            "includeOptionalEntry": effective_optional_entry,
             "directConfig": input.direct_config,
             "autoConfig": input.auto_config,
         });
@@ -750,6 +768,38 @@ impl ScheduledTaskService {
             .run_now(workspace.app, record.definition)
             .await
     }
+}
+
+fn effective_optional_entry_choice(
+    app: &App,
+    run_mode: &str,
+    template_id: Option<&str>,
+    requested: Option<bool>,
+) -> ScheduledServiceResult<Option<bool>> {
+    if run_mode != "workflow" {
+        return Ok(None);
+    }
+    let template_id = template_id.unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+    let store = app.workflow_templates().map_err(|_| {
+        ScheduledServiceError::invalid(
+            "resolve-workflow-template",
+            serde_json::json!({ "workflowTemplateId": template_id }),
+        )
+    })?;
+    let template = store
+        .templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .ok_or_else(|| {
+            ScheduledServiceError::invalid(
+                "resolve-workflow-template",
+                serde_json::json!({ "workflowTemplateId": template_id }),
+            )
+        })?;
+    Ok(template
+        .optional_entry_stage
+        .as_ref()
+        .map(|stage| requested.unwrap_or(stage.default_enabled)))
 }
 
 struct DesktopScheduledCoordinator {
@@ -1128,11 +1178,14 @@ fn copy_attachments(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use chrono::{TimeZone, Utc};
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
-    use gold_band::scheduler::db::ScheduledTaskDatabase;
+    use gold_band::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
+    use gold_band::dsl::NodeDsl;
+    use gold_band::scheduler::db::{ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult};
     use gold_band::scheduler::occurrence::{
         OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
     };
@@ -1140,6 +1193,7 @@ mod tests {
         LocalTimeDisambiguation, OverlapPolicy, RepeatPreset, ScheduleKind, ScheduledMode,
         ScheduledTaskDefinition, SessionPolicy,
     };
+    use gold_band::workflow_model_binding::{WorkerModelBinding, WorkflowModelBindings};
     use tempfile::TempDir;
 
     use super::{
@@ -1230,9 +1284,63 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_configured_workflow(true)
+        }
+
+        fn with_configured_workflow(configured: bool) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-            let app = App::new(root);
+            let config = RuntimeConfig::default().with_provider_diagnostics(BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-14T00:00:00Z".to_string(),
+                    capabilities: Some(serde_json::json!({
+                        "configOptions": [{
+                            "id": "model",
+                            "category": "model",
+                            "options": [
+                                { "value": "sonnet", "name": "Sonnet" },
+                                { "value": "opus", "name": "Opus" }
+                            ]
+                        }]
+                    })),
+                },
+            )]));
+            let app = App::with_config(root, config);
+            if configured {
+                let template = app
+                    .workflow_templates()
+                    .unwrap()
+                    .templates
+                    .into_iter()
+                    .find(|template| template.id == DEFAULT_WORKFLOW_TEMPLATE_ID)
+                    .unwrap();
+                let bindings = template
+                    .workflow
+                    .nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        NodeDsl::Worker(worker) => Some(WorkerModelBinding {
+                            execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                            agent_id: "claude-acp".to_string(),
+                            model_id: None,
+                            permission_mode_id: None,
+                            config_options: BTreeMap::new(),
+                        }),
+                        NodeDsl::AiDynamic(_) => None,
+                    })
+                    .collect();
+                app.update_built_in_workflow_template_bindings(
+                    DEFAULT_WORKFLOW_TEMPLATE_ID,
+                    WorkflowModelBindings {
+                        bindings,
+                        ..WorkflowModelBindings::default()
+                    },
+                )
+                .unwrap();
+            }
             let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
             let coordinator = Arc::new(CoordinatorSpy::with_database(database.clone()));
             let service =
@@ -1252,7 +1360,7 @@ mod tests {
                 content: "Generate the scheduled report".to_string(),
                 run_mode: "workflow".to_string(),
                 workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-                include_interview: Some(false),
+                include_optional_entry: Some(false),
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
@@ -1274,13 +1382,31 @@ mod tests {
                 content: content.to_string(),
                 run_mode: "workflow".to_string(),
                 workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-                include_interview: Some(false),
+                include_optional_entry: Some(false),
                 direct_config: None,
                 auto_config: None,
                 attachment_paths: None,
                 schedule: valid_schedule_input(),
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
+            }
+        }
+
+        fn associate_task(
+            &self,
+            record: &ScheduledJobRecord,
+            fingerprint: &str,
+        ) -> ScheduledJobRecord {
+            let mut definition = record.definition.clone();
+            definition.task_id = Some("task-existing".to_string());
+            definition.content_fingerprint = fingerprint.to_string();
+            match self
+                .database
+                .update_job_runtime_projection(&definition, record.revision)
+                .unwrap()
+            {
+                UpdateJobResult::Updated(record) => record,
+                other => panic!("expected updated projection, got {other:?}"),
             }
         }
     }
@@ -1424,6 +1550,68 @@ mod tests {
         assert_eq!(timezone, "America/New_York");
     }
 
+    #[test]
+    fn workflow_schedule_freezes_optional_entry_choice_and_effective_workflow() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+
+        assert_eq!(
+            created.definition.execution_config["includeOptionalEntry"],
+            serde_json::json!(false)
+        );
+        let authoring: gold_band::workflow_model_binding::TaskAuthoringWorkflow =
+            serde_json::from_value(
+                created
+                    .definition
+                    .content_snapshot
+                    .workflow_authoring
+                    .clone()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(authoring.workflow.entry, "plan");
+        assert!(
+            !authoring
+                .workflow
+                .nodes
+                .iter()
+                .any(|node| node.id() == "interview")
+        );
+        assert_eq!(
+            authoring.model_bindings.bindings.len(),
+            authoring
+                .workflow
+                .nodes
+                .iter()
+                .filter(|node| matches!(node, gold_band::dsl::NodeDsl::Worker(_)))
+                .count()
+        );
+
+        let mut default_input = fixture.create_input();
+        default_input.include_optional_entry = None;
+        let defaulted = fixture.service.create(default_input).unwrap();
+        assert_eq!(
+            defaulted.definition.execution_config["includeOptionalEntry"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn workflow_schedule_rejects_an_unconfigured_model_binding() {
+        let fixture = Fixture::with_configured_workflow(false);
+
+        let error = fixture.service.create(fixture.create_input()).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
+        assert!(
+            error.params["details"]["codes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|code| code == "workflow-model-binding.agent-required")
+        );
+    }
+
     #[tokio::test]
     async fn run_now_creates_manual_occurrence_without_advancing_planned_deadline() {
         let fixture = Fixture::new();
@@ -1483,6 +1671,82 @@ mod tests {
         assert_eq!(
             error.params["updatedAt"],
             serde_json::json!(first.definition.updated_at)
+        );
+    }
+
+    #[test]
+    fn workflow_execution_binding_update_reuses_task_and_legacy_fingerprint() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let associated = fixture.associate_task(&created, "sha256:legacy-fingerprint");
+        let mut template = fixture
+            .app
+            .workflow_templates()
+            .unwrap()
+            .templates
+            .into_iter()
+            .find(|template| template.id == DEFAULT_WORKFLOW_TEMPLATE_ID)
+            .unwrap();
+        for binding in &mut template.model_bindings.bindings {
+            binding.model_id = Some("sonnet".to_string());
+        }
+        fixture
+            .app
+            .update_built_in_workflow_template_bindings(
+                DEFAULT_WORKFLOW_TEMPLATE_ID,
+                template.model_bindings,
+            )
+            .unwrap();
+
+        let updated = fixture
+            .service
+            .update(
+                fixture.update_input(&associated.definition, &associated.definition.instruction),
+            )
+            .unwrap();
+        let authoring: gold_band::workflow_model_binding::TaskAuthoringWorkflow =
+            serde_json::from_value(
+                updated
+                    .definition
+                    .content_snapshot
+                    .workflow_authoring
+                    .clone()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(updated.definition.task_id.as_deref(), Some("task-existing"));
+        assert_eq!(
+            updated.definition.content_fingerprint,
+            "sha256:legacy-fingerprint"
+        );
+        assert!(
+            authoring
+                .model_bindings
+                .bindings
+                .iter()
+                .all(|binding| binding.model_id.as_deref() == Some("sonnet"))
+        );
+    }
+
+    #[test]
+    fn workflow_semantic_content_update_clears_task_and_recomputes_fingerprint() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let associated = fixture.associate_task(&created, "sha256:legacy-fingerprint");
+
+        let updated = fixture
+            .service
+            .update(fixture.update_input(
+                &associated.definition,
+                "Generate a different scheduled report",
+            ))
+            .unwrap();
+
+        assert_eq!(updated.definition.task_id, None);
+        assert_ne!(
+            updated.definition.content_fingerprint,
+            "sha256:legacy-fingerprint"
         );
     }
 
@@ -1576,15 +1840,13 @@ mod tests {
 
     #[test]
     fn list_without_project_aggregates_every_workspace() {
-        let first_temp = tempfile::tempdir().unwrap();
-        let second_temp = tempfile::tempdir().unwrap();
-        let first_app =
-            App::new(camino::Utf8PathBuf::from_path_buf(first_temp.path().to_path_buf()).unwrap());
-        let second_app =
-            App::new(camino::Utf8PathBuf::from_path_buf(second_temp.path().to_path_buf()).unwrap());
+        let first = Fixture::new();
+        let second = Fixture::new();
+        let first_app = &first.app;
+        let second_app = &second.app;
         let coordinator = Arc::new(CoordinatorSpy::default());
         let service = ScheduledTaskService::for_test_workspaces(
-            &[(&first_app, "First"), (&second_app, "Second")],
+            &[(first_app, "First"), (second_app, "Second")],
             coordinator,
         );
         let input_for = |app: &App, content: &str| CreateScheduledTaskInputVm {
@@ -1592,7 +1854,7 @@ mod tests {
             content: content.to_string(),
             run_mode: "workflow".to_string(),
             workflow_template_id: Some(DEFAULT_WORKFLOW_TEMPLATE_ID.to_string()),
-            include_interview: Some(false),
+            include_optional_entry: Some(false),
             direct_config: None,
             auto_config: None,
             attachment_paths: None,
@@ -1600,8 +1862,8 @@ mod tests {
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
         };
-        service.create(input_for(&first_app, "first")).unwrap();
-        service.create(input_for(&second_app, "second")).unwrap();
+        service.create(input_for(first_app, "first")).unwrap();
+        service.create(input_for(second_app, "second")).unwrap();
 
         assert_eq!(service.list(None).unwrap().len(), 2);
         assert_eq!(

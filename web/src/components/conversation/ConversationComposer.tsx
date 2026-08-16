@@ -2,15 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeOptionalEntryForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, setOptionalEntryPreference, shouldShowOptionalEntryToggle } from '@/lib/conversation-run-mode-config';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
 import { AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
@@ -58,6 +58,7 @@ interface ConversationComposerProps {
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
+  onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
   onScheduledModeExit?: () => void;
 }
@@ -78,6 +79,7 @@ export function ConversationComposer({
   onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
+  onWorkflowRepairTargetChange,
   onWorkspaceChange,
   onScheduledModeExit,
 }: ConversationComposerProps) {
@@ -244,7 +246,9 @@ export function ConversationComposer({
   const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
-  const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const selectedWorkflowTemplate = templates.find((template) => template.id === selectedWorkflowTemplateId);
+  const showOptionalEntryToggle = shouldShowOptionalEntryToggle(runMode.mode, selectedWorkflowTemplate);
+  const includeOptionalEntry = includeOptionalEntryForSubmit(runMode, selectedWorkflowTemplate);
   const renderDirectAgentOption = ({ agent, selectable, reason }: SelectableAgentOption) => (
     <Tooltip key={agent.agentType}>
       <TooltipTrigger asChild>
@@ -399,7 +403,7 @@ export function ConversationComposer({
       content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-      includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+      includeOptionalEntry,
       directConfig: isDirect
         ? normalizeConversationDirectConfigForSubmit({
           agentType: selectedDirectAgent,
@@ -433,6 +437,15 @@ export function ConversationComposer({
           t,
         );
       if (localIssues.length > 0) {
+        if (!isDirect && !isAuto) {
+          onWorkflowRepairTargetChange?.(workflowRepairTargetForTemplate(
+            inputBase.workflowTemplateId,
+            agentRegistry,
+            profiles,
+            workflowTemplates,
+            t,
+          ));
+        }
         setRunModeError(localIssues.join('\n'));
         return;
       }
@@ -460,7 +473,7 @@ export function ConversationComposer({
     content: content.trim(),
     runMode: runMode.mode,
     workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-    includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+    includeOptionalEntry,
     directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
     autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
   });
@@ -719,7 +732,7 @@ export function ConversationComposer({
                 onRunModeChange({ mode: 'direct', directPreferences: runMode.directPreferences }, projectId);
               }
             } else if (value === 'workflow') {
-              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview }, projectId);
+              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, optionalEntryPreferences: runMode.optionalEntryPreferences }, projectId);
             } else {
               onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() }, projectId);
             }
@@ -844,7 +857,7 @@ export function ConversationComposer({
         ) : (
           <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
             <Workflow className="size-4 text-muted-foreground" />
-            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, includeInterview: runMode.includeInterview }, projectId); }}>
+            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, optionalEntryPreferences: runMode.optionalEntryPreferences }, projectId); }}>
               <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
                 <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
               </SelectTrigger>
@@ -857,12 +870,12 @@ export function ConversationComposer({
                 ) : null}
               </SelectContent>
             </Select>
-            {showInterviewToggle ? (
+            {showOptionalEntryToggle && selectedWorkflowTemplate?.optionalEntryStage ? (
               <label className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs text-muted-foreground">{t('conversation.home.includeInterview')}</span>
+                <span className="text-xs text-muted-foreground">{t(selectedWorkflowTemplate.optionalEntryStage.labelKey)}</span>
                 <Switch
-                  checked={runMode.includeInterview ?? true}
-                  onCheckedChange={(checked) => onRunModeChange({ ...runMode, includeInterview: checked }, projectId)}
+                  checked={includeOptionalEntry}
+                  onCheckedChange={(checked) => onRunModeChange(setOptionalEntryPreference(runMode, selectedWorkflowTemplate.id, checked), projectId)}
                 />
               </label>
             ) : null}

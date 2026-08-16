@@ -5,14 +5,14 @@ import {
   conversationRunModeForWorkspace,
   conversationRunModeOrDefault,
   directConfigForAgent,
-  includeInterviewForSubmit,
-  isDefaultWorkflowTemplate,
+  includeOptionalEntryForSubmit,
   mergeConversationRunMode,
   normalizeConversationAutoConfigForSubmit,
   normalizeConversationDirectConfigForSubmit,
   normalizeOptionalRunModeText,
   optionalRunModeText,
-  shouldShowInterviewToggle,
+  setOptionalEntryPreference,
+  shouldShowOptionalEntryToggle,
   setConversationRunModeForWorkspace,
 } from '../src/lib/conversation-run-mode-config';
 
@@ -197,7 +197,7 @@ describe('conversation run mode config text fields', () => {
     const workflow = {
       mode: 'workflow' as const,
       workflowTemplateId: 'workflow-review',
-      includeInterview: false,
+      optionalEntryPreferences: { default: false },
     };
     const auto = {
       mode: 'auto' as const,
@@ -262,12 +262,12 @@ describe('conversation run mode config text fields', () => {
     });
   });
 
-  it('persists the workspace interview preference across mode and template changes', () => {
+  it('persists optional entry preferences across mode and template changes', () => {
     expect(mergeConversationRunMode(
       {
         mode: 'workflow',
         workflowTemplateId: 'default',
-        includeInterview: false,
+        optionalEntryPreferences: { default: false, 'default-lightweight': true },
       },
       {
         mode: 'workflow',
@@ -276,29 +276,54 @@ describe('conversation run mode config text fields', () => {
     )).toEqual({
       mode: 'workflow',
       workflowTemplateId: 'workflow-review',
-      includeInterview: false,
+      optionalEntryPreferences: { default: false, 'default-lightweight': true },
       autoConfig: undefined,
     });
   });
 
-  it('only exposes and submits the interview preference for the built-in default workflow', () => {
+  it('keeps optional entry preferences isolated per built-in template', () => {
+    const full = {
+      id: 'default',
+      name: 'Default full workflow',
+      isBuiltIn: true,
+      optionalEntryStage: { nodeId: 'interview', labelKey: 'conversation.home.includeInterview', defaultEnabled: true },
+      workflow: { version: '0.1', id: 'full', entry: 'interview', control: {}, nodes: [], edges: [] },
+      createdAt: '',
+      updatedAt: '',
+    };
+    const lightweight = {
+      ...full,
+      id: 'default-lightweight',
+      optionalEntryStage: { nodeId: 'grill', labelKey: 'conversation.home.includeGrill', defaultEnabled: true },
+    };
+    const custom = { ...full, id: 'custom', isBuiltIn: false, optionalEntryStage: null };
     const mode = {
       mode: 'workflow' as const,
       workflowTemplateId: 'default',
-      includeInterview: false,
+      optionalEntryPreferences: { default: false, 'default-lightweight': true },
     };
 
-    expect(isDefaultWorkflowTemplate('default')).toBe(true);
-    expect(isDefaultWorkflowTemplate('custom')).toBe(false);
-    expect(shouldShowInterviewToggle('workflow', 'default')).toBe(true);
-    expect(shouldShowInterviewToggle('workflow', 'custom')).toBe(false);
-    expect(shouldShowInterviewToggle('auto', 'default')).toBe(false);
-    expect(includeInterviewForSubmit(mode, 'default')).toBe(false);
-    expect(includeInterviewForSubmit(mode, 'custom')).toBeUndefined();
+    expect(shouldShowOptionalEntryToggle('workflow', full)).toBe(true);
+    expect(shouldShowOptionalEntryToggle('workflow', custom)).toBe(false);
+    expect(shouldShowOptionalEntryToggle('auto', full)).toBe(false);
+    expect(includeOptionalEntryForSubmit(mode, full)).toBe(false);
+    expect(includeOptionalEntryForSubmit(mode, lightweight)).toBe(true);
+    expect(includeOptionalEntryForSubmit(mode, custom)).toBeUndefined();
+    expect(setOptionalEntryPreference(mode, 'default-lightweight', false).optionalEntryPreferences)
+      .toEqual({ default: false, 'default-lightweight': false });
   });
 
-  it('defaults the default workflow interview preference to enabled', () => {
-    expect(includeInterviewForSubmit({ mode: 'workflow' }, 'default')).toBe(true);
+  it('uses the template default when no optional entry preference exists', () => {
+    const template = {
+      id: 'default-lightweight',
+      name: '',
+      isBuiltIn: true,
+      optionalEntryStage: { nodeId: 'grill', labelKey: 'conversation.home.includeGrill', defaultEnabled: true },
+      workflow: { version: '0.1', id: 'light', entry: 'grill', control: {}, nodes: [], edges: [] },
+      createdAt: '',
+      updatedAt: '',
+    };
+    expect(includeOptionalEntryForSubmit({ mode: 'workflow' }, template)).toBe(true);
   });
 
   it('preserves special characters, markdown, JSON-like text, emoji, and newlines', () => {

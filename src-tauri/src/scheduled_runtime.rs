@@ -20,6 +20,9 @@ use gold_band::scheduler::queue::{
 use gold_band::scheduler::store::ScheduledTaskStore;
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
+use gold_band::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, migrate_authoring_workflow,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -2938,7 +2941,18 @@ pub(super) fn execute_definition_with_action(
                 app_handle.clone(),
                 Some(definition.project_id.clone()),
             );
-            let prepared_run = scheduled_app.prepare_run(&task_id, None)?;
+            let prepared_run = match definition.mode {
+                ScheduledMode::Workflow => {
+                    let authoring = scheduled_workflow_authoring(definition)?.ok_or_else(|| {
+                        anyhow::anyhow!("scheduled workflow authoring snapshot is missing")
+                    })?;
+                    scheduled_app.prepare_run_with_authoring(&task_id, &authoring)?
+                }
+                ScheduledMode::Auto => scheduled_app.prepare_run(&task_id, None)?,
+                ScheduledMode::Direct => {
+                    anyhow::bail!("direct mode cannot use the start-new-run action")
+                }
+            };
             let run = prepared_run.run().clone();
             let links = OccurrenceLinks {
                 task_id: Some(task_id.clone()),
@@ -3046,9 +3060,10 @@ fn scheduled_create_input(
         .get("workflowTemplateId")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
-    let include_interview = config
-        .get("includeInterview")
+    let include_optional_entry = config
+        .get("includeOptionalEntry")
         .and_then(|value| value.as_bool());
+    let workflow_authoring = scheduled_workflow_authoring(definition)?;
     let input_dir = app.paths.scheduled_task_dir(&definition.id).join("inputs");
     let attachment_paths = definition
         .attachment_names
@@ -3065,13 +3080,26 @@ fn scheduled_create_input(
             .unwrap_or_else(|| ConversationRunMode::Direct.as_str())
             .to_string(),
         workflow_template_id,
-        include_interview,
+        include_optional_entry,
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
+        workflow_authoring,
     })
+}
+
+fn scheduled_workflow_authoring(
+    definition: &ScheduledTaskDefinition,
+) -> anyhow::Result<Option<TaskAuthoringWorkflow>> {
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(None);
+    };
+    let compat = serde_json::from_value::<TaskAuthoringWorkflowCompat>(value)?;
+    let (mut authoring, _) = compat.into_current();
+    migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None)?;
+    Ok(Some(authoring))
 }
 
 #[cfg(test)]
@@ -3098,6 +3126,9 @@ mod tests {
         OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition, SessionPolicy,
     };
     use gold_band::storage::write_json;
+    use gold_band::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
+    };
     use tempfile::tempdir;
     use tokio::sync::Notify;
 
@@ -3331,6 +3362,89 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[test]
+    fn scheduled_create_input_uses_frozen_workflow_authoring_snapshot() {
+        let directory = tempdir().unwrap();
+        let app = gold_band::app::App::new(
+            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap(),
+        );
+        let mut definition = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "frozen-workflow",
+            "workflow",
+            ScheduleSpec::at(Utc::now() + Duration::hours(1)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let workflow = gold_band::dsl::WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "frozen".to_string(),
+            entry: "worker".to_string(),
+            control: Default::default(),
+            nodes: vec![gold_band::dsl::NodeDsl::Worker(
+                gold_band::dsl::WorkerNode {
+                    id: "worker".to_string(),
+                    execution_slot_id: Some("slot-frozen".to_string()),
+                    provider: None,
+                    model: None,
+                    profile: Some("developer".to_string()),
+                    goal: Some("frozen goal".to_string()),
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                },
+            )],
+            edges: vec![],
+        };
+        let authoring = TaskAuthoringWorkflow {
+            workflow,
+            model_bindings: WorkflowModelBindings {
+                definition_revision: "revision".to_string(),
+                binding_revision: 4,
+                bindings: vec![WorkerModelBinding {
+                    execution_slot_id: "slot-frozen".to_string(),
+                    agent_id: "agent-frozen".to_string(),
+                    model_id: Some("model-frozen".to_string()),
+                    permission_mode_id: Some("ask".to_string()),
+                    config_options: Default::default(),
+                }],
+            },
+        };
+        definition.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(&authoring).unwrap());
+        definition.execution_config = serde_json::json!({
+            "runMode": "workflow",
+            "workflowTemplateId": "template-that-no-longer-exists"
+        });
+
+        let input = super::scheduled_create_input(&app, &definition).unwrap();
+
+        assert_eq!(
+            input.workflow_template_id.as_deref(),
+            Some("template-that-no-longer-exists")
+        );
+        let frozen = input.workflow_authoring.unwrap();
+        assert_eq!(
+            serde_json::to_value(&frozen.workflow).unwrap(),
+            serde_json::to_value(&authoring.workflow).unwrap()
+        );
+        assert_eq!(
+            frozen.model_bindings.bindings,
+            authoring.model_bindings.bindings
+        );
+        assert_eq!(
+            frozen.model_bindings.definition_revision,
+            gold_band::workflow_model_binding::definition_revision(&frozen.workflow)
+        );
+        assert_eq!(
+            frozen.model_bindings.binding_revision,
+            authoring.model_bindings.binding_revision
+        );
     }
 
     #[tokio::test(start_paused = true)]

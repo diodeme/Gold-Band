@@ -245,7 +245,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   content: content ?? definition.content,
                   runMode: definition.runMode,
                   workflowTemplateId: definition.workflowTemplateId,
-                  includeInterview: definition.includeInterview,
+                  includeOptionalEntry: definition.includeOptionalEntry,
                   directConfig: definition.directConfig,
                   autoConfig: definition.autoConfig,
                   schedule: config.schedule,

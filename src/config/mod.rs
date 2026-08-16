@@ -2744,7 +2744,7 @@ mod tests {
                 ConversationRunModeEntry {
                     mode: ConversationRunMode::Direct,
                     workflow_template_id: None,
-                    include_interview: None,
+                    optional_entry_preferences: Default::default(),
                     direct_config: Some(config.clone()),
                     direct_preferences: [("claude-acp".to_string(), config)].into(),
                     auto_config: None,
@@ -2831,7 +2831,8 @@ pub struct ConversationPin {
 pub struct ConversationRunModeEntry {
     pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub optional_entry_preferences: std::collections::HashMap<String, bool>,
     pub direct_config: Option<ConversationDirectConfig>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub direct_preferences: std::collections::HashMap<String, ConversationDirectConfig>,

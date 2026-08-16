@@ -67,6 +67,8 @@ Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立�
 - 当前进程 prompt registry 只决定 Agent 是否正在 `Starting / Accepted / Running / CancelRequested`；客户端重启后 registry 为空，磁盘 session status 不能重建 live turn。
 - ACP session metadata 只决定 session 可用性与最近一轮历史结果；`completed/cancelled/failed` 不代表节点完成，也不代表 Runtime 正在跳转。
 
+Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回调把权威 execution phase 从 `StartingNode` 推进为 `RunningNode`；provider 返回 success 不能补做或绕过该转换，后续 finalize、manual check 与 edge transition 只接受已进入 `RunningNode` 的 attempt。
+
 `LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。
 
 `run-progress.json` 是带 `runtimeRevision` 的观测投影，不参与 continue 资格、composer、sidebar、错误语义或 active run 选择；详情页只展示 revision 与 `run.json.execution.revision` 相同的 progress。启动恢复继续把遗留 Running 收敛为 `Paused + ProcessInterrupted + execution=Paused`，revision 单调推进。

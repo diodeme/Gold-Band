@@ -16,10 +16,10 @@ use crate::frontmatter::{
 };
 use crate::prompts::{
     PROFILE_ACCEPT_EN, PROFILE_ACCEPT_ZH_CN, PROFILE_CLEAN_EN, PROFILE_CLEAN_ZH_CN, PROFILE_DEV_EN,
-    PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN, PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN,
-    PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN, PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN,
-    PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN, PROFILE_TEST_ZH_CN,
-    profile_template_validation_contexts, prompt_by_language, render,
+    PROFILE_DEV_TEST_EN, PROFILE_DEV_TEST_ZH_CN, PROFILE_DEV_ZH_CN, PROFILE_GRILLME_EN,
+    PROFILE_GRILLME_ZH_CN, PROFILE_INTERVIEW_EN, PROFILE_INTERVIEW_ZH_CN, PROFILE_PLAN_EN,
+    PROFILE_PLAN_ZH_CN, PROFILE_REVIEW_EN, PROFILE_REVIEW_ZH_CN, PROFILE_TEST_EN,
+    PROFILE_TEST_ZH_CN, profile_template_validation_contexts, prompt_by_language, render,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir};
 
@@ -254,6 +254,19 @@ const DEFAULT_PROFILE_SEEDS: &[DefaultProfileSeed] = &[
         summary: LocalizedProfileText {
             zh_cn: "开发角色，用于实现需求并维护代码质量。",
             en: "Development role for implementing requirements and maintaining code quality.",
+        },
+        dynamic_template: true,
+    },
+    DefaultProfileSeed {
+        key: "dev-test",
+        id: "pf-builtin-dev-test",
+        name: LocalizedProfileText {
+            zh_cn: "开发测试",
+            en: "Development and Testing",
+        },
+        summary: LocalizedProfileText {
+            zh_cn: "开发测试角色，用于在同一节点完成需求实现、自动化测试与必要回归。",
+            en: "Development and testing role for implementing requirements and running automated verification in one node.",
         },
         dynamic_template: true,
     },
@@ -775,6 +788,7 @@ fn built_in_profile_content(key: &str, language: DesktopLanguage) -> &'static st
     match key {
         "plan" => prompt_by_language(language, PROFILE_PLAN_ZH_CN, PROFILE_PLAN_EN),
         "dev" => prompt_by_language(language, PROFILE_DEV_ZH_CN, PROFILE_DEV_EN),
+        "dev-test" => prompt_by_language(language, PROFILE_DEV_TEST_ZH_CN, PROFILE_DEV_TEST_EN),
         "review" => prompt_by_language(language, PROFILE_REVIEW_ZH_CN, PROFILE_REVIEW_EN),
         "test" => prompt_by_language(language, PROFILE_TEST_ZH_CN, PROFILE_TEST_EN),
         "accept" => prompt_by_language(language, PROFILE_ACCEPT_ZH_CN, PROFILE_ACCEPT_EN),
@@ -1245,6 +1259,7 @@ profile body
 
         assert_eq!(by_id["pf-builtin-plan"], true);
         assert_eq!(by_id["pf-builtin-dev"], true);
+        assert_eq!(by_id["pf-builtin-dev-test"], true);
         assert_eq!(by_id["pf-builtin-review"], false);
         assert_eq!(by_id["pf-builtin-test"], false);
         assert_eq!(by_id["pf-builtin-accept"], false);
@@ -1259,6 +1274,7 @@ profile body
         let expected = [
             ("pf-builtin-plan", "方案", "Plan"),
             ("pf-builtin-dev", "开发", "Development"),
+            ("pf-builtin-dev-test", "开发测试", "Development and Testing"),
             ("pf-builtin-review", "审查", "Review"),
             ("pf-builtin-test", "测试", "Testing"),
             ("pf-builtin-accept", "验收", "Acceptance"),

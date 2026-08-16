@@ -51,6 +51,18 @@ model、thought level、permission 和 Direct session policy 不进入内容指�
 
 编辑保存时若新旧内容指纹不同，将 `taskId` 置空；历史 Task/Run 不修改、不迁移、不删除。
 
+Workflow 的定时冻结快照与内容指纹承担不同职责：冻结快照保留完整
+`TaskAuthoringWorkflow`，供下一次定时 Run 注入最新模型、权限和 config options；内容指纹只投影
+Task 语义身份。新绑定结构中的 Agent 身份必须先通过 `executionSlotId` 关联到 Worker，再规范化为按
+`nodeId` 排序的 `{ nodeId, agentId }`；内部 slot、模型、权限、config options、
+`definitionRevision` 和 `bindingRevision` 均不进入身份。
+
+更新时比较新旧语义投影而不是完整冻结快照。仅执行配置变化时保留 `taskId` 和既有
+`contentFingerprint`，避免指纹算法升级使已有 Task metadata 失配；语义变化时才计算新指纹并清除
+关联。复用 Task 的定时 Workflow 必须从定时定义的冻结 authoring 生成新的
+`workflow.snapshot.json`，不得覆盖 Task 的 `authoring/workflow.json`。因此当前已运行 Run 保持不变，
+下一次定时 Run 使用最新执行配置，而普通手动重跑继续使用 Task authoring。
+
 ## 5. Direct 执行生命周期
 
 ### 新会话
@@ -123,3 +135,4 @@ changed identity is rejected with a structured error code.
 - Direct 持续会话连续触发两次保持相同 Task、Run 和 Round。
 - Direct Agent 在编辑界面不可修改，接口层也拒绝篡改。
 - 内容指纹变化会使下一次触发创建新 Task；仅执行配置变化不会创建新 Task。
+- 定时 Workflow 仅修改模型、权限或 config options 后，下一次触发复用 Task，并在新 Run snapshot 中使用新值；Task authoring 与手动重跑语义保持不变。

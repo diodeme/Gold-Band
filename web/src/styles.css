@@ -444,6 +444,14 @@
     @apply h-screen;
   }
 
+  #gold-band-overlay-portal-host {
+    overflow: visible;
+    contain: none;
+    transform: none;
+    filter: none;
+    backdrop-filter: none;
+  }
+
   button,
   select {
     font: inherit;

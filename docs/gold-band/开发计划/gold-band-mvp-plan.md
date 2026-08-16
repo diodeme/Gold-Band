@@ -1121,3 +1121,10 @@ attempt-001/
 - 数据与实现：新增无数量上限的字体目录规范化函数，仅做 trim、大小写不敏感去重和 locale 排序；Settings 与浏览器字体探测统一消费该目录函数，用户偏好仍由原有有界、保序规范化函数约束。两个内置主题改为随包分发的 `Inter Variable → Gold Band MiSans`，设置页也允许选择两套内置字体；继续复用 shadcn `Popover + Command`，不增加逐字符 JS 分流。
 - 接口回归：单元测试固定 100 项字体目录不被截断、自然排序与大小写去重，继续固定用户字体栈最多 16 项；Theme SDK 测试固定两个内置主题的 Inter / MiSans 顺序，生产构建必须包含 Fontsource variable font 资源。
 - 性能与过度设计评审：系统字体仅在设置页载入时对约百项数组执行一次 O(n) 去重与 O(n log n) 排序；99 项 Command 不需要虚拟化，没有新增状态、Context、缓存、队列或额外字体枚举。Fontsource 依靠 unicode-range 按需加载字集，正文仍由浏览器原生 fallback 完成；新增依赖只承担成熟字体资源的版本与打包管理，与实际跨平台一致性需求匹配。
+
+## 2026-08-16：Variable Font 与浮层宿主/动画边界修复
+
+- 根因修复：Theme Contract v2 的单值 face weight 让 variable WOFF2 退化为离散 400/500/600/700 注册，破坏既有 330/380/450/520 轴映射；Dialog/Sheet/AlertDialog 缺少可验收的专用 Portal host；Dropdown/Context Menu 的 Radix 定位节点又同时承担 transform 动画与裁剪。三项均在共享契约和 shadcn primitive 层修复，不增加页面或主题 ID 特判。
+- 实现：字体 face 改用有序且受资产 metadata 约束的 `weightMin/weightMax`，内置 Inter/MiSans 分别生成连续 range；应用壳增加无 transform/filter/contain/overflow 裁剪的 body-level overlay host；菜单 Content/SubContent 将材质、overflow 与 slide/zoom/fade 下沉到内部视觉层，Radix 节点只负责定位、焦点和 dismiss。
+- 回归与文档：Theme SDK、Web Schema、内置主题、生成产物、SDK README、UI 交互规则、产品设置规范和主题 v2 计划同步；定向测试固定区间验证、跨主题字体身份、Portal host 和定位/视觉层职责边界。
+- 性能与过度设计评审：每主题 font-face 从 8 条收敛为 2 条，只新增一个静态 host 和打开菜单时的一层 DOM；无新依赖、状态、订阅、缓存、队列、测量或 I/O，减少字体匹配键并避免定位节点的 transform 合成竞争。

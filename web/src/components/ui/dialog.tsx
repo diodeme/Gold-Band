@@ -5,7 +5,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { PortalContainerContext } from "@/lib/portal-container"
+import { getOverlayPortalHost, PortalContainerContext } from "@/lib/portal-container"
 import { Button } from "@/components/ui/button"
 
 function Dialog({
@@ -23,9 +23,10 @@ const DialogTrigger = React.forwardRef<
 DialogTrigger.displayName = "DialogTrigger"
 
 function DialogPortal({
+  container = getOverlayPortalHost(),
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+  return <DialogPrimitive.Portal data-slot="dialog-portal" container={container} {...props} />
 }
 
 const DialogClose = React.forwardRef<

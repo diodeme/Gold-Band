@@ -786,10 +786,11 @@
   "fonts": {
     "faces": [
       {
-        "id": "inter-regular",
+        "id": "inter-variable",
         "family": "Inter Variable",
         "assetId": "inter-latin-variable",
-        "weight": 400,
+        "weightMin": 100,
+        "weightMax": 900,
         "style": "normal",
         "display": "swap",
         "coverage": {
@@ -800,106 +801,11 @@
         "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
       },
       {
-        "id": "inter-medium",
-        "family": "Inter Variable",
-        "assetId": "inter-latin-variable",
-        "weight": 500,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Latn"
-          ]
-        },
-        "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
-      },
-      {
-        "id": "inter-semibold",
-        "family": "Inter Variable",
-        "assetId": "inter-latin-variable",
-        "weight": 600,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Latn"
-          ]
-        },
-        "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
-      },
-      {
-        "id": "inter-bold",
-        "family": "Inter Variable",
-        "assetId": "inter-latin-variable",
-        "weight": 700,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Latn"
-          ]
-        },
-        "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
-      },
-      {
-        "id": "misans-regular",
+        "id": "misans-variable",
         "family": "Gold Band MiSans",
         "assetId": "misans-variable",
-        "weight": 400,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Hans",
-            "Latn"
-          ],
-          "locales": [
-            "zh-CN"
-          ]
-        },
-        "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
-      },
-      {
-        "id": "misans-medium",
-        "family": "Gold Band MiSans",
-        "assetId": "misans-variable",
-        "weight": 500,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Hans",
-            "Latn"
-          ],
-          "locales": [
-            "zh-CN"
-          ]
-        },
-        "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
-      },
-      {
-        "id": "misans-semibold",
-        "family": "Gold Band MiSans",
-        "assetId": "misans-variable",
-        "weight": 600,
-        "style": "normal",
-        "display": "swap",
-        "coverage": {
-          "scripts": [
-            "Hans",
-            "Latn"
-          ],
-          "locales": [
-            "zh-CN"
-          ]
-        },
-        "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
-      },
-      {
-        "id": "misans-bold",
-        "family": "Gold Band MiSans",
-        "assetId": "misans-variable",
-        "weight": 700,
+        "weightMin": 250,
+        "weightMax": 520,
         "style": "normal",
         "display": "swap",
         "coverage": {
@@ -922,21 +828,21 @@
           "en": "Inter Variable · MiSans"
         },
         "defaultFaces": [
-          "inter-regular"
+          "inter-variable"
         ],
         "byScript": {
           "Hans": [
-            "inter-regular",
-            "misans-regular"
+            "inter-variable",
+            "misans-variable"
           ],
           "Latn": [
-            "inter-regular"
+            "inter-variable"
           ]
         },
         "byLocale": {
           "zh-CN": [
-            "inter-regular",
-            "misans-regular"
+            "inter-variable",
+            "misans-variable"
           ]
         },
         "systemFallbacks": [

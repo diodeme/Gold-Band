@@ -175,6 +175,16 @@ describe('theme package contract', () => {
     expect(themePackageSchema.safeParse(missingDark).success).toBe(false);
   });
 
+  it('rejects an inverted variable font weight range', () => {
+    const invalidFontRange = structuredClone(getThemePackage('builtin.gold-band')) as unknown as {
+      fonts: { faces: Array<{ weightMin: number; weightMax: number }> };
+    };
+    invalidFontRange.fonts.faces[0].weightMin = 700;
+    invalidFontRange.fonts.faces[0].weightMax = 300;
+
+    expect(themePackageSchema.safeParse(invalidFontRange).success).toBe(false);
+  });
+
   it('covers the required application, conversation, and workspace semantic roles', () => {
     const requiredTokens = [
       'contentHeader',

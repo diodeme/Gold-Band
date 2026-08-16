@@ -249,7 +249,8 @@ function validateAssetReferences({ manifest, presets, fonts, icons, wallpapers, 
       if (Object.hasOwn(face, 'runtimeFamily')) throw themeError('theme.package-invalid', `${manifest.id}: ${face.id} runtimeFamily is compiler-owned`);
       const asset = requireAsset(face.assetId, 'font', 'theme.asset-kind-mismatch');
       if (!fontFamilyMatchesMetadata(face.family, asset.fontMetadata.family)) throw themeError('theme.font-metadata-invalid', `${manifest.id}: ${face.id} family ${face.family} does not match ${face.assetId} metadata family ${asset.fontMetadata.family}`);
-      if (face.weight < asset.fontMetadata.weightMin || face.weight > asset.fontMetadata.weightMax) throw themeError('theme.font-metadata-invalid', `${manifest.id}: ${face.id} weight is not supported by ${face.assetId}`);
+      if (face.weightMin > face.weightMax) throw themeError('theme.font-metadata-invalid', `${manifest.id}: ${face.id} font weight range is not ordered`);
+      if (face.weightMin < asset.fontMetadata.weightMin || face.weightMax > asset.fontMetadata.weightMax) throw themeError('theme.font-metadata-invalid', `${manifest.id}: ${face.id} font weight range is not supported by ${face.assetId}`);
       for (const locale of face.coverage.locales ?? []) try { new Intl.Locale(locale); } catch { throw themeError('theme.font-coverage-invalid', `${manifest.id}: invalid locale ${locale}`); }
     }
     for (const stack of fonts.stacks) for (const faceId of [...stack.defaultFaces, ...Object.values(stack.byScript ?? {}).flat(), ...Object.values(stack.byLocale ?? {}).flat()]) if (!faceIds.has(faceId)) throw themeError('theme.font-stack-unresolved', `${manifest.id}: ${stack.id} references ${faceId}`);
@@ -302,7 +303,8 @@ function compilePackageCss(themePackage) {
       const format = asset.mediaType === 'font/woff2' ? 'woff2' : 'woff';
       const coverage = face.coverage.unicodeRanges?.length ? `unicode-range:${face.coverage.unicodeRanges.join(',')};` : '';
       const metrics = face.metrics ?? {};
-      blocks.push(`@font-face{font-family:${quoteCss(face.runtimeFamily)};src:url(${quoteCss(asset.outputUrl)}) format('${format}');font-weight:${face.weight};font-style:${face.style};font-display:swap;${coverage}${fontMetricCss(metrics)}}`);
+      const weight = face.weightMin === face.weightMax ? `${face.weightMin}` : `${face.weightMin} ${face.weightMax}`;
+      blocks.push(`@font-face{font-family:${quoteCss(face.runtimeFamily)};src:url(${quoteCss(asset.outputUrl)}) format('${format}');font-weight:${weight};font-style:${face.style};font-display:swap;${coverage}${fontMetricCss(metrics)}}`);
     }
   }
   for (const [schemeName, scheme] of Object.entries(themePackage.schemes)) {

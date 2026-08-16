@@ -71,11 +71,11 @@ export const scrollbarTokensSchema = z.object({
 export const MAX_FONT_STACK_FAMILIES = 16;
 export const MAX_FONT_FAMILY_CODE_POINTS = 128;
 const fontFaceSchema = z.object({
-  id: z.string(), family: z.string(), runtimeFamily: z.string(), assetId: z.string(), weight: z.union([z.literal(400), z.literal(500), z.literal(600), z.literal(700)]),
+  id: z.string(), family: z.string(), runtimeFamily: z.string(), assetId: z.string(), weightMin: z.number().int().min(1).max(1000), weightMax: z.number().int().min(1).max(1000),
   style: z.enum(['normal', 'italic']), display: z.literal('swap'),
   coverage: z.object({ scripts: z.array(z.string()), locales: z.array(z.string()).optional(), unicodeRanges: z.array(z.string()).optional() }).strict(),
   metrics: z.object({ sizeAdjust: z.string().optional(), ascentOverride: z.string().optional(), descentOverride: z.string().optional(), lineGapOverride: z.string().optional() }).strict().optional(),
-}).strict();
+}).strict().refine((face) => face.weightMin <= face.weightMax, { message: 'font weight range must be ordered' });
 const fontStackSchema = z.object({
   id: z.string(), displayName: localizedTextSchema, defaultFaces: z.array(z.string()),
   byScript: z.record(z.string(), z.array(z.string())).optional(), byLocale: z.record(z.string(), z.array(z.string())).optional(),

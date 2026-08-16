@@ -57,8 +57,8 @@ describe('desktop typography preferences', () => {
     const fontPath = path.resolve(__dirname, '../../themes/gold-band/assets/fonts/misans-vf.woff2');
     expect(styles).not.toContain('@font-face');
     expect(generated).toMatch(/font-family:"Gold Band MiSans";src:url\("\/theme-assets\/builtin\.gold-band\/[a-f0-9]{16}-misans-vf\.woff2"\) format\('woff2'\)/u);
-    expect(generated).toContain('font-weight:400');
-    expect(generated).toContain('font-weight:600');
+    expect(generated).toMatch(/font-family:"Inter Variable";[^}]*font-weight:100 900;/u);
+    expect(generated).toMatch(/font-family:"Gold Band MiSans";[^}]*font-weight:250 520;/u);
     expect(styles).toContain('--font-weight-normal: 330;');
     expect(styles).toContain('--font-weight-medium: 380;');
     expect(styles).toContain('--font-weight-semibold: 450;');
@@ -83,7 +83,7 @@ describe('desktop typography preferences', () => {
 
   it('does not register competing theme asset URLs for one CSS font-face match key', () => {
     const generated = fs.readFileSync(path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'), 'utf8');
-    const facePattern = /@font-face\{font-family:"([^"]+)";src:url\("([^"]+)"\)[^}]*font-weight:(\d+);font-style:([^;]+);/gu;
+    const facePattern = /@font-face\{font-family:"([^"]+)";src:url\("([^"]+)"\)[^}]*font-weight:(\d+(?: \d+)?);font-style:([^;]+);/gu;
     const sourcesByMatchKey = new Map<string, Set<string>>();
 
     for (const match of generated.matchAll(facePattern)) {

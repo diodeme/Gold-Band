@@ -26,6 +26,7 @@ import {
   conversationDirectoryWorkspaceResourceKey,
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
   RightWorkspaceProvider,
   useRightWorkspace,
   type AgentTranscriptLocator,
@@ -148,6 +149,8 @@ function WorkspaceProbe() {
       data-workspace-tab-count={workspace.tabs.length}
       data-workspace-active-tab={workspace.activeTabKey ?? ''}
       data-workspace-width={workspace.width}
+      data-workspace-open={workspace.requestedOpen}
+      data-workspace-open-revision={workspace.openRevision}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
     </output>
@@ -221,14 +224,10 @@ describe('right workspace DOM lifecycle', () => {
     store.save(first, {
       tabs: [{ ...resource('agent-a'), scopeKey: first.key }],
       activeTabKey: resource('agent-a').key,
-      requestedOpen: true,
-      openRevision: 1,
     });
     store.save(second, {
       tabs: [{ ...resource('agent-b'), scopeKey: second.key }],
       activeTabKey: resource('agent-b').key,
-      requestedOpen: true,
-      openRevision: 1,
     });
     try {
       await act(async () => {
@@ -243,6 +242,71 @@ describe('right workspace DOM lifecycle', () => {
         root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-a');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('restores shell open intent and width after a page without workspace capability', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+
+    function OpenDraftWorkspace() {
+      const workspace = useRightWorkspace();
+      useEffect(() => {
+        void workspace.openResource({ ...resource('draft-agent'), scopeKey: draft.key });
+        workspace.setWidth(684);
+      }, [workspace.openResource, workspace.setWidth]);
+      return null;
+    }
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={draft} store={store} initialWidth={440}>
+            <OpenDraftWorkspace />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '1',
+      });
+
+      await act(async () => root.render(<div data-run-mode="true" />));
+      expect(container.querySelector('[data-run-mode="true"]')).not.toBeNull();
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={draft} store={store} initialWidth={440}>
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '1',
+      });
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={conversation} store={store} initialWidth={440}>
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '0',
+      });
     } finally {
       await act(async () => root.unmount());
     }

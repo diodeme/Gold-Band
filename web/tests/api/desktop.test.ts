@@ -49,6 +49,12 @@ describe('desktopApi', () => {
   });
 
   it('forwards recent workspace removal to the Tauri command path', async () => {
+    vi.mocked(invokeCommand).mockResolvedValueOnce({
+      preferences: {
+        wallpapers: { recentWallpapers: [] },
+      },
+    });
+
     await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
 
     expect(invokeCommand).toHaveBeenCalledWith('remove_recent_workspace', {

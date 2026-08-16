@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -24,14 +24,16 @@ use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
-use gold_band::domain::TurnControlMode;
+use gold_band::domain::{SessionMode, TurnControlMode};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
-use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
+use gold_band::runtime::{
+    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, WorkerRefState,
+};
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
@@ -644,6 +646,19 @@ pub struct ConversationComposerVm {
     pub status_key: Option<String>,
     pub can_stop: bool,
     pub lock_input: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<ConversationSessionTargetVm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSessionTargetVm {
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
+    pub path_label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1899,6 +1914,7 @@ fn composer_for_lifecycle(
         status_key: status_key.map(str::to_string),
         can_stop: runtime_active || acp_active || acp_stopping,
         lock_input: mode != "normal",
+        superseded_by: None,
     }
 }
 
@@ -2373,6 +2389,295 @@ fn conversation_leaf_key(leaf: &ConversationSessionLeafVm) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ConversationSessionLocator {
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+impl ConversationSessionLocator {
+    fn target_vm(&self) -> ConversationSessionTargetVm {
+        ConversationSessionTargetVm {
+            round_id: self.round_id.clone(),
+            node_id: self.node_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            outer_node_id: self.outer_node_id.clone(),
+            outer_attempt_id: self.outer_attempt_id.clone(),
+            path_label: format!("{}/{}", self.node_id, self.attempt_id),
+        }
+    }
+}
+
+fn worker_ref_can_continue(path: &Utf8Path) -> bool {
+    read_json::<WorkerRefState>(path)
+        .ok()
+        .and_then(|worker_ref| worker_ref.continue_ref)
+        .is_some()
+}
+
+fn workflow_edge_continues_session(
+    workflow: &WorkflowDsl,
+    from_node_id: Option<&str>,
+    to_node_id: &str,
+    edge_outcome: Option<&str>,
+) -> bool {
+    let (Some(from_node_id), Some(edge_outcome)) = (from_node_id, edge_outcome) else {
+        return false;
+    };
+    workflow.edges.iter().any(|edge| {
+        edge.from == from_node_id
+            && edge.to == to_node_id
+            && enum_label(&edge.on) == edge_outcome
+            && edge.session == Some(SessionMode::Continue)
+    })
+}
+
+fn resolve_terminal_session_successor(
+    source: &ConversationSessionLocator,
+    direct: &HashMap<ConversationSessionLocator, ConversationSessionLocator>,
+) -> Option<ConversationSessionLocator> {
+    let mut seen = HashSet::from([source.clone()]);
+    let mut current = direct.get(source)?.clone();
+    while seen.insert(current.clone()) {
+        let Some(next) = direct.get(&current) else {
+            return Some(current);
+        };
+        current = next.clone();
+    }
+    None
+}
+
+fn conversation_session_successors_from_state(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    rounds: &[RoundState],
+    workflow: Option<&WorkflowDsl>,
+) -> anyhow::Result<HashMap<ConversationSessionLocator, ConversationSessionTargetVm>> {
+    let mut direct = HashMap::<ConversationSessionLocator, ConversationSessionLocator>::new();
+
+    if let Some(workflow) = workflow {
+        for round in rounds {
+            let mut trace = round.trace.clone();
+            trace.sort_by_key(|step| step.sequence);
+            let mut latest_by_node = HashMap::<String, ConversationSessionLocator>::new();
+            for step in trace {
+                let target = ConversationSessionLocator {
+                    round_id: round.id.clone(),
+                    node_id: step.node_id.clone(),
+                    attempt_id: step.attempt_id.clone(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                };
+                if workflow_edge_continues_session(
+                    workflow,
+                    step.from_node_id.as_deref(),
+                    &step.node_id,
+                    step.edge_outcome.as_deref(),
+                ) && let Some(source) = latest_by_node.get(&step.node_id)
+                {
+                    let worker_ref_path = app.paths.worker_ref_file(
+                        task_id,
+                        run_id,
+                        &source.round_id,
+                        &source.node_id,
+                        &source.attempt_id,
+                    );
+                    if source != &target && worker_ref_can_continue(&worker_ref_path) {
+                        direct.insert(source.clone(), target.clone());
+                    }
+                }
+                latest_by_node.insert(step.node_id, target);
+            }
+        }
+    }
+
+    for round in rounds {
+        for node in app.node_list(task_id, run_id, &round.id)? {
+            if node.node_type != NodeType::AiDynamic {
+                continue;
+            }
+            for outer_attempt in app.attempt_list(task_id, run_id, &round.id, &node.node_id)? {
+                let dynamic_path = app.paths.dynamic_graph_file(
+                    task_id,
+                    run_id,
+                    &round.id,
+                    &node.node_id,
+                    &outer_attempt.attempt_id,
+                );
+                if !dynamic_path.exists() {
+                    continue;
+                }
+                let graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
+                for dynamic_node in &graph.nodes {
+                    if dynamic_node.session_mode != SessionMode::Continue {
+                        continue;
+                    }
+                    let Some(source_node_id) = dynamic_node.continue_from_node_id.as_ref() else {
+                        continue;
+                    };
+                    let attempt_id = default_dynamic_attempt_id();
+                    let source = ConversationSessionLocator {
+                        round_id: round.id.clone(),
+                        node_id: source_node_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        outer_node_id: Some(node.node_id.clone()),
+                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                    };
+                    let target = ConversationSessionLocator {
+                        round_id: round.id.clone(),
+                        node_id: dynamic_node.id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        outer_node_id: Some(node.node_id.clone()),
+                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                    };
+                    let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &outer_attempt.attempt_id,
+                        source_node_id,
+                        &attempt_id,
+                    );
+                    let target_attempt_dir = app.paths.dynamic_node_attempt_dir(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &outer_attempt.attempt_id,
+                        &dynamic_node.id,
+                        &attempt_id,
+                    );
+                    if source != target
+                        && target_attempt_dir.exists()
+                        && worker_ref_can_continue(&source_attempt_dir.join("worker-ref.json"))
+                    {
+                        direct.insert(source, target);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(direct
+        .keys()
+        .filter_map(|source| {
+            resolve_terminal_session_successor(source, &direct)
+                .map(|target| (source.clone(), target.target_vm()))
+        })
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn conversation_session_successor(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> anyhow::Result<Option<ConversationSessionTargetVm>> {
+    if !conversation_is_orchestrated(app, task_id) {
+        return Ok(None);
+    }
+    let round = read_json::<RoundState>(&app.paths.round_file(task_id, run_id, round_id))?;
+    let workflow =
+        read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id)).ok();
+    let successors = conversation_session_successors_from_state(
+        app,
+        task_id,
+        run_id,
+        &[round],
+        workflow.as_ref(),
+    )?;
+    Ok(successors
+        .get(&ConversationSessionLocator {
+            round_id: round_id.to_string(),
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            outer_node_id: outer_node_id.map(str::to_string),
+            outer_attempt_id: outer_attempt_id.map(str::to_string),
+        })
+        .cloned())
+}
+
+fn mark_composer_session_superseded(
+    composer: &mut ConversationComposerVm,
+    target: ConversationSessionTargetVm,
+) {
+    composer.mode = "session-superseded".to_string();
+    composer.submit_target = "none".to_string();
+    composer.status_key = None;
+    composer.can_stop = false;
+    composer.lock_input = true;
+    composer.superseded_by = Some(target);
+}
+
+fn apply_session_successors_to_tree(
+    rounds: &mut [ConversationRoundNodeVm],
+    successors: &HashMap<ConversationSessionLocator, ConversationSessionTargetVm>,
+) {
+    for round in rounds {
+        for node in &mut round.nodes {
+            for leaf in &mut node.attempts {
+                let locator = ConversationSessionLocator {
+                    round_id: leaf.round_id.clone(),
+                    node_id: leaf.node_id.clone(),
+                    attempt_id: leaf.attempt_id.clone(),
+                    outer_node_id: leaf.outer_node_id.clone(),
+                    outer_attempt_id: leaf.outer_attempt_id.clone(),
+                };
+                if let Some(target) = successors.get(&locator) {
+                    mark_composer_session_superseded(&mut leaf.lifecycle.composer, target.clone());
+                }
+            }
+            if let Some(outer_nodes) = &mut node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &mut outer_node.attempts {
+                        let locator = ConversationSessionLocator {
+                            round_id: leaf.round_id.clone(),
+                            node_id: leaf.node_id.clone(),
+                            attempt_id: leaf.attempt_id.clone(),
+                            outer_node_id: leaf.outer_node_id.clone(),
+                            outer_attempt_id: leaf.outer_attempt_id.clone(),
+                        };
+                        if let Some(target) = successors.get(&locator) {
+                            mark_composer_session_superseded(
+                                &mut leaf.lifecycle.composer,
+                                target.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_session_successors_to_active_sessions(
+    sessions: &mut [ConversationActiveSessionVm],
+    successors: &HashMap<ConversationSessionLocator, ConversationSessionTargetVm>,
+) {
+    for session in sessions {
+        let locator = ConversationSessionLocator {
+            round_id: session.round_id.clone(),
+            node_id: session.node_id.clone(),
+            attempt_id: session.attempt_id.clone(),
+            outer_node_id: session.outer_node_id.clone(),
+            outer_attempt_id: session.outer_attempt_id.clone(),
+        };
+        if let Some(target) = successors.get(&locator) {
+            mark_composer_session_superseded(&mut session.lifecycle.composer, target.clone());
+        }
+    }
+}
+
 pub fn conversation_run_vm(
     app: &App,
     project_id: &str,
@@ -2426,6 +2731,17 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
+    let session_successors = if is_orchestrated {
+        conversation_session_successors_from_state(
+            app,
+            task_id,
+            run_id,
+            &rounds,
+            workflow_snapshot.as_ref(),
+        )?
+    } else {
+        HashMap::new()
+    };
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
@@ -2885,6 +3201,9 @@ pub fn conversation_run_vm(
             nodes: tree_nodes,
         });
     }
+
+    apply_session_successors_to_tree(&mut tree_rounds, &session_successors);
+    apply_session_successors_to_active_sessions(&mut active_sessions, &session_successors);
 
     // Determine which session leaf to load.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
@@ -3854,10 +4173,11 @@ pub fn switch_conversation_session_vm(
 mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
-        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
-        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity, attempt_control_mode,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_sidebar_vm_from_sources,
+        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
+        ConversationTaskActivityVm, ConversationWorkspaceSource, ConversationWorkspaceVm,
+        PromptActivity, attempt_control_mode, build_auto_workflow, build_direct_workflow,
+        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
+        conversation_session_successors_from_state, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
         create_conversation_task_vm, derive_conversation_attempt_lifecycle,
         derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
@@ -3871,7 +4191,7 @@ mod tests {
     use gold_band::config::ConversationRunMode;
     use gold_band::domain::TurnControlMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
-    use gold_band::runtime::{RuntimeExecutionPhase, RuntimeExecutionState};
+    use gold_band::runtime::{RoundState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::workflow_model_binding::WorkflowModelBindings;
     use serde_json::json;
 
@@ -3993,6 +4313,197 @@ mod tests {
             "在.claude下输出两个python类"
         );
         assert_eq!(conversation_auto_title("", 20), "New Task");
+    }
+
+    #[test]
+    fn workflow_continue_successors_resolve_the_whole_chain_to_the_latest_attempt() {
+        let app = App::new(temp_repo_root());
+        let task_id = "task-session-owner";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let workflow: gold_band::dsl::WorkflowDsl = serde_json::from_value(json!({
+            "version": "0.1",
+            "id": "session-owner",
+            "entry": "review",
+            "control": {},
+            "nodes": [
+                { "type": "worker", "id": "review", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "review", "to": "review", "on": "failure", "session": "continue" }
+            ]
+        }))
+        .unwrap();
+        let round: RoundState = serde_json::from_value(json!({
+            "version": gold_band::domain::VERSION,
+            "id": round_id,
+            "run_id": run_id,
+            "index": 1,
+            "status": "completed",
+            "outcome": "success",
+            "trigger": "initial",
+            "started_at": "2026-08-16T00:00:00Z",
+            "trace": [
+                { "sequence": 1, "node_id": "review", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-08-16T00:00:00Z" },
+                { "sequence": 2, "node_id": "review", "attempt_id": "attempt-002", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:01Z" },
+                { "sequence": 3, "node_id": "review", "attempt_id": "attempt-003", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:02Z" }
+            ]
+        }))
+        .unwrap();
+        for (attempt_id, session_id) in [
+            ("attempt-001", "session-001"),
+            ("attempt-002", "session-001"),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .worker_ref_file(task_id, run_id, round_id, "review", attempt_id),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "provider": "claude-acp",
+                    "mode": "continue",
+                    "supports_open_session": true,
+                    "supports_continue_session": true,
+                    "continue_ref": { "acpSessionId": session_id },
+                    "open_command": null
+                }),
+            )
+            .unwrap();
+        }
+
+        let successors = conversation_session_successors_from_state(
+            &app,
+            task_id,
+            run_id,
+            std::slice::from_ref(&round),
+            Some(&workflow),
+        )
+        .unwrap();
+        let first = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "review".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            })
+            .unwrap();
+        let second = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "review".to_string(),
+                attempt_id: "attempt-002".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            })
+            .unwrap();
+
+        assert_eq!(first.attempt_id, "attempt-003");
+        assert_eq!(second.attempt_id, "attempt-003");
+        assert!(
+            !successors
+                .keys()
+                .any(|locator| locator.attempt_id == "attempt-003")
+        );
+
+        let mut new_session_workflow = workflow;
+        new_session_workflow.edges[0].session = Some(gold_band::domain::SessionMode::New);
+        let new_session_successors = conversation_session_successors_from_state(
+            &app,
+            task_id,
+            run_id,
+            &[round],
+            Some(&new_session_workflow),
+        )
+        .unwrap();
+        assert!(new_session_successors.is_empty());
+    }
+
+    #[test]
+    fn auto_dynamic_continue_successor_uses_the_explicit_continue_source() {
+        let app = App::new(temp_repo_root());
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "completed",
+            Vec::new(),
+            true,
+        );
+        let task_id = "task-dyn";
+        let run_id = "run-dyn";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let graph_path = app.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        let mut target = graph["nodes"][0].clone();
+        target["id"] = json!("good-night");
+        target["title"] = json!("Good night");
+        target["task"] = json!("Say good night");
+        target["chainId"] = json!("good-night");
+        target["sessionMode"] = json!("continue");
+        target["continueFromNodeId"] = json!("good-morning");
+        graph["nodes"].as_array_mut().unwrap().push(target);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+        let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            "good-morning",
+            "attempt-001",
+        );
+        gold_band::storage::write_json(
+            &source_attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "provider": "claude-acp",
+                "mode": "new",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": { "acpSessionId": "session-good-morning" },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .dynamic_node_attempt_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    "good-night",
+                    "attempt-001",
+                )
+                .as_std_path(),
+        )
+        .unwrap();
+
+        let rounds = app.round_list(task_id, run_id).unwrap();
+        let successors =
+            conversation_session_successors_from_state(&app, task_id, run_id, &rounds, None)
+                .unwrap();
+        let target = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "good-morning".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(target.node_id, "good-night");
+        assert_eq!(target.outer_node_id.as_deref(), Some(outer_node_id));
     }
 
     #[test]

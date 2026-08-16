@@ -11,11 +11,16 @@ export type FontStackPreference = { source: 'theme' } | { source: 'custom'; fami
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
+export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export interface PersonalizationPreference {
-  schemaVersion: 2;
+  schemaVersion: 3;
   typography: {
     ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
     editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
+  };
+  wallpaper: {
+    image: WallpaperImagePreference;
+    opacityPercent: number;
   };
   avatars: {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
@@ -36,6 +41,21 @@ export interface PreferencesVm {
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;
+  wallpapers: WallpaperPreferencesVm;
+}
+
+export interface WallpaperImageVm {
+  id: string;
+  imageUrl: string;
+  thumbnailUrl: string;
+  createdAt: string;
+  width: number;
+  height: number;
+}
+
+export interface WallpaperPreferencesVm {
+  selectedWallpaperId: string | null;
+  recentWallpapers: WallpaperImageVm[];
 }
 
 export interface AvatarImageVm {
@@ -1850,7 +1870,17 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 export type ConversationPage =
   | { kind: 'conversation-home' }
   | { kind: 'scheduled-task-create' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
+  | {
+      kind: 'conversation-run';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      roundId?: string;
+      nodeId?: string;
+      attemptId?: string;
+      outerNodeId?: string;
+      outerAttemptId?: string;
+    }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -2103,6 +2133,16 @@ export interface ConversationComposerVm {
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+  supersededBy?: ConversationSessionTargetVm | null;
+}
+
+export interface ConversationSessionTargetVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
 }
 
 export interface AppExitRequestVm {

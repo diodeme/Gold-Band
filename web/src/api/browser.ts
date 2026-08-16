@@ -331,6 +331,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
         lockInput: false,
       },
     };
+
   }
   return run;
 }
@@ -1406,6 +1407,70 @@ export const browserApi: RuntimeApi = {
       },
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
+  },
+  importDesktopWallpaper() {
+    const current = browserPreviewState.getPreferences();
+    const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `wallpaper-${Date.now()}`;
+    const imageUrl = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900"%3E%3Cdefs%3E%3ClinearGradient id="g" x2="1" y2="1"%3E%3Cstop stop-color="%23111927"/%3E%3Cstop offset=".5" stop-color="%230f766e"/%3E%3Cstop offset="1" stop-color="%23d4a72c"/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width="1600" height="900" fill="url(%23g)"/%3E%3C/svg%3E';
+    const wallpaper = {
+      id,
+      imageUrl,
+      thumbnailUrl: imageUrl,
+      createdAt: localTimestamp(),
+      width: 1600,
+      height: 900,
+    };
+    const wallpapers = {
+      selectedWallpaperId: id,
+      recentWallpapers: [wallpaper, ...current.wallpapers.recentWallpapers].slice(0, 10),
+    };
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        image: { source: 'user' as const, assetId: id },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  selectRecentDesktopWallpaper(wallpaperId) {
+    const current = browserPreviewState.getPreferences();
+    const selected = current.wallpapers.recentWallpapers.find((wallpaper) => wallpaper.id === wallpaperId);
+    if (!selected) return Promise.reject({ code: 'wallpaper.recent-not-found', params: { wallpaperId } });
+    const wallpapers = {
+      selectedWallpaperId: wallpaperId,
+      recentWallpapers: [selected, ...current.wallpapers.recentWallpapers.filter((wallpaper) => wallpaper.id !== wallpaperId)],
+    };
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        image: { source: 'user' as const, assetId: wallpaperId },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  saveDesktopWallpaperOpacity(opacityPercent) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: { ...current.personalization.wallpaper, opacityPercent },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  restoreThemeDesktopWallpaper() {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        image: { source: 'theme' as const },
+      },
+    };
+    const wallpapers = { ...current.wallpapers, selectedWallpaperId: null };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();

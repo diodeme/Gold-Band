@@ -11,6 +11,7 @@ const resizableGroupWidth = vi.hoisted(() => ({ value: 1_290 }));
 const resizableGroupEvents = vi.hoisted(() => ({
   onLayoutChanged: null as null | ((layout: Record<string, number>, meta: { isUserInteraction: boolean }) => void),
 }));
+const resizableGroupConstraintLag = vi.hoisted(() => ({ centerMinPixels: null as number | null }));
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
@@ -48,6 +49,20 @@ vi.mock('@/components/ui/resizable', async () => {
             if (!state?.collapsed || size <= 0.01) continue;
             applied[id] = 0;
             applied['workspace-center'] = (applied['workspace-center'] ?? 0) + size;
+          }
+          const laggedCenterMinPixels = resizableGroupConstraintLag.centerMinPixels;
+          const laggedCenterMinPercentage = laggedCenterMinPixels == null
+            ? null
+            : laggedCenterMinPixels / resizableGroupWidth.value * 100;
+          if (
+            laggedCenterMinPercentage != null
+            && (applied['workspace-right'] ?? 0) > 0.01
+            && (applied['workspace-center'] ?? 0) < laggedCenterMinPercentage
+          ) {
+            const deficit = laggedCenterMinPercentage - (applied['workspace-center'] ?? 0);
+            applied['workspace-center'] = laggedCenterMinPercentage;
+            applied['workspace-navigation'] = Math.max(0, (applied['workspace-navigation'] ?? 0) - deficit);
+            resizableGroupConstraintLag.centerMinPixels = null;
           }
           layoutRef.current = applied;
           resizableGroupLayouts.push(applied);
@@ -93,7 +108,7 @@ vi.mock('@/components/ui/sheet', () => ({
 
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import { FALLBACK_WORKSPACE_LAYOUT } from '@/components/workspace/workspace-layout';
-import { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
+import { ConversationWorkspaceStore, createDraftConversationWorkspaceScope } from '@/components/workspace/right-workspace-context';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -103,6 +118,7 @@ beforeEach(() => {
   resizableGroupLayouts.splice(0, resizableGroupLayouts.length);
   resizableGroupWidth.value = 1_290;
   resizableGroupEvents.onLayoutChanged = null;
+  resizableGroupConstraintLag.centerMinPixels = null;
   vi.clearAllMocks();
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
@@ -186,7 +202,8 @@ describe('WorkspaceShell sidebar width hydration', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    store.openWorkspace({ explicit: true });
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
     const commonProps = {
       appName: 'Gold Band',
       windowFrameStyle: 'native-compositor' as const,
@@ -259,7 +276,105 @@ describe('WorkspaceShell sidebar width hydration', () => {
       });
       expect(resizablePanelHandles.get('workspace-navigation')?.calls).toContain('expand');
       expect(resizablePanelHandles.get('workspace-right')?.calls).toContain('expand');
-      expect(store.peekShellState()).toMatchObject({ requestedOpen: true, width: 690 });
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 690 });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('replays the canonical layout once after a feature-page center constraint settles', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
+    resizableGroupWidth.value = 1_360;
+    const animationFrames = new Map<number, FrameRequestCallback>();
+    let nextAnimationFrameId = 1;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = nextAnimationFrameId++;
+      animationFrames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      animationFrames.delete(id);
+    });
+    const flushAnimationFrames = () => {
+      const callbacks = [...animationFrames.values()];
+      animationFrames.clear();
+      callbacks.forEach((callback) => callback(0));
+    };
+    const commonProps = {
+      appName: 'Gold Band',
+      windowFrameStyle: 'native-compositor' as const,
+      appConfig: {
+        acpSessionTitleRefreshEnabled: false,
+        acpChatEventPageSize: 360,
+        turnFiles: { cardPreviewLimit: 3 },
+        workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+      },
+      vm: {
+        workspaces: [],
+        pinnedTasks: [],
+        tasksByWorkspace: {},
+        preferences: { 'sidebar.width': 332, 'rightWorkspace.width': 484 },
+      },
+      conversationWorkspaceStore: store,
+      sidebarCollapsed: false,
+      onSelect: () => {},
+      onToggleSidebar: () => {},
+      onNewConversation: () => {},
+      onSearch: () => {},
+      onSelectTask: () => {},
+      onSelectRun: () => {},
+      onPinTask: () => {},
+      onUnpinTask: () => {},
+      onRenameTask: () => {},
+      onDeleteTask: () => {},
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      await act(async () => flushAnimationFrames());
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'scheduled-tasks' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      await act(async () => flushAnimationFrames());
+
+      resizableGroupConstraintLag.centerMinPixels = 640;
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+
+      const constrained = resizableGroupLayouts.at(-1)!;
+      expect(constrained['workspace-navigation'] * 13.6).toBeCloseTo(236, 5);
+      expect(constrained['workspace-center'] * 13.6).toBeCloseTo(640, 5);
+      expect(constrained['workspace-right'] * 13.6).toBeCloseTo(484, 5);
+      expect(animationFrames.size).toBe(1);
+
+      await act(async () => flushAnimationFrames());
+
+      const converged = resizableGroupLayouts.at(-1)!;
+      expect(converged['workspace-navigation'] * 13.6).toBeCloseTo(332, 5);
+      expect(converged['workspace-center'] * 13.6).toBeCloseTo(544, 5);
+      expect(converged['workspace-right'] * 13.6).toBeCloseTo(484, 5);
+      expect(animationFrames.size).toBe(0);
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 484 });
     } finally {
       await act(async () => root.unmount());
     }
@@ -271,7 +386,8 @@ describe('WorkspaceShell sidebar width hydration', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    store.openWorkspace({ explicit: true });
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
     resizableGroupWidth.value = 1_271;
 
     try {
@@ -324,7 +440,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
         }, { isUserInteraction: true });
       });
 
-      expect(store.peekShellState().width).toBe(288);
+      expect(store.peekShellState(draftScope).width).toBe(288);
       expect(saveConversationPreference).toHaveBeenCalledWith('rightWorkspace.width', 288);
     } finally {
       await act(async () => root.unmount());

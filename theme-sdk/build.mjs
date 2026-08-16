@@ -315,7 +315,9 @@ function compilePackageCss(themePackage) {
   blocks.push(
     `${selector} body,${selector} #root,${selector} .app-window-shell{background-color:var(--gold-workspace);background-image:var(--gb-theme-background-image);background-attachment:fixed;background-size:cover}`,
     `${selector} [data-theme-wallpaper-slot]{position:relative;isolation:isolate}`,
-    `${selector} [data-theme-wallpaper-slot]::before{position:absolute;z-index:-1;inset:0;pointer-events:none;content:"";background-image:linear-gradient(color-mix(in srgb,var(--gb-wallpaper-overlay-color) calc(var(--gb-wallpaper-overlay-opacity)*100%),transparent),color-mix(in srgb,var(--gb-wallpaper-overlay-color) calc(var(--gb-wallpaper-overlay-opacity)*100%),transparent)),var(--gb-wallpaper-image,none);background-position:var(--gb-wallpaper-position,center);background-size:var(--gb-wallpaper-size,cover);background-repeat:var(--gb-wallpaper-repeat,no-repeat);opacity:var(--gb-wallpaper-opacity,1)}`,
+    `${selector} [data-theme-wallpaper-slot]::before,${selector} [data-theme-wallpaper-slot]::after{position:absolute;inset:0;pointer-events:none;content:""}`,
+    `${selector} [data-theme-wallpaper-slot]::before{z-index:-2;background-image:var(--gb-wallpaper-image,none);background-position:var(--gb-wallpaper-position,center);background-size:var(--gb-wallpaper-size,cover);background-repeat:var(--gb-wallpaper-repeat,no-repeat);opacity:var(--gb-wallpaper-opacity,1)}`,
+    `${selector} [data-theme-wallpaper-slot]::after{z-index:-1;background:color-mix(in srgb,var(--gb-wallpaper-overlay-color,transparent) calc(var(--gb-wallpaper-overlay-opacity,0)*100%),transparent)}`,
   );
   const recipeComponentBlocks = [];
   for (const [role, recipe] of Object.entries(themePackage.recipes)) {

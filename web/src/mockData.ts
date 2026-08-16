@@ -25,9 +25,10 @@ import type {
 } from './types';
 import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
 import { createDefaultAvatarPreferences } from './lib/avatar';
+import { createDefaultWallpaperPreferences } from './lib/wallpaper';
 import { defaultPersonalizationPreference } from './theme';
 
-const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,

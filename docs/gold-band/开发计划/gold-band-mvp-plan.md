@@ -1145,3 +1145,13 @@ attempt-001/
 - 实现：字体 face 改用有序且受资产 metadata 约束的 `weightMin/weightMax`，内置 Inter/MiSans 分别生成连续 range；应用壳增加无 transform/filter/contain/overflow 裁剪的 body-level overlay host；菜单 Content/SubContent 将材质、overflow 与 slide/zoom/fade 下沉到内部视觉层，Radix 节点只负责定位、焦点和 dismiss。
 - 回归与文档：Theme SDK、Web Schema、内置主题、生成产物、SDK README、UI 交互规则、产品设置规范和主题 v2 计划同步；定向测试固定区间验证、跨主题字体身份、Portal host 和定位/视觉层职责边界。
 - 性能与过度设计评审：每主题 font-face 从 8 条收敛为 2 条，只新增一个静态 host 和打开菜单时的一层 DOM；无新依赖、状态、订阅、缓存、队列、测量或 I/O，减少字体匹配键并避免定位节点的 transform 合成竞争。
+
+## 2026-08-17：用户壁纸导入、最近使用与会话表面覆盖
+
+- 根因与边界：Theme Contract v2 已有 `app / conversation / workspace / settings` 四类 wallpaper surface，但只表达主题包资产，不能表达用户级覆盖；会话运行页和 ACP 根容器又以实色背景遮住了 surface。实现升级既有 personalization，而不把用户资产写入主题包，也不在页面局部拼接 background image。
+- 数据契约：personalization schema v3 新增 `wallpaper.image = theme | user { assetId }` 与 `opacityPercent`；settings schema v9 将 v2 一次性迁移为主题来源。壁纸仓库 v1 只维护最多 10 条 MRU 资产记录，当前选择仍以 personalization 为唯一权威，恢复主题不删除历史。
+- 资源链路：导入支持 PNG/JPEG/WebP，限制 32 MiB、4096×4096 与 1600 万像素；blocking pool 规范化完整图至约 4 MiB 并生成 320×180 WebP 缩略图。自定义协议只接受单段 `{uuid}.full / {uuid}.thumbnail` token，并校验 UUID、索引、固定文件名和 MIME，修复 Windows `convertFileSrc` 对内嵌斜杠编码后协议解析失败的问题。
+- 交互实现：设置项位于字体与头像之间，复用 shadcn Popover、Slider、Button 与 Dialog。主预览限制为 256×144 的小卡片，点击放大后再次点击缩小；最近列表两列且只懒加载缩略图。自定义壁纸固定 `cover / center / no-repeat`，覆盖主题图片，恢复后主题无壁纸则回到普通底色。
+- 可见度与会话：范围 20%–100%、默认 60%、步长 1%。拖动只更新局部 state 与 CSS variable，commit 才持久化。Theme SDK 将图片层与 scrim 分离到 `::before / ::after`；会话主页和运行页共同消费 `conversation` surface，ACP timeline 与包住 Composer 的整宽 sticky footer 使用透明承载；prompt-kit Composer、任务列表、prompt queue 和 manual-check 面板保持不透明 card，只让控件左右空白区透出壁纸。
+- 接口与回归：Rust 测试覆盖 v9 迁移、导入/最近 10 条/恢复、缺失资产收敛、单段协议 token、路径穿越与损坏索引拒绝；Web 测试覆盖最近选择、1% 规范化、Windows URL、设置顺序、小卡片/Dialog、Slider commit 和会话 surface 投影；Theme SDK 测试固定图片/scrim 分层。
+- 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素和既有图片预加载；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper，与实际数据规模匹配，无需额外 benchmark。

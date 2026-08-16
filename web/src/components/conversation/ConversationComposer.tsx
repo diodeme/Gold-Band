@@ -35,6 +35,7 @@ import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import {
   draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
@@ -61,6 +62,84 @@ interface ConversationComposerProps {
   onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
   onScheduledModeExit?: () => void;
+}
+
+interface ConversationWorkspaceControlProps {
+  projectId: string;
+  workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
+  onWorkspaceChange: (projectId: string) => void;
+}
+
+export function ConversationWorkspaceControl({
+  projectId,
+  workspaceName,
+  workspaces,
+  onWorkspaceChange,
+}: ConversationWorkspaceControlProps) {
+  const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useOverflowTooltip<HTMLSpanElement>();
+  const controlClassName = `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
+  const triggerEvents = {
+    onPointerEnter: showTooltipIfOverflowing,
+    onPointerLeave: hideTooltip,
+    onPointerDown: hideTooltip,
+    onFocus: showTooltipIfOverflowing,
+    onBlur: hideTooltip,
+  };
+  const value = (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
+      <TooltipTrigger asChild>
+        <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
+          {selectedWorkspaceName}
+        </span>
+      </TooltipTrigger>
+    </span>
+  );
+
+  return (
+    <TooltipProvider>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        {workspaces.length > 1 ? (
+          <Select value={projectId} onValueChange={onWorkspaceChange}>
+            <SelectTrigger
+              {...triggerEvents}
+              className={`${controlClassName} hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}
+            >
+              {value}
+            </SelectTrigger>
+            <SelectContent position="popper" align="start">
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.projectId} value={workspace.projectId}>{workspace.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <div
+            {...triggerEvents}
+            tabIndex={0}
+            className={`${controlClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none`}
+          >
+            {value}
+          </div>
+        )}
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {selectedWorkspaceName}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 export function ConversationComposer({
@@ -611,26 +690,12 @@ export function ConversationComposer({
               >
                 <Paperclip className="size-4" />
               </Button>
-              {workspaces.length > 1 ? (
-                <Select value={projectId} onValueChange={onWorkspaceChange}>
-                  <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
-                    <span className="flex min-w-0 items-center gap-2">
-                      <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
-                      <SelectValue />
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent position="popper" align="start">
-                    {workspaces.map((w) => (
-                      <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground`}>
-                  <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
-                  <span className="truncate">{workspaceName}</span>
-                </div>
-              )}
+              <ConversationWorkspaceControl
+                projectId={projectId}
+                workspaceName={workspaceName}
+                workspaces={workspaces}
+                onWorkspaceChange={onWorkspaceChange}
+              />
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"

@@ -57,8 +57,13 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-2');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('grid-cols-1');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('@sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('@xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).not.toContain('@sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName).toContain('justify-end');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('w-fit');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('max-w-full');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('flex-initial');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).not.toContain('flex-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');

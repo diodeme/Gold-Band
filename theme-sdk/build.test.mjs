@@ -222,6 +222,7 @@ test('emits a complete v2 runtime package with non-distributed icon and wallpape
     await enableWallpaperCapability(directory);
   }, async (directory) => {
     const runtime = JSON.parse(await readFile(join(directory, 'themes', 'gold-band', 'dist', 'runtime-theme.json'), 'utf8'));
+    const css = await readFile(join(directory, 'themes', 'gold-band', 'dist', 'builtin-theme.css'), 'utf8');
     const records = new Map(runtime.assets.records.map((record) => [record.id, record]));
     const icon = records.get('fixture-icon');
     const wallpaper = records.get('fixture-wallpaper');
@@ -233,6 +234,8 @@ test('emits a complete v2 runtime package with non-distributed icon and wallpape
       wallpaperKind: wallpaper?.kind,
       iconExists: Boolean(icon && await readFile(join(directory, 'web', 'public', icon.outputUrl.slice(1)))),
       wallpaperExists: Boolean(wallpaper && await readFile(join(directory, 'web', 'public', wallpaper.outputUrl.slice(1)))),
+      wallpaperImageLayerSeparated: css.includes('::before{z-index:-2;background-image:var(--gb-wallpaper-image,none)'),
+      wallpaperOverlayLayerSeparated: css.includes('::after{z-index:-1;background:color-mix(in srgb,var(--gb-wallpaper-overlay-color,transparent)'),
     };
   });
 
@@ -245,6 +248,8 @@ test('emits a complete v2 runtime package with non-distributed icon and wallpape
     wallpaperKind: 'wallpaper',
     iconExists: true,
     wallpaperExists: true,
+    wallpaperImageLayerSeparated: true,
+    wallpaperOverlayLayerSeparated: true,
   });
 });
 

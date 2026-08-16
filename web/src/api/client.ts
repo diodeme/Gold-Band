@@ -300,6 +300,10 @@ export interface RuntimeApi {
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
   clearDesktopAvatar(kind: AvatarKind): Promise<PreferencesVm>;
+  importDesktopWallpaper(): Promise<PreferencesVm | null>;
+  selectRecentDesktopWallpaper(wallpaperId: string): Promise<PreferencesVm>;
+  saveDesktopWallpaperOpacity(opacityPercent: number): Promise<PreferencesVm>;
+  restoreThemeDesktopWallpaper(): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

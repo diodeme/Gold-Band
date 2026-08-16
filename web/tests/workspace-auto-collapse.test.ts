@@ -15,6 +15,7 @@ import {
   shouldOpenRightWorkspaceSheet,
   workspaceAutoCollapsePresentationChanged,
   workspaceCanonicalLayoutMissingPanel,
+  workspaceCanonicalLayoutNeedsConvergence,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
   type FileWorkspaceResponsiveState,
@@ -414,6 +415,27 @@ describe('workspace auto collapse state machine', () => {
 
     expect(workspaceCanonicalLayoutMissingPanel(target, applied, 'workspace-navigation')).toBe(true);
     expect(workspaceCanonicalLayoutMissingPanel(target, applied, 'workspace-right')).toBe(false);
+  });
+
+  it('detects a partially constrained layout that still needs canonical convergence', () => {
+    const target = {
+      'workspace-navigation': 332 / 13.6,
+      'workspace-center': 544 / 13.6,
+      'workspace-right': 484 / 13.6,
+    };
+    const constrained = {
+      'workspace-navigation': 236 / 13.6,
+      'workspace-center': 640 / 13.6,
+      'workspace-right': 484 / 13.6,
+    };
+    const withinOnePixel = {
+      ...target,
+      'workspace-navigation': 331.5 / 13.6,
+      'workspace-center': 544.5 / 13.6,
+    };
+
+    expect(workspaceCanonicalLayoutNeedsConvergence(target, constrained, 1_360)).toBe(true);
+    expect(workspaceCanonicalLayoutNeedsConvergence(target, withinOnePixel, 1_360)).toBe(false);
   });
 
   it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {

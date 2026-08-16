@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -31,7 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { ArrowDown, ArrowUp, Check, ChevronsUpDown, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save, X } from 'lucide-react';
-import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
+import { getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
@@ -108,7 +108,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [language, setLanguage] = useState(preferences.language);
   const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language));
   const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language));
-  const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
+  const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
@@ -122,7 +122,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
   useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
   useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
-  useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
@@ -169,15 +168,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     }).catch(() => {});
   }, [metricsSettings]);
 
-  const [localClaudeStatus, setLocalClaudeStatus] = useState<LocalClaudeStatusVm | null>(null);
-
   useEffect(() => {
     getSystemFonts().then(setSystemFonts).catch(() => setSystemFonts([]));
   }, []);
-
-  useEffect(() => {
-    checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
-  }, [useLocalClaude]);
 
   useEffect(() => {
     void onViewSettings();
@@ -452,34 +445,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.advanced')}>
-              <div className="flex items-center gap-3 py-2">
-                <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
-                <SettingInfoTooltip content={t('settings.useLocalClaude.tooltip')} />
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={useLocalClaude}
-                  className={cn(
-                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                    useLocalClaude ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
-                  )}
-                  onClick={() => {
-                    const next = !useLocalClaude;
-                    setUseLocalClaude(next);
-                    onSave(appearance, personalization, language, next, verboseLogging);
-                  }}
-                >
-                  <span
-                    className={cn(
-                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
-                      useLocalClaude && 'translate-x-5',
-                    )}
-                  />
-                </button>
-                {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
-                  <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
-                ) : null}
-              </div>
               <div className="flex items-center gap-3 py-2">
                 <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
                 <SettingInfoTooltip content={t('settings.verboseLogging.description')} />

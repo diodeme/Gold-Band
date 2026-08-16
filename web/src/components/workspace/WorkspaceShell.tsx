@@ -41,6 +41,7 @@ import {
   WORKSPACE_SIDEBAR_MIN_WIDTH,
   workspaceAutoCollapsePresentationChanged,
   workspaceCanonicalLayoutMissingPanel,
+  workspaceCanonicalLayoutNeedsConvergence,
   workspaceLayoutProfileForPage,
   type WorkspaceAutoCollapseInput,
   type WorkspaceAutoCollapsePresentation,
@@ -431,49 +432,64 @@ function WorkspaceShellLayout({
   }, [evaluateAutoCollapse, fileWorkspaceActive, profile.centerAutoCollapseWidth, profile.centerMinWidth, sidebarCollapsed, sidebarWidth, wantsRight]);
 
   useEffect(() => {
-    const group = panelGroupRef.current;
-    const groupWidth = workspacePanelGroupWidth(panelGroupElementRef.current);
-    if (!group || groupWidth <= 0) return;
-    const target = resolveWorkspaceCanonicalLayout({
-      groupWidth,
-      centerMinWidth: profile.centerMinWidth,
-      leftVisible: showLeft,
-      leftWidth: sidebarWidth,
-      rightVisible: showRightDock,
-      rightPreferredWidth: workspace.width,
-    });
-    if (!target) return;
-    const before = workspaceLayoutDiagnosticsEnabled ? group.getLayout() : null;
-    let firstApplied: Layout | null = null;
-    let applied: Layout | null = null;
-    const expandedPanels: string[] = [];
-    try {
-      firstApplied = group.setLayout(target);
-      applied = firstApplied;
-      const expansionCandidates = [
-        ['workspace-right', rightPanelRef.current],
-        ['workspace-navigation', leftPanelRef.current],
-      ] as const;
-      for (const [panelId, panel] of expansionCandidates) {
-        if (!panel || !workspaceCanonicalLayoutMissingPanel(target, applied, panelId)) continue;
-        if (!panel.isCollapsed()) continue;
-        panel.expand();
-        expandedPanels.push(panelId);
-      }
-      if (expandedPanels.length > 0) applied = group.setLayout(target);
-    } catch {
-      // The panel group may be unmounting while the desktop surface changes.
-    }
-    if (workspaceLayoutDiagnosticsEnabled) {
-      recordPanelSnapshot('group-layout-sync', {
+    const applyCanonicalLayout = (attempt: 'initial' | 'constraint-settled') => {
+      const group = panelGroupRef.current;
+      const groupWidth = workspacePanelGroupWidth(panelGroupElementRef.current);
+      if (!group || groupWidth <= 0) return null;
+      const target = resolveWorkspaceCanonicalLayout({
         groupWidth,
-        target,
-        before,
-        firstApplied,
-        expandedPanels,
-        applied,
+        centerMinWidth: profile.centerMinWidth,
+        leftVisible: showLeft,
+        leftWidth: sidebarWidth,
+        rightVisible: showRightDock,
+        rightPreferredWidth: workspace.width,
       });
-    }
+      if (!target) return null;
+      const before = workspaceLayoutDiagnosticsEnabled ? group.getLayout() : null;
+      let firstApplied: Layout | null = null;
+      let applied: Layout | null = null;
+      const expandedPanels: string[] = [];
+      try {
+        firstApplied = group.setLayout(target);
+        applied = firstApplied;
+        const expansionCandidates = [
+          ['workspace-right', rightPanelRef.current],
+          ['workspace-navigation', leftPanelRef.current],
+        ] as const;
+        for (const [panelId, panel] of expansionCandidates) {
+          if (!panel || !workspaceCanonicalLayoutMissingPanel(target, applied, panelId)) continue;
+          if (!panel.isCollapsed()) continue;
+          panel.expand();
+          expandedPanels.push(panelId);
+        }
+        if (expandedPanels.length > 0) applied = group.setLayout(target);
+      } catch {
+        // The panel group may be unmounting while the desktop surface changes.
+      }
+      if (workspaceLayoutDiagnosticsEnabled) {
+        recordPanelSnapshot('group-layout-sync', {
+          attempt,
+          groupWidth,
+          target,
+          before,
+          firstApplied,
+          expandedPanels,
+          applied,
+        });
+      }
+      return applied == null ? null : { applied, groupWidth, target };
+    };
+
+    const initial = applyCanonicalLayout('initial');
+    if (
+      initial == null
+      || !workspaceCanonicalLayoutNeedsConvergence(initial.target, initial.applied, initial.groupWidth)
+    ) return;
+
+    const convergenceFrame = requestAnimationFrame(() => {
+      applyCanonicalLayout('constraint-settled');
+    });
+    return () => cancelAnimationFrame(convergenceFrame);
   }, [
     autoCollapse.rightOwnsWindowResize,
     profile.centerMinWidth,

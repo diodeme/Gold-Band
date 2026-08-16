@@ -276,6 +276,9 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        "workflow-model-binding": {
+          "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
+        },
         git: {
           "workspace-outside-project": "所选 Worktree 不属于当前项目。",
           "ref-changed": "仓库状态已变化，请刷新后重试。",
@@ -555,6 +558,9 @@ const resources = {
         deleteUsageTemplates: "受影响的工作流模板",
         deleteUsageTasks: "受影响的 Task",
         deleteUsageSchedules: "受影响的定时任务",
+        deleteUsageUnknownTasks: "无法确认的 Task",
+        deleteUsageUnknownSchedules: "无法确认的定时任务",
+        deleteUsageUnknownWarning: "部分数据已损坏，引用关系无法完全确认。确认删除后，这些项目中的 Agent 引用可能失效。",
         deleteUsageFailed: "无法加载绑定引用：{{reason}}",
         deleteUsageRetry: "重新统计",
         title: "Agent 管理",
@@ -2310,6 +2316,9 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        "workflow-model-binding": {
+          "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
+        },
         git: {
           "workspace-outside-project": "The selected worktree does not belong to this project.",
           "ref-changed": "Repository state changed. Refresh and try again.",
@@ -2596,6 +2605,9 @@ const resources = {
         deleteUsageTemplates: "Affected workflow templates",
         deleteUsageTasks: "Affected tasks",
         deleteUsageSchedules: "Affected scheduled tasks",
+        deleteUsageUnknownTasks: "Tasks that could not be checked",
+        deleteUsageUnknownSchedules: "Scheduled tasks that could not be checked",
+        deleteUsageUnknownWarning: "Some data is damaged, so its references could not be fully checked. Deleting this Agent may leave broken references in those items.",
         deleteUsageFailed: "Could not load binding references: {{reason}}",
         deleteUsageRetry: "Retry count",
         title: "Agent Management",

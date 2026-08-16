@@ -818,7 +818,7 @@ pub fn scheduled_content_snapshot(
             let mut workflow = template.workflow.clone();
             apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
             let mut model_bindings = template.model_bindings.clone();
-            migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+            migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
             snapshot.workflow_authoring = Some(serde_json::to_value(TaskAuthoringWorkflow {
                 workflow,
                 model_bindings,
@@ -3271,12 +3271,13 @@ pub fn validate_conversation_create_vm(
                 })
             };
             if let Some(mut authoring) = authoring {
-                migrate_authoring_workflow(
+                if let Err(error) = migrate_authoring_workflow(
                     &mut authoring.workflow,
                     &mut authoring.model_bindings,
                     None,
-                );
-                if let Err(error) = validate_and_inject(
+                ) {
+                    missing.push(workflow_binding_missing_item(&error, tid));
+                } else if let Err(error) = validate_and_inject(
                     &authoring.workflow,
                     &authoring.model_bindings,
                     &app.config.agents,
@@ -3594,7 +3595,7 @@ pub fn prepare_conversation_task_vm(
             include_optional_entry,
         )
     };
-    migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+    migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
 
     // Git is an authoritative prerequisite for Auto and every workflow that
     // directly contains AI-DYNAMIC. Check before creating either the task or run.

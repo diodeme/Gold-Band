@@ -220,6 +220,8 @@ describe('Agent management input mapping', () => {
       workflowTemplateCount: 1,
       taskCount: 2,
       scheduledTaskCount: 3,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
     };
 
     expect(agentDeleteActionDisabled(true, null, null)).toBe(true);

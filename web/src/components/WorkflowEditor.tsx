@@ -459,7 +459,9 @@ export function WorkflowEditor({ value, modelBindings: modelBindingsValue, agent
         setJsonError(t('workflowEditor.outputSchemaInvalid'));
         return;
       }
-      workflowToSave = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(parsed));
+      workflowToSave = normalizeWorkflowEntryFromTopology(
+        normalizeWorkflowExecutionSlots(normalizeWorkflowSchemas(parsed), workflow),
+      );
       setWorkflow(workflowToSave);
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       onChange?.(workflowToSave);
@@ -721,7 +723,10 @@ export function WorkflowEditor({ value, modelBindings: modelBindingsValue, agent
                   setJsonError(null);
                   const parsed = parseWorkflowJson(nextDraft);
                   if (!parsed) return;
-                  const nextWorkflow = normalizeWorkflowSchemas(parsed);
+                  const nextWorkflow = normalizeWorkflowExecutionSlots(
+                    normalizeWorkflowSchemas(parsed),
+                    workflow,
+                  );
                   setWorkflow(nextWorkflow);
                   setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
                   onChange?.(nextWorkflow);
@@ -2292,6 +2297,29 @@ export function parseWorkflowJson(json?: string | null): WorkflowDsl | null {
   } catch {
     return null;
   }
+}
+
+export function normalizeWorkflowExecutionSlots(
+  nextWorkflow: WorkflowDsl,
+  previousWorkflow: WorkflowDsl,
+  createSlotId: () => string = () => crypto.randomUUID(),
+): WorkflowDsl {
+  const previousSlotsByNodeId = new Map(
+    previousWorkflow.nodes.flatMap((node) => {
+      if (node.type !== 'worker' || !node.executionSlotId?.trim()) return [];
+      return [[node.id, node.executionSlotId] as const];
+    }),
+  );
+  return {
+    ...nextWorkflow,
+    nodes: nextWorkflow.nodes.map((node) => {
+      if (node.type !== 'worker' || node.executionSlotId?.trim()) return node;
+      return {
+        ...node,
+        executionSlotId: previousSlotsByNodeId.get(node.id) ?? createSlotId(),
+      };
+    }),
+  };
 }
 
 function uniqueNodeId(workflow: WorkflowDsl, base: string) {

@@ -39,6 +39,7 @@ use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use std::path::{Component, Path, PathBuf};
 use std::{
     collections::{BTreeSet, HashSet},
+    fs,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -1392,6 +1393,8 @@ pub struct AgentBindingUsageVm {
     pub workflow_template_count: usize,
     pub task_count: usize,
     pub scheduled_task_count: usize,
+    pub unknown_task_count: usize,
+    pub unknown_scheduled_task_count: usize,
 }
 
 fn agent_usage_workspace_apps(
@@ -1438,20 +1441,53 @@ fn collect_agent_binding_usage(
         .count();
     let mut task_count = 0;
     let mut scheduled_task_count = 0;
+    let mut unknown_task_count = 0;
+    let mut unknown_scheduled_task_count = 0;
     for app in workspace_apps {
-        for task in app.task_list()? {
-            let authoring = app.task_authoring_workflow(&task.id)?;
-            if workflow_references_agent(&authoring.workflow, &authoring.model_bindings, agent_id) {
-                task_count += 1;
+        let tasks_dir = app.paths.tasks_dir();
+        if tasks_dir.exists() {
+            for entry in fs::read_dir(tasks_dir.as_std_path())? {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        unknown_task_count += 1;
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                if !path.is_dir() || !path.join("task.json").exists() {
+                    continue;
+                }
+                let Some(task_id) = path.file_name().and_then(|value| value.to_str()) else {
+                    unknown_task_count += 1;
+                    continue;
+                };
+                match app.task_authoring_workflow(task_id) {
+                    Ok(authoring)
+                        if workflow_references_agent(
+                            &authoring.workflow,
+                            &authoring.model_bindings,
+                            agent_id,
+                        ) =>
+                    {
+                        task_count += 1;
+                    }
+                    Ok(_) => {}
+                    Err(_) => unknown_task_count += 1,
+                }
             }
         }
         let scheduler_db_path = app.paths.scheduler_db_path();
         if !scheduler_db_path.exists() {
             continue;
         }
-        for definition in ScheduledTaskDatabase::open(scheduler_db_path)?.list_job_definitions()? {
-            if scheduled_task_references_agent(&definition, agent_id)? {
-                scheduled_task_count += 1;
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?.scan_job_definitions()?;
+        unknown_scheduled_task_count += scan.invalid_count;
+        for definition in scan.definitions {
+            match scheduled_task_references_agent(&definition, agent_id) {
+                Ok(true) => scheduled_task_count += 1,
+                Ok(false) => {}
+                Err(_) => unknown_scheduled_task_count += 1,
             }
         }
     }
@@ -1459,6 +1495,8 @@ fn collect_agent_binding_usage(
         workflow_template_count,
         task_count,
         scheduled_task_count,
+        unknown_task_count,
+        unknown_scheduled_task_count,
     })
 }
 
@@ -7359,8 +7397,81 @@ mod tests {
                 workflow_template_count: 2,
                 task_count: 3,
                 scheduled_task_count: 3,
+                unknown_task_count: 0,
+                unknown_scheduled_task_count: 0,
             }
         );
+    }
+
+    #[test]
+    fn agent_binding_usage_isolates_damaged_tasks_and_scheduled_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("workspace")).unwrap());
+        write_bound_task(&app, "task-valid", "agent-a");
+        write_json(
+            &app.paths.task_file("task-invalid"),
+            &TaskState::new("task-invalid"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .workflow_file("task-invalid")
+                .parent()
+                .unwrap()
+                .as_std_path(),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.workflow_file("task-invalid").as_std_path(),
+            "{invalid",
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let mut valid = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-valid",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        valid.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-valid")).unwrap());
+        database.save_job_definition(&valid).unwrap();
+
+        let mut invalid_snapshot = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-invalid-snapshot",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        invalid_snapshot.content_snapshot.workflow_authoring = Some(serde_json::json!({
+            "workflow": "invalid"
+        }));
+        database.save_job_definition(&invalid_snapshot).unwrap();
+
+        drop(database);
+
+        let usage = collect_agent_binding_usage(
+            &ManagedAgentId::from_str("agent-a").unwrap(),
+            &WorkflowTemplateStore {
+                version: gold_band::domain::VERSION.to_string(),
+                last_used_template_id: None,
+                last_created_workflow: None,
+                templates: Vec::new(),
+            },
+            &[app],
+        )
+        .unwrap();
+
+        assert_eq!(usage.workflow_template_count, 0);
+        assert_eq!(usage.task_count, 1);
+        assert_eq!(usage.scheduled_task_count, 1);
+        assert_eq!(usage.unknown_task_count, 1);
+        assert_eq!(usage.unknown_scheduled_task_count, 1);
     }
 
     #[test]

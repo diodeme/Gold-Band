@@ -75,7 +75,9 @@ use self::orchestrator::{
     build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
-    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
+    prepare_run as orchestrator_prepare_run,
+    prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
+    run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
@@ -646,14 +648,14 @@ fn upsert_built_in_workflow_template(
     templates: &mut Vec<WorkflowTemplate>,
     built_in: WorkflowTemplate,
     index: usize,
-) {
+) -> Result<()> {
     if let Some(current_index) = templates
         .iter()
         .position(|template| template.id == built_in.id)
     {
         let mut next = built_in;
         next.model_bindings = templates[current_index].model_bindings.clone();
-        migrate_authoring_workflow(&mut next.workflow, &mut next.model_bindings, Some(&next.id));
+        migrate_authoring_workflow(&mut next.workflow, &mut next.model_bindings, Some(&next.id))?;
         templates[current_index] = next;
         if current_index != index {
             let template = templates.remove(current_index);
@@ -665,9 +667,10 @@ fn upsert_built_in_workflow_template(
             &mut built_in.workflow,
             &mut built_in.model_bindings,
             Some(&built_in.id),
-        );
+        )?;
         templates.insert(index.min(templates.len()), built_in);
     }
+    Ok(())
 }
 
 pub fn apply_optional_entry_preference(
@@ -1913,7 +1916,7 @@ impl App {
         mut workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
         let mut model_bindings = WorkflowModelBindings::default();
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         self.save_workflow_template_with_bindings(name, workflow, model_bindings)
     }
 
@@ -1928,7 +1931,7 @@ impl App {
             bail!("workflow template name cannot be empty");
         }
         let mut store = self.load_workflow_template_store()?;
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1970,7 +1973,7 @@ impl App {
         mut workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
         let mut model_bindings = WorkflowModelBindings::default();
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         self.update_workflow_template_with_bindings(template_id, workflow, model_bindings)
     }
 
@@ -1993,7 +1996,7 @@ impl App {
         {
             return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
         }
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
@@ -2032,7 +2035,7 @@ impl App {
             &mut template.workflow,
             &mut model_bindings,
             Some(template_id),
-        );
+        )?;
         validate_and_inject(
             &template.workflow,
             &model_bindings,
@@ -2213,13 +2216,13 @@ impl App {
                     &mut template.workflow,
                     &mut template.model_bindings,
                     template.is_built_in.then_some(template.id.as_str()),
-                );
+                )?;
             }
-            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0);
-            upsert_built_in_workflow_template(&mut store.templates, default_template, 0);
+            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
             if let Some(workflow) = store.last_created_workflow.as_mut() {
                 let mut ignored = WorkflowModelBindings::default();
-                migrate_authoring_workflow(workflow, &mut ignored, None);
+                migrate_authoring_workflow(workflow, &mut ignored, None)?;
             }
             self.save_workflow_template_store(&store)?;
             return Ok(store);
@@ -2235,7 +2238,7 @@ impl App {
                 &mut template.workflow,
                 &mut template.model_bindings,
                 template.is_built_in.then_some(template.id.as_str()),
-            );
+            )?;
         }
         self.save_workflow_template_store(&store)?;
         Ok(store)
@@ -2251,7 +2254,7 @@ impl App {
         let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
         let (mut current, legacy) = compat.into_current();
         if legacy
-            || migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)
+            || migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)?
         {
             write_json(&path, &current)?;
         }
@@ -2277,7 +2280,7 @@ impl App {
         task_id: &str,
         mut authoring: TaskAuthoringWorkflow,
     ) -> Result<()> {
-        migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None);
+        migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None)?;
         write_json(&self.paths.workflow_file(task_id), &authoring)
     }
 
@@ -2448,7 +2451,7 @@ impl App {
 
         let mut workflow = input.workflow.clone();
         let mut model_bindings = WorkflowModelBindings::default();
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         self.create_task_from_requirement_with_bindings(input, workflow, model_bindings)
     }
 
@@ -2461,7 +2464,7 @@ impl App {
         if input.requirement_content.trim().is_empty() {
             bail!("requirement content cannot be empty");
         }
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
@@ -2534,7 +2537,7 @@ impl App {
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
         let mut workflow = workflow;
         let mut model_bindings = WorkflowModelBindings::default();
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         self.save_task_workflow_with_bindings(task_id, workflow, model_bindings)
     }
 
@@ -2545,7 +2548,7 @@ impl App {
         mut model_bindings: WorkflowModelBindings,
     ) -> Result<TaskSummary> {
         self.task_show(task_id)?;
-        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None);
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
         let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
@@ -3879,6 +3882,14 @@ impl App {
         orchestrator_prepare_run(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run_with_authoring(
+        &self,
+        task_id: &str,
+        authoring: &TaskAuthoringWorkflow,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_with_authoring(self, task_id, authoring)
+    }
+
     pub fn launch_prepared_run_background(
         &self,
         task_id: &str,
@@ -4224,7 +4235,9 @@ mod tests {
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
-    use crate::workflow_model_binding::{TaskAuthoringWorkflow, WorkflowModelBindings};
+    use crate::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindingError, WorkflowModelBindings,
+    };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -4720,6 +4733,73 @@ mod tests {
     }
 
     #[test]
+    fn prepared_run_authoring_override_is_run_scoped() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                }]
+            }),
+        );
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Scheduled override".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "use the scheduled model".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let authoring_path = app.paths.workflow_file(&created.task.id);
+        let original_authoring = std::fs::read(authoring_path.as_std_path()).unwrap();
+        let mut scheduled_authoring = app.task_authoring_workflow(&created.task.id).unwrap();
+        scheduled_authoring.model_bindings.bindings[0].model_id = Some("sonnet".to_string());
+        scheduled_authoring.model_bindings.binding_revision += 1;
+
+        let scheduled = app
+            .prepare_run_with_authoring(&created.task.id, &scheduled_authoring)
+            .unwrap();
+        let scheduled_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &scheduled.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(scheduled_worker) = &scheduled_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(scheduled_worker.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            std::fs::read(authoring_path.as_std_path()).unwrap(),
+            original_authoring
+        );
+        drop(scheduled);
+
+        let manual = app.prepare_run(&created.task.id, None).unwrap();
+        let manual_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &manual.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(manual_worker) = &manual_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(manual_worker.model, None);
+    }
+
+    #[test]
     fn owned_task_directory_rolls_back_until_disarmed() {
         let temp = tempdir().unwrap();
         let rollback_dir = Utf8PathBuf::from_path_buf(temp.path().join("rollback")).unwrap();
@@ -5132,6 +5212,63 @@ mod tests {
             unreachable!();
         };
         assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn save_task_workflow_rejects_duplicate_model_binding_slots() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+        let workflow = WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-duplicate-bindings".to_string(),
+            entry: "dev".to_string(),
+            control: WorkflowControl::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                execution_slot_id: Some("slot-dev".to_string()),
+                provider: None,
+                model: None,
+                profile: None,
+                goal: None,
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                config_options: BTreeMap::new(),
+                manual_check: None,
+                prompt_envelope: Default::default(),
+            })],
+            edges: Vec::new(),
+        };
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-dev".to_string(),
+            agent_id: "agent-a".to_string(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+
+        let error = app
+            .save_task_workflow_with_bindings("task-001", workflow, bindings)
+            .unwrap_err();
+        let binding_error = error.downcast_ref::<WorkflowModelBindingError>().unwrap();
+
+        assert_eq!(
+            binding_error,
+            &WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-dev".to_string(),
+            }
+        );
+        assert!(!app.paths.workflow_file("task-001").exists());
     }
 
     #[test]

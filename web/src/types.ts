@@ -1073,6 +1073,8 @@ export interface AgentBindingUsageVm {
   workflowTemplateCount: number;
   taskCount: number;
   scheduledTaskCount: number;
+  unknownTaskCount: number;
+  unknownScheduledTaskCount: number;
 }
 
 export interface WorkflowModelBindings {

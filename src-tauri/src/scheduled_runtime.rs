@@ -20,7 +20,9 @@ use gold_band::scheduler::queue::{
 use gold_band::scheduler::store::ScheduledTaskStore;
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
-use gold_band::workflow_model_binding::{TaskAuthoringWorkflowCompat, migrate_authoring_workflow};
+use gold_band::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, migrate_authoring_workflow,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -2939,7 +2941,18 @@ pub(super) fn execute_definition_with_action(
                 app_handle.clone(),
                 Some(definition.project_id.clone()),
             );
-            let prepared_run = scheduled_app.prepare_run(&task_id, None)?;
+            let prepared_run = match definition.mode {
+                ScheduledMode::Workflow => {
+                    let authoring = scheduled_workflow_authoring(definition)?.ok_or_else(|| {
+                        anyhow::anyhow!("scheduled workflow authoring snapshot is missing")
+                    })?;
+                    scheduled_app.prepare_run_with_authoring(&task_id, &authoring)?
+                }
+                ScheduledMode::Auto => scheduled_app.prepare_run(&task_id, None)?,
+                ScheduledMode::Direct => {
+                    anyhow::bail!("direct mode cannot use the start-new-run action")
+                }
+            };
             let run = prepared_run.run().clone();
             let links = OccurrenceLinks {
                 task_id: Some(task_id.clone()),
@@ -3050,21 +3063,7 @@ fn scheduled_create_input(
     let include_optional_entry = config
         .get("includeOptionalEntry")
         .and_then(|value| value.as_bool());
-    let workflow_authoring = definition
-        .content_snapshot
-        .workflow_authoring
-        .clone()
-        .map(serde_json::from_value::<TaskAuthoringWorkflowCompat>)
-        .transpose()?
-        .map(|compat| {
-            let (mut authoring, _) = compat.into_current();
-            migrate_authoring_workflow(
-                &mut authoring.workflow,
-                &mut authoring.model_bindings,
-                None,
-            );
-            authoring
-        });
+    let workflow_authoring = scheduled_workflow_authoring(definition)?;
     let input_dir = app.paths.scheduled_task_dir(&definition.id).join("inputs");
     let attachment_paths = definition
         .attachment_names
@@ -3089,6 +3088,18 @@ fn scheduled_create_input(
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
     })
+}
+
+fn scheduled_workflow_authoring(
+    definition: &ScheduledTaskDefinition,
+) -> anyhow::Result<Option<TaskAuthoringWorkflow>> {
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(None);
+    };
+    let compat = serde_json::from_value::<TaskAuthoringWorkflowCompat>(value)?;
+    let (mut authoring, _) = compat.into_current();
+    migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None)?;
+    Ok(Some(authoring))
 }
 
 #[cfg(test)]

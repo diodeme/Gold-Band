@@ -7,6 +7,7 @@ use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
 use gold_band::scheduler::db::{
     ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
+use gold_band::scheduler::fingerprint::canonical_content_json;
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
 use gold_band::scheduler::{
     ScheduleError, ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy,
@@ -555,14 +556,17 @@ impl ScheduledTaskService {
                     serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
                 )
             })?;
-        let content_changed = new_snapshot != definition.content_snapshot;
+        let content_changed = canonical_content_json(&new_snapshot)
+            != canonical_content_json(&definition.content_snapshot);
         definition.content_snapshot = new_snapshot;
-        definition.recompute_content_fingerprint().map_err(|_| {
-            ScheduledServiceError::invalid(
-                "fingerprint-content",
-                serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
-            )
-        })?;
+        if content_changed || definition.content_fingerprint.trim().is_empty() {
+            definition.recompute_content_fingerprint().map_err(|_| {
+                ScheduledServiceError::invalid(
+                    "fingerprint-content",
+                    serde_json::json!({ "scheduledTaskId": input.scheduled_task_id }),
+                )
+            })?;
+        }
         definition.instruction = input.content;
         definition.schedule = schedule;
         definition.overlap_policy = input.overlap_policy;
@@ -1181,7 +1185,7 @@ mod tests {
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
     use gold_band::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use gold_band::dsl::NodeDsl;
-    use gold_band::scheduler::db::ScheduledTaskDatabase;
+    use gold_band::scheduler::db::{ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult};
     use gold_band::scheduler::occurrence::{
         OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
     };
@@ -1292,7 +1296,16 @@ mod tests {
                     available: true,
                     reason: None,
                     checked_at: "2026-08-14T00:00:00Z".to_string(),
-                    capabilities: None,
+                    capabilities: Some(serde_json::json!({
+                        "configOptions": [{
+                            "id": "model",
+                            "category": "model",
+                            "options": [
+                                { "value": "sonnet", "name": "Sonnet" },
+                                { "value": "opus", "name": "Opus" }
+                            ]
+                        }]
+                    })),
                 },
             )]));
             let app = App::with_config(root, config);
@@ -1376,6 +1389,24 @@ mod tests {
                 schedule: valid_schedule_input(),
                 overlap_policy: definition.overlap_policy,
                 session_policy: SessionPolicy::New,
+            }
+        }
+
+        fn associate_task(
+            &self,
+            record: &ScheduledJobRecord,
+            fingerprint: &str,
+        ) -> ScheduledJobRecord {
+            let mut definition = record.definition.clone();
+            definition.task_id = Some("task-existing".to_string());
+            definition.content_fingerprint = fingerprint.to_string();
+            match self
+                .database
+                .update_job_runtime_projection(&definition, record.revision)
+                .unwrap()
+            {
+                UpdateJobResult::Updated(record) => record,
+                other => panic!("expected updated projection, got {other:?}"),
             }
         }
     }
@@ -1644,6 +1675,82 @@ mod tests {
     }
 
     #[test]
+    fn workflow_execution_binding_update_reuses_task_and_legacy_fingerprint() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let associated = fixture.associate_task(&created, "sha256:legacy-fingerprint");
+        let mut template = fixture
+            .app
+            .workflow_templates()
+            .unwrap()
+            .templates
+            .into_iter()
+            .find(|template| template.id == DEFAULT_WORKFLOW_TEMPLATE_ID)
+            .unwrap();
+        for binding in &mut template.model_bindings.bindings {
+            binding.model_id = Some("sonnet".to_string());
+        }
+        fixture
+            .app
+            .update_built_in_workflow_template_bindings(
+                DEFAULT_WORKFLOW_TEMPLATE_ID,
+                template.model_bindings,
+            )
+            .unwrap();
+
+        let updated = fixture
+            .service
+            .update(
+                fixture.update_input(&associated.definition, &associated.definition.instruction),
+            )
+            .unwrap();
+        let authoring: gold_band::workflow_model_binding::TaskAuthoringWorkflow =
+            serde_json::from_value(
+                updated
+                    .definition
+                    .content_snapshot
+                    .workflow_authoring
+                    .clone()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(updated.definition.task_id.as_deref(), Some("task-existing"));
+        assert_eq!(
+            updated.definition.content_fingerprint,
+            "sha256:legacy-fingerprint"
+        );
+        assert!(
+            authoring
+                .model_bindings
+                .bindings
+                .iter()
+                .all(|binding| binding.model_id.as_deref() == Some("sonnet"))
+        );
+    }
+
+    #[test]
+    fn workflow_semantic_content_update_clears_task_and_recomputes_fingerprint() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let associated = fixture.associate_task(&created, "sha256:legacy-fingerprint");
+
+        let updated = fixture
+            .service
+            .update(fixture.update_input(
+                &associated.definition,
+                "Generate a different scheduled report",
+            ))
+            .unwrap();
+
+        assert_eq!(updated.definition.task_id, None);
+        assert_ne!(
+            updated.definition.content_fingerprint,
+            "sha256:legacy-fingerprint"
+        );
+    }
+
+    #[test]
     fn update_rejects_invalid_schedule_without_mutating_the_job() {
         let fixture = Fixture::new();
         let created = fixture.service.create(fixture.create_input()).unwrap();
@@ -1733,15 +1840,13 @@ mod tests {
 
     #[test]
     fn list_without_project_aggregates_every_workspace() {
-        let first_temp = tempfile::tempdir().unwrap();
-        let second_temp = tempfile::tempdir().unwrap();
-        let first_app =
-            App::new(camino::Utf8PathBuf::from_path_buf(first_temp.path().to_path_buf()).unwrap());
-        let second_app =
-            App::new(camino::Utf8PathBuf::from_path_buf(second_temp.path().to_path_buf()).unwrap());
+        let first = Fixture::new();
+        let second = Fixture::new();
+        let first_app = &first.app;
+        let second_app = &second.app;
         let coordinator = Arc::new(CoordinatorSpy::default());
         let service = ScheduledTaskService::for_test_workspaces(
-            &[(&first_app, "First"), (&second_app, "Second")],
+            &[(first_app, "First"), (second_app, "Second")],
             coordinator,
         );
         let input_for = |app: &App, content: &str| CreateScheduledTaskInputVm {
@@ -1757,8 +1862,8 @@ mod tests {
             overlap_policy: OverlapPolicy::SkipWhenRunning,
             session_policy: None,
         };
-        service.create(input_for(&first_app, "first")).unwrap();
-        service.create(input_for(&second_app, "second")).unwrap();
+        service.create(input_for(first_app, "first")).unwrap();
+        service.create(input_for(second_app, "second")).unwrap();
 
         assert_eq!(service.list(None).unwrap().len(), 2);
         assert_eq!(

@@ -78,6 +78,9 @@ pub enum WorkflowModelBindingError {
         execution_slot_id: String,
         node_ids: Vec<String>,
     },
+    #[error("workflow-model-binding.binding-duplicate")]
+    #[serde(rename = "workflow-model-binding.binding-duplicate")]
+    BindingDuplicate { execution_slot_id: String },
     #[error("workflow-model-binding.slot-not-found")]
     #[serde(rename = "workflow-model-binding.slot-not-found")]
     SlotNotFound { execution_slot_id: String },
@@ -122,6 +125,7 @@ impl WorkflowModelBindingError {
         match self {
             Self::SlotRequired { .. } => "workflow-model-binding.slot-required",
             Self::SlotDuplicate { .. } => "workflow-model-binding.slot-duplicate",
+            Self::BindingDuplicate { .. } => "workflow-model-binding.binding-duplicate",
             Self::SlotNotFound { .. } => "workflow-model-binding.slot-not-found",
             Self::AgentRequired { .. } => "workflow-model-binding.agent-required",
             Self::AgentUnavailable { .. } => "workflow-model-binding.agent-unavailable",
@@ -141,6 +145,9 @@ impl WorkflowModelBindingError {
                 "executionSlotId": execution_slot_id,
                 "nodeIds": node_ids,
             }),
+            Self::BindingDuplicate { execution_slot_id } => {
+                serde_json::json!({ "executionSlotId": execution_slot_id })
+            }
             Self::SlotNotFound { execution_slot_id } => {
                 serde_json::json!({ "executionSlotId": execution_slot_id })
             }
@@ -226,9 +233,10 @@ pub fn migrate_authoring_workflow(
     workflow: &mut WorkflowDsl,
     model_bindings: &mut WorkflowModelBindings,
     built_in_template_id: Option<&str>,
-) -> bool {
+) -> Result<bool, WorkflowModelBindingError> {
+    validate_unique_bindings(model_bindings)?;
     let mut changed = false;
-    let previous_bindings = std::mem::take(&mut model_bindings.bindings);
+    let previous_bindings = model_bindings.bindings.clone();
     let mut bindings = previous_bindings
         .iter()
         .cloned()
@@ -319,7 +327,21 @@ pub fn migrate_authoring_workflow(
     if changed {
         model_bindings.binding_revision = model_bindings.binding_revision.saturating_add(1);
     }
-    changed
+    Ok(changed)
+}
+
+fn validate_unique_bindings(
+    model_bindings: &WorkflowModelBindings,
+) -> Result<(), WorkflowModelBindingError> {
+    let mut execution_slot_ids = BTreeSet::new();
+    for binding in &model_bindings.bindings {
+        if !execution_slot_ids.insert(binding.execution_slot_id.as_str()) {
+            return Err(WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: binding.execution_slot_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_and_inject(
@@ -328,6 +350,7 @@ pub fn validate_and_inject(
     managed_agents: &BTreeMap<ManagedAgentId, ManagedAgentConfig>,
     diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
 ) -> Result<WorkflowDsl, WorkflowModelBindingError> {
+    validate_unique_bindings(model_bindings)?;
     let mut nodes_by_slot = BTreeMap::<String, Vec<String>>::new();
     for node in &authoring.nodes {
         let NodeDsl::Worker(worker) = node else {
@@ -479,11 +502,7 @@ mod tests {
     fn migration_extracts_execution_fields_and_is_idempotent() {
         let mut workflow = workflow(worker());
         let mut bindings = WorkflowModelBindings::default();
-        assert!(migrate_authoring_workflow(
-            &mut workflow,
-            &mut bindings,
-            Some("default")
-        ));
+        assert!(migrate_authoring_workflow(&mut workflow, &mut bindings, Some("default")).unwrap());
         let NodeDsl::Worker(worker) = &workflow.nodes[0] else {
             panic!("worker expected")
         };
@@ -494,12 +513,76 @@ mod tests {
         assert!(worker.provider.is_none());
         assert_eq!(bindings.bindings.len(), 1);
         let revision = bindings.binding_revision;
-        assert!(!migrate_authoring_workflow(
-            &mut workflow,
-            &mut bindings,
-            Some("default")
-        ));
+        assert!(
+            !migrate_authoring_workflow(&mut workflow, &mut bindings, Some("default")).unwrap()
+        );
         assert_eq!(bindings.binding_revision, revision);
+    }
+
+    #[test]
+    fn migration_rejects_duplicate_binding_slots_without_mutating_bindings() {
+        let mut workflow = workflow(worker());
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-a".into(),
+            agent_id: "agent-a".into(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let mut bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+        let original = bindings.clone();
+
+        let error = migrate_authoring_workflow(&mut workflow, &mut bindings, None).unwrap_err();
+
+        assert_eq!(
+            error,
+            WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-a".into(),
+            }
+        );
+        assert_eq!(error.code(), "workflow-model-binding.binding-duplicate");
+        assert_eq!(
+            error.params(),
+            serde_json::json!({ "executionSlotId": "slot-a" })
+        );
+        assert_eq!(bindings, original);
+    }
+
+    #[test]
+    fn executable_injection_rejects_duplicate_binding_slots() {
+        let mut node = worker();
+        node.execution_slot_id = Some("slot-a".into());
+        node.provider = None;
+        node.model = None;
+        node.permission_mode = None;
+        node.config_options.clear();
+        let workflow = workflow(node);
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-a".into(),
+            agent_id: "agent-a".into(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+
+        let error = validate_and_inject(&workflow, &bindings, &BTreeMap::new(), &BTreeMap::new())
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-a".into(),
+            }
+        );
     }
 
     #[test]

@@ -113,6 +113,7 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
   return (
     <div
       data-prompt-kit-tool="true"
+      data-theme-role="tool-card"
       data-tool-variant={variant}
       className={cn(
         "border-border min-w-0 max-w-full overflow-hidden",

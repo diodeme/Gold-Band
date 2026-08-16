@@ -1,10 +1,15 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "licenses": [
     {
-      "name": "Gold Band theme package",
-      "license": "AGPL-3.0-only",
-      "assets": []
+      "id": "inter-ofl",
+      "name": "Inter Variable",
+      "license": "OFL-1.1"
+    },
+    {
+      "id": "misans-apache",
+      "name": "MiSans",
+      "license": "Apache-2.0"
     }
   ]
 }

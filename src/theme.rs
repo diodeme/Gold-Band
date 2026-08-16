@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,8 @@ pub enum ThemeCapability {
     Fonts,
     Avatars,
     Textures,
+    Icons,
+    Wallpapers,
     VisualQualityProfiles,
 }
 
@@ -162,12 +164,8 @@ pub struct MaterialTokens {
     pub specular_highlight: String,
     #[serde(default = "default_edge_shadow")]
     pub edge_shadow: String,
-    pub shadow: String,
-    pub radius: String,
     pub background_image: String,
     pub texture_opacity: f64,
-    pub motion_duration: String,
-    pub motion_easing: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,25 +191,83 @@ fn default_edge_shadow() -> String {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThemeFontStackPreset {
-    pub families: Vec<String>,
-    pub fallback: ThemeGenericFontFamily,
-    pub size: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThemeGenericFontFamily {
-    #[serde(rename = "sans-serif")]
-    SansSerif,
-    #[serde(rename = "monospace")]
-    Monospace,
+pub struct ThemeTypographyWeights {
+    pub read: u16,
+    pub emphasize: u16,
+    pub announce: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ThemeTypographyPreset {
-    pub ui: ThemeFontStackPreset,
-    pub editor: ThemeFontStackPreset,
+    pub ui_stack_id: String,
+    pub ui_size: f64,
+    pub ui_line_height: f64,
+    pub editor_stack_id: String,
+    pub editor_size: f64,
+    pub editor_line_height: f64,
+    pub weights: ThemeTypographyWeights,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeShapeTokens {
+    pub radius_control: String,
+    pub radius_surface: String,
+    pub radius_overlay: String,
+    pub radius_avatar: String,
+    pub radius_pill: String,
+    pub border_hairline: String,
+    pub border_default: String,
+    pub border_strong: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeElevationTokens {
+    pub none: String,
+    pub surface: String,
+    pub overlay: String,
+    pub floating: String,
+    pub pressed: String,
+    pub press_offset: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeMotionMode {
+    Smooth,
+    Stepped,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeMotionTokens {
+    pub mode: ThemeMotionMode,
+    pub duration_fast: String,
+    pub duration_normal: String,
+    pub duration_slow: String,
+    pub easing_standard: String,
+    pub easing_enter: String,
+    pub easing_press: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeScrollbarButtons {
+    None,
+    Visible,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeScrollbarTokens {
+    pub width: String,
+    pub thumb_radius: String,
+    pub thumb_inset: String,
+    pub min_length: String,
+    pub buttons: ThemeScrollbarButtons,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,6 +293,10 @@ pub struct ThemeScheme {
     pub preview: ThemePreviewPalette,
     pub semantic: SemanticThemeTokens,
     pub material: MaterialTokens,
+    pub shape: ThemeShapeTokens,
+    pub elevation: ThemeElevationTokens,
+    pub motion: ThemeMotionTokens,
+    pub scrollbar: ThemeScrollbarTokens,
     pub typography: ThemeTypographyPreset,
     pub avatars: ThemeAvatarPreset,
 }
@@ -251,11 +311,22 @@ pub struct ThemeSchemes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecipeBackground {
+    Background,
     Card,
     Popover,
     Sidebar,
     SurfaceLow,
     SurfaceHigh,
+    Accent,
+    Primary,
+    MessageUser,
+    MessageAssistant,
+    Composer,
+    Activity,
+    ToolCard,
+    PermissionCard,
+    WorkspaceTab,
+    Editor,
     Transparent,
 }
 
@@ -265,6 +336,16 @@ pub enum RecipeForeground {
     Foreground,
     MutedForeground,
     CardForeground,
+    AccentForeground,
+    PrimaryForeground,
+    MessageUserForeground,
+    MessageAssistantForeground,
+    ComposerForeground,
+    ActivityForeground,
+    ToolCardForeground,
+    PermissionCardForeground,
+    WorkspaceTabForeground,
+    EditorForeground,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +354,9 @@ pub enum RecipeBorder {
     Border,
     SidebarBorder,
     Highlight,
+    Ring,
+    Primary,
+    Transparent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,30 +367,101 @@ pub enum RecipeMaterial {
     Elevated,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecipeBorderWidth { None, Hairline, Default, Strong }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecipeBorderStyle { Solid, Double, Dashed }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecipeRadius { None, Control, Surface, Overlay, Avatar, Pill }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecipeElevation { None, Surface, Overlay, Floating, Pressed }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecipeMotion { None, Color, Surface, Press }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ThemeStateRecipe {
+    pub background: Option<RecipeBackground>,
+    pub foreground: Option<RecipeForeground>,
+    pub border: Option<RecipeBorder>,
+    pub elevation: Option<RecipeElevation>,
+    pub opacity: Option<f64>,
+    pub press: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeRecipeStates {
+    pub hover: Option<ThemeStateRecipe>,
+    pub active: Option<ThemeStateRecipe>,
+    pub selected: Option<ThemeStateRecipe>,
+    pub focus: Option<ThemeStateRecipe>,
+    pub disabled: Option<ThemeStateRecipe>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SurfaceRecipe {
     pub background: RecipeBackground,
     pub foreground: RecipeForeground,
     pub border: RecipeBorder,
+    pub border_width: RecipeBorderWidth,
+    pub border_style: RecipeBorderStyle,
+    pub radius: RecipeRadius,
+    pub elevation: RecipeElevation,
     pub material: RecipeMaterial,
+    pub motion: RecipeMotion,
+    pub states: Option<ThemeRecipeStates>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComponentRecipes {
     pub shell: SurfaceRecipe,
     pub titlebar: SurfaceRecipe,
     pub sidebar: SurfaceRecipe,
+    #[serde(rename = "navigation-item")]
+    pub navigation_item: SurfaceRecipe,
     pub panel: SurfaceRecipe,
-    pub composer: SurfaceRecipe,
     pub card: SurfaceRecipe,
+    pub composer: SurfaceRecipe,
+    #[serde(rename = "message-user")]
+    pub message_user: SurfaceRecipe,
+    #[serde(rename = "message-assistant")]
+    pub message_assistant: SurfaceRecipe,
+    pub activity: SurfaceRecipe,
+    #[serde(rename = "tool-card")]
+    pub tool_card: SurfaceRecipe,
+    #[serde(rename = "permission-card")]
+    pub permission_card: SurfaceRecipe,
     pub dialog: SurfaceRecipe,
     pub sheet: SurfaceRecipe,
     pub popover: SurfaceRecipe,
     pub input: SurfaceRecipe,
-    pub button: SurfaceRecipe,
+    #[serde(rename = "button-primary")]
+    pub button_primary: SurfaceRecipe,
+    #[serde(rename = "button-secondary")]
+    pub button_secondary: SurfaceRecipe,
+    #[serde(rename = "button-ghost")]
+    pub button_ghost: SurfaceRecipe,
     pub editor: SurfaceRecipe,
+    pub diff: SurfaceRecipe,
+    #[serde(rename = "workspace-tab")]
+    pub workspace_tab: SurfaceRecipe,
+    #[serde(rename = "workflow-node")]
+    pub workflow_node: SurfaceRecipe,
+    #[serde(rename = "workflow-edge")]
+    pub workflow_edge: SurfaceRecipe,
+    pub scrollbar: SurfaceRecipe,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -314,13 +469,14 @@ pub struct ComponentRecipes {
 pub struct PerformanceMaterialOverrides {
     pub blur: f64,
     pub saturate: f64,
-    pub backdrop_brightness: Option<f64>,
-    pub backdrop_contrast: Option<f64>,
-    pub specular_highlight: Option<String>,
-    pub edge_shadow: Option<String>,
-    pub shadow: String,
     pub texture_opacity: f64,
-    pub motion_duration: String,
+    pub wallpapers: Option<WallpaperPerformanceOverride>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WallpaperPerformanceOverride {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -329,6 +485,165 @@ pub struct ThemeVisualQualityProfiles {
     pub default: ThemeVisualQuality,
     pub supported: [ThemeVisualQuality; 2],
     pub performance: PerformanceMaterialOverrides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeAssetKind { Font, Avatar, Icon, Texture, Wallpaper, Preview }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeFontMetadata {
+    pub family: String,
+    pub subfamily: String,
+    pub postscript_name: String,
+    pub weight_min: f64,
+    pub weight_max: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeAssetRecord {
+    pub id: String,
+    pub kind: ThemeAssetKind,
+    pub media_type: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub output_url: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub font_metadata: Option<ThemeFontMetadata>,
+    pub required: bool,
+    pub license_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeAssetManifestSummary {
+    pub schema_version: u8,
+    pub count: usize,
+    pub total_bytes: u64,
+    pub records: Vec<ThemeAssetRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFontCoverage {
+    pub scripts: Vec<String>,
+    pub locales: Option<Vec<String>>,
+    #[serde(rename = "unicodeRanges")]
+    pub unicode_ranges: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeFontMetrics {
+    pub size_adjust: Option<String>,
+    pub ascent_override: Option<String>,
+    pub descent_override: Option<String>,
+    pub line_gap_override: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeFontStyle { Normal, Italic }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeFontDisplay { Swap }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeFontFace {
+    pub id: String,
+    pub family: String,
+    pub runtime_family: String,
+    pub asset_id: String,
+    pub weight: u16,
+    pub style: ThemeFontStyle,
+    pub display: ThemeFontDisplay,
+    pub coverage: ThemeFontCoverage,
+    pub metrics: Option<ThemeFontMetrics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeFontStack {
+    pub id: String,
+    pub display_name: LocalizedThemeName,
+    pub default_faces: Vec<String>,
+    pub by_script: Option<BTreeMap<String, Vec<String>>>,
+    pub by_locale: Option<BTreeMap<String, Vec<String>>>,
+    pub system_fallbacks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFontRuntime {
+    pub faces: Vec<ThemeFontFace>,
+    pub stacks: Vec<ThemeFontStack>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeIconRenderMode { Mask, Image }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeImageRendering { Auto, Pixelated }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeIconDescriptor {
+    pub asset_id: String,
+    pub render_mode: ThemeIconRenderMode,
+    pub native_size: u8,
+    pub image_rendering: ThemeImageRendering,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeIconSchemeMaps {
+    pub light: Option<BTreeMap<String, ThemeIconDescriptor>>,
+    pub dark: Option<BTreeMap<String, ThemeIconDescriptor>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeIconMap {
+    pub defaults: BTreeMap<String, ThemeIconDescriptor>,
+    pub schemes: Option<ThemeIconSchemeMaps>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeWallpaperFit { Cover, Contain, Tile }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeWallpaperPosition { Center, Top, Bottom, Left, Right, TopLeft, TopRight, BottomLeft, BottomRight }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ThemeWallpaperRepeat { NoRepeat, Repeat, RepeatX, RepeatY }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThemeWallpaperDescriptor {
+    pub asset_id: String,
+    pub fit: ThemeWallpaperFit,
+    pub position: ThemeWallpaperPosition,
+    pub repeat: ThemeWallpaperRepeat,
+    pub opacity: f64,
+    pub overlay_color: RecipeBackground,
+    pub overlay_opacity: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeWallpaperMap {
+    pub light: BTreeMap<String, ThemeWallpaperDescriptor>,
+    pub dark: BTreeMap<String, ThemeWallpaperDescriptor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -344,6 +659,10 @@ pub struct ThemePackage {
     pub capabilities: Vec<ThemeCapability>,
     pub schemes: ThemeSchemes,
     pub recipes: ComponentRecipes,
+    pub assets: ThemeAssetManifestSummary,
+    pub fonts: Option<ThemeFontRuntime>,
+    pub icons: Option<ThemeIconMap>,
+    pub wallpapers: Option<ThemeWallpaperMap>,
     pub visual_quality_profiles: Option<ThemeVisualQualityProfiles>,
 }
 
@@ -371,6 +690,12 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
         })?;
     let mut ids = BTreeSet::new();
     for theme in &catalog {
+        if theme.schema_version != 2 || theme.contract_version != 2 {
+            return Err(ThemeContractError {
+                code: "theme.contract-version-unsupported",
+                detail: format!("{} must use Theme Contract v2", theme.id),
+            });
+        }
         if !ids.insert(theme.id.as_str()) {
             return Err(ThemeContractError {
                 code: "theme.package-invalid",
@@ -386,6 +711,40 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
                 detail: format!("quality capability mismatch for {}", theme.id),
             });
         }
+        validate_capability(theme, ThemeCapability::Fonts, theme.fonts.is_some())?;
+        validate_capability(theme, ThemeCapability::Icons, theme.icons.is_some())?;
+        validate_capability(theme, ThemeCapability::Wallpapers, theme.wallpapers.is_some())?;
+        if theme.assets.schema_version != 2 {
+            return Err(ThemeContractError {
+                code: "theme.package-invalid",
+                detail: format!("asset manifest version mismatch for {}", theme.id),
+            });
+        }
+        let mut asset_ids = BTreeSet::new();
+        for asset in &theme.assets.records {
+            if !asset_ids.insert(asset.id.as_str()) || !asset.output_url.starts_with("/theme-assets/") {
+                return Err(ThemeContractError {
+                    code: "theme.package-invalid",
+                    detail: format!("invalid asset record {} in {}", asset.id, theme.id),
+                });
+            }
+        }
+        if let Some(icons) = &theme.icons {
+            for slot in icons.defaults.keys()
+                .chain(icons.schemes.iter().flat_map(|maps| maps.light.iter().chain(maps.dark.iter())).flat_map(|map| map.keys()))
+            {
+                if !THEME_ICON_SLOTS.contains(&slot.as_str()) {
+                    return Err(ThemeContractError { code: "theme.icon-slot-unknown", detail: slot.clone() });
+                }
+            }
+        }
+        if let Some(wallpapers) = &theme.wallpapers {
+            for slot in wallpapers.light.keys().chain(wallpapers.dark.keys()) {
+                if !THEME_WALLPAPER_SLOTS.contains(&slot.as_str()) {
+                    return Err(ThemeContractError { code: "theme.wallpaper-slot-unknown", detail: slot.clone() });
+                }
+            }
+        }
     }
     if !ids.contains("builtin.gold-band") {
         return Err(ThemeContractError {
@@ -394,4 +753,28 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
         });
     }
     Ok(catalog)
+}
+
+const THEME_ICON_SLOTS: &[&str] = &[
+    "navigation.conversation", "navigation.search", "navigation.agent", "navigation.context",
+    "navigation.run-mode", "navigation.settings", "entity.task", "entity.workflow",
+    "entity.agent", "entity.file", "entity.folder", "conversation.thought",
+    "conversation.attachment", "tool.read", "tool.write", "tool.command",
+    "permission.request", "status.running", "status.success", "status.warning",
+    "status.error", "action.send", "action.continue", "action.stop",
+];
+const THEME_WALLPAPER_SLOTS: &[&str] = &["app", "conversation", "workspace", "settings"];
+
+fn validate_capability(
+    theme: &ThemePackage,
+    capability: ThemeCapability,
+    has_payload: bool,
+) -> Result<(), ThemeContractError> {
+    if theme.capabilities.contains(&capability) == has_payload {
+        return Ok(());
+    }
+    Err(ThemeContractError {
+        code: "theme.capability-file-mismatch",
+        detail: format!("{:?} capability mismatch for {}", capability, theme.id),
+    })
 }

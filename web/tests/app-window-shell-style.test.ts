@@ -52,7 +52,7 @@ describe('App window shell style', () => {
     expect(shell).toContain('data-testid="workspace-right-resize-handle"');
     expect(shell).toContain('border-t border-workspace-divider bg-gold-workspace');
     expect(shell).toContain('bg-workspace-divider hover:bg-primary/30');
-    expect(shell).toContain("'border-t border-workspace-divider',");
+    expect(shell).toContain("'relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace'");
     expect(shell).not.toContain('bg-sidebar-border/70 hover:bg-primary/30');
     expect(workbenchShell).toContain('border-l border-t border-workspace-divider');
     expect(shell).not.toContain('mousemove');
@@ -70,7 +70,7 @@ describe('App window shell style', () => {
     expect(conversationShell).toContain('className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible"');
     expect(conversationShell).toContain("'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]'");
     expect(conversationShell).toContain("'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]'");
-    expect(conversationShell).toContain("<main className={cn('relative flex h-full");
+    expect(conversationShell).toContain("<main data-theme-wallpaper-slot=\"workspace\" className={cn('relative flex h-full");
     expect(conversationShell).not.toContain("<main className={cn('relative z-10");
     expect(conversationShell).not.toContain('bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]');
     expect(conversationShell).not.toContain("showLeft && 'rounded-tl-2xl border-l'");
@@ -83,7 +83,9 @@ describe('App window shell style', () => {
   it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
-    expect(shell).not.toContain('panel.resize(');
+    expect(shell.match(/panel\.resize\(/gu)).toHaveLength(1);
+    expect(shell).toContain('panel.resize(sidebarWidth)');
+    expect(shell).not.toContain('rightPanelRef.current?.resize(');
     expect(shell).not.toContain('panel.getSize(');
     expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
     expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");

@@ -99,6 +99,8 @@
 ### 5.2 行为
 - 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
 - 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `fontStack: { source: theme } | { source: custom, families: string[] }`，字号分别使用 `source: theme | custom`；不得通过空字符串或值恰好等于 14/12 推断继承。
+- 主题字体的作者 `family` 可以带包命名空间和 `Variable/VF` 标记，但必须保留字体文件元数据中的 canonical family；Theme SDK 在产物发布前完成一致性校验，产品展示名继续由字体栈的本地化 `displayName` 提供。构建器为运行时 package 派生浏览器专用 `runtimeFamily`，主题作者不得填写，用户偏好也不持久化该字段。主题字体只能从 content-hash 资产图注册，应用入口不得额外全局导入同一字体。
+- 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weight + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
 - 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
 - UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
@@ -140,6 +142,14 @@
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
+- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页不新增图标、壁纸或高级字体入口，只展示当前有效投影；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
+- 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
+- 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
+- 设置内容区标记稳定 `settings` wallpaper surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退设置页语义底色，不影响主题其余能力。
+- 2026-08-16 Theme Engine v2 开发实现完成：两个内置主题已破坏式迁移到 Contract v2，全局硬编码 MiSans TTF 路径删除，设置页默认字体名称改由 `ResolvedTypography` 提供；主题构建、Web 生产构建和 Rust workspace compile check 通过。单元/接口、浏览器与 EXE 交互验收按开发节点边界交由后续测试和验收节点执行。
+- 2026-08-16 测试反馈修正：`resolveAppearance` 的默认 locale 解析不再直接依赖 DOM，Node/SSR 环境按 document language、navigator language、`en` 依次回退；DOM projector 在 wallpaper 查询、图片预加载和主题图标事件分发前检查对应浏览器 capability。完整浏览器行为不变，最小接口环境不需要伪造无关 DOM API。
+- 2026-08-16 第二轮测试：设置页两个内置主题、light/dark/system、640px 窄窗、恢复正常宽度和动态字体名称通过浏览器验收，主题核心行覆盖率达到 98.18%。当前仍不得标记 Theme Engine v2 完成：全局 Inter CSS import 绕过主题资源图，且旧主题 wallpaper 的迟到加载失败会清空新主题投影；SDK 另缺少字体 family 元数据一致性校验和生成资源目录的陈旧文件清理。
+- 2026-08-16 第四轮及 round-002 复核：第二、三轮发现的 Inter 旁路、wallpaper 迟到回调、字体 family 元数据、陈旧资源和跨主题 font-face identity 问题均已在现有契约与生命周期根部闭环。当前 Theme Engine v2 业务实现完成；Theme SDK、TypeScript、Vite 生产构建与 Rust workspace compile check 通过，`web/dist/theme-assets` 4 个文件共 5,326,544 bytes，生产产物无 TTF。浏览器长帧/GPU/图片内存、EXE 与安装包总增量因当前环境无法执行，按用户授权放行并明确记为未执行。
 - 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
 - 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
@@ -181,6 +191,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
 - 2026-08-15 字体偏好升级为有序字体栈：Theme SDK v2 以 `families + fallback + size` 声明 UI/编辑器默认栈，设置页通过可搜索多选、取消和上下移动维护用户顺序；自定义栈始终追加主题栈兜底，清空后恢复跟随主题。personalization schema v2 与 settings schema v8 同步替换旧单字体字段。
 - 2026-08-15 字体目录与用户字体栈拆分为两个领域：目录不设数量上限并稳定去重排序，用户栈继续保序且最多 16 项，避免系统字体计数与选择器实际选项不一致。
+- 2026-08-16 Theme SDK 补齐字体声明名与文件内建 family 的一致性校验；内置 `Inter Variable / Gold Band MiSans` 保持既有展示名与用户偏好语义，产品展示名继续独立管理。应用入口与依赖清单均移除 Fontsource Inter 全局旁路。后续以构建器派生的 `runtimeFamily` 隔离浏览器全局 font-face identity，自定义栈随当前主题重新投影；两个内置主题不再因复用作者 family 而相互请求字体资源。
 - UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。

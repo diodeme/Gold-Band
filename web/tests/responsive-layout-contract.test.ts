@@ -128,8 +128,9 @@ describe('responsive desktop layout contracts', () => {
     expect(settingsSource).toContain('@container/settings-content');
     expect(settingsSource).toContain('@container/theme-drawer');
     expect(settingsSource).toContain('@2xl/theme-drawer:grid-cols-2');
-    expect(settingsSource).not.toContain('@container/theme-summary');
-    expect(settingsSource).not.toContain('@xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]');
+    expect(settingsSource).toContain('@container/theme-summary');
+    expect(settingsSource).toContain('@xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]');
+    expect(settingsSource).toContain('@lg/theme-summary:col-span-2');
     expect(settingsSource).not.toContain('flex min-h-32 gap-4');
     expect(settingsSource).not.toContain('md:grid-cols-2');
     expect(settingsSource).not.toContain('lg:grid-cols-[160px_minmax(0,1fr)]');

@@ -70,9 +70,11 @@ describe('Gold themed scrollbar', () => {
   it('uses Gold Band tokens for shadcn ScrollArea scrollbars', () => {
     const scrollArea = readFileSync(path.resolve(__dirname, '../src/components/ui/scroll-area.tsx'), 'utf8');
 
-    expect(scrollArea).toContain('p-[3px]');
-    expect(scrollArea).toContain('w-2.5');
-    expect(scrollArea).toContain('h-2.5');
+    expect(scrollArea).toContain('p-[var(--gb-scrollbar-thumb-inset)]');
+    expect(scrollArea).toContain('w-[var(--gb-scrollbar-width)]');
+    expect(scrollArea).toContain('h-[var(--gb-scrollbar-width)]');
+    expect(scrollArea).toContain('min-h-[var(--gb-scrollbar-min-length)]');
+    expect(scrollArea).toContain('rounded-[var(--gb-scrollbar-thumb-radius)]');
     expect(scrollArea).toContain('bg-[var(--gold-scrollbar-track)]');
     expect(scrollArea).toContain('bg-[var(--gold-scrollbar-thumb)]');
     expect(scrollArea).toContain('bg-[var(--gold-scrollbar-thumb-hover)]');

@@ -3,7 +3,7 @@
     "schemaVersion": 2,
     "contractVersion": 2,
     "id": "builtin.gold-band",
-    "version": "1.1.0",
+    "version": "2.0.0",
     "source": "builtin",
     "name": {
       "zh-CN": "Gold Band",
@@ -101,7 +101,7 @@
           "warning": "#a46508",
           "danger": "#c83237",
           "permission": "#8a651d",
-          "titlebar": "#ffffff",
+          "titlebar": "#fafafa",
           "titlebarForeground": "#0d0d0d",
           "titlebarMuted": "#6e6e6e",
           "titlebarBorder": "rgba(13,13,13,.08)",
@@ -112,44 +112,63 @@
         },
         "material": {
           "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
           "backdropBrightness": 100,
           "backdropContrast": 100,
           "specularHighlight": "none",
           "edgeShadow": "0 0 0 transparent",
-          "radius": "0.75rem",
-          "motionEasing": "cubic-bezier(.16,1,.3,1)",
-          "surfaceOpacity": 1,
-          "borderHighlight": "transparent",
-          "blur": 0,
-          "saturate": 100,
-          "shadow": "0 4px 16px rgba(13,13,13,.06)",
           "backgroundImage": "none",
-          "textureOpacity": 0,
-          "motionDuration": "180ms",
-          "surfaceOverlay": "none"
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(13,13,13,.06)",
+          "floating": "0 4px 16px rgba(13,13,13,.06)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
         },
         "typography": {
-          "ui": {
-            "families": [
-              "Inter Variable",
-              "Gold Band MiSans",
-              "MiSans",
-              "Microsoft YaHei UI",
-              "PingFang SC",
-              "Noto Sans CJK SC",
-              "Source Han Sans SC"
-            ],
-            "fallback": "sans-serif",
-            "size": 14
-          },
-          "editor": {
-            "families": [
-              "JetBrains Mono",
-              "SFMono-Regular",
-              "Consolas"
-            ],
-            "fallback": "monospace",
-            "size": 12
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 12,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
           }
         },
         "avatars": {
@@ -254,44 +273,63 @@
         },
         "material": {
           "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
           "backdropBrightness": 100,
           "backdropContrast": 100,
           "specularHighlight": "none",
           "edgeShadow": "0 0 0 transparent",
-          "radius": "0.75rem",
-          "motionEasing": "cubic-bezier(.16,1,.3,1)",
-          "surfaceOpacity": 1,
-          "borderHighlight": "transparent",
-          "blur": 0,
-          "saturate": 100,
-          "shadow": "0 4px 16px rgba(0,0,0,.28)",
           "backgroundImage": "none",
-          "textureOpacity": 0,
-          "motionDuration": "180ms",
-          "surfaceOverlay": "none"
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.75rem",
+          "radiusSurface": "0.75rem",
+          "radiusOverlay": "0.75rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 4px 16px rgba(0,0,0,.28)",
+          "floating": "0 4px 16px rgba(0,0,0,.28)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "180ms",
+          "durationSlow": "240ms",
+          "easingStandard": "cubic-bezier(.16,1,.3,1)",
+          "easingEnter": "cubic-bezier(.16,1,.3,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
         },
         "typography": {
-          "ui": {
-            "families": [
-              "Inter Variable",
-              "Gold Band MiSans",
-              "MiSans",
-              "Microsoft YaHei UI",
-              "PingFang SC",
-              "Noto Sans CJK SC",
-              "Source Han Sans SC"
-            ],
-            "fallback": "sans-serif",
-            "size": 14
-          },
-          "editor": {
-            "families": [
-              "JetBrains Mono",
-              "SFMono-Regular",
-              "Consolas"
-            ],
-            "fallback": "monospace",
-            "size": 12
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 12,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
           }
         },
         "avatars": {
@@ -306,82 +344,610 @@
       "shell": {
         "background": "transparent",
         "foreground": "foreground",
-        "border": "border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "none"
       },
       "titlebar": {
         "background": "sidebar",
         "foreground": "foreground",
-        "border": "sidebar-border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
       },
       "sidebar": {
         "background": "sidebar",
         "foreground": "foreground",
-        "border": "sidebar-border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "navigation-item": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
       },
       "panel": {
         "background": "card",
         "foreground": "card-foreground",
-        "border": "border",
-        "material": "flat"
-      },
-      "composer": {
-        "background": "card",
-        "foreground": "card-foreground",
-        "border": "border",
-        "material": "elevated"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
       },
       "card": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "composer": {
+        "background": "composer",
+        "foreground": "composer-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface",
+        "states": {
+          "focus": {
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "message-user": {
+        "background": "message-user",
+        "foreground": "message-user-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-assistant": {
+        "background": "message-assistant",
+        "foreground": "message-assistant-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "activity": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "tool-card": {
+        "background": "tool-card",
+        "foreground": "tool-card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "permission-card": {
+        "background": "permission-card",
+        "foreground": "permission-card-foreground",
+        "border": "highlight",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "subtle",
+        "motion": "surface"
       },
       "dialog": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "elevated"
-      },
-      "popover": {
-        "background": "popover",
-        "foreground": "card-foreground",
-        "border": "border",
-        "material": "elevated"
-      },
-      "editor": {
-        "background": "card",
-        "foreground": "foreground",
-        "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
       },
       "sheet": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "elevated"
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "floating",
+        "material": "elevated",
+        "motion": "surface"
+      },
+      "popover": {
+        "background": "popover",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "elevated",
+        "motion": "surface"
       },
       "input": {
         "background": "surface-low",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
       },
-      "button": {
+      "button-primary": {
+        "background": "primary",
+        "foreground": "primary-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "overlay"
+          },
+          "active": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-secondary": {
         "background": "surface-high",
         "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-ghost": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "editor": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "diff": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "workspace-tab": {
+        "background": "workspace-tab",
+        "foreground": "workspace-tab-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "workflow-node": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "workflow-edge": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "foreground": "accent-foreground",
+            "border": "ring"
+          }
+        }
+      },
+      "scrollbar": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "pill",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
       }
+    },
+    "assets": {
+      "schemaVersion": 2,
+      "count": 2,
+      "totalBytes": 2663272,
+      "records": [
+        {
+          "id": "inter-latin-variable",
+          "kind": "font",
+          "mediaType": "font/woff2",
+          "bytes": 48256,
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+          "outputUrl": "/theme-assets/builtin.gold-band/3100e775e8616cd2-inter-latin-variable.woff2",
+          "required": true,
+          "licenseId": "inter-ofl",
+          "fontMetadata": {
+            "family": "Inter",
+            "subfamily": "Regular",
+            "postscriptName": "Inter-Regular",
+            "weightMin": 100,
+            "weightMax": 900
+          }
+        },
+        {
+          "id": "misans-variable",
+          "kind": "font",
+          "mediaType": "font/woff2",
+          "bytes": 2615016,
+          "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27",
+          "outputUrl": "/theme-assets/builtin.gold-band/c905ab46ff4f0bcf-misans-vf.woff2",
+          "required": true,
+          "licenseId": "misans-apache",
+          "fontMetadata": {
+            "family": "MiSans VF",
+            "subfamily": "Regular",
+            "postscriptName": "MiSansVF",
+            "weightMin": 150,
+            "weightMax": 700
+          }
+        }
+      ]
+    },
+    "fonts": {
+      "faces": [
+        {
+          "id": "inter-regular",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 400,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable"
+        },
+        {
+          "id": "inter-medium",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 500,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable"
+        },
+        {
+          "id": "inter-semibold",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 600,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable"
+        },
+        {
+          "id": "inter-bold",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 700,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable"
+        },
+        {
+          "id": "misans-regular",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 400,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans"
+        },
+        {
+          "id": "misans-medium",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 500,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans"
+        },
+        {
+          "id": "misans-semibold",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 600,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans"
+        },
+        {
+          "id": "misans-bold",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 700,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans"
+        }
+      ],
+      "stacks": [
+        {
+          "id": "theme-ui",
+          "displayName": {
+            "zh-CN": "Inter Variable · MiSans",
+            "en": "Inter Variable · MiSans"
+          },
+          "defaultFaces": [
+            "inter-regular"
+          ],
+          "byScript": {
+            "Hans": [
+              "inter-regular",
+              "misans-regular"
+            ],
+            "Latn": [
+              "inter-regular"
+            ]
+          },
+          "byLocale": {
+            "zh-CN": [
+              "inter-regular",
+              "misans-regular"
+            ]
+          },
+          "systemFallbacks": [
+            "Microsoft YaHei UI",
+            "PingFang SC",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "sans-serif"
+          ]
+        },
+        {
+          "id": "theme-editor",
+          "displayName": {
+            "zh-CN": "JetBrains Mono",
+            "en": "JetBrains Mono"
+          },
+          "defaultFaces": [],
+          "systemFallbacks": [
+            "JetBrains Mono",
+            "SFMono-Regular",
+            "Consolas",
+            "monospace"
+          ]
+        }
+      ]
     }
   },
   {
     "schemaVersion": 2,
     "contractVersion": 2,
     "id": "builtin.tech-neutral",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "source": "builtin",
     "name": {
       "zh-CN": "技术中性",
@@ -490,44 +1056,63 @@
         },
         "material": {
           "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
           "backdropBrightness": 100,
           "backdropContrast": 100,
           "specularHighlight": "none",
           "edgeShadow": "0 0 0 transparent",
-          "radius": "0.625rem",
-          "motionEasing": "ease-out",
-          "surfaceOpacity": 1,
-          "borderHighlight": "transparent",
-          "blur": 0,
-          "saturate": 100,
-          "shadow": "0 1px 2px rgb(0 0 0 / 0.12)",
           "backgroundImage": "none",
-          "textureOpacity": 0,
-          "motionDuration": "200ms",
-          "surfaceOverlay": "none"
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.625rem",
+          "radiusSurface": "0.625rem",
+          "radiusOverlay": "0.625rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 1px 2px rgb(0 0 0 / 0.12)",
+          "floating": "0 1px 2px rgb(0 0 0 / 0.12)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "200ms",
+          "durationSlow": "260ms",
+          "easingStandard": "cubic-bezier(0,0,.2,1)",
+          "easingEnter": "cubic-bezier(0,0,.2,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
         },
         "typography": {
-          "ui": {
-            "families": [
-              "Inter Variable",
-              "Gold Band MiSans",
-              "MiSans",
-              "Microsoft YaHei UI",
-              "PingFang SC",
-              "Noto Sans CJK SC",
-              "Source Han Sans SC"
-            ],
-            "fallback": "sans-serif",
-            "size": 14
-          },
-          "editor": {
-            "families": [
-              "JetBrains Mono",
-              "SFMono-Regular",
-              "Consolas"
-            ],
-            "fallback": "monospace",
-            "size": 12
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 12,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
           }
         },
         "avatars": {
@@ -632,44 +1217,63 @@
         },
         "material": {
           "model": "solid",
+          "surfaceOpacity": 1,
+          "borderHighlight": "transparent",
+          "surfaceOverlay": "none",
+          "blur": 0,
+          "saturate": 100,
           "backdropBrightness": 100,
           "backdropContrast": 100,
           "specularHighlight": "none",
           "edgeShadow": "0 0 0 transparent",
-          "radius": "0.625rem",
-          "motionEasing": "ease-out",
-          "surfaceOpacity": 1,
-          "borderHighlight": "transparent",
-          "blur": 0,
-          "saturate": 100,
-          "shadow": "0 1px 2px rgb(0 0 0 / 0.12)",
           "backgroundImage": "none",
-          "textureOpacity": 0,
-          "motionDuration": "200ms",
-          "surfaceOverlay": "none"
+          "textureOpacity": 0
+        },
+        "shape": {
+          "radiusControl": "0.625rem",
+          "radiusSurface": "0.625rem",
+          "radiusOverlay": "0.625rem",
+          "radiusAvatar": "999px",
+          "radiusPill": "999px",
+          "borderHairline": "1px",
+          "borderDefault": "1px",
+          "borderStrong": "2px"
+        },
+        "elevation": {
+          "none": "none",
+          "surface": "0 1px 2px rgba(0,0,0,.08)",
+          "overlay": "0 1px 2px rgb(0 0 0 / 0.12)",
+          "floating": "0 1px 2px rgb(0 0 0 / 0.12)",
+          "pressed": "none",
+          "pressOffset": 1
+        },
+        "motion": {
+          "mode": "smooth",
+          "durationFast": "120ms",
+          "durationNormal": "200ms",
+          "durationSlow": "260ms",
+          "easingStandard": "cubic-bezier(0,0,.2,1)",
+          "easingEnter": "cubic-bezier(0,0,.2,1)",
+          "easingPress": "cubic-bezier(.2,0,.2,1)"
+        },
+        "scrollbar": {
+          "width": "10px",
+          "thumbRadius": "999px",
+          "thumbInset": "3px",
+          "minLength": "24px",
+          "buttons": "none"
         },
         "typography": {
-          "ui": {
-            "families": [
-              "Inter Variable",
-              "Gold Band MiSans",
-              "MiSans",
-              "Microsoft YaHei UI",
-              "PingFang SC",
-              "Noto Sans CJK SC",
-              "Source Han Sans SC"
-            ],
-            "fallback": "sans-serif",
-            "size": 14
-          },
-          "editor": {
-            "families": [
-              "JetBrains Mono",
-              "SFMono-Regular",
-              "Consolas"
-            ],
-            "fallback": "monospace",
-            "size": 12
+          "uiStackId": "theme-ui",
+          "uiSize": 14,
+          "uiLineHeight": 1.5,
+          "editorStackId": "theme-editor",
+          "editorSize": 12,
+          "editorLineHeight": 1.55,
+          "weights": {
+            "read": 400,
+            "emphasize": 600,
+            "announce": 700
           }
         },
         "avatars": {
@@ -684,75 +1288,603 @@
       "shell": {
         "background": "transparent",
         "foreground": "foreground",
-        "border": "border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "none"
       },
       "titlebar": {
         "background": "sidebar",
         "foreground": "foreground",
-        "border": "sidebar-border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
       },
       "sidebar": {
         "background": "sidebar",
         "foreground": "foreground",
-        "border": "sidebar-border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "navigation-item": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
       },
       "panel": {
         "background": "card",
         "foreground": "card-foreground",
-        "border": "border",
-        "material": "flat"
-      },
-      "composer": {
-        "background": "card",
-        "foreground": "card-foreground",
-        "border": "border",
-        "material": "flat"
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "surface"
       },
       "card": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "composer": {
+        "background": "composer",
+        "foreground": "composer-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "flat",
+        "motion": "surface",
+        "states": {
+          "focus": {
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "message-user": {
+        "background": "message-user",
+        "foreground": "message-user-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "message-assistant": {
+        "background": "message-assistant",
+        "foreground": "message-assistant-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "activity": {
+        "background": "activity",
+        "foreground": "activity-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "tool-card": {
+        "background": "tool-card",
+        "foreground": "tool-card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "permission-card": {
+        "background": "permission-card",
+        "foreground": "permission-card-foreground",
+        "border": "highlight",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface"
       },
       "dialog": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
-      },
-      "popover": {
-        "background": "popover",
-        "foreground": "card-foreground",
-        "border": "border",
-        "material": "flat"
-      },
-      "editor": {
-        "background": "card",
-        "foreground": "foreground",
-        "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "floating",
+        "material": "flat",
+        "motion": "surface"
       },
       "sheet": {
         "background": "card",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "floating",
+        "material": "flat",
+        "motion": "surface"
+      },
+      "popover": {
+        "background": "popover",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "overlay",
+        "elevation": "overlay",
+        "material": "flat",
+        "motion": "surface"
       },
       "input": {
         "background": "surface-low",
         "foreground": "card-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
       },
-      "button": {
+      "button-primary": {
+        "background": "primary",
+        "foreground": "primary-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "overlay"
+          },
+          "active": {
+            "background": "primary",
+            "foreground": "primary-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-secondary": {
         "background": "surface-high",
         "foreground": "card-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "press",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "elevation": "pressed",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "button-ghost": {
+        "background": "transparent",
+        "foreground": "foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "hover": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "active": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "press": true
+          },
+          "focus": {
+            "border": "ring"
+          },
+          "disabled": {
+            "opacity": 0.5
+          }
+        }
+      },
+      "editor": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "diff": {
+        "background": "editor",
+        "foreground": "editor-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "none",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
+      },
+      "workspace-tab": {
+        "background": "workspace-tab",
+        "foreground": "workspace-tab-foreground",
         "border": "border",
-        "material": "flat"
+        "borderWidth": "hairline",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground"
+          },
+          "focus": {
+            "border": "ring"
+          }
+        }
+      },
+      "workflow-node": {
+        "background": "card",
+        "foreground": "card-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "surface",
+        "elevation": "surface",
+        "material": "flat",
+        "motion": "surface",
+        "states": {
+          "selected": {
+            "background": "accent",
+            "foreground": "accent-foreground",
+            "border": "ring",
+            "elevation": "overlay"
+          }
+        }
+      },
+      "workflow-edge": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "border",
+        "borderWidth": "default",
+        "borderStyle": "solid",
+        "radius": "control",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color",
+        "states": {
+          "selected": {
+            "foreground": "accent-foreground",
+            "border": "ring"
+          }
+        }
+      },
+      "scrollbar": {
+        "background": "transparent",
+        "foreground": "muted-foreground",
+        "border": "transparent",
+        "borderWidth": "none",
+        "borderStyle": "solid",
+        "radius": "pill",
+        "elevation": "none",
+        "material": "flat",
+        "motion": "color"
       }
+    },
+    "assets": {
+      "schemaVersion": 2,
+      "count": 2,
+      "totalBytes": 2663272,
+      "records": [
+        {
+          "id": "inter-latin-variable",
+          "kind": "font",
+          "mediaType": "font/woff2",
+          "bytes": 48256,
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+          "outputUrl": "/theme-assets/builtin.tech-neutral/3100e775e8616cd2-inter-latin-variable.woff2",
+          "required": true,
+          "licenseId": "inter-ofl",
+          "fontMetadata": {
+            "family": "Inter",
+            "subfamily": "Regular",
+            "postscriptName": "Inter-Regular",
+            "weightMin": 100,
+            "weightMax": 900
+          }
+        },
+        {
+          "id": "misans-variable",
+          "kind": "font",
+          "mediaType": "font/woff2",
+          "bytes": 2615016,
+          "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27",
+          "outputUrl": "/theme-assets/builtin.tech-neutral/c905ab46ff4f0bcf-misans-vf.woff2",
+          "required": true,
+          "licenseId": "misans-apache",
+          "fontMetadata": {
+            "family": "MiSans VF",
+            "subfamily": "Regular",
+            "postscriptName": "MiSansVF",
+            "weightMin": 150,
+            "weightMax": 700
+          }
+        }
+      ]
+    },
+    "fonts": {
+      "faces": [
+        {
+          "id": "inter-regular",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 400,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
+        },
+        {
+          "id": "inter-medium",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 500,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
+        },
+        {
+          "id": "inter-semibold",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 600,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
+        },
+        {
+          "id": "inter-bold",
+          "family": "Inter Variable",
+          "assetId": "inter-latin-variable",
+          "weight": 700,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Latn"
+            ]
+          },
+          "runtimeFamily": "Inter Variable [builtin.tech-neutral]"
+        },
+        {
+          "id": "misans-regular",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 400,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
+        },
+        {
+          "id": "misans-medium",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 500,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
+        },
+        {
+          "id": "misans-semibold",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 600,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
+        },
+        {
+          "id": "misans-bold",
+          "family": "Gold Band MiSans",
+          "assetId": "misans-variable",
+          "weight": 700,
+          "style": "normal",
+          "display": "swap",
+          "coverage": {
+            "scripts": [
+              "Hans",
+              "Latn"
+            ],
+            "locales": [
+              "zh-CN"
+            ]
+          },
+          "runtimeFamily": "Gold Band MiSans [builtin.tech-neutral]"
+        }
+      ],
+      "stacks": [
+        {
+          "id": "theme-ui",
+          "displayName": {
+            "zh-CN": "Inter Variable · MiSans",
+            "en": "Inter Variable · MiSans"
+          },
+          "defaultFaces": [
+            "inter-regular"
+          ],
+          "byScript": {
+            "Hans": [
+              "inter-regular",
+              "misans-regular"
+            ],
+            "Latn": [
+              "inter-regular"
+            ]
+          },
+          "byLocale": {
+            "zh-CN": [
+              "inter-regular",
+              "misans-regular"
+            ]
+          },
+          "systemFallbacks": [
+            "Microsoft YaHei UI",
+            "PingFang SC",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "sans-serif"
+          ]
+        },
+        {
+          "id": "theme-editor",
+          "displayName": {
+            "zh-CN": "JetBrains Mono",
+            "en": "JetBrains Mono"
+          },
+          "defaultFaces": [],
+          "systemFallbacks": [
+            "JetBrains Mono",
+            "SFMono-Regular",
+            "Consolas",
+            "monospace"
+          ]
+        }
+      ]
     }
   }
 ]

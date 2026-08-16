@@ -87,6 +87,9 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 
 ## 7. 实现状态
 
+- 2026-08-16 起文件工作区接入 Theme Contract v2：外层使用稳定 `workspace` wallpaper surface，编辑器使用 `editor` role。主题只改变背景投影、字体变量、边界、形状和材质，不销毁 CodeMirror `EditorView`，也不改变文件加载、保存或 revision 状态。
+- 壁纸仅在工作区 surface 可见时预加载；缺失、损坏或由 performance 档关闭时回退语义底色。编辑器正文继续使用独立 editor 字体栈和字号，locale 切换不重载文件内容。
+
 2026-08-09 文件 reveal 已迁移到官方 `tauri-plugin-opener` Rust API。项目工作空间和会话运行目录仍分别使用原有受控 locator 解析路径，只有验证后的 canonical path 会交给 opener；删除 Explorer `/select` 参数拼接和 `xdg-open` 平台分支，使 Finder reveal 成为同一接口的 macOS 实现。
 
 2026-08-07 文件树已增加紧凑目录 / 树形目录切换：紧凑投影保持链首节点身份并把上下文操作绑定到链尾真实路径；两种模式的展开动作都会连续装载单目录链。watcher 局部结构刷新会重新装载已展开后代，保证新增文件动态拆分紧凑链。树形目录按层级最小行宽计算横向溢出，紧凑目录按层级宽度与完整合并名称的较大值计算，两种模式都只在真实溢出时出现横向滚动；模式按钮使用清晰的列表树 / 列表收合图标。右侧工作区整体最小宽度同步由 320px 收至 288px。上述数据、交互和溢出契约由 FileExplorerStore 与 WorkspaceFileTree 单元测试固化，并已在本地真实页面用深层 Java 路径完成模式切换、连续展开及有/无横向溢出的交互验证。

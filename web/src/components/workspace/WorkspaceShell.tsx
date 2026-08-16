@@ -10,6 +10,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { RightWorkspaceDock } from './RightWorkspaceDock';
 import {
   ConversationWorkspaceStore,
@@ -154,6 +155,7 @@ function FileWorkspaceIntegration({
 }
 
 export function WorkspaceShell(props: WorkspaceShellProps) {
+  useThemeWallpaperSurface();
   const rightWorkspaceLayout = props.appConfig.workspaceLayout.rightWorkspace;
   const initialRightWidth = loadWidth(
     props.vm.preferences,
@@ -474,6 +476,8 @@ function WorkspaceShellLayout({
     <div
       ref={shellRef}
       className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
+      data-theme-role="shell"
+      data-theme-wallpaper-slot="app"
       data-window-frame-style={windowFrameStyle}
       onContextMenu={(event) => event.preventDefault()}
     >
@@ -541,7 +545,7 @@ function WorkspaceShellLayout({
           )}
           groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl')}>
+          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl')}>
             {children}
           </main>
         </ResizablePanel>

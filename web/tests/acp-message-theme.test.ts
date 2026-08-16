@@ -30,9 +30,9 @@ const stylesSource = readFileSync(
 
 describe('ACP message theme contract', () => {
   it('uses the shared user-message semantic surface without primary tint, border, or elevation', () => {
-    expect(messageSource).toContain('variant === "user" && "bg-message-user text-message-user-foreground"');
+    expect(messageSource).toContain('data-theme-role={variant === "user" ? "message-user" : variant === "assistant" ? "message-assistant" : "activity"}');
     expect(chatSource).toContain('variant={isUser ? "user" : "assistant"}');
-    expect(chatSource).toContain('w-fit max-w-full rounded-br-md shadow-none');
+    expect(chatSource).toContain('w-fit max-w-full rounded-br-md py-3 shadow-none');
     expect(chatSource).not.toContain('var(--primary)_16%');
     expect(chatSource).not.toContain('var(--primary)_26%');
   });
@@ -81,8 +81,8 @@ describe('ACP message theme contract', () => {
   });
 
   it('keeps assistant prose and main content headers on the page surface', () => {
-    expect(messageSource).toContain('variant === "assistant" && "bg-transparent text-foreground"');
-    expect(chatSource).toContain(': "rounded-bl-md shadow-none"');
+    expect(messageSource).toContain('? "message-assistant" : "activity"');
+    expect(chatSource).toContain(': "rounded-bl-md pb-0 pt-2 shadow-none"');
     expect(chatSource).toContain('bg-content-header px-5');
     expect(runHeaderSource).toContain('bg-content-header px-5');
     expect(chatSource).not.toContain('bg-gold-surface-high/60 px-5');

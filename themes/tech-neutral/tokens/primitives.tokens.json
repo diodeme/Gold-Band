@@ -6,7 +6,11 @@
     },
     "motionEasing": {
       "$type": "string",
-      "$value": "ease-out"
+      "$value": "cubic-bezier(0,0,.2,1)"
+    },
+    "radiusPill": {
+      "$type": "string",
+      "$value": "999px"
     }
   }
 }

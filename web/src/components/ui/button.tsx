@@ -56,7 +56,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(({
     <Comp
       ref={ref}
       data-slot="button"
-      data-theme-role="button"
+      data-theme-role={variant === "default" ? "button-primary" : variant === "ghost" ? "button-ghost" : variant === "secondary" || variant === "outline" ? "button-secondary" : undefined}
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}

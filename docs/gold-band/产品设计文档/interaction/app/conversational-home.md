@@ -46,6 +46,7 @@
 ### 输入区域
 
 - 会话壳、侧栏、阅读区与 prompt-kit composer 通过稳定主题角色消费主题包 recipe；不得在会话业务组件中根据 `themeId` 分支。
+- `data-theme-role` 只标记真正拥有对应视觉 surface 的元素，不能因为内容逻辑上位于 composer 内就把状态行再次标为 `composer`。ACP usage/processing 行继承外层 composer，不单独产生背景、边框、圆角或 elevation；普通 activity 保持无边框，tool 审计行只保留既有下分隔线，普通 tool card 才保留完整卡片边界。主题 recipe 是 role 的组件层默认值，不能抹掉 prompt-kit/shadcn 显式变体已有的 focus ring、透明背景、局部阴影、单边分隔或 transition。
 - 会话标题中的 session 切换列表使用统一 `popover` 主题角色；当前 Gold Band 与技术中性均由各自包提供实底 popover，业务组件不得写固定透明度。
 - 主题、明暗或视觉质量切换只触发 CSS 样式重算，不读取会话数据、不重播 Markdown、不改变 composer 草稿、会话选中态或右侧工作区资源身份。
 1. 文本输入框：用户输入任意需求文本
@@ -190,6 +191,10 @@
 - 高频 ACP session update 必须直接携带从 per-attempt prompt control registry 投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；prompt 终态用显式 `null` 清除。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费此字段，并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
 
 ## 性能与后台刷新
+
+- 会话主页与消息流分别消费 Theme Contract v2 的 `panel`、`composer`、`message-user`、`message-assistant`、`activity`、`tool-card` 和 `permission-card` role；Markdown 标题密度与 ACP 卡片结构仍由产品交互规则约束，主题不能改变 DOM、信息层级或业务状态。
+- 会话内容区标记稳定 `conversation` wallpaper surface。运行时只预加载当前可见槽，资源失败或 performance 档关闭壁纸时回退语义背景色；overlay 位于内容下方，不在每条消息重复创建合成层。
+- `ThemeAssetsContext` 只提供低频图标 descriptor，不保存二进制资源，也不承载流式消息状态；主题或明暗切换不得导致已完成 Markdown 重新解析。
 
 - Conversation 模式是桌面端主路径，输入与会话流式渲染期间不得启动旧 Workbench 的任务/工作流/round detail 周期刷新。
 - 旧 Workbench 的 10 秒可见窗口刷新与 30 秒隐藏窗口刷新只在 Workbench 模式启用；切回 Conversation 时必须清理该 interval，避免周期性文件扫描、Tauri IPC 与 React 大状态更新抢占会话输入主线程。

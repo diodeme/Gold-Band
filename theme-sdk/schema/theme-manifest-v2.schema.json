@@ -96,6 +96,8 @@
           "fonts",
           "avatars",
           "textures",
+          "icons",
+          "wallpapers",
           "visual-quality-profiles"
         ]
       }

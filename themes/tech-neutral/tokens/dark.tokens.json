@@ -322,6 +322,10 @@
     }
   },
   "material": {
+    "model": {
+      "$type": "string",
+      "$value": "solid"
+    },
     "surfaceOpacity": {
       "$type": "number",
       "$value": 1
@@ -329,6 +333,10 @@
     "borderHighlight": {
       "$type": "string",
       "$value": "transparent"
+    },
+    "surfaceOverlay": {
+      "$type": "string",
+      "$value": "none"
     },
     "blur": {
       "$type": "number",
@@ -338,9 +346,21 @@
       "$type": "number",
       "$value": 100
     },
-    "shadow": {
+    "backdropBrightness": {
+      "$type": "number",
+      "$value": 100
+    },
+    "backdropContrast": {
+      "$type": "number",
+      "$value": 100
+    },
+    "specularHighlight": {
       "$type": "string",
-      "$value": "0 1px 2px rgb(0 0 0 / 0.12)"
+      "$value": "none"
+    },
+    "edgeShadow": {
+      "$type": "string",
+      "$value": "0 0 0 transparent"
     },
     "backgroundImage": {
       "$type": "string",
@@ -349,14 +369,32 @@
     "textureOpacity": {
       "$type": "number",
       "$value": 0
-    },
-    "motionDuration": {
-      "$type": "string",
-      "$value": "200ms"
-    },
-    "surfaceOverlay": {
+    }
+  },
+  "elevation": {
+    "none": {
       "$type": "string",
       "$value": "none"
+    },
+    "surface": {
+      "$type": "string",
+      "$value": "0 1px 2px rgba(0,0,0,.08)"
+    },
+    "overlay": {
+      "$type": "string",
+      "$value": "0 1px 2px rgb(0 0 0 / 0.12)"
+    },
+    "floating": {
+      "$type": "string",
+      "$value": "0 1px 2px rgb(0 0 0 / 0.12)"
+    },
+    "pressed": {
+      "$type": "string",
+      "$value": "none"
+    },
+    "pressOffset": {
+      "$type": "number",
+      "$value": 1
     }
   }
 }

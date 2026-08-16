@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
@@ -32,7 +32,7 @@ interface WorkflowPageProps {
   onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
   onContinueRun: (taskId: string, runId: string) => void;
   onStopRun: (taskId: string, runId: string) => void;
-  onSaveWorkflow: (taskId: string, workflow: WorkflowDsl) => Promise<WorkflowVm | undefined>;
+  onSaveWorkflow: (taskId: string, workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm | undefined>;
   onOpenProfileManagement: () => void;
 }
 
@@ -68,6 +68,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
+  const [modelBindingsDraft, setModelBindingsDraft] = useState<WorkflowModelBindings | null>(null);
   const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
   const [validationRequestId, setValidationRequestId] = useState(0);
 
@@ -78,6 +79,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const closeWorkflowDrawer = useCallback(() => {
     setWorkflowDrawerMode(null);
     setWorkflowDraft(null);
+    setModelBindingsDraft(null);
     setWorkflowSaveError(null);
   }, []);
 
@@ -140,11 +142,11 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     setValidationRequestId((value) => value + 1);
   };
 
-  const saveWorkflow = async (workflow: WorkflowDsl) => {
+  const saveWorkflow = async (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setSavingWorkflow(true);
     try {
       setWorkflowSaveError(null);
-      await onSaveWorkflow(vm.task.id, workflow);
+      await onSaveWorkflow(vm.task.id, workflow, modelBindings);
       setWorkflowDraft(null);
       setWorkflowDrawerMode(null);
     } catch (error) {
@@ -296,7 +298,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 workflowDraft ? (
                   <>
                     {workflowSaveError ? <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">{workflowSaveError}</div> : null}
-                    <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} />
+                    <WorkflowEditor value={workflowDraft} modelBindings={modelBindingsDraft ?? vm.modelBindings} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} validateModelBindings={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} onModelBindingsChange={setModelBindingsDraft} />
                   </>
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (

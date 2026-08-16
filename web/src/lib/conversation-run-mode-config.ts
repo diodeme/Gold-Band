@@ -1,4 +1,4 @@
-import type { ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationRunModeVm } from '@/types';
+import type { ConversationAutoConfigVm, ConversationDirectConfigVm, ConversationRunModeVm, WorkflowTemplate } from '@/types';
 
 export const DEFAULT_CONVERSATION_RUN_MODE: ConversationRunModeVm = { mode: 'direct' };
 export const DEFAULT_WORKFLOW_TEMPLATE_ID = 'default';
@@ -133,9 +133,9 @@ export function mergeConversationRunMode(
     workflowTemplateId: patch.workflowTemplateId === undefined
       ? current.workflowTemplateId
       : patch.workflowTemplateId,
-    includeInterview: patch.includeInterview === undefined
-      ? current.includeInterview
-      : patch.includeInterview,
+    optionalEntryPreferences: patch.optionalEntryPreferences === undefined
+      ? current.optionalEntryPreferences
+      : patch.optionalEntryPreferences,
     directConfig: patch.directConfig === undefined ? current.directConfig : patch.directConfig,
     directPreferences: patch.directPreferences === undefined
       ? current.directPreferences
@@ -144,21 +144,31 @@ export function mergeConversationRunMode(
   };
 }
 
-export function isDefaultWorkflowTemplate(templateId: string | null | undefined): boolean {
-  return templateId === DEFAULT_WORKFLOW_TEMPLATE_ID;
-}
-
-export function shouldShowInterviewToggle(
+export function shouldShowOptionalEntryToggle(
   mode: ConversationRunModeVm['mode'],
-  templateId: string | null | undefined,
+  template: WorkflowTemplate | null | undefined,
 ): boolean {
-  return mode === 'workflow' && isDefaultWorkflowTemplate(templateId);
+  return mode === 'workflow' && Boolean(template?.optionalEntryStage);
 }
 
-export function includeInterviewForSubmit(
+export function includeOptionalEntryForSubmit(
   mode: ConversationRunModeVm,
-  templateId: string | null | undefined,
+  template: WorkflowTemplate | null | undefined,
 ): boolean | undefined {
-  if (!shouldShowInterviewToggle(mode.mode, templateId)) return undefined;
-  return mode.includeInterview ?? true;
+  if (!shouldShowOptionalEntryToggle(mode.mode, template)) return undefined;
+  return mode.optionalEntryPreferences?.[template!.id] ?? template!.optionalEntryStage!.defaultEnabled;
+}
+
+export function setOptionalEntryPreference(
+  mode: ConversationRunModeVm,
+  templateId: string,
+  enabled: boolean,
+): ConversationRunModeVm {
+  return {
+    ...mode,
+    optionalEntryPreferences: {
+      ...mode.optionalEntryPreferences,
+      [templateId]: enabled,
+    },
+  };
 }

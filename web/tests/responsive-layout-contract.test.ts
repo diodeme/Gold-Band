@@ -152,6 +152,10 @@ describe('responsive desktop layout contracts', () => {
     expect(workflowEditorSource).toContain("compactPane === 'canvas' ? canvasSurface : inspectorSurface");
     expect(workflowEditorSource).not.toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
     expect(workflowEditorSource).toContain('max-w-[calc(100%-1.5rem)] flex-wrap');
+    expect(workflowEditorSource).toContain('data-slot="worker-inspector"');
+    expect(workflowEditorSource).toContain('data-slot="worker-model-config"');
+    expect(workflowEditorSource).toContain('data-slot="worker-node-config"');
+    expect(workflowEditorSource).not.toContain('<Badge variant="outline">worker</Badge>');
   });
 
   it('fills the remaining workflow management viewport and keeps inspector scrolling internal', () => {

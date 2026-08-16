@@ -1,12 +1,16 @@
 use camino::Utf8PathBuf;
 use gold_band::app::{App, CreateTaskInput, ProfileCommandError, ProfileInput, is_run_continuable};
-use gold_band::config::{DesktopLanguage, RuntimeConfig};
+use gold_band::config::{DesktopLanguage, ProviderDiagnosticSnapshot, RuntimeConfig};
 use gold_band::domain::{RunStatus, SessionMode};
 use gold_band::dsl::{WorkflowDsl, WorkflowValidationError};
 use gold_band::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderRunResult,
     ProviderRunStatus, SessionRef, WorkerInvocation,
 };
+use gold_band::workflow_model_binding::{
+    WorkerModelBinding, WorkflowModelBindings, definition_revision,
+};
+use std::collections::BTreeMap;
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -64,6 +68,19 @@ impl ProviderAdapter for SuccessProvider {
             stream_path: None,
             runtime_error: None,
         })
+    }
+
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<gold_band::provider::AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
     }
 
     fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
@@ -165,6 +182,43 @@ fn workflow(app: &App, entry: &str) -> WorkflowDsl {
     workflow
 }
 
+fn configured_bindings(workflow: &WorkflowDsl) -> WorkflowModelBindings {
+    WorkflowModelBindings {
+        definition_revision: String::new(),
+        binding_revision: 1,
+        bindings: workflow
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+                    return None;
+                };
+                Some(WorkerModelBinding {
+                    execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                    agent_id: "claude-acp".to_string(),
+                    model_id: None,
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                })
+            })
+            .collect(),
+    }
+}
+
+fn with_available_claude_diagnostics(app: App) -> App {
+    app.with_provider_diagnostics_source(std::sync::Arc::new(|| {
+        Ok(BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-08-14T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )]))
+    }))
+}
+
 #[test]
 fn create_task_from_requirement_writes_authoring_files() {
     let temp = tempdir().unwrap();
@@ -189,6 +243,70 @@ fn create_task_from_requirement_writes_authoring_files() {
 }
 
 #[test]
+fn create_task_accepts_lightweight_authoring_workflow_with_model_bindings() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let template = app
+        .workflow_templates()
+        .unwrap()
+        .templates
+        .into_iter()
+        .find(|template| template.id == "default-lightweight")
+        .unwrap();
+    let bindings = WorkflowModelBindings {
+        definition_revision: template.model_bindings.definition_revision,
+        binding_revision: template.model_bindings.binding_revision + 1,
+        bindings: template
+            .workflow
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+                    return None;
+                };
+                Some(WorkerModelBinding {
+                    execution_slot_id: worker.execution_slot_id.clone().unwrap(),
+                    agent_id: "claude-acp".to_string(),
+                    model_id: Some("claude-sonnet-4-6".to_string()),
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                })
+            })
+            .collect(),
+    };
+
+    let summary = app
+        .create_task_from_requirement_with_bindings(
+            CreateTaskInput {
+                title: Some("Configured lightweight task".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "Implement the configured task".to_string(),
+                workflow: template.workflow.clone(),
+                workflow_template_id: Some(template.id),
+            },
+            template.workflow,
+            bindings,
+        )
+        .expect("configured authoring workflow should create a task");
+
+    let authoring = app.task_authoring_workflow(&summary.task.id).unwrap();
+    let grill = authoring
+        .workflow
+        .nodes
+        .iter()
+        .find(|node| node.id() == "grill")
+        .unwrap();
+    let gold_band::dsl::NodeDsl::Worker(grill) = grill else {
+        panic!("grill should be a worker node");
+    };
+    assert!(grill.provider.is_none());
+    assert!(grill.model.is_none());
+    assert_eq!(authoring.model_bindings.bindings.len(), 3);
+}
+
+#[test]
 fn default_workflow_template_includes_simplified_output_schema() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -200,8 +318,13 @@ fn default_workflow_template_includes_simplified_output_schema() {
         .iter()
         .find(|template| template.id == "default")
         .unwrap();
-    assert!(default.workflow.control.max_attempts.is_none());
-    assert!(default.workflow.control.max_rounds.is_none());
+    assert_eq!(default.workflow.control.max_attempts, Some(10));
+    assert_eq!(default.workflow.control.max_rounds, Some(3));
+    assert!(default.is_built_in);
+    assert_eq!(
+        default.optional_entry_stage.as_ref().unwrap().node_id,
+        "interview"
+    );
     let review = default
         .workflow
         .nodes
@@ -265,6 +388,137 @@ fn default_workflow_template_includes_simplified_output_schema() {
         panic!("plan should be a worker node");
     };
     assert_eq!(plan.goal.as_deref(), Some("分析导入的需求并产出实施方案。"));
+}
+
+#[test]
+fn built_in_workflow_templates_include_lightweight_topology_and_are_idempotent() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+
+    let first = app.workflow_templates().unwrap();
+    let second = app.workflow_templates().unwrap();
+    assert_eq!(
+        second
+            .templates
+            .iter()
+            .map(|template| template.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["default", "default-lightweight"]
+    );
+    assert_eq!(first.templates.len(), second.templates.len());
+
+    let lightweight = second
+        .templates
+        .iter()
+        .find(|template| template.id == "default-lightweight")
+        .unwrap();
+    assert!(lightweight.is_built_in);
+    assert_eq!(lightweight.workflow.control.max_attempts, Some(10));
+    assert_eq!(lightweight.workflow.control.max_rounds, Some(3));
+    assert_eq!(lightweight.workflow.entry, "grill");
+    assert_eq!(lightweight.workflow.nodes.len(), 3);
+    assert_eq!(lightweight.workflow.edges.len(), 4);
+    assert!(
+        lightweight
+            .workflow
+            .nodes
+            .iter()
+            .any(|node| node.id() == "dev-test")
+    );
+    assert!(lightweight.workflow.edges.iter().any(|edge| {
+        edge.from == "accept"
+            && edge.to == gold_band::dsl::NEW_ROUND_NODE
+            && edge.new_round_entry.as_deref() == Some("dev-test")
+    }));
+    assert_eq!(
+        lightweight.optional_entry_stage.as_ref().unwrap().node_id,
+        "grill"
+    );
+}
+
+#[test]
+fn optional_entry_preference_trims_only_built_in_optional_entry() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for (template_id, expected_entry, removed_node) in [
+        ("default", "plan", "interview"),
+        ("default-lightweight", "dev-test", "grill"),
+    ] {
+        let template = store
+            .templates
+            .iter()
+            .find(|item| item.id == template_id)
+            .unwrap();
+        let original = template.workflow.clone();
+        let mut effective = original.clone();
+        assert_eq!(
+            gold_band::app::apply_optional_entry_preference(template, Some(false), &mut effective)
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(effective.entry, expected_entry);
+        assert!(!effective.nodes.iter().any(|node| node.id() == removed_node));
+        assert_eq!(
+            serde_json::to_value(&template.workflow).unwrap(),
+            serde_json::to_value(&original).unwrap()
+        );
+    }
+
+    let mut custom = store.templates[0].clone();
+    custom.id = "custom".to_string();
+    custom.is_built_in = false;
+    custom.optional_entry_stage = None;
+    let original = custom.workflow.clone();
+    let mut effective = original.clone();
+    assert_eq!(
+        gold_band::app::apply_optional_entry_preference(&custom, Some(false), &mut effective)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        serde_json::to_value(&effective).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+}
+
+#[test]
+fn built_in_workflow_templates_are_read_only_by_metadata() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for template_id in ["default", "default-lightweight"] {
+        let workflow = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap()
+            .workflow
+            .clone();
+        let update_error = app
+            .update_workflow_template(template_id, workflow)
+            .unwrap_err();
+        assert_eq!(
+            update_error
+                .downcast_ref::<gold_band::app::WorkflowTemplateCommandError>()
+                .unwrap()
+                .code(),
+            "workflow-template.readonly-built-in"
+        );
+        let delete_error = app.delete_workflow_template(template_id).unwrap_err();
+        assert_eq!(
+            delete_error
+                .downcast_ref::<gold_band::app::WorkflowTemplateCommandError>()
+                .unwrap()
+                .code(),
+            "workflow-template.readonly-built-in"
+        );
+    }
 }
 
 #[test]
@@ -517,7 +771,10 @@ fn deleting_referenced_profile_requires_confirmation_for_templates_and_tasks() {
 fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(InterruptThenSuccessProvider::new()),
+    ));
     let created = app
         .create_profile(ProfileInput {
             name: "可恢复运行角色".to_string(),
@@ -538,14 +795,19 @@ fn deleting_referenced_profile_requires_confirmation_for_actionable_runs() {
     };
     plan.profile = Some(created.id.clone());
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Actionable run".to_string()),
-        description: None,
-        requirement_file_name: None,
-        requirement_content: "Task workflow uses resumable role".to_string(),
-        workflow: run_workflow,
-        workflow_template_id: None,
-    })
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Actionable run".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "Task workflow uses resumable role".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     let paused = app.run_start("task-001", None).unwrap();
@@ -592,8 +854,7 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
     })
     .unwrap();
 
-    let persisted_workflow: WorkflowDsl =
-        gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
+    let persisted_workflow = app.task_workflow("task-001").unwrap();
 
     let profiles = app.delete_profile(&created.id, true).unwrap();
     assert!(
@@ -616,7 +877,10 @@ fn force_deleting_referenced_profile_requires_workflow_reset_afterward() {
 fn force_deleting_referenced_profile_breaks_run_continue() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(InterruptThenSuccessProvider::new()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(InterruptThenSuccessProvider::new()),
+    ));
     let created = app
         .create_profile(ProfileInput {
             name: "继续运行删除角色".to_string(),
@@ -637,14 +901,19 @@ fn force_deleting_referenced_profile_breaks_run_continue() {
     };
     plan.profile = Some(created.id.clone());
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Force delete continue task".to_string()),
-        description: None,
-        requirement_file_name: None,
-        requirement_content: "Task workflow uses resumable profile".to_string(),
-        workflow: run_workflow,
-        workflow_template_id: None,
-    })
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Force delete continue task".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "Task workflow uses resumable profile".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     let paused = app.run_start("task-001", None).unwrap();
@@ -676,8 +945,9 @@ fn save_as_template_generates_new_workflow_id() {
 
     let original = workflow(&app, "plan");
     let original_id = original.id.clone();
+    let bindings = configured_bindings(&original);
     let store = app
-        .save_workflow_template("Copied workflow".to_string(), original)
+        .save_workflow_template_with_bindings("Copied workflow".to_string(), original, bindings)
         .unwrap();
     let saved = store
         .templates
@@ -687,6 +957,94 @@ fn save_as_template_generates_new_workflow_id() {
 
     assert_ne!(saved.workflow.id, original_id);
     assert!(!saved.workflow.id.trim().is_empty());
+    assert_eq!(
+        saved.model_bindings.definition_revision,
+        definition_revision(&saved.workflow)
+    );
+
+    let reloaded = app.workflow_templates().unwrap();
+    let reloaded = reloaded
+        .templates
+        .iter()
+        .find(|template| template.id == saved.id)
+        .unwrap();
+    assert_eq!(reloaded.workflow.id, saved.workflow.id);
+    assert_eq!(reloaded.model_bindings, saved.model_bindings);
+}
+
+#[test]
+fn task_workflow_revisions_advance_once_per_binding_change() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let initial_workflow = workflow(&app, "plan");
+    let initial_bindings = configured_bindings(&initial_workflow);
+
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Revision task".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "Verify authoring revisions".to_string(),
+            workflow: initial_workflow.clone(),
+            workflow_template_id: None,
+        },
+        initial_workflow,
+        initial_bindings,
+    )
+    .unwrap();
+
+    let created = app.task_authoring_workflow("task-001").unwrap();
+    assert_eq!(created.model_bindings.binding_revision, 1);
+
+    app.save_task_workflow_with_bindings(
+        "task-001",
+        created.workflow.clone(),
+        created.model_bindings.clone(),
+    )
+    .unwrap();
+    let repeated = app.task_authoring_workflow("task-001").unwrap();
+    assert_eq!(repeated.model_bindings.binding_revision, 1);
+
+    let mut changed_bindings = repeated.model_bindings.clone();
+    changed_bindings.bindings[0].agent_id = "codex-acp".to_string();
+    app.save_task_workflow_with_bindings("task-001", repeated.workflow.clone(), changed_bindings)
+        .unwrap();
+    let binding_changed = app.task_authoring_workflow("task-001").unwrap();
+    assert_eq!(binding_changed.model_bindings.binding_revision, 2);
+
+    app.save_task_workflow_with_bindings(
+        "task-001",
+        binding_changed.workflow.clone(),
+        binding_changed.model_bindings.clone(),
+    )
+    .unwrap();
+    let binding_repeated = app.task_authoring_workflow("task-001").unwrap();
+    assert_eq!(binding_repeated.model_bindings.binding_revision, 2);
+
+    let previous_definition_revision = binding_repeated.model_bindings.definition_revision.clone();
+    let mut definition_changed = binding_repeated.workflow.clone();
+    let worker = definition_changed
+        .nodes
+        .iter_mut()
+        .find_map(|node| match node {
+            gold_band::dsl::NodeDsl::Worker(worker) => Some(worker),
+            gold_band::dsl::NodeDsl::AiDynamic(_) => None,
+        })
+        .unwrap();
+    worker.goal = Some("Changed definition only".to_string());
+    app.save_task_workflow_with_bindings(
+        "task-001",
+        definition_changed,
+        binding_repeated.model_bindings,
+    )
+    .unwrap();
+    let definition_changed = app.task_authoring_workflow("task-001").unwrap();
+    assert_eq!(definition_changed.model_bindings.binding_revision, 2);
+    assert_ne!(
+        definition_changed.model_bindings.definition_revision,
+        previous_definition_revision
+    );
 }
 
 #[test]
@@ -848,16 +1206,23 @@ fn creating_task_with_template_duplicate_workflow_id_fails() {
 fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root, Box::new(SuccessProvider));
+    let app =
+        with_available_claude_diagnostics(App::with_provider(repo_root, Box::new(SuccessProvider)));
 
-    app.create_task_from_requirement(CreateTaskInput {
-        title: Some("Snapshot task".to_string()),
-        description: None,
-        requirement_file_name: Some("requirement.txt".to_string()),
-        requirement_content: "Keep snapshot stable".to_string(),
-        workflow: workflow(&app, "plan"),
-        workflow_template_id: None,
-    })
+    let run_workflow = workflow(&app, "plan");
+    let bindings = configured_bindings(&run_workflow);
+    app.create_task_from_requirement_with_bindings(
+        CreateTaskInput {
+            title: Some("Snapshot task".to_string()),
+            description: None,
+            requirement_file_name: Some("requirement.txt".to_string()),
+            requirement_content: "Keep snapshot stable".to_string(),
+            workflow: run_workflow.clone(),
+            workflow_template_id: None,
+        },
+        run_workflow,
+        bindings,
+    )
     .unwrap();
 
     app.run_start("task-001", None).unwrap();
@@ -867,8 +1232,7 @@ fn editing_authoring_workflow_does_not_mutate_run_snapshot() {
     let snapshot: WorkflowDsl =
         gold_band::storage::read_json(&app.paths.workflow_snapshot_file("task-001", "run-001"))
             .unwrap();
-    let authoring: WorkflowDsl =
-        gold_band::storage::read_json(&app.paths.workflow_file("task-001")).unwrap();
+    let authoring = app.task_workflow("task-001").unwrap();
     assert_eq!(snapshot.entry, "plan");
     assert_eq!(authoring.entry, "dev");
 }

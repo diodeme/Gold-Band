@@ -1,7 +1,12 @@
 "use client"
 
 import { Textarea } from "@/components/ui/textarea"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
@@ -325,27 +330,25 @@ export type PromptInputActionProps = {
 function PromptInputAction({
   tooltip,
   children,
-  className: _className,
-  side: _side = "top",
-  ..._props
+  className,
+  side = "top",
+  ...props
 }: PromptInputActionProps) {
-  const title = promptInputActionTitle(tooltip)
-
   return (
-    <span
-      data-slot="prompt-input-action"
-      className="inline-flex"
-      title={title}
-      onClick={(event) => event.stopPropagation()}
-    >
-      {children}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-slot="prompt-input-action"
+          className={cn("inline-flex", className)}
+          onClick={(event) => event.stopPropagation()}
+          {...props}
+        >
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side={side}>{tooltip}</TooltipContent>
+    </Tooltip>
   )
-}
-
-function promptInputActionTitle(node: React.ReactNode) {
-  if (typeof node === "string" || typeof node === "number") return String(node)
-  return undefined
 }
 
 export {
@@ -353,5 +356,4 @@ export {
   PromptInputTextarea,
   PromptInputActions,
   PromptInputAction,
-  promptInputActionTitle,
 }

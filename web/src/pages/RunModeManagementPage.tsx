@@ -1388,15 +1388,18 @@ function MultiToggle({ items, selected, onChange, emptyLabel }: { items: Array<{
         {selectableItems.map((item, index) => {
           const active = selectedSet.has(item.id);
           return (
-            <button
-              key={`${item.id}-${index}`}
-              type="button"
-              className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
-              onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
-              title={item.id}
-            >
-              <span className="block max-w-52 truncate">{item.label}</span>
-            </button>
+            <Tooltip key={`${item.id}-${index}`}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
+                  onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
+                >
+                  <span className="block max-w-52 truncate">{item.label}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[360px] break-all">{item.id}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>

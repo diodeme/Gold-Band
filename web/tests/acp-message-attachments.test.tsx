@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ACPMessageList } from '@/components/acp/ACPChatDialog';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AcpUiEventVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,11 +47,13 @@ describe('ACP message attachment layout', () => {
     try {
       await act(async () => {
         root.render(
-          <ACPMessageList
-            timeline={[message]}
-            sessionStatus="completed"
-            sending={false}
-          />,
+          <TooltipProvider>
+            <ACPMessageList
+              timeline={[message]}
+              sessionStatus="completed"
+              sending={false}
+            />
+          </TooltipProvider>,
         );
       });
 

@@ -680,12 +680,16 @@ function TaskRow({
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
           <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            <img
-              src={agentIconSrc(task.agentIdentity.iconKey)}
-              alt=""
-              title={task.agentIdentity.displayName}
-              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <img
+                  src={agentIconSrc(task.agentIdentity.iconKey)}
+                  alt=""
+                  className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
+                />
+              </TooltipTrigger>
+              <TooltipContent>{task.agentIdentity.displayName}</TooltipContent>
+            </Tooltip>
           </span>
         ) : (
           <span className={cn('size-1.5 rounded-full', latestColor)} />

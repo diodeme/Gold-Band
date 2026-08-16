@@ -5,6 +5,7 @@ import type { ConversationSearchResultVm } from '../../types';
 import { searchConversationTasks } from '../../api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { conversationSearchHighlightSegments } from '@/lib/conversation-search';
 
@@ -123,20 +124,29 @@ export function ConversationSearchDialog({ open, onOpenChange, onSelectResult }:
                   }}
                 >
                   {result.runMode === 'direct' && result.agentIdentity ? (
-                    <img
-                      src={agentIconSrc(result.agentIdentity.iconKey)}
-                      alt=""
-                      title={result.agentIdentity.displayName}
-                      className={agentIconClass(result.agentIdentity.iconKey, 'size-4 shrink-0')}
-                    />
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <img
+                          src={agentIconSrc(result.agentIdentity.iconKey)}
+                          alt=""
+                          className={agentIconClass(result.agentIdentity.iconKey, 'size-4 shrink-0')}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent>{result.agentIdentity.displayName}</TooltipContent>
+                    </Tooltip>
                   ) : (
                     <span className={`size-2 shrink-0 rounded-full ${statusColor(result.latestRun?.outcome)}`} />
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{result.title}</div>
-                    <div className="truncate text-xs text-muted-foreground" title={result.matchPreview}>
-                      <SearchMatchPreview text={result.matchPreview} query={query} />
-                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="truncate text-xs text-muted-foreground">
+                          <SearchMatchPreview text={result.matchPreview} query={query} />
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[360px] whitespace-pre-wrap break-words">{result.matchPreview}</TooltipContent>
+                    </Tooltip>
                   </div>
                   {result.workspaceName ? (
                     <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-micro text-muted-foreground">

@@ -1,9 +1,14 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { createElement } from 'react';
+import { createElement, type ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { APP_TITLE_BAR_LAYOUT, AppTitleBar } from '../src/components/AppTitleBar';
+import { APP_TITLE_BAR_LAYOUT, AppTitleBar as AppTitleBarComponent } from '../src/components/AppTitleBar';
+import { TooltipProvider } from '../src/components/ui/tooltip';
+
+function AppTitleBar(props: ComponentProps<typeof AppTitleBarComponent>) {
+  return createElement(TooltipProvider, null, createElement(AppTitleBarComponent, props));
+}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({

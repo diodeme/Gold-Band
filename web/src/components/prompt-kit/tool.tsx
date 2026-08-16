@@ -128,13 +128,16 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
           <Button
             variant="ghost"
             className={cn(
-              "h-auto w-full min-w-0 justify-between overflow-hidden font-normal hover:bg-muted/20",
+              "grid h-auto w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden font-normal hover:bg-muted/20",
               audit
                 ? "min-h-8 rounded-md px-1.5 py-1"
                 : "min-h-9 rounded-lg px-2 py-1.5",
             )}
           >
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div
+              data-tool-primary="true"
+              className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden"
+            >
               <span
                 className={cn(
                   "flex shrink-0 items-center justify-center text-muted-foreground",
@@ -143,18 +146,25 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
               >
                 {getStateIcon()}
               </span>
-              <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
-                <span className={cn("shrink-0 font-medium text-foreground", audit ? "text-xs" : "text-sm")}>
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-left">
+                <span
+                  data-tool-name="true"
+                  className={cn(
+                    "min-w-0 truncate font-medium text-foreground",
+                    summary ? "shrink" : "flex-1",
+                    audit ? "text-xs" : "text-sm",
+                  )}
+                >
                   {toolPart.type}
                 </span>
                 {summary ? (
-                  <span data-tool-summary="true" className="min-w-0 truncate rounded-md bg-muted/55 px-1.5 py-0.5 font-mono text-ui-caption text-muted-foreground">
+                  <span data-tool-summary="true" className="min-w-0 flex-1 truncate rounded-md bg-muted/55 px-1.5 py-0.5 font-mono text-ui-caption text-muted-foreground">
                     {summary}
                   </span>
                 ) : null}
               </span>
             </div>
-            <span className={cn("ml-3 flex shrink-0 items-center", audit ? "gap-2" : "gap-3")}>
+            <span data-tool-actions="true" className={cn("ml-3 flex shrink-0 items-center", audit ? "gap-2" : "gap-3")}>
               {getStateBadge()}
               <ChevronDown className={cn(audit ? "size-3.5" : "size-4", "shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-180")} />
             </span>

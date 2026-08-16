@@ -1,7 +1,9 @@
 import { X, Image as ImageIcon, FileText, Eye } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { isImageMime } from '@/lib/attachments';
 import { cn } from '@/lib/utils';
 import type { AttachmentItem } from '@/lib/attachment-service';
@@ -15,6 +17,7 @@ export interface AttachmentChipProps {
 }
 
 export function AttachmentChip({ item, compact = false, onRemove, onPreview }: AttachmentChipProps) {
+  const { t } = useTranslation();
   const isImage = isImageMime(item.mime);
   const showPreviewUrl = isImage && item.previewUrl;
 
@@ -25,7 +28,6 @@ export function AttachmentChip({ item, compact = false, onRemove, onPreview }: A
         compact ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-xs',
       )}
       onClick={onPreview}
-      title={item.name}
     >
       {showPreviewUrl ? (
         <img
@@ -43,29 +45,39 @@ export function AttachmentChip({ item, compact = false, onRemove, onPreview }: A
           {isImage ? <ImageIcon className="size-3.5" /> : <FileText className={compact ? 'size-3' : 'size-4'} />}
         </span>
       )}
-      <span className={cn('min-w-0 truncate font-medium', compact ? 'max-w-[100px]' : 'max-w-[140px]')}>
-        {item.name}
-      </span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className={cn('min-w-0 truncate font-medium', compact ? 'max-w-[100px]' : 'max-w-[140px]')}>
+            {item.name}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[360px] break-all">{item.name}</TooltipContent>
+      </Tooltip>
       {!compact && (
         <Badge variant="secondary" className="shrink-0 rounded-full px-1.5 py-0 text-ui-micro font-normal">
           {formatSize(item.size)}
         </Badge>
       )}
-      <Button
-        variant="ghost"
-        size="icon"
-        className={cn(
-          'shrink-0 rounded-full opacity-0 transition-opacity group-hover:opacity-100',
-          compact ? 'size-4' : 'size-5',
-        )}
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        title="Remove"
-      >
-        <X className={compact ? 'size-2.5' : 'size-3'} />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(
+              'shrink-0 rounded-full opacity-0 transition-opacity group-hover:opacity-100',
+              compact ? 'size-4' : 'size-5',
+            )}
+            aria-label={t('common.remove')}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+          >
+            <X className={compact ? 'size-2.5' : 'size-3'} />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('common.remove')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -200,7 +200,10 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     <main className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-auto px-6 py-8">
       <header className="mb-6 flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          <Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={onBack} aria-label={t('scheduled.detail.back')} title={t('scheduled.detail.back')}><ArrowLeft className="size-4" /></Button>
+          <Tooltip>
+            <TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={onBack} aria-label={t('scheduled.detail.back')}><ArrowLeft className="size-4" /></Button></TooltipTrigger>
+            <TooltipContent>{t('scheduled.detail.back')}</TooltipContent>
+          </Tooltip>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold tracking-tight">{task.title || t('scheduled.unnamed')}</h1>
             <p className="mt-0.5 truncate text-sm text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}</p>

@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   Dialog,
   DialogContent,
@@ -87,14 +88,24 @@ export function SourceControlSyncActions({ snapshot, busyActionKind, locked, onO
   const syncLabel = t(`sourceControl.${syncAction}`);
   return (
     <>
-      <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || !canSync} aria-label={syncLabel} title={syncLabel} onClick={() => openAction(syncAction)}>
-        {busyActionKind === syncAction ? <LoaderCircle className="size-3 animate-spin" /> : null}
-        {behind > 0 ? <span className="tabular-nums" aria-hidden="true">↓{behind}</span> : null}
-        {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑</span>}
-      </Button>
-      <Button type="button" size="icon-xs" variant="ghost" disabled={busy || !defaultRemote} aria-label={t('sourceControl.fetch')} title={t('sourceControl.fetch')} onClick={() => openAction('fetch')}>
-        {busyActionKind === 'fetch' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" size="xs" variant="ghost" className="gap-1 px-1 text-muted-foreground" disabled={busy || locked || !canSync} aria-label={syncLabel} onClick={() => openAction(syncAction)}>
+            {busyActionKind === syncAction ? <LoaderCircle className="size-3 animate-spin" /> : null}
+            {behind > 0 ? <span className="tabular-nums" aria-hidden="true">↓{behind}</span> : null}
+            {snapshot.repository.upstream ? <span className="tabular-nums" aria-hidden="true">↑{ahead}</span> : <span aria-hidden="true">↑</span>}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{syncLabel}</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button type="button" size="icon-xs" variant="ghost" disabled={busy || !defaultRemote} aria-label={t('sourceControl.fetch')} onClick={() => openAction('fetch')}>
+            {busyActionKind === 'fetch' ? <LoaderCircle className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('sourceControl.fetch')}</TooltipContent>
+      </Tooltip>
       <ChangesActionDialog action={action} message="" flag={flag} remote={remote} pullStrategy={pullStrategy} remotes={remoteNames} onMessage={() => undefined} onFlag={setFlag} onRemote={selectRemote} onPullStrategy={setPullStrategy} onClose={() => setAction(null)} onSubmit={submit} valid={valid} />
     </>
   );

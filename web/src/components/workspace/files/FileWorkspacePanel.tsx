@@ -3,6 +3,7 @@ import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Ma
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
@@ -121,7 +122,10 @@ function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{resource.title}</p>
-          <p className="truncate text-ui-micro text-muted-foreground" title={path}>{path}</p>
+          <Tooltip>
+            <TooltipTrigger asChild><p className="truncate text-ui-micro text-muted-foreground">{path}</p></TooltipTrigger>
+            <TooltipContent className="max-w-[420px] break-all">{path}</TooltipContent>
+          </Tooltip>
         </div>
         {svgSource ? (
           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void (async () => {

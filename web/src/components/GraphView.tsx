@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next';
 import {
   Background,
   BaseEdge,
-  Controls,
   EdgeLabelRenderer,
   Handle,
   MarkerType,
@@ -15,6 +14,7 @@ import {
   type EdgeProps,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
   type Viewport,
 } from '@xyflow/react';
 import type { GraphNodeVm, GraphVm } from '../types';
@@ -40,6 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { EmptyState } from '@/components/PageScaffold';
 import { cn } from '@/lib/utils';
 import { statusBadgeClass } from '@/lib/status';
+import { GraphControls } from '@/components/GraphControls';
 
 /** Runtime graph nodes use a slightly taller card for status badges. */
 const RUNTIME_NODE_HEIGHT = 138;
@@ -104,6 +105,7 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
   const contextMenuTimerRef = useRef<number | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<WorkflowNodeData>, Edge> | null>(null);
   const fitViewOptions = useMemo(() => ({ padding: variant === 'workflow' ? 0.2 : 0.22, maxZoom: variant === 'workflow' ? WORKFLOW_FIT_MAX_ZOOM : ACTUAL_FIT_MAX_ZOOM }), [variant]);
   const viewportHorizontalAnchor = variant === 'actual' ? 0.40 : 0.5;
   const viewportVerticalAnchor = variant === 'actual' ? 0.32 : 0.5;
@@ -203,10 +205,16 @@ export function GraphView({ graph, selectedNodeId, activeNodeId, onNodeSelect, o
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeContextMenu={handleNodeContextMenu}
+        onInit={setFlowInstance}
         className="workflow-graph"
       >
         <Background color="var(--border)" gap={28} size={1} />
-        <Controls showInteractive={false} fitViewOptions={fitViewOptions} position="bottom-right" />
+        <GraphControls
+          disabled={!flowInstance}
+          onZoomIn={() => { void flowInstance?.zoomIn(); }}
+          onZoomOut={() => { void flowInstance?.zoomOut(); }}
+          onFitView={() => { if (centeredViewport) setViewport(centeredViewport); }}
+        />
       </ReactFlow>
       <div className="pointer-events-none absolute left-4 top-4 rounded-full border bg-card/85 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-sm backdrop-blur">
         {mode === 'interactive' ? t('graph.executionGraph') : t('graph.workflowBlueprint')}

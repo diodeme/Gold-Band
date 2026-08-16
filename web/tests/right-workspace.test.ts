@@ -105,19 +105,23 @@ describe('right workspace resource model', () => {
     expect(state).toMatchObject({ tabs: [], activeTabKey: null });
   });
 
-  it('stores open intent and width at the conversation shell boundary', () => {
+  it('stores open intent per scope while sharing the width preference', () => {
     const store = new ConversationWorkspaceStore();
-    expect(store.peekShellState()).toMatchObject({ requestedOpen: false, openRevision: 0 });
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: false, openRevision: 0 });
 
-    store.openWorkspace({ explicit: true });
-    expect(store.peekShellState()).toMatchObject({ requestedOpen: true, openRevision: 1 });
+    store.openWorkspace(draft, { explicit: true });
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: true, openRevision: 1 });
+    expect(store.peekShellState(conversation)).toMatchObject({ requestedOpen: false, openRevision: 0 });
     expect(store.hydrateWidth(720)).toBe(false);
     expect(store.setWidth(760)).toBe(true);
     expect(store.hydrateWidth(800)).toBe(false);
-    expect(store.peekShellState()).toMatchObject({ requestedOpen: true, width: 760 });
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: true, width: 760 });
+    expect(store.peekShellState(conversation)).toMatchObject({ requestedOpen: false, width: 760 });
 
-    store.closeWorkspace();
-    expect(store.peekShellState()).toMatchObject({ requestedOpen: false, width: 760 });
+    store.closeWorkspace(draft);
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: false, width: 760 });
   });
 
   it('normalizes project files into one locator-only file browser tab', () => {
@@ -175,7 +179,7 @@ describe('right workspace resource model', () => {
     expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222::src/main.rs');
   });
 
-  it('isolates resource state by conversation scope while sharing shell presentation intent', () => {
+  it('isolates resource and open state by conversation scope', () => {
     const store = new ConversationWorkspaceStore();
     const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
     const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
@@ -185,11 +189,16 @@ describe('right workspace resource model', () => {
       tabs: [{ ...agent('agent-b'), scopeKey: second.key }],
       activeTabKey: agent('agent-b').key,
     });
-    store.openWorkspace({ explicit: true });
+    store.openWorkspace(second, { explicit: true });
 
     expect(store.restore(first)).toMatchObject({ tabs: [] });
     expect(store.restore(second)).toMatchObject({ activeTabKey: agent('agent-b').key });
-    expect(store.peekShellState().requestedOpen).toBe(true);
+    expect(store.peekShellState(first).requestedOpen).toBe(false);
+    expect(store.peekShellState(second).requestedOpen).toBe(true);
+
+    store.closeWorkspace(second);
+    expect(store.peekShellState(first).requestedOpen).toBe(false);
+    expect(store.peekShellState(second).requestedOpen).toBe(false);
   });
 
   it('evicts the least recently used conversation workspace after 24 stateful scopes', () => {
@@ -208,20 +217,81 @@ describe('right workspace resource model', () => {
     expect(store.restore(scopes[1])).toEqual(createInitialRightWorkspaceState());
   });
 
-  it('discards draft resources when a conversation is created without migrating shell intent', () => {
+  it('promotes draft tabs and their content locators when a conversation is created', () => {
     const store = new ConversationWorkspaceStore();
     const draft = createDraftConversationWorkspaceScope('project-1');
     const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const attachment = {
+      id: 'attachment-1',
+      name: 'preview.png',
+      size: 128,
+      mime: 'image/png',
+      previewUrl: 'blob:preview',
+      source: 'paste' as const,
+    };
+    const draftAttachment: RightWorkspaceResource = {
+      kind: 'draft-attachment',
+      key: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
+      scopeKey: draft.key,
+      projectId: draft.projectId,
+      title: attachment.name,
+      attention: false,
+      attachment,
+    };
     store.save(draft, {
       ...createInitialRightWorkspaceState(),
-      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }],
-      activeTabKey: agent('draft-agent').key,
+      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }, draftAttachment],
+      activeTabKey: draftAttachment.key,
     });
-    store.openWorkspace({ explicit: true });
+    store.openWorkspace(draft, { explicit: true });
     store.promoteDraft(draft, conversation);
 
     expect(store.has(draft)).toBe(false);
-    expect(store.restore(conversation)).toMatchObject({ tabs: [], activeTabKey: null });
-    expect(store.peekShellState().requestedOpen).toBe(true);
+    expect(store.restore(conversation)).toMatchObject({
+      tabs: [
+        { key: agent('draft-agent').key, scopeKey: conversation.key },
+        {
+          key: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+          scopeKey: conversation.key,
+          attachment,
+        },
+      ],
+      activeTabKey: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+    });
+    expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+  });
+
+  it('keeps draft promotion isolated to the same project and idempotent after success', () => {
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const siblingConversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
+    const otherProjectConversation = createConversationWorkspaceScope({ projectId: 'project-2', taskId: 'task-1', runId: 'run-1' });
+    store.save(draft, {
+      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }],
+      activeTabKey: agent('draft-agent').key,
+    });
+    store.save(siblingConversation, {
+      tabs: [{ ...agent('sibling-agent'), scopeKey: siblingConversation.key }],
+      activeTabKey: agent('sibling-agent').key,
+    });
+    store.openWorkspace(draft, { explicit: true });
+
+    store.promoteDraft(draft, otherProjectConversation);
+    expect(store.has(draft)).toBe(true);
+    expect(store.has(otherProjectConversation)).toBe(false);
+
+    store.promoteDraft(draft, conversation);
+    store.promoteDraft(draft, conversation);
+    expect(store.restore(conversation)).toMatchObject({
+      tabs: [{ key: agent('draft-agent').key, scopeKey: conversation.key }],
+      activeTabKey: agent('draft-agent').key,
+    });
+    expect(store.restore(siblingConversation)).toMatchObject({
+      tabs: [{ key: agent('sibling-agent').key, scopeKey: siblingConversation.key }],
+      activeTabKey: agent('sibling-agent').key,
+    });
+    expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+    expect(store.peekShellState(siblingConversation).requestedOpen).toBe(false);
   });
 });

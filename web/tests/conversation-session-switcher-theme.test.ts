@@ -11,8 +11,9 @@ const switcherSource = readFileSync(
 describe('conversation session switcher theme surface', () => {
   it('delegates transparency and blur to the theme popover recipe', () => {
     expect(switcherSource).toContain('data-theme-role="popover"');
-    expect(switcherSource).toContain('bg-popover');
-    expect(switcherSource).toContain('text-popover-foreground');
-    expect(switcherSource).not.toContain('bg-card/60');
+    expect(switcherSource).toContain('className="w-64 p-2"');
+    expect(switcherSource).not.toContain('bg-popover');
+    expect(switcherSource).not.toContain('border-border/60 bg-popover');
+    expect(switcherSource).not.toContain('shadow-sm');
   });
 });

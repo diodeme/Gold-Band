@@ -287,6 +287,7 @@ function validateRecipeInvariants(themePackage) {
       const override = recipe.states?.[state];
       if (override?.background && !override.foreground) throw themeError('theme.recipe-state-invalid', `${themePackage.id}: ${role}.${state} changes background without foreground`);
       if (override?.press && state !== 'active') throw themeError('theme.recipe-state-invalid', `${themePackage.id}: press is only valid for active state`);
+      if (override?.press && recipe.motion !== 'press') throw themeError('theme.recipe-state-invalid', `${themePackage.id}: ${role}.${state} requires press motion`);
     }
   }
 }
@@ -374,6 +375,11 @@ function resolveFontStack(themePackage, stackId, locale) {
 function compileRecipeCss(selector, role, recipe) {
   const base = recipeDeclarations(recipe);
   const blocks = [`${selector} [data-theme-role='${role}']{${base.join(';')}}`];
+  if (recipe.material !== 'flat') {
+    const backdrop = materialBackdropDeclaration();
+    blocks.push(`${selector} [data-theme-role='${role}']:not([data-theme-material-layer='isolated']){${backdrop}}`);
+    blocks.push(`${selector} [data-theme-role='${role}'][data-theme-material-layer='isolated']::before{position:absolute;inset:0;pointer-events:none;content:"";border-radius:inherit;${backdrop}}`);
+  }
   for (const [state, override] of Object.entries(recipe.states ?? {})) {
     const pseudo = state === 'selected' ? `[data-selected='true']` : state === 'focus' ? ':focus-visible' : state === 'disabled' ? ':disabled' : `:${state}`;
     blocks.push(`${selector} [data-theme-role='${role}']${pseudo}{${stateDeclarations(override).join(';')}}`);
@@ -391,10 +397,21 @@ function recipeDeclarations(recipe) {
     `background-color:var(--gb-recipe-background)`, `color:var(--gb-recipe-foreground)`, `border-color:var(--gb-recipe-border)`,
     `box-shadow:${elevationVariable(recipe.elevation)}`,
   ];
-  if (recipe.material !== 'flat') declarations.push('backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate)) brightness(var(--gb-material-backdrop-brightness)) contrast(var(--gb-material-backdrop-contrast))');
   if (recipe.material === 'elevated') declarations.push('background-image:var(--gb-material-surface-overlay)');
-  if (recipe.motion !== 'none') declarations.push(`transition-property:${recipe.motion === 'color' ? 'color,background-color,border-color' : 'color,background-color,border-color,box-shadow,transform'}`, 'transition-duration:var(--gb-motion-fast)', 'transition-timing-function:var(--gb-easing-standard)');
+  const transitionProperties = motionTransitionProperties(recipe.motion);
+  if (transitionProperties) declarations.push(`transition-property:${transitionProperties}`, 'transition-duration:var(--gb-motion-fast)', 'transition-timing-function:var(--gb-easing-standard)');
   return declarations;
+}
+
+function materialBackdropDeclaration() {
+  return 'backdrop-filter:blur(var(--gb-material-blur)) saturate(var(--gb-material-saturate)) brightness(var(--gb-material-backdrop-brightness)) contrast(var(--gb-material-backdrop-contrast))';
+}
+
+function motionTransitionProperties(motion) {
+  if (motion === 'none') return '';
+  if (motion === 'color') return 'color,background-color,border-color';
+  if (motion === 'surface') return 'color,background-color,border-color,box-shadow';
+  return 'color,background-color,border-color,box-shadow,transform';
 }
 
 function stateDeclarations(state) {

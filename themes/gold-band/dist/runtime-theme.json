@@ -458,13 +458,35 @@
       "material": "flat",
       "motion": "color"
     },
-    "activity": {
+    "message-disclosure": {
       "background": "activity",
       "foreground": "activity-foreground",
       "border": "transparent",
       "borderWidth": "none",
       "borderStyle": "solid",
       "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "runtime-control": {
+      "background": "activity",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "activity": {
+      "background": "transparent",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
       "elevation": "none",
       "material": "flat",
       "motion": "color"
@@ -481,14 +503,14 @@
       "motion": "color"
     },
     "permission-card": {
-      "background": "permission-card",
+      "background": "transparent",
       "foreground": "permission-card-foreground",
-      "border": "highlight",
-      "borderWidth": "default",
+      "border": "border",
+      "borderWidth": "hairline",
       "borderStyle": "solid",
       "radius": "surface",
-      "elevation": "surface",
-      "material": "subtle",
+      "elevation": "none",
+      "material": "flat",
       "motion": "surface"
     },
     "dialog": {
@@ -611,7 +633,7 @@
       "radius": "control",
       "elevation": "none",
       "material": "flat",
-      "motion": "color",
+      "motion": "press",
       "states": {
         "hover": {
           "background": "accent",

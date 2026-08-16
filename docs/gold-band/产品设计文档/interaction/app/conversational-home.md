@@ -192,7 +192,10 @@
 
 ## 性能与后台刷新
 
-- 会话主页与消息流分别消费 Theme Contract v2 的 `panel`、`composer`、`message-user`、`message-assistant`、`activity`、`tool-card` 和 `permission-card` role；Markdown 标题密度与 ACP 卡片结构仍由产品交互规则约束，主题不能改变 DOM、信息层级或业务状态。
+- 会话主页与消息流分别消费 Theme Contract v2 的 `panel`、`composer`、`message-user`、`message-assistant`、`message-disclosure`、`runtime-control`、`activity`、`tool-card` 和 `permission-card` role；Markdown 标题密度与 ACP 卡片结构仍由产品交互规则约束，主题不能改变 DOM、信息层级或业务状态。
+- 用户消息中的系统提示/运行上下文折叠块统一使用 `message-disclosure`，AI 输出判定与控制产物统一使用 `runtime-control`。两者的背景、前景、完整边框、圆角、材质和 elevation 由主题 recipe 声明；展开状态、内容分隔、joined artifact 操作、focus ring 与 invalid/destructive 变体仍由共享组件负责，组件不得读取 `themeId` 或写死正常态主题色。
+- 思考、工具审计批次和上下文压缩等非正文结构行消费 `activity`；两个内置主题的折叠 Activity 摘要统一呈现为无背景、无边框、无圆角的一行文本，只在 hover/focus 与展开内容中提供必要反馈。权限申请与 Elicitation 等等待用户介入的表面消费 `permission-card`，外层统一使用透明底、hairline 边界和零 elevation，状态强调限制在选项、按钮、错误或选中局部，不允许铺满整张决策卡；每轮文件变更摘要复用 shadcn `Card` 的 `card` role。会话树弹层与选择器分别复用 `popover`、`input`，不得在业务组件重新声明完整背景、perimeter、圆角或 elevation。
+- AI 正文后的复制操作属于消息级次要动作，使用 prompt-kit `MessageActions` 与 shadcn `Button` 的紧凑图标尺寸；不得以空白操作行拉大正文与下一条 Activity 之间的垂直间距，同时保留 Tooltip、键盘焦点和复制完成反馈。
 - 会话内容区标记稳定 `conversation` wallpaper surface。运行时只预加载当前可见槽，资源失败或 performance 档关闭壁纸时回退语义背景色；overlay 位于内容下方，不在每条消息重复创建合成层。
 - `ThemeAssetsContext` 只提供低频图标 descriptor，不保存二进制资源，也不承载流式消息状态；主题或明暗切换不得导致已完成 Markdown 重新解析。
 

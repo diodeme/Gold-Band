@@ -44,6 +44,14 @@ fn rust_catalog_contains_only_the_supported_builtin_packages() {
     );
     assert_ne!(tech_neutral.recipes, gold_band.recipes);
     assert_ne!(
+        tech_neutral.recipes.message_disclosure,
+        gold_band.recipes.message_disclosure
+    );
+    assert_ne!(
+        tech_neutral.recipes.runtime_control,
+        gold_band.recipes.runtime_control
+    );
+    assert_ne!(
         tech_neutral.schemes.light.semantic.primary,
         gold_band.schemes.light.semantic.primary
     );

@@ -107,7 +107,8 @@ const surfaceRecipeSchema = z.object({
 const componentRecipesSchema = z.object({
   shell: surfaceRecipeSchema, titlebar: surfaceRecipeSchema, sidebar: surfaceRecipeSchema, 'navigation-item': surfaceRecipeSchema,
   panel: surfaceRecipeSchema, card: surfaceRecipeSchema, composer: surfaceRecipeSchema, 'message-user': surfaceRecipeSchema,
-  'message-assistant': surfaceRecipeSchema, activity: surfaceRecipeSchema, 'tool-card': surfaceRecipeSchema,
+  'message-assistant': surfaceRecipeSchema, 'message-disclosure': surfaceRecipeSchema, 'runtime-control': surfaceRecipeSchema,
+  activity: surfaceRecipeSchema, 'tool-card': surfaceRecipeSchema,
   'permission-card': surfaceRecipeSchema, dialog: surfaceRecipeSchema, sheet: surfaceRecipeSchema, popover: surfaceRecipeSchema,
   input: surfaceRecipeSchema, 'button-primary': surfaceRecipeSchema, 'button-secondary': surfaceRecipeSchema,
   'button-ghost': surfaceRecipeSchema, editor: surfaceRecipeSchema, diff: surfaceRecipeSchema, 'workspace-tab': surfaceRecipeSchema,

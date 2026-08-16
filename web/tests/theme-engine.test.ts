@@ -108,6 +108,37 @@ describe('theme package contract', () => {
     expect(flatNeutralComposer).toContain('box-shadow:var(--gb-elevation-overlay)');
   });
 
+  it('lets each package design message disclosures and runtime control surfaces', () => {
+    const goldBand = getThemePackage('builtin.gold-band');
+    const techNeutral = getThemePackage('builtin.tech-neutral');
+
+    expect(goldBand.recipes['message-disclosure']).toMatchObject({
+      background: 'activity', borderWidth: 'none', radius: 'control',
+    });
+    expect(techNeutral.recipes['message-disclosure']).toMatchObject({
+      background: 'transparent', borderWidth: 'hairline', radius: 'control',
+    });
+    expect(goldBand.recipes['runtime-control']).toMatchObject({
+      background: 'activity', borderWidth: 'none', radius: 'surface',
+    });
+    expect(techNeutral.recipes['runtime-control']).toMatchObject({
+      background: 'tool-card', borderWidth: 'hairline', radius: 'control',
+    });
+    for (const theme of [goldBand, techNeutral]) {
+      expect(theme.recipes.activity).toMatchObject({
+        background: 'transparent', borderWidth: 'none', radius: 'none', elevation: 'none',
+      });
+      expect(theme.recipes['permission-card']).toMatchObject({
+        background: 'transparent', border: 'border', borderWidth: 'hairline', elevation: 'none',
+      });
+    }
+
+    expect(generatedRoleRule('builtin.gold-band', 'message-disclosure'))
+      .toContain('background-color:var(--gb-recipe-background)');
+    expect(generatedRoleRule('builtin.tech-neutral', 'runtime-control'))
+      .toContain('border-color:var(--gb-recipe-border)');
+  });
+
   it('provides opaque solid surfaces for every supported theme', () => {
     for (const theme of builtinThemes) {
       expect(theme.schemes.light.semantic.popover).toMatch(/^#[\da-f]{6}$/iu);

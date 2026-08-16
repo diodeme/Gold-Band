@@ -22,7 +22,8 @@ export const THEME_WALLPAPER_SLOTS = ['app', 'conversation', 'workspace', 'setti
 export const THEME_VISUAL_STATES = ['hover', 'active', 'selected', 'focus', 'disabled'];
 export const RECIPE_ROLE_NAMES = [
   'shell', 'titlebar', 'sidebar', 'navigation-item', 'panel', 'card', 'composer',
-  'message-user', 'message-assistant', 'activity', 'tool-card', 'permission-card',
+  'message-user', 'message-assistant', 'message-disclosure', 'runtime-control',
+  'activity', 'tool-card', 'permission-card',
   'dialog', 'sheet', 'popover', 'input', 'button-primary', 'button-secondary',
   'button-ghost', 'editor', 'diff', 'workspace-tab', 'workflow-node', 'workflow-edge',
   'scrollbar',

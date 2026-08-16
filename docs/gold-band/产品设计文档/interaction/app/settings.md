@@ -143,6 +143,8 @@
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
 - Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页不新增图标、壁纸或高级字体入口，只展示当前有效投影；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
+- Theme Contract v2 的 motion 分离装饰表面与位移动效：`color` 只过渡颜色，`surface` 可追加 elevation，只有可按压控件的 `press` 可以过渡 transform。Dropdown、Select、Popover、Dialog、Sheet 等定位型浮层由组件库拥有定位与开合 transform，主题只声明其颜色、材质、几何和阴影。
+- 当组件库浮层内部还拥有 fixed 子浮层时，定位节点与主题材质层必须隔离：定位、Portal、焦点与裁剪继续由组件库拥有，backdrop filter 仅作用于无交互视觉层，不能改变子浮层的 containing block。
 - 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
 - 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
 - 设置内容区标记稳定 `settings` wallpaper surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退设置页语义底色，不影响主题其余能力。

@@ -438,6 +438,10 @@ pub struct ComponentRecipes {
     pub message_user: SurfaceRecipe,
     #[serde(rename = "message-assistant")]
     pub message_assistant: SurfaceRecipe,
+    #[serde(rename = "message-disclosure")]
+    pub message_disclosure: SurfaceRecipe,
+    #[serde(rename = "runtime-control")]
+    pub runtime_control: SurfaceRecipe,
     pub activity: SurfaceRecipe,
     #[serde(rename = "tool-card")]
     pub tool_card: SurfaceRecipe,

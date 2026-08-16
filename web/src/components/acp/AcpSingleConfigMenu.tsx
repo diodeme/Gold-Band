@@ -9,6 +9,7 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   acpComposerConfigTriggerVariants,
+  useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
   DropdownMenu,
@@ -17,6 +18,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export const UNSPECIFIED_ACP_CONFIG_VALUE = '__gold_band_unspecified__';
 
@@ -59,14 +61,45 @@ export function AcpSingleConfigMenu({
 }: Props) {
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useAcpComposerConfigOverflowTooltip();
 
   return (
     <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
-      <DropdownMenuTrigger className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{selectedLabel}</span>
-        <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-      </DropdownMenuTrigger>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        <DropdownMenuTrigger
+          className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
+          onPointerEnter={showTooltipIfOverflowing}
+          onPointerLeave={hideTooltip}
+          onPointerDown={hideTooltip}
+          onFocus={showTooltipIfOverflowing}
+          onBlur={hideTooltip}
+        >
+          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
+          <TooltipTrigger asChild>
+            <span
+              ref={valueRef}
+              className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
+              data-acp-config-value="true"
+            >
+              {selectedLabel}
+            </span>
+          </TooltipTrigger>
+          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+        </DropdownMenuTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {selectedLabel}
+        </TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side={contentSide}
         sideOffset={8}

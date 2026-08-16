@@ -1,4 +1,5 @@
 import { cva } from 'class-variance-authority';
+import { useCallback, useRef, useState } from 'react';
 
 export const DEFAULT_ACP_COMPOSER_CONFIG_ALIGN = 'start' as const;
 export const ACP_COMPOSER_CONFIG_DROPDOWN_MODAL = false;
@@ -26,3 +27,29 @@ export const acpComposerConfigTriggerVariants = cva(
 export const ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS = 'shrink-0 text-muted-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS = 'min-w-0 flex-1 truncate text-left text-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS = 'size-3.5 shrink-0 text-muted-foreground';
+
+export function isAcpComposerConfigValueOverflowing(element: HTMLElement | null) {
+  return element !== null && element.scrollWidth > element.clientWidth + 1;
+}
+
+/** Keep overflow measurement local to the hovered/focused composer control. */
+export function useAcpComposerConfigOverflowTooltip() {
+  const valueRef = useRef<HTMLSpanElement>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+
+  const showTooltipIfOverflowing = useCallback(() => {
+    setTooltipOpen(isAcpComposerConfigValueOverflowing(valueRef.current));
+  }, []);
+  const hideTooltip = useCallback(() => setTooltipOpen(false), []);
+  const handleTooltipOpenChange = useCallback((open: boolean) => {
+    setTooltipOpen(open && isAcpComposerConfigValueOverflowing(valueRef.current));
+  }, []);
+
+  return {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  };
+}

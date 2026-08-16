@@ -149,13 +149,16 @@ export type RightWorkspaceResource =
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
   activeTabKey: string | null;
-  requestedOpen: boolean;
-  openRevision: number;
 }
 
-export interface RightWorkspaceState extends RightWorkspaceSessionState {
-  scopeKey: string | null;
+export interface RightWorkspaceShellState {
+  requestedOpen: boolean;
+  openRevision: number;
   width: number;
+}
+
+export interface RightWorkspaceState extends RightWorkspaceSessionState, RightWorkspaceShellState {
+  scopeKey: string | null;
 }
 
 interface RightWorkspaceContextValue extends RightWorkspaceState {
@@ -191,10 +194,8 @@ export type RightWorkspaceResourceCloseResolver = (
 
 export type RightWorkspaceAction =
   | { type: 'open'; resource: RightWorkspaceResource }
-  | { type: 'open-workspace' }
   | { type: 'activate'; key: string }
-  | { type: 'close'; key: string }
-  | { type: 'close-workspace' };
+  | { type: 'close'; key: string };
 
 export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
 export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
@@ -219,7 +220,7 @@ export function createConversationWorkspaceScope(input: {
 }
 
 export function createInitialRightWorkspaceState(): RightWorkspaceSessionState {
-  return { tabs: [], activeTabKey: null, requestedOpen: false, openRevision: 0 };
+  return { tabs: [], activeTabKey: null };
 }
 
 function cloneRightWorkspaceState(state: RightWorkspaceSessionState): RightWorkspaceSessionState {
@@ -233,6 +234,13 @@ interface StoredConversationWorkspace {
 
 export class ConversationWorkspaceStore {
   private readonly entries = new BoundedLruCache<string, StoredConversationWorkspace>(CONVERSATION_WORKSPACE_LRU_LIMIT);
+  private shellState: RightWorkspaceShellState = {
+    requestedOpen: false,
+    openRevision: 0,
+    width: RIGHT_WORKSPACE_DEFAULT_WIDTH,
+  };
+  private widthInitialized = false;
+  private widthTouched = false;
 
   restore(scope: ConversationWorkspaceScope) {
     const stored = this.entries.get(scope.key);
@@ -252,19 +260,46 @@ export class ConversationWorkspaceStore {
     this.entries.get(scope.key);
   }
 
+  peekShellState(initialWidth?: number) {
+    return {
+      ...this.shellState,
+      width: !this.widthInitialized && initialWidth != null ? initialWidth : this.shellState.width,
+    };
+  }
+
+  hydrateWidth(width: number) {
+    if (this.widthTouched) return false;
+    const shouldRender = this.widthInitialized && this.shellState.width !== width;
+    this.widthInitialized = true;
+    this.shellState = { ...this.shellState, width };
+    return shouldRender;
+  }
+
+  setWidth(width: number) {
+    this.widthInitialized = true;
+    this.widthTouched = true;
+    if (this.shellState.width === width) return false;
+    this.shellState = { ...this.shellState, width };
+    return true;
+  }
+
+  openWorkspace({ explicit }: { explicit: boolean }) {
+    this.shellState = {
+      ...this.shellState,
+      requestedOpen: true,
+      openRevision: explicit ? this.shellState.openRevision + 1 : this.shellState.openRevision,
+    };
+  }
+
+  closeWorkspace() {
+    if (!this.shellState.requestedOpen) return false;
+    this.shellState = { ...this.shellState, requestedOpen: false };
+    return true;
+  }
+
   promoteDraft(draft: ConversationWorkspaceScope, conversation: ConversationWorkspaceScope) {
     if (draft.kind !== 'draft' || conversation.kind !== 'conversation') return;
-    const previous = this.entries.get(draft.key);
     this.entries.delete(draft.key);
-    if (!previous) return;
-    this.entries.set(conversation.key, {
-      scope: conversation,
-      state: {
-        ...createInitialRightWorkspaceState(),
-        requestedOpen: previous.state.requestedOpen,
-        openRevision: previous.state.openRevision,
-      },
-    });
   }
 
   deleteConversation(projectId: string, taskId: string) {
@@ -311,19 +346,11 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
         ...state,
         tabs,
         activeTabKey: resource.key,
-        requestedOpen: true,
-        openRevision: state.openRevision + 1,
       };
     }
-    case 'open-workspace':
-      return {
-        ...state,
-        requestedOpen: true,
-        openRevision: state.openRevision + 1,
-      };
     case 'activate':
       return state.tabs.some((tab) => tab.key === action.key)
-        ? { ...state, activeTabKey: action.key, requestedOpen: true }
+        ? { ...state, activeTabKey: action.key }
         : state;
     case 'close': {
       const index = state.tabs.findIndex((tab) => tab.key === action.key);
@@ -336,11 +363,8 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
         ...state,
         tabs,
         activeTabKey,
-        requestedOpen: tabs.length > 0 && state.requestedOpen,
       };
     }
-    case 'close-workspace':
-      return { ...state, requestedOpen: false };
   }
 }
 
@@ -362,8 +386,6 @@ export function RightWorkspaceProvider({
   const effectiveStore = store ?? internalStoreRef.current;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const widthTouchedRef = useRef(false);
-  const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
   const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
@@ -374,6 +396,7 @@ export function RightWorkspaceProvider({
     () => scope ? effectiveStore.peek(scope) : createInitialRightWorkspaceState(),
     [effectiveStore, revision, scope],
   );
+  const shellState = useMemo(() => effectiveStore.peekShellState(initialWidth), [effectiveStore, initialWidth, revision]);
 
   useEffect(() => {
     if (scope) effectiveStore.touch(scope);
@@ -389,17 +412,19 @@ export function RightWorkspaceProvider({
   }, [effectiveStore, scope]);
 
   useEffect(() => {
-    if (widthTouchedRef.current || initialWidth == null) return;
-    setWidthState(initialWidth);
-  }, [initialWidth]);
+    if (initialWidth == null || !effectiveStore.hydrateWidth(initialWidth)) return;
+    render();
+  }, [effectiveStore, initialWidth]);
 
   const commit = useCallback((action: RightWorkspaceAction) => {
     const currentScope = scopeRef.current;
-    if (!currentScope) return;
+    if (!currentScope) return null;
     const current = effectiveStore.peek(currentScope);
-    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return;
-    effectiveStore.save(currentScope, rightWorkspaceReducer(current, action));
-    render();
+    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return null;
+    const next = rightWorkspaceReducer(current, action);
+    if (next === current) return null;
+    effectiveStore.save(currentScope, next);
+    return next;
   }, [effectiveStore]);
   const openResource = useCallback(async (resource: RightWorkspaceResource) => {
     const currentScope = scopeRef.current;
@@ -409,14 +434,20 @@ export function RightWorkspaceProvider({
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
-    commit({ type: 'open', resource });
+    if (!commit({ type: 'open', resource })) return;
+    effectiveStore.openWorkspace({ explicit: true });
+    render();
   }, [commit, effectiveStore]);
   const getResource = useCallback((key: string) => {
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
     return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
   }, [effectiveStore]);
-  const openWorkspace = useCallback(() => commit({ type: 'open-workspace' }), [commit]);
+  const openWorkspace = useCallback(() => {
+    if (!scopeRef.current) return;
+    effectiveStore.openWorkspace({ explicit: true });
+    render();
+  }, [effectiveStore]);
   const activateTab = useCallback(async (key: string) => {
     if (!scope) return;
     const current = effectiveStore.peek(scope);
@@ -424,25 +455,30 @@ export function RightWorkspaceProvider({
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
-    commit({ type: 'activate', key });
+    if (!commit({ type: 'activate', key })) return;
+    effectiveStore.openWorkspace({ explicit: false });
+    render();
   }, [commit, effectiveStore, scope]);
   const closeTab = useCallback(async (key: string) => {
     if (!scope) return;
     const resource = effectiveStore.peek(scope).tabs.find((tab) => tab.key === key);
     if (resource && await closeResolverRegistryRef.current.get(resource.kind)?.(resource, 'close') === false) return;
-    commit({ type: 'close', key });
+    const next = commit({ type: 'close', key });
+    if (!next) return;
+    if (next.tabs.length === 0) effectiveStore.closeWorkspace();
+    render();
   }, [commit, effectiveStore, scope]);
   const closeWorkspace = useCallback(async () => {
     if (!scope) return;
     const current = effectiveStore.peek(scope);
     const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
     if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'workspace-close') === false) return;
-    commit({ type: 'close-workspace' });
-  }, [commit, effectiveStore, scope]);
+    effectiveStore.closeWorkspace();
+    render();
+  }, [effectiveStore, scope]);
   const setWidth = useCallback((nextWidth: number) => {
-    widthTouchedRef.current = true;
-    setWidthState(nextWidth);
-  }, []);
+    if (effectiveStore.setWidth(nextWidth)) render();
+  }, [effectiveStore]);
   const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
     setConversationDirectoryEntryState(entry);
   }, []);
@@ -464,11 +500,11 @@ export function RightWorkspaceProvider({
   }, []);
   const value = useMemo(() => ({
     ...sessionState,
+    ...shellState,
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
     conversationDirectoryEntry: conversationDirectoryEntry?.scopeKey === scope?.key ? conversationDirectoryEntry : null,
     setConversationDirectoryEntry,
-    width,
     openResource,
     openWorkspace,
     activateTab,
@@ -478,7 +514,7 @@ export function RightWorkspaceProvider({
     renderResource,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, width]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,

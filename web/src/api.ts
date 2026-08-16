@@ -96,8 +96,8 @@ export function getTaskDetail(taskId: string) {
   return getRuntimeApi().getTaskDetail(taskId);
 }
 
-export function getWorkflow(taskId: string) {
-  return getRuntimeApi().getWorkflow(taskId);
+export function getWorkflow(taskId: string, projectId?: string | null) {
+  return getRuntimeApi().getWorkflow(taskId, projectId);
 }
 
 export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createTask']>[0]) {

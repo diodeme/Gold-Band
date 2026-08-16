@@ -5,11 +5,12 @@ import path from 'node:path';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ConversationRunVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
+import type { ConversationRunVm, WorkflowDsl, WorkflowModelBindings, WorkflowVm } from '@/types';
 
 const api = vi.hoisted(() => ({
   getAgentRegistry: vi.fn(),
   getProfiles: vi.fn(),
+  getWorkflow: vi.fn(),
 }));
 
 const workflow: WorkflowDsl = {
@@ -32,6 +33,11 @@ const modelBindings: WorkflowModelBindings = {
   }],
 };
 
+const workflowVm = {
+  workflowJson: JSON.stringify(workflow),
+  modelBindings,
+} as WorkflowVm;
+
 vi.mock('@/api', () => ({
   ...api,
   getAcpRawFrames: vi.fn(),
@@ -45,10 +51,18 @@ vi.mock('react-i18next', async (importOriginal) => ({
 
 vi.mock('@/components/WorkflowEditor', () => ({
   parseWorkflowJson: (json: string) => JSON.parse(json),
-  WorkflowEditor: ({ onSave }: {
+  WorkflowEditor: ({ value, modelBindings: bindings, onSave }: {
+    value: WorkflowDsl;
+    modelBindings: WorkflowModelBindings;
     onSave: (next: WorkflowDsl, bindings: WorkflowModelBindings) => Promise<void>;
   }) => (
-    <button type="button" data-save-workflow onClick={() => void onSave(workflow, modelBindings)}>
+    <button
+      type="button"
+      data-save-workflow
+      data-workflow-id={value.id}
+      data-agent-id={bindings.bindings[0]?.agentId}
+      onClick={() => void onSave(value, bindings)}
+    >
       Save
     </button>
   ),
@@ -71,7 +85,8 @@ afterEach(() => {
 describe('conversation run workflow save contract', () => {
   it('forwards the editor model bindings with the serialized workflow', async () => {
     api.getProfiles.mockResolvedValue({ profiles: [] });
-    const onSaveWorkflow = vi.fn().mockResolvedValue(undefined);
+    api.getWorkflow.mockResolvedValue(workflowVm);
+    const onSaveWorkflow = vi.fn().mockResolvedValue(workflowVm);
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -88,7 +103,7 @@ describe('conversation run workflow save contract', () => {
             mode: 'edit',
             locator: { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' },
           }}
-          run={{ workflowJson: JSON.stringify(workflow), workflowValid: true } as ConversationRunVm}
+          run={{ projectId: 'project-1', taskId: 'task-1', workflowValid: true } as ConversationRunVm}
           agentRegistry={{ agents: [], catalog: [] }}
           onSaveWorkflow={onSaveWorkflow}
         />,
@@ -97,6 +112,9 @@ describe('conversation run workflow save contract', () => {
 
     const saveButton = container.querySelector<HTMLButtonElement>('[data-save-workflow]');
     expect(saveButton).not.toBeNull();
+    expect(saveButton?.dataset.workflowId).toBe('workflow-1');
+    expect(saveButton?.dataset.agentId).toBe('codex-acp');
+    expect(api.getWorkflow).toHaveBeenCalledWith('task-1', 'project-1');
     await act(async () => saveButton?.click());
 
     expect(onSaveWorkflow).toHaveBeenCalledWith(JSON.stringify(workflow), modelBindings);
@@ -107,8 +125,7 @@ describe('conversation run workflow save contract', () => {
     const appSource = readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
 
     expect(appSource).toContain('onSaveWorkflow={async (json, modelBindings) => {');
-    expect(appSource).toContain(
-      'await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);',
-    );
+    expect(appSource).toContain('const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);');
+    expect(appSource).toContain('return saved;');
   });
 });

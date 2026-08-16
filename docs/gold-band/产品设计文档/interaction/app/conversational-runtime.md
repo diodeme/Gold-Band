@@ -315,9 +315,9 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ### 修复入口
 
-- 会话运行时的“修复”按钮与旧任务工作流页的 repair drawer 心智一致：打开当前任务工作流编辑 Sheet，让用户修复 workflow 配置。
-- 修复 Sheet 标题使用“修复工作流”，而不是普通“编辑工作流”；Header 中展示无效状态、查看错误原因入口和错误原因摘要，帮助用户理解为什么需要修复。
-- 在会话页保存修复后的 workflow 后，必须重新拉取当前 conversation run VM，使 workflow 有效性、session tree、工作流图与 composer 状态立即刷新。
+- 会话运行时的“修复”按钮与旧任务工作流页的 repair drawer 心智一致：打开当前任务的右侧工作流编辑资源，让用户修复 workflow 配置。
+- 修复资源标题使用“修复工作流”，而不是普通“编辑工作流”；Header 中展示无效状态、查看错误原因入口和错误原因摘要，帮助用户理解为什么需要修复。
+- 右侧编辑资源激活后按完整 `projectId/taskId` 单独读取 Task authoring 聚合，以其中的 `WorkflowDsl` 和 `WorkflowModelBindings` 初始化编辑器；不得从当前 Run 的 executable snapshot 反推作者态绑定。保存后以 `saveTaskWorkflow` 返回的最新 `WorkflowVm` 收敛编辑基线，再重新拉取当前 conversation run VM，使 workflow 有效性、session tree、运行图与 composer 状态立即刷新。
 - 修复入口不直接调用 `continueRun`；用户完成修复后再按运行态规则继续。对于 `error-blocked`，修复入口只表示查看错误、修改 workflow 或进入诊断；只有后端确认存在安全恢复点并生成恢复计划时，才允许恢复，否则只能重新运行或从节点重新开始。
 
 ### 继续输入

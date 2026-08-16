@@ -1880,8 +1880,12 @@ pub fn save_task_workflow(
 }
 
 #[tauri::command]
-pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandResult<WorkflowVm> {
-    let app = state.app().map_err(command_error)?;
+pub fn get_workflow(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<WorkflowVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 

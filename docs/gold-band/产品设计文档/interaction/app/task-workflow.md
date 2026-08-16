@@ -144,6 +144,7 @@
 ### 5.4 作者态与运行态边界
 - 模板创建 Task 时复制当时的 `WorkflowDsl` 与整份模型绑定，之后模板与 Task 互不回写；Task 作者态继续使用同一个 `WorkflowDsl` 类型，并单独持有 Task 模型绑定。
 - Task 作者态把 `{ workflow, modelBindings }` 作为一个聚合原子写入 `authoring/workflow.json`；定时任务创建或编辑时把同一聚合冻结到 content snapshot。两者都不维护独立绑定文件或双写路径。
+- 会话 Run 中的工作流编辑或修复入口编辑的是 Task 作者态聚合，不是当前 Run 的 executable snapshot。入口激活时按 `projectId/taskId` 读取完整 `WorkflowVm`，同时初始化定义和本机模型绑定；保存成功后使用接口返回实体更新编辑基线。当前及历史 Run 的图和继续执行仍只读取各自冻结快照。
 - Task 可保存不完整或失效的模型绑定，但不能创建新 Run；运行尝试必须阻断并 deep link 到第一个问题普通 Worker，用户保存修复后自行再次发起运行，不保留启动意图或自动续跑。
 - 新建 Run 前，runtime 按 `executionSlotId` 严格校验并把 Task 绑定注入普通 Worker 的 provider、model、permission 与 config options，随后把完整可执行 `WorkflowDsl` 冻结为 `runs/<run>/workflow.snapshot.json`；校验失败不得产生部分 Run。
 - 创建 Run 的结构化绑定错误携带 `workflowTemplateId`、`nodeId` 和 `executionSlotId`；修复入口打开对应模板并聚焦第一个失效普通 Worker，不自动重试原启动动作。

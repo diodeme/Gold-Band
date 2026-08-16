@@ -126,6 +126,13 @@ const WORKFLOW_NODE_SPLIT_OUTCOME_RATIO = { success: 0.34, failure: 0.66 } as co
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
 
+export function mergeBufferedNodePatches(
+  pending: Partial<WorkflowNodeDsl>,
+  immediate: Partial<WorkflowNodeDsl> = {},
+): Partial<WorkflowNodeDsl> {
+  return { ...pending, ...immediate };
+}
+
 export function recordWorkflowHistory(history: WorkflowEditorHistory, current: WorkflowDsl, limit = WORKFLOW_HISTORY_LIMIT): WorkflowEditorHistory {
   return { past: [...history.past.slice(-(limit - 1)), current], future: [] };
 }
@@ -1107,18 +1114,18 @@ function BufferedNodeInspector(props: { node: WorkflowNodeDsl; agents: ManagedAg
     if (Object.keys(pendingPatchRef.current).length > 0) onUpdateRef.current(nodeIdRef.current, pendingPatchRef.current);
   }, []);
 
-  const flush = () => {
+  const flush = (immediatePatch: Partial<WorkflowNodeDsl> = {}) => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
     const pending = pendingPatchRef.current;
     pendingPatchRef.current = {};
     timerRef.current = null;
-    if (Object.keys(pending).length > 0) onUpdateRef.current(nodeIdRef.current, pending);
+    const merged = mergeBufferedNodePatches(pending, immediatePatch);
+    if (Object.keys(merged).length > 0) onUpdateRef.current(nodeIdRef.current, merged);
   };
 
   const updateDraft = (_nodeId: string, patch: Partial<WorkflowNodeDsl>) => {
     if (patch.id !== undefined) {
-      flush();
-      onUpdateRef.current(nodeIdRef.current, patch);
+      flush(patch);
       return;
     }
     pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };

@@ -157,6 +157,8 @@ export interface RightWorkspaceShellState {
   width: number;
 }
 
+type RightWorkspacePresentationState = Pick<RightWorkspaceShellState, 'requestedOpen' | 'openRevision'>;
+
 export interface RightWorkspaceState extends RightWorkspaceSessionState, RightWorkspaceShellState {
   scopeKey: string | null;
 }
@@ -230,15 +232,16 @@ function cloneRightWorkspaceState(state: RightWorkspaceSessionState): RightWorks
 interface StoredConversationWorkspace {
   scope: ConversationWorkspaceScope;
   state: RightWorkspaceSessionState;
+  presentation: RightWorkspacePresentationState;
+}
+
+function createInitialRightWorkspacePresentation(): RightWorkspacePresentationState {
+  return { requestedOpen: false, openRevision: 0 };
 }
 
 export class ConversationWorkspaceStore {
   private readonly entries = new BoundedLruCache<string, StoredConversationWorkspace>(CONVERSATION_WORKSPACE_LRU_LIMIT);
-  private shellState: RightWorkspaceShellState = {
-    requestedOpen: false,
-    openRevision: 0,
-    width: RIGHT_WORKSPACE_DEFAULT_WIDTH,
-  };
+  private width = RIGHT_WORKSPACE_DEFAULT_WIDTH;
   private widthInitialized = false;
   private widthTouched = false;
 
@@ -253,52 +256,92 @@ export class ConversationWorkspaceStore {
   }
 
   save(scope: ConversationWorkspaceScope, state: RightWorkspaceSessionState) {
-    this.entries.set(scope.key, { scope, state: cloneRightWorkspaceState(state) });
+    const stored = this.entries.peek(scope.key);
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(state),
+      presentation: stored?.presentation ?? createInitialRightWorkspacePresentation(),
+    });
   }
 
   touch(scope: ConversationWorkspaceScope) {
     this.entries.get(scope.key);
   }
 
-  peekShellState(initialWidth?: number) {
+  peekShellState(scope: ConversationWorkspaceScope | null, initialWidth?: number): RightWorkspaceShellState {
+    const presentation = scope
+      ? this.entries.peek(scope.key)?.presentation ?? createInitialRightWorkspacePresentation()
+      : createInitialRightWorkspacePresentation();
     return {
-      ...this.shellState,
-      width: !this.widthInitialized && initialWidth != null ? initialWidth : this.shellState.width,
+      ...presentation,
+      width: !this.widthInitialized && initialWidth != null ? initialWidth : this.width,
     };
   }
 
   hydrateWidth(width: number) {
     if (this.widthTouched) return false;
-    const shouldRender = this.widthInitialized && this.shellState.width !== width;
+    const shouldRender = this.widthInitialized && this.width !== width;
     this.widthInitialized = true;
-    this.shellState = { ...this.shellState, width };
+    this.width = width;
     return shouldRender;
   }
 
   setWidth(width: number) {
     this.widthInitialized = true;
     this.widthTouched = true;
-    if (this.shellState.width === width) return false;
-    this.shellState = { ...this.shellState, width };
+    if (this.width === width) return false;
+    this.width = width;
     return true;
   }
 
-  openWorkspace({ explicit }: { explicit: boolean }) {
-    this.shellState = {
-      ...this.shellState,
-      requestedOpen: true,
-      openRevision: explicit ? this.shellState.openRevision + 1 : this.shellState.openRevision,
-    };
+  openWorkspace(scope: ConversationWorkspaceScope, { explicit }: { explicit: boolean }) {
+    const stored = this.entries.peek(scope.key);
+    const presentation = stored?.presentation ?? createInitialRightWorkspacePresentation();
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(stored?.state ?? createInitialRightWorkspaceState()),
+      presentation: {
+        ...presentation,
+        requestedOpen: true,
+        openRevision: explicit ? presentation.openRevision + 1 : presentation.openRevision,
+      },
+    });
   }
 
-  closeWorkspace() {
-    if (!this.shellState.requestedOpen) return false;
-    this.shellState = { ...this.shellState, requestedOpen: false };
+  closeWorkspace(scope: ConversationWorkspaceScope) {
+    const stored = this.entries.peek(scope.key);
+    if (!stored?.presentation.requestedOpen) return false;
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(stored.state),
+      presentation: {
+        ...stored.presentation,
+        requestedOpen: false,
+      },
+    });
     return true;
   }
 
   promoteDraft(draft: ConversationWorkspaceScope, conversation: ConversationWorkspaceScope) {
-    if (draft.kind !== 'draft' || conversation.kind !== 'conversation') return;
+    if (
+      draft.kind !== 'draft'
+      || conversation.kind !== 'conversation'
+      || draft.projectId !== conversation.projectId
+    ) return;
+    const draftWorkspace = this.entries.peek(draft.key);
+    if (!draftWorkspace) return;
+    const promotedTabs = draftWorkspace.state.tabs.map((resource) => promoteDraftWorkspaceResource(resource, conversation.key));
+    const promotedActiveTabKey = draftWorkspace.state.activeTabKey == null
+      ? null
+      : promotedTabs[draftWorkspace.state.tabs.findIndex((resource) => resource.key === draftWorkspace.state.activeTabKey)]?.key ?? null;
+    this.entries.set(conversation.key, {
+      scope: conversation,
+      state: {
+        tabs: promotedTabs,
+        activeTabKey: promotedActiveTabKey,
+      },
+      presentation: { ...draftWorkspace.presentation },
+    });
     this.entries.delete(draft.key);
   }
 
@@ -368,6 +411,36 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
   }
 }
 
+function promoteDraftWorkspaceResource(
+  resource: RightWorkspaceResource,
+  scopeKey: string,
+): RightWorkspaceResource {
+  if (resource.kind === 'draft-attachment') {
+    return {
+      ...resource,
+      key: draftAttachmentWorkspaceResourceKey(scopeKey, resource.attachment.id),
+      scopeKey,
+    };
+  }
+  if (resource.kind === 'scheduled-task-config') {
+    return {
+      ...resource,
+      key: scheduledTaskConfigWorkspaceResourceKey(scopeKey),
+      scopeKey,
+    };
+  }
+  if (resource.kind === 'file-browser') {
+    return {
+      ...resource,
+      scopeKey,
+      selectedFile: resource.selectedFile
+        ? { ...resource.selectedFile, scopeKey }
+        : resource.selectedFile,
+    };
+  }
+  return { ...resource, scopeKey };
+}
+
 const DEFAULT_SCOPE = createDraftConversationWorkspaceScope('default');
 
 export function RightWorkspaceProvider({
@@ -396,7 +469,10 @@ export function RightWorkspaceProvider({
     () => scope ? effectiveStore.peek(scope) : createInitialRightWorkspaceState(),
     [effectiveStore, revision, scope],
   );
-  const shellState = useMemo(() => effectiveStore.peekShellState(initialWidth), [effectiveStore, initialWidth, revision]);
+  const shellState = useMemo(
+    () => effectiveStore.peekShellState(scope, initialWidth),
+    [effectiveStore, initialWidth, revision, scope],
+  );
 
   useEffect(() => {
     if (scope) effectiveStore.touch(scope);
@@ -435,7 +511,7 @@ export function RightWorkspaceProvider({
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
     if (!commit({ type: 'open', resource })) return;
-    effectiveStore.openWorkspace({ explicit: true });
+    effectiveStore.openWorkspace(currentScope, { explicit: true });
     render();
   }, [commit, effectiveStore]);
   const getResource = useCallback((key: string) => {
@@ -444,8 +520,9 @@ export function RightWorkspaceProvider({
     return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
   }, [effectiveStore]);
   const openWorkspace = useCallback(() => {
-    if (!scopeRef.current) return;
-    effectiveStore.openWorkspace({ explicit: true });
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    effectiveStore.openWorkspace(currentScope, { explicit: true });
     render();
   }, [effectiveStore]);
   const activateTab = useCallback(async (key: string) => {
@@ -456,7 +533,7 @@ export function RightWorkspaceProvider({
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
     if (!commit({ type: 'activate', key })) return;
-    effectiveStore.openWorkspace({ explicit: false });
+    effectiveStore.openWorkspace(scope, { explicit: false });
     render();
   }, [commit, effectiveStore, scope]);
   const closeTab = useCallback(async (key: string) => {
@@ -465,7 +542,7 @@ export function RightWorkspaceProvider({
     if (resource && await closeResolverRegistryRef.current.get(resource.kind)?.(resource, 'close') === false) return;
     const next = commit({ type: 'close', key });
     if (!next) return;
-    if (next.tabs.length === 0) effectiveStore.closeWorkspace();
+    if (next.tabs.length === 0) effectiveStore.closeWorkspace(scope);
     render();
   }, [commit, effectiveStore, scope]);
   const closeWorkspace = useCallback(async () => {
@@ -473,7 +550,7 @@ export function RightWorkspaceProvider({
     const current = effectiveStore.peek(scope);
     const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
     if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'workspace-close') === false) return;
-    effectiveStore.closeWorkspace();
+    effectiveStore.closeWorkspace(scope);
     render();
   }, [effectiveStore, scope]);
   const setWidth = useCallback((nextWidth: number) => {

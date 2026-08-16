@@ -108,7 +108,7 @@ vi.mock('@/components/ui/sheet', () => ({
 
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import { FALLBACK_WORKSPACE_LAYOUT } from '@/components/workspace/workspace-layout';
-import { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
+import { ConversationWorkspaceStore, createDraftConversationWorkspaceScope } from '@/components/workspace/right-workspace-context';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -202,7 +202,8 @@ describe('WorkspaceShell sidebar width hydration', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    store.openWorkspace({ explicit: true });
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
     const commonProps = {
       appName: 'Gold Band',
       windowFrameStyle: 'native-compositor' as const,
@@ -275,7 +276,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
       });
       expect(resizablePanelHandles.get('workspace-navigation')?.calls).toContain('expand');
       expect(resizablePanelHandles.get('workspace-right')?.calls).toContain('expand');
-      expect(store.peekShellState()).toMatchObject({ requestedOpen: true, width: 690 });
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 690 });
     } finally {
       await act(async () => root.unmount());
     }
@@ -286,7 +287,8 @@ describe('WorkspaceShell sidebar width hydration', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    store.openWorkspace({ explicit: true });
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
     resizableGroupWidth.value = 1_360;
     const animationFrames = new Map<number, FrameRequestCallback>();
     let nextAnimationFrameId = 1;
@@ -372,7 +374,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
       expect(converged['workspace-center'] * 13.6).toBeCloseTo(544, 5);
       expect(converged['workspace-right'] * 13.6).toBeCloseTo(484, 5);
       expect(animationFrames.size).toBe(0);
-      expect(store.peekShellState()).toMatchObject({ requestedOpen: true, width: 484 });
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 484 });
     } finally {
       await act(async () => root.unmount());
     }
@@ -384,7 +386,8 @@ describe('WorkspaceShell sidebar width hydration', () => {
     document.body.append(container);
     const root = createRoot(container);
     const store = new ConversationWorkspaceStore();
-    store.openWorkspace({ explicit: true });
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
     resizableGroupWidth.value = 1_271;
 
     try {
@@ -437,7 +440,7 @@ describe('WorkspaceShell sidebar width hydration', () => {
         }, { isUserInteraction: true });
       });
 
-      expect(store.peekShellState().width).toBe(288);
+      expect(store.peekShellState(draftScope).width).toBe(288);
       expect(saveConversationPreference).toHaveBeenCalledWith('rightWorkspace.width', 288);
     } finally {
       await act(async () => root.unmount());

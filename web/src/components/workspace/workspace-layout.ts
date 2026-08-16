@@ -305,6 +305,19 @@ export function workspaceCanonicalLayoutMissingPanel(
     && (applied[panelId] ?? 0) <= WORKSPACE_LAYOUT_PERCENTAGE_EPSILON;
 }
 
+export function workspaceCanonicalLayoutNeedsConvergence(
+  target: Layout,
+  applied: Layout,
+  groupWidth: number,
+  tolerancePixels = 1,
+) {
+  if (groupWidth <= 0) return false;
+  return Object.entries(target).some(([panelId, targetPercentage]) => {
+    const appliedPercentage = applied[panelId] ?? 0;
+    return Math.abs(targetPercentage - appliedPercentage) * groupWidth / 100 > tolerancePixels;
+  });
+}
+
 export function shouldOpenRightWorkspaceSheet({
   compact,
   previousOpenRevision,

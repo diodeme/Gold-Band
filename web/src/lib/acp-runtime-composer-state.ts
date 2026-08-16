@@ -7,6 +7,7 @@ export type AcpComposerMode =
   | 'invalid-workflow'
   | 'runtime-error'
   | 'permission-blocked'
+  | 'session-superseded'
   | 'submitting';
 
 export type AcpComposerSubmitTarget =
@@ -105,10 +106,11 @@ export function deriveAcpRuntimeComposerState(
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = false;
   const reportedBackendMode = normalizeComposerMode(backend?.mode);
+  const sessionSuperseded = reportedBackendMode === 'session-superseded';
   const backendMode = acpTerminal && reportedBackendMode === 'stopping'
     ? 'normal'
     : reportedBackendMode;
-  const mode = composerModeFromBackend({
+  const mode = sessionSuperseded ? 'session-superseded' : composerModeFromBackend({
     backendMode,
     waitingForPermission,
     stopInProgress,
@@ -167,7 +169,7 @@ export function deriveAcpRuntimeComposerState(
     && processingKind === 'launching-next-node'
     && !turnSubmitting
     && !awaitingResponse;
-  const statusActive =
+  const statusActive = !sessionSuperseded &&
     !input.waitingForPermission &&
     !composerLocked &&
     !directTurnHandoff &&
@@ -179,7 +181,7 @@ export function deriveAcpRuntimeComposerState(
     submitTarget,
     inputDisabled,
     canSubmit,
-    canStop:
+    canStop: !sessionSuperseded && (
       (!acpTerminal && Boolean(backend?.canStop)) ||
       (backendWorkspacePreparing && Boolean(backend?.canStop)) ||
       sessionActive ||
@@ -187,7 +189,8 @@ export function deriveAcpRuntimeComposerState(
       input.sending ||
       waitingForOptimisticPrompt ||
       localTurnInFlight ||
-      cancelling,
+      cancelling
+    ),
     stopInProgress,
     sessionActive,
     acpActive,
@@ -198,7 +201,7 @@ export function deriveAcpRuntimeComposerState(
     externalMessage,
     processingKind,
     statusActive,
-    showStatus: !input.waitingForPermission && statusActive,
+    showStatus: !sessionSuperseded && !input.waitingForPermission && statusActive,
     placeholderKind: directQueueFacet
       ? 'default'
       : placeholderKindForMode(input, mode, activePromptLocked),
@@ -299,6 +302,7 @@ function normalizeComposerMode(mode?: string | null): AcpComposerMode {
     normalized === 'invalid-workflow' ||
     normalized === 'runtime-error' ||
     normalized === 'permission-blocked' ||
+    normalized === 'session-superseded' ||
     normalized === 'submitting'
   ) {
     return normalized;

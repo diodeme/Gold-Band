@@ -272,6 +272,10 @@ export type AcpRuntimeComposerContext = {
   pauseMessage?: string | null;
   runtimeError?: string | null;
   onRepair?: () => void;
+  supersededSessionNavigation?: {
+    href: string;
+    onNavigate: () => void;
+  };
 };
 
 export interface AcpDirectSessionHeaderProps {
@@ -316,6 +320,7 @@ interface ACPChatDialogProps {
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
+  wallpaperSurface?: boolean;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -760,6 +765,7 @@ export function ACPChatDialog(
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+    wallpaperSurface = false,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -1458,6 +1464,15 @@ export function ACPChatDialog(
   const showComposerStatus = composerState.showStatus;
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
   const composerPlaceholder = composerPlaceholderText(composerState, t);
+  const supersededBy = localLifecycle?.composer.supersededBy;
+  const supersededSession = composerState.mode === 'session-superseded'
+    && supersededBy
+    && runtimeComposerContext?.supersededSessionNavigation
+    ? {
+        label: `${supersededBy.nodeId} / ${supersededBy.attemptId}`,
+        ...runtimeComposerContext.supersededSessionNavigation,
+      }
+    : null;
   const canSubmitPrompt = composerState.canSubmit;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
@@ -3381,19 +3396,19 @@ export function ACPChatDialog(
   });
 
   if (sessionShellState === 'error') {
-    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} />;
+    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
   }
 
   if (sessionShellState === 'interrupted') {
-    return <AcpInterruptedState label={t("acp.sessionInterrupted")} />;
+    return <AcpInterruptedState label={t("acp.sessionInterrupted")} transparent={wallpaperSurface} />;
   }
 
   if (sessionShellState === 'loading') {
-    return <AcpLoadingState label={t("common.loading")} />;
+    return <AcpLoadingState label={t("common.loading")} transparent={wallpaperSurface} />;
   }
 
   if (!effective) {
-    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} />;
+    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
   }
 
   // A failed provider attempt can be followed by an automatic retry. Until
@@ -3410,7 +3425,14 @@ export function ACPChatDialog(
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
-    <div ref={conversationRootRef} className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
+    <div
+      ref={conversationRootRef}
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col",
+        wallpaperSurface ? "bg-transparent" : "bg-background",
+      )}
+      data-conversation-branch-id={branchId}
+    >
       <ACPSessionHeader
         session={effective}
         rawActive={resolveRawFramesActionActive(Boolean(rightWorkspace?.scopeKey), canvasMode === "raw")}
@@ -3549,7 +3571,10 @@ export function ACPChatDialog(
                 ) : null}
               </InterventionLayer>
               <div
-                className="sticky bottom-0 z-20 mt-auto shrink-0 bg-background"
+                className={cn(
+                  "sticky bottom-0 z-20 mt-auto shrink-0",
+                  wallpaperSurface ? "bg-transparent" : "bg-background",
+                )}
                 data-acp-conversation-footer="sticky"
               >
                 {hasNewerEvents ? (
@@ -3671,6 +3696,7 @@ export function ACPChatDialog(
                 attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
                 integratedInfoTab={composerInfoTabTarget === "composer"}
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
+                supersededSession={supersededSession}
               />
             )}
             </div>
@@ -3690,22 +3716,25 @@ export function ACPChatDialog(
   );
 }
 
-function AcpErrorState({ reason }: { reason: string }) {
+function AcpErrorState({ reason, transparent = false }: { reason: string; transparent?: boolean }) {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className={cn("flex h-full min-h-0 flex-col", transparent ? "bg-transparent" : "bg-background")}>
       <AcpErrorBanner reason={reason} />
       <div className="flex-1" />
     </div>
   );
 }
 
-function AcpLoadingState({ label }: { label: string }) {
-  return <BrandLoadingState label={label} />;
+function AcpLoadingState({ label, transparent = false }: { label: string; transparent?: boolean }) {
+  return <BrandLoadingState label={label} className={transparent ? "bg-transparent" : undefined} />;
 }
 
-function AcpInterruptedState({ label }: { label: string }) {
+function AcpInterruptedState({ label, transparent = false }: { label: string; transparent?: boolean }) {
   return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-background px-6 text-center text-sm font-medium text-muted-foreground">
+    <div className={cn(
+      "flex h-full min-h-0 items-center justify-center px-6 text-center text-sm font-medium text-muted-foreground",
+      transparent ? "bg-transparent" : "bg-background",
+    )}>
       {label}
     </div>
   );

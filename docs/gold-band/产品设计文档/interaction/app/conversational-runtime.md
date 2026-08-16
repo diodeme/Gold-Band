@@ -110,6 +110,15 @@
 - AI-DYNAMIC leaf 已持久化 `runtimeError` 时，当前选中 leaf 的错误展示优先使用该结构化错误的完整 diagnostic；不得只展示 outer provider context，也不得被 graph/run 的泛化暂停原因覆盖。
 - 每个 attempt leaf 必须暴露真实 `artifactCount / attachmentCount`，计数来源与当前选中 session 底部资源条使用同一套后端资源列表规则；计数不能写死或由前端推断，避免 session tree 与资源条对同一 attempt 的文件事实不一致。
 
+### Continue session 的单写入 attempt
+
+- Workflow edge 使用 `session: continue`、或 AUTO 动态节点使用 `sessionMode=continue + continueFromNodeId` 接续既有 ACP session 后，同一 session 只有最终 successor attempt 拥有会话写入权。链式接续必须解析到末端 attempt；所有中间及源 attempt 都进入只读态。`session: new`、Direct 和没有形成 continue 关系的 attempt 不受影响。
+- continue 关系只从既有 canonical runtime 事实投影：普通 Workflow 使用 workflow snapshot edge 与按 `sequence` 排序的 round trace，并要求被接续 attempt 已有可用 `worker-ref.continue_ref`；AUTO 使用 dynamic graph 的显式 continue source，并要求目标 attempt 已实际创建。不得按 attempt 名称、时间戳、session 展示文案或 timeline 内容猜测 owner，也不新增第二套持久 ownership 表。
+- `ConversationComposerVm` 对旧 attempt 返回 `mode=session-superseded`、`submitTarget=none`、`lockInput=true`、`canStop=false` 与结构化 `supersededBy` 完整 locator。后端 prompt preflight 必须使用同一 resolver 再次校验；stale UI 直接提交时返回 `conversation.session-superseded` 及目标 locator，不能仅依赖前端禁用。
+- 旧 attempt 仍可查看历史、Session Switcher 与右侧工作区；prompt-kit composer 输入区改为只读提示“此会话已由 node / attempt 接续，请前往该 attempt 继续”，不渲染 textarea，并禁用附件、拖放、发送与停止。目标 attempt 是键盘可聚焦的真实 `<a href>`，复用 Markdown 文件链接的主题链接色与紧凑字号，普通点击复用 session switch 事务。
+- attempt deep link 必须携带完整 leaf identity。普通 leaf 使用 `roundId + nodeId + attemptId`；AUTO leaf 额外携带 `outerNodeId + outerAttemptId`。点击后 URL、`selectedSessionKey`、Session Switcher 和正文投影必须同步；旧的仅含 `roundId + attemptId` 路径只保留给尚无 node locator 的 scheduled occurrence。
+- resolver 构建 run VM 时只线性读取 round trace、workflow snapshot、dynamic graph 与 worker-ref 元数据，不扫描 timeline 或消息正文；提交前只解析当前 locator 所在 round，不增加缓存、轮询、队列或长期锁。
+
 ### 默认 session 选择
 - 用户已有选中 session 且仍有效时保持
 - 多个 session 默认最近 session；最近 session 必须按 session/attempt 的实际开始时间选择，不能按 workflow DSL 节点顺序选择最后一个节点

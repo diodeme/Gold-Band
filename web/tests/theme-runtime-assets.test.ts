@@ -67,8 +67,10 @@ vi.mock('../src/themes/builtin-themes', async (importOriginal) => {
 import type { AppearancePreference } from '../src/types';
 import {
   applyAppearance,
+  applyWallpaperPersonalization,
   defaultAppearancePreference,
   getCurrentThemeIconSnapshot,
+  previewWallpaperOpacity,
   resolveAppearance,
 } from '../src/theme';
 
@@ -203,5 +205,50 @@ describe('theme runtime asset projection', () => {
       surface.properties.get('--gb-wallpaper-image'),
       'a stale failure must not clear the current generation wallpaper',
     ).toBe('url("/theme-assets/builtin.gold-band/wallpaper-dark.png")');
+  });
+
+  it('lets a user wallpaper override the theme image while keeping the theme scrim independent', () => {
+    const root = rootStub();
+    const surface = wallpaperSurface();
+    vi.stubGlobal('document', {
+      documentElement: root.element,
+      querySelectorAll: () => [surface.element],
+    });
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() });
+    vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
+
+    applyAppearance(preference(), 'en');
+    applyWallpaperPersonalization(
+      { image: { source: 'user', assetId: 'user-wallpaper' }, opacityPercent: 60 },
+      {
+        selectedWallpaperId: 'user-wallpaper',
+        recentWallpapers: [{
+          id: 'user-wallpaper',
+          imageUrl: 'gold-band-wallpaper://user-wallpaper/full',
+          thumbnailUrl: 'gold-band-wallpaper://user-wallpaper/thumbnail',
+          createdAt: '2026-08-17T00:00:00Z',
+          width: 1600,
+          height: 900,
+        }],
+      },
+    );
+    const customImage = FakeImage.instances.at(-1)!;
+    expect(customImage.src).toContain('user-wallpaper/full');
+    customImage.onload?.();
+
+    expect(surface.properties.get('--gb-wallpaper-image')).toContain('user-wallpaper/full');
+    expect(surface.properties.get('--gb-wallpaper-size')).toBe('cover');
+    expect(surface.properties.get('--gb-wallpaper-position')).toBe('center');
+    expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.6');
+    expect(surface.properties.get('--gb-wallpaper-overlay-color')).toBe('var(--background)');
+    expect(surface.properties.get('--gb-wallpaper-overlay-opacity')).toBe('0.4');
+
+    previewWallpaperOpacity(35);
+    expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.35');
+
+    applyWallpaperPersonalization(
+      { image: { source: 'theme' }, opacityPercent: 60 },
+      { selectedWallpaperId: null, recentWallpapers: [] },
+    );
   });
 });

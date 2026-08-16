@@ -135,6 +135,10 @@ function clonePreferences(preferences: PreferencesVm): PreferencesVm {
         agent: { image: { ...preferences.personalization.avatars.agent.image }, shape: { ...preferences.personalization.avatars.agent.shape } },
         user: { image: { ...preferences.personalization.avatars.user.image }, shape: { ...preferences.personalization.avatars.user.shape } },
       },
+      wallpaper: {
+        image: { ...preferences.personalization.wallpaper.image },
+        opacityPercent: preferences.personalization.wallpaper.opacityPercent,
+      },
     },
     avatars: {
       agent: {
@@ -145,6 +149,10 @@ function clonePreferences(preferences: PreferencesVm): PreferencesVm {
         ...preferences.avatars.user,
         recentAvatars: preferences.avatars.user.recentAvatars.map((avatar) => ({ ...avatar })),
       },
+    },
+    wallpapers: {
+      ...preferences.wallpapers,
+      recentWallpapers: preferences.wallpapers.recentWallpapers.map((wallpaper) => ({ ...wallpaper })),
     },
   };
 }

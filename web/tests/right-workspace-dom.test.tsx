@@ -229,25 +229,40 @@ describe('right workspace DOM lifecycle', () => {
       tabs: [{ ...resource('agent-b'), scopeKey: second.key }],
       activeTabKey: resource('agent-b').key,
     });
+    store.openWorkspace(first, { explicit: true });
     try {
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-a');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('true');
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={second} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-b');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
+
+      store.openWorkspace(second, { explicit: true });
+      store.closeWorkspace(first);
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={second} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('true');
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-a');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
     } finally {
       await act(async () => root.unmount());
     }
   });
 
-  it('restores shell open intent and width after a page without workspace capability', async () => {
+  it('restores shell presentation and promotes draft content into the created conversation', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -295,6 +310,8 @@ describe('right workspace DOM lifecycle', () => {
         workspaceTabCount: '1',
       });
 
+      store.promoteDraft(draft, conversation);
+
       await act(async () => {
         root.render(
           <RightWorkspaceProvider scope={conversation} store={store} initialWidth={440}>
@@ -305,8 +322,9 @@ describe('right workspace DOM lifecycle', () => {
       expect(container.querySelector('output')?.dataset).toMatchObject({
         workspaceOpen: 'true',
         workspaceWidth: '684',
-        workspaceTabCount: '0',
+        workspaceTabCount: '1',
       });
+      expect(container.querySelector('output')?.textContent).toBe('draft-agent');
     } finally {
       await act(async () => root.unmount());
     }

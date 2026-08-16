@@ -1,7 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { z } from 'zod';
 import { isTauriRuntime } from './api/shared';
-import type { AppearancePreference, PersonalizationPreference, ResolvedColorScheme, VisualQuality } from './types';
+import type { AppearancePreference, PersonalizationPreference, ResolvedColorScheme, VisualQuality, WallpaperPreferencesVm } from './types';
 import {
   MAX_FONT_FAMILY_CODE_POINTS,
   MAX_FONT_STACK_FAMILIES,
@@ -15,6 +15,7 @@ import {
   type ThemeWallpaperSlot,
 } from './theme-contract';
 import { builtinThemes } from './themes/builtin-themes';
+import { DEFAULT_WALLPAPER_OPACITY_PERCENT, normalizeWallpaperOpacityPercent, selectedWallpaper } from './lib/wallpaper';
 
 export interface ThemePreviewPalette {
   background: string; surface: string; border: string; primary: string;
@@ -61,10 +62,14 @@ export const defaultAppearancePreference: AppearancePreference = {
   schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {},
 };
 export const defaultPersonalizationPreference: PersonalizationPreference = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   typography: {
     ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
     editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
+  },
+  wallpaper: {
+    image: { source: 'theme' },
+    opacityPercent: DEFAULT_WALLPAPER_OPACITY_PERCENT,
   },
   avatars: {
     agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
@@ -171,6 +176,7 @@ const semanticVariableNames: Record<keyof SemanticThemeTokens, string> = {
 let wallpaperGeneration = 0;
 const wallpaperRequests = new WeakMap<HTMLElement, HTMLImageElement>();
 let currentEffectiveAppearance: EffectiveAppearance | null = null;
+let currentUserWallpaper: { assetId: string; url: string; opacity: number } | null = null;
 let currentThemeIconSnapshot: { themeId: string; icons: EffectiveAppearance['icons'] } = { themeId: 'builtin.gold-band', icons: {} };
 export function getCurrentThemeIconSnapshot() { return currentThemeIconSnapshot; }
 export function applyAppearance(preference: AppearancePreference, locale?: string): EffectiveAppearance {
@@ -232,7 +238,18 @@ function applyVisibleWallpapers(effective: EffectiveAppearance, generation: numb
     wallpaperRequests.delete(surface);
     clearWallpaper(surface);
     const slot = surface.dataset.themeWallpaperSlot as ThemeWallpaperSlot;
-    const descriptor = effective.wallpapers[slot];
+    const themeDescriptor = effective.wallpapers[slot];
+    const descriptor = currentUserWallpaper
+      ? {
+          url: currentUserWallpaper.url,
+          fit: 'cover' as const,
+          position: 'center' as const,
+          repeat: 'no-repeat' as const,
+          opacity: currentUserWallpaper.opacity,
+          overlayColor: themeDescriptor?.overlayColor ?? 'transparent' as const,
+          overlayOpacity: themeDescriptor?.overlayOpacity ?? 0,
+        }
+      : themeDescriptor;
     if (!descriptor || typeof Image !== 'function' || typeof surface.getClientRects !== 'function' || surface.getClientRects().length === 0) continue;
     const image = new Image();
     wallpaperRequests.set(surface, image);
@@ -298,6 +315,33 @@ export function applyPersonalization(preference: PersonalizationPreference) {
   root.style.setProperty('--app-editor-font-family', editorFont.source === 'theme' ? 'var(--gb-theme-editor-font-family)' : editorFontFamilyForStack(editorFont.families));
   root.style.setProperty('--app-ui-font-size', uiFontSize.source === 'theme' ? 'var(--gb-theme-ui-font-size)' : `${normalizeTypographySize(uiFontSize.px, 'ui')}px`);
   root.style.setProperty('--app-editor-font-size', editorFontSize.source === 'theme' ? 'var(--gb-theme-editor-font-size)' : `${normalizeTypographySize(editorFontSize.px, 'editor')}px`);
+}
+
+export function applyWallpaperPersonalization(
+  preference: PersonalizationPreference['wallpaper'],
+  wallpapers: WallpaperPreferencesVm,
+) {
+  const assetId = preference.image.source === 'user' ? preference.image.assetId : null;
+  const selected = assetId ? selectedWallpaper(wallpapers) : null;
+  currentUserWallpaper = selected && selected.id === assetId
+    ? {
+        assetId: selected.id,
+        url: selected.imageUrl,
+        opacity: normalizeWallpaperOpacityPercent(preference.opacityPercent) / 100,
+      }
+    : null;
+  if (!currentEffectiveAppearance) return;
+  const generation = ++wallpaperGeneration;
+  applyVisibleWallpapers(currentEffectiveAppearance, generation);
+}
+
+export function previewWallpaperOpacity(opacityPercent: number) {
+  if (!currentUserWallpaper || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+  const opacity = normalizeWallpaperOpacityPercent(opacityPercent) / 100;
+  currentUserWallpaper = { ...currentUserWallpaper, opacity };
+  for (const surface of document.querySelectorAll<HTMLElement>('[data-theme-wallpaper-slot]')) {
+    surface.style.setProperty('--gb-wallpaper-opacity', String(opacity));
+  }
 }
 function resolveRuntimeFontFamilies(families: readonly string[]) {
   const theme = getThemePackage(currentEffectiveAppearance?.themeId ?? defaultAppearancePreference.themeId);

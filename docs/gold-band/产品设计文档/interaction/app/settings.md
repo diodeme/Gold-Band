@@ -1,7 +1,7 @@
 # 桌面客户端设置页
 
 ## 1. 一句话定义
-设置页用于调整桌面端语言、高级能力与个性化偏好；个性化按外观、字体、头像的顺序组织。
+设置页用于调整桌面端语言、高级能力与个性化偏好；个性化按外观、字体、壁纸、头像的顺序组织。
 
 ---
 
@@ -27,6 +27,9 @@
 │                                                              │
 │ 字体                                                         │
 │   界面 UI / 编辑器分别跟随主题或维护有序字体栈与自定义字号        │
+│                                                              │
+│ 壁纸                                                         │
+│   小尺寸预览、最近使用、导入、恢复主题壁纸与可见度                │
 │                                                              │
 │ 头像                                                         │
 │   Agent / 个人紧凑设置行，主题头像、最近头像、上传裁剪与头像框    │
@@ -115,7 +118,35 @@
 
 ---
 
-## 6. 语言选择
+## 6. 壁纸
+
+### 6.1 数据与领域边界
+
+- 壁纸选择属于用户级个性化偏好。`PersonalizationPreference` 使用 `schemaVersion = 3`，以 `wallpaper.image = { source: theme } | { source: user, assetId }` 表达权威图片来源，以 `wallpaper.opacityPercent` 保存用户壁纸可见度；settings schema v9 一次性把旧个性化配置迁移为主题壁纸，不双读旧结构。
+- 壁纸资产仓库只保存最近使用记录，不保存第二份 selected 状态。当前选择只由 personalization 中的稳定 `assetId` 决定；仓库按最近使用顺序最多保留 10 张，恢复主题壁纸不删除历史。
+- 导入支持 PNG、JPEG、WebP；源文件不超过 32 MiB，宽高均不超过 4096px，总像素不超过 1600 万。完整图规范化为 JPEG/WebP 且不超过约 4 MiB，并生成 320×180 WebP 缩略图。
+- 完整图解码、缩放与编码在 blocking pool 中执行，不阻塞 Tauri 事件线程。仓库索引使用原子 JSON 写入；新资产和缩略图完整写入后才发布索引，索引失败则回收本次文件。
+- 自定义协议只接受单段 `{uuid}.full` / `{uuid}.thumbnail` token。协议必须同时校验 UUID、索引记录、固定文件名和 MIME 映射后才能读取，不能接受文件路径、编码斜杠或路径穿越。
+
+### 6.2 行为
+
+- 用户壁纸覆盖当前主题包的壁纸，并在切换主题、明暗模式和客户端尺寸后继续生效；恢复操作只把来源切回 `theme`，当前主题没有壁纸时显示普通主题底色。
+- 用户壁纸固定使用 CSS `cover / center / no-repeat`，由浏览器随 surface 尺寸自适应，不新增 ResizeObserver、窗口尺寸 React state 或重新生成图片。
+- `app / conversation / workspace / settings` 四类既有 wallpaper surface 统一消费同一用户壁纸投影。会话运行页必须标记 `conversation` surface；聊天 timeline 与包住 Composer 的整宽 sticky footer 使用透明承载层，prompt-kit Composer 及附着的任务/队列面板继续使用不透明主题卡片保持输入可读性；只允许控件本身的实色边界，不允许全宽 footer 在控件左右继续盖住 wallpaper surface。
+- 壁纸图片层和主题 scrim 分别由 `::before` 与 `::after` 承载。可见度只调整图片层，主题遮罩不随 Slider 一起变淡。
+- 可见度范围为 20%–100%，默认 60%，步长 1%。拖动过程只更新当前 React 局部值和 wallpaper CSS variable，松手后才调用保存接口；拖动不会逐帧写磁盘或刷新全局偏好。
+- 当前资产缺失或记录无效时，启动协调将选择收敛到主题壁纸；单条损坏记录从 VM 中隔离，不能拖垮其他最近记录。
+
+### 6.3 UI 形式
+
+- 壁纸设置位于字体与头像之间。主预览固定为 256×144 上限的 16:9 小卡片，不随宽内容区无限放大；有图片时显示来源标签，当前主题无图片时显示紧凑空状态。
+- 点击预览卡使用共享 shadcn/ui Dialog 放大并完整 `contain` 展示；点击放大图片、遮罩或关闭动作均回到小卡片，键盘焦点与 Escape 关闭由 Dialog 管理。
+- “选择壁纸”使用共享 Popover：最近使用以两列 16:9 缩略图展示并懒加载，底部提供导入入口；当前使用项有明确选中态。恢复主题壁纸为相邻的次级动作。
+- 可见度 Slider 仅在用户壁纸生效时展示，数值实时显示整数百分比。
+
+---
+
+## 7. 语言选择
 
 ### 6.1 选项
 当前支持：
@@ -134,21 +165,21 @@
 
 ---
 
-## 7. Tauri 2.x MVP 对应实现
+## 8. Tauri 2.x MVP 对应实现
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
-- 个性化权威字段为 `personalization`：`schemaVersion = 2`，显式保存两套有序字体栈、字号以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段并将两套字体恢复为主题栈，不保留双读；主题来源持续跟随当前主题，用户资产历史独立保留。
+- 个性化权威字段为 `personalization`：`schemaVersion = 3`，显式保存两套有序字体栈、字号、壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段并将两套字体恢复为主题栈；settings schema v9 增加显式主题壁纸来源，不保留双读。主题来源持续跟随当前主题，用户资产历史独立保留。
 - 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
-- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页不新增图标、壁纸或高级字体入口，只展示当前有效投影；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
+- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
 - Theme Contract v2 的 motion 分离装饰表面与位移动效：`color` 只过渡颜色，`surface` 可追加 elevation，只有可按压控件的 `press` 可以过渡 transform。Dropdown、Select、Popover、Dialog、Sheet 等定位型浮层由组件库拥有定位与开合 transform，主题只声明其颜色、材质、几何和阴影。
 - 当组件库浮层内部还拥有 fixed 子浮层时，定位节点与主题材质层必须隔离：定位、Portal、焦点与裁剪继续由组件库拥有，backdrop filter 仅作用于无交互视觉层，不能改变子浮层的 containing block。
 - Dialog、Sheet、AlertDialog 统一 Portal 到 `body` 下与 `#root` 同级的专用 overlay host；host 保持 `overflow: visible` 且不建立 transform/filter/contain containing block。Dropdown Menu 与 Context Menu 的 Content/SubContent 只保留 Radix 定位、焦点和 dismiss 语义，开合 transform、透明度、材质及内容裁剪下沉到内部视觉层，避免 WebView2 定位与动画矩阵竞争。
 - 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
 - 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
-- 设置内容区标记稳定 `settings` wallpaper surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退设置页语义底色，不影响主题其余能力。
+- 设置内容区标记稳定 `settings` wallpaper surface，会话主页与会话运行页标记稳定 `conversation` surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退对应语义底色，不影响主题其余能力；用户壁纸存在时统一覆盖主题图片。
 - 2026-08-16 Theme Engine v2 开发实现完成：两个内置主题已破坏式迁移到 Contract v2，全局硬编码 MiSans TTF 路径删除，设置页默认字体名称改由 `ResolvedTypography` 提供；主题构建、Web 生产构建和 Rust workspace compile check 通过。单元/接口、浏览器与 EXE 交互验收按开发节点边界交由后续测试和验收节点执行。
 - 2026-08-16 测试反馈修正：`resolveAppearance` 的默认 locale 解析不再直接依赖 DOM，Node/SSR 环境按 document language、navigator language、`en` 依次回退；DOM projector 在 wallpaper 查询、图片预加载和主题图标事件分发前检查对应浏览器 capability。完整浏览器行为不变，最小接口环境不需要伪造无关 DOM API。
 - 2026-08-16 第二轮测试：设置页两个内置主题、light/dark/system、640px 窄窗、恢复正常宽度和动态字体名称通过浏览器验收，主题核心行覆盖率达到 98.18%。当前仍不得标记 Theme Engine v2 完成：全局 Inter CSS import 绕过主题资源图，且旧主题 wallpaper 的迟到加载失败会清空新主题投影；SDK 另缺少字体 family 元数据一致性校验和生成资源目录的陈旧文件清理。
@@ -165,6 +196,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
 - 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
 - personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
+- personalization v2 仅由 settings schema v9 migration 升级为 v3 并加入显式 `wallpaper`；运行时只消费 v3。壁纸资产仓库不复制 personalization 的选择状态，所有壁纸写命令返回最新 `PreferencesVm` 供前端收敛。
 - `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言和日志偏好；现阶段前端固定提交 `useLocalClaude = false`，后端 `RuntimeConfig` 加载入口也固定投影为 `false`，不接受历史持久化值覆盖。设置页不向用户暴露本地 Claude 开关，旧用户升级后同样立即使用 ACP npm 包内版本。前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
 - 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。
@@ -190,7 +222,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。
 - 2026-05-07 起设置页从多张独立卡片收敛为一个主工作面，外观、字体、语言通过 section 与低对比分隔线组织；主题摘要、字体选项和本地字体预览降级为低对比选项行，避免盒中盒和浅黑色块过多。
 - 2026-05-25 起设置页改为三个 tab：语言进入通用，主题和字体进入个性化；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。2026-07-30 起原“外观”tab 正式更名为“个性化”，并新增头像设置。
-- 2026-07-30 个性化页顺序调整为“外观 / 字体 / 头像”；头像作为低频设置放在底部，Agent 与个人头像使用 48px 预览、短说明和紧凑形状按钮组成的响应式横向设置行，不再显示冗余“头像框”标签。
+- 2026-08-17 个性化页顺序调整为“外观 / 字体 / 壁纸 / 头像”；头像继续作为低频设置放在底部。壁纸使用固定小预览卡与可放大 Dialog，不把媒体预览扩张为设置页主视觉。
 - 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
 - 2026-08-15 字体偏好升级为有序字体栈：Theme SDK v2 以 `families + fallback + size` 声明 UI/编辑器默认栈，设置页通过可搜索多选、取消和上下移动维护用户顺序；自定义栈始终追加主题栈兜底，清空后恢复跟随主题。personalization schema v2 与 settings schema v8 同步替换旧单字体字段。
 - 2026-08-15 字体目录与用户字体栈拆分为两个领域：目录不设数量上限并稳定去重排序，用户栈继续保序且最多 16 项，避免系统字体计数与选择器实际选项不一致。
@@ -207,7 +239,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 右侧主内容区顶部新增公告区：首次发现某个新版本且该版本公告尚未被关闭时，页面 header 下方展示一条可关闭公告，提示“发现新版本，可前往 设置 → 高级 → 更新”。点击“查看更新”打开轻量弹窗，明确引导用户前往设置页更新；关闭公告后仅移除公告本身，不影响三级红点。
 - 可用更新快照持久化到用户级桌面配置，因此用户在发现更新后关闭应用再打开，公告、设置页状态和更新版本信息不会因为重启丢失；只要存在这份快照，高级页更新状态区就按“可更新”态展示版本信息与安装入口，而不是回退成“尚未检查”；只有后续检查确认当前已无可更新版本时，才清空这份快照与 `Updates` 红点。
 
-## 8. 2026-06-12 指标上报地址展示
+## 9. 2026-06-12 指标上报地址展示
 
 - 设置页的指标上报区域只展示一个“上报服务地址”，不展示心跳与节点详情两个接口后缀。
 - `wb` 渠道默认服务地址为 `http://maling.weoa.com`，且随锁定开关一起禁止用户修改。
@@ -216,11 +248,11 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 
 ---
 
-## 7. 一句话总结
+## 10. 一句话总结
 
-> 当前设置页只解决“我想用什么主题、字体和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。
+> 当前设置页只解决“我想用什么主题、字体、壁纸和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。
 
-## 9. 定时任务运行设置
+## 11. 定时任务运行设置
 
 - 设置页是定时任务全局运行设置的唯一可见入口，通过 `get_scheduled_runtime_settings` / `save_scheduled_runtime_settings` 统一管理保持唤醒、完成通知和 occurrence 保留天数；保留范围固定为 `1..=3650` 天，越界返回 `SCHEDULED_VALIDATION_FAILED` 及结构化 `field/minimum/maximum/actual` 参数。
 - 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。

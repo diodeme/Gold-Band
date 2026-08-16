@@ -994,7 +994,7 @@ export const browserApi: RuntimeApi = {
   getTaskDetail(taskId: string) {
     return Promise.resolve({ ...mockTaskDetail, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockTaskDetail.task });
   },
-  getWorkflow(taskId: string) {
+  getWorkflow(taskId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
   },
   createTask(input: CreateTaskInput) {

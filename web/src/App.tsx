@@ -2147,12 +2147,13 @@ export function App() {
           onEditWorkflow={() => {}}
           onSaveWorkflow={async (json, modelBindings) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[2];
-            await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);
+            const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
             applyConversationRunSnapshot(refreshed, 'workflow-save', {
               selectedSessionKey: conversationSelectedSessionKeyRef.current,
               preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
             });
+            return saved;
           }}
           onSelectSession={(leaf, followActive) => {
             const key = leaf.outerNodeId

@@ -237,7 +237,7 @@ export interface RuntimeApi {
   selectRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   removeRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   getTaskDetail(taskId: string): Promise<TaskDetailVm>;
-  getWorkflow(taskId: string): Promise<WorkflowVm>;
+  getWorkflow(taskId: string, projectId?: string | null): Promise<WorkflowVm>;
   createTask(input: CreateTaskInput): Promise<WorkflowVm>;
   saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowVm>;
   getWorkflowTemplates(): Promise<WorkflowTemplateStore>;

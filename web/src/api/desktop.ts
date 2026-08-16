@@ -234,8 +234,8 @@ export const desktopApi: RuntimeApi = {
   getTaskDetail(taskId: string) {
     return invokeCommand('get_task_detail', { taskId });
   },
-  getWorkflow(taskId: string) {
-    return invokeCommand('get_workflow', { taskId });
+  getWorkflow(taskId: string, projectId?: string | null) {
+    return invokeCommand('get_workflow', { projectId, taskId });
   },
   createTask(input: CreateTaskInput) {
     return invokeCommand('create_task', { input });

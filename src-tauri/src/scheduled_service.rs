@@ -9,9 +9,7 @@ use gold_band::scheduler::db::{
 };
 use gold_band::scheduler::fingerprint::canonical_content_json;
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
-use gold_band::scheduler::{
-    ScheduleError, ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy,
-};
+use gold_band::scheduler::{ScheduleError, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -153,10 +151,10 @@ pub struct ManualRunResult {
 
 #[derive(Debug, Clone)]
 pub enum SchedulerCommand {
-    JobCreated(ScheduledTaskDefinition),
-    JobUpdated(ScheduledTaskDefinition),
-    JobEnabled(ScheduledTaskDefinition),
-    JobDisabled(ScheduledTaskDefinition),
+    JobCreated(ScheduledJobRecord),
+    JobUpdated(ScheduledJobRecord),
+    JobEnabled(ScheduledJobRecord),
+    JobDisabled(ScheduledJobRecord),
     JobDeleted(ScheduledTaskDefinition),
 }
 
@@ -253,7 +251,7 @@ impl ScheduledTaskService {
     pub fn list(
         &self,
         project_id: Option<&str>,
-    ) -> ScheduledServiceResult<Vec<ScheduledTaskDefinition>> {
+    ) -> ScheduledServiceResult<Vec<ScheduledJobRecord>> {
         let workspaces = match project_id {
             Some(project_id) => match (self.resolve_workspace)(project_id) {
                 Ok(workspace) => vec![workspace],
@@ -262,18 +260,18 @@ impl ScheduledTaskService {
             },
             None => (self.list_workspaces)()?,
         };
-        let mut definitions = Vec::new();
+        let mut records = Vec::new();
         for workspace in workspaces {
             let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
                 .map_err(ScheduledServiceError::from_database)?;
-            definitions.extend(
+            records.extend(
                 database
-                    .list_job_definitions_for_project(&workspace.app.paths.project_id)
+                    .list_job_records_for_project(&workspace.app.paths.project_id)
                     .map_err(ScheduledServiceError::from_database)?,
             );
         }
-        definitions.sort_by_key(|definition| definition.created_at);
-        Ok(definitions)
+        records.sort_by_key(|record| record.definition.created_at);
+        Ok(records)
     }
 
     pub fn get(
@@ -295,12 +293,13 @@ impl ScheduledTaskService {
         Ok((self.resolve_workspace)(project_id)?.workspace_name)
     }
 
-    pub fn list_occurrences(
+    pub fn list_occurrence_page(
         &self,
         project_id: &str,
         job_id: &str,
-        limit: usize,
-    ) -> ScheduledServiceResult<Vec<ScheduledOccurrence>> {
+        status: Option<gold_band::scheduler::occurrence::OccurrenceStatus>,
+        cursor: Option<&gold_band::scheduler::db::OccurrencePageCursor>,
+    ) -> ScheduledServiceResult<gold_band::scheduler::db::OccurrencePage> {
         let workspace = (self.resolve_workspace)(project_id)?;
         let resolved_project_id = workspace.app.paths.project_id.clone();
         let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
@@ -310,8 +309,40 @@ impl ScheduledTaskService {
             .map_err(ScheduledServiceError::from_database)?
             .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
         database
-            .list_occurrences(job_id, limit)
+            .list_occurrence_page(
+                job_id,
+                status,
+                cursor,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
             .map_err(ScheduledServiceError::from_database)
+    }
+
+    pub fn occurrence_diagnostics(
+        &self,
+        project_id: &str,
+        job_id: &str,
+    ) -> ScheduledServiceResult<(u64, Vec<ScheduledOccurrence>)> {
+        let workspace = (self.resolve_workspace)(project_id)?;
+        let resolved_project_id = workspace.app.paths.project_id.clone();
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        database
+            .get_job_definition(&resolved_project_id, job_id)
+            .map_err(ScheduledServiceError::from_database)?
+            .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
+        let run_count = database
+            .count_run_occurrences(job_id)
+            .map_err(ScheduledServiceError::from_database)?;
+        let page = database
+            .list_occurrence_page(
+                job_id,
+                None,
+                None,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
+            .map_err(ScheduledServiceError::from_database)?;
+        Ok((run_count, page.items))
     }
 
     pub fn create(
@@ -442,7 +473,7 @@ impl ScheduledTaskService {
                 .map_err(ScheduledServiceError::from_database)
         })?;
         self.coordinator
-            .notify(SchedulerCommand::JobCreated(record.definition.clone()))?;
+            .notify(SchedulerCommand::JobCreated(record.clone()))?;
         let _ = workspace.workspace_name;
         Ok(record)
     }
@@ -548,6 +579,7 @@ impl ScheduledTaskService {
         }
 
         let mut definition = current.definition.clone();
+        let previous_schedule = definition.schedule.clone();
         let previous_mode = definition.mode;
         let new_snapshot =
             scheduled_content_snapshot(&workspace.app, &validation_input).map_err(|_| {
@@ -632,12 +664,20 @@ impl ScheduledTaskService {
         } else {
             None
         };
+        // next_run_at 单一维护者：只有 schedule 真正变化时才基于 now 重算下一次触发；
+        // 改 instruction / 附件 / 模式等非调度字段时保留 scheduler 已推进的 next_run_at，
+        // 避免编辑把调度时机重置或倒退。
+        let next_run_at = if definition.schedule != previous_schedule {
+            if definition.enabled {
+                definition.schedule.next_occurrence_after(now)
+            } else {
+                None
+            }
+        } else {
+            current.next_run_at
+        };
         let update_result = database
-            .update_job(
-                &definition,
-                expected_updated_at,
-                derived_next_run_at(&definition),
-            )
+            .update_job(&definition, expected_updated_at, next_run_at)
             .map_err(ScheduledServiceError::from_database);
         let record = match update_result {
             Ok(UpdateJobResult::Updated(record)) => {
@@ -669,7 +709,7 @@ impl ScheduledTaskService {
             }
         };
         self.coordinator
-            .notify(SchedulerCommand::JobUpdated(record.definition.clone()))?;
+            .notify(SchedulerCommand::JobUpdated(record.clone()))?;
         Ok(record)
     }
 
@@ -687,27 +727,29 @@ impl ScheduledTaskService {
             .get_job_definition(&resolved_project_id, job_id)
             .map_err(ScheduledServiceError::from_database)?
             .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
+        if current.definition.enabled == enabled {
+            return Ok(current);
+        }
         let expected_updated_at = current.definition.updated_at;
         let mut definition = current.definition;
-        let was_enabled = definition.enabled;
         definition.enabled = enabled;
-        if enabled && !was_enabled {
-            if let ScheduleKind::Every { anchor_at, .. } = &mut definition.schedule.kind {
-                *anchor_at = chrono::Utc::now();
-            }
-        }
         let now = chrono::Utc::now();
+        // 重新启用时，所有 schedule 类型都从「当前时刻」计算下一次触发，而不是沿用停用前的
+        // last_trigger_at 作基准——否则 Repeat/Cron 会算出停用期间的一个过去点作为 next_run_at，
+        // 被 coordinator 当作 missed 回填（产生错过的历史记录 + 通知）。Every 同样从 now 起算，
+        // 不再单独重置 anchor（next_occurrence_after(now) 已覆盖）。
+        let next_run_at = if enabled {
+            definition.schedule.next_occurrence_after(now)
+        } else {
+            None
+        };
         definition.updated_at = if now > expected_updated_at {
             now
         } else {
             expected_updated_at + chrono::Duration::milliseconds(1)
         };
         let record = match database
-            .update_job(
-                &definition,
-                expected_updated_at,
-                derived_next_run_at(&definition),
-            )
+            .update_job(&definition, expected_updated_at, next_run_at)
             .map_err(ScheduledServiceError::from_database)?
         {
             UpdateJobResult::Updated(record) => record,
@@ -717,9 +759,9 @@ impl ScheduledTaskService {
             }
         };
         self.coordinator.notify(if enabled {
-            SchedulerCommand::JobEnabled(record.definition.clone())
+            SchedulerCommand::JobEnabled(record.clone())
         } else {
-            SchedulerCommand::JobDisabled(record.definition.clone())
+            SchedulerCommand::JobDisabled(record.clone())
         })?;
         Ok(record)
     }
@@ -808,32 +850,36 @@ struct DesktopScheduledCoordinator {
 
 impl ScheduledCoordinator for DesktopScheduledCoordinator {
     fn notify(&self, command: SchedulerCommand) -> ScheduledServiceResult<()> {
-        let (definition, runtime_command) = match command {
-            SchedulerCommand::JobCreated(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+        let (definition, next_run_at, runtime_command) = match command {
+            SchedulerCommand::JobCreated(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobCreated { key },
                 )
             }
-            SchedulerCommand::JobUpdated(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobUpdated(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobUpdated { key },
                 )
             }
-            SchedulerCommand::JobEnabled(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobEnabled(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobEnabled { key },
                 )
             }
-            SchedulerCommand::JobDisabled(definition) => {
-                let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
+            SchedulerCommand::JobDisabled(record) => {
+                let key = scheduled_job_key_for_definition(&self.app_handle, &record.definition)?;
                 (
-                    definition,
+                    record.definition,
+                    record.next_run_at,
                     crate::scheduled_runtime::SchedulerCommand::JobDisabled { key },
                 )
             }
@@ -841,6 +887,7 @@ impl ScheduledCoordinator for DesktopScheduledCoordinator {
                 let key = scheduled_job_key_for_definition(&self.app_handle, &definition)?;
                 (
                     definition,
+                    None,
                     crate::scheduled_runtime::SchedulerCommand::JobDeleted { key },
                 )
             }
@@ -857,7 +904,11 @@ impl ScheduledCoordinator for DesktopScheduledCoordinator {
         if deleted {
             crate::scheduled_runtime::emit_scheduled_task_deleted(&self.app_handle, &definition);
         } else {
-            crate::scheduled_runtime::emit_scheduled_task_updated(&self.app_handle, &definition);
+            crate::scheduled_runtime::emit_scheduled_task_updated(
+                &self.app_handle,
+                &definition,
+                next_run_at,
+            );
         }
         Ok(())
     }
@@ -1181,7 +1232,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration, TimeZone, Utc};
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
     use gold_band::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use gold_band::dsl::NodeDsl;
@@ -1226,6 +1277,10 @@ mod tests {
 
         fn command_count(&self) -> usize {
             self.commands.lock().unwrap().len()
+        }
+
+        fn last_command(&self) -> SchedulerCommand {
+            self.commands.lock().unwrap().last().unwrap().clone()
         }
     }
 
@@ -1471,6 +1526,21 @@ mod tests {
                 .join("inputs/report.txt")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn create_notification_keeps_the_persisted_next_run_at() {
+        let fixture = Fixture::new();
+
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+
+        match fixture.coordinator.last_command() {
+            SchedulerCommand::JobCreated(record) => {
+                assert_eq!(record.next_run_at, created.next_run_at);
+                assert!(record.next_run_at.is_some());
+            }
+            command => panic!("expected JobCreated, got {command:?}"),
+        }
     }
 
     #[test]
@@ -1774,6 +1844,93 @@ mod tests {
     }
 
     #[test]
+    fn update_preserves_next_run_at_when_schedule_is_unchanged() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        // 模拟 scheduler 已经把 next_run_at 推进到一个明确值（例如 occurrence materialize 后）。
+        let advanced = Utc.with_ymd_and_hms(2099, 6, 1, 12, 0, 0).unwrap();
+        let mut definition = created.definition.clone();
+        definition.updated_at = Utc::now();
+        fixture
+            .database
+            .update_job(&definition, created.definition.updated_at, Some(advanced))
+            .unwrap();
+        // update_input 的 expected_updated_at 需基于当前 record（被上面 update_job 推进过）。
+        let current = fixture
+            .database
+            .get_job_definition(&created.definition.project_id, created.definition.id())
+            .unwrap()
+            .unwrap();
+
+        // 编辑 instruction（非 schedule 字段），schedule 保持与创建时一致。
+        let updated = fixture
+            .service
+            .update(fixture.update_input(&current.definition, "edited content"))
+            .unwrap();
+
+        // next_run_at 必须保留为 scheduler 推进的值，不能被 derived 覆盖/倒退。
+        assert_eq!(updated.next_run_at, Some(advanced));
+    }
+
+    #[test]
+    fn schedule_edits_ignore_stale_last_trigger_for_repeat_cron_and_every() {
+        let schedules = vec![
+            ScheduledScheduleInputVm::Repeat {
+                preset: RepeatPreset::Daily,
+                hour: 9,
+                minute: 0,
+                timezone: "UTC".to_string(),
+            },
+            ScheduledScheduleInputVm::Cron {
+                expression: "0 0 9 * * *".to_string(),
+                timezone: "UTC".to_string(),
+            },
+            ScheduledScheduleInputVm::Every {
+                every: ScheduledEveryInputVm {
+                    value: 1,
+                    unit: "hours".to_string(),
+                },
+                anchor_at: Utc::now() - Duration::days(30),
+                timezone: "UTC".to_string(),
+            },
+        ];
+
+        for schedule in schedules {
+            let fixture = Fixture::new();
+            let created = fixture.service.create(fixture.create_input()).unwrap();
+            let mut stale = created.definition.clone();
+            stale.last_trigger_at = Some(Utc::now() - Duration::days(30));
+            stale.updated_at = created.definition.updated_at + Duration::seconds(1);
+            fixture
+                .database
+                .update_job(
+                    &stale,
+                    created.definition.updated_at,
+                    Some(Utc::now() - Duration::days(29)),
+                )
+                .unwrap();
+            let current = fixture
+                .database
+                .get_job_definition(&created.definition.project_id, created.definition.id())
+                .unwrap()
+                .unwrap();
+            let mut input = fixture.update_input(&current.definition, "edited schedule");
+            input.schedule = schedule;
+            let before = Utc::now();
+
+            let updated = fixture.service.update(input).unwrap();
+            let next_run_at = updated
+                .next_run_at
+                .expect("an enabled recurring schedule must keep a future deadline");
+
+            assert!(
+                next_run_at >= before,
+                "schedule edit must derive its deadline from now: {next_run_at} < {before}"
+            );
+        }
+    }
+
+    #[test]
     fn enable_and_pause_update_the_sqlite_deadline() {
         let fixture = Fixture::new();
         let created = fixture.service.create(fixture.create_input()).unwrap();
@@ -1799,6 +1956,100 @@ mod tests {
             .unwrap();
         assert!(enabled.definition.enabled);
         assert!(enabled.next_run_at.is_some());
+    }
+
+    #[test]
+    fn setting_the_existing_enabled_state_is_idempotent() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let advanced = Utc.with_ymd_and_hms(2099, 6, 1, 12, 0, 0).unwrap();
+        let mut definition = created.definition.clone();
+        definition.updated_at = created.definition.updated_at + Duration::seconds(1);
+        let current = match fixture
+            .database
+            .update_job(&definition, created.definition.updated_at, Some(advanced))
+            .unwrap()
+        {
+            UpdateJobResult::Updated(record) => record,
+            result => panic!("expected updated record, got {result:?}"),
+        };
+        let command_count = fixture.coordinator.command_count();
+
+        let unchanged_enabled = fixture
+            .service
+            .set_enabled(
+                &current.definition.project_id,
+                current.definition.id(),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(unchanged_enabled, current);
+        assert_eq!(unchanged_enabled.next_run_at, Some(advanced));
+        assert_eq!(fixture.coordinator.command_count(), command_count);
+
+        let disabled = fixture
+            .service
+            .set_enabled(
+                &current.definition.project_id,
+                current.definition.id(),
+                false,
+            )
+            .unwrap();
+        let disabled_command_count = fixture.coordinator.command_count();
+        let unchanged_disabled = fixture
+            .service
+            .set_enabled(
+                &current.definition.project_id,
+                current.definition.id(),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(unchanged_disabled, disabled);
+        assert_eq!(fixture.coordinator.command_count(), disabled_command_count);
+    }
+
+    #[test]
+    fn reenabling_repeat_job_schedules_next_run_from_now_not_from_stale_last_trigger() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.schedule = ScheduledScheduleInputVm::Repeat {
+            preset: RepeatPreset::Daily,
+            hour: 9,
+            minute: 0,
+            timezone: "UTC".to_string(),
+        };
+        let created = fixture.service.create(input).unwrap();
+        // 模拟「停用前」的状态：把 last_trigger_at 设到很远的过去。
+        let mut stale = created.definition.clone();
+        stale.last_trigger_at = Some(Utc::now() - Duration::days(30));
+        stale.enabled = false;
+        stale.updated_at = Utc::now();
+        fixture
+            .database
+            .update_job(&stale, created.definition.updated_at, None)
+            .unwrap();
+
+        let before = Utc::now();
+        let enabled = fixture
+            .service
+            .set_enabled(
+                &created.definition.project_id,
+                created.definition.id(),
+                true,
+            )
+            .unwrap();
+
+        // 重新启用后，next_run_at 必须从「当前时刻」起算（未来点），
+        // 而不是基于 30 天前的 last_trigger_at 算出停用期间的一个过去点。
+        let next_run_at = enabled
+            .next_run_at
+            .expect("enabled repeat job must have a future next_run_at");
+        assert!(
+            next_run_at >= before,
+            "next_run_at must not regress into the disabled window: {next_run_at} < {before}"
+        );
     }
 
     #[test]
@@ -1875,7 +2126,7 @@ mod tests {
         );
         let second = service.list(Some(&second_app.paths.project_id)).unwrap();
         assert_eq!(second.len(), 1);
-        assert_eq!(second[0].instruction, "second");
+        assert_eq!(second[0].definition.instruction, "second");
     }
 
     #[test]

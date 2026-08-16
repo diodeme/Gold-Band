@@ -1628,10 +1628,16 @@ export const browserApi: RuntimeApi = {
     emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
     return Promise.resolve();
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit = 50) {
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
     if (!task) return browserCommandError('scheduled-task.not-found');
-    return Promise.resolve((browserScheduledOccurrences.get(scheduledTaskId) ?? []).slice(0, Math.max(1, Math.min(limit, 200))).map((occurrence) => structuredClone(occurrence)));
+    const all = (browserScheduledOccurrences.get(scheduledTaskId) ?? [])
+      .filter((occurrence) => !status || occurrence.status === status);
+    const start = cursor ? all.findIndex((occurrence) => occurrence.id === cursor) + 1 : 0;
+    if (cursor && start === 0) return browserCommandError('scheduled-task.validation-failed');
+    const items = all.slice(start, start + 20).map((occurrence) => structuredClone(occurrence));
+    const hasMore = start + items.length < all.length;
+    return Promise.resolve({ items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);

@@ -1922,6 +1922,11 @@ export interface ScheduledOccurrenceVm {
   finishedAt?: string | null;
 }
 
+export interface ScheduledOccurrencePageVm {
+  items: ScheduledOccurrenceVm[];
+  nextCursor?: string | null;
+}
+
 export interface ScheduledTaskDiagnosticsVm {
   scheduledTaskId: string;
   projectId: string;

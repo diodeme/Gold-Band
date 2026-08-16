@@ -204,6 +204,8 @@ describe('turn file changes card', () => {
     try {
       expect(container.textContent).not.toContain('正在加载文件变化');
       expect(container.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+      expect(container.querySelector('[data-slot="tooltip-trigger"]')).not.toBeNull();
+      expect(container.querySelector('[title]')).toBeNull();
       expect(getTurnFileChangeSetMock).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => root.unmount());
@@ -337,8 +339,11 @@ describe('conversation artifact workspace entry', () => {
           </RightWorkspaceProvider>,
         );
       });
-      const artifactButton = container.querySelector<HTMLButtonElement>('button[title="result.md"]');
+      const artifactButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('result.md')) ?? null;
       expect(artifactButton).not.toBeNull();
+      expect(artifactButton?.dataset.slot).toBe('tooltip-trigger');
+      expect(artifactButton?.hasAttribute('title')).toBe(false);
       await act(async () => artifactButton?.click());
       const probe = container.querySelector('output');
       expect(probe?.dataset.activeKind).toBe('conversation-asset');

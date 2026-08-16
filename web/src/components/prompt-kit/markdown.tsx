@@ -1,15 +1,19 @@
 import type React from 'react';
-import { createContext, isValidElement, memo, useContext, useLayoutEffect, useRef } from 'react';
-import { FileCode2 } from 'lucide-react';
+import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Download, FileCode2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { code } from '@streamdown/code';
 import {
   Block,
+  CodeBlock,
+  CodeBlockCopyButton,
   defaultUrlTransform,
   Streamdown,
   type BlockProps,
   type StreamdownProps,
+  useIsCodeFenceIncomplete,
 } from 'streamdown';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { openExternalUrl } from '@/api';
 import { cn } from '@/lib/utils';
 import { isExternalUrlHref, isLocalFileHref, parseLocalFileLinkTarget } from '@/lib/file-link';
@@ -79,7 +83,7 @@ const markdownUrlTransform: NonNullable<StreamdownProps['urlTransform']> = (url,
 const markdownLinkSafety: NonNullable<StreamdownProps['linkSafety']> = { enabled: false };
 const markdownPlugins: NonNullable<StreamdownProps['plugins']> = { code };
 const markdownControls: NonNullable<StreamdownProps['controls']> = {
-  code: { copy: true, download: false },
+  code: { copy: false, download: false },
   table: false,
   mermaid: false,
 };
@@ -157,6 +161,162 @@ function CompactHeading({ level, children }: { level: 1 | 2 | 3; children: React
   return <h3 className="mt-2.5 mb-1 text-sm font-medium leading-6 text-foreground first:mt-0">{children}</h3>;
 }
 
+const CODE_LANGUAGE_PATTERN = /language-([^\s]+)/;
+const CODE_START_LINE_PATTERN = /startLine=(\d+)/;
+const CODE_WITHOUT_LINE_NUMBERS_PATTERN = /\bnoLineNumbers\b/;
+const IMAGE_EXTENSION_PATTERN = /\.[^/.]+$/;
+
+type MarkdownCodeBlockProps = React.HTMLAttributes<HTMLElement> & {
+  node?: {
+    properties?: {
+      metastring?: string;
+    };
+  };
+};
+
+function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCodeBlockProps) {
+  const { t } = useTranslation();
+  const isIncomplete = useIsCodeFenceIncomplete();
+  const language = className?.match(CODE_LANGUAGE_PATTERN)?.[1] ?? '';
+  const meta = node?.properties?.metastring;
+  const parsedStartLine = meta?.match(CODE_START_LINE_PATTERN)?.[1];
+  const startLine = parsedStartLine ? Number.parseInt(parsedStartLine, 10) : undefined;
+  const lineNumbers = !CODE_WITHOUT_LINE_NUMBERS_PATTERN.test(meta ?? '');
+  let source = '';
+
+  if (isValidElement<{ children?: React.ReactNode }>(children) && typeof children.props.children === 'string') {
+    source = children.props.children;
+  } else if (typeof children === 'string') {
+    source = children;
+  }
+
+  return (
+    <CodeBlock
+      {...props}
+      className={className}
+      code={source}
+      isIncomplete={isIncomplete}
+      language={language}
+      lineNumbers={lineNumbers}
+      startLine={startLine && startLine >= 1 ? startLine : undefined}
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <CodeBlockCopyButton
+            aria-label={t('common.copyCode')}
+            code={source}
+            title={undefined}
+          />
+        </TooltipTrigger>
+        <TooltipContent>{t('common.copyCode')}</TooltipContent>
+      </Tooltip>
+    </CodeBlock>
+  );
+}
+
+type MarkdownImageProps = React.ImgHTMLAttributes<HTMLImageElement> & { node?: unknown };
+
+function imageDownloadName(src: string, alt: string) {
+  const sourceName = new URL(src, window.location.origin).pathname.split('/').at(-1) ?? '';
+  const sourceExtension = sourceName.split('.').at(-1);
+  if (sourceName.includes('.') && sourceExtension && sourceExtension.length <= 4) return sourceName;
+  return alt.replace(IMAGE_EXTENSION_PATTERN, '') || sourceName || 'image';
+}
+
+function downloadImageBlob(blob: Blob, fileName: string) {
+  const extension = blob.type.includes('jpeg') || blob.type.includes('jpg')
+    ? 'jpg'
+    : blob.type.includes('svg')
+      ? 'svg'
+      : blob.type.includes('gif')
+        ? 'gif'
+        : blob.type.includes('webp')
+          ? 'webp'
+          : 'png';
+  const downloadName = fileName.includes('.') ? fileName : `${fileName}.${extension}`;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = downloadName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function MarkdownImage({ node: _node, className, src, alt = '', onLoad, onError, ...props }: MarkdownImageProps) {
+  const { t } = useTranslation();
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const hasDeclaredSize = props.width !== undefined || props.height !== undefined;
+  const showImage = (loaded || hasDeclaredSize) && !failed;
+  const showFallback = failed && !hasDeclaredSize;
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image?.complete) return;
+    const succeeded = image.naturalWidth > 0;
+    setLoaded(succeeded);
+    setFailed(!succeeded);
+  }, []);
+
+  const handleLoad = useCallback<React.ReactEventHandler<HTMLImageElement>>((event) => {
+    setLoaded(true);
+    setFailed(false);
+    onLoad?.(event);
+  }, [onLoad]);
+
+  const handleError = useCallback<React.ReactEventHandler<HTMLImageElement>>((event) => {
+    setLoaded(false);
+    setFailed(true);
+    onError?.(event);
+  }, [onError]);
+
+  const handleDownload = useCallback(async () => {
+    if (!src) return;
+    try {
+      const response = await fetch(src);
+      const blob = await response.blob();
+      downloadImageBlob(blob, imageDownloadName(src, alt));
+    } catch {
+      await openExternalUrl(src);
+    }
+  }, [alt, src]);
+
+  if (!src) return null;
+  return (
+    <span className="group relative my-4 inline-block" data-gb-markdown-image="true">
+      <img
+        {...props}
+        ref={imageRef}
+        alt={alt}
+        className={cn('max-w-full rounded-lg', showFallback && 'hidden', className)}
+        src={src}
+        onLoad={handleLoad}
+        onError={handleError}
+      />
+      {showFallback ? <span className="text-xs italic text-muted-foreground">{t('common.imageNotAvailable')}</span> : null}
+      <span className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" aria-hidden="true" />
+      {showImage ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="absolute bottom-2 right-2 flex size-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 shadow-sm backdrop-blur-sm transition-all duration-200 hover:bg-background group-hover:opacity-100"
+              aria-label={t('common.downloadImage')}
+              onClick={() => void handleDownload()}
+            >
+              <Download className="size-3.5" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{t('common.downloadImage')}</TooltipContent>
+        </Tooltip>
+      ) : null}
+    </span>
+  );
+}
+
 const markdownComponents = {
   h1: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={1}>{children}</CompactHeading>,
   h2: ({ children }: { children?: React.ReactNode }) => <CompactHeading level={2}>{children}</CompactHeading>,
@@ -168,6 +328,8 @@ const markdownComponents = {
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold text-foreground">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="text-foreground/90">{children}</em>,
   a: MarkdownLink,
+  code: MarkdownCodeBlock,
+  img: MarkdownImage,
   ul: ({ children }: { children?: React.ReactNode }) => <ul className="my-1.5 list-disc space-y-1 pl-5 marker:text-muted-foreground">{children}</ul>,
   ol: ({ children }: { children?: React.ReactNode }) => <ol className="my-1.5 list-decimal space-y-1 pl-5 marker:text-muted-foreground">{children}</ol>,
   li: ({ children }: { children?: React.ReactNode }) => <li className="pl-1 leading-6">{children}</li>,

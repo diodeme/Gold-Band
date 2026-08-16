@@ -2,12 +2,17 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ScheduledTaskManagementPage, scheduledWorkspaceFilterTriggerClassName } from '@/pages/ScheduledTaskManagementPage';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import i18n from '@/i18n';
 
 describe('ScheduledTaskManagementPage', () => {
   it('renders the global management surface with workspace filtering', async () => {
     await i18n.changeLanguage('zh-CN');
-    const html = renderToStaticMarkup(React.createElement(ScheduledTaskManagementPage, { projectId: 'project-a' }));
+    const html = renderToStaticMarkup(React.createElement(
+      TooltipProvider,
+      null,
+      React.createElement(ScheduledTaskManagementPage, { projectId: 'project-a' }),
+    ));
 
     expect(html).toContain('定时任务');
     expect(html).not.toContain('按计划执行并追踪最近一次运行');

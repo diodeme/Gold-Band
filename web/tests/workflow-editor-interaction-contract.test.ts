@@ -22,6 +22,7 @@ import {
 
 const editorSource = readFileSync(fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)), 'utf8');
 const runtimeGraphSource = readFileSync(fileURLToPath(new URL('../src/components/GraphView.tsx', import.meta.url)), 'utf8');
+const graphControlsSource = readFileSync(fileURLToPath(new URL('../src/components/GraphControls.tsx', import.meta.url)), 'utf8');
 const stylesSource = readFileSync(fileURLToPath(new URL('../src/styles.css', import.meta.url)), 'utf8');
 
 function worker(id: string, patch: Partial<WorkflowWorkerNodeDsl> = {}): WorkflowWorkerNodeDsl {
@@ -292,7 +293,13 @@ describe('workflow editor interaction contracts', () => {
   });
 
   it('keeps workflow navigation on the canvas controls without a minimap lifecycle', () => {
-    expect(editorSource).toContain('<Controls showInteractive={false}');
+    expect(editorSource).toContain('<GraphControls');
+    expect(runtimeGraphSource).toContain('<GraphControls');
+    expect(graphControlsSource).toContain('showZoom={false} showFitView={false} showInteractive={false}');
+    expect(graphControlsSource).toContain('<TooltipTrigger asChild>');
+    expect(stylesSource).toContain('.workflow-graph .react-flow__controls-button svg');
+    expect(stylesSource).toContain('fill: none;\n  stroke: currentColor;');
+    expect(stylesSource).not.toContain('.workflow-graph .react-flow__controls-button svg {\n  fill: currentColor;');
     expect(editorSource).not.toContain('<MiniMap');
     expect(editorSource).not.toContain('showMiniMap');
     expect(editorSource).not.toContain('workflowGraphExceedsViewport');

@@ -51,39 +51,38 @@ export function EditableConversationTitle({
 
   if (editing) {
     return (
-      <input
-        ref={inputRef}
-        className={cn(
-          'min-w-0 rounded-md border border-primary/40 bg-background px-2 py-0.5 text-sm font-semibold leading-5 text-foreground outline-none ring-2 ring-primary/10',
-          className,
-        )}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        onBlur={commitTitle}
-        onKeyDown={handleTitleKeyDown}
-      />
+      <span className={cn('min-w-0', className)}>
+        <input
+          ref={inputRef}
+          aria-label={t('conversation.runtime.titleEdit')}
+          className="min-w-[2ch] max-w-full rounded-md border border-primary/40 bg-background px-2 py-0.5 text-sm font-semibold leading-5 text-foreground outline-none ring-2 ring-primary/10 [field-sizing:content]"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={commitTitle}
+          onKeyDown={handleTitleKeyDown}
+        />
+      </span>
     );
   }
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'group -ml-1 flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted/50',
-            className,
-          )}
-          onClick={startEditing}
-        >
-          <h1 className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground">{title}</h1>
-          {metadata ? <span className="shrink-0 text-ui-caption leading-4 text-muted-foreground/55">{metadata}</span> : null}
-          {showEditIcon ? (
-            <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-          ) : null}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{t('conversation.runtime.titleEdit')}</TooltipContent>
-    </Tooltip>
+    <span className={cn('min-w-0', className)}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="group -ml-1 inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted/50"
+            onClick={startEditing}
+          >
+            <h1 className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground">{title}</h1>
+            {metadata ? <span className="shrink-0 text-ui-caption leading-4 text-muted-foreground/55">{metadata}</span> : null}
+            {showEditIcon ? (
+              <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+            ) : null}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{t('conversation.runtime.titleEdit')}</TooltipContent>
+      </Tooltip>
+    </span>
   );
 }

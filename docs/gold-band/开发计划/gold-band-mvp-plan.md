@@ -1,5 +1,20 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-16：产品悬浮提示统一迁移
+
+- 根因：项目已经确立 shadcn/Radix Tooltip 与全局 Provider，但多个页面仍直接使用浏览器 `title`，React Flow 画布控制和 Streamdown 代码/图片控制还会由依赖内部间接生成 `title`。这是共享交互契约覆盖不完整，不是工作流或文件列表的局部样式问题。
+- 实现：删除业务控件上的原生提示，统一组合现有 Tooltip；用 React Flow 官方 `Controls/ControlButton` 和实例接口封装共享画布控制，用 Streamdown 官方 `CodeBlock/CodeBlockCopyButton` 与 `components` 扩展点接管 Markdown 代码、图片控制，不修改 `node_modules`、不增加依赖、DOM 清理器或兼容分支。迁移范围包括标题栏、工作流、会话/ACP、轮次变更、附件、文件/源码管理、运行模式、定时任务及 Markdown 控制。
+- 接口验收：增加源码 AST 契约，禁止原生标签及基础 `Button/Handle` 回退到 `title`；补充 prompt-kit action、轮次文件/运行产物、Markdown 代码复制与图片下载的服务端 DOM 测试。按用户要求不执行浏览器或桌面端人工验证，由用户根据最终验证点清单验收视觉位置。
+- 性能与过度设计评审：Tooltip 仅在现有有限控件处增加有界组件树，不新增请求、缓存、队列、全量扫描或宽泛状态订阅；画布操作继续调用既有 React Flow 实例，复杂度 O(1)。Markdown 图片只保留依赖原有的单图片加载状态与点击下载 I/O，不增加轮询或观察器；现有 canonical 数据、生命周期和接口均无需扩展。
+- 视觉回归修正：React Flow 的基础样式会对 `ControlButton` 下所有 SVG 强制 `fill: currentColor`，迁移后覆盖了 Lucide 线性图标的 `fill="none"`，使放大、缩小的 `+ / −` 被实心镜片遮蔽。现于共享 `.workflow-graph` 控制样式边界统一恢复 `fill: none / stroke: currentColor`，同时覆盖编辑态与运行态画布；契约测试禁止该边界回退为实心填充。本修正仅改变三个固定 SVG 的绘制属性，不新增渲染、状态、I/O 或主题特判。
+
+## 2026-08-16：会话标题编辑宽度收敛
+
+- 根因：共享可编辑标题组件把页头传入的 `flex-1` 布局职责直接附加到展示态 Tooltip trigger 和编辑输入框，导致视觉内容很短时，空白剩余区域仍可触发“修改标题”，编辑态也会占满整行。这是布局槽位与真实交互命中区没有分层，不是某个标题或截图宽度的特例。
+- 实现：继续复用现有 React、Tailwind 与 shadcn Tooltip，不引入新组件或依赖。展示态与编辑态都增加只负责页头布局的外层槽位；Tooltip/click trigger 使用 intrinsic `inline-flex`，输入框使用浏览器原生 `field-sizing: content`，两者均通过 `max-w-full` 受槽位约束；同步补充输入框无障碍名称。
+- 验收：DOM 单元测试固定父级 `flex-1` 只作用于布局槽位，展示态 trigger 与编辑态输入框均不继承伸展宽度且保留最大宽度约束；执行定向 Vitest、TypeScript 与 Web 生产构建，并使用内置浏览器 deep link 检查短标题、标题后空白命中、长标题与窄窗口编辑态。
+- 性能与过度设计评审：没有新增 React state、effect、DOM 测量、ResizeObserver、缓存、I/O、依赖或逐帧计算；每次输入仍只更新标题组件自身，宽度由浏览器既有布局阶段计算。现有 canonical title、保存接口和事件链足以表达需求，不新增状态模型或抽象。
+
 ## 2026-08-15：会话侧边栏固定区与滚动区收敛
 
 - 根因：侧栏把置顶区放在 workspace `ScrollArea` 之外，导致置顶会话增长时持续挤占 workspace 可视高度；同时“置顶”仍消费辅助 `text-xs`，与已经统一为 UI 基准字号的功能入口不一致。问题来自滚动容器边界和排版 token 未同步完成，不是单个截图尺寸下的间距问题。

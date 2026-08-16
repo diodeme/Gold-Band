@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { isLocalFileHref, Markdown, proxyLocalFileLinks } from '@/components/prompt-kit/markdown';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { isDocumentAnchorHref, isExternalUrlHref, parseLocalFileLinkTarget } from '@/lib/file-link';
 
 function renderedText(html: string) {
@@ -114,16 +115,38 @@ describe('prompt-kit Markdown', () => {
   });
 
   it('does not leak renderer metadata into code DOM attributes', () => {
-    const html = renderToStaticMarkup(createElement(Markdown, {
-      children: '```ts\nconst value = 1;\n```',
-    }));
+    const html = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
+      createElement(Markdown, {
+        children: '```ts\nconst value = 1;\n```',
+      }),
+    ));
 
     expect(html).toContain('const value = 1;');
     expect(html).toContain('data-streamdown="code-block"');
     expect(html).toContain('data-streamdown="code-block-header"');
     expect(html).toContain('data-language="ts"');
     expect(html).toContain('data-streamdown="code-block-copy-button"');
-    expect(html).toContain('title="common.copyCode"');
+    expect(html).toContain('data-slot="tooltip-trigger"');
+    expect(html).toContain('aria-label="common.copyCode"');
+    expect(html).not.toContain('title="common.copyCode"');
     expect(html).not.toContain('node=');
+  });
+
+  it('uses the project image adapter instead of Streamdown native-title image controls', () => {
+    const html = renderToStaticMarkup(createElement(
+      TooltipProvider,
+      null,
+      createElement(Markdown, {
+        children: '<img src="https://example.com/preview.png" alt="Preview" width="64" />',
+      }),
+    ));
+
+    expect(html).toContain('data-gb-markdown-image="true"');
+    expect(html).toContain('aria-label="common.downloadImage"');
+    expect(html).toContain('data-slot="tooltip-trigger"');
+    expect(html).not.toContain('title=');
+    expect(html).not.toContain('data-streamdown="image-wrapper"');
   });
 });

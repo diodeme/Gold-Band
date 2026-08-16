@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
   loadTurnFileChangeSet,
@@ -152,7 +153,12 @@ function TurnFileChangeRow({ change, onOpen }: { change: TurnFileChangeVm; onOpe
   const content = (
     <>
       {icon}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={change.logicalPath}>{change.logicalPath}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{change.logicalPath}</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[360px] break-all">{change.logicalPath}</TooltipContent>
+      </Tooltip>
       <span className="text-xs tabular-nums text-emerald-600 dark:text-emerald-400">+{change.addedLines ?? 0}</span>
       <span className="text-xs tabular-nums text-destructive">-{change.deletedLines ?? 0}</span>
     </>

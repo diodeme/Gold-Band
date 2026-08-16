@@ -696,7 +696,8 @@
 }
 
 .workflow-graph .react-flow__controls-button svg {
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
 }
 
 .workflow-running-dot {

@@ -3,7 +3,6 @@ import { AlertCircle, Check, ChevronDown, ChevronsUpDown, CircleHelp, CornerDown
 import {
   Background,
   BaseEdge,
-  Controls,
   EdgeLabelRenderer,
   Handle,
   MarkerType,
@@ -69,6 +68,7 @@ import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { GraphControls } from '@/components/GraphControls';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
@@ -209,21 +209,36 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
   }
   const successHandleTop = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
   return (
-    <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
+      <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
       <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
-        <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" title={`${data.quickAddLabel}: ${data.successLabel}`} onClick={() => data.onQuickAdd?.('success')}>
-          <CornerDownRight className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-          {data.successLabel}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" onClick={() => data.onQuickAdd?.('success')}>
+              <CornerDownRight className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              {data.successLabel}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{data.quickAddLabel}: {data.successLabel}</TooltipContent>
+        </Tooltip>
         {data.supportsFailureOutcome ? (
-          <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" title={`${data.quickAddLabel}: ${data.failureLabel}`} onClick={() => data.onQuickAdd?.('failure')}>
-            <CornerDownRight className="size-3.5 text-destructive" />
-            {data.failureLabel}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" onClick={() => data.onQuickAdd?.('failure')}>
+                <CornerDownRight className="size-3.5 text-destructive" />
+                {data.failureLabel}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{data.quickAddLabel}: {data.failureLabel}</TooltipContent>
+          </Tooltip>
         ) : null}
-        <Button type="button" variant="ghost" size="icon-sm" className="nodrag nopan size-7 text-muted-foreground hover:text-destructive" aria-label={data.deleteLabel} title={data.deleteLabel} onClick={() => data.onDelete?.()}>
-          <Trash2 className="size-3.5" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-sm" className="nodrag nopan size-7 text-muted-foreground hover:text-destructive" aria-label={data.deleteLabel} onClick={() => data.onDelete?.()}>
+              <Trash2 className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{data.deleteLabel}</TooltipContent>
+        </Tooltip>
       </NodeToolbar>
       {data.entryCandidate ? (
         <Badge variant="outline" className="pointer-events-none absolute -left-1 -top-2 z-10 h-5 rounded-full bg-background px-1.5 text-[10px] font-medium">
@@ -231,8 +246,20 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
         </Badge>
       ) : null}
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
-      <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} title={data.successLabel} />
-      {data.supportsFailureOutcome ? <Handle id="failure" type="source" position={Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }} title={data.failureLabel} /> : null}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} />
+        </TooltipTrigger>
+        <TooltipContent>{data.successLabel}</TooltipContent>
+      </Tooltip>
+      {data.supportsFailureOutcome ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Handle id="failure" type="source" position={Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }} />
+          </TooltipTrigger>
+          <TooltipContent>{data.failureLabel}</TooltipContent>
+        </Tooltip>
+      ) : null}
       <div className="flex items-center gap-1.5">
         {data.iconKey ? (
           <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border/60 bg-muted/30 shadow-sm">
@@ -821,8 +848,8 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
             </TabsList>
           </Tabs>
           <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
-            <Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')} title={`${t('workflowEditor.undo')} (Ctrl+Z)`}><Undo2 className="size-3.5" /></Button>
-            <Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')} title={`${t('workflowEditor.redo')} (Ctrl+Y)`}><Redo2 className="size-3.5" /></Button>
+            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
+            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
           </div>
           {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
           {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
@@ -876,9 +903,14 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
               <Background color="var(--border)" gap={28} size={1} />
               <Panel position="top-left" className="m-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur-md">
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button type="button" size="icon-sm" variant="ghost" className="size-8 rounded-full" aria-label={t('workflowEditor.addNode')} title={t('workflowEditor.addNode')}><Plus className="size-4" /></Button>
-                  </DropdownMenuTrigger>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" size="icon-sm" variant="ghost" className="size-8 rounded-full" aria-label={t('workflowEditor.addNode')}><Plus className="size-4" /></Button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('workflowEditor.addNode')}</TooltipContent>
+                  </Tooltip>
                   <DropdownMenuContent align="start" sideOffset={8}>
                     <DropdownMenuItem onClick={addWorkerNode}><Plus className="size-4" />{t('workflowEditor.addWorkerNode')}</DropdownMenuItem>
                     {allowAiDynamic ? <DropdownMenuItem onClick={addAiDynamicNode}><Sparkles className="size-4" />{t('workflowEditor.addAiDynamicNode')}</DropdownMenuItem> : null}
@@ -888,7 +920,12 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
                 </DropdownMenu>
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
               </Panel>
-              <Controls showInteractive={false} fitViewOptions={{ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }} position="bottom-right" />
+              <GraphControls
+                disabled={!flowInstance}
+                onZoomIn={() => { void flowInstance?.zoomIn(); }}
+                onZoomOut={() => { void flowInstance?.zoomOut(); }}
+                onFitView={() => { void flowInstance?.fitView({ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }); }}
+              />
             </ReactFlow>
           </div>
         ) : (

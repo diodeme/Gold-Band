@@ -514,7 +514,18 @@ export function ConversationComposer({
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
-        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-foreground" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button></div> : null}
+        {scheduledMode ? (
+          <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
+            <AlarmClock className="size-4 text-foreground" />
+            <span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('scheduled.composer.exit')}</TooltipContent>
+            </Tooltip>
+          </div>
+        ) : null}
         {/* Main text input */}
         <PromptInput
           value={visibleContent}
@@ -670,7 +681,12 @@ export function ConversationComposer({
                       <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                  <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('scheduled.composer.configure')}</TooltipContent>
+                  </Tooltip>
                 </div>
               ) : (
                 <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} overflow-hidden rounded-full bg-primary text-primary-foreground`}>
@@ -885,17 +901,21 @@ export function DirectAgentEmptyState({
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="truncate text-xs text-muted-foreground">{t('conversation.home.noAgent')}</span>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
-        aria-label={t('agentManagement.addAgent')}
-        title={t('agentManagement.addAgent')}
-        onClick={onOpenAgentManagement}
-      >
-        <Plus className="size-3.5" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
+            aria-label={t('agentManagement.addAgent')}
+            onClick={onOpenAgentManagement}
+          >
+            <Plus className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('agentManagement.addAgent')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

@@ -5452,17 +5452,21 @@ const RuntimeControlOutputCard = memo(function RuntimeControlOutputCard({
           </Button>
         </CollapsibleTrigger>
         {display.artifactName && onOpenArtifact ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-9 min-w-0 max-w-48 shrink-0 gap-1.5 rounded-none border-l border-border/50 px-2.5 text-xs font-normal"
-            title={display.artifactName}
-            onClick={() => onOpenArtifact(display.artifactName!)}
-          >
-            <FileText className="size-3.5 shrink-0" />
-            <span className="truncate">{display.artifactName}</span>
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 min-w-0 max-w-48 shrink-0 gap-1.5 rounded-none border-l border-border/50 px-2.5 text-xs font-normal"
+                onClick={() => onOpenArtifact(display.artifactName!)}
+              >
+                <FileText className="size-3.5 shrink-0" />
+                <span className="truncate">{display.artifactName}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[360px] break-all">{display.artifactName}</TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
       <CollapsibleContent
@@ -5523,6 +5527,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
   onClick?: (attachment: MessageAttachmentPreview) => void;
 }) {
   const isImage = isImageMessageAttachment(attachment);
+  const attachmentLabel = `${attachment.name} (${formatAttachmentSize(attachment.size)})`;
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -5560,43 +5565,51 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
 
   if (isImage) {
     return (
-      <button
-        type="button"
-        className="group relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
-        aria-label={attachment.name}
-        onClick={() => onClick?.(attachment)}
-      >
-        {previewSrc ? (
-          <img
-            src={previewSrc}
-            alt={attachment.name}
-            loading="lazy"
-            draggable={false}
-            className="size-full object-cover"
-          />
-        ) : (
-          <span className="flex size-full items-center justify-center bg-muted/40">
-            <ImageIcon className="size-5 text-blue-400" />
-          </span>
-        )}
-        <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-ui-micro font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-          {attachment.name}
-        </span>
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="group relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={attachment.name}
+            onClick={() => onClick?.(attachment)}
+          >
+            {previewSrc ? (
+              <img
+                src={previewSrc}
+                alt={attachment.name}
+                loading="lazy"
+                draggable={false}
+                className="size-full object-cover"
+              />
+            ) : (
+              <span className="flex size-full items-center justify-center bg-muted/40">
+                <ImageIcon className="size-5 text-blue-400" />
+              </span>
+            )}
+            <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-ui-micro font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
+              {attachment.name}
+            </span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
+      </Tooltip>
     );
   }
 
   return (
-    <button
-      type="button"
-      className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-ui-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      title={`${attachment.name} (${formatAttachmentSize(attachment.size)})`}
-      onClick={() => onClick?.(attachment)}
-    >
-      <FileText className="size-3 text-muted-foreground" />
-      <span className="max-w-[120px] truncate">{attachment.name}</span>
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-9 w-fit max-w-full shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-3 text-ui-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => onClick?.(attachment)}
+        >
+          <FileText className="size-3 text-muted-foreground" />
+          <span className="max-w-[120px] truncate">{attachment.name}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
+    </Tooltip>
   );
 });
 

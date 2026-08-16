@@ -9,6 +9,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/components/conversation/ScheduledTaskDialog';
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
@@ -129,7 +130,10 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
         actions={(
           <>
           {onCreate ? <Button size="sm" className="h-8 gap-1.5" onClick={onCreate}><Plus className="size-3.5" />{t('scheduled.management.create')}</Button> : null}
-          <Button variant="ghost" size="icon" className="size-8" onClick={() => void loadTasks()} disabled={loading} aria-label={t('scheduled.management.refresh')} title={t('scheduled.management.refresh')}><RefreshCw className="size-3.5" /></Button>
+          <Tooltip>
+            <TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-8" onClick={() => void loadTasks()} disabled={loading} aria-label={t('scheduled.management.refresh')}><RefreshCw className="size-3.5" /></Button></TooltipTrigger>
+            <TooltipContent>{t('scheduled.management.refresh')}</TooltipContent>
+          </Tooltip>
           <Select value={workspaceFilter} onValueChange={setWorkspaceFilter}>
             <SelectTrigger size="sm" className={scheduledWorkspaceFilterTriggerClassName} aria-label={t('scheduled.management.workspaceFilter')}>
               <SelectValue>{workspaceFilter === 'all' ? t('scheduled.management.allWorkspaces') : workspaceFilter}</SelectValue>

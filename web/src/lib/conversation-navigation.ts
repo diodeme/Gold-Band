@@ -1,4 +1,17 @@
-import type { ConversationPage, ConversationRunVm, InterventionNavigateEventVm } from '@/types';
+import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import type {
+  ConversationPage,
+  ConversationRunVm,
+  ConversationSessionLeafVm,
+  ConversationSessionTargetVm,
+  ConversationSessionTreeVm,
+  InterventionNavigateEventVm,
+} from '@/types';
+
+type ConversationSessionLocator = Pick<
+  ConversationSessionTargetVm,
+  'roundId' | 'nodeId' | 'attemptId' | 'outerNodeId' | 'outerAttemptId'
+>;
 
 export function conversationPageForIntervention(
   event: Extract<InterventionNavigateEventVm, { targetType: 'conversation' }>,
@@ -52,6 +65,51 @@ export function beginConversationSessionSelection(
       selectedSessionKey,
     },
   };
+}
+
+export function conversationPageForSession(
+  run: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'runId'>,
+  locator: ConversationSessionLocator,
+): Extract<ConversationPage, { kind: 'conversation-run' }> {
+  return {
+    kind: 'conversation-run',
+    projectId: run.projectId,
+    taskId: run.taskId,
+    runId: run.runId,
+    roundId: locator.roundId,
+    nodeId: locator.nodeId,
+    attemptId: locator.attemptId,
+    outerNodeId: locator.outerNodeId ?? undefined,
+    outerAttemptId: locator.outerAttemptId ?? undefined,
+  };
+}
+
+export function findConversationLeafForPage(
+  tree: ConversationSessionTreeVm,
+  page: Extract<ConversationPage, { kind: 'conversation-run' }>,
+): ConversationSessionLeafVm | null {
+  if (!page.roundId) return null;
+  if (page.nodeId && page.attemptId) {
+    return findConversationLeafByKey(tree, conversationSessionKeyFromParts({
+      roundId: page.roundId,
+      nodeId: page.nodeId,
+      attemptId: page.attemptId,
+      outerNodeId: page.outerNodeId,
+      outerAttemptId: page.outerAttemptId,
+    }));
+  }
+  for (const round of tree.rounds) {
+    if (round.roundId !== page.roundId) continue;
+    for (const node of round.nodes) {
+      const leaf = node.attempts.find((attempt) => !page.attemptId || attempt.attemptId === page.attemptId);
+      if (leaf) return leaf;
+      for (const outerNode of node.outerNodes ?? []) {
+        const nestedLeaf = outerNode.attempts.find((attempt) => !page.attemptId || attempt.attemptId === page.attemptId);
+        if (nestedLeaf) return nestedLeaf;
+      }
+    }
+  }
+  return null;
 }
 
 export function shouldCommitConversationNavigation(

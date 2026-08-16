@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   beginConversationSessionSelection,
+  conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  findConversationLeafForPage,
   isConversationRunNavigationLoading,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
-import type { ConversationPage, ConversationRunVm } from '@/types';
+import type { ConversationPage, ConversationRunVm, ConversationSessionTreeVm } from '@/types';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -106,6 +108,37 @@ describe('conversation navigation presentation transaction', () => {
     const targetRun = { ...oldRun, taskId: 'task-new', runId: 'run-2' } as ConversationRunVm;
     expect(shouldCommitConversationNavigation(1, 2, requested, targetRun)).toBe(false);
     expect(shouldCommitConversationNavigation(2, 2, requested, targetRun)).toBe(true);
+  });
+
+  it('builds and resolves a fully qualified dynamic attempt locator', () => {
+    const target = {
+      roundId: 'round-001',
+      nodeId: 'review',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-002',
+    };
+    const page = conversationPageForSession(oldRun, target);
+    const dynamicLeaf = { ...target, pathLabel: 'review/attempt-001' };
+    const sameAttemptIdOnTopLevel = {
+      roundId: 'round-001',
+      nodeId: 'plan',
+      attemptId: 'attempt-001',
+      pathLabel: 'plan/attempt-001',
+    };
+    const tree = {
+      selectedSessionKey: null,
+      rounds: [{
+        roundId: 'round-001',
+        nodes: [{
+          attempts: [sameAttemptIdOnTopLevel],
+          outerNodes: [{ attempts: [dynamicLeaf] }],
+        }],
+      }],
+    } as ConversationSessionTreeVm;
+
+    expect(page).toMatchObject(target);
+    expect(findConversationLeafForPage(tree, page)).toBe(dynamicLeaf);
   });
 });
 

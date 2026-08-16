@@ -17,7 +17,10 @@ import { ConversationSessionSwitcher } from '@/components/conversation/Conversat
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
+import { conversationPageForSession } from '@/lib/conversation-navigation';
+import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { isRuntimeControlledConversationLifecycle } from '@/lib/conversation-session-follow';
+import { pathFromRoute, taskListPage } from '@/routes';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
 function activeSessionKey(session: {
@@ -383,6 +386,14 @@ export function ConversationRunPage({
       ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
       : null);
   const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
+  const supersededBy = selectedLeaf?.lifecycle?.composer.supersededBy;
+  const supersedingLeaf = supersededBy
+    ? findConversationLeafByKey(run.sessionTree, activeSessionKey(supersededBy))
+    : null;
+  const supersedingPage = supersededBy ? conversationPageForSession(run, supersededBy) : null;
+  const supersedingHref = supersedingPage
+    ? pathFromRoute('task-orchestration', taskListPage, supersedingPage)
+    : null;
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         isOrchestrated: run.runMode !== 'direct',
@@ -394,6 +405,18 @@ export function ConversationRunPage({
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
+        supersededSessionNavigation: supersedingHref
+          ? {
+              href: supersedingHref,
+              onNavigate: () => {
+                if (supersedingLeaf) {
+                  handleSessionSelection(supersedingLeaf);
+                } else {
+                  window.location.assign(supersedingHref);
+                }
+              },
+            }
+          : undefined,
       }
     : undefined;
 

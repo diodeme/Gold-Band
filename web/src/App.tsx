@@ -143,8 +143,10 @@ import {
 import { conversationPageForSearchResult } from '@/lib/conversation-search';
 import {
   beginConversationSessionSelection,
+  conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  findConversationLeafForPage,
   isConversationRunNavigationLoading,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
@@ -198,31 +200,6 @@ import type {
   AvatarShape,
   SaveDesktopAvatarInput,
 } from './types';
-
-function findScheduledLinkedLeaf(
-  tree: ConversationSessionTreeVm,
-  roundId: string,
-  attemptId?: string,
-): ConversationSessionLeafVm | null {
-  const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
-    const leaf = node.attempts.find((attempt) =>
-      attempt.roundId === roundId && (!attemptId || attempt.attemptId === attemptId));
-    if (leaf) return leaf;
-    for (const child of node.outerNodes ?? []) {
-      const nested = walkNode(child);
-      if (nested) return nested;
-    }
-    return null;
-  };
-  for (const round of tree.rounds) {
-    for (const node of round.nodes) {
-      const leaf = walkNode(node);
-      if (leaf) return leaf;
-    }
-  }
-  return null;
-}
-
 const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
   channel: 'default',
@@ -808,14 +785,14 @@ export function App() {
   // Load conversation run when navigating to a run page
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
-    const { projectId, taskId, runId, roundId, attemptId } = conversationPage;
+    const { projectId, taskId, runId, roundId } = conversationPage;
     const requestId = conversationNavigationRequestRef.current + 1;
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
     getConversationRun(projectId, taskId, runId)
       .then(async (run) => {
         if (!roundId) return run;
-        const leaf = findScheduledLinkedLeaf(run.sessionTree, roundId, attemptId);
+        const leaf = findConversationLeafForPage(run.sessionTree, conversationPage);
         if (!leaf) return run;
         const selectedSessionKey = conversationSessionKeyFromParts(leaf);
         return getConversationRun(projectId, taskId, runId, selectedSessionKey);
@@ -1716,17 +1693,24 @@ export function App() {
     }
     if (page.kind === 'conversation-run') {
       const cached = conversationRunCache.restore(page);
-      const cachedMatchesLinkedTarget = !page.roundId || Boolean(
-        cached && findScheduledLinkedLeaf(cached.sessionTree, page.roundId, page.attemptId),
-      );
+      const cachedLinkedLeaf = cached && page.roundId
+        ? findConversationLeafForPage(cached.sessionTree, page)
+        : null;
+      const cachedMatchesLinkedTarget = !page.roundId || Boolean(cachedLinkedLeaf);
       if (cached && cachedMatchesLinkedTarget) {
-        conversationRunRef.current = cached;
-        conversationSelectedSessionKeyRef.current = cached.sessionTree.selectedSessionKey ?? null;
+        const cachedForPage = cachedLinkedLeaf
+          ? beginConversationSessionSelection(
+              cached,
+              conversationSessionKeyFromParts(cachedLinkedLeaf),
+            )
+          : cached;
+        conversationRunRef.current = cachedForPage;
+        conversationSelectedSessionKeyRef.current = cachedForPage.sessionTree.selectedSessionKey ?? null;
         conversationSessionFollowRef.current = {
           ...conversationSessionFollowRef.current,
-          selectedSessionKey: cached.sessionTree.selectedSessionKey ?? null,
+          selectedSessionKey: cachedForPage.sessionTree.selectedSessionKey ?? null,
         };
-        setConversationRun(cached);
+        setConversationRun(cachedForPage);
       }
     }
     setConversationPage(page);
@@ -2196,6 +2180,11 @@ export function App() {
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            pushRoute(
+              'task-orchestration',
+              taskListPage,
+              conversationPageForSession(conversationPage, leaf),
+            );
             setConversationRun((current) => {
               if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
               const next = beginConversationSessionSelection(current, key);

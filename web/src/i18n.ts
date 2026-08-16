@@ -433,6 +433,8 @@ const resources = {
         },
         conversation: {
           "task-not-found": "找不到该会话。",
+          "session-superseded":
+            "此会话已由 {{nodeId}} / {{attemptId}} 接续，请前往该 attempt 继续。",
           "task-running": "该会话仍在运行，请先停止后再删除。",
           "task-delete-failed": "删除会话失败：{{message}}",
           "workspace-not-found": "找不到该工作空间。",
@@ -1480,6 +1482,8 @@ const resources = {
       },
       acp: {
         restored: "已恢复",
+        sessionSuperseded:
+          "此会话已由 <attempt>{{target}}</attempt> 接续，请前往该 attempt 继续。",
         noSessionId: "无 session id",
         copySessionId: "复制 session ID",
         sessionIdCopied: "已复制",
@@ -2474,6 +2478,8 @@ const resources = {
         },
         conversation: {
           "task-not-found": "This conversation could not be found.",
+          "session-superseded":
+            "This session was continued by {{nodeId}} / {{attemptId}}. Continue in that attempt.",
           "task-running":
             "This conversation is still running. Stop it before deleting.",
           "task-delete-failed": "Failed to delete conversation: {{message}}",
@@ -3559,6 +3565,8 @@ const resources = {
       },
       acp: {
         restored: "Restored",
+        sessionSuperseded:
+          "This session was continued by <attempt>{{target}}</attempt>. Continue in that attempt.",
         noSessionId: "No session id",
         copySessionId: "Copy session ID",
         sessionIdCopied: "Copied",

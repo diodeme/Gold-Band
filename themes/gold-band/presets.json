@@ -1,0 +1,26 @@
+{
+  "light": {
+    "typography": {
+      "uiStackId": "theme-ui",
+      "uiSize": 14,
+      "uiLineHeight": 1.5,
+      "editorStackId": "theme-editor",
+      "editorSize": 12,
+      "editorLineHeight": 1.55,
+      "weights": { "read": 400, "emphasize": 600, "announce": 700 }
+    },
+    "avatars": { "agentShape": "circle", "userShape": "circle", "agentAsset": null, "userAsset": null }
+  },
+  "dark": {
+    "typography": {
+      "uiStackId": "theme-ui",
+      "uiSize": 14,
+      "uiLineHeight": 1.5,
+      "editorStackId": "theme-editor",
+      "editorSize": 12,
+      "editorLineHeight": 1.55,
+      "weights": { "read": 400, "emphasize": 600, "announce": 700 }
+    },
+    "avatars": { "agentShape": "circle", "userShape": "circle", "agentAsset": null, "userAsset": null }
+  }
+}

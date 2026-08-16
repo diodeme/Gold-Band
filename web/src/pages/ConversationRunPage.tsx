@@ -3,12 +3,21 @@ import { useTranslation } from 'react-i18next';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
-import { ACPChatDialog, type AcpLifecycleSnapshot, type AcpRuntimeComposerContext } from '@/components/acp/ACPChatDialog';
+import {
+  ACPChatDialog,
+  createAcpEventWindowCacheKey,
+  hasHydratedAcpSessionContent,
+  type AcpInitialSessionQueryState,
+  type AcpLifecycleSnapshot,
+  type AcpRuntimeComposerContext,
+} from '@/components/acp/ACPChatDialog';
+import { BrandLoadingState } from '@/components/BrandLoadingState';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
+import { isRuntimeControlledConversationLifecycle } from '@/lib/conversation-session-follow';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
 function activeSessionKey(session: {
@@ -39,6 +48,16 @@ export function sessionBelongsToLeaf(session: AcpSessionVm | null | undefined, r
     ? normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.outerNodeId}/${leaf.outerAttemptId}/dynamic/nodes/${leaf.nodeId}/${leaf.attemptId}`)
     : normalizeSessionPath(`tasks/${run.taskId}/runs/${run.runId}/rounds/${leaf.roundId}/nodes/${leaf.nodeId}/${leaf.attemptId}`);
   return cwd.endsWith(expected);
+}
+
+export function resolveConversationContentQueryState(
+  identity: string | null,
+  projection: { identity: string; state: AcpInitialSessionQueryState } | null,
+  hydrated: boolean,
+): AcpInitialSessionQueryState {
+  if (!identity) return 'success';
+  if (projection?.identity === identity) return projection.state;
+  return hydrated ? 'success' : 'loading';
 }
 
 function normalizeSessionPath(path: string) {
@@ -216,18 +235,16 @@ export function ConversationRunPage({
   const isDirect = run.runMode === 'direct';
   const selectedLeaf = findSelectedLeaf(run);
   const selectedSessionKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
+  const selectedRoundId = selectedLeaf?.roundId ?? null;
+  const selectedNodeId = selectedLeaf?.nodeId ?? null;
+  const selectedAttemptId = selectedLeaf?.attemptId ?? null;
+  const selectedOuterNodeId = selectedLeaf?.outerNodeId ?? null;
+  const selectedOuterAttemptId = selectedLeaf?.outerAttemptId ?? null;
+  const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
-
-  const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
-    if (!workspace.scopeKey || !selectedLeaf) return null;
-    return {
-      kind: 'conversation-directory',
-      scopeKey: workspace.scopeKey,
-      title: t('workspace.runDirectory'),
-      description: selectedLeaf.runtimeDisplay?.code ?? null,
-      attention: false,
-      locator: {
-        projectId: run.projectId,
+  const selectedContentIdentity = selectedLeaf
+    ? createAcpEventWindowCacheKey({
+        cacheNamespace: run.taskUuid ?? `${run.projectId}:${run.taskId}`,
         taskId: run.taskId,
         runId: run.runId,
         roundId: selectedLeaf.roundId,
@@ -235,9 +252,45 @@ export function ConversationRunPage({
         attemptId: selectedLeaf.attemptId,
         outerNodeId: selectedLeaf.outerNodeId,
         outerAttemptId: selectedLeaf.outerAttemptId,
+      })
+    : null;
+  const [contentQueryProjection, setContentQueryProjection] = useState<{
+    identity: string;
+    state: AcpInitialSessionQueryState;
+  } | null>(null);
+  const selectedContentQueryState = resolveConversationContentQueryState(
+    selectedContentIdentity,
+    contentQueryProjection,
+    selectedContentIdentity
+      ? hasHydratedAcpSessionContent(selectedContentIdentity)
+      : false,
+  );
+  const showPageLoadingState = selectedContentQueryState === 'loading';
+  const handleInitialSessionQueryStateChange = useCallback((state: AcpInitialSessionQueryState) => {
+    if (!selectedContentIdentity) return;
+    setContentQueryProjection({ identity: selectedContentIdentity, state });
+  }, [selectedContentIdentity]);
+
+  const conversationDirectoryEntry = useMemo<ConversationDirectoryWorkspaceEntry | null>(() => {
+    if (!workspace.scopeKey || !selectedRoundId || !selectedNodeId || !selectedAttemptId) return null;
+    return {
+      kind: 'conversation-directory',
+      scopeKey: workspace.scopeKey,
+      title: t('workspace.runDirectory'),
+      description: selectedRuntimeCode,
+      attention: false,
+      locator: {
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        roundId: selectedRoundId,
+        nodeId: selectedNodeId,
+        attemptId: selectedAttemptId,
+        outerNodeId: selectedOuterNodeId,
+        outerAttemptId: selectedOuterAttemptId,
       },
     };
-  }, [run.projectId, run.runId, run.taskId, selectedLeaf, t, workspace.scopeKey]);
+  }, [run.projectId, run.runId, run.taskId, selectedAttemptId, selectedNodeId, selectedOuterAttemptId, selectedOuterNodeId, selectedRoundId, selectedRuntimeCode, t, workspace.scopeKey]);
 
   useEffect(() => {
     workspace.setConversationDirectoryEntry(conversationDirectoryEntry);
@@ -246,7 +299,8 @@ export function ConversationRunPage({
 
   const isAutoFollowRestorableLeaf = useCallback((leaf: ConversationSessionLeafVm | null) => {
     if (!leaf) return false;
-    return activeSessionKeys.includes(leafKey(leaf)) || isRestorableRuntimeLeaf(leaf);
+    return isRuntimeControlledConversationLifecycle(leaf.lifecycle)
+      && (activeSessionKeys.includes(leafKey(leaf)) || isRestorableRuntimeLeaf(leaf));
   }, [activeSessionKeys]);
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
@@ -258,6 +312,12 @@ export function ConversationRunPage({
     }
     const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
+    if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
+      pendingAutoFollowRestoreSessionKeyRef.current = null;
+      manualAutoFollowDisabledRef.current = true;
+      onAutoFollowChange?.(false);
+      return;
+    }
     const restorableSelected = isAutoFollowRestorableLeaf(selectedLeaf);
     if (selectedKey && restoreKey === selectedKey && restorableSelected) {
       pendingAutoFollowRestoreSessionKeyRef.current = null;
@@ -325,6 +385,7 @@ export function ConversationRunPage({
   const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
+        isOrchestrated: run.runMode !== 'direct',
         lifecycle: selectedLeaf.lifecycle,
         promptQueueEnabled: isDirect,
         runtimeStatus: selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
@@ -338,7 +399,8 @@ export function ConversationRunPage({
 
   return (
     <TooltipProvider>
-      <div className="flex h-full min-h-0 flex-col bg-background">
+      <div className="relative h-full min-h-0 bg-background">
+      <div className={`flex h-full min-h-0 flex-col bg-background ${showPageLoadingState ? 'invisible' : ''}`}>
         <div ref={headerAreaRef} className="shrink-0 relative">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
@@ -425,6 +487,7 @@ export function ConversationRunPage({
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
+            onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             showInitializingSessionShell={selectedLeaf.current}
             runtimeComposerContext={runtimeComposerContext}
@@ -462,22 +525,24 @@ export function ConversationRunPage({
       </AlertDialog>
 
     </div>
+      {showPageLoadingState ? (
+        <BrandLoadingState
+          label={t('conversation.runtime.loadingSession')}
+          className="absolute inset-0"
+        />
+      ) : null}
+    </div>
     </TooltipProvider>
   );
 }
 
 function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
+  if (active) {
+    return <BrandLoadingState label={label} />;
+  }
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      <div className="flex items-center gap-2">
-        {active ? (
-          <span
-            aria-hidden="true"
-            className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-gold-running/30 border-t-gold-running [animation-duration:900ms]"
-          />
-        ) : null}
-        <span>{label}</span>
-      </div>
+      <span>{label}</span>
     </div>
   );
 }
@@ -582,7 +647,7 @@ function activeSessionToLeaf(
 function isRestorableRuntimeLeaf(leaf: ConversationSessionLeafVm) {
   return Boolean(
     leaf.lifecycle?.runtime.active
-    || leaf.lifecycle?.acp.active
+    || leaf.lifecycle?.acp.liveTurnActivity !== 'idle'
     || leaf.lifecycle?.acp.stopping,
   ) || isActiveSessionStatus(leaf.status) || (leaf.current && !isTerminalSessionStatus(leaf.status));
 }

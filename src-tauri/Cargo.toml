@@ -15,9 +15,11 @@ anyhow = "1"
 atomic-write-file = "0.2"
 blake3 = "1"
 camino = { version = "1", features = ["serde1"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-encoding_rs = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+chrono-tz = "0.10"
 gold-band = { path = ".." }
+keepawake = "0.6.0"
+encoding_rs = "0.8"
 ignore = "0.4"
 infer = "0.19"
 imagesize = "0.14"
@@ -30,7 +32,7 @@ tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
-tokio = { version = "1", features = ["time", "rt", "macros", "fs", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 trash = "5"
 url = "2"
@@ -63,6 +65,5 @@ windows-version = "0.1.7"
 
 [features]
 default = ["native-notification"]
-# 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?
+# 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?
 native-notification = ["dep:notify-rust"]
-

@@ -22,7 +22,7 @@ Catalog 与实例必须分域管理：
 
 主 Skills 目录默认由全局与项目作用域共用。编辑 Sheet 在标题右侧提供带 Tooltip 的分裂图标按钮；开启后按钮呈选中态，单输入框拆为“全局主目录 / 项目主目录”，关闭后恢复共用主目录。数据层以可选项目主目录字段表达拆分状态，不维护独立布尔值。目录策略按作用域生成：全局写入全局主目录，项目写入项目主目录；两端读取时都在各自主目录后追加共用兼容目录，兼容目录始终只读。Catalog、设置实例、Tauri 输入/VM、SkillManager、原生命令扫描和同步状态必须消费同一目录策略接口，禁止在 Pi 调用点判断 Agent ID。
 
-自定义 Agent 表单需要用户配置稳定 Agent ID、display name、icon、命令、参数、环境、主/兼容 Skills 目录和跨端会话合并能力。界面将原“Agent 类型”准确命名为“Agent ID”，说明其创建后不可修改。编辑器显式维护 Catalog 新建、自定义新建、已有实例编辑三种来源状态，Agent ID 锁定规则不得从当前输入文本推导；自定义输入即使暂时与 `kimi` 等 Catalog ID 相同，也必须允许继续输入后缀。Agent ID 的即时规范化必须识别 IME composition 生命周期，组合期间不改写临时文本，组合结束后再过滤为小写字母、数字和连字符。system prompt 能力由 Gold Band 内部维护，不提供用户开关；自定义 Agent 固定为不支持。icon 可使用系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，并以 data URI 持久化；新建自定义 Agent 与空 icon 默认使用项目 `gold-band` Logo，已有明确保存为 `agent` 的实例不迁移。主 Skills 目录允许为空，表示该 Agent 不参与 Skills 读写与同步。
+自定义 Agent 表单需要用户配置稳定 Agent ID、display name、icon、命令、参数、环境和主/兼容 Skills 目录。界面将原“Agent 类型”准确命名为“Agent ID”，说明其创建后不可修改。编辑器显式维护 Catalog 新建、自定义新建、已有实例编辑三种来源状态，Agent ID 锁定规则不得从当前输入文本推导；自定义输入即使暂时与 `kimi` 等 Catalog ID 相同，也必须允许继续输入后缀。Agent ID 的即时规范化必须识别 IME composition 生命周期，组合期间不改写临时文本，组合结束后再过滤为小写字母、数字和连字符。system prompt 能力由 Gold Band 内部维护，不提供用户开关；自定义 Agent 固定为不支持。icon 可使用系统文件选择器导入不超过 1 MB 的 PNG、JPEG、WebP 或 SVG，并以 data URI 持久化；新建自定义 Agent 与空 icon 默认使用项目 `gold-band` Logo，已有明确保存为 `agent` 的实例不迁移。主 Skills 目录允许为空，表示该 Agent 不参与 Skills 读写与同步。
 agent需要有对应icon标识，参考 `docs\gold-band\资源\icon` 目录；应用打包实际读取 `web\public\agent-icons`，Cursor 图标也必须同步复制到该目录
 新增agent时，已经新增过的agent类型，不能重复新增
 agent配置需要做持久化管理；修改 Sheet 的参数和环境变量使用可换行的多行编辑区，编辑时不即时吞掉空行或换行；参数保存时按空格或换行拆分，环境变量保存时按行解析；保存成功后只清空当前 agent 的旧诊断状态，并由后端后台自动诊断该 agent 一次，保存接口不得等待本次或已经运行中的 doctor，持久化完成后前端立即关闭 Sheet 并提示“配置已保存，正在后台诊断”；自动诊断期间卡片显示诊断中并禁用重复修改、删除和诊断，完成后通过桌面事件刷新全局 Agent registry；新增、编辑或删除某个 agent 时，不允许把其他已诊断 agent 一并回退成未诊断
@@ -31,7 +31,7 @@ agent配置需要做持久化管理；修改 Sheet 的参数和环境变量使�
 
 Agent `command` 在前端构建保存参数、脏状态比较以及后端 `ManagedAgentInput` 转配置时统一执行首尾 `trim`。仅修改命令前后空格不算配置变化，也不能触发保存和自动诊断；真实命令内容变化仍正常保存。
 
-Agent 修改 Sheet 的外部会话同步开关属于 Beta 能力，默认关闭。标题右侧使用 shadcn/ui `Badge` 展示 `Beta`，并使用可聚焦的问号 `Tooltip` 解释“同步同一个 Session 在其他客户端中发生过的对话”；常驻说明文案必须明确：仅在确认该 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误。
+当前版本暂不对客开放跨端会话合并与外部会话同步配置：Agent 卡片、新增 Agent 和修改 Agent Sheet 均不展示两个选项。底层字段、持久化和 runtime 逻辑继续保留；编辑其他字段时必须保留已有隐藏配置，新建实例继续使用 Catalog/自定义 Agent 的既有默认值，后续具备自动能力发现与清晰使用场景后再开放。
 
 Agent 实例新增两个独立能力配置：
 - system prompt：默认关闭，仅 Claude 模板默认开启并使用 `_meta.systemPrompt.append`；能力不进入用户可编辑输入，自定义 Agent 固定关闭；关闭时新会话首个 user prompt 内嵌稳定上下文，恢复会话不重复注入
@@ -55,7 +55,7 @@ Agent 实例新增两个独立能力配置：
 - 已新增 Registry 快照准备脚本、离线重建脚本和 Node 单元测试，精选列表固定为十一项，包含 Amp、Pi 且排除 GLM
 - 已将 Catalog 通过 Rust `include_str!` 和 Vite public assets 打包；创建时复制模板，已有实例不读取 Catalog 默认值
 - 已开放自定义 Agent 创建、保存、doctor、Provider 和 workflow 运行链路，移除 preset 白名单门禁
-- 已新增 Agent 搜索选择器、自定义入口、本地图标选择、跨端能力和可选 Skills 目录编辑项，并复用现有 shadcn/ui 组件；system prompt 能力不向用户开放
+- 已新增 Agent 搜索选择器、自定义入口、本地图标选择和可选 Skills 目录编辑项，并复用现有 shadcn/ui 组件；system prompt 与跨端会话能力当前均不向用户开放
 - 图标编辑已收敛为预览、选择本地图片和恢复默认 Logo，不向用户暴露 icon key、URL 或 data URI 文本输入；既有图标引用保持兼容
 - 图标命令按钮统一使用透明 ghost 样式，避免 outline 默认底色与相邻按钮 hover 底色叠加后被误认为“双选”；当前 hover 与键盘 focus-visible 反馈保持可用
 - 图标区从单输入框 `<label>` 容器拆为 `fieldset + legend` 操作组，修复整行 label 将 hover/click 语义转发到“选择图片”的扩大命中范围问题
@@ -69,6 +69,7 @@ Agent 实例新增两个独立能力配置：
 - 验证结果：`cargo check --workspace --all-targets -j 1` 通过；Rust 库实际执行 518 项，517 项通过，本功能新增测试全部通过，唯一失败为既有 `acp::branches::tests::result_migration_v2_removes_legacy_background_acknowledgements`（期望 `queued`、实际 `completed`），单独复跑仍失败；桌面 `ManagedAgentInput` 命令边界测试 2 项全部通过
 - 验证结果：Catalog Node 测试 2 项通过，Agent 管理及 workflow/run-mode 相关前端测试 42 项通过，`npm run web:build` 通过；全量前端 880 项中 875 项通过，剩余 5 项失败集中在本轮范围外的 right-workspace/file-link 既有改动
 - 页面实测：通过 `/chat/agents` deep link 验证 11 个内置 Agent、Amp/Pi 搜索、自定义入口、目录拆分、默认 Bot icon、空 Skills 主目录保存、跨端能力联动和禁用态；页面 console 无 warning/error，测试页面、服务和临时进程已清理
+- 2026-08-12：当前版本从全部 Agent 卡片、新增与修改入口隐藏“支持跨端会话合并 / 同步外部会话”；删除专用 Switch、Beta Badge 与帮助 Tooltip 的渲染代码，保留配置 DTO、持久化和 runtime 语义。接口回归固定卡片不展示高级字段，并验证编辑其他字段不会改写已有隐藏配置。
 - 2026-08-08：新增 Agent 下拉收敛 cmdk active 态的视觉语义。`Command + Popover` 继续保留键盘 active 与回车确认能力，但下拉刚展开时不把第一项渲染为选中态；只有鼠标悬停项显示 hover 背景，避免“自定义 Agent”被误判为默认选中。前端测试固化该样式契约。
 - 已将 macOS / Linux ACP 子进程 PATH 从“常见目录猜测”升级为通用登录 Shell 环境发现：从 Unix 账户默认 Shell 读取 `-ilc` 环境，使用 2 秒总超时、输出边界、进程回收和进程生命周期缓存；移除 `~/.opencode/bin` Agent 特判，并让通用可执行文件查找与 ACP adapter 共用同一解析入口
 - PATH 接口验收：Windows `process` 测试 9 项、ACP adapter 测试 11 项全部通过，覆盖原生 binary、npm `.cmd`、无扩展名 Unix shim 与显式扩展名；Unix 专属 `process.rs` 最小工程在 `x86_64-unknown-linux-gnu` target 交叉编译通过；`cargo check --workspace --all-targets -j 1` 通过，仅保留本轮范围外的既有桌面端 warning

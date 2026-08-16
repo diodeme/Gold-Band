@@ -1,19 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ExternalLink, FileQuestion, FolderOpen, LoaderCircle, Maximize2, Pause, Play, RefreshCw, RotateCcw, SearchX, ShieldAlert, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { openExternalUrl, openFileWithSystemApp, resolveWorkspaceFileLink, workspaceFilePreviewUrl } from '@/api';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useMarkdownResourceLinkHandler } from '@/components/prompt-kit/markdown';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 import { isExternalUrlHref, isLocalFileHref } from '@/lib/file-link';
-import {
-  reduceFileWorkspaceResponsiveState,
-  resolveFileWorkspaceResizeDirection,
-  resolveWorkspacePanelWidthFromLayout,
-  type FileWorkspaceResizeDirection,
-  type FileWorkspaceResponsiveState,
-} from '../workspace-layout';
+import { resolveWorkspacePanelWidthFromLayout } from '../workspace-layout';
+import { useWorkspaceResponsiveState } from '../use-workspace-responsive-state';
 import {
   fileWorkspaceResourceKey,
   useRightWorkspace,
@@ -31,71 +27,6 @@ import { WorkspaceFileTree } from './WorkspaceFileTree';
 interface FileWorkspacePanelProps {
   resource: Extract<RightWorkspaceResource, { kind: 'file' | 'file-browser' }>;
   layout: FileWorkspaceLayoutVm;
-}
-
-const INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE: FileWorkspaceResponsiveState = {
-  split: false,
-  widthAtTransition: 0,
-};
-
-export function useFileWorkspaceResponsiveState(splitMinWidth: number) {
-  const ref = useRef<HTMLDivElement>(null);
-  const widthRef = useRef(0);
-  const shellWidthRef = useRef(0);
-  const shellResizeDirectionRef = useRef<FileWorkspaceResizeDirection>('stationary');
-  const shellResizeObservedAtRef = useRef(0);
-  const resizeFrameRef = useRef<number | null>(null);
-  const responsiveStateRef = useRef(INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE);
-  const [responsiveState, setResponsiveState] = useState(INITIAL_FILE_WORKSPACE_RESPONSIVE_STATE);
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const update = () => {
-      const width = Math.round(element.clientWidth);
-      const shellWidth = Math.round(element.ownerDocument.documentElement.clientWidth);
-      const now = Date.now();
-      const shellWidthChanged = shellWidthRef.current > 0 && shellWidth !== shellWidthRef.current;
-      const direction = resolveFileWorkspaceResizeDirection({
-        previousShellWidth: shellWidthRef.current,
-        shellWidth,
-        previousDirection: shellResizeDirectionRef.current,
-        elapsedSinceShellResizeMs: now - shellResizeObservedAtRef.current,
-      });
-      widthRef.current = width;
-      shellWidthRef.current = shellWidth;
-      shellResizeDirectionRef.current = direction;
-      if (shellWidthChanged) shellResizeObservedAtRef.current = now;
-      const next = reduceFileWorkspaceResponsiveState(
-        responsiveStateRef.current,
-        width,
-        splitMinWidth,
-        direction,
-      );
-      if (next === responsiveStateRef.current) return;
-      responsiveStateRef.current = next;
-      setResponsiveState(next);
-    };
-    const scheduleUpdate = () => {
-      if (resizeFrameRef.current !== null) return;
-      resizeFrameRef.current = requestAnimationFrame(() => {
-        resizeFrameRef.current = null;
-        update();
-      });
-    };
-    update();
-    const observer = new ResizeObserver(scheduleUpdate);
-    observer.observe(element);
-    return () => {
-      observer.disconnect();
-      if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
-      resizeFrameRef.current = null;
-    };
-  }, [splitMinWidth]);
-  return {
-    ref,
-    responsiveState,
-    currentWidth: () => widthRef.current || Math.round(ref.current?.clientWidth ?? 0),
-  };
 }
 
 function fileResourceFromEntry(resource: FileWorkspacePanelProps['resource'], entry: WorkspaceDirectoryEntryVm): FileWorkspaceResource {
@@ -151,9 +82,8 @@ export function FileWorkspacePanel({ resource, layout }: FileWorkspacePanelProps
 }
 
 export function FileWorkspaceSplitLayout({ layout, hasFile, selectedFileKey, content, tree, treeWidth, onTreeWidthChange }: { layout: FileWorkspaceLayoutVm; hasFile: boolean; selectedFileKey: string | null; content: React.ReactNode; tree: React.ReactNode; treeWidth: number | null; onTreeWidthChange: (width: number) => void }) {
-  const { t } = useTranslation(); const workspace = useRightWorkspace(); const { ref, responsiveState, currentWidth } = useFileWorkspaceResponsiveState(layout.splitMinWidth);
-  const requested = useRef(false); const [compactView, setCompactView] = useState<'content' | 'tree'>(hasFile ? 'content' : 'tree');
-  useEffect(() => { if (requested.current) return; requested.current = true; if (workspace.width < layout.preferredWidth) workspace.setWidth(layout.preferredWidth); }, [layout.preferredWidth, workspace.setWidth, workspace.width]);
+  const { t } = useTranslation(); const { ref, responsiveState, currentWidth } = useWorkspaceResponsiveState(layout.splitMinWidth);
+  const [compactView, setCompactView] = useState<'content' | 'tree'>(hasFile ? 'content' : 'tree');
   useEffect(() => { if (selectedFileKey) setCompactView('content'); }, [selectedFileKey]);
   const width = Math.min(layout.treeMaxWidth, Math.max(layout.treeMinWidth, treeWidth ?? layout.treeDefaultWidth)); const percent = Math.min(60, Math.max(20, responsiveState.widthAtTransition > 0 ? width / responsiveState.widthAtTransition * 100 : 38));
   return <div ref={ref} className="flex min-h-0 flex-1 flex-col" data-file-workspace-panel="true">{!responsiveState.split ? <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/50 px-2"><Button size="sm" variant={compactView === 'content' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('content')} disabled={!hasFile}>{t('workspace.filesPanel.file')}</Button><Button size="sm" variant={compactView === 'tree' ? 'secondary' : 'ghost'} className="h-7 text-xs" onClick={() => setCompactView('tree')}>{t('workspace.filesPanel.directory')}</Button></div> : null}<div className="min-h-0 flex-1">{responsiveState.split ? <ResizablePanelGroup orientation="horizontal" className="h-full" onLayoutChanged={(panelLayout, meta) => { if (!meta.isUserInteraction) return; const next = resolveWorkspacePanelWidthFromLayout({ layout: panelLayout, panelId: 'file-tree', groupWidth: currentWidth(), minWidth: layout.treeMinWidth, maxWidth: layout.treeMaxWidth }); if (next != null) onTreeWidthChange(next); }}><ResizablePanel id="file-content" defaultSize={`${100 - percent}%`} minSize={280} className="min-w-0">{content}</ResizablePanel><ResizableHandle className="bg-border/50" /><ResizablePanel id="file-tree" defaultSize={`${percent}%`} minSize={layout.treeMinWidth} maxSize={layout.treeMaxWidth} className="min-w-0">{tree}</ResizablePanel></ResizablePanelGroup> : compactView === 'content' && hasFile ? content : tree}</div></div>;
@@ -192,7 +122,10 @@ function FileContent({ resource }: { resource: FileWorkspaceResource }) {
       <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border/50 px-3 py-1.5">
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{resource.title}</p>
-          <p className="truncate text-[10px] text-muted-foreground" title={path}>{path}</p>
+          <Tooltip>
+            <TooltipTrigger asChild><p className="truncate text-ui-micro text-muted-foreground">{path}</p></TooltipTrigger>
+            <TooltipContent className="max-w-[420px] break-all">{path}</TooltipContent>
+          </Tooltip>
         </div>
         {svgSource ? (
           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => void (async () => {
@@ -203,10 +136,10 @@ function FileContent({ resource }: { resource: FileWorkspaceResource }) {
             {t('workspace.filesPanel.viewPreview')}
           </Button>
         ) : null}
-        {entry.saveState.kind === 'scheduled' ? <span className="text-[10px] text-muted-foreground">{t('workspace.filesPanel.pendingSave')}</span> : null}
-        {entry.saveState.kind === 'saving' ? <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />{t('workspace.filesPanel.saving')}</span> : null}
-        {entry.saveState.kind === 'clean' && entry.status === 'ready' && entry.snapshot?.kind === 'text' ? <span className="text-[10px] text-muted-foreground">{t('workspace.filesPanel.saved')}</span> : null}
-        {locationAdjusted ? <span className="text-[10px] text-amber-600 dark:text-amber-400">{t('workspace.filesPanel.locationAdjusted')}</span> : null}
+        {entry.saveState.kind === 'scheduled' ? <span className="text-ui-micro text-muted-foreground">{t('workspace.filesPanel.pendingSave')}</span> : null}
+        {entry.saveState.kind === 'saving' ? <span className="flex items-center gap-1 text-ui-micro text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />{t('workspace.filesPanel.saving')}</span> : null}
+        {entry.saveState.kind === 'clean' && entry.status === 'ready' && entry.snapshot?.kind === 'text' ? <span className="text-ui-micro text-muted-foreground">{t('workspace.filesPanel.saved')}</span> : null}
+        {locationAdjusted ? <span className="text-ui-micro text-amber-600 dark:text-amber-400">{t('workspace.filesPanel.locationAdjusted')}</span> : null}
       </header>
       {entry.status === 'idle' || entry.status === 'loading' ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>
@@ -436,7 +369,7 @@ function ImagePreview({ resource }: { resource: FileWorkspaceResource }) {
           style={{ width: snapshot.width * zoom, height: snapshot.height * zoom }}
         />
       </div>
-      <div className="shrink-0 border-t border-border/40 px-3 py-1 text-[10px] text-muted-foreground">{snapshot.width} × {snapshot.height} · {Math.round(zoom * 100)}%</div>
+      <div className="shrink-0 border-t border-border/40 px-3 py-1 text-ui-micro text-muted-foreground">{snapshot.width} × {snapshot.height} · {Math.round(zoom * 100)}%</div>
     </div>
   );
 }

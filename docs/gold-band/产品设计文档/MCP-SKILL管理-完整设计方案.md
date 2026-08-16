@@ -449,6 +449,8 @@ Page
 
 加载生命周期固定为：Profiles Tab 挂载只执行 `get_profiles`；MCP Tab 首次激活执行 MCP 列表；SKILL Tab 首次激活执行 SKILL 列表，并按需取得 `get_agent_registry + get_conversation_workspaces`。不同 Tab 的数据结构分属不同领域，不允许页面挂载时统一预取。完整会话侧栏属于会话运行领域，即使 App 壳已经缓存，也不能成为上下文管理的 workspace 下拉数据接口。
 
+角色批量导入统一使用可调整宽度的右侧 Sheet：设置与结果共享尺寸记忆，标题、状态提示与底部操作区固定，中间结果列表作为唯一可收缩滚动区。结果行使用 `minmax(0, 1fr)` 分配文本列，窄宽度下操作按钮自然换行；名称、Windows 路径与错误信息允许安全断行，任何单条记录都不能扩大抽屉或产生横向溢出。结果内编辑进入同一抽屉工作流的角色编辑层，保存、返回或关闭后恢复原批次结果；保存成功后使用接口返回实体，按 `importedId` 同步结果行名称，源路径与兜底诊断继续保留；任意时刻只挂载一个活动 Sheet。
+
 上述入口都会访问文件系统或目录树，后端必须声明为 async Tauri command，并通过统一的 `spawn_blocking_command` 在 blocking pool 中完成读取和 VM 构建。该约束覆盖 `get_profiles`、`get_agent_registry`、`list_mcp_servers`、`list_skills`、`list_project_skills` 与 `get_conversation_workspaces`，确保任一 Tab 加载期间都不占用桌面 IPC 事件处理线程。
 
 SKILL 卡片底部的 Agent 区域采用“最多两行、超量聚合”的自适应布局。容器先按实际可用宽度展示一行，数量增加时自然使用第二行；只有两行仍无法容纳时，才在末尾保留 `+N` 入口。`+N` 使用无页面遮罩的 Popover 展示被隐藏 Agent，并按“直接读取 / 同步设置”分组；同步 Agent 行复用卡片上的同步/取消同步接口，操作后 Popover 保持打开，支持连续调整。详情、编辑、删除操作区固定在右侧，不参与 Agent 换行。容量由 `ResizeObserver` 驱动，不绑定内置 Agent 数量或窗口断点。

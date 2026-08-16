@@ -1,7 +1,7 @@
 import type { ConversationPage, ConversationRunVm, InterventionNavigateEventVm } from '@/types';
 
 export function conversationPageForIntervention(
-  event: InterventionNavigateEventVm,
+  event: Extract<InterventionNavigateEventVm, { targetType: 'conversation' }>,
 ): Extract<ConversationPage, { kind: 'conversation-run' }> {
   return {
     kind: 'conversation-run',
@@ -31,14 +31,27 @@ export function conversationPageForRun(run: ConversationRunVm): Extract<Conversa
   };
 }
 
-export function resolvePresentedConversationPage(
+export function isConversationRunNavigationLoading(
   requested: ConversationPage,
-  presentedRun: ConversationRunVm | null,
-): ConversationPage {
-  if (requested.kind !== 'conversation-run' || !presentedRun) return requested;
-  return conversationPageMatchesRun(requested, presentedRun)
-    ? requested
-    : conversationPageForRun(presentedRun);
+  loadedRun: ConversationRunVm | null,
+) {
+  return requested.kind === 'conversation-run'
+    && !conversationPageMatchesRun(requested, loadedRun);
+}
+
+export function beginConversationSessionSelection(
+  run: ConversationRunVm,
+  selectedSessionKey: string,
+): ConversationRunVm {
+  if (run.sessionTree.selectedSessionKey === selectedSessionKey) return run;
+  return {
+    ...run,
+    selectedSession: null,
+    sessionTree: {
+      ...run.sessionTree,
+      selectedSessionKey,
+    },
+  };
 }
 
 export function shouldCommitConversationNavigation(

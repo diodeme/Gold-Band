@@ -4,8 +4,8 @@ use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, UserPromptRenderMode,
-    WorkerInvocation,
+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, SessionRef,
+    UserPromptRenderMode, WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
 use std::sync::{Arc, Barrier, Mutex};
@@ -523,6 +523,19 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
             stream_path: None,
             runtime_error: None,
         })
+    }
+
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<gold_band::provider::AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
     }
 
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
@@ -1066,12 +1079,18 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
         )
         .unwrap();
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
+    assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(
-        manual_prompt
+        !manual_prompt
             .system_prompt
             .contains("你必须在最后一步按照以下格式输出你的结果")
     );
     assert_eq!(manual_prompt.user_prompt, "手动追问");
+    assert!(
+        !manual_prompt
+            .user_prompt
+            .contains("Gold Band runtime context")
+    );
     assert_eq!(
         manual_prompt.prompt_id.as_deref(),
         Some("manual-prompt-001")
@@ -1092,9 +1111,12 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     assert_eq!(invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(
         invocations[1].user_prompt_render_mode,
-        UserPromptRenderMode::WorkflowResume
+        UserPromptRenderMode::RuntimeResume
     );
-    assert_eq!(invocations[1].resume_prompt.as_deref(), Some("继续"));
+    assert_eq!(
+        invocations[1].resume_prompt.as_deref(),
+        Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
+    );
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
         Some("prompt-continue-001")
@@ -1361,6 +1383,21 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     assert_eq!(dev_invocations.len(), 3);
     assert_eq!(dev_invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(
+        dev_invocations[1].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[1].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
+    assert!(
+        !dev_invocations[1]
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("用户已选择将当前节点重新交由 Runtime 控制")
+    );
+    assert_eq!(
         dev_invocations[1]
             .continue_ref
             .as_ref()
@@ -1369,6 +1406,14 @@ fn transition_continue_uses_latest_target_attempt_ref() {
         Some("dev-attempt-001"),
     );
     assert_eq!(dev_invocations[2].session_mode, SessionMode::Continue);
+    assert_eq!(
+        dev_invocations[2].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[2].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
     assert_eq!(
         dev_invocations[2]
             .continue_ref
@@ -1865,6 +1910,7 @@ fn error_blocked_run_is_not_continuable() {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        execution: Default::default(),
     };
 
     assert!(!is_run_continuable(&run));

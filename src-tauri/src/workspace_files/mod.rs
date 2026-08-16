@@ -20,6 +20,10 @@ pub use watcher::WorkspaceFileWatchRuntime;
 
 pub const WORKSPACE_FILE_PREVIEW_PROTOCOL: &str = "gold-band-preview";
 
+pub(crate) fn revision_for_preview(path: &Path) -> CommandResult<FileRevisionVm> {
+    service::revision_for_path(path)
+}
+
 use paths::{
     canonicalize_file, locator_for_path, parse_file_link_from, path_is_within,
     resolve_workspace_relative_path, resolve_workspace_root,
@@ -392,7 +396,7 @@ pub fn stop_workspace_file_watch(
     input: WorkspaceFileWatchInput,
 ) -> CommandResult<()> {
     let root = resolve_workspace_root(state.inner(), &input.project_id)?;
-    watch_runtime.stop_workspace(&root.project_id)
+    watch_runtime.stop_workspace(&root.project_id, &root.path)
 }
 
 fn authorize_external_if_needed(

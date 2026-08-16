@@ -6,6 +6,168 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("{msg}")]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLifecycleTransitionError {
+    pub code: String,
+    pub msg: String,
+    pub from: RuntimeExecutionPhase,
+    pub to: RuntimeExecutionPhase,
+}
+
+pub struct RuntimeLifecycleStore;
+
+impl RuntimeLifecycleStore {
+    pub fn transition(
+        run: &mut RunState,
+        phase: RuntimeExecutionPhase,
+        locator: Option<RuntimeAttemptLocator>,
+        updated_at: impl Into<String>,
+    ) -> std::result::Result<(), RuntimeLifecycleTransitionError> {
+        let from = run.execution.phase;
+        if !runtime_execution_transition_allowed(from, phase) {
+            return Err(RuntimeLifecycleTransitionError {
+                code: "runtime.execution-transition-invalid".to_string(),
+                msg: format!("runtime execution cannot transition from {from:?} to {phase:?}"),
+                from,
+                to: phase,
+            });
+        }
+        run.execution.revision = run.execution.revision.saturating_add(1);
+        run.execution.phase = phase;
+        run.execution.locator = locator;
+        run.execution.updated_at = updated_at.into();
+        Ok(())
+    }
+}
+
+fn runtime_execution_transition_allowed(
+    from: RuntimeExecutionPhase,
+    to: RuntimeExecutionPhase,
+) -> bool {
+    use RuntimeExecutionPhase::*;
+    from == to
+        || matches!(
+            (from, to),
+            (
+                StartingNode,
+                RunningNode
+                    | FinalizingArtifact
+                    | RepairingArtifact
+                    | PreparingWorkspace
+                    | Paused
+                    | Terminal
+            ) | (
+                RunningNode,
+                StartingNode
+                    | FinalizingArtifact
+                    | RepairingArtifact
+                    | AwaitingManualCheck
+                    | Transitioning
+                    | PreparingWorkspace
+                    | Paused
+                    | Terminal
+            ) | (
+                FinalizingArtifact,
+                RepairingArtifact | AwaitingManualCheck | Transitioning | Paused | Terminal
+            ) | (
+                RepairingArtifact,
+                FinalizingArtifact | AwaitingManualCheck | Transitioning | Paused | Terminal
+            ) | (AwaitingManualCheck, Transitioning | Paused)
+                | (
+                    Transitioning,
+                    LaunchingNextNode | StartingNode | PreparingWorkspace | Paused | Terminal
+                )
+                | (
+                    LaunchingNextNode,
+                    StartingNode | RunningNode | PreparingWorkspace | Paused | Terminal
+                )
+                | (
+                    PreparingWorkspace,
+                    StartingNode
+                        | RunningNode
+                        | Transitioning
+                        | LaunchingNextNode
+                        | Paused
+                        | Terminal
+                )
+                | (
+                    Paused,
+                    StartingNode
+                        | FinalizingArtifact
+                        | RepairingArtifact
+                        | AwaitingManualCheck
+                        | Transitioning
+                        | PreparingWorkspace
+                )
+                | (Terminal, Terminal)
+        )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAttemptLocator {
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeExecutionPhase {
+    StartingNode,
+    RunningNode,
+    FinalizingArtifact,
+    RepairingArtifact,
+    AwaitingManualCheck,
+    Transitioning,
+    LaunchingNextNode,
+    PreparingWorkspace,
+    Paused,
+    Terminal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeExecutionState {
+    pub revision: u64,
+    pub phase: RuntimeExecutionPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator: Option<RuntimeAttemptLocator>,
+    pub updated_at: String,
+}
+
+impl Default for RuntimeExecutionState {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            phase: RuntimeExecutionPhase::StartingNode,
+            locator: None,
+            updated_at: String::new(),
+        }
+    }
+}
+
+impl RuntimeExecutionState {
+    pub fn new(
+        phase: RuntimeExecutionPhase,
+        locator: Option<RuntimeAttemptLocator>,
+        updated_at: impl Into<String>,
+    ) -> Self {
+        Self {
+            revision: 1,
+            phase,
+            locator,
+            updated_at: updated_at.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LastExecutedNode {
@@ -59,6 +221,59 @@ pub struct RunState {
     pub uuid: Option<String>,
     #[serde(default)]
     pub last_executed_node: Option<LastExecutedNode>,
+    /// Authoritative Workflow Runtime phase. ACP session/turn state must never
+    /// infer or mutate this aggregate.
+    #[serde(default)]
+    pub execution: RuntimeExecutionState,
+}
+
+impl RunState {
+    pub fn current_execution_locator(&self) -> Option<RuntimeAttemptLocator> {
+        Some(RuntimeAttemptLocator {
+            round_id: self.current_round.clone()?,
+            node_id: self.current_node.clone()?,
+            attempt_id: self.current_attempt.clone()?,
+            outer_node_id: None,
+            outer_attempt_id: None,
+        })
+    }
+
+    pub fn transition_execution(
+        &mut self,
+        phase: RuntimeExecutionPhase,
+        locator: Option<RuntimeAttemptLocator>,
+        updated_at: impl Into<String>,
+    ) -> std::result::Result<(), RuntimeLifecycleTransitionError> {
+        RuntimeLifecycleStore::transition(self, phase, locator, updated_at)
+    }
+
+    pub fn transition_current_execution(
+        &mut self,
+        phase: RuntimeExecutionPhase,
+        updated_at: impl Into<String>,
+    ) -> std::result::Result<(), RuntimeLifecycleTransitionError> {
+        let locator = self.current_execution_locator();
+        self.transition_execution(phase, locator, updated_at)
+    }
+
+    /// Deterministic one-time migration for run.json written before execution
+    /// phases became authoritative.
+    pub fn reconcile_legacy_execution(&mut self) -> bool {
+        if self.execution.revision != 0 || !self.execution.updated_at.is_empty() {
+            return false;
+        }
+        let phase = match self.status {
+            RunStatus::Running => RuntimeExecutionPhase::StartingNode,
+            RunStatus::Paused => RuntimeExecutionPhase::Paused,
+            RunStatus::Completed => RuntimeExecutionPhase::Terminal,
+        };
+        self.execution = RuntimeExecutionState::new(
+            phase,
+            self.current_execution_locator(),
+            self.updated_at.clone(),
+        );
+        true
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +316,11 @@ pub struct NodeState {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub manual_check_pending: bool,
+    /// Identifies the currently authorized Runtime invocation for this attempt.
+    /// A stop clears it and every explicit continue allocates a new value so
+    /// stale background work cannot mutate a newer execution of the same attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_id: Option<String>,
     pub resolved_config: ResolvedConfig,
     #[serde(default)]
     pub uuid: Option<String>,
@@ -152,6 +372,19 @@ pub fn validate_run_state(state: &RunState) -> Result<()> {
     ensure!(
         !(state.current_attempt.is_some() && state.current_node.is_none()),
         "currentAttempt requires currentNode"
+    );
+    // A zero revision exists only in in-memory legacy/test fixtures. App
+    // storage access reconciles it before exposing or writing the run.
+    ensure!(
+        state.status != RunStatus::Paused
+            || state.execution.phase == RuntimeExecutionPhase::Paused
+            || state.execution.phase == RuntimeExecutionPhase::AwaitingManualCheck,
+        "paused run must have paused or manual-check runtime execution phase"
+    );
+    ensure!(
+        state.status != RunStatus::Completed
+            || state.execution.phase == RuntimeExecutionPhase::Terminal,
+        "completed run must have terminal runtime execution phase"
     );
     ensure!(
         !(state.current_node.is_some() && state.current_round.is_none()),
@@ -215,6 +448,38 @@ pub fn validate_worker_ref_state(state: &WorkerRefState) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn test_run(status: RunStatus, phase: RuntimeExecutionPhase) -> RunState {
+        RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status,
+            outcome: None,
+            started_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-a".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                phase,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "node-a".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "t0",
+            ),
+        }
+    }
+
     #[test]
     fn task_state_new_generates_uuid() {
         let task = TaskState::new("task-001");
@@ -228,5 +493,77 @@ mod tests {
         let a = TaskState::new("task-a");
         let b = TaskState::new("task-b");
         assert_ne!(a.uuid, b.uuid);
+    }
+
+    #[test]
+    fn runtime_lifecycle_transition_is_validated_and_revision_is_monotonic() {
+        let mut run = test_run(RunStatus::Running, RuntimeExecutionPhase::StartingNode);
+        let locator = run.current_execution_locator();
+        RuntimeLifecycleStore::transition(
+            &mut run,
+            RuntimeExecutionPhase::RunningNode,
+            locator.clone(),
+            "t1",
+        )
+        .unwrap();
+        RuntimeLifecycleStore::transition(
+            &mut run,
+            RuntimeExecutionPhase::FinalizingArtifact,
+            locator,
+            "t2",
+        )
+        .unwrap();
+        assert_eq!(run.execution.revision, 3);
+        assert_eq!(
+            run.execution.phase,
+            RuntimeExecutionPhase::FinalizingArtifact
+        );
+    }
+
+    #[test]
+    fn runtime_lifecycle_allows_workspace_preparation_before_provider_start() {
+        let mut run = test_run(RunStatus::Running, RuntimeExecutionPhase::StartingNode);
+        let locator = run.current_execution_locator();
+
+        RuntimeLifecycleStore::transition(
+            &mut run,
+            RuntimeExecutionPhase::PreparingWorkspace,
+            locator,
+            "t1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            run.execution.phase,
+            RuntimeExecutionPhase::PreparingWorkspace
+        );
+        assert_eq!(run.execution.revision, 2);
+    }
+
+    #[test]
+    fn runtime_lifecycle_rejects_terminal_to_running_transition() {
+        let mut run = test_run(RunStatus::Completed, RuntimeExecutionPhase::Terminal);
+        run.outcome = Some(RunOutcome::Success);
+        let error = RuntimeLifecycleStore::transition(
+            &mut run,
+            RuntimeExecutionPhase::RunningNode,
+            None,
+            "t1",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "runtime.execution-transition-invalid");
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Terminal);
+        assert_eq!(run.execution.revision, 1);
+    }
+
+    #[test]
+    fn legacy_run_migration_uses_run_status_without_acp_facts() {
+        let mut run = test_run(RunStatus::Paused, RuntimeExecutionPhase::StartingNode);
+        run.pause_reason = Some(PauseReason::ProcessInterrupted);
+        run.execution = RuntimeExecutionState::default();
+        assert!(run.reconcile_legacy_execution());
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 1);
+        assert!(!run.reconcile_legacy_execution());
     }
 }

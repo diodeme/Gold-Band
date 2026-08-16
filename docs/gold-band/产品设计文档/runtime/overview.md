@@ -3,6 +3,7 @@
 ## 1. 核心对象
 Runtime 当前围绕以下对象组织：
 - task
+- scheduled task
 - run
 - round
 - attempt
@@ -31,10 +32,12 @@ preset -> task -> run -> round/attempt
 - runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
+- [定时任务运行时设计](scheduled-task.md)
 - [控制层](control.md)
 - [目录布局](layout.md)
 - 状态文件规范
   - [task.json](state/task.json.md)
+  - [scheduled-task.json](state/scheduled-task.json.md)
   - [run.json](state/run.json.md)
   - [round.json](state/round.json.md)
   - [node.json](state/node.json.md)
@@ -132,3 +135,4 @@ ACP attempt 会在 `acp.diagnostics.jsonl` 写入 adapter 复用/新建结果和
 ## 9. 相关边界文件
 - [Worker Ref 规范](../provider/worker-ref.md)
 - [Progress 规范](../interaction/progress.md)
+- [状态、生命周期与数据完整性规则](../../rules/state-lifecycle-and-data-integrity.md) —— 实现和审查实体身份、canonical state、异步收敛、持久化、原子写入与错误隔离时的统一工程约束

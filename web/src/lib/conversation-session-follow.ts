@@ -1,3 +1,5 @@
+import type { ConversationAttemptLifecycleVm } from '@/types';
+
 export type ConversationSessionFollowMode = 'auto' | 'manual';
 
 export interface ConversationSessionFollowState {
@@ -12,6 +14,8 @@ export function resolveConversationEventSelectedSessionKey(args: {
   followMode: ConversationSessionFollowMode;
   currentSelectedActive?: boolean;
   incomingActive?: boolean;
+  currentSelectedRuntimeControlled?: boolean;
+  incomingRuntimeControlled?: boolean;
 }) {
   const {
     currentSelectedKey,
@@ -19,6 +23,8 @@ export function resolveConversationEventSelectedSessionKey(args: {
     followMode,
     currentSelectedActive = false,
     incomingActive = true,
+    currentSelectedRuntimeControlled = false,
+    incomingRuntimeControlled = false,
   } = args;
   if (currentSelectedKey && isNestedConversationSessionKey(currentSelectedKey, incomingSessionKey)) {
     return currentSelectedKey;
@@ -26,6 +32,7 @@ export function resolveConversationEventSelectedSessionKey(args: {
   if (!currentSelectedKey) return incomingSessionKey;
   if (followMode !== 'auto') return currentSelectedKey;
   if (!incomingActive) return currentSelectedKey;
+  if (!currentSelectedRuntimeControlled || !incomingRuntimeControlled) return currentSelectedKey;
   return currentSelectedActive ? currentSelectedKey : incomingSessionKey;
 }
 
@@ -33,8 +40,16 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   followMode: ConversationSessionFollowMode;
   pendingEventSessionKey?: string | null;
   currentSelectedKey?: string | null;
+  currentSelectedRuntimeControlled?: boolean;
+  pendingEventRuntimeControlled?: boolean;
 }) {
-  const { followMode, pendingEventSessionKey, currentSelectedKey } = args;
+  const {
+    followMode,
+    pendingEventSessionKey,
+    currentSelectedKey,
+    currentSelectedRuntimeControlled = false,
+    pendingEventRuntimeControlled = false,
+  } = args;
   if (
     currentSelectedKey &&
     pendingEventSessionKey &&
@@ -42,8 +57,19 @@ export function resolveConversationRefreshSelectedSessionKey(args: {
   ) {
     return currentSelectedKey;
   }
-  if (followMode === 'auto' && pendingEventSessionKey) return pendingEventSessionKey;
+  if (
+    followMode === 'auto'
+    && pendingEventSessionKey
+    && currentSelectedRuntimeControlled
+    && pendingEventRuntimeControlled
+  ) return pendingEventSessionKey;
   return currentSelectedKey ?? pendingEventSessionKey ?? null;
+}
+
+export function isRuntimeControlledConversationLifecycle(
+  lifecycle?: Pick<ConversationAttemptLifecycleVm, 'control'> | null,
+) {
+  return lifecycle?.control.mode === 'runtime-controlled';
 }
 
 export function isNestedConversationSessionKey(currentSelectedKey: string, incomingSessionKey: string) {
@@ -53,8 +79,9 @@ export function isNestedConversationSessionKey(currentSelectedKey: string, incom
 export function shouldEnableConversationAutoFollow(
   isActiveSession: boolean,
   atBottom: boolean,
+  runtimeControlled: boolean,
 ) {
-  return isActiveSession && atBottom;
+  return runtimeControlled && isActiveSession && atBottom;
 }
 
 export function isTerminalConversationSessionStatus(status?: string | null) {

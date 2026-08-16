@@ -15,6 +15,11 @@ describe('app error i18n', () => {
     expect(i18n.t('runMode.autoSection', { lng: 'en' })).toBe('AUTO Mode');
   });
 
+  it('localizes the ACP attachment action', () => {
+    expect(i18n.t('acp.attachHint', { lng: 'zh-CN' })).toBe('添加附件');
+    expect(i18n.t('acp.attachHint', { lng: 'en' })).toBe('Attach files');
+  });
+
   it('renders active ACP prompt config-save guard as a user action', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'acp.active-prompt-blocks-config-save',
@@ -31,5 +36,15 @@ describe('app error i18n', () => {
     });
 
     expect(message).toBe('找不到该工作空间。');
+  });
+
+  it('does not expose interpolation placeholders when an error has no message parameter', () => {
+    const message = displayAppError(i18n.t.bind(i18n), {
+      code: 'app.unexpected',
+      params: {},
+    });
+
+    expect(message).toBe('操作失败，请重试。');
+    expect(message).not.toContain('{{message}}');
   });
 });

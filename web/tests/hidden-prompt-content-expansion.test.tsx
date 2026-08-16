@@ -20,6 +20,43 @@ afterEach(() => {
 });
 
 describe('hidden prompt content expansion', () => {
+  it('projects appended runtime context above the visible user message', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<HiddenPromptMessageContent content={[
+          '本次目标变更：你输出一个 hi 就好了',
+          '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">',
+          'runtime suspended',
+          '</hidden>',
+        ].join('\n')} />);
+      });
+
+      const contentRoot = container.firstElementChild;
+      expect(contentRoot?.firstElementChild?.getAttribute('data-slot')).toBe('collapsible');
+      expect(contentRoot?.firstElementChild?.getAttribute('data-theme-role')).toBe('message-disclosure');
+      expect(contentRoot?.children[1]?.textContent).toContain('本次目标变更');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('uses the shared chat disclosure lifecycle when opening and closing', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}

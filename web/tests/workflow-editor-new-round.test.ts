@@ -35,6 +35,8 @@ function worker(id: string) {
     provider: 'claude-acp',
     profile: 'developer',
     goal: `Run ${id}`,
+    output: { kind: 'json' as const, artifact: `${id}-result`, schema: { result: 'boolean' } },
+    success_condition: { expression: '$.result == true' },
   };
 }
 

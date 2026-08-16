@@ -22,6 +22,7 @@ describe('workspace file editor theme contract', () => {
     for (const token of [
       'var(--foreground)',
       'var(--muted-foreground)',
+      'var(--link)',
       'var(--gold-running)',
       'var(--gold-success)',
       'var(--gold-warning)',
@@ -43,7 +44,7 @@ describe('workspace file editor theme contract', () => {
   });
 
   it('maps Markdown links and code surfaces to contrast-safe semantic tokens', () => {
-    expect(styles).toContain('--atomic-editor-link: var(--gold-running)');
+    expect(styles).toContain('--atomic-editor-link: var(--link)');
     expect(styles).toContain('--atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background))');
     expect(styles).not.toContain('--atomic-editor-link: var(--primary)');
   });

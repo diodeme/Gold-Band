@@ -2,8 +2,10 @@ import {
   Check,
   ChevronDown,
   CornerDownLeft,
+  ListPlus,
   Paperclip,
   Pencil,
+  MessageSquareQuote,
   Trash2,
   X,
 } from 'lucide-react';
@@ -33,6 +35,8 @@ export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
   sessionActive: boolean;
   mutationPending: boolean;
+  attachedAbove?: boolean;
+  integratedInfoTab?: boolean;
   onEdit: (itemId: string, content: string) => void | Promise<void>;
   onUse: (itemId: string) => void | Promise<void>;
   onDelete: (itemId: string) => void | Promise<void>;
@@ -42,24 +46,26 @@ export function ConversationPromptQueue({
   queue,
   sessionActive,
   mutationPending,
+  attachedAbove = false,
+  integratedInfoTab = false,
   onEdit,
   onUse,
   onDelete,
 }: ConversationPromptQueueProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(true);
+  const [showAll, setShowAll] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const hasMore = queue.items.length > DEFAULT_VISIBLE_ITEMS;
-  const visibleItems = expanded ? queue.items : queue.items.slice(0, DEFAULT_VISIBLE_ITEMS);
+  const visibleItems = showAll ? queue.items : queue.items.slice(0, DEFAULT_VISIBLE_ITEMS);
 
   useEffect(() => {
-    if (!hasMore) setExpanded(false);
     if (editingId && !queue.items.some((item) => item.id === editingId)) {
       setEditingId(null);
       setDraft('');
     }
-  }, [editingId, hasMore, queue.items]);
+  }, [editingId, queue.items]);
 
   if (queue.items.length === 0) return null;
 
@@ -80,64 +86,75 @@ export function ConversationPromptQueue({
 
   return (
     <Collapsible
-      open={expanded}
-      onOpenChange={setExpanded}
-      className="overflow-hidden rounded-t-2xl border border-b-0 border-border/70 bg-muted/35"
+      open={open}
+      onOpenChange={setOpen}
+      className={cn(
+        'overflow-hidden border border-b-0 border-border bg-card',
+        attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
+        integratedInfoTab && !attachedAbove && 'rounded-tl-none',
+      )}
       data-testid="conversation-prompt-queue"
     >
-      <div className="flex items-center justify-between gap-3 px-3 py-2 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground/80">
-          {t('acp.promptQueue.title', { count: queue.items.length, max: queue.maxItems })}
-        </span>
-        {hasMore ? (
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs">
-              {expanded ? t('acp.promptQueue.collapse') : t('acp.promptQueue.showMore')}
-              <ChevronDown className={cn('size-3 transition-transform', expanded && 'rotate-180')} />
-            </Button>
-          </CollapsibleTrigger>
-        ) : null}
-      </div>
-      <div className="divide-y divide-border/50 border-t border-border/50">
-        {visibleItems.slice(0, DEFAULT_VISIBLE_ITEMS).map((item, index) => (
-          <QueueItem
-            key={item.id}
-            index={index}
-            item={item}
-            editing={editingId === item.id}
-            draft={draft}
-            sessionActive={sessionActive}
-            mutationPending={mutationPending}
-            onDraftChange={setDraft}
-            onEdit={() => startEdit(item.id, item.content)}
-            onCancel={cancelEdit}
-            onSave={() => { void saveEdit(); }}
-            onUse={() => { void onUse(item.id); }}
-            onDelete={() => { void onDelete(item.id); }}
+      <CollapsibleTrigger asChild>
+        <Button
+          variant="ghost"
+          className="h-auto w-full justify-between rounded-none border-0 px-3 py-2 font-normal shadow-none hover:bg-transparent focus-visible:border-transparent focus-visible:ring-0"
+          data-queue-trigger="true"
+        >
+          <span className="flex min-w-0 items-center gap-2 text-xs">
+            <ListPlus className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="text-muted-foreground">{t('acp.promptQueue.title')}</span>
+            <span className="truncate font-medium text-foreground">
+              {t('acp.promptQueue.summary', { count: queue.items.length, max: queue.maxItems })}
+            </span>
+          </span>
+          <ChevronDown
+            className={cn(
+              'size-3.5 shrink-0 text-muted-foreground transition-transform',
+              open && 'rotate-180',
+            )}
           />
-        ))}
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
+        <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
+          {visibleItems.map((item, index) => (
+            <QueueItem
+              key={item.id}
+              index={index}
+              item={item}
+              editing={editingId === item.id}
+              draft={draft}
+              sessionActive={sessionActive}
+              mutationPending={mutationPending}
+              onDraftChange={setDraft}
+              onEdit={() => startEdit(item.id, item.content)}
+              onCancel={cancelEdit}
+              onSave={() => { void saveEdit(); }}
+              onUse={() => { void onUse(item.id); }}
+              onDelete={() => { void onDelete(item.id); }}
+            />
+          ))}
+        </div>
         {hasMore ? (
-          <CollapsibleContent>
-            {visibleItems.slice(DEFAULT_VISIBLE_ITEMS).map((item, index) => (
-              <QueueItem
-                key={item.id}
-                index={index + DEFAULT_VISIBLE_ITEMS}
-                item={item}
-                editing={editingId === item.id}
-                draft={draft}
-                sessionActive={sessionActive}
-                mutationPending={mutationPending}
-                onDraftChange={setDraft}
-                onEdit={() => startEdit(item.id, item.content)}
-                onCancel={cancelEdit}
-                onSave={() => { void saveEdit(); }}
-                onUse={() => { void onUse(item.id); }}
-                onDelete={() => { void onDelete(item.id); }}
-              />
-            ))}
-          </CollapsibleContent>
+          <div className="border-t border-border/25 px-3 py-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-full gap-1.5 rounded-md text-xs font-normal text-muted-foreground shadow-none hover:bg-muted/30 hover:text-foreground"
+              aria-expanded={showAll}
+              onClick={() => setShowAll((current) => !current)}
+              data-queue-show-more="true"
+            >
+              {showAll
+                ? t('acp.promptQueue.showFirst', { count: DEFAULT_VISIBLE_ITEMS })
+                : t('acp.promptQueue.showMore')}
+              <ChevronDown className={cn('size-3.5 transition-transform', showAll && 'rotate-180')} />
+            </Button>
+          </div>
         ) : null}
-      </div>
+      </CollapsibleContent>
     </Collapsible>
   );
 }
@@ -173,8 +190,8 @@ function QueueItem({
 }: QueueItemProps) {
   const { t } = useTranslation();
   return (
-    <div className="flex min-h-10 items-center gap-2 px-3 py-1.5" data-queue-item-id={item.id}>
-      <span className="w-4 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+    <div className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-xs" data-queue-item-id={item.id}>
+      <span className="w-4 shrink-0 text-center text-ui-caption tabular-nums text-muted-foreground">
         {index + 1}
       </span>
       {editing ? (
@@ -182,19 +199,29 @@ function QueueItem({
           autoFocus
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
-          className="min-h-9 resize-none bg-background/70 py-1.5 text-sm"
+          className="min-h-8 resize-none bg-background/70 py-1 text-xs"
           aria-label={t('acp.promptQueue.editInput')}
         />
       ) : (
         <div className="min-w-0 flex-1">
-          <p className="line-clamp-2 whitespace-pre-wrap break-words text-sm leading-5 text-foreground/90">
+          <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
             {item.content}
           </p>
-          {item.attachmentCount > 0 ? (
-            <span className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-              <Paperclip className="size-3" />
-              {item.attachmentCount}
-            </span>
+          {item.attachmentCount > 0 || item.quoteCount > 0 ? (
+            <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
+              {item.quoteCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <MessageSquareQuote className="size-3" />
+                  {t('acp.userQuoteCount', { count: item.quoteCount })}
+                </span>
+              ) : null}
+              {item.attachmentCount > 0 ? (
+                <span className="inline-flex items-center gap-1">
+                  <Paperclip className="size-3" />
+                  {item.attachmentCount}
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </div>
       )}

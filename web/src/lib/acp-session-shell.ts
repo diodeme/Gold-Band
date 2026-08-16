@@ -32,6 +32,7 @@ export interface AcpSessionShellStateInput {
   hasLiveSessionShell: boolean;
   hasEstablishedSessionShell?: boolean;
   initialSessionLoading: boolean;
+  initialSessionLoadFailed?: boolean;
   initializationInterrupted?: boolean;
   initializationFailed?: boolean;
   runtimeActive?: boolean;
@@ -39,6 +40,7 @@ export interface AcpSessionShellStateInput {
 }
 
 export interface AcpSessionInitializationInterruptedInput {
+  orchestrated: boolean;
   runtimeStatus?: string | null;
   runtimePauseReason?: string | null;
   runtimeActive: boolean;
@@ -68,16 +70,17 @@ export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicy
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
   if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
-  if (input.hasEstablishedSessionShell) return 'available';
+  if (input.initialSessionLoadFailed) return 'error';
   if (
     input.showInitializingShell &&
     input.runtimeActive &&
     !input.baseSessionReady &&
     !input.hasLiveSessionShell
   ) return 'initializing';
+  if (input.initialSessionLoading) return 'loading';
+  if (input.hasEstablishedSessionShell) return 'available';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
-  if (input.initialSessionLoading) return 'loading';
   if (input.hasBaseSession) return 'available';
   if (input.runtimeActive) return 'loading';
   return 'missing';
@@ -108,6 +111,7 @@ export function isAcpSessionInitializationInterrupted(
   const runtimeStatus = normalizeLifecycleCode(input.runtimeStatus);
   const pauseReason = normalizeLifecycleCode(input.runtimePauseReason);
   return (
+    input.orchestrated &&
     !input.runtimeActive &&
     runtimeStatus === 'paused' &&
     pauseReason === 'process-interrupted' &&

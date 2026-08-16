@@ -683,7 +683,7 @@ export function WorkspaceFileEditor({
   };
 
   return (
-    <div className="relative h-full min-h-0">
+    <div data-theme-role="editor" className="relative h-full min-h-0">
       {markdownMode ? (
         <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-md border border-border/50 bg-background/88 p-0.5 shadow-sm backdrop-blur">
           <Tooltip>

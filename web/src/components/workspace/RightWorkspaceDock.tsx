@@ -1,4 +1,4 @@
-import { Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
+import { AlarmClock, Bot, Braces, Check, ChevronDown, FileCode2, FileDiff, FileText, FolderOpen, GitBranch, PencilLine, Plus, X } from 'lucide-react';
 import { memo, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { cn } from '@/lib/utils';
 import { useConversationBranchLiveSnapshot } from '@/lib/conversation-event-router';
 import { AgentConversationPanel } from './AgentConversationPanel';
-import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
 export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
@@ -45,12 +45,12 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   }, [tabs]);
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true">
+    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true" data-theme-role="panel">
       {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
         <WorkspaceEntryOptions presentation="menu" />
         <div
           ref={tabStripRef}
-          className="gold-themed-scrollbar right-workspace-tab-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
+          className="gold-themed-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
           data-right-workspace-tab-strip="true"
         >
           {tabs.map((tab) => (
@@ -112,7 +112,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
 });
 
 type WorkspaceEntryOption = {
-  id: 'file-browser' | 'conversation-directory';
+  id: 'file-browser' | 'source-control' | 'conversation-directory';
   label: string;
   description: string;
   icon: typeof FolderOpen;
@@ -137,6 +137,22 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
           projectId,
           title: t('workspace.files'),
           description: t('workspace.browseWorkspaceFiles'),
+          attention: false,
+        });
+      },
+    }, {
+      id: 'source-control',
+      label: t('sourceControl.title'),
+      description: t('sourceControl.description'),
+      icon: GitBranch,
+      open: () => {
+        void openResource({
+          kind: 'source-control',
+          key: sourceControlWorkspaceResourceKey(projectId),
+          scopeKey,
+          projectId,
+          title: t('sourceControl.title'),
+          description: t('sourceControl.description'),
           attention: false,
         });
       },
@@ -187,7 +203,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
                 <Icon className="size-3.5" />
                 <span className="min-w-0">
                   <span className="block font-medium">{option.label}</span>
-                  <span className="block truncate text-[10px] text-muted-foreground">{option.description}</span>
+                  <span className="block truncate text-ui-micro text-muted-foreground">{option.description}</span>
                 </span>
               </DropdownMenuItem>
             );
@@ -210,7 +226,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
             data-right-workspace-empty-option={option.id}
             onClick={option.open}
           >
-            <Icon className="size-4 shrink-0 text-primary" />
+            <Icon className="size-4 shrink-0 text-foreground" />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-foreground">{option.label}</span>
               <span className="mt-0.5 block text-xs font-normal text-muted-foreground">{option.description}</span>
@@ -262,8 +278,12 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
       ? <PencilLine className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />
-        : tab.kind === 'raw-frames'
+        : tab.kind === 'scheduled-task-config'
+          ? <AlarmClock className="size-3.5 shrink-0" />
+          : tab.kind === 'raw-frames'
           ? <Braces className="size-3.5 shrink-0" />
+          : tab.kind === 'source-control'
+            ? <GitBranch className="size-3.5 shrink-0" />
           : tab.kind === 'file-browser'
             ? <FolderOpen className="size-3.5 shrink-0" />
             : tab.kind === 'file-diff'

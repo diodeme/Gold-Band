@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 describe('App window shell style', () => {
   it('uses a viewport-safe Win10 inset frame without duplicating Win11 native rounding', () => {
     const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const generatedThemeStyles = readFileSync(
+      path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'),
+      'utf8',
+    );
 
     expect(styles).toContain('--gold-window-outline');
     expect(styles).toContain('--gold-window-edge-shadow');
@@ -13,8 +17,11 @@ describe('App window shell style', () => {
     expect(styles).toContain('inset 0 0 0 1px var(--gold-window-outline)');
     expect(styles).toContain('inset 0 0 8px var(--gold-window-edge-shadow)');
     expect(styles).not.toContain('outline-offset: -1px');
-    expect(styles).not.toContain('.app-window-shell {');
-    expect(styles).not.toContain('.app-window-shell::before');
+    expect(styles).not.toMatch(/^\.app-window-shell \{/mu);
+    expect(styles).not.toMatch(/^\.app-window-shell::before/mu);
+    expect(styles).toContain('@import "./themes/generated/builtin-themes.css"');
+    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.gold-band'] .app-window-shell");
+    expect(generatedThemeStyles).toContain(":root[data-theme='builtin.tech-neutral'] .app-window-shell");
     expect(styles).not.toContain('z-index: 60');
   });
 
@@ -34,20 +41,51 @@ describe('App window shell style', () => {
   });
 
   it('uses the shared shadcn resizable handles with low-contrast dividers', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+    const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
 
+    expect(styles).toContain('--color-workspace-divider: var(--workspace-divider)');
+    expect(styles).toContain('--workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace))');
     expect(shell).toContain('ResizablePanelGroup');
     expect(shell).toContain('data-testid="workspace-left-resize-handle"');
     expect(shell).toContain('data-testid="workspace-right-resize-handle"');
-    expect(shell).toContain('bg-sidebar-border/70 hover:bg-primary/30');
+    expect(shell).toContain('border-t border-workspace-divider bg-gold-workspace');
+    expect(shell).toContain('bg-workspace-divider hover:bg-primary/30');
+    expect(shell).toContain("'relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace'");
+    expect(shell).not.toContain('bg-sidebar-border/70 hover:bg-primary/30');
+    expect(workbenchShell).toContain('border-l border-t border-workspace-divider');
     expect(shell).not.toContain('mousemove');
     expect(shell).not.toContain('mouseup');
+  });
+
+  it('elevates the shared workspace surfaces with directional theme shadows', () => {
+    const styles = readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
+    const conversationShell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
+    const workbenchShell = readFileSync(path.resolve(__dirname, '../src/components/Shell.tsx'), 'utf8');
+    const elevation = '[box-shadow:var(--workspace-main-surface-shadow)]';
+
+    expect(conversationShell).toContain(elevation);
+    expect(workbenchShell).toContain(elevation);
+    expect(conversationShell).toContain('className="min-h-0 flex-1 bg-sidebar !overflow-x-clip !overflow-y-visible"');
+    expect(conversationShell).toContain("'relative z-10 min-w-0 [box-shadow:var(--workspace-main-surface-shadow)]'");
+    expect(conversationShell).toContain("'relative z-10 border-t border-workspace-divider [box-shadow:var(--workspace-main-surface-shadow)]'");
+    expect(conversationShell).toContain("<main data-theme-wallpaper-slot=\"workspace\" className={cn('relative flex h-full");
+    expect(conversationShell).not.toContain("<main className={cn('relative z-10");
+    expect(conversationShell).not.toContain('bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]');
+    expect(conversationShell).not.toContain("showLeft && 'rounded-tl-2xl border-l'");
+    expect(workbenchShell).toContain('relative z-10 flex min-w-0');
+    expect(styles).toContain('--workspace-main-surface-shadow:');
+    expect(styles).toMatch(/--workspace-main-surface-shadow:\s*0 -8px 16px -8px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 85%, transparent\),\s*0 0 16px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 45%, transparent\);/u);
+    expect(styles).not.toMatch(/--workspace-main-surface-shadow:[^;]*var\(--gb-material-shadow\)/u);
   });
 
   it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
-    expect(shell).not.toContain('panel.resize(');
+    expect(shell.match(/panel\.resize\(/gu)).toHaveLength(1);
+    expect(shell).toContain('panel.resize(sidebarWidth)');
+    expect(shell).not.toContain('rightPanelRef.current?.resize(');
     expect(shell).not.toContain('panel.getSize(');
     expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
     expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");

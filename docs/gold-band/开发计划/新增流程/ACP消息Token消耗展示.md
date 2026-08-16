@@ -557,7 +557,9 @@ function AcpUsagePanel({ usage, isRunning }: AcpUsagePanelProps) {
 - [ ] `usage` 为 `null` 时不报错、不展示任何 token 信息。
 - [ ] `cost` 字段缺失时，仅不展示费用行，不影响其他字段。
 - [ ] `size` 字段为 0 或缺失时，进度条不展示，不报除零错误。
-- [ ] 会话恢复（restored）后，token 数据从 `acp.session.json` 恢复，面板展示历史累计值。
+- [x] 同一 attempt 恢复后，Token counter 与有效执行时间从当前 attempt 的 `acp.prompt-usage.jsonl` / `acp.snapshot.json` 恢复。
+- [x] 同一 Provider session 创建新 attempt 时，仅通过 `continue_ref.snapshotFile` 继承最后有效的 `usedTokens / contextWindowSize`；Provider 后续观测直接替换该 gauge，不跨 attempt 算术累加，也不继承旧 attempt 的 Token counter 或 timing。
+- [x] 新会话 UI 直接消费当前 leaf 的 `selectedSession`，不依赖旧 Round 工作区的多 attempt 消息合并，也不在前端扫描历史 attempt 计算上下文占用。
 
 ---
 

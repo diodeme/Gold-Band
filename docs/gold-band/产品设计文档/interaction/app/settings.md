@@ -21,17 +21,15 @@
 │ 标题：设置                                                     │
 ├──────────────────────────────────────────────────────────────┤
 │ 个性化                                                       │
-│   Sync with OS 开关                                           │
-│   未跟随系统：当前主题摘要 + 选择主题按钮                       │
-│   跟随系统：浅色默认主题 + 深色默认主题两个选择入口              │
-│   主题抽屉：按入口展示全部 / 仅浅色 / 仅深色主题                 │
+│   设计风格：当前主题摘要；点击后在主题抽屉中选择                  │
+│   明暗模式：跟随系统 / 浅色 / 深色                              │
+│   视觉效果：仅主题声明质量档能力时展示                            │
 │                                                              │
 │ 字体                                                         │
-│   应用内置默认字体（MiSans）                                   │
-│   本机字体下拉列表                                             │
+│   界面 UI / 编辑器分别跟随主题或维护有序字体栈与自定义字号        │
 │                                                              │
 │ 头像                                                         │
-│   Agent / 个人紧凑设置行，最近头像、上传裁剪、圆形/方形头像框    │
+│   Agent / 个人紧凑设置行，主题头像、最近头像、上传裁剪与头像框    │
 │                                                              │
 │ 语言                                                         │
 │   语言选择：中文 / English                                    │
@@ -40,59 +38,53 @@
 
 ---
 
-## 4. 主题选择
+## 4. 主题包与外观选择
 
 ### 4.1 选项
 当前支持：
-- System / 跟随系统：由 `Sync with OS` 开关控制。
-- Light / 瓷白：瓷白主面、雾灰工作区、石墨文字与低饱和矿物靛蓝强调，作为默认浅色主题；蓝色不得大面积铺入页面底、侧栏和边框。
-- Light Gray / 科技灰：白色主内容、纯中性灰侧栏与选中面、石墨文字和无彩交互色；冷蓝只用于运行状态，呈现参考图中干净、克制的桌面工具质感。
-- Graphite Dark / 石墨深色：参考 Codex 桌面端，以 `#181818` 主内容、`#202020` 侧栏/标题栏、`#242424` 内容面、`#2d2d2d` 高层 surface、`#313131` 选中面建立无彩炭灰层级；蓝、绿、橙、红仅用于运行和语义状态。
-- Black / 终端黑：与石墨深色使用同一套无彩层级逻辑，但整体压暗为 `#111111 / #191919 / #1b1b1b / #252525 / #2d2d2d`，作为更安静的沉浸选项。
+- Gold Band：默认设计风格，采用类 OpenAI 的白/近黑编辑界面；浅色以纯白画布、墨黑主操作和青绿色焦点建立层级，深色以近黑画布、克制灰阶和同一青绿色焦点保持一致。
+- 技术中性：更克制的无彩工具风格，浅色与深色都只让业务状态使用彩色。
+- 明暗偏好独立为 `跟随系统 / 浅色 / 深色`；每个正式主题包必须同时提供浅色和深色，`跟随系统` 不跨主题包切换。
 
 ### 4.2 行为
 - 设置保存到本地用户偏好。
-- `Sync with OS` 开启时保存 `desktopTheme = system`，应用根据操作系统浅色/深色自动解析到用户最近选择过的对应模式主题；没有记忆时才回退到默认浅色或 Gold Band 深色。
-- `Sync with OS` 关闭时保存当前解析出的具体主题。
-- 点击任一主题预览卡会立即保存该具体主题，并记忆为该浅色/深色模式的首选变体，同时隐式关闭 `Sync with OS`。
+- 设置页主体只展示当前生效主题摘要，并在摘要右侧保留明确的“选择主题”按钮；点击按钮使用 shadcn/ui Sheet 打开主题抽屉，完整主题包列表只在抽屉内展示。
+- 点击抽屉中的主题包预览卡保存稳定 `themeId`、关闭抽屉，且不会改变当前 `colorScheme` 偏好。
+- 选择 `跟随系统` 时只保存 `colorScheme = system`；操作系统变化只重新解析当前包的 light/dark，不写回偏好。
+- 视觉质量选择按 `themeId` 隔离记忆；切换到不声明该能力的主题时隐藏控件且不制造伪性能档。
+- 后端完成校验和原子持久化后返回 canonical `appearance + personalization`，前端以返回值收敛并应用根属性。
 - 所有主题选择后立即预览，不需要重启。
 
 ### 4.3 UI 形式
 设置页采用一个主工作面，内部用 section 和低对比分隔线组织外观、字体、语言，不再将每个设置组做成独立大卡片。
 
-推荐使用顶部开关 + 当前主题摘要 + 抽屉式分组预览：
+外观区域使用当前主题摘要与两行紧凑选项；完整主题网格采用右侧抽屉渐进披露：
 
 ```text
 外观
-  Sync with OS                                      ( on/off )
+  [ 当前主题：Gold Band     当前生效              选择主题 ]
+  明暗模式                                      [ 跟随系统 v ]
+  视觉效果（仅支持的主题）                    [ 完整效果 v ]
 
-  未跟随系统：
-    当前主题  [ terminal 预览 ]  终端黑              [ 选择主题 ]
-    -> 打开包含 Light + Dark 全部主题的抽屉
-
-  跟随系统：
-    浅色默认主题 [ terminal 预览 ] 瓷白              [ 选择浅色主题 ]
-    深色默认主题 [ terminal 预览 ] 终端黑            [ 选择深色主题 ]
-    -> 分别打开仅浅色 / 仅深色主题抽屉
+点击当前主题
+  主题抽屉
+    [ Gold Band ] [ 技术中性 ]
 ```
 
 视觉规则：
-- 主题摘要默认是低对比选项行，不是完整卡片墙。
-- terminal-like 配色预览可以保留独立边界，因为它是内容预览，不是布局容器。
+- 主题卡只展示包名、当前明暗方案的视觉样本和明确选中态，不展示 token、目录或实现说明。
 - 当前选中主题只用 primary 低透明背景和弱边框强调，不使用重阴影或大面积色块。
-- 主题抽屉使用紧凑的视觉样本墙：分组标题位于卡片网格上方，容器达到双列阈值时同组两个主题并排，窄容器退回单列。主题卡只展示预览、名称和当前状态，不恢复说明文字。
 - 当前生效主题除轻量背景与边界外，还必须显示 `primary / primary-foreground` 配对的对勾状态胶囊；不能只依赖整张卡片边框让用户猜测选中项。
 - 所有主题都遵循同一布局层级，主题 token 只负责换色，不改变设置页结构。
 - 顶部 `通用 / 个性化 / 高级` 使用共享 shadcn Tabs 默认变体：tab track 必须使用 `secondary` surface，并以 `border` 语义的内描边与工作区分层；不得使用可能与浅色工作区同值的 `muted` 作为唯一背景。选中 tab 继续使用 `background` surface 与轻量阴影。该规则同时适用于项目中其他默认分段 Tabs，明确使用 `line` 或透明变体的场景除外。
 - 每个选项自身拥有胶囊边界，或 Tabs 容器已经显式提供边界时，必须使用共享 `bare` 变体清除默认 track、padding 和 ring；不得仅用 `bg-transparent` 覆盖背景而遗留外层内描边。Agent 胶囊选择器与 Round 详情胶囊 Tabs 均遵循该规则。
 - 文本选区由独立的 `text-selection` / `text-selection-foreground` 主题 token 管理，普通文本、Markdown、输入框和 composer 必须共享同一规则。两套深色使用可辨识的中灰选区与白色文字，不得继续复用与内容面接近的中性 `primary/30`；基础 Input 不再设置局部 selection 覆盖。
-- 瓷白遵循中性面优先：大面积背景使用白与中性灰建立层级，品牌靛蓝只用于主操作、选中态、焦点环和运行态；边框使用中性石墨透明度，不使用蓝色边框给整窗染色。
+- Gold Band 遵循中性面优先：大面积背景使用纯白与 `#fafafa / #f5f5f5` 建立层级，墨黑承担主操作，OpenAI Teal 只用于焦点、成功路径和少量强调；边框使用 `#e5e5e5` 发丝线，不用彩色边界给整窗染色。
 - 科技灰通过 `#ffffff` 主内容、`#f3f3f3` 侧栏、`#e7e7e7` 选中面和 `#e5e5e5` 边界建立层级；正文与主操作使用石墨灰，冷蓝只承担运行状态。禁止给文字、图标、边界或大面积 surface 注入蓝灰、暖黄、米色或古铜金色偏。
 - 科技灰文字层级固定为 `#171717` 深黑标题、`#2b2b2b` 正文、`#666666` 辅助信息和更浅的禁用/占位状态；欢迎语等页面视觉锚点必须使用 `title` token，不得使用带透明度的正文色替代。侧栏导航、分组标题和任务标题属于主要信息，统一消费 `sidebar-foreground = #171717`，只有时间、空状态等元信息使用 `muted-foreground = #666666`。主消息阅读区保持纯白，科技灰侧栏与会话标题栏共同使用 `#f3f3f3` 框架 surface。
-- 四套主题均保留独立 `content-header` 语义接口，但当前统一映射为 `var(--sidebar)`，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。未来需要拆分标题栏色阶时只调整主题映射，不修改组件消费路径。
-- 设置 section、主题摘要列表与主题抽屉必须按各自容器的实际宽度响应，禁止仅依据整窗 viewport breakpoint 升列。section 宽度不足时标题堆叠到内容上方；跟随系统的浅色/深色摘要只在内容容器足够容纳两个完整条目时双列，否则单列。
-- 单个主题摘要内部按自身宽度逐级切换：窄卡片使用“预览 → 名称 → 全宽操作”纵向结构，中等卡片使用“预览 + 名称 / 下方操作”，足够宽时才使用“预览 + 名称 + 操作”单行结构。主题名称下方不展示说明文字，任何宽度下名称都不得被压缩成逐字纵排。
-- 抽屉内主题卡与设置页主题摘要是两种不同密度：摘要承担打开抽屉的操作，抽屉卡直接承担选择；抽屉卡不得继续占满超宽单行，也不展示额外按钮。
+- 所有内置主题方案均保留独立 `content-header` 语义接口，让会话标题栏与侧边栏组成连续应用框架，并通过轻量底边界与消息阅读区分层；不得在标题栏额外包裹卡片、嵌套灰块或投影。
+- 当前主题摘要按设置内容区宽度响应；主题抽屉内的主题卡网格按抽屉容器宽度在两列与单列之间切换。选项行允许标题和 Select 换行，但不得制造横向滚动或逐字纵排。
+- Dialog/Popover 必须消费主题包的稳定表面 recipe；当前两个内置主题均提供实底表面。未来引入透明材质主题时，必须保证弹层内容可读并重新完成明暗主题与背景穿透验收。
 
 ---
 
@@ -100,15 +92,25 @@
 
 ### 5.1 选项
 当前支持：
-- 应用内置默认字体（`app-default`）：优先使用内置 `Gold Band MiSans`，并在系统缺字时回退到 `MiSans`、`Microsoft YaHei UI`、`PingFang SC`、`Noto Sans CJK SC`、`Source Han Sans SC` 等系统字体，作为所有设备上的稳定默认值。
-- 本机字体：从系统已安装字体枚举加载，用户可直接选择真实字体 family。
+- “界面 UI”主题默认栈：主题包按顺序声明英文字体、中文字体与 generic fallback；内置主题以应用随包分发的 `Inter Variable → Gold Band MiSans` 为主路径，由 Inter 负责拉丁字符、MiSans 负责中文，继续提供 MiSans 与常见系统 CJK 字体后备，最后落到 `sans-serif`。两套主字体必须随应用分发，不依赖用户系统是否安装。
+- “编辑器”主题默认栈：内置主题使用 `JetBrains Mono → SFMono-Regular → Consolas → monospace`。
+- 自定义有序栈：从系统已安装字体和内置 `Inter Variable / Gold Band MiSans` 中多选，浏览器按用户排序逐字形回退。
 
 ### 5.2 行为
-- 字体字段保存为 `desktopFont`，支持 `app-default`，以及真实本机字体 family 名称。
-- 设置页第一行只提供一个内置默认字体入口；第二行提供本机字体下拉列表，避免多预设卡片与长列表混排。
+- 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
+- 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `fontStack: { source: theme } | { source: custom, families: string[] }`，字号分别使用 `source: theme | custom`；不得通过空字符串或值恰好等于 14/12 推断继承。
+- 主题字体的作者 `family` 可以带包命名空间和 `Variable/VF` 标记，但必须保留字体文件元数据中的 canonical family；Theme SDK 在产物发布前完成一致性校验，产品展示名继续由字体栈的本地化 `displayName` 提供。构建器为运行时 package 派生浏览器专用 `runtimeFamily`，主题作者不得填写，用户偏好也不持久化该字段。主题字体只能从 content-hash 资产图注册，应用入口不得额外全局导入同一字体。
+- 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
+- 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
+- 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
+- UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
+- UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
+- 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
+- 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；Inter face 暴露字体原生连续轴，MiSans face 暴露 `250–520` 连续轴，确保四档值命中真实字形而不是吸附到静态 400/500/600。最高中文视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
+- 每个展开栏内部提供字号、主题默认入口和基于 shadcn `Popover + Command` 的可搜索多选器，避免两个领域的设置混排；重排使用可访问的按钮，不为短列表引入拖拽依赖。
 - 选择后立即应用到全局 UI 字体 token。
 - 字体切换必须覆盖导航栏、面包屑、任务 requirement 预览与完整需求正文等常规阅读文本；只有日志、代码块和工作图技术标识允许继续走 mono token。
-- Tauri 桌面端通过 `get_system_fonts` 枚举系统字体；浏览器调试模式优先使用 `queryLocalFonts()`，不可用时回退到常见系统字体探测。
+- Tauri 桌面端通过 `get_system_fonts` 枚举系统字体；浏览器调试模式优先使用 `queryLocalFonts()`，不可用时回退到常见系统字体探测。字体目录只负责去空白、大小写不敏感去重和本地化排序，不应用用户字体栈的 16 项上限；设置页显示的本机字体计数必须全部进入可搜索、可滚动的 shadcn Command 列表。
 - 字体示例区带独立的“字体预览”标签和预览容器，并用彩色示例文本强化它是预览而不是正文内容。
 
 ---
@@ -134,14 +136,38 @@
 
 ## 7. Tauri 2.x MVP 对应实现
 
+- 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
+- 个性化权威字段为 `personalization`：`schemaVersion = 2`，显式保存两套有序字体栈、字号以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段并将两套字体恢复为主题栈，不保留双读；主题来源持续跟随当前主题，用户资产历史独立保留。
+- 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
+- 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
+- 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
+- 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
+- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页不新增图标、壁纸或高级字体入口，只展示当前有效投影；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
+- Theme Contract v2 的 motion 分离装饰表面与位移动效：`color` 只过渡颜色，`surface` 可追加 elevation，只有可按压控件的 `press` 可以过渡 transform。Dropdown、Select、Popover、Dialog、Sheet 等定位型浮层由组件库拥有定位与开合 transform，主题只声明其颜色、材质、几何和阴影。
+- 当组件库浮层内部还拥有 fixed 子浮层时，定位节点与主题材质层必须隔离：定位、Portal、焦点与裁剪继续由组件库拥有，backdrop filter 仅作用于无交互视觉层，不能改变子浮层的 containing block。
+- Dialog、Sheet、AlertDialog 统一 Portal 到 `body` 下与 `#root` 同级的专用 overlay host；host 保持 `overflow: visible` 且不建立 transform/filter/contain containing block。Dropdown Menu 与 Context Menu 的 Content/SubContent 只保留 Radix 定位、焦点和 dismiss 语义，开合 transform、透明度、材质及内容裁剪下沉到内部视觉层，避免 WebView2 定位与动画矩阵竞争。
+- 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
+- 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
+- 设置内容区标记稳定 `settings` wallpaper surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退设置页语义底色，不影响主题其余能力。
+- 2026-08-16 Theme Engine v2 开发实现完成：两个内置主题已破坏式迁移到 Contract v2，全局硬编码 MiSans TTF 路径删除，设置页默认字体名称改由 `ResolvedTypography` 提供；主题构建、Web 生产构建和 Rust workspace compile check 通过。单元/接口、浏览器与 EXE 交互验收按开发节点边界交由后续测试和验收节点执行。
+- 2026-08-16 测试反馈修正：`resolveAppearance` 的默认 locale 解析不再直接依赖 DOM，Node/SSR 环境按 document language、navigator language、`en` 依次回退；DOM projector 在 wallpaper 查询、图片预加载和主题图标事件分发前检查对应浏览器 capability。完整浏览器行为不变，最小接口环境不需要伪造无关 DOM API。
+- 2026-08-16 第二轮测试：设置页两个内置主题、light/dark/system、640px 窄窗、恢复正常宽度和动态字体名称通过浏览器验收，主题核心行覆盖率达到 98.18%。当前仍不得标记 Theme Engine v2 完成：全局 Inter CSS import 绕过主题资源图，且旧主题 wallpaper 的迟到加载失败会清空新主题投影；SDK 另缺少字体 family 元数据一致性校验和生成资源目录的陈旧文件清理。
+- 2026-08-16 第四轮及 round-002 复核：第二、三轮发现的 Inter 旁路、wallpaper 迟到回调、字体 family 元数据、陈旧资源和跨主题 font-face identity 问题均已在现有契约与生命周期根部闭环。当前 Theme Engine v2 业务实现完成；Theme SDK、TypeScript、Vite 生产构建与 Rust workspace compile check 通过，`web/dist/theme-assets` 4 个文件共 5,326,544 bytes，生产产物无 TTF。浏览器长帧/GPU/图片内存、EXE 与安装包总增量因当前环境无法执行，按用户授权放行并明确记为未执行。
+- 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
+- 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
+- 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。
+- 2026-08-14 内置主题收敛：删除 `builtin.glass` 与 `builtin.neo-brutalist` 的源包、运行时产物和选择入口，Catalog 只保留 Gold Band 与技术中性。退役或未知 `themeId` 由现有 resolver 统一规范化为 Gold Band，并清理不再受支持的质量档记录，不增加兼容主题或业务组件特判。
+
 MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri command `save_desktop_preferences` 保存用户偏好。
 
 当前实现规则：
-- 主题字段保存为 `desktopTheme`，支持 `system`、`light`、`light-gray`、`dark`、`black`。
+- 历史实现曾保存 `desktopTheme = system | light | light-gray | dark | black`，现仅由 v5 migration 读取并映射为主题包与明暗模式。
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
-- 字体字段保存为 `desktopFont`，支持 `app-default`，以及真实本机字体 family 名称，默认 `app-default`。
-- 主题使用 `Sync with OS` 开关 + 条件化主题摘要：未跟随系统时展示一个当前主题选择入口；跟随系统时展示浅色默认主题和深色默认主题两个选择入口，并分别打开过滤后的主题抽屉；语言使用下拉选择，选择后立即调用 `save_desktop_preferences` 保存并预览。
-- 首次启动默认主题为 `system`，系统浅色时解析到瓷白，系统深色时解析到石墨深色。
+- 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
+- personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
+- `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言、本地 Claude 和日志偏好；前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
+- 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
+- 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。
 - 2026-05-03 起设置页使用 Tailwind CSS v4 + shadcn/ui Card、Button、Select、Badge 等现成组件重构；主题和语言选择后立即保存并预览的行为不变。
 - 2026-05-07 起设置页移除标题副文案、范围提示卡片，以及外观/语言卡片中的辅助说明，页面仅保留主题与语言控件。
 - 2026-05-07 起主题选择器升级为 `Sync with OS` 开关 + 主题预览卡，浅色主题扩展为两个可选变体，并新增终端黑主题。
@@ -160,11 +186,16 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-07-24 文本选区可见性修正：四套主题新增成对的文本选区 token，深色选区提升为明确中灰层级；移除 Input 对 selection 的局部 primary 覆盖，使普通文本、Markdown、输入框和 composer 呈现一致。
 - 2026-08-02 滚动条视觉层级校准：四套主题继续通过统一的 `gold-scrollbar-track` / `gold-scrollbar-thumb` / `gold-scrollbar-thumb-hover` 语义接口驱动原生滚动容器、主题滚动容器与 shadcn `ScrollArea`。滚动条改用中性前景色的低透明叠加，静止态不得混入品牌 `primary` 或不透明辅助文字色；轨道仅在容器 hover 时提供极弱反馈，thumb 在 hover 时再适度增强。两套浅色采用 3% / 16% / 26% 的轨道、静止、悬浮层级，石墨深色采用 4% / 18% / 30%，终端黑采用 4% / 20% / 32%，保证可发现但不抢占正文与导航的视觉重心。
 - 2026-07-24 胶囊 Tabs 边界收敛：共享 Tabs 新增 `bare` 变体，Agent 选择器和自带边界的 Round 详情 Tabs 不再继承默认 track ring，避免外层轨道与选中胶囊形成双重边界。
-- 2026-05-08 起应用内置默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。
+- 2026-05-08 起应用内置中文默认字体切换为 MiSans（前端 family 为 `Gold Band MiSans`）；设置页删除三套 CJK 预设，只保留一个默认字体卡片与一个本机字体下拉列表。2026-08-15 起内置 UI 默认栈在其前增加随包分发的 `Inter Variable`，用于改善拉丁字符并保留 MiSans 中文。
 - 2026-05-08 验收修正：字体切换必须同步作用到导航栏、面包屑、任务 requirement 预览与完整需求抽屉；这些区域不再误用 mono token。
 - 2026-05-07 起设置页从多张独立卡片收敛为一个主工作面，外观、字体、语言通过 section 与低对比分隔线组织；主题摘要、字体选项和本地字体预览降级为低对比选项行，避免盒中盒和浅黑色块过多。
 - 2026-05-25 起设置页改为三个 tab：语言进入通用，主题和字体进入个性化；高级页展示当前更新渠道、内置更新地址、有效更新地址，支持用户持久化覆盖更新地址、恢复内置地址和手动检查更新。2026-07-30 起原“外观”tab 正式更名为“个性化”，并新增头像设置。
 - 2026-07-30 个性化页顺序调整为“外观 / 字体 / 头像”；头像作为低频设置放在底部，Agent 与个人头像使用 48px 预览、短说明和紧凑形状按钮组成的响应式横向设置行，不再显示冗余“头像框”标签。
+- 2026-08-14 字体区新增 UI/代码基准字号设置与恢复默认入口，并将全局 `medium / semibold / bold` 语义由 `500 / 600 / 700` 校准为 `400 / 500 / 600`，从字体系统根部降低整体视觉重量；字号写入既有桌面偏好配置，应用启动时统一恢复根级 CSS 变量。
+- 2026-08-15 字体偏好升级为有序字体栈：Theme SDK v2 以 `families + fallback + size` 声明 UI/编辑器默认栈，设置页通过可搜索多选、取消和上下移动维护用户顺序；自定义栈始终追加主题栈兜底，清空后恢复跟随主题。personalization schema v2 与 settings schema v8 同步替换旧单字体字段。
+- 2026-08-15 字体目录与用户字体栈拆分为两个领域：目录不设数量上限并稳定去重排序，用户栈继续保序且最多 16 项，避免系统字体计数与选择器实际选项不一致。
+- 2026-08-16 Theme SDK 补齐字体声明名与文件内建 family 的一致性校验；内置 `Inter Variable / Gold Band MiSans` 保持既有展示名与用户偏好语义，产品展示名继续独立管理。应用入口与依赖清单均移除 Fontsource Inter 全局旁路。后续以构建器派生的 `runtimeFamily` 隔离浏览器全局 font-face identity，自定义栈随当前主题重新投影；两个内置主题不再因复用作者 family 而相互请求字体资源。
+- UI 小字号统一使用 `text-ui-nano / micro / caption / compact` 排版 token，并随 `--app-ui-font-size` 缩放。共享 `cn()` 必须把这些 token 识别为字号类，使字号与 `text-foreground / text-muted-foreground` 等颜色类独立合并；Button、Badge、CommandItem 等 shadcn copy-in 组件不得因 class 合并丢失任一语义。
 - 头像系统的完整数据、存储、交互与会话展示规范见 [avatar-system.md](avatar-system.md)。
 - 设置页中的问号帮助入口（如“使用本地 Claude”“记录详细日志”“开启指标上报”）统一使用随主题变化的浅色 shadcn/ui `Tooltip`，悬浮或聚焦即可展示说明文本；这些布尔开关统一采用“标题 + tips icon + switch”同一行布局，避免一部分开关右置、一部分行内导致对齐不一致；同时避免页面出现主题色 tooltip 与白底说明面板混用。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
@@ -187,3 +218,12 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 ## 7. 一句话总结
 
 > 当前设置页只解决“我想用什么主题、字体和语言”，不承载任务编排、provider 配置或 workflow 编辑能力。
+
+## 9. 定时任务运行设置
+
+- 设置页是定时任务全局运行设置的唯一可见入口，通过 `get_scheduled_runtime_settings` / `save_scheduled_runtime_settings` 统一管理保持唤醒、完成通知和 occurrence 保留天数；保留范围固定为 `1..=3650` 天，越界返回 `SCHEDULED_VALIDATION_FAILED` 及结构化 `field/minimum/maximum/actual` 参数。
+- 保持唤醒同时展示用户启用值与系统实际生效值。只有用户开启、至少一个 job 为 enabled 且应用仍在运行时才生效；平台获取失败展示 `SCHEDULED_POWER_INHIBITOR_FAILED`，但不改变任务调度与 occurrence 结果。
+- Windows、macOS 和 Linux 使用 `keepawake 0.6.0` 的统一进程级 guard；Windows 走 System Power API，macOS 走 IOKit，Linux 走系统 inhibit 后端。配置允许显示器休眠，只阻止空闲导致的系统自动睡眠，应用退出时必须释放 guard。
+- macOS 不是后续兼容项，而是 Task 6 的同级目标平台：实现必须保留 `objc2-io-kit`/IOKit 后端与相同的启用、失效、退出释放语义。Windows 开发机无法替代 macOS 编译或真机验证；发布验收需要在 macOS CI 或真机上补充编译和开关 smoke test。
+- occurrence 默认保留 30 天。清理仅删除 SQLite 中过期的 `succeeded/failed/skipped/missed` 行，保留 `attention_required`、非终态和活动 Run 链接；Task、Run、Round、ACP 文件与产物不属于该清理事务。
+- 2026-08-09 起 `ScheduledRuntimeSettings` 只在通用设置页展示；定时任务管理页移除重复入口，但继续由同一命令和状态模型服务设置页，不增加页面级副本。

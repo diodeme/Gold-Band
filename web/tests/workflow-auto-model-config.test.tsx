@@ -2,8 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
-import '@/i18n';
-import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor } from '@/components/WorkflowEditor';
+import i18n from '@/i18n';
+import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor, WorkflowNodeInspector, workflowEditorSupportedAgents } from '@/components/WorkflowEditor';
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
 import type { AgentRegistryVm, WorkflowDsl } from '@/types';
 
@@ -22,6 +22,19 @@ const agentRegistry = {
   }],
   catalog: [],
 } as AgentRegistryVm;
+
+function renderWorkflowNodeInspector(workflow: WorkflowDsl) {
+  return renderToStaticMarkup(React.createElement(WorkflowNodeInspector, {
+    node: workflow.nodes[0],
+    agents: workflowEditorSupportedAgents(agentRegistry),
+    profiles: workflow.nodes[0]?.type === 'worker' ? [{ id: 'interview', name: 'Interview' }] : [],
+    workflow,
+    workflowTemplates: null,
+    fieldErrors: {},
+    onUpdate: () => undefined,
+    t: i18n.t.bind(i18n),
+  }));
+}
 
 describe('workflow and AUTO model configuration', () => {
   it('restores omitted worker Agent options after switching back to the original Agent', () => {
@@ -61,14 +74,16 @@ describe('workflow and AUTO model configuration', () => {
       edges: [{ from: 'interview', to: '$end', on: 'success' }],
     };
 
-    const html = renderToStaticMarkup(React.createElement(WorkflowEditor, {
+    const editorHtml = renderToStaticMarkup(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
       profiles: [{ id: 'interview', name: 'Interview' }],
       onSave: () => undefined,
       showSaveAction: false,
     }));
+    const html = renderWorkflowNodeInspector(workflow);
 
+    expect(editorHtml).not.toContain('Sonnet · High');
     expect(html).toContain('Sonnet · High');
     expect(html).toContain('data-slot="dropdown-menu-trigger"');
   });
@@ -137,7 +152,7 @@ describe('workflow and AUTO model configuration', () => {
       edges: [{ from: 'route', to: '$end', on: 'success' }],
     };
 
-    const html = renderToStaticMarkup(React.createElement(WorkflowEditor, {
+    const editorHtml = renderToStaticMarkup(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
       profiles: [],
@@ -145,7 +160,9 @@ describe('workflow and AUTO model configuration', () => {
       showSaveAction: false,
       allowAiDynamic: true,
     }));
+    const html = renderWorkflowNodeInspector(workflow);
 
+    expect(editorHtml).not.toContain('Sonnet · High');
     expect(html.match(/Sonnet · High/g)?.length).toBe(3);
     expect(html.match(/Accept Edits/g)?.length).toBe(2);
   });

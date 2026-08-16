@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import {
   loadTurnFileChangeSet,
@@ -90,10 +91,10 @@ export function TurnFileChangesCard({ event, locator }: { event: AcpUiEventVm; l
   };
 
   return (
-    <Card className="ml-10 max-w-[min(46rem,calc(100%-2.5rem))] gap-0 overflow-hidden rounded-xl border-border/60 bg-muted/10 py-0 shadow-none" data-turn-file-changes-card={changeSetId}>
+    <Card className="w-full max-w-[46rem] gap-0 overflow-hidden py-0" data-turn-file-changes-card={changeSetId}>
       <CardHeader className="grid-cols-[1fr_auto] items-center gap-3 px-3 py-2.5">
         <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <FileDiff className="size-4 shrink-0 text-primary" />
+          <FileDiff className="size-4 shrink-0 text-foreground" />
           <span>{t('turnFiles.title', { count: summary.fileCount })}</span>
         </CardTitle>
         <div className="flex items-center gap-2 text-xs tabular-nums">
@@ -152,7 +153,12 @@ function TurnFileChangeRow({ change, onOpen }: { change: TurnFileChangeVm; onOpe
   const content = (
     <>
       {icon}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={change.logicalPath}>{change.logicalPath}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{change.logicalPath}</span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[360px] break-all">{change.logicalPath}</TooltipContent>
+      </Tooltip>
       <span className="text-xs tabular-nums text-emerald-600 dark:text-emerald-400">+{change.addedLines ?? 0}</span>
       <span className="text-xs tabular-nums text-destructive">-{change.deletedLines ?? 0}</span>
     </>

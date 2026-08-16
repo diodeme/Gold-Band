@@ -2,14 +2,14 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { desktopThemeWindowSurface } from '../src/theme';
+import { getThemePackage } from '../src/theme';
 
 describe('desktop window surface', () => {
   it('maps every concrete theme to the workspace surface used during native resize', () => {
-    expect(desktopThemeWindowSurface('light')).toBe('#f1f2f5');
-    expect(desktopThemeWindowSurface('light-gray')).toBe('#ffffff');
-    expect(desktopThemeWindowSurface('dark')).toBe('#181818');
-    expect(desktopThemeWindowSurface('black')).toBe('#111111');
+    expect(getThemePackage('builtin.gold-band').schemes.light.windowSurface).toBe('#ffffff');
+    expect(getThemePackage('builtin.tech-neutral').schemes.light.windowSurface).toBe('#ffffff');
+    expect(getThemePackage('builtin.gold-band').schemes.dark.windowSurface).toBe('#0f0f0f');
+    expect(getThemePackage('builtin.tech-neutral').schemes.dark.windowSurface).toBe('#111111');
   });
 
   it('uses the Windows composition resize path and keeps the window hidden until the first themed frame', () => {

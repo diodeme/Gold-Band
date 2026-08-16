@@ -49,6 +49,8 @@ describe('PermissionRequestCard', () => {
     expect(html).not.toContain('bg-card/65');
     expect(html).not.toContain('shadow-[0_16px_40px');
     expect(html).not.toContain('bg-primary text-primary-foreground');
+    expect(html).toContain('text-accent-foreground hover:border-accent-foreground/35 hover:bg-accent/60');
+    expect(html).toContain('focus-visible:border-accent-foreground/35 focus-visible:bg-accent/60');
   });
 
   it('exposes the full option label from the truncated button trigger', () => {

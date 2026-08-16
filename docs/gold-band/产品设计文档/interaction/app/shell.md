@@ -152,6 +152,7 @@ Agent 管理
 
 ### 6.3 适配桌面窗口
 功能区应支持：
+- 主窗口首次创建和 macOS Dock 重建统一读取 Tauri 权威窗口配置；默认逻辑尺寸为 1280×720，并由宿主按当前显示器工作区居中。默认位置不使用固定物理坐标，也不持久化临时启动位置，避免系统缩放或显示器变化后窗口落到可见区域之外。
 - 面板宽度调整
 - 列表滚动
 - 详情页滚动
@@ -210,7 +211,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置；`remove_recent_workspace` 只移除最近列表项并返回刷新后的 bootstrap。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
-- Tauri window 默认尺寸为 1280x800；`src-tauri/tauri.conf.json` 只管理默认尺寸与 chrome 属性，页面最小尺寸唯一来自 `configs/app-config.toml` 的 `workspaceLayout`。渠道构建 overlay 只能完整继承基础 window config 并覆盖渠道属性，不能独立硬编码宽高或最小尺寸。
+- Tauri window 默认逻辑尺寸为 1280×720，并使用宿主原生 `center` 定位；`src-tauri/tauri.conf.json` 只管理默认尺寸、初始位置与 chrome 属性，页面最小尺寸唯一来自 `configs/app-config.toml` 的 `workspaceLayout`。渠道构建 overlay 只能完整继承基础 window config 并覆盖渠道属性，不能独立硬编码宽高、位置或最小尺寸。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。

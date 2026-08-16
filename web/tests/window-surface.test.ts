@@ -16,6 +16,9 @@ describe('desktop window surface', () => {
     const config = JSON.parse(readFileSync(path.resolve(__dirname, '../../src-tauri/tauri.conf.json'), 'utf8'));
     const mainWindow = config.app.windows[0];
 
+    expect(mainWindow.width).toBe(1280);
+    expect(mainWindow.height).toBe(720);
+    expect(mainWindow.center).toBe(true);
     expect(mainWindow.decorations).toBe(false);
     expect(mainWindow.visible).toBe(false);
     expect(mainWindow.transparent).toBe(false);

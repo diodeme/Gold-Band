@@ -12,6 +12,7 @@ import {
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
+  useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
   AcpSingleConfigMenu,
@@ -27,6 +28,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export { UNSPECIFIED_ACP_CONFIG_VALUE } from '@/components/acp/AcpSingleConfigMenu';
 
@@ -112,6 +114,13 @@ export function AcpModelThoughtSelects({
   const selectedModel = models.find((model) => model.id === modelValue);
   const selectedThought = thoughtLevel?.options.find((option) => option.value === thoughtValue);
   const selectionMode = acpConfigMenuSelectionMode(thoughtLevel);
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useAcpComposerConfigOverflowTooltip();
   const handleConfigOptionSelect = (event: Event) => {
     keepAcpConfigMenuOpenOnSelect(event);
     keepMenuOpenRef.current = true;
@@ -158,11 +167,35 @@ export function AcpModelThoughtSelects({
       modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}
       onOpenChange={handleMenuOpenChange}
     >
-      <DropdownMenuTrigger className={cn(triggerClass, triggerClassName)}>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{compositeLabel}</span>
-        <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-      </DropdownMenuTrigger>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        <DropdownMenuTrigger
+          className={cn(triggerClass, triggerClassName)}
+          onPointerEnter={showTooltipIfOverflowing}
+          onPointerLeave={hideTooltip}
+          onPointerDown={hideTooltip}
+          onFocus={showTooltipIfOverflowing}
+          onBlur={hideTooltip}
+        >
+          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{t('acp.currentModel')}</span>
+          <TooltipTrigger asChild>
+            <span
+              ref={valueRef}
+              className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
+              data-acp-config-value="true"
+            >
+              {compositeLabel}
+            </span>
+          </TooltipTrigger>
+          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+        </DropdownMenuTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {compositeLabel}
+        </TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side={contentSide}
         sideOffset={8}

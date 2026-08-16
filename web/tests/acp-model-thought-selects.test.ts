@@ -16,6 +16,15 @@ import {
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   keepAcpConfigMenuOpenOnSelect,
 } from '@/components/acp/AcpComposerConfigTrigger';
+import { TooltipProvider } from '@/components/ui/tooltip';
+
+function renderSelect(props: React.ComponentProps<typeof AcpModelThoughtSelects>) {
+  return renderToStaticMarkup(createElement(
+    TooltipProvider,
+    null,
+    createElement(AcpModelThoughtSelects, props),
+  ));
+}
 
 function triggerClass(markup: string, slot: string) {
   const match = markup.match(new RegExp(`data-slot="${slot}"[^>]*class="([^"]+)"`));
@@ -99,8 +108,8 @@ describe('ACP composite model selector', () => {
       modelValue: 'gpt-5.6-sol',
       onModelChange: () => {},
     };
-    const modelOnly = renderToStaticMarkup(createElement(AcpModelThoughtSelects, commonProps));
-    const composite = renderToStaticMarkup(createElement(AcpModelThoughtSelects, {
+    const modelOnly = renderSelect(commonProps);
+    const composite = renderSelect({
       ...commonProps,
       thoughtLevel: {
         id: 'reasoning_effort',
@@ -108,7 +117,7 @@ describe('ACP composite model selector', () => {
         options: [{ value: 'high', name: 'High' }],
       },
       thoughtValue: 'high',
-    }));
+    });
 
     expect(modelOnly).toContain('模型');
     expect(modelOnly).toContain('GPT-5.6-Sol');
@@ -133,8 +142,8 @@ describe('ACP composite model selector', () => {
       onModelChange: () => {},
       triggerClassName: 'w-full max-w-none',
     };
-    const modelOnly = renderToStaticMarkup(createElement(AcpModelThoughtSelects, commonProps));
-    const composite = renderToStaticMarkup(createElement(AcpModelThoughtSelects, {
+    const modelOnly = renderSelect(commonProps);
+    const composite = renderSelect({
       ...commonProps,
       thoughtLevel: {
         id: 'reasoning_effort',
@@ -142,7 +151,7 @@ describe('ACP composite model selector', () => {
         options: [{ value: 'high', name: 'High' }],
       },
       thoughtValue: 'high',
-    }));
+    });
 
     expect(triggerClass(modelOnly, 'dropdown-menu-trigger')).toContain('w-full max-w-none');
     expect(triggerClass(composite, 'dropdown-menu-trigger')).toContain('w-full max-w-none');

@@ -1,13 +1,13 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { AppProviders } from '@/components/AppProviders';
 import './i18n';
 import { installUiErrorDiagnostics, logUiErrorDiagnostic, shouldLogUiError } from '@/lib/ui-error-diagnostics';
 import '@/lib/acp-streaming-diagnostics';
 import { disposeAcpComposerDrafts } from '@/lib/acp-composer-draft';
 import { installDesktopPageZoomGuard } from '@/lib/desktop-page-zoom';
 import '@xyflow/react/dist/style.css';
-import '@fontsource-variable/inter/wght.css';
 import './styles.css';
 
 installUiErrorDiagnostics();
@@ -26,6 +26,6 @@ createRoot(document.getElementById('root') as HTMLElement, {
   },
 }).render(
   <React.StrictMode>
-    <App />
+    <AppProviders><App /></AppProviders>
   </React.StrictMode>,
 );

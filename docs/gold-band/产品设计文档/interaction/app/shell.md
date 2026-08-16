@@ -196,6 +196,11 @@ Agent 管理
 
 ## 7. Tauri 2.x MVP 对应实现
 
+- 应用壳使用 Theme Contract v2 的 `shell`、`titlebar`、`sidebar`、`navigation-item` 等稳定 role；业务组件不得读取具体 `themeId` 或通过页面级 class 复制主题状态。
+- 跨页面导航图标通过有限语义槽接入 `ThemeIcon`。主题资源可用时按 scheme descriptor 渲染，缺失或加载失败时保持原 Lucide 图标、可访问名称和按钮尺寸不变。
+- 主壳标记稳定 `app` wallpaper surface；壁纸只为当前可见 surface 预加载，使用安全底色和 overlay 保证窗口 resize 与正文可读性。资源失败只回退当前 surface，不新增 Tauri IPC 或文件权限。
+- 主题更新只投影根 CSS variables、resource locator 和低频图标 descriptor，不重新请求会话、卸载右侧资源或扩大重型 React 子树的订阅范围。
+
 MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 左侧固定展示 Gold Band、workspace 路径/切换入口、任务编排、Agent 管理、上下文管理、模型管理占位、设置。
 - 右侧由 React 状态维护当前一级模块内容；任务编排继续使用递进式页面栈，Agent 管理和上下文管理为独立管理页。
@@ -237,6 +242,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-15：左右栏宽度恢复统一以全局 `sidebar.width` / `rightWorkspace.width` 为唯一持久化事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；异步 preference hydrate 到达且对应分隔条尚未被用户操作时，通过 Panel imperative `resize(width)` 应用有界像素宽度。用户操作后由本地偏好投影立即接管，并仅在对应分隔条的完成事件持久化一次。工作空间、运行目录及其他右侧资源只能按当前实际宽度响应，禁止请求推荐宽度或改写外层右栏偏好。
 - 2026-08-11：中间工作区顶边、左边与右侧工作区 separator 统一使用不透明语义色 `workspace-divider`。该 token 由当前主题的 `sidebar-border` 与 `gold-workspace` 预混合，禁止在不同底色上分别叠加半透明 `sidebar-border/70`，避免高 DPI 下横竖边线交点出现色阶断层。Dock 展示时，中间 Panel 与右侧 Panel 必须各自绘制同为 1 CSS px 的顶边，使边界连续横跨两个区域，separator 从顶边下方形成 T 形交点；separator 的 1px 布局宽度、4px 命中区和 hover 状态保持不变。
 - 2026-08-14：应用壳主题材质从手写 Glass 专用选择器迁到 Theme SDK 编译的包级 recipe CSS。Shell、标题栏、侧栏、工作区、Composer 与共享控件仍只暴露稳定 `data-theme-role`；新增合规主题包通过 DTCG token、封闭 recipe 和构建 Catalog 接入，不修改壳层 DOM、导航状态或 React 生命周期。
+- 2026-08-16：主题 recipe 由各主题明确声明 role 视觉，并统一作为 CSS `components` 层默认值；组件显式变体可以覆盖背景、前景、边框色、focus ring、阴影、动效和几何，不允许高优先级 recipe 抹掉 `border-0`、单边分隔、圆形、pill、joined-control 圆角或定向阴影。Gold Band 与技术中性主题中的 Shell、共享顶栏、侧栏、右侧工作区、编辑器根面和源码管理根面不拥有完整 perimeter，统一声明 `borderWidth:none + radius:none`；后续主题仍可选择其他 role 形状。工作区顶边、主区圆角、侧栏/右栏 separator 与 Sheet 靠内容侧边线继续由布局 owner 单独绘制。共享顶栏本身不显示下边框，也不得形成四边圆角卡片。
+- 2026-08-16：Gold Band 浅色主题的共享顶栏与侧栏统一使用 `#fafafa` sidebar surface，消除顶栏白色条带与导航区之间的色阶断层；深色 Gold Band 和技术中性主题维持各自已有声明。该视觉由主题 token/recipe 投影，禁止在共享 `AppTitleBar` 中按主题特判。
 - 2026-08-15：共享顶栏从 44px 收紧为 36px，品牌图标容器同步收紧为 24×36px，应用标题由 14px 提升为 16px，并使用独立 700 字重而不是全局映射为 520 的 `font-bold`；帮助入口为 28px 高，左右栏开关保持 28px，Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。改动只调整共享 `AppTitleBar` 的静态布局 token，不改变拖拽区、平台控制策略和窗口生命周期。
 
 ---

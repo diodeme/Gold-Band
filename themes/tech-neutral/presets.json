@@ -1,42 +1,26 @@
 {
   "light": {
     "typography": {
-      "ui": {
-        "families": ["Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"],
-        "fallback": "sans-serif",
-        "size": 14
-      },
-      "editor": {
-        "families": ["JetBrains Mono", "SFMono-Regular", "Consolas"],
-        "fallback": "monospace",
-        "size": 12
-      }
+      "uiStackId": "theme-ui",
+      "uiSize": 14,
+      "uiLineHeight": 1.5,
+      "editorStackId": "theme-editor",
+      "editorSize": 12,
+      "editorLineHeight": 1.55,
+      "weights": { "read": 400, "emphasize": 600, "announce": 700 }
     },
-    "avatars": {
-      "agentShape": "circle",
-      "userShape": "circle",
-      "agentAsset": null,
-      "userAsset": null
-    }
+    "avatars": { "agentShape": "circle", "userShape": "circle", "agentAsset": null, "userAsset": null }
   },
   "dark": {
     "typography": {
-      "ui": {
-        "families": ["Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC"],
-        "fallback": "sans-serif",
-        "size": 14
-      },
-      "editor": {
-        "families": ["JetBrains Mono", "SFMono-Regular", "Consolas"],
-        "fallback": "monospace",
-        "size": 12
-      }
+      "uiStackId": "theme-ui",
+      "uiSize": 14,
+      "uiLineHeight": 1.5,
+      "editorStackId": "theme-editor",
+      "editorSize": 12,
+      "editorLineHeight": 1.55,
+      "weights": { "read": 400, "emphasize": 600, "announce": 700 }
     },
-    "avatars": {
-      "agentShape": "circle",
-      "userShape": "circle",
-      "agentAsset": null,
-      "userAsset": null
-    }
+    "avatars": { "agentShape": "circle", "userShape": "circle", "agentAsset": null, "userAsset": null }
   }
 }

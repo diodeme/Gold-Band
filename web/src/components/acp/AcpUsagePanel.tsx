@@ -73,7 +73,6 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
         className,
       )}
       data-acp-session-info="true"
-      data-theme-role="composer"
     >
       {showProcessing ? (
         <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">

@@ -1,0 +1,28 @@
+{
+  "faces": [
+    { "id": "inter-regular", "family": "Inter Variable", "assetId": "inter-latin-variable", "weight": 400, "style": "normal", "display": "swap", "coverage": { "scripts": ["Latn"] } },
+    { "id": "inter-medium", "family": "Inter Variable", "assetId": "inter-latin-variable", "weight": 500, "style": "normal", "display": "swap", "coverage": { "scripts": ["Latn"] } },
+    { "id": "inter-semibold", "family": "Inter Variable", "assetId": "inter-latin-variable", "weight": 600, "style": "normal", "display": "swap", "coverage": { "scripts": ["Latn"] } },
+    { "id": "inter-bold", "family": "Inter Variable", "assetId": "inter-latin-variable", "weight": 700, "style": "normal", "display": "swap", "coverage": { "scripts": ["Latn"] } },
+    { "id": "misans-regular", "family": "Gold Band MiSans", "assetId": "misans-variable", "weight": 400, "style": "normal", "display": "swap", "coverage": { "scripts": ["Hans", "Latn"], "locales": ["zh-CN"] } },
+    { "id": "misans-medium", "family": "Gold Band MiSans", "assetId": "misans-variable", "weight": 500, "style": "normal", "display": "swap", "coverage": { "scripts": ["Hans", "Latn"], "locales": ["zh-CN"] } },
+    { "id": "misans-semibold", "family": "Gold Band MiSans", "assetId": "misans-variable", "weight": 600, "style": "normal", "display": "swap", "coverage": { "scripts": ["Hans", "Latn"], "locales": ["zh-CN"] } },
+    { "id": "misans-bold", "family": "Gold Band MiSans", "assetId": "misans-variable", "weight": 700, "style": "normal", "display": "swap", "coverage": { "scripts": ["Hans", "Latn"], "locales": ["zh-CN"] } }
+  ],
+  "stacks": [
+    {
+      "id": "theme-ui",
+      "displayName": { "zh-CN": "Inter Variable · MiSans", "en": "Inter Variable · MiSans" },
+      "defaultFaces": ["inter-regular"],
+      "byScript": { "Hans": ["inter-regular", "misans-regular"], "Latn": ["inter-regular"] },
+      "byLocale": { "zh-CN": ["inter-regular", "misans-regular"] },
+      "systemFallbacks": ["Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "sans-serif"]
+    },
+    {
+      "id": "theme-editor",
+      "displayName": { "zh-CN": "JetBrains Mono", "en": "JetBrains Mono" },
+      "defaultFaces": [],
+      "systemFallbacks": ["JetBrains Mono", "SFMono-Regular", "Consolas", "monospace"]
+    }
+  ]
+}

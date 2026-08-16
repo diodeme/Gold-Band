@@ -588,20 +588,20 @@ export function App() {
   const { t } = useTranslation();
 
   useEffect(() => {
-    applyAppearance(preferences.appearance);
-  }, [preferences.appearance]);
+    applyAppearance(preferences.appearance, preferences.language);
+  }, [preferences.appearance, preferences.language]);
 
   useEffect(() => {
     if (preferences.appearance.colorScheme !== 'system') return undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => applyAppearance(preferences.appearance);
+    const syncSystemTheme = () => applyAppearance(preferences.appearance, preferences.language);
     colorScheme.addEventListener('change', syncSystemTheme);
     return () => colorScheme.removeEventListener('change', syncSystemTheme);
-  }, [preferences.appearance]);
+  }, [preferences.appearance, preferences.language]);
 
   useEffect(() => {
     applyPersonalization(preferences.personalization);
-  }, [preferences.personalization]);
+  }, [preferences.appearance, preferences.language, preferences.personalization]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -614,7 +614,7 @@ export function App() {
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
       if (!windowRevealedRef.current) {
-        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance));
+        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance, preferences.language));
       }
       await syncDesktopWindowMinimum(
         appWindow,

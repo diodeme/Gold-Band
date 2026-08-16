@@ -51,11 +51,14 @@ describe('desktop typography preferences', () => {
     expect(source).not.toContain("localStorage.setItem(typographyDisclosureSessionKey");
   });
 
-  it('uses the MiSans variable axis between Light and Regular and caps emphasis at Semibold', () => {
+  it('ships MiSans as a theme-owned WOFF2 resource and removes the legacy global TTF', () => {
     const styles = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
-    const fontDirectory = path.resolve(__dirname, '../public/fonts/misans');
-    expect(styles).toContain('src: url("/fonts/misans/MiSans-VF.ttf") format("truetype-variations");');
-    expect(styles).toContain('font-weight: 250 520;');
+    const generated = fs.readFileSync(path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'), 'utf8');
+    const fontPath = path.resolve(__dirname, '../../themes/gold-band/assets/fonts/misans-vf.woff2');
+    expect(styles).not.toContain('@font-face');
+    expect(generated).toMatch(/font-family:"Gold Band MiSans";src:url\("\/theme-assets\/builtin\.gold-band\/[a-f0-9]{16}-misans-vf\.woff2"\) format\('woff2'\)/u);
+    expect(generated).toContain('font-weight:400');
+    expect(generated).toContain('font-weight:600');
     expect(styles).toContain('--font-weight-normal: 330;');
     expect(styles).toContain('--font-weight-medium: 380;');
     expect(styles).toContain('--font-weight-semibold: 450;');
@@ -63,12 +66,8 @@ describe('desktop typography preferences', () => {
     expect(styles).toContain('@apply m-0 overflow-hidden bg-background font-sans font-normal text-foreground;');
     expect(styles).not.toMatch(/MiSans-(?:Light|Regular|Medium|Semibold|Bold)\.woff2/u);
     expect(styles).not.toContain('font-weight: 700;');
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-VF.ttf'))).toBe(true);
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Light.woff2'))).toBe(false);
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Regular.woff2'))).toBe(false);
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Medium.woff2'))).toBe(false);
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Semibold.woff2'))).toBe(false);
-    expect(fs.existsSync(path.join(fontDirectory, 'MiSans-Bold.woff2'))).toBe(false);
+    expect(fs.existsSync(fontPath)).toBe(true);
+    expect(fs.existsSync(path.resolve(__dirname, '../public/fonts/misans/MiSans-VF.ttf'))).toBe(false);
   });
 
   it('bundles Inter Variable ahead of MiSans for coordinated Latin and CJK text', () => {
@@ -76,10 +75,31 @@ describe('desktop typography preferences', () => {
     const styles = fs.readFileSync(path.resolve(__dirname, '../src/styles.css'), 'utf8');
     const goldBandPreset = fs.readFileSync(path.resolve(__dirname, '../../themes/gold-band/presets.json'), 'utf8');
     const techNeutralPreset = fs.readFileSync(path.resolve(__dirname, '../../themes/tech-neutral/presets.json'), 'utf8');
-    expect(main).toContain("import '@fontsource-variable/inter/wght.css';");
-    expect(styles).toContain('--app-font-sans: "Inter Variable", "Gold Band MiSans"');
-    expect(goldBandPreset).toContain('"families": ["Inter Variable", "Gold Band MiSans"');
-    expect(techNeutralPreset).toContain('"families": ["Inter Variable", "Gold Band MiSans"');
+    expect(main).not.toContain("import '@fontsource-variable/inter/wght.css';");
+    expect(styles).toContain('--app-font-sans: var(--gb-theme-ui-font-family');
+    expect(goldBandPreset).toContain('"uiStackId": "theme-ui"');
+    expect(techNeutralPreset).toContain('"uiStackId": "theme-ui"');
+  });
+
+  it('does not register competing theme asset URLs for one CSS font-face match key', () => {
+    const generated = fs.readFileSync(path.resolve(__dirname, '../src/themes/generated/builtin-themes.css'), 'utf8');
+    const facePattern = /@font-face\{font-family:"([^"]+)";src:url\("([^"]+)"\)[^}]*font-weight:(\d+);font-style:([^;]+);/gu;
+    const sourcesByMatchKey = new Map<string, Set<string>>();
+
+    for (const match of generated.matchAll(facePattern)) {
+      const [, family, source, weight, style] = match;
+      const key = `${family}\u0000${weight}\u0000${style}`;
+      const sources = sourcesByMatchKey.get(key) ?? new Set<string>();
+      sources.add(source);
+      sourcesByMatchKey.set(key, sources);
+    }
+
+    expect(sourcesByMatchKey.size).toBeGreaterThan(0);
+    expect(
+      [...sourcesByMatchKey.entries()]
+        .filter(([, sources]) => sources.size > 1)
+        .map(([key, sources]) => ({ key, sources: [...sources].sort() })),
+    ).toEqual([]);
   });
 
   it('keeps the complete sorted font catalog separate from the bounded preference stack', () => {

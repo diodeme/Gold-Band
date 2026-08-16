@@ -1,4 +1,41 @@
 {
-  "schemaVersion": 1,
-  "assets": []
+  "schemaVersion": 2,
+  "count": 2,
+  "totalBytes": 2663272,
+  "records": [
+    {
+      "id": "inter-latin-variable",
+      "kind": "font",
+      "mediaType": "font/woff2",
+      "bytes": 48256,
+      "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+      "outputUrl": "/theme-assets/builtin.gold-band/3100e775e8616cd2-inter-latin-variable.woff2",
+      "required": true,
+      "licenseId": "inter-ofl",
+      "fontMetadata": {
+        "family": "Inter",
+        "subfamily": "Regular",
+        "postscriptName": "Inter-Regular",
+        "weightMin": 100,
+        "weightMax": 900
+      }
+    },
+    {
+      "id": "misans-variable",
+      "kind": "font",
+      "mediaType": "font/woff2",
+      "bytes": 2615016,
+      "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27",
+      "outputUrl": "/theme-assets/builtin.gold-band/c905ab46ff4f0bcf-misans-vf.woff2",
+      "required": true,
+      "licenseId": "misans-apache",
+      "fontMetadata": {
+        "family": "MiSans VF",
+        "subfamily": "Regular",
+        "postscriptName": "MiSansVF",
+        "weightMin": 150,
+        "weightMax": 700
+      }
+    }
+  ]
 }

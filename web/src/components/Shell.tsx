@@ -9,6 +9,7 @@ import type { ConversationSidebarWorkspaceRevealRequest } from '@/components/con
 import type { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
 import { AppTitleBar } from './AppTitleBar';
 import { cn } from '@/lib/utils';
+import { ThemeIcon, useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 
 interface ShellProps {
   uiMode: DesktopUiMode;
@@ -49,6 +50,7 @@ interface ShellProps {
 }
 
 export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
+  useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
       <WorkspaceShell
@@ -129,6 +131,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
       <div
         className="app-window-shell flex h-screen flex-col bg-gold-workspace text-foreground"
         data-theme-role="shell"
+        data-theme-wallpaper-slot="app"
         data-window-frame-style={windowFrameStyle}
         onContextMenu={(event) => event.preventDefault()}
       >
@@ -168,13 +171,13 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
               </Tooltip>
 
               <nav className="mt-6 flex flex-1 flex-col gap-2">
-                <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<Command />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
-                <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<Bot />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
-                <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<Boxes />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
+                <ShellNavButton active={active === 'task-orchestration'} href="/tasks" icon={<ThemeIcon slot="entity.task" fallback={Command} aria-hidden="true" />} label={t('common.taskOrchestration')} onClick={() => onSelect('task-orchestration')} />
+                <ShellNavButton active={active === 'agent-management'} href="/agents" icon={<ThemeIcon slot="navigation.agent" fallback={Bot} aria-hidden="true" />} label={t('common.agentManagement')} onClick={() => onSelect('agent-management')} />
+                <ShellNavButton active={active === 'knowledge-base'} href="/contexts" icon={<ThemeIcon slot="navigation.context" fallback={Boxes} aria-hidden="true" />} label={t('common.contextManagement')} onClick={() => onSelect('knowledge-base')} />
               </nav>
 
               <Separator />
-              <ShellNavButton active={active === 'settings'} href="/settings" icon={<Settings />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
+              <ShellNavButton active={active === 'settings'} href="/settings" icon={<ThemeIcon slot="navigation.settings" fallback={Settings} aria-hidden="true" />} label={t('common.settings')} trailing={showSettingsUpdateDot ? <UpdateDot /> : null} onClick={() => onSelect('settings')} />
             </aside>
           </div>
           <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-2xl border-l border-t border-workspace-divider bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]">{children}</main>
@@ -207,11 +210,11 @@ function ShellNavButton({ active, disabled, href, icon, label, trailing, onClick
     </>
   );
   const button = href && !disabled ? (
-    <Button variant="ghost" className={className} asChild>
+    <Button variant="ghost" className={className} data-theme-role="navigation-item" data-selected={active} asChild>
       <a href={href} onClick={(event) => handleNavLinkClick(event, onClick)}>{content}</a>
     </Button>
   ) : (
-    <Button variant="ghost" disabled={disabled} className={className} onClick={onClick}>{content}</Button>
+    <Button variant="ghost" disabled={disabled} className={className} data-theme-role="navigation-item" data-selected={active} onClick={onClick}>{content}</Button>
   );
 
   if (!disabled) return button;

@@ -100,6 +100,8 @@ PR 列表项点击后先进入由选中 locator 驱动的详情 loading 状态�
 
 ## 7. 当前实施状态（2026-08-11）
 
+2026-08-16 起源码管理 comparison surface 接入 Theme Contract v2 的稳定 `diff` role；主题可以通过封闭 recipe 调整表面、边界、形状、阴影和状态色，但不能建立第二套 Diff 统计、文件身份或交互状态。主题切换只更新 CodeMirror theme extension/CSS variables，保持当前审阅会话、请求 revision、滚动位置和 `EditorView` identity。
+
 已完成 Git snapshot、porcelain v2 状态解析、refs/worktree/stash 读取、历史分页、文本 comparison、共享写锁、stage/unstage、staged-only commit、branch/tag/worktree typed mutation，以及右侧工作区的更改/历史/仓库基础视图。历史区默认单栏并在选择后进入响应式 Commit 主从工作区，支持 300 条客户端页面、按需加载下一后端页、标准桌面范围/增减选择、按文件演化链聚合的最终 Diff、右键 SHA/归属操作和跨文件 Diff 审阅会话。
 
 `workspacePath` 已贯穿 snapshot/history/mutation/comparison/长操作 IPC，并由后端校验 linked worktree 归属。stash create/apply、fetch/pull/push/push-tag 已接入可取消后台进程组、共享锁和结构化状态；分支、tag、worktree、stash 与远端操作已提供 shadcn 对话框/菜单入口。

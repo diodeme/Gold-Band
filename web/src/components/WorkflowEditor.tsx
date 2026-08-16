@@ -7,7 +7,6 @@ import {
   EdgeLabelRenderer,
   Handle,
   MarkerType,
-  MiniMap,
   NodeToolbar,
   Panel,
   Position,
@@ -120,16 +119,10 @@ const WORKFLOW_EDITOR_COMPACT_WIDTH = 820;
 const WORKFLOW_EDITOR_MIN_ZOOM = 0.3;
 const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
 const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
-const WORKFLOW_EDITOR_MINIMAP_SIZE = { width: 168, height: 112 } as const;
 const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
 const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
 const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
 const WORKFLOW_NODE_SPLIT_OUTCOME_RATIO = { success: 0.34, failure: 0.66 } as const;
-
-function workflowMiniMapNodeColor(node: Node<EditorNodeData>): string {
-  if (node.selected) return 'var(--primary)';
-  return node.data.terminal ? 'var(--foreground)' : 'var(--muted-foreground)';
-}
 
 export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
 
@@ -208,7 +201,7 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
 function EditorCanvasNode({ data }: { data: EditorNodeData }) {
   if (data.terminal) {
     return (
-      <div className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
+      <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
         <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
         {data.label}
       </div>
@@ -216,7 +209,7 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
   }
   const successHandleTop = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
   return (
-    <div className="relative flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+    <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
       <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
         <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" title={`${data.quickAddLabel}: ${data.successLabel}`} onClick={() => data.onQuickAdd?.('success')}>
           <CornerDownRight className="size-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -347,7 +340,6 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
     () => createAuthoringFlowProjection(workflow, graphLayout, selectedNodeId, selectedEdgeId, invalidNodeIds, agentIconKeys, t, handleCanvasQuickAdd, handleCanvasDelete, selectedTerminalId),
     [agentIconKeys, graphLayout, handleCanvasDelete, handleCanvasQuickAdd, invalidNodeSignature, selectedEdgeId, selectedNodeId, selectedTerminalId, t, workflowGraphSignature],
   );
-
   useEffect(() => {
     if (!onSessionDraftChangeRef.current) return undefined;
     const timer = window.setTimeout(() => {
@@ -812,7 +804,6 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
 
   const canUndo = historyRevision >= 0 && historyRef.current.past.length > 0;
   const canRedo = historyRevision >= 0 && historyRef.current.future.length > 0;
-  const showMiniMap = nodes.length >= 6;
   const validationIssues = liveValidation?.issues ?? [];
 
   const canvasSurface = (
@@ -898,23 +889,6 @@ export function WorkflowEditor({ className, value, agentRegistry, profiles = [],
                 <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
               </Panel>
               <Controls showInteractive={false} fitViewOptions={{ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }} position="bottom-right" />
-              {showMiniMap ? (
-                <MiniMap<Node<EditorNodeData>>
-                  position="bottom-left"
-                  pannable
-                  zoomable
-                  style={WORKFLOW_EDITOR_MINIMAP_SIZE}
-                  className="!m-3 !overflow-hidden !rounded-lg !border !border-border/80 !bg-background/95 !shadow-sm"
-                  bgColor="var(--background)"
-                  nodeColor={workflowMiniMapNodeColor}
-                  nodeStrokeColor="var(--background)"
-                  nodeStrokeWidth={2}
-                  nodeBorderRadius={6}
-                  maskColor="color-mix(in srgb, var(--background) 28%, transparent)"
-                  maskStrokeColor="var(--primary)"
-                  maskStrokeWidth={1.5}
-                />
-              ) : null}
             </ReactFlow>
           </div>
         ) : (
@@ -2375,10 +2349,11 @@ function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY
   const labelY = route?.labelY ?? smoothLabelY;
   return (
     <>
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
+      <BaseEdge data-theme-role="workflow-edge" path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
       {label ? (
         <EdgeLabelRenderer>
           <span
+            data-theme-role="workflow-edge"
             className="workflow-edge-label pointer-events-none absolute z-20 rounded-full border bg-background px-2 py-0.5 text-[11px] font-semibold shadow-sm"
             style={{ color: style?.stroke, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >

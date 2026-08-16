@@ -3,7 +3,7 @@
   "schemaVersion": 2,
   "contractVersion": 2,
   "id": "builtin.tech-neutral",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "source": "builtin",
   "name": {
     "zh-CN": "技术中性",

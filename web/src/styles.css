@@ -99,14 +99,6 @@
   color: var(--muted-foreground);
 }
 
-@font-face {
-  font-family: "Gold Band MiSans";
-  src: url("/fonts/misans/MiSans-VF.ttf") format("truetype-variations");
-  font-weight: 250 520;
-  font-style: normal;
-  font-display: swap;
-}
-
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -329,7 +321,7 @@
 
 :root {
   color-scheme: dark;
-  --app-font-sans: "Inter Variable", "Gold Band MiSans", "MiSans", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  --app-font-sans: var(--gb-theme-ui-font-family, "Inter Variable", "Gold Band MiSans", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif);
   --app-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --app-editor-font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
   --app-ui-font-size: 14px;
@@ -401,8 +393,8 @@
 
   @supports not (scrollbar-width: thin) {
     *::-webkit-scrollbar {
-      width: 10px;
-      height: 10px;
+      width: var(--gb-scrollbar-width, 10px);
+      height: var(--gb-scrollbar-width, 10px);
     }
 
     *::-webkit-scrollbar-track {
@@ -414,9 +406,9 @@
     }
 
     *::-webkit-scrollbar-thumb {
-      min-height: 40px;
-      border: 3px solid transparent;
-      border-radius: 999px;
+      min-height: var(--gb-scrollbar-min-length, 24px);
+      border: var(--gb-scrollbar-thumb-inset, 3px) solid transparent;
+      border-radius: var(--gb-scrollbar-thumb-radius, 999px);
       background: var(--gold-scrollbar-thumb);
       background-clip: content-box;
     }
@@ -563,7 +555,6 @@
   --xy-edge-stroke-default: var(--muted-foreground);
   --xy-edge-stroke-selected-default: var(--primary);
   --xy-connectionline-stroke-default: var(--primary);
-  --xy-minimap-background-color-default: var(--card);
   --xy-controls-button-background-color-default: var(--card);
   --xy-controls-button-background-color-hover-default: var(--accent);
   --xy-controls-button-color-default: var(--muted-foreground);

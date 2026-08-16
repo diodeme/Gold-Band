@@ -11,7 +11,7 @@ describe('desktop window chrome ownership', () => {
     expect(rustMainSource).toContain('window.decorations = true;');
     expect(rustMainSource).toContain('window.title_bar_style = tauri::TitleBarStyle::Overlay;');
     expect(rustMainSource).toContain('window.hidden_title = true;');
-    expect(appSource).toContain('syncDesktopWindowSurface(resolveAppearance(preferences.appearance))');
+    expect(appSource).toContain('syncDesktopWindowSurface(resolveAppearance(preferences.appearance, preferences.language))');
     expect(appSource).toContain('appWindow.show()');
     expect(appSource).not.toContain('.setDecorations(');
     expect(appSource).not.toContain('.setTitleBarStyle(');

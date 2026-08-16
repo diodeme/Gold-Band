@@ -2,6 +2,7 @@ import { ConversationComposer } from '@/components/conversation/ConversationComp
 import { ConversationGreeting } from '@/components/conversation/ConversationGreeting';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { cn } from '@/lib/utils';
+import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
 
 interface ConversationHomePageProps {
@@ -43,8 +44,9 @@ export function ConversationHomePage({
   onWorkspaceChange,
   onScheduledModeExit,
 }: ConversationHomePageProps) {
+  useThemeWallpaperSurface();
   return (
-    <div className={cn(
+    <div data-theme-wallpaper-slot="conversation" className={cn(
       'flex h-full flex-col items-center justify-center px-4 sm:px-6 lg:px-8',
       CONVERSATION_HOME_COMPOSER_LAYOUT.opticalBottomPaddingClassName,
     )}>

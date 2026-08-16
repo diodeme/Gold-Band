@@ -41,20 +41,21 @@ function ScrollBar({
   return (
     <ScrollAreaPrimitive.ScrollAreaScrollbar
       data-slot="scroll-area-scrollbar"
+      data-theme-role="scrollbar"
       orientation={orientation}
       className={cn(
-        "z-20 flex touch-none bg-transparent p-[3px] transition-colors select-none hover:bg-[var(--gold-scrollbar-track)]",
+        "z-20 flex touch-none bg-transparent p-[var(--gb-scrollbar-thumb-inset)] transition-colors select-none hover:bg-[var(--gold-scrollbar-track)]",
         orientation === "vertical" &&
-          "h-full w-2.5 border-l border-l-transparent",
+          "h-full w-[var(--gb-scrollbar-width)] border-l border-l-transparent",
         orientation === "horizontal" &&
-          "h-2.5 flex-col border-t border-t-transparent",
+          "h-[var(--gb-scrollbar-width)] flex-col border-t border-t-transparent",
         className
       )}
       {...props}
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-[var(--gold-scrollbar-thumb)] transition-colors hover:bg-[var(--gold-scrollbar-thumb-hover)]"
+        className="relative min-h-[var(--gb-scrollbar-min-length)] flex-1 rounded-[var(--gb-scrollbar-thumb-radius)] bg-[var(--gold-scrollbar-thumb)] transition-colors hover:bg-[var(--gold-scrollbar-thumb-hover)]"
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

@@ -13,7 +13,7 @@ describe('conversation visual hierarchy contract', () => {
 
     expect(title).toContain('text-sm font-semibold leading-5 text-foreground');
     expect(title).toContain('text-ui-caption leading-4 text-muted-foreground/55');
-    expect(header).toContain('bg-content-header px-5 py-2');
+    expect(header).toContain('bg-content-header px-5 py-0.5');
     expect(header).toContain('h-7 gap-1.5 px-2 text-xs font-normal');
   });
 

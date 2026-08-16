@@ -14,7 +14,8 @@
       {
         "title": "Gold Band",
         "width": 1280,
-        "height": 800,
+        "height": 720,
+        "center": true,
         "visible": false,
         "decorations": false,
         "transparent": false,

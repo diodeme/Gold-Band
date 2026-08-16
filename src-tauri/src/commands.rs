@@ -808,7 +808,7 @@ fn prompt_turn_lifecycle_callback(
             schedule_direct_prompt_queue_drain(
                 app_handle.clone(),
                 project_id.clone(),
-                app.clone_for_background(),
+                direct_prompt_queue_drain_app(&app),
                 locator,
                 successful,
                 completion,
@@ -839,6 +839,14 @@ fn process_prompt_turn_lifecycle(
             schedule_finished(locator, successful, completion);
         }
     }
+}
+
+fn direct_prompt_queue_drain_app(app: &App) -> App {
+    app.clone_for_background()
+}
+
+fn queued_user_turn_app(app: &App) -> App {
+    app.clone_for_background().without_scheduled_turn_context()
 }
 
 fn schedule_direct_prompt_queue_drain(
@@ -894,7 +902,6 @@ fn schedule_direct_prompt_queue_drain(
     let expected_revision = queue.revision;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
-        let state = app_handle.state::<DesktopState>();
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -929,9 +936,14 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let _result = send_acp_prompt(
+        let queued_turn_app = configure_conversation_runtime_callbacks(
+            queued_user_turn_app(&app),
             app_handle.clone(),
-            state,
+            project_id.clone(),
+        );
+        let _result = send_acp_prompt_with_configured_app(
+            app_handle.clone(),
+            queued_turn_app,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
@@ -2862,7 +2874,7 @@ pub async fn stop_active_session(
 }
 
 #[tauri::command]
-pub fn submit_manual_check(
+pub async fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -2884,9 +2896,32 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let submission_lease = app
+        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+        .map_err(command_error)?;
+    let resumed_occurrence_id = resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
+    let app = app
+        .into_inner()
+        .with_scheduled_occurrence_id(resumed_occurrence_id);
+    app.submit_manual_check_background(
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outcome,
+        submission_lease,
+    )
+    .map(run_summary_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -6647,18 +6682,15 @@ pub async fn respond_elicitation(
 
     // Reclaim the durable scheduled occurrence before writing the response file.
     // The ACP waiter may resume immediately after the file is visible.
-    if let Ok(coordinator) = state.scheduler_coordinator() {
-        coordinator
-            .resume_attention(
-                app.paths.repo_root.clone(),
-                task_id.clone(),
-                run_id.clone(),
-                round_id.clone(),
-                attempt_id.clone(),
-            )
-            .await
-            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
-    }
+    resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -6739,6 +6771,72 @@ pub async fn respond_elicitation(
     );
 
     Ok(())
+}
+
+fn scheduled_attention_requires_coordinator(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> crate::scheduled_service::ScheduledServiceResult<bool> {
+    let database_path = app.paths.scheduler_db_path();
+    if !database_path.exists() {
+        return Ok(false);
+    }
+    let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
+    Ok(database
+        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
+        .is_some())
+}
+
+async fn resume_scheduled_interaction(
+    state: &DesktopState,
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> CommandResult<Option<String>> {
+    let requires_coordinator =
+        scheduled_attention_requires_coordinator(app, task_id, run_id, round_id, attempt_id)
+            .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?;
+    if !requires_coordinator {
+        return Ok(None);
+    }
+
+    let coordinator = state.scheduler_coordinator().map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::CoordinatorUnavailable
+                .to_string(),
+            serde_json::json!({ "operation": "resume-attention" }),
+        )
+    })?;
+    coordinator
+        .resume_attention(
+            app.paths.repo_root.clone(),
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            attempt_id.to_string(),
+        )
+        .await
+        .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::NotFound.to_string(),
+                serde_json::json!({
+                    "operation": "resume-attention",
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "attemptId": attempt_id,
+                }),
+            )
+        })
+        .map(Some)
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -7601,6 +7699,108 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_attention_lookup_only_requires_coordinator_for_matching_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+
+        assert!(
+            !scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+        assert!(!app.paths.scheduler_db_path().exists());
+
+        let database =
+            gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+                .unwrap();
+        let now = chrono::Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + chrono::Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                definition.id(),
+                now,
+                gold_band::scheduler::occurrence::OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "owner-1";
+        database
+            .claim_occurrence(
+                &occurrence.id,
+                owner_id,
+                now,
+                now + chrono::Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &occurrence.id,
+                owner_id,
+                gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+
+        assert!(
+            scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_maps_database_failure_to_storage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+        std::fs::create_dir_all(app.paths.scheduler_db_path()).unwrap();
+
+        let error = scheduled_attention_requires_coordinator(
+            &app,
+            "task-1",
+            "run-1",
+            "round-1",
+            "attempt-1",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+        );
+    }
+
+    #[test]
     fn agent_binding_usage_isolates_damaged_tasks_and_scheduled_snapshots() {
         let root = tempfile::tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("workspace")).unwrap());
@@ -7922,7 +8122,6 @@ mod tests {
             "non-runtime-controlled"
         );
         assert!(timeline_path.is_dir());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8340,6 +8539,60 @@ mod tests {
             event => panic!("expected terminal AcpTurnFinished, got {event:?}"),
         }
         drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_queue_drain_keeps_the_originating_scheduled_turn_context() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-drain-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()));
+
+        let drain_app = direct_prompt_queue_drain_app(&app);
+
+        assert_eq!(drain_app.scheduled_occurrence_id(), Some("occurrence-001"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_user_turn_clears_only_the_scheduled_origin() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-queued-turn-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_callback = seen.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                *seen_for_callback.lock().unwrap() += 1;
+                Ok(())
+            }));
+
+        let queued_app = queued_user_turn_app(&app);
+        queued_app
+            .notify_prompt_turn_finished(
+                acp_live_event_context(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "node-001",
+                    "attempt-001",
+                    None,
+                    None,
+                ),
+                Some("turn-001".to_string()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(queued_app.scheduled_occurrence_id(), None);
+        assert_eq!(*seen.lock().unwrap(), 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -77,6 +77,13 @@ pub struct ScheduledOccurrenceVm {
     pub finished_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrencePageVm {
+    pub items: Vec<ScheduledOccurrenceVm>,
+    pub next_cursor: Option<String>,
+}
+
 impl ScheduledOccurrenceVm {
     pub fn from_occurrence(
         occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,
@@ -258,13 +265,17 @@ pub struct UpdateScheduledTaskInputVm {
 }
 
 impl ScheduledTaskVm {
-    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
-        Self::from_definition_in_workspace(definition, &definition.project_id)
+    pub fn from_definition(
+        definition: &gold_band::scheduler::ScheduledTaskDefinition,
+        next_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        Self::from_definition_in_workspace(definition, &definition.project_id, next_run_at)
     }
 
     pub fn from_definition_in_workspace(
         definition: &gold_band::scheduler::ScheduledTaskDefinition,
         workspace_name: &str,
+        next_run_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Self {
         Self {
             id: definition.id.clone(),
@@ -281,15 +292,7 @@ impl ScheduledTaskVm {
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .unwrap_or_default(),
             schedule: definition.schedule.clone(),
-            next_at: definition
-                .enabled
-                .then(|| {
-                    definition
-                        .schedule
-                        .next_occurrence_after(chrono::Utc::now())
-                })
-                .flatten()
-                .map(|value| value.to_rfc3339()),
+            next_at: next_run_at.map(|value| value.to_rfc3339()),
             status: scheduled_task_status(definition),
             last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
             last_trigger_status: definition.last_trigger_status.clone(),
@@ -363,12 +366,13 @@ pub fn scheduled_task_vms_from_sources(
         )?;
         tasks.extend(
             database
-                .list_job_definitions_for_project(&source.workspace.project_id)?
+                .list_job_records_for_project(&source.workspace.project_id)?
                 .iter()
-                .map(|definition| {
+                .map(|record| {
                     ScheduledTaskVm::from_definition_in_workspace(
-                        definition,
+                        &record.definition,
                         &source.workspace.name,
+                        record.next_run_at,
                     )
                 }),
         );
@@ -7001,12 +7005,34 @@ mod tests {
         )
         .unwrap();
         let value =
-            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition)).unwrap();
+            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition, None))
+                .unwrap();
         assert_eq!(value["schedule"]["kind"], "Repeat");
         assert_eq!(value["schedule"]["timezone"], "Asia/Shanghai");
         assert!(value.get("scheduleLabel").is_none());
         assert!(value.get("timezoneLabel").is_none());
         assert!(value.get("lastTriggerLabel").is_none());
+    }
+
+    #[test]
+    fn scheduled_task_vm_next_at_uses_persisted_next_run_at_not_realtime_recompute() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::every(3, "minutes", chrono::Utc::now()).unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        // 模拟数据库持久化的 next_run_at（与 now 实时重算的结果不同）。
+        let persisted = chrono::Utc::now() + chrono::Duration::days(7);
+
+        let vm = super::ScheduledTaskVm::from_definition(&definition, Some(persisted));
+        assert_eq!(vm.next_at.as_deref(), Some(persisted.to_rfc3339().as_str()));
+
+        // 不传 next_run_at（None）时 next_at 为 None，而不是回退到 now 实时算。
+        let vm_none = super::ScheduledTaskVm::from_definition(&definition, None);
+        assert!(vm_none.next_at.is_none());
     }
 
     #[test]

@@ -24,7 +24,8 @@ use crate::domain::{
 };
 use crate::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, NodeDsl, ValidatedWorkflow, WorkflowDsl,
-    validate_workflow, validate_workflow_snapshot, workflow_contains_ai_dynamic,
+    validate_authoring_workflow, validate_workflow, validate_workflow_snapshot,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
@@ -77,6 +78,7 @@ use crate::runtime_error::{
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{append_jsonl, read_json, write_json};
+use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
 
 use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
@@ -86,7 +88,8 @@ use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{
     current_attempt_state, load_run_workflow, persist_runtime_state,
-    persist_runtime_state_if_execution_current, refresh_runtime_execution_if_current,
+    persist_runtime_state_if_execution_current,
+    persist_runtime_state_if_expected_execution_current, refresh_runtime_execution_if_current,
 };
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
@@ -715,14 +718,33 @@ pub(crate) fn prepare_run(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
-    let workflow_path = workflow_override
-        .map(|path| path.to_owned())
-        .unwrap_or_else(|| app.paths.workflow_file(task_id));
-    let mut workflow: WorkflowDsl = read_json(&workflow_path)?;
-    let model_normalizations = app.normalize_workflow_models(&mut workflow);
-    if workflow_override.is_none() && !model_normalizations.is_empty() {
-        write_json(&workflow_path, &workflow)?;
-    }
+    let workflow: WorkflowDsl = match workflow_override {
+        Some(path) => read_json(path)?,
+        None => app.executable_task_workflow(task_id)?,
+    };
+    prepare_run_from_workflow(app, task_id, workflow)
+}
+
+pub(crate) fn prepare_run_with_authoring(
+    app: &App,
+    task_id: &str,
+    authoring: &TaskAuthoringWorkflow,
+) -> Result<PreparedRun> {
+    let validated_authoring = validate_authoring_workflow(authoring.workflow.clone())?;
+    let workflow = validate_and_inject(
+        &validated_authoring.raw,
+        &authoring.model_bindings,
+        &app.config.agents,
+        &app.provider_diagnostics(),
+    )?;
+    prepare_run_from_workflow(app, task_id, workflow)
+}
+
+fn prepare_run_from_workflow(
+    app: &App,
+    task_id: &str,
+    workflow: WorkflowDsl,
+) -> Result<PreparedRun> {
     let validated = validate_workflow_snapshot(workflow)?;
     if workflow_contains_ai_dynamic(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
@@ -857,19 +879,6 @@ pub(crate) fn prepare_run(
             None,
         ),
     );
-    for normalization in model_normalizations {
-        let mut event_data = run_event_data(&ctx, None, None, None, None);
-        event_data.details =
-            Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
-        append_run_event_best_effort(
-            &app.paths,
-            task_id,
-            &run.id,
-            "model_config_normalized",
-            now_rfc3339_like(),
-            event_data,
-        );
-    }
     write_progress_hint(
         &app.paths,
         task_id,
@@ -1128,6 +1137,7 @@ pub(crate) fn run_continue(
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
+    let _continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
     run_continue_with_launch_signal(
         app,
         task_id,
@@ -3488,8 +3498,12 @@ fn freeze_allowed_workflow_snapshots(
             .iter()
             .find(|template| template.workflow.id.trim() == workflow_id)
             .ok_or_else(|| anyhow!("allowed workflow `{workflow_id}` not found"))?;
-        let mut workflow = template.workflow.clone();
-        app.normalize_workflow_models(&mut workflow);
+        let workflow = crate::workflow_model_binding::validate_and_inject(
+            &template.workflow,
+            &template.model_bindings,
+            &app.config.agents,
+            &app.provider_diagnostics(),
+        )?;
         let validated = validate_workflow(workflow)?;
         app.validate_workflow_agents(&validated)?;
         let contains_ai_dynamic = workflow_contains_ai_dynamic(&validated.raw);
@@ -11411,8 +11425,10 @@ fn drive_from_node_with_initial_session(
                 run.status = RunStatus::Paused;
                 run.pause_reason = Some(pause_reason);
                 run.updated_at = now_rfc3339_like();
-                run.transition_current_execution(
+                let active_locator = run.execution.locator.clone();
+                run.transition_execution(
                     RuntimeExecutionPhase::Paused,
+                    active_locator,
                     run.updated_at.clone(),
                 )?;
                 round.status = RunStatus::Paused;
@@ -11420,6 +11436,7 @@ fn drive_from_node_with_initial_session(
                 failed_node.status = RunStatus::Paused;
                 failed_node.outcome = None;
                 failed_node.finished_at = Some(run.updated_at.clone());
+                let expected_execution_id = failed_node.runtime_execution_id.take();
                 write_run_progress_best_effort(
                     &app.paths,
                     task_id,
@@ -11454,12 +11471,13 @@ fn drive_from_node_with_initial_session(
                     &failed_node,
                     &ctx,
                 );
-                if !persist_runtime_state_if_execution_current(
+                if !persist_runtime_state_if_expected_execution_current(
                     app,
                     task_id,
                     run,
                     round,
                     &failed_node,
+                    expected_execution_id.as_deref(),
                 )? {
                     return Ok(());
                 }
@@ -11494,12 +11512,19 @@ fn drive_from_node_with_initial_session(
             run.status = RunStatus::Paused;
             run.pause_reason = Some(pause_reason);
             run.updated_at = now_rfc3339_like();
-            run.transition_current_execution(
+            // Provider and AI-DYNAMIC callbacks may have advanced the
+            // authoritative execution locator to an inner leaf. Pausing the
+            // outer aggregate changes its phase, not the identity of the
+            // execution whose result is being committed.
+            let active_locator = run.execution.locator.clone();
+            run.transition_execution(
                 RuntimeExecutionPhase::Paused,
+                active_locator,
                 run.updated_at.clone(),
             )?;
             round.status = RunStatus::Paused;
             round.outcome = None;
+            let expected_execution_id = node.runtime_execution_id.take();
             let summary = format!(
                 "run {} paused at {}/{}/{}",
                 run.id, round.id, node.node_id, node.attempt_id
@@ -11538,7 +11563,14 @@ fn drive_from_node_with_initial_session(
                     run.pause_reason,
                 ),
             );
-            if !persist_runtime_state_if_execution_current(app, task_id, run, round, &node)? {
+            if !persist_runtime_state_if_expected_execution_current(
+                app,
+                task_id,
+                run,
+                round,
+                &node,
+                expected_execution_id.as_deref(),
+            )? {
                 return Ok(());
             }
             emit_pause_side_effects(app, task_id, run, round, &node);

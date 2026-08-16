@@ -49,10 +49,25 @@ describe('desktopApi', () => {
   });
 
   it('forwards recent workspace removal to the Tauri command path', async () => {
+    vi.mocked(invokeCommand).mockResolvedValueOnce({
+      preferences: {
+        wallpapers: { recentWallpapers: [] },
+      },
+    });
+
     await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
 
     expect(invokeCommand).toHaveBeenCalledWith('remove_recent_workspace', {
       workspace: 'D:/Projects/code/ai/Gold-Band',
+    });
+  });
+
+  it('loads task authoring from the requested conversation workspace', async () => {
+    await desktopApi.getWorkflow('task-1', 'project-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_workflow', {
+      projectId: 'project-1',
+      taskId: 'task-1',
     });
   });
 

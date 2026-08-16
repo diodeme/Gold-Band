@@ -46,6 +46,12 @@ pub struct RetentionResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledJobDefinitionScan {
+    pub definitions: Vec<ScheduledTaskDefinition>,
+    pub invalid_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DueMaterialization {
     Ready {
         job: ScheduledJobRecord,
@@ -561,6 +567,37 @@ impl ScheduledTaskDatabase {
             definitions.push(serde_json::from_str(&definition_json)?);
         }
         Ok(definitions)
+    }
+
+    pub fn scan_job_definitions(&self) -> Result<ScheduledJobDefinitionScan> {
+        let connection = self.lock_connection()?;
+        let mut statement = connection.prepare(
+            "SELECT definition_json
+             FROM scheduled_jobs
+             WHERE definition_json IS NOT NULL
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut definitions = Vec::new();
+        let mut invalid_count = 0;
+        for row in rows {
+            match row.and_then(|definition_json| {
+                serde_json::from_str(&definition_json).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            }) {
+                Ok(definition) => definitions.push(definition),
+                Err(_) => invalid_count += 1,
+            }
+        }
+        Ok(ScheduledJobDefinitionScan {
+            definitions,
+            invalid_count,
+        })
     }
 
     pub fn list_job_definitions_for_project(
@@ -2107,6 +2144,38 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn tolerant_definition_scan_isolates_malformed_rows() {
+        let (_temp, database) = database();
+        let valid = definition(
+            "project-a",
+            "job-valid",
+            ScheduleSpec::every(1, "hours", fixed_time()).unwrap(),
+        );
+        let malformed = definition(
+            "project-a",
+            "job-malformed",
+            ScheduleSpec::every(1, "hours", fixed_time()).unwrap(),
+        );
+        database.save_job_definition(&valid).unwrap();
+        database.save_job_definition(&malformed).unwrap();
+        database
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE scheduled_jobs SET definition_json = ?1 WHERE id = ?2",
+                params!["{invalid", malformed.id],
+            )
+            .unwrap();
+
+        let scan = database.scan_job_definitions().unwrap();
+
+        assert_eq!(scan.definitions, vec![valid]);
+        assert_eq!(scan.invalid_count, 1);
+        assert!(database.list_job_definitions().is_err());
     }
 
     fn set_occurrence_state(

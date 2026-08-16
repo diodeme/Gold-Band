@@ -50,7 +50,7 @@ describe("AcpUsagePanel", () => {
     );
 
     expect(html).toContain('data-acp-session-info="true"');
-    expect(html).toContain('data-theme-role="composer"');
+    expect(html).not.toContain('data-theme-role="composer"');
     expect(html).toContain("acp.timingSession");
     expect(html).toContain("2m 21s");
     expect(html).toContain("tabular-nums");

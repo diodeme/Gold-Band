@@ -278,6 +278,9 @@ const resources = {
         discardWorkflowChanges: "工作流还有未保存的修改。确定要放弃这些修改并关闭吗？",
       },
       errors: {
+        "workflow-model-binding": {
+          "binding-duplicate": "执行槽位 {{executionSlotId}} 存在重复模型绑定，请删除重复项后重试。",
+        },
         git: {
           "workspace-outside-project": "所选 Worktree 不属于当前项目。",
           "ref-changed": "仓库状态已变化，请刷新后重试。",
@@ -572,6 +575,15 @@ const resources = {
         },
       },
       agentManagement: {
+        deleteUsageLoading: "正在统计绑定引用…",
+        deleteUsageTemplates: "受影响的工作流模板",
+        deleteUsageTasks: "受影响的 Task",
+        deleteUsageSchedules: "受影响的定时任务",
+        deleteUsageUnknownTasks: "无法确认的 Task",
+        deleteUsageUnknownSchedules: "无法确认的定时任务",
+        deleteUsageUnknownWarning: "部分数据已损坏，引用关系无法完全确认。确认删除后，这些项目中的 Agent 引用可能失效。",
+        deleteUsageFailed: "无法加载绑定引用：{{reason}}",
+        deleteUsageRetry: "重新统计",
         title: "Agent 管理",
         addAgent: "新增 Agent",
         searchAgents: "搜索 Agent…",
@@ -848,6 +860,8 @@ const resources = {
           confirmDiscardAction: "放弃草稿",
           workflowTemplate: "工作流模板",
           defaultWorkflow: "默认工作流",
+          defaultFullWorkflow: "默认完整工作流",
+          defaultLightweightWorkflow: "默认轻量工作流",
           workflowTemplatePlaceholder: "选择工作流",
           unsavedWorkflowTemplate: "新增模板（未保存）",
           noWorkflowTemplate:
@@ -857,6 +871,7 @@ const resources = {
           workflowDirty: "有未保存改动",
           defaultWorkflowSaveAsNotice:
             "默认工作流不可覆盖，请输入名称并保存为新的工作流。",
+          restoreOtherWorkflowChanges: "还原其他修改",
           workflowTemplateName: "新工作流名称",
           saveTask: "保存任务",
           savingTask: "保存中…",
@@ -976,6 +991,16 @@ const resources = {
         maxRoundsHelp:
           "限制 $new-round 可打开的新 Round 数；初始 Round 不计入。",
         nodeConfig: "节点配置",
+        modelConfig: "模型配置",
+        syncToOtherNodes: "同步至其他节点",
+        syncDialogTitle: "同步模型配置",
+        syncDialogDescription: "仅在当前工作流内，将当前节点的 Agent、模型、权限和全部配置项一次性应用到其他普通节点。",
+        syncOverwriteConfigured: "覆盖已配置节点",
+        syncOverwriteDescription: "默认只填充未配置节点。开启后也会替换已有模型配置。",
+        syncFillCount: "填充",
+        syncOverwriteCount: "覆盖",
+        syncSkipCount: "跳过",
+        syncConfirm: "应用同步",
         edgeConfig: "边配置",
         nodeId: "节点 ID",
         agent: "Agent",
@@ -1116,6 +1141,10 @@ const resources = {
         validationNodeProviderRequired: "{{node}} 节点未关联 Agent。",
         validationNodeProviderUnavailable:
           "{{node}} 节点关联的 Agent 未通过 doctor。",
+        validationSlotRequired: "{{node}} 节点缺少执行槽位。",
+        validationSlotDuplicate: "{{node}} 节点的执行槽位重复。",
+        validationModelUnavailable: "{{node}} 节点选择的模型不属于当前 Agent。",
+        validationConfigOptionUnavailable: "{{node}} 节点的配置项 {{option}} 不属于当前 Agent。",
         validationPermissionModeUnavailable:
           "{{node}} 节点的权限模式不属于当前 Agent。",
         validationNodeProfileRequired: "{{node}} 节点未关联角色。",
@@ -1981,6 +2010,7 @@ const resources = {
           configureAuto: "修改 AUTO",
           configureWorkflow: "修改工作流",
           includeInterview: "需求采访",
+          includeGrill: "需求拷问",
         },
         runtime: {
           justNow: "刚刚",
@@ -2355,6 +2385,9 @@ const resources = {
         discardWorkflowChanges: "This workflow has unsaved changes. Discard them and close the tab?",
       },
       errors: {
+        "workflow-model-binding": {
+          "binding-duplicate": "Execution slot {{executionSlotId}} has duplicate model bindings. Remove the duplicate and try again.",
+        },
         git: {
           "workspace-outside-project": "The selected worktree does not belong to this project.",
           "ref-changed": "Repository state changed. Refresh and try again.",
@@ -2656,6 +2689,15 @@ const resources = {
         },
       },
       agentManagement: {
+        deleteUsageLoading: "Counting binding references…",
+        deleteUsageTemplates: "Affected workflow templates",
+        deleteUsageTasks: "Affected tasks",
+        deleteUsageSchedules: "Affected scheduled tasks",
+        deleteUsageUnknownTasks: "Tasks that could not be checked",
+        deleteUsageUnknownSchedules: "Scheduled tasks that could not be checked",
+        deleteUsageUnknownWarning: "Some data is damaged, so its references could not be fully checked. Deleting this Agent may leave broken references in those items.",
+        deleteUsageFailed: "Could not load binding references: {{reason}}",
+        deleteUsageRetry: "Retry count",
         title: "Agent Management",
         addAgent: "Add Agent",
         searchAgents: "Search agents…",
@@ -2944,6 +2986,8 @@ const resources = {
           confirmDiscardAction: "Discard draft",
           workflowTemplate: "Workflow template",
           defaultWorkflow: "Default workflow",
+          defaultFullWorkflow: "Default full workflow",
+          defaultLightweightWorkflow: "Default lightweight workflow",
           workflowTemplatePlaceholder: "Select workflow",
           unsavedWorkflowTemplate: "New template (unsaved)",
           noWorkflowTemplate:
@@ -2953,6 +2997,7 @@ const resources = {
           workflowDirty: "Unsaved changes",
           defaultWorkflowSaveAsNotice:
             "The default workflow cannot be overwritten. Enter a name and save it as a new workflow.",
+          restoreOtherWorkflowChanges: "Restore other changes",
           workflowTemplateName: "New workflow name",
           saveTask: "Save task",
           savingTask: "Saving…",
@@ -3077,6 +3122,16 @@ const resources = {
         maxRoundsHelp:
           "Limits how many new rounds $new-round can open. The initial round is not counted.",
         nodeConfig: "Node Config",
+        modelConfig: "Model Configuration",
+        syncToOtherNodes: "Sync to other nodes",
+        syncDialogTitle: "Sync model configuration",
+        syncDialogDescription: "Within the current workflow only, apply this node's agent, model, permission, and all configuration options to other worker nodes in one operation.",
+        syncOverwriteConfigured: "Overwrite configured nodes",
+        syncOverwriteDescription: "By default, only unconfigured nodes are filled. Enable this to replace existing model configuration too.",
+        syncFillCount: "Fill",
+        syncOverwriteCount: "Overwrite",
+        syncSkipCount: "Skip",
+        syncConfirm: "Apply sync",
         edgeConfig: "Edge Config",
         nodeId: "Node ID",
         agent: "Agent",
@@ -3225,6 +3280,10 @@ const resources = {
           "{{node}} node is not associated with an agent.",
         validationNodeProviderUnavailable:
           "{{node}} node agent has not passed doctor.",
+        validationSlotRequired: "{{node}} node is missing an execution slot.",
+        validationSlotDuplicate: "{{node}} node has a duplicate execution slot.",
+        validationModelUnavailable: "{{node}} node model does not belong to the current agent.",
+        validationConfigOptionUnavailable: "{{node}} node configuration option {{option}} does not belong to the current agent.",
         validationPermissionModeUnavailable:
           "{{node}} node permission mode does not belong to the current agent.",
         validationNodeProfileRequired:
@@ -4107,6 +4166,7 @@ const resources = {
           configureAuto: "Edit AUTO",
           configureWorkflow: "Edit Workflow",
           includeInterview: "Requirement Interview",
+          includeGrill: "Requirement Grilling",
         },
         runtime: {
           justNow: "Just now",

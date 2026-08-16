@@ -951,6 +951,7 @@ export interface WorkflowVm {
   runs: RunGroupVm[];
   control?: WorkflowControlVm | null;
   workflowJson?: string | null;
+  modelBindings: WorkflowModelBindings;
 }
 
 export interface WorkflowDsl {
@@ -972,6 +973,7 @@ export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
   id: string;
+  executionSlotId?: string | null;
   provider?: string | null;
   model?: string | null;
   profile?: string | null;
@@ -1060,6 +1062,7 @@ export interface CreateTaskInput {
   requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   workflowTemplateId?: string | null;
 }
 
@@ -1073,9 +1076,38 @@ export interface WorkflowTemplateStore {
 export interface WorkflowTemplate {
   id: string;
   name: string;
+  isBuiltIn: boolean;
+  optionalEntryStage?: {
+    nodeId: string;
+    labelKey: string;
+    defaultEnabled: boolean;
+  } | null;
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentBindingUsageVm {
+  workflowTemplateCount: number;
+  taskCount: number;
+  scheduledTaskCount: number;
+  unknownTaskCount: number;
+  unknownScheduledTaskCount: number;
+}
+
+export interface WorkflowModelBindings {
+  definitionRevision: string;
+  bindingRevision: number;
+  bindings: WorkerModelBinding[];
+}
+
+export interface WorkerModelBinding {
+  executionSlotId: string;
+  agentId: string;
+  modelId?: string | null;
+  permissionModeId?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface AutoTemplateStore {
@@ -1949,7 +1981,7 @@ export interface ScheduledTaskEditVm {
   attachmentNames: string[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   schedule: ScheduledScheduleSpec;
@@ -1966,7 +1998,7 @@ export interface UpdateScheduledTaskInput {
   content: string;
   runMode: string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
@@ -2257,7 +2289,7 @@ export interface ConversationActiveSessionVm {
 export interface ConversationRunModeVm {
   mode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  optionalEntryPreferences?: Record<string, boolean>;
   directConfig?: ConversationDirectConfigVm | null;
   directPreferences?: Record<string, ConversationDirectConfigVm>;
   autoConfig?: ConversationAutoConfigVm | null;
@@ -2302,7 +2334,7 @@ export interface ConversationCreateInput {
   content: string;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
@@ -2317,6 +2349,12 @@ export interface ConversationMissingItemVm {
   code: string;
   label: string;
   recoveryPath: string;
+  params: Record<string, unknown>;
+}
+
+export interface WorkflowRepairTarget {
+  workflowTemplateId: string;
+  nodeId: string;
 }
 
 export interface ConversationSearchResultVm {

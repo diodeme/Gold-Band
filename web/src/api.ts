@@ -44,6 +44,10 @@ export function deleteAgent(agentType: string) {
   return getRuntimeApi().deleteAgent(agentType);
 }
 
+export function getAgentBindingUsage(agentType: string) {
+  return getRuntimeApi().getAgentBindingUsage(agentType);
+}
+
 export function doctorAgent(agentType: string) {
   return getRuntimeApi().doctorAgent(agentType);
 }
@@ -92,28 +96,28 @@ export function getTaskDetail(taskId: string) {
   return getRuntimeApi().getTaskDetail(taskId);
 }
 
-export function getWorkflow(taskId: string) {
-  return getRuntimeApi().getWorkflow(taskId);
+export function getWorkflow(taskId: string, projectId?: string | null) {
+  return getRuntimeApi().getWorkflow(taskId, projectId);
 }
 
 export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createTask']>[0]) {
   return getRuntimeApi().createTask(input);
 }
 
-export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2]) {
-  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow);
+export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[3]) {
+  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow, modelBindings);
 }
 
 export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
-export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1]) {
-  return getRuntimeApi().saveWorkflowTemplate(name, workflow);
+export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
+  return getRuntimeApi().saveWorkflowTemplate(name, workflow, modelBindings);
 }
 
-export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1]) {
-  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow);
+export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[2]) {
+  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow, modelBindings);
 }
 
 export function deleteWorkflowTemplate(templateId: string) {

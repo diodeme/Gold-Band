@@ -369,23 +369,50 @@ pub enum RecipeMaterial {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RecipeBorderWidth { None, Hairline, Default, Strong }
+pub enum RecipeBorderWidth {
+    None,
+    Hairline,
+    Default,
+    Strong,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RecipeBorderStyle { Solid, Double, Dashed }
+pub enum RecipeBorderStyle {
+    Solid,
+    Double,
+    Dashed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RecipeRadius { None, Control, Surface, Overlay, Avatar, Pill }
+pub enum RecipeRadius {
+    None,
+    Control,
+    Surface,
+    Overlay,
+    Avatar,
+    Pill,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RecipeElevation { None, Surface, Overlay, Floating, Pressed }
+pub enum RecipeElevation {
+    None,
+    Surface,
+    Overlay,
+    Floating,
+    Pressed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RecipeMotion { None, Color, Surface, Press }
+pub enum RecipeMotion {
+    None,
+    Color,
+    Surface,
+    Press,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -493,7 +520,14 @@ pub struct ThemeVisualQualityProfiles {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeAssetKind { Font, Avatar, Icon, Texture, Wallpaper, Preview }
+pub enum ThemeAssetKind {
+    Font,
+    Avatar,
+    Icon,
+    Texture,
+    Wallpaper,
+    Preview,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -550,11 +584,16 @@ pub struct ThemeFontMetrics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeFontStyle { Normal, Italic }
+pub enum ThemeFontStyle {
+    Normal,
+    Italic,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeFontDisplay { Swap }
+pub enum ThemeFontDisplay {
+    Swap,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -591,11 +630,17 @@ pub struct ThemeFontRuntime {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeIconRenderMode { Mask, Image }
+pub enum ThemeIconRenderMode {
+    Mask,
+    Image,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeImageRendering { Auto, Pixelated }
+pub enum ThemeImageRendering {
+    Auto,
+    Pixelated,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -622,15 +667,34 @@ pub struct ThemeIconMap {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeWallpaperFit { Cover, Contain, Tile }
+pub enum ThemeWallpaperFit {
+    Cover,
+    Contain,
+    Tile,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeWallpaperPosition { Center, Top, Bottom, Left, Right, TopLeft, TopRight, BottomLeft, BottomRight }
+pub enum ThemeWallpaperPosition {
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ThemeWallpaperRepeat { NoRepeat, Repeat, RepeatX, RepeatY }
+pub enum ThemeWallpaperRepeat {
+    NoRepeat,
+    Repeat,
+    RepeatX,
+    RepeatY,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -718,7 +782,11 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
         }
         validate_capability(theme, ThemeCapability::Fonts, theme.fonts.is_some())?;
         validate_capability(theme, ThemeCapability::Icons, theme.icons.is_some())?;
-        validate_capability(theme, ThemeCapability::Wallpapers, theme.wallpapers.is_some())?;
+        validate_capability(
+            theme,
+            ThemeCapability::Wallpapers,
+            theme.wallpapers.is_some(),
+        )?;
         if theme.assets.schema_version != 2 {
             return Err(ThemeContractError {
                 code: "theme.package-invalid",
@@ -727,7 +795,9 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
         }
         let mut asset_ids = BTreeSet::new();
         for asset in &theme.assets.records {
-            if !asset_ids.insert(asset.id.as_str()) || !asset.output_url.starts_with("/theme-assets/") {
+            if !asset_ids.insert(asset.id.as_str())
+                || !asset.output_url.starts_with("/theme-assets/")
+            {
                 return Err(ThemeContractError {
                     code: "theme.package-invalid",
                     detail: format!("invalid asset record {} in {}", asset.id, theme.id),
@@ -735,18 +805,28 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
             }
         }
         if let Some(icons) = &theme.icons {
-            for slot in icons.defaults.keys()
-                .chain(icons.schemes.iter().flat_map(|maps| maps.light.iter().chain(maps.dark.iter())).flat_map(|map| map.keys()))
-            {
+            for slot in icons.defaults.keys().chain(
+                icons
+                    .schemes
+                    .iter()
+                    .flat_map(|maps| maps.light.iter().chain(maps.dark.iter()))
+                    .flat_map(|map| map.keys()),
+            ) {
                 if !THEME_ICON_SLOTS.contains(&slot.as_str()) {
-                    return Err(ThemeContractError { code: "theme.icon-slot-unknown", detail: slot.clone() });
+                    return Err(ThemeContractError {
+                        code: "theme.icon-slot-unknown",
+                        detail: slot.clone(),
+                    });
                 }
             }
         }
         if let Some(wallpapers) = &theme.wallpapers {
             for slot in wallpapers.light.keys().chain(wallpapers.dark.keys()) {
                 if !THEME_WALLPAPER_SLOTS.contains(&slot.as_str()) {
-                    return Err(ThemeContractError { code: "theme.wallpaper-slot-unknown", detail: slot.clone() });
+                    return Err(ThemeContractError {
+                        code: "theme.wallpaper-slot-unknown",
+                        detail: slot.clone(),
+                    });
                 }
             }
         }
@@ -761,12 +841,30 @@ fn parse_builtin_theme_catalog() -> Result<Vec<ThemePackage>, ThemeContractError
 }
 
 const THEME_ICON_SLOTS: &[&str] = &[
-    "navigation.conversation", "navigation.search", "navigation.agent", "navigation.context",
-    "navigation.run-mode", "navigation.settings", "entity.task", "entity.workflow",
-    "entity.agent", "entity.file", "entity.folder", "conversation.thought",
-    "conversation.attachment", "tool.read", "tool.write", "tool.command",
-    "permission.request", "status.running", "status.success", "status.warning",
-    "status.error", "action.send", "action.continue", "action.stop",
+    "navigation.conversation",
+    "navigation.search",
+    "navigation.agent",
+    "navigation.context",
+    "navigation.run-mode",
+    "navigation.settings",
+    "entity.task",
+    "entity.workflow",
+    "entity.agent",
+    "entity.file",
+    "entity.folder",
+    "conversation.thought",
+    "conversation.attachment",
+    "tool.read",
+    "tool.write",
+    "tool.command",
+    "permission.request",
+    "status.running",
+    "status.success",
+    "status.warning",
+    "status.error",
+    "action.send",
+    "action.continue",
+    "action.stop",
 ];
 const THEME_WALLPAPER_SLOTS: &[&str] = &["app", "conversation", "workspace", "settings"];
 

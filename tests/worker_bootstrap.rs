@@ -1,3 +1,5 @@
+mod support;
+
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
@@ -8,8 +10,15 @@ use gold_band::provider::{
     UserPromptRenderMode, WorkerInvocation,
 };
 use gold_band::runtime::{RunState, WorkerRefState};
+use gold_band::workflow_model_binding::TaskAuthoringWorkflow;
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::tempdir;
+
+use support::app_with_available_claude_provider;
+
+fn app_with_provider(repo_root: Utf8PathBuf, provider: Box<dyn ProviderAdapter>) -> App {
+    app_with_available_claude_provider(repo_root, provider)
+}
 
 #[derive(Clone, Default)]
 struct RecordingProvider {
@@ -625,7 +634,7 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     let task_id = "task-001";
 
     let provider = RecordingProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -707,7 +716,7 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-pause-worker";
-    let app = App::with_provider(repo_root, Box::new(RecordingProvider::default()));
+    let app = app_with_provider(repo_root, Box::new(RecordingProvider::default()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -717,6 +726,7 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
         gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
     running_run.status = RunStatus::Running;
     running_run.outcome = None;
+    running_run.execution.phase = gold_band::runtime::RuntimeExecutionPhase::RunningNode;
     gold_band::storage::write_json(&app.paths.run_file(task_id, "run-001"), &running_run).unwrap();
     let node_path = app
         .paths
@@ -749,7 +759,7 @@ fn stopped_attempt_success_does_not_complete_workflow() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-stop-race";
     let provider = BlockingSuccessProvider::new(2);
-    let app = Arc::new(App::with_provider(repo_root, Box::new(provider.clone())));
+    let app = Arc::new(app_with_provider(repo_root, Box::new(provider.clone())));
     write_dev_only_workflow(&app, task_id);
 
     let runner = {
@@ -794,7 +804,7 @@ fn run_continue_ignores_cancelled_session_snapshot() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-after-cancel";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -838,7 +848,7 @@ fn run_continue_ignores_stale_provider_pid_metadata() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-stale-pid";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -864,7 +874,7 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-user-message";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
     let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
@@ -909,7 +919,7 @@ fn run_start_background_allocates_from_max_run_id_under_concurrency() {
     let task_id = "task-concurrent-rerun";
 
     let provider = BlockingSuccessProvider::new(2);
-    let app = Arc::new(App::with_provider(
+    let app = Arc::new(app_with_provider(
         repo_root.clone(),
         Box::new(provider.clone()),
     ));
@@ -1006,7 +1016,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     let task_id = "task-continue";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1138,7 +1148,7 @@ fn run_continue_model_override_uses_current_acp_session_model() {
     let task_id = "task-continue-model";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1231,7 +1241,7 @@ fn run_continue_permission_override_uses_explicit_gold_band_override() {
     let task_id = "task-continue-permission";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1328,7 +1338,7 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     let task_id = "task-continue-lineage";
 
     let provider = MultiAttemptContinueProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1431,7 +1441,7 @@ fn max_attempts_allows_one_repair_loop_then_forward_success() {
     let task_id = "task-max-attempts-success";
 
     let provider = OneRepairProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1494,7 +1504,7 @@ fn max_attempts_fails_when_repair_budget_is_exceeded() {
     let task_id = "task-max-attempts";
 
     let provider = MultiAttemptContinueProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1557,7 +1567,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     let task_id = "task-max-rounds";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1613,7 +1623,7 @@ fn run_start_normalizes_legacy_new_round_entry_in_snapshot_only() {
     let task_id = "task-legacy-new-round-entry";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1661,9 +1671,11 @@ fn run_start_normalizes_legacy_new_round_entry_in_snapshot_only() {
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
 
-    let authoring: WorkflowDsl = gold_band::storage::read_json(&app.paths.workflow_file(task_id))
-        .expect("authoring workflow should remain readable");
+    let authoring: TaskAuthoringWorkflow =
+        gold_band::storage::read_json(&app.paths.workflow_file(task_id))
+            .expect("authoring workflow should remain readable");
     let authoring_new_round = authoring
+        .workflow
         .edges
         .iter()
         .find(|edge| edge.to == "$new-round")
@@ -1691,7 +1703,7 @@ fn new_round_starts_from_configured_entry_node() {
     let task_id = "task-new-round-entry";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let profiles = app.profiles().unwrap().profiles;
@@ -1759,7 +1771,7 @@ fn new_round_predecessor_context_uses_stable_prefix_and_current_round() {
     let task_id = "task-new-round-scoped-context";
 
     let provider = NewRoundScopedContextProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let profiles = app.profiles().unwrap().profiles;

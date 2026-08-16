@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
 
 use crate::dsl::{WorkflowDsl, normalize_legacy_workflow_snapshot};
-use crate::observability::{ExecutionContext, append_run_event_best_effort, run_event_data};
-use crate::runtime::{NodeState, RoundState, RunState};
+use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator};
 use crate::storage::{read_json, write_json};
 
 use super::App;
@@ -69,26 +68,9 @@ pub(crate) fn current_attempt_state(
 
 pub(crate) fn load_run_workflow(app: &App, task_id: &str, run_id: &str) -> Result<WorkflowDsl> {
     let snapshot_path = app.paths.workflow_snapshot_file(task_id, run_id);
-    let mut workflow = normalize_legacy_workflow_snapshot(read_json(&snapshot_path)?);
-    let normalizations = app.normalize_workflow_models(&mut workflow);
-    if !normalizations.is_empty() {
-        write_json(&snapshot_path, &workflow)?;
-        let ctx = ExecutionContext::for_run(task_id, run_id);
-        for normalization in normalizations {
-            let mut event_data = run_event_data(&ctx, None, None, None, None);
-            event_data.details =
-                Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
-            append_run_event_best_effort(
-                &app.paths,
-                task_id,
-                run_id,
-                "model_config_normalized",
-                super::ids::now_rfc3339_like(),
-                event_data,
-            );
-        }
-    }
-    Ok(workflow)
+    Ok(normalize_legacy_workflow_snapshot(read_json(
+        &snapshot_path,
+    )?))
 }
 
 pub(crate) fn persist_runtime_state(
@@ -111,6 +93,27 @@ pub(crate) fn persist_runtime_state(
     Ok(())
 }
 
+fn execution_locator_belongs_to_outer_attempt(
+    locator: Option<&RuntimeAttemptLocator>,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> bool {
+    let Some(locator) = locator else {
+        return false;
+    };
+    if locator.round_id != round_id {
+        return false;
+    }
+    match (&locator.outer_node_id, &locator.outer_attempt_id) {
+        (Some(outer_node_id), Some(outer_attempt_id)) => {
+            outer_node_id == node_id && outer_attempt_id == attempt_id
+        }
+        (None, None) => locator.node_id == node_id && locator.attempt_id == attempt_id,
+        _ => false,
+    }
+}
+
 /// Persists a Runtime-controlled attempt only while its durable execution
 /// identity is still current. The same short lock is used by stop and failure
 /// convergence, making the identity comparison and state write one operation.
@@ -121,7 +124,26 @@ pub(crate) fn persist_runtime_state_if_execution_current(
     round: &RoundState,
     node: &NodeState,
 ) -> Result<bool> {
-    let Some(execution_id) = node.runtime_execution_id.as_deref() else {
+    let expected_execution_id = node.runtime_execution_id.clone();
+    persist_runtime_state_if_expected_execution_current(
+        app,
+        task_id,
+        run,
+        round,
+        node,
+        expected_execution_id.as_deref(),
+    )
+}
+
+pub(crate) fn persist_runtime_state_if_expected_execution_current(
+    app: &App,
+    task_id: &str,
+    run: &mut RunState,
+    round: &RoundState,
+    node: &NodeState,
+    expected_execution_id: Option<&str>,
+) -> Result<bool> {
+    let Some(execution_id) = expected_execution_id else {
         persist_runtime_state(app, task_id, run, round, node)?;
         return Ok(true);
     };
@@ -148,7 +170,18 @@ pub(crate) fn persist_runtime_state_if_execution_current(
         || durable_run.current_round != run.current_round
         || durable_run.current_node != run.current_node
         || durable_run.current_attempt != run.current_attempt
-        || durable_run.execution.locator != run.execution.locator
+        || !execution_locator_belongs_to_outer_attempt(
+            durable_run.execution.locator.as_ref(),
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        )
+        || !execution_locator_belongs_to_outer_attempt(
+            run.execution.locator.as_ref(),
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        )
     {
         return Ok(false);
     }

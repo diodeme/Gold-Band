@@ -25,3 +25,4 @@ pub mod scheduler;
 pub mod skill;
 pub mod storage;
 pub mod theme;
+pub mod workflow_model_binding;

@@ -199,13 +199,53 @@ import type {
   UpdateStatusVm,
   UpdaterSettingsVm,
   WorkflowDsl,
+  WorkflowModelBindings,
   WorkflowVm,
   InterventionNavigateEventVm,
   AvatarKind,
   AvatarShape,
   SaveDesktopAvatarInput,
+  WorkflowRepairTarget,
   WallpaperPreferencesVm,
 } from './types';
+
+export function workflowRepairTargetFromMissingItems(
+  missingItems: Array<{ params: Record<string, unknown> }>,
+): WorkflowRepairTarget | null {
+  for (const item of missingItems) {
+    const workflowTemplateId = item.params.workflowTemplateId;
+    const nodeId = item.params.nodeId;
+    if (typeof workflowTemplateId === 'string' && workflowTemplateId.trim()
+      && typeof nodeId === 'string' && nodeId.trim()) {
+      return { workflowTemplateId, nodeId };
+    }
+  }
+  return null;
+}
+
+function findScheduledLinkedLeaf(
+  tree: ConversationSessionTreeVm,
+  roundId: string,
+  attemptId?: string,
+): ConversationSessionLeafVm | null {
+  const walkNode = (node: ConversationTreeNodeVm): ConversationSessionLeafVm | null => {
+    const leaf = node.attempts.find((attempt) =>
+      attempt.roundId === roundId && (!attemptId || attempt.attemptId === attemptId));
+    if (leaf) return leaf;
+    for (const child of node.outerNodes ?? []) {
+      const nested = walkNode(child);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const round of tree.rounds) {
+    for (const node of round.nodes) {
+      const leaf = walkNode(node);
+      if (leaf) return leaf;
+    }
+  }
+  return null;
+}
 
 const defaultPreferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 const defaultUpdaterSettings: UpdaterSettingsVm = {
@@ -325,6 +365,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const [workflowRepairTarget, setWorkflowRepairTarget] = useState<WorkflowRepairTarget | null>(null);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
   const conversationRunStopPendingRef = useRef(false);
@@ -1472,11 +1513,11 @@ export function App() {
     return created;
   };
 
-  const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl) => {
+  const onSaveTaskWorkflow = async (taskId: string, workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setBusy(true);
     setError(null);
     try {
-      const saved = await saveTaskWorkflow(undefined, taskId, workflow);
+      const saved = await saveTaskWorkflow(undefined, taskId, workflow, modelBindings);
       setWorkflow(saved);
       return saved;
     } finally {
@@ -2087,14 +2128,20 @@ export function App() {
               }
               : input.runMode === 'auto'
                 ? { mode: 'auto', autoConfig: input.autoConfig ?? conversationRunMode.autoConfig }
-                : { mode: 'workflow', workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId, includeInterview: input.includeInterview ?? conversationRunMode.includeInterview };
+                : {
+                  mode: 'workflow',
+                  workflowTemplateId: input.workflowTemplateId ?? conversationRunMode.workflowTemplateId,
+                  optionalEntryPreferences: conversationRunMode.optionalEntryPreferences,
+                };
             setBusy(true);
             void updateConversationRunMode(nextMode, input.projectId);
             try {
               const validation = await validateConversationCreate(input);
               if (!validation.valid) {
+                setWorkflowRepairTarget(workflowRepairTargetFromMissingItems(validation.missingItems));
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
+              setWorkflowRepairTarget(null);
               const run = await createConversationRun(input);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
@@ -2143,6 +2190,7 @@ export function App() {
           }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
+          onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
@@ -2185,6 +2233,7 @@ export function App() {
           runMode={conversationRunMode}
           agentRegistry={agentRegistry}
           workflowTemplates={conversationWorkflowTemplates}
+          repairTarget={workflowRepairTarget}
           onProjectChange={(projectId) => {
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
@@ -2229,14 +2278,15 @@ export function App() {
               .catch((err) => setError(displayAppError(t, err)));
           }}
           onEditWorkflow={() => {}}
-          onSaveWorkflow={async (json) => {
+          onSaveWorkflow={async (json, modelBindings) => {
             const dsl = JSON.parse(json) as Parameters<typeof saveTaskWorkflow>[2];
-            await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl);
+            const saved = await saveTaskWorkflow(conversationPage.projectId, conversationPage.taskId, dsl, modelBindings);
             const refreshed = await getConversationRun(conversationPage.projectId, conversationPage.taskId, conversationPage.runId);
             applyConversationRunSnapshot(refreshed, 'workflow-save', {
               selectedSessionKey: conversationSelectedSessionKeyRef.current,
               preserveSelectedSession: conversationSessionFollowRef.current.mode === 'manual',
             });
+            return saved;
           }}
           onSelectSession={(leaf, followActive) => {
             const key = leaf.outerNodeId

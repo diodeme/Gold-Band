@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -88,11 +88,16 @@ vi.mock('@/components/workspace/source-control/source-control-store', async () =
   };
 });
 
-import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { RightWorkspaceProvider as BaseRightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { SourceControlWorkspacePanel } from '@/components/workspace/source-control/SourceControlWorkspacePanel';
 import { sourceControlStore } from '@/components/workspace/source-control/source-control-store';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function RightWorkspaceProvider({ children }: { children: ReactNode }) {
+  return <TooltipProvider><BaseRightWorkspaceProvider>{children}</BaseRightWorkspaceProvider></TooltipProvider>;
+}
 
 beforeEach(() => {
   sessionRuntime.listeners.clear();

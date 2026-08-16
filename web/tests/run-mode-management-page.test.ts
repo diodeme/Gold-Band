@@ -78,7 +78,7 @@ describe('RunModeTabsToolbar', () => {
       lastCreatedWorkflow: null,
       templates: [
         { id: 'new-template', name: '新增工作流', workflow: { id: 'workflow-new' } as WorkflowDsl, createdAt: '', updatedAt: '' },
-        { id: 'default', name: '默认工作流', workflow: { id: 'workflow-default' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+        { id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'workflow-default' } as WorkflowDsl, createdAt: '', updatedAt: '' },
       ],
     };
 
@@ -137,7 +137,7 @@ describe('RunModeTabsToolbar', () => {
         lastUsedTemplateId: 'default',
         lastCreatedWorkflow: null,
         templates: [
-          { id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+          { id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
           { id: 'custom', name: '我的工作流', workflow: { id: 'custom-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
         ],
       },
@@ -175,7 +175,7 @@ describe('RunModeTabsToolbar', () => {
         version: '0.1',
         lastUsedTemplateId: 'default',
         lastCreatedWorkflow: null,
-        templates: [{ id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' }],
+        templates: [{ id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' }],
       },
       [{ id: 'profile-plan', name: '规划', content: '', isBuiltIn: false }],
     );

@@ -115,7 +115,8 @@ pub fn save_scheduled_runtime_settings(
 pub struct ConversationRunModeSettingsVm {
     pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    #[serde(default)]
+    pub optional_entry_preferences: std::collections::HashMap<String, bool>,
     pub direct_config: Option<crate::view_models_conversation::ConversationDirectConfigVm>,
     #[serde(default)]
     pub direct_preferences: std::collections::HashMap<
@@ -150,6 +151,7 @@ fn validate_direct_capabilities(
                 code: "direct.agent.unavailable".to_string(),
                 label: "Selected Direct Agent is unavailable".to_string(),
                 recovery_path: "/chat/agents".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let models =
@@ -167,6 +169,7 @@ fn validate_direct_capabilities(
                 code: "direct.model.not-found".to_string(),
                 label: "Selected model is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let modes =
@@ -184,6 +187,7 @@ fn validate_direct_capabilities(
                 code: "direct.permission.not-found".to_string(),
                 label: "Selected permission mode is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     result.valid = result.missing_items.is_empty();
@@ -1023,7 +1027,7 @@ pub fn get_conversation_run_mode(
             |entry| crate::view_models_conversation::ConversationRunModeVm {
                 mode: entry.mode.as_str().to_string(),
                 workflow_template_id: entry.workflow_template_id.clone(),
-                include_interview: entry.include_interview,
+                optional_entry_preferences: entry.optional_entry_preferences.clone(),
                 direct_config: entry.direct_config.as_ref().map(|config| {
                     crate::view_models_conversation::ConversationDirectConfigVm {
                         agent_type: config.agent_type.clone(),
@@ -1124,7 +1128,7 @@ pub fn save_conversation_run_mode(
         ConversationRunModeEntry {
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
-            include_interview: settings.include_interview,
+            optional_entry_preferences: settings.optional_entry_preferences,
             direct_config: settings
                 .direct_config
                 .map(|config| ConversationDirectConfig {
@@ -2493,7 +2497,7 @@ mod tests {
             gold_band::config::ConversationRunModeEntry {
                 mode: gold_band::config::ConversationRunMode::Auto,
                 workflow_template_id: None,
-                include_interview: None,
+                optional_entry_preferences: Default::default(),
                 direct_config: None,
                 direct_preferences: Default::default(),
                 auto_config: None,

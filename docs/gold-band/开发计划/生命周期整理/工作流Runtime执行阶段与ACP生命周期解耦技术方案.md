@@ -378,6 +378,8 @@ AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace cat
 
 顶层 phase 与 dynamic graph 的更新必须位于现有 project-scoped dynamic state lock 和 run lifecycle transition 边界内。不得由 selected leaf 的 ACP terminal 状态反推 outer graph phase。
 
+AI-DYNAMIC 内部 leaf locator 是同一 outer attempt 内的可变执行投影，不是 outer attempt 的 CAS identity。父级聚合写入固定以 `roundId + outerNodeId + outerAttemptId + outer runtimeExecutionId` 校验归属，同时要求提交前后的 execution locator 都属于该 outer attempt；不得因 inner leaf 推进而错误拒绝合法的父级暂停或恢复。子工作流/最后 active leaf 暂停时，先按旧 execution ID 校验当前 generation，再按 `node.json -> round.json -> run.json` 写入父级暂停聚合并清空 active execution ID；继续时复用 per-run lease，后台路径生成新 execution ID。
+
 ## 8. 持久化与 crash consistency
 
 ### 8.1 权威文件
@@ -840,6 +842,8 @@ Conversation VM 本来就读取 `run.json`，直接从同一对象获得 executi
 - `run-progress.json` 降级为 revision 对齐后的详情观测，active run 选择、错误语义与 Conversation VM 不再依赖 progress。
 - ACP metadata 已完成破坏式 schema 收口：新写入只包含 `availability + latestTurnStatus`，旧通用 `status` 由统一 loader 首次读取后一次性回写；迁移不扫描 timeline，也不恢复 live turn。
 - 启动恢复、停止 revision、stale progress、manual check、Direct、AI-DYNAMIC、继续窗口和旧 snapshot 竞态均已加入 Rust/Web 回归测试。
+- 2026-08-15 合并回归确认 provider 测试替身必须在模拟 prompt 接受时触发 `prompt_accepted`，保证 `StartingNode -> RunningNode -> AwaitingManualCheck` 与真实 adapter 使用同一状态机合约，不放宽生产转换。
+- 2026-08-17 修复 AI-DYNAMIC 子工作流暂停后的父级聚合收敛：outer CAS 改为校验稳定 outer attempt 归属，允许同一 attempt 内 inner locator 合法推进；父 `node/round/run` 同步暂停并清空 active execution ID，接口回归覆盖暂停后立即读取一致、显式继续完成和测试 Provider 的 accepted 合约。
 
 验证与实际 UI deep-link 结果记录在本次实现验收中；若产品运行环境没有可复用测试会话，则以 production build、接口测试和浏览器可达页面验证为最低交付门槛。
 

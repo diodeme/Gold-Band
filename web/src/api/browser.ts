@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -15,9 +15,14 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
 const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
@@ -29,6 +34,17 @@ let browserScheduledRuntimeSettings = {
   occurrenceRetentionDays: 30,
   powerErrorCode: null,
 };
+
+function resolveBrowserOptionalEntry(
+  runMode: string,
+  workflowTemplateId: string | null | undefined,
+  includeOptionalEntry: boolean | null | undefined,
+) {
+  if (runMode !== 'workflow') return includeOptionalEntry;
+  if (includeOptionalEntry != null) return includeOptionalEntry;
+  return mockWorkflowTemplates.templates.find((template) => template.id === workflowTemplateId)
+    ?.optionalEntryStage?.defaultEnabled;
+}
 
 function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
   const event: ScheduledTaskUpdatedEventVm = {
@@ -930,6 +946,15 @@ export const browserApi: RuntimeApi = {
   deleteAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },
+  getAgentBindingUsage(_agentType: string) {
+    return Promise.resolve({
+      workflowTemplateCount: 0,
+      taskCount: 0,
+      scheduledTaskCount: 0,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
+    });
+  },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
   },
@@ -993,7 +1018,7 @@ export const browserApi: RuntimeApi = {
   getTaskDetail(taskId: string) {
     return Promise.resolve({ ...mockTaskDetail, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockTaskDetail.task });
   },
-  getWorkflow(taskId: string) {
+  getWorkflow(taskId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
   },
   createTask(input: CreateTaskInput) {
@@ -1008,15 +1033,15 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowError: null,
     };
-    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2) });
+    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2), modelBindings: input.modelBindings ?? emptyWorkflowModelBindings() });
   },
-  saveTaskWorkflow(_projectId, taskId, workflow) {
-    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2) });
+  saveTaskWorkflow(_projectId, taskId, workflow, modelBindings = emptyWorkflowModelBindings()) {
+    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2), modelBindings });
   },
   getWorkflowTemplates() {
     return Promise.resolve(browserPreviewState.getWorkflowTemplates());
   },
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
     let nextWorkflow = workflow;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1029,7 +1054,9 @@ export const browserApi: RuntimeApi = {
     const template = {
       id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${current.templates.length + 1}`,
       name,
+      isBuiltIn: false,
       workflow: nextWorkflow,
+      modelBindings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1039,16 +1066,26 @@ export const browserApi: RuntimeApi = {
       templates: [...current.templates, template],
     }));
   },
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+        ...current,
+        lastUsedTemplateId: templateId,
+        templates: current.templates.map((template) => template.id === templateId ? { ...template, modelBindings, updatedAt: new Date().toISOString() } : template),
+      }));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: templateId,
-      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, updatedAt: new Date().toISOString() } : template),
+      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, modelBindings, updatedAt: new Date().toISOString() } : template),
     }));
   },
   deleteWorkflowTemplate(templateId: string) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.reject(browserCommandError('workflow-template.readonly-built-in'));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: current.lastUsedTemplateId === templateId ? 'default' : current.lastUsedTemplateId,
@@ -1462,7 +1499,11 @@ export const browserApi: RuntimeApi = {
       attachmentNames: [],
       runMode: input.runMode,
       workflowTemplateId: input.workflowTemplateId,
-      includeInterview: input.includeInterview,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
       directConfig: input.directConfig,
       autoConfig: input.autoConfig,
       schedule,
@@ -1490,6 +1531,11 @@ export const browserApi: RuntimeApi = {
     const next: ScheduledTaskEditVm = {
       ...definition,
       ...input,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
       schedule,
       expectedUpdatedAt: now,
       directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
@@ -1665,10 +1711,12 @@ export const browserApi: RuntimeApi = {
   searchConversationTasks(_query, _limit) {
     return Promise.resolve([]);
   },
-  getConversationRunMode(_projectId) {
-    return Promise.resolve({ mode: 'auto' });
+  getConversationRunMode(projectId) {
+    const mode = browserConversationRunModes.get(projectId);
+    return Promise.resolve(mode ? structuredClone(mode) : { mode: 'auto' });
   },
-  saveConversationRunMode() {
+  saveConversationRunMode(projectId, mode) {
+    browserConversationRunModes.set(projectId, structuredClone(mode));
     return Promise.resolve();
   },
   chooseConversationWorkspace() {
@@ -1976,7 +2024,6 @@ function quoteFontFamily(family: string) {
   return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-void mockWorkflowTemplates;
 void toRoundSelectionInput;
 void mockBootstrap;
 void mockContent;

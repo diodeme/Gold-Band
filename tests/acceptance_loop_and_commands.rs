@@ -1,9 +1,11 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
+use gold_band::config::ProviderDiagnosticSnapshot;
 use gold_band::domain::SessionMode;
 use gold_band::provider::{
-    DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
+    AcpPromptAccepted, DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities,
+    ProviderInfo, ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef,
+    WorkerInvocation,
 };
 use tempfile::tempdir;
 
@@ -77,6 +79,19 @@ impl ProviderAdapter for LoopingProvider {
         })
     }
 
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
+    }
+
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
         Ok(())
     }
@@ -97,7 +112,18 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
 
     let gold_band_home = repo_root.join("gold-band-home");
     unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
-    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()));
+    let app = App::with_provider(repo_root.clone(), Box::new(LoopingProvider::default()))
+        .with_provider_diagnostics_source(std::sync::Arc::new(|| {
+            Ok(std::collections::BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-16T00:00:00Z".to_string(),
+                    capabilities: None,
+                },
+            )]))
+        }));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let profiles = app.profiles().unwrap();
@@ -147,6 +173,24 @@ fn acceptance_loop_creates_new_round_and_commands_work() {
         r#"{"version":"0.1","id":"task-001"}"#,
     )
     .unwrap();
+    let migrated = app.task_authoring_workflow(task_id).unwrap();
+    assert!(migrated.workflow.nodes.iter().all(|node| match node {
+        gold_band::dsl::NodeDsl::Worker(worker) => worker.execution_slot_id.is_some(),
+        gold_band::dsl::NodeDsl::AiDynamic(_) => true,
+    }));
+    assert_eq!(migrated.model_bindings.bindings.len(), 2);
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(app.paths.workflow_file(task_id).as_std_path()).unwrap(),
+    )
+    .unwrap();
+    assert!(persisted.get("workflow").is_some());
+    assert_eq!(
+        persisted["modelBindings"]["bindings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let run = app.run_start(task_id, None).unwrap();
     assert_eq!(run.id, "run-001");
 

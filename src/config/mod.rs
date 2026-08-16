@@ -220,6 +220,17 @@ pub enum AvatarPreference {
     User { asset_id: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "source",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WallpaperImagePreference {
+    Theme,
+    User { asset_id: String },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PersonalizationAvatarShape {
@@ -266,11 +277,23 @@ pub struct AvatarPersonalizationSet {
     pub user: AvatarPersonalization,
 }
 
+pub const DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 60;
+pub const MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 20;
+pub const MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WallpaperPersonalization {
+    pub image: WallpaperImagePreference,
+    pub opacity_percent: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonalizationPreference {
     pub schema_version: u8,
     pub typography: TypographyPersonalization,
+    pub wallpaper: WallpaperPersonalization,
     pub avatars: AvatarPersonalizationSet,
 }
 
@@ -285,10 +308,14 @@ impl Default for PersonalizationPreference {
             shape: AvatarShapePreference::Theme,
         };
         Self {
-            schema_version: 2,
+            schema_version: 3,
             typography: TypographyPersonalization {
                 ui: typography(),
                 editor: typography(),
+            },
+            wallpaper: WallpaperPersonalization {
+                image: WallpaperImagePreference::Theme,
+                opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
             },
             avatars: AvatarPersonalizationSet {
                 agent: avatar(),
@@ -300,9 +327,13 @@ impl Default for PersonalizationPreference {
 
 impl PersonalizationPreference {
     pub fn normalized(mut self) -> Self {
-        self.schema_version = 2;
+        self.schema_version = 3;
         self.typography.ui.font_stack = self.typography.ui.font_stack.normalized();
         self.typography.editor.font_stack = self.typography.editor.font_stack.normalized();
+        self.wallpaper.opacity_percent = self.wallpaper.opacity_percent.clamp(
+            MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+        );
         self
     }
 }
@@ -723,7 +754,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -784,6 +815,10 @@ impl SettingsConfig {
             migrate_desktop_font_stacks(settings);
             migrated = true;
         }
+        if version < 9 {
+            migrate_desktop_wallpaper(settings);
+            migrated = true;
+        }
         if migrated {
             settings.insert(
                 "settingsSchemaVersion".to_string(),
@@ -830,6 +865,23 @@ fn migrate_desktop_font_stacks(settings: &mut serde_json::Map<String, serde_json
             serde_json::json!({ "source": "theme" }),
         );
     }
+}
+
+fn migrate_desktop_wallpaper(settings: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(personalization) = settings
+        .get_mut("personalization")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    personalization.insert("schemaVersion".to_string(), serde_json::json!(3));
+    personalization.insert(
+        "wallpaper".to_string(),
+        serde_json::json!({
+            "image": { "source": "theme" },
+            "opacityPercent": DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        }),
+    );
 }
 
 fn migrate_desktop_appearance(settings: &mut serde_json::Map<String, serde_json::Value>) {
@@ -1681,10 +1733,11 @@ mod tests {
     use super::{
         AcpAdapterConfig, AppearancePreference, ColorSchemePreference, ConsoleThemeName,
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
-        DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState, FontSizePreference,
-        FontStackPreference, ManagedAgentConfig, ManagedAgentId, PersonalizationPreference,
-        ProjectAppConfig, RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig,
-        SystemPromptDelivery, TurnFilesConfig, VisualQuality, WorkspaceLayoutConfig,
+        DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
+        ManagedAgentId, PersonalizationPreference, ProjectAppConfig, RuntimeConfig,
+        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
+        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
         catalog_agent_default_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
@@ -1850,7 +1903,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 2);
+        assert_eq!(personalization.schema_version, 3);
         assert_eq!(
             personalization.typography.ui.font_stack,
             FontStackPreference::Theme
@@ -1862,6 +1915,37 @@ mod tests {
         assert_eq!(
             personalization.typography.ui.font_size,
             FontSizePreference::Custom { px: 15 }
+        );
+        assert_eq!(
+            personalization.wallpaper.image,
+            WallpaperImagePreference::Theme
+        );
+    }
+
+    #[test]
+    fn settings_v9_adds_theme_wallpaper_without_dual_reading() {
+        let defaults = PersonalizationPreference::default();
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 8,
+                "personalization": {
+                    "schemaVersion": 2,
+                    "typography": serde_json::to_value(defaults.typography).unwrap(),
+                    "avatars": serde_json::to_value(defaults.avatars).unwrap()
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
+        assert_eq!(personalization.schema_version, 3);
+        assert_eq!(
+            personalization.wallpaper.image,
+            WallpaperImagePreference::Theme
+        );
+        assert_eq!(
+            personalization.wallpaper.opacity_percent,
+            DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
         );
     }
 

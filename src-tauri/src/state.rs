@@ -22,10 +22,12 @@ use gold_band::storage::{
     GoldBandPaths, active_storage_path_config, load_settings_file, read_json, write_json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::migrate_conversation_workspace_state;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
+use crate::wallpaper::reconcile_wallpaper_personalization;
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -1161,14 +1163,27 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
 
 fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> {
     let mut settings = load_settings_file(&paths.user_settings_file())?;
+    let mut settings_changed = false;
+    let mut avatar_migrated = false;
     if let Some(personalization) = settings.personalization.as_mut() {
-        let migrated = legacy_avatar_personalization(&paths.user_gold_band_dir(), personalization)
-            .map_err(|error| anyhow::anyhow!(error.code))?;
-        if migrated {
-            write_json(&paths.user_settings_file(), &settings)?;
-            complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
+        avatar_migrated =
+            legacy_avatar_personalization(&paths.user_gold_band_dir(), personalization)
                 .map_err(|error| anyhow::anyhow!(error.code))?;
+        settings_changed |= avatar_migrated;
+        match reconcile_wallpaper_personalization(&paths.user_gold_band_dir(), personalization) {
+            Ok(changed) => settings_changed |= changed,
+            Err(error) => warn!(
+                error_code = error.code,
+                "wallpaper personalization reconciliation skipped"
+            ),
         }
+    }
+    if settings_changed {
+        write_json(&paths.user_settings_file(), &settings)?;
+    }
+    if avatar_migrated {
+        complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
+            .map_err(|error| anyhow::anyhow!(error.code))?;
     }
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
     Ok((settings, state))

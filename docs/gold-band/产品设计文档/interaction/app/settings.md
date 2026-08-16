@@ -100,13 +100,13 @@
 - 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
 - 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `fontStack: { source: theme } | { source: custom, families: string[] }`，字号分别使用 `source: theme | custom`；不得通过空字符串或值恰好等于 14/12 推断继承。
 - 主题字体的作者 `family` 可以带包命名空间和 `Variable/VF` 标记，但必须保留字体文件元数据中的 canonical family；Theme SDK 在产物发布前完成一致性校验，产品展示名继续由字体栈的本地化 `displayName` 提供。构建器为运行时 package 派生浏览器专用 `runtimeFamily`，主题作者不得填写，用户偏好也不持久化该字段。主题字体只能从 content-hash 资产图注册，应用入口不得额外全局导入同一字体。
-- 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weight + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
+- 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
 - 自定义栈最多 16 项，family 去除首尾空白后按大小写不敏感去重；空值、超过 128 个 Unicode 字符及包含 `, ; { }` 的 family 无效。保存接口重新校验并返回 canonical 顺序。
 - UI 基准字号允许 `12–18px`；编辑器字号允许 `10–18px`，步长均为 `1px`。输入时只更新根级 CSS 变量进行即时预览，失焦后保存 `source: custom`；点击恢复时保存 `source: theme` 并立即展示当前主题预设，禁止写死 14/12、使用浏览器 zoom 或新增 localStorage 旁路。
 - UI 字号控制侧栏、设置页、聊天正文、Thought 与普通 Markdown，并通过派生 token 覆盖紧凑说明、徽标和时间等层级；聊天行内代码与代码块只切换等宽字形，字号继续从 UI 基准派生。
 - 编辑器字体和字号只覆盖所有 CodeMirror 文件查看/编辑、运行产物、Markdown 编辑器以及 Git/本轮 Diff；技术标识使用等宽字体不等同于消费编辑器字号。
-- 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；最高视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
+- 全局字重语义采用 variable font 轻量轴映射：正文 `330`、常规强调 `380`、标题/强强调 `450`、最高强调 `520`；Inter face 暴露字体原生连续轴，MiSans face 暴露 `250–520` 连续轴，确保四档值命中真实字形而不是吸附到静态 400/500/600。最高中文视觉层级不超过 Semibold。保留视觉层次，不按页面机械替换字重类，也不通过透明度或错配字体文件伪造较细字重。
 - 每个展开栏内部提供字号、主题默认入口和基于 shadcn `Popover + Command` 的可搜索多选器，避免两个领域的设置混排；重排使用可访问的按钮，不为短列表引入拖拽依赖。
 - 选择后立即应用到全局 UI 字体 token。
 - 字体切换必须覆盖导航栏、面包屑、任务 requirement 预览与完整需求正文等常规阅读文本；只有日志、代码块和工作图技术标识允许继续走 mono token。
@@ -145,6 +145,7 @@
 - Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页不新增图标、壁纸或高级字体入口，只展示当前有效投影；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
 - Theme Contract v2 的 motion 分离装饰表面与位移动效：`color` 只过渡颜色，`surface` 可追加 elevation，只有可按压控件的 `press` 可以过渡 transform。Dropdown、Select、Popover、Dialog、Sheet 等定位型浮层由组件库拥有定位与开合 transform，主题只声明其颜色、材质、几何和阴影。
 - 当组件库浮层内部还拥有 fixed 子浮层时，定位节点与主题材质层必须隔离：定位、Portal、焦点与裁剪继续由组件库拥有，backdrop filter 仅作用于无交互视觉层，不能改变子浮层的 containing block。
+- Dialog、Sheet、AlertDialog 统一 Portal 到 `body` 下与 `#root` 同级的专用 overlay host；host 保持 `overflow: visible` 且不建立 transform/filter/contain containing block。Dropdown Menu 与 Context Menu 的 Content/SubContent 只保留 Radix 定位、焦点和 dismiss 语义，开合 transform、透明度、材质及内容裁剪下沉到内部视觉层，避免 WebView2 定位与动画矩阵竞争。
 - 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
 - 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
 - 设置内容区标记稳定 `settings` wallpaper surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退设置页语义底色，不影响主题其余能力。

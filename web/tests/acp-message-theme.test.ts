@@ -54,8 +54,9 @@ describe('ACP message theme contract', () => {
 
   it('keeps activity summaries and assistant copy actions compact', () => {
     expect(chatSource).toContain('min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5');
-    expect(chatSource).toContain('text-muted-foreground hover:bg-transparent hover:text-accent-foreground');
-    expect(chatSource).toContain('data-[state=open]:bg-transparent data-[state=open]:text-accent-foreground');
+    expect(chatSource).toContain('text-muted-foreground hover:bg-transparent hover:text-foreground');
+    expect(chatSource).toContain('data-[state=open]:bg-transparent data-[state=open]:text-foreground');
+    expect(chatSource).not.toContain('hover:bg-transparent hover:text-accent-foreground');
     expect(chatSource).toContain('data-agent-message-actions="true"');
     expect(chatSource).toContain('className="h-5 px-1 leading-none opacity-100');
     expect(chatSource).toContain('className="size-5 text-muted-foreground');

@@ -4,7 +4,7 @@ import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { PortalContainerContext } from "@/lib/portal-container"
+import { getOverlayPortalHost, PortalContainerContext } from "@/lib/portal-container"
 import { Button } from "@/components/ui/button"
 
 function AlertDialog({
@@ -22,10 +22,11 @@ const AlertDialogTrigger = React.forwardRef<
 AlertDialogTrigger.displayName = "AlertDialogTrigger"
 
 function AlertDialogPortal({
+  container = getOverlayPortalHost(),
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
   return (
-    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" container={container} {...props} />
   )
 }
 

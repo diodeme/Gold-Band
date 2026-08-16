@@ -4974,7 +4974,7 @@ const AcpActivityBatchRow = memo(function AcpActivityBatchRow({
           <Button
             ref={triggerRef}
             variant="ghost"
-            className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5 text-left font-normal text-muted-foreground hover:bg-transparent hover:text-accent-foreground focus-visible:bg-transparent focus-visible:text-accent-foreground data-[state=open]:bg-transparent data-[state=open]:text-accent-foreground"
+            className="h-auto min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5 text-left font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:bg-transparent focus-visible:text-foreground data-[state=open]:bg-transparent data-[state=open]:text-foreground"
           >
             {event.live ? (
               <AcpProcessingSpinner className="size-3.5" />

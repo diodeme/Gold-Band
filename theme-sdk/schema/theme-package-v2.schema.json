@@ -14861,7 +14861,8 @@
               "family",
               "runtimeFamily",
               "assetId",
-              "weight",
+              "weightMin",
+              "weightMax",
               "style",
               "display",
               "coverage"
@@ -14884,13 +14885,15 @@
                 "type": "string",
                 "minLength": 1
               },
-              "weight": {
-                "enum": [
-                  400,
-                  500,
-                  600,
-                  700
-                ]
+              "weightMin": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "weightMax": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
               },
               "style": {
                 "enum": [

@@ -203,6 +203,8 @@ test('builds ordered font stacks and rejects duplicate families', async () => {
   const built = await withBuildFixture();
   assert.equal(built.status, 0, built.stderr || built.stdout);
   assert.match(built.generatedCss, /--gb-theme-ui-font-family:"Inter Variable", "Microsoft YaHei UI"/u);
+  assert.match(built.generatedCss, /font-family:"Inter Variable";[^}]*font-weight:100 900;/u);
+  assert.match(built.generatedCss, /font-family:"Gold Band MiSans";[^}]*font-weight:250 520;/u);
 
   const rejected = await withBuildFixture(async (directory) => {
     const path = join(directory, 'themes', 'gold-band', 'fonts.json');
@@ -421,6 +423,25 @@ test('rejects invalid font coverage, unresolved stacks, and metadata mismatches'
     });
     assert.notEqual(result.status, 0, 'font family metadata mismatch must be rejected');
     assert.match(buildOutput(result), /theme\.font-metadata-invalid/u);
+  });
+  await t.test('font weight range must be ordered', async () => {
+    const result = await withBuildFixture(async (directory) => {
+      await updateJson(join(directory, 'themes', 'gold-band', 'fonts.json'), (fonts) => {
+        fonts.faces[0].weightMin = 700;
+        fonts.faces[0].weightMax = 300;
+      });
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(buildOutput(result), /theme\.font-metadata-invalid|not ordered/u);
+  });
+  await t.test('font weight range must stay within asset metadata', async () => {
+    const result = await withBuildFixture(async (directory) => {
+      await updateJson(join(directory, 'themes', 'gold-band', 'fonts.json'), (fonts) => {
+        fonts.faces[1].weightMin = 100;
+      });
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(buildOutput(result), /theme\.font-metadata-invalid|not supported/u);
   });
 });
 

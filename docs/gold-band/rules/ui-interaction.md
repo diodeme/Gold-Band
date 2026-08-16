@@ -159,4 +159,6 @@
 - 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。无障碍 `prefers-reduced-motion` 规则可以强制关闭动效。
 - 组件覆盖只用于真实变体、交互状态和组件拓扑，例如 focus ring、单边 separator、joined control、透明 variant，以及显式声明的阴影、圆角和动效；禁止在组件中按 `themeId` 特判视觉样式。
 - 迁移现有主题时，必须由各主题 recipe 明确声明需要保持的边框、圆角、阴影、颜色、材质、状态和动效，不得把旧主题外观硬编码回共享组件。
+- Dialog、Sheet、AlertDialog 必须 Portal 到 `body` 的专用 overlay host；host 不得包含非 `none` 的 `transform`、`filter`、`backdrop-filter`、`contain`，也不得使用会裁剪后代的 `overflow`。
+- Dropdown Menu、Context Menu 的 Radix Content/SubContent 定位节点只负责定位、焦点和外部交互事件；位移、缩放、淡入淡出、材质、圆角和内容裁剪必须放在其内部视觉层，禁止在定位节点上施加开合 transform 动画或 filter。
 - 验收时必须检查生成 CSS 的 layer 与顺序，并至少在两个主题下通过 computed style 覆盖代表性静态态、hover/focus 态、outline 按钮、input 和 joined/split control，确认主题默认值生效且组件显式变体可覆盖。

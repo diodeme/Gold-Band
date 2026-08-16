@@ -174,10 +174,10 @@ const recipeSchema = {
 };
 const recipesSchema = { type: 'object', additionalProperties: false, required: RECIPE_ROLE_NAMES, properties: Object.fromEntries(RECIPE_ROLE_NAMES.map((role) => [role, recipeSchema])) };
 const fontFaceSchema = {
-  type: 'object', additionalProperties: false, required: ['id', 'family', 'runtimeFamily', 'assetId', 'weight', 'style', 'display', 'coverage'],
+  type: 'object', additionalProperties: false, required: ['id', 'family', 'runtimeFamily', 'assetId', 'weightMin', 'weightMax', 'style', 'display', 'coverage'],
   properties: {
     id: { type: 'string', pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }, family: { type: 'string', minLength: 1, maxLength: MAX_FONT_FAMILY_CHARS }, runtimeFamily: { type: 'string', minLength: 1 }, assetId: { type: 'string', minLength: 1 },
-    weight: { enum: [400, 500, 600, 700] }, style: { enum: ['normal', 'italic'] }, display: { const: 'swap' },
+    weightMin: { type: 'integer', minimum: 1, maximum: 1000 }, weightMax: { type: 'integer', minimum: 1, maximum: 1000 }, style: { enum: ['normal', 'italic'] }, display: { const: 'swap' },
     coverage: { type: 'object', additionalProperties: false, required: ['scripts'], properties: { scripts: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', pattern: '^[A-Z][a-z]{3}$' } }, locales: { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 2 } }, unicodeRanges: { type: 'array', uniqueItems: true, items: { type: 'string', pattern: '^U\\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?$' } } } },
     metrics: { type: 'object', additionalProperties: false, properties: stringProperties(['sizeAdjust', 'ascentOverride', 'descentOverride', 'lineGapOverride']) },
   },

@@ -29,10 +29,11 @@ rings, and destructive/invalid variants remain application-owned and must not be
 {
   "faces": [
     {
-      "id": "ui-regular",
+      "id": "ui-variable",
       "family": "Example UI",
       "assetId": "example-ui-variable",
-      "weight": 400,
+      "weightMin": 300,
+      "weightMax": 700,
       "style": "normal",
       "display": "swap",
       "coverage": { "scripts": ["Latn"] }

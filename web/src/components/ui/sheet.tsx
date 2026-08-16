@@ -3,7 +3,7 @@ import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { PortalContainerContext } from "@/lib/portal-container"
+import { getOverlayPortalHost, PortalContainerContext } from "@/lib/portal-container"
 
 const sheetResizeStoragePrefix = "gold-band:sheet-size:"
 const defaultSheetMinSize = 360
@@ -39,9 +39,10 @@ const SheetClose = React.forwardRef<
 SheetClose.displayName = "SheetClose"
 
 function SheetPortal({
+  container = getOverlayPortalHost(),
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
-  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />
+  return <SheetPrimitive.Portal data-slot="sheet-portal" container={container} {...props} />
 }
 
 function SheetOverlay({

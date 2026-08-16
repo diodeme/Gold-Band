@@ -82,6 +82,7 @@
 - 左侧会话侧边栏的 run 终态刷新不能只依赖 ACP session terminal update。ACP update 继续负责 session/graph 实时状态；run 真正完成并持久化后，后端通过 runtime `RunCompleted` lifecycle 推送 run 级事件，前端统一刷新当前 run 和 sidebar，让 run 行从 running 空心点切到既有终态展示。
 - workflow control 限制触发的终局失败同样属于 run 完成事实。`max_attempts`、`max_rounds` 等路径在写入 `workflow_control_limit_exceeded`、`run-progress.json` 与 terminal run state 后，必须复用 `RunCompleted(Failure)` lifecycle 推送，确保会话页从 `launching-next-node` 实时刷新为终态横幅，而不是依赖用户切换会话后重新加载。
 - 编辑工作流：打开 Sheet，内嵌 WorkflowEditor 完整编辑器
+- 会话编辑或修复工作流保存时，必须一次提交 Task 作者态 `WorkflowDsl` 与整份 `WorkflowModelBindings`；Agent、模型、权限和 config options 的修改不得因会话页回调链路丢失
 - 修改只影响未来 run，不影响当前 run snapshot
 
 ## Session Switcher

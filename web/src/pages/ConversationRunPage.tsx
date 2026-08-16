@@ -17,7 +17,7 @@ import { ConversationSessionSwitcher } from '@/components/conversation/Conversat
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, WorkflowModelBindings } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -69,7 +69,7 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<void>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;

@@ -18,6 +18,7 @@ import type {
   GraphNodeVm,
   ProfileVm,
   WorkflowDsl,
+  WorkflowModelBindings,
 } from '@/types';
 import {
   type RawFramesWorkspaceResource,
@@ -37,7 +38,7 @@ interface ConversationRunWorkspaceResourcePanelProps {
   resource: ConversationRunWorkspaceResource;
   run: ConversationRunVm;
   agentRegistry: AgentRegistryVm | null;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<void>;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
 }
 
@@ -132,7 +133,7 @@ function WorkflowEditPanel({
   resource: WorkflowEditWorkspaceResource;
   run: ConversationRunVm;
   initialAgentRegistry: AgentRegistryVm | null;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<void>;
 }) {
   const { t } = useTranslation();
   const parsedWorkflow = useMemo(() => parseWorkflowJson(run.workflowJson), [run.workflowJson]);
@@ -184,10 +185,10 @@ function WorkflowEditPanel({
     workflowDraftCache.set(resource.key, { baselineSignature, draft: next.workflow, editorDraft: next });
   }, [baselineSignature, resource.key]);
 
-  const handleSave = useCallback(async (next: WorkflowDsl) => {
+  const handleSave = useCallback(async (next: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setSaving(true);
     try {
-      await onSaveWorkflow?.(JSON.stringify(next));
+      await onSaveWorkflow?.(JSON.stringify(next), modelBindings);
       const signature = workflowSignature(next);
       setDraft(next);
       setBaselineSignature(signature);

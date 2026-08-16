@@ -12,9 +12,9 @@ export const workspaceEditorTheme = EditorView.theme({
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--text-selection)' },
   '.cm-deletedChunk, .cm-deletedLine': { backgroundColor: 'color-mix(in srgb, var(--destructive) 10%, transparent)' },
   '.cm-insertedLine': { backgroundColor: 'color-mix(in srgb, var(--gold-success) 10%, transparent)' },
-  '.cm-deletedText': { backgroundColor: 'color-mix(in srgb, var(--destructive) 25%, transparent)' },
+  '.cm-deletedText': { backgroundColor: 'color-mix(in srgb, var(--destructive) 12%, transparent)' },
   '&.cm-merge-b .cm-changedText': {
-    backgroundColor: 'color-mix(in srgb, var(--gold-success) 22%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--gold-success) 12%, transparent)',
     backgroundImage: 'none',
   },
   '.cm-deletedLineGutter': { color: 'var(--destructive)' },

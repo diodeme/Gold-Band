@@ -105,7 +105,7 @@
 - 编辑器宽容器使用 shadcn/ui `ResizablePanelGroup` 展示可调宽画布 / Inspector；宽屏只保留两者之间一条可拖拽分隔线，画布与 Inspector surface 不再分别绘制完整外框。容器不足时切换为“画布 / 配置面板”单面板标签，不允许把 Inspector 纵向堆到画布下方形成超长滚动页。工作流模板管理中的编辑工作区占满页面标题、模式栏和模板操作栏以下的视口剩余高度，取消工作流模式的页面底部留白，使画布与 Inspector 直接延伸到页面底部；页面本身不产生第二层纵向滚动，Inspector 标题固定，配置内容在面板内部独立滚动。`WorkflowEditor` 的高度由使用方容器控制，其他 Sheet / 工作区可以继续使用自身的高度策略。ResizeObserver 只发布单面板 / 双面板离散状态，不逐像素提交根 React state。真实节点与终点节点共用同一选中颜色、外发光和渐变语义，仅按节点形状保持不同圆角。
 - 作者态支持节点 / 边键盘选择、Delete / Backspace 删除、Ctrl/Cmd+Z 撤销和 Ctrl/Cmd+Y 或 Ctrl/Cmd+Shift+Z 重做；历史只保留最近 50 个 canonical workflow 草稿，不持久化为第二套业务图模型。打开或替换 workflow、撤销、重做以及删除当前节点后，画布统一清空瞬时选择和编辑器内焦点，不得自动选择第一个节点；只有用户显式点击、创建新节点或定位校验问题时才主动选择对象。画布不显示 MiniMap；工作流导航统一使用画布平移、缩放与 fit view controls，不维护额外的图边界、显隐状态或尺寸观察器。
 - 编辑器在用户停止输入后持续执行保存前校验，并在 Inspector 顶部保留可点击的问题摘要；点击问题应选择并聚焦对应节点或边，同时标记相关字段。保存时的阻断弹窗继续作为最终防线，不能成为发现问题的唯一入口。
-- Inspector 高频文本与数字输入先保存在局部草稿，短暂空闲后合并写回 canonical `WorkflowDsl`；父级草稿通知与 `onChange` 同样合并发布。JSON 文本只在进入 JSON 模式时从 canonical workflow 生成，画布输入不得反复序列化完整 DSL。
+- Inspector 高频文本与数字输入先保存在局部草稿，短暂空闲后合并写回 canonical `WorkflowDsl`；父级草稿通知与 `onChange` 同样合并发布。节点 ID 提交若与尚未发布的字段草稿重叠，必须把字段 patch 与重命名 patch 合并为一次原子更新，不得让后一次重命名覆盖 goal、model、output 等待提交字段。JSON 文本只在进入 JSON 模式时从 canonical workflow 生成，画布输入不得反复序列化完整 DSL。
 - 节点配置包含 node id、goal、provider agent、profile（中文界面显示为“角色”，英文界面显示为“Profile”）、ACP 权限模式、节点结果判定方式；agent 来源于 Agent 管理页已配置且 doctor 成功的 agent 卡片，前端不提供默认 provider，新增节点必须由用户显式选择可用 Agent。
 - 工作流创建、修改和模板保存只允许使用最近一次 doctor 成功的 managed agent；未诊断、诊断失败或诊断缓存缺失的 agent 不出现在下拉框中，保存时也视为不可用。
 - 节点 id 输入框使用本地草稿编辑，中文输入法组合输入期间不更新 workflow DSL；失焦、Enter 或组合输入结束后再提交到节点与关联边。作者态画布普通节点直接展示原始节点 id，不把 `test` 等默认模板节点名翻译成本地化文案。

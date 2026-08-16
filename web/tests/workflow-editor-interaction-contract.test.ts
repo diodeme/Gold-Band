@@ -5,6 +5,7 @@ import { getSmoothStepPath, Position } from '@xyflow/react';
 import {
   createAuthoringFlowProjection,
   createAuthoringGraphLayout,
+  mergeBufferedNodePatches,
   nodeSupportsFailureOutcome,
   recordWorkflowHistory,
   redoWorkflowHistory,
@@ -88,6 +89,18 @@ function rectsOverlap(
 const t = (key: string) => key;
 
 describe('workflow editor interaction contracts', () => {
+  it('commits buffered node fields and a rename as one patch', () => {
+    expect(mergeBufferedNodePatches(
+      { goal: 'Updated goal', model: 'gpt-5.6', output: { kind: 'json', artifact: 'result' } },
+      { id: 'renamed-node' },
+    )).toEqual({
+      goal: 'Updated goal',
+      model: 'gpt-5.6',
+      output: { kind: 'json', artifact: 'result' },
+      id: 'renamed-node',
+    });
+  });
+
   it('keeps topology layout independent from inspector-only configuration', () => {
     const before = workflow();
     const after = workflow({

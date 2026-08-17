@@ -202,8 +202,7 @@ Normalization 层可以读取：
 - workflow / DSL 无效
 - edge 缺失导致控制流无路可走
 - workflow snapshot 与运行时状态不一致
-- AI-DYNAMIC proposal repair 耗尽后仍不合法
-- AI 输出声明了 artifact 但 artifact 缺失，且 repair 机制耗尽
+- 输出修复所需的 session / continue identity 缺失，无法安全恢复当前 attempt
 - dynamic 控制约束无法满足，例如 `maxFanout`、`maxDepth`、`maxDynamicNodes`、`maxWorkflowInvocations` 在 repair 后仍超限
 - runtime invariant 破坏，无法确定安全恢复点
 
@@ -469,3 +468,9 @@ Gold Band 异常处理的目标状态是：
 - ACP 生命周期测试：可重试错误后恢复不产生 terminal failure；重试错误后进入 `systemError` 会提升为 terminal failure。
 - Provider 接口测试：`systemError + end_turn` 必须失败；正常 `end_turn` 成功；未知/缺失 stop reason 协议失败；`max_tokens` 不成功。
 - AI-DYNAMIC 接口测试：bootstrap 返回 Provider runtime error 时仅调用一次 Provider，graph/run 进入 `runtime-abnormal`，不进入 proposal repair。
+
+### ACP artifact 最终消息身份异常
+
+Runtime 控制 turn 复用 canonical message identity 维护最近最多 3 条 Agent message。最终消息有稳定 provider identity 时，允许从最后一条开始倒序检查该窗口，提取第一个可解析 JSON 后进入 schema 校验；整个 turn 都没有稳定 identity 时只能校验最后一条无 ID message，并在非法时进入既有输出 repair。若 turn 内已经出现稳定 identity、最终 message 却无 ID，则无法证明该结尾是正常输出还是文本化错误，统一返回 `provider.acp-terminal-message-unidentified + recovery=manual`，将 run 收敛为可继续的 `runtime-abnormal`，禁止回扫和自动 repair，避免错误结尾之后由 repair 伪造成功 artifact。该分支只作用于 RuntimeControlled output contract；Direct/普通会话仍展示全部文本并正常结束。
+
+回归必须同时固定：mixed terminal 仅调用一次 Provider 且没有 `invalid_output_repair_requested`；最终稳定消息可命中最近三条内更早的 JSON（包括无 ID 消息），但不能命中第四条以外；全 turn 无 ID 的合法 JSON 可成功、非法文本可进入最多三次 repair；repair 耗尽后仍为可输入、可继续的 `RuntimeAbnormal`。

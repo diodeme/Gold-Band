@@ -4339,24 +4339,14 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 .map_err(command_error)?;
             prompt_bundle.display_text = Some(display_text.clone());
             prompt_bundle.quotes = quotes.clone();
-            // Resolve attachments
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
-                    let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                    let _ = std::fs::create_dir_all(&user_inputs_dir);
-                    if let Ok(resolved) =
-                        gold_band::provider::resolve_attachments(paths, "user-inputs")
-                    {
-                        // Copy files to user-inputs/
-                        for (r, src) in resolved.iter().zip(paths.iter()) {
-                            let src_path = std::path::Path::new(src);
-                            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                                let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                                let _ = std::fs::copy(src_path, &dest);
-                            }
-                            prompt_bundle.attachment_metas.push(r.meta.clone());
-                            prompt_bundle.content_blocks.push(r.block.clone());
-                        }
+                    let resolved =
+                        gold_band::provider::resolve_user_input_attachments(paths, &attempt_dir)
+                            .map_err(command_error)?;
+                    for attachment in resolved {
+                        prompt_bundle.attachment_metas.push(attachment.meta);
+                        prompt_bundle.content_blocks.push(attachment.block);
                     }
                 }
             }
@@ -4413,7 +4403,6 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
-                client::AcpOutputPolicy::Conversation,
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -4511,22 +4500,14 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             .map_err(command_error)?;
         prompt_bundle.display_text = Some(display_text);
         prompt_bundle.quotes = quotes;
-        // Resolve attachments
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
-                let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                let _ = std::fs::create_dir_all(&user_inputs_dir);
-                if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs")
-                {
-                    for (r, src) in resolved.iter().zip(paths.iter()) {
-                        let src_path = std::path::Path::new(src);
-                        if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                            let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                            let _ = std::fs::copy(src_path, &dest);
-                        }
-                        prompt_bundle.attachment_metas.push(r.meta.clone());
-                        prompt_bundle.content_blocks.push(r.block.clone());
-                    }
+                let resolved =
+                    gold_band::provider::resolve_user_input_attachments(paths, &attempt_dir)
+                        .map_err(command_error)?;
+                for attachment in resolved {
+                    prompt_bundle.attachment_metas.push(attachment.meta);
+                    prompt_bundle.content_blocks.push(attachment.block);
                 }
             }
         }
@@ -4582,7 +4563,6 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
-            client::AcpOutputPolicy::Conversation,
             Some(&|event| {
                 live_update(
                     acp_live_event_context(

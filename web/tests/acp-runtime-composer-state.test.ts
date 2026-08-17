@@ -443,7 +443,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
-  it('keeps runtime-abnormal stopped input as a non-runtime ACP prompt', () => {
+  it('keeps repair-exhausted runtime-abnormal input open for user-guided continue', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {

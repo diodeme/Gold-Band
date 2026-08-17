@@ -343,6 +343,47 @@ function browserCompletedConversationRun(): ConversationRunVm {
   return run;
 }
 
+const browserQueuedPromptDrafts = [
+  {
+    id: 'browser-queued-1',
+    content: '完成当前修改后，补充对应的回归测试。',
+    quotes: [],
+    attachmentPaths: ['C:/browser/mock.png'],
+    createdAt: '2026-08-07T08:00:00Z',
+  },
+  {
+    id: 'browser-queued-2',
+    content: '检查深色主题下的输入区层级。',
+    quotes: [
+      { id: 'browser-quote-1', sourceMessageKey: 'browser-message-1', text: '第一段引用' },
+      { id: 'browser-quote-2', sourceMessageKey: 'browser-message-2', text: '第二段引用' },
+    ],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:01Z',
+  },
+  {
+    id: 'browser-queued-3',
+    content: '把关键设计决策同步到产品文档。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:02Z',
+  },
+  {
+    id: 'browser-queued-4',
+    content: '验证停止后队列仍然可编辑和删除。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:03Z',
+  },
+  {
+    id: 'browser-queued-5',
+    content: '最后整理本轮变更摘要。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:04Z',
+  },
+];
+
 function browserQueuedConversationRun(): ConversationRunVm {
   const run = browserCompletedConversationRun();
   run.runId = 'run-053';
@@ -390,18 +431,12 @@ function browserQueuedConversationRun(): ConversationRunVm {
       promptQueue: {
         revision: 5,
         maxItems: 10,
-        items: Array.from({ length: 5 }, (_, index) => ({
-          id: `browser-queued-${index + 1}`,
-          content: [
-            '完成当前修改后，补充对应的回归测试。',
-            '检查深色主题下的输入区层级。',
-            '把关键设计决策同步到产品文档。',
-            '验证停止后队列仍然可编辑和删除。',
-            '最后整理本轮变更摘要。',
-          ][index],
-          attachmentCount: index === 0 ? 1 : 0,
-          quoteCount: index === 1 ? 2 : 0,
-          createdAt: `2026-08-07T08:00:0${index}Z`,
+        items: browserQueuedPromptDrafts.map((item) => ({
+          id: item.id,
+          content: item.content,
+          attachmentCount: item.attachmentPaths.length,
+          quoteCount: item.quotes.length,
+          createdAt: item.createdAt,
         })),
       },
     };
@@ -1242,8 +1277,20 @@ export const browserApi: RuntimeApi = {
   submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
-  updateConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _content, _outerNodeId, _outerAttemptId) {
+  reorderConversationQueuedPrompts(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision, _orderedItemIds, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
+  },
+  restoreConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
+    const item = browserQueuedPromptDrafts.find((candidate) => candidate.id === itemId);
+    if (!item) return Promise.reject(new Error('queued prompt not found'));
+    return Promise.resolve({
+      draft: {
+        content: item.content,
+        quotes: item.quotes.map((quote) => ({ ...quote })),
+        attachmentPaths: [...item.attachmentPaths],
+      },
+      lifecycle: null,
+    });
   },
   deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
@@ -1974,6 +2021,14 @@ export const browserApi: RuntimeApi = {
   },
   pickAttachmentFiles() {
     return Promise.resolve([]);
+  },
+  statAttachmentFiles(paths) {
+    return Promise.resolve(paths.map((path) => ({
+      path,
+      name: path.split(/[\\/]/).at(-1) ?? path,
+      size: 0,
+      previewUrl: null,
+    })));
   },
   materializeConversationAttachments(files) {
     return Promise.resolve(files.map((file, index) => ({

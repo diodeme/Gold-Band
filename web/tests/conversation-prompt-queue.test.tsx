@@ -4,7 +4,10 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ConversationPromptQueue } from '@/components/conversation/ConversationPromptQueue';
+import {
+  ConversationPromptQueue,
+  moveQueueItemIds,
+} from '@/components/conversation/ConversationPromptQueue';
 import type { ConversationPromptQueueVm } from '@/types';
 import '@/i18n';
 
@@ -42,7 +45,9 @@ describe('ConversationPromptQueue', () => {
       queue,
       sessionActive: false,
       mutationPending: false,
-      onEdit: vi.fn(),
+      composerOccupied: false,
+      onRestore: vi.fn(),
+      onReorder: vi.fn(),
       onUse: vi.fn(),
       onDelete: vi.fn(),
       ...overrides,
@@ -84,30 +89,31 @@ describe('ConversationPromptQueue', () => {
     expect(host.textContent).toContain('queued prompt 5');
   });
 
-  it('edits a queued prompt in place and exposes accessible icon actions', async () => {
-    const onEdit = vi.fn().mockResolvedValue(undefined);
-    await renderQueue({ onEdit });
+  it('returns the complete queued draft to the composer and exposes accessible icon actions', async () => {
+    const onRestore = vi.fn().mockResolvedValue(undefined);
+    await renderQueue({ onRestore });
     const firstRow = host.querySelector('[data-queue-item-id="item-1"]') as HTMLElement;
     const editButton = firstRow.querySelector('button[aria-label="编辑"]') as HTMLButtonElement;
     const useButton = firstRow.querySelector('button[aria-label="使用"]');
     const deleteButton = firstRow.querySelector('button[aria-label="删除"]');
+    const reorderButton = firstRow.querySelector('button[aria-label="调整排队顺序"]');
     expect(editButton).toBeTruthy();
     expect(useButton).toBeTruthy();
     expect(deleteButton).toBeTruthy();
+    expect(reorderButton).toBeTruthy();
 
     await act(async () => editButton.click());
-    const textarea = firstRow.querySelector('textarea') as HTMLTextAreaElement;
-    expect(textarea).toBeTruthy();
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-      setter?.call(textarea, 'edited in place');
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const saveButton = firstRow.querySelector('button[aria-label="保存"]') as HTMLButtonElement;
-    await act(async () => saveButton.click());
-
-    expect(onEdit).toHaveBeenCalledWith('item-1', 'edited in place');
+    expect(onRestore).toHaveBeenCalledWith('item-1');
     expect(host.querySelector('[data-queue-item-id="item-1"]')).toBe(firstRow);
+  });
+
+  it('protects an existing composer draft from being overwritten', async () => {
+    const onRestore = vi.fn();
+    await renderQueue({ composerOccupied: true, onRestore });
+    const editButtons = host.querySelectorAll<HTMLButtonElement>('button[aria-label="编辑"]');
+    expect(editButtons).toHaveLength(3);
+    expect(Array.from(editButtons).every((button) => button.disabled)).toBe(true);
+    expect(onRestore).not.toHaveBeenCalled();
   });
 
   it('disables manual use while the session is active', async () => {
@@ -121,5 +127,14 @@ describe('ConversationPromptQueue', () => {
     await renderQueue();
     const secondRow = host.querySelector('[data-queue-item-id="item-2"]') as HTMLElement;
     expect(secondRow.textContent).toContain('2 条引用');
+  });
+
+  it('calculates a complete stable-id order for pointer and keyboard sorting', () => {
+    const itemIds = queue.items.map((item) => item.id);
+    expect(moveQueueItemIds(itemIds, 'item-1', 'item-4')).toEqual([
+      'item-2', 'item-3', 'item-4', 'item-1', 'item-5',
+    ]);
+    expect(moveQueueItemIds(itemIds, 'missing', 'item-2')).toEqual(itemIds);
+    expect(itemIds).toEqual(['item-1', 'item-2', 'item-3', 'item-4', 'item-5']);
   });
 });

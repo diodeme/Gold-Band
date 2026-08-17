@@ -55,6 +55,7 @@ import type {
   MetricsSettingsVm,
   WorkflowDsl,
   ConversationAttemptLifecycleVm,
+  ConversationQueuedPromptDraftVm,
   ConversationTaskActivityVm,
   WorkflowTemplateStore,
   WorkflowVm,
@@ -171,6 +172,11 @@ export interface ConversationPromptQueueMutationVm {
   lifecycle?: ConversationAttemptLifecycleVm | null;
 }
 
+export interface ConversationPromptQueueRestoreVm {
+  draft: ConversationQueuedPromptDraftVm;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
 export interface AttachmentFileRef {
   path: string;
   name: string;
@@ -277,7 +283,8 @@ export interface RuntimeApi {
   subscribeAppExitRequested?(listener: (event: AppExitRequestVm) => void): Promise<() => void>;
   takePendingInterventionNavigations(): Promise<InterventionNavigateEventVm[]>;
   submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('../types').ConversationPromptInput, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<ConversationPromptSubmitVm>;
-  updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
+  restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueRestoreVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
   sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
@@ -364,6 +371,7 @@ export interface RuntimeApi {
   openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
+  statAttachmentFiles(paths: string[]): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;
   getSupportedAttachmentExtensions(): Promise<string[]>;
   openInFileManager(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId?: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;

@@ -2234,6 +2234,12 @@ export interface ConversationRunVm {
   scheduledTaskId?: string | null;
 }
 
+export interface ConversationQueuedPromptDraftVm {
+  content: string;
+  quotes: UserPromptQuote[];
+  attachmentPaths: string[];
+}
+
 export interface ConversationSessionSwitchVm {
   selectedSession?: AcpSessionVm | null;
 }

@@ -15,8 +15,9 @@ use gold_band::acp::prompt_queue::{
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
     clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension, complete_accepted_prompt,
     delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
-    record_auto_dispatch_reply_completion, release_queued_prompt, request_auto_dispatch_suspension,
-    settle_dispatching_prompts, suspend_auto_dispatch, update_queued_prompt,
+    record_auto_dispatch_reply_completion, release_queued_prompt, reorder_queued_prompts,
+    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
+    take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
@@ -55,7 +56,8 @@ use gold_band::config::{
 use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
     ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
-    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, conversation_prompt_text,
+    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
+    conversation_prompt_text,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1005,6 +1007,21 @@ pub struct ConversationPromptSubmitVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPromptQueueMutationVm {
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationQueuedPromptDraftVm {
+    pub content: String,
+    pub quotes: Vec<UserPromptQuote>,
+    pub attachment_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueRestoreVm {
+    pub draft: ConversationQueuedPromptDraftVm,
     pub lifecycle: Option<ConversationAttemptLifecycleVm>,
 }
 
@@ -3607,7 +3624,7 @@ fn emit_prompt_queue_lifecycle(
 }
 
 #[tauri::command]
-pub fn update_conversation_queued_prompt(
+pub fn reorder_conversation_queued_prompts(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -3616,8 +3633,8 @@ pub fn update_conversation_queued_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    item_id: String,
-    content: String,
+    expected_revision: u64,
+    ordered_item_ids: Vec<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ConversationPromptQueueMutationVm> {
@@ -3631,9 +3648,49 @@ pub fn update_conversation_queued_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    update_queued_prompt(&locator.attempt_dir(&app), &item_id, content)
-        .map_err(prompt_queue_command_error)?;
+    reorder_queued_prompts(
+        &locator.attempt_dir(&app),
+        expected_revision,
+        ordered_item_ids,
+    )
+    .map_err(prompt_queue_command_error)?;
     Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[tauri::command]
+pub fn restore_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueRestoreVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let (item, _) = take_queued_prompt(&locator.attempt_dir(&app), &item_id)
+        .map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueRestoreVm {
+        draft: ConversationQueuedPromptDraftVm {
+            content: item.content,
+            quotes: item.quotes,
+            attachment_paths: item.attachment_paths,
+        },
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
 }
@@ -5473,6 +5530,8 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
         PromptQueueError::NotFound => "conversation.prompt-queue-item-not-found",
         PromptQueueError::Dispatching => "conversation.prompt-queue-item-dispatching",
         PromptQueueError::Empty => "conversation.prompt-queue-empty",
+        PromptQueueError::RevisionConflict => "conversation.prompt-queue-revision-conflict",
+        PromptQueueError::InvalidOrder => "conversation.prompt-queue-invalid-order",
         PromptQueueError::Storage => "conversation.prompt-queue-storage-failed",
     };
     CommandErrorVm::new(code, serde_json::json!({}))

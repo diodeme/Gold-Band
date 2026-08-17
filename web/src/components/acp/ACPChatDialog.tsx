@@ -130,7 +130,11 @@ import {
   useWindowDragGuard,
   type AttachmentItem,
 } from "@/lib/attachment-service";
-import { useAcpComposerDraft, type AcpComposerDraft } from "@/lib/acp-composer-draft";
+import {
+  queuedPromptToAcpComposerDraft,
+  useAcpComposerDraft,
+  type AcpComposerDraft,
+} from "@/lib/acp-composer-draft";
 import {
   addComposerQuote,
   createUserPromptSubmission,
@@ -209,8 +213,10 @@ import {
   respondElicitation,
   continueConversationRuntime,
   recoverConversationRuntime,
+  reorderConversationQueuedPrompts,
+  restoreConversationQueuedPrompt,
+  statAttachmentFiles,
   submitConversationPrompt,
-  updateConversationQueuedPrompt,
   useConversationQueuedPrompt,
   setAcpSessionModel,
   setAcpSessionConfigOption,
@@ -952,6 +958,7 @@ export function ACPChatDialog(
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
   const [queueMutationPending, setQueueMutationPending] = useState(false);
+  const [queueRestorePending, setQueueRestorePending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
@@ -1480,11 +1487,16 @@ export function ACPChatDialog(
         ...runtimeComposerContext.supersededSessionNavigation,
       }
     : null;
-  const canSubmitPrompt = composerState.canSubmit;
+  const canSubmitPrompt = composerState.canSubmit
+    && !queueSubmitPending
+    && !queueRestorePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
   const promptQueueVisible = Boolean(promptQueue?.items.length);
+  const composerDraftOccupied = prompt.length > 0
+    || pendingAttachments.length > 0
+    || quotes.length > 0;
   const showComposerInfoPanel = showComposerStatus
     || composerSessionSeconds != null
     || hasAcpUsagePanelContent(effective?.usage);
@@ -2949,14 +2961,49 @@ export function ACPChatDialog(
     emitLifecycleSnapshot(lifecycle, effective ?? null);
   };
 
-  const editQueuedPrompt = async (itemId: string, content: string) => {
-    if (queueMutationPending) return;
+  const restoreQueuedPrompt = async (itemId: string) => {
+    if (queueMutationPending || queueSubmitPending || composerDraftOccupied) return;
+    setQueueMutationPending(true);
+    setQueueRestorePending(true);
+    setSendError(null);
+    try {
+      const result = await restoreConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      applyQueueLifecycle(result.lifecycle);
+      const restoredDraft = queuedPromptToAcpComposerDraft(result.draft);
+      if (!composerDraft.restoreIfEmpty(restoredDraft)) {
+        setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        return;
+      }
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+      if (result.draft.attachmentPaths.length > 0) {
+        void statAttachmentFiles(result.draft.attachmentPaths).then((fileRefs) => {
+          const enrichedDraft = queuedPromptToAcpComposerDraft(result.draft, fileRefs);
+          if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
+            revokeAttachmentPreviewUrls(enrichedDraft.attachments);
+          }
+        }).catch(() => {
+          // The canonical paths remain in the draft; missing preview metadata must not discard them.
+        });
+      }
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+      setQueueRestorePending(false);
+    }
+  };
+
+  const reorderQueuedPrompts = async (orderedItemIds: string[], expectedRevision: number) => {
+    if (queueMutationPending || queueSubmitPending) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
-      const result = await updateConversationQueuedPrompt(
+      const result = await reorderConversationQueuedPrompts(
         projectId, taskId, runId, roundId, nodeId, attemptId,
-        itemId, content, outerNodeId, outerAttemptId,
+        expectedRevision, orderedItemIds, outerNodeId, outerAttemptId,
       );
       applyQueueLifecycle(result.lifecycle);
     } catch (error) {
@@ -2968,7 +3015,7 @@ export function ACPChatDialog(
   };
 
   const deleteQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending) return;
+    if (queueMutationPending || queueSubmitPending) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
@@ -2985,7 +3032,7 @@ export function ACPChatDialog(
   };
 
   const useQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending || sessionActive) return;
+    if (queueMutationPending || queueSubmitPending || sessionActive) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
@@ -3628,10 +3675,12 @@ export function ACPChatDialog(
               <ConversationPromptQueue
                 queue={promptQueue}
                 sessionActive={sessionActive || stopInProgress}
-                mutationPending={queueMutationPending}
+                mutationPending={queueMutationPending || queueSubmitPending}
+                composerOccupied={composerDraftOccupied}
                 attachedAbove={todoEntries.length > 0}
                 integratedInfoTab={composerInfoTabTarget === "queue"}
-                onEdit={editQueuedPrompt}
+                onRestore={restoreQueuedPrompt}
+                onReorder={reorderQueuedPrompts}
                 onUse={useQueuedPrompt}
                 onDelete={deleteQueuedPrompt}
               />
@@ -3673,7 +3722,7 @@ export function ACPChatDialog(
                   description: committedSlashCommand.command.description,
                 } : null}
                 placeholder={composerPlaceholder}
-                inputDisabled={composerInputDisabled}
+                inputDisabled={composerInputDisabled || queueRestorePending}
                 onTextareaKeyDown={slashCommands.onKeyDown}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
@@ -3685,7 +3734,7 @@ export function ACPChatDialog(
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
-                canSubmit={canSubmitPrompt && !queueSubmitPending}
+                canSubmit={canSubmitPrompt}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
                 runtimeContinueKind={localLifecycle?.continueKind ?? null}
@@ -3716,7 +3765,7 @@ export function ACPChatDialog(
         textPreview={textPreview}
         onCloseText={() => setTextPreview(null)}
       />
-      {!readOnly ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
+      {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>

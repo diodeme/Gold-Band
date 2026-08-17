@@ -340,8 +340,11 @@ export const desktopApi: RuntimeApi = {
   submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
     return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
-  updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
-    return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
+  reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId) {
+    return invokeCommand('reorder_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId });
+  },
+  restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('restore_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
   deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
     return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
@@ -643,6 +646,13 @@ export const desktopApi: RuntimeApi = {
     const result = await open({ multiple: true });
     if (!result) return [];
     const paths = Array.isArray(result) ? result : [result];
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+    }));
+  },
+  async statAttachmentFiles(paths) {
     const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
     return files.map((file) => ({
       ...file,

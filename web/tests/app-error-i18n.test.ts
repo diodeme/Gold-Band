@@ -38,6 +38,20 @@ describe('app error i18n', () => {
     expect(message).toBe('找不到该工作空间。');
   });
 
+  it('renders prompt queue reorder conflicts as recoverable structured errors', () => {
+    const conflict = displayAppError(i18n.t.bind(i18n), {
+      code: 'conversation.prompt-queue-revision-conflict',
+      params: {},
+    });
+    const invalidOrder = displayAppError(i18n.t.bind(i18n), {
+      code: 'conversation.prompt-queue-invalid-order',
+      params: {},
+    });
+
+    expect(conflict).toBe('待发送顺序已发生变化，请在列表更新后重试。');
+    expect(invalidOrder).toBe('待发送顺序无效，请重试。');
+  });
+
   it('does not expose interpolation placeholders when an error has no message parameter', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'app.unexpected',

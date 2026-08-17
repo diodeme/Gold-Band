@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AcpComposerDraftStore } from '@/lib/acp-composer-draft';
+import {
+  AcpComposerDraftStore,
+  queuedPromptToAcpComposerDraft,
+} from '@/lib/acp-composer-draft';
 import type { AttachmentItem } from '@/lib/attachment-service';
 
 function attachment(id: string, size = 1, preview = false): AttachmentItem {
@@ -15,6 +18,30 @@ function attachment(id: string, size = 1, preview = false): AttachmentItem {
 
 describe('ACP follow-up composer draft store', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it('restores queued content, attachment paths, and structured quotes as one composer draft', () => {
+    const draft = queuedPromptToAcpComposerDraft({
+      content: '继续处理',
+      quotes: [{ id: 'quote-1', sourceMessageKey: 'message-1', text: 'Agent 原文' }],
+      attachmentPaths: ['C:/work/evidence.png'],
+    }, [{
+      path: 'C:/work/evidence.png',
+      name: 'evidence.png',
+      size: 24,
+      previewUrl: 'asset://evidence',
+    }]);
+
+    expect(draft.content).toBe('继续处理');
+    expect(draft.quotes).toEqual([{ id: 'quote-1', sourceKey: 'message-1', text: 'Agent 原文' }]);
+    expect(draft.attachments).toHaveLength(1);
+    expect(draft.attachments[0]).toMatchObject({
+      name: 'evidence.png',
+      path: 'C:/work/evidence.png',
+      size: 24,
+      mime: 'image/png',
+      previewUrl: 'asset://evidence',
+    });
+  });
 
   it('restores text and attachments by full session locator while isolating another session', () => {
     const store = new AcpComposerDraftStore();
@@ -44,6 +71,18 @@ describe('ACP follow-up composer draft store', () => {
     expect(store.restoreIfEmpty('session-b', detached)).toBe(false);
     expect(store.read('session-a').content).toBe('session A');
     expect(store.read('session-b').content).toBe('session B');
+  });
+
+  it('enriches a restored queued draft only while the user has not changed it', () => {
+    const store = new AcpComposerDraftStore();
+    const restored = { content: 'queued', attachments: [attachment('fallback', 0)], quotes: [] };
+    const enriched = { content: 'queued', attachments: [attachment('enriched', 12)], quotes: [] };
+    store.restoreIfEmpty('session', restored);
+
+    expect(store.replaceIfUnchanged('session', restored, enriched)).toBe(true);
+    expect(store.read('session')).toBe(enriched);
+    expect(store.replaceIfUnchanged('session', restored, restored)).toBe(false);
+    expect(store.read('session')).toBe(enriched);
   });
 
   it('keeps storage bounded and releases preview URLs when an old draft is evicted', () => {

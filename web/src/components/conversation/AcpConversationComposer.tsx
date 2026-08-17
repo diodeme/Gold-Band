@@ -168,6 +168,7 @@ export function AcpConversationComposer({
           maxHeight={320}
           className={cn(
             'bg-card !shadow-none transition-colors',
+            ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
             attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
             integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}

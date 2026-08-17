@@ -3665,7 +3665,10 @@ export function ACPChatDialog(
                 processingLabel={showComposerStatus ? composerStatusLabel : null}
                 sessionSeconds={composerSessionSeconds}
                 worktreePath={worktreePath}
-                className="absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-[''] after:pointer-events-none after:absolute after:-right-2.5 after:bottom-px after:size-2.5 after:rounded-bl-md after:border-b after:border-l after:border-border after:content-['']"
+                className={cn(
+                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']",
+                  ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+                )}
               />
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
@@ -3908,11 +3911,12 @@ function AcpExternalComposerState({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-none",
+        "flex min-w-0 items-center gap-3 rounded-2xl px-5 py-4 shadow-none",
+        ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
         integratedInfoTab && "rounded-tl-none",
         isError
-          ? "border-destructive/20 bg-destructive/5"
-          : "border-amber-500/20 bg-amber-500/5",
+          ? "bg-destructive/5"
+          : "bg-amber-500/5",
       )}
     >
       <span
@@ -3961,7 +3965,8 @@ function AcpManualCheckPanel({
   const { t } = useTranslation();
   return (
     <div className={cn(
-      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl border border-primary/20 bg-card px-4 py-2.5 shadow-none",
+      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl bg-card px-4 py-2.5 shadow-none",
+      ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
       integratedInfoTab && "rounded-tl-none",
     )}>
       <div className="min-w-0 flex-1">
@@ -4033,8 +4038,9 @@ export function AcpTodoPanel({
         "w-full",
         variant === "composer"
           ? cn(
-              "overflow-hidden border border-border bg-card",
-              attachedBelow ? "rounded-t-2xl border-b-0" : "rounded-2xl",
+              "overflow-hidden bg-card",
+              ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+              attachedBelow ? "rounded-t-2xl" : "rounded-2xl",
               integratedInfoTab && "rounded-tl-none",
             )
           : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
@@ -4064,7 +4070,10 @@ export function AcpTodoPanel({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-        <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
+        <div className={cn(
+          "px-3 pb-1.5",
+          variant === "nested" && "divide-y divide-border/25 border-t border-border/35",
+        )}>
           {entries.map((entry, index) => (
             <div data-acp-todo-row="true" className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-xs" key={index}>
               <TodoStatusMark status={entry.status} />

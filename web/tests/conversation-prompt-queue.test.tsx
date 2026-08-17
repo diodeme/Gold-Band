@@ -64,8 +64,14 @@ describe('ConversationPromptQueue', () => {
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(trigger?.textContent).toContain('待发送');
     expect(trigger?.textContent).toContain('5/10');
-    expect(host.querySelector('[data-testid="conversation-prompt-queue"]')?.className).toContain('bg-card');
-    expect(host.querySelector('[data-testid="conversation-prompt-queue"]')?.className).not.toContain('bg-muted/35');
+    const queueSurface = host.querySelector('[data-testid="conversation-prompt-queue"]');
+    expect(queueSurface?.classList.contains('bg-card')).toBe(true);
+    expect(queueSurface?.classList.contains('border-0')).toBe(true);
+    expect(queueSurface?.classList.contains('border')).toBe(false);
+    expect(queueSurface?.classList.contains('bg-muted/35')).toBe(false);
+    expect(host.querySelector('[data-queue-items="true"]')?.classList.contains('divide-y')).toBe(false);
+    expect(host.querySelector('[data-queue-items="true"]')?.classList.contains('border-t')).toBe(false);
+    expect(host.querySelector('[data-queue-show-more-row="true"]')?.classList.contains('border-t')).toBe(false);
     expect(host.querySelectorAll('[data-queue-item-id]')).toHaveLength(3);
     expect(host.textContent).toContain('queued prompt 1');
     expect(host.textContent).not.toContain('queued prompt 4');

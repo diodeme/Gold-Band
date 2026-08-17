@@ -42,9 +42,9 @@ use crate::dynamic::{
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
 };
-use crate::git::{GitRepositoryService, GitWorkspaceManager};
 #[cfg(test)]
 use crate::git::{GitCommandOutput, GitCommandRunner};
+use crate::git::{GitRepositoryService, GitWorkspaceManager};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
@@ -934,27 +934,22 @@ pub(crate) fn launch_prepared_run_background(
             // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
             // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
             let drive_result = catch_unwind(AssertUnwindSafe(|| {
-                prepare_run_worktree_background(
-                    &app,
-                    &task_id,
-                    &mut run,
-                    &round,
-                    &node,
+                prepare_run_worktree_background(&app, &task_id, &mut run, &round, &node).and_then(
+                    |ready| {
+                        if !ready {
+                            return Ok(());
+                        }
+                        drive_from_node(
+                            &app,
+                            &task_id,
+                            &validated,
+                            &resolved_profiles,
+                            &mut run,
+                            &mut round,
+                            node,
+                        )
+                    },
                 )
-                .and_then(|ready| {
-                    if !ready {
-                        return Ok(());
-                    }
-                    drive_from_node(
-                        &app,
-                        &task_id,
-                        &validated,
-                        &resolved_profiles,
-                        &mut run,
-                        &mut round,
-                        node,
-                    )
-                })
             }));
             let err = match drive_result {
                 Ok(Ok(())) => None,
@@ -1283,10 +1278,13 @@ fn prepare_run_worktree_background(
         .lock()
         .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
     let mut durable_run: RunState = read_json(&app.paths.run_file(task_id, &run.id))?;
-    let durable_node: NodeState = read_json(
-        &app.paths
-            .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
-    )?;
+    let durable_node: NodeState = read_json(&app.paths.node_file(
+        task_id,
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+    ))?;
     if durable_run.status != RunStatus::Running
         || durable_run.current_round.as_deref() != Some(round.id.as_str())
         || durable_run.current_node.as_deref() != Some(node.node_id.as_str())
@@ -1315,11 +1313,15 @@ pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Resul
     let canonical_root = Utf8PathBuf::from_path_buf(std::fs::canonicalize(
         expected_root.as_std_path(),
     )?)
-    .map_err(|path| anyhow!("managed conversation worktree root is not UTF-8: {}", path.display()))?;
-    let canonical_worktree = Utf8PathBuf::from_path_buf(std::fs::canonicalize(
-        worktree.path.as_std_path(),
-    )?)
-    .map_err(|path| anyhow!("run worktree path is not UTF-8: {}", path.display()))?;
+    .map_err(|path| {
+        anyhow!(
+            "managed conversation worktree root is not UTF-8: {}",
+            path.display()
+        )
+    })?;
+    let canonical_worktree =
+        Utf8PathBuf::from_path_buf(std::fs::canonicalize(worktree.path.as_std_path())?)
+            .map_err(|path| anyhow!("run worktree path is not UTF-8: {}", path.display()))?;
     ensure!(
         canonical_worktree.starts_with(&canonical_root),
         "run worktree is outside the managed conversation worktree root"
@@ -12534,7 +12536,7 @@ mod tests {
         assert_eq!(state.resume_prompt_visibility, PromptVisibility::Visible);
 
         let prompt = state.resume_prompt.as_deref().unwrap_or_default();
-        assert!(prompt.starts_with("请先补充回归测试\n"));
+        assert_eq!(prompt.lines().next(), Some("请先补充回归测试"));
         assert!(prompt.contains("show=\"false\""));
         assert!(prompt.contains("请先完整执行本消息中的用户指令"));
         assert!(prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
@@ -12837,16 +12839,23 @@ mod tests {
 
     #[test]
     fn conversation_worktree_run_records_head_and_stays_stopped_after_preparation() {
-        let (_temp, repo_root) = init_repo();
-        let app = App::new(repo_root.clone());
+        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
+        let repo_root = app.paths.repo_root.clone();
         let task_id = create_direct_test_task(&app);
         let expected_head = GitRepositoryService::default().head(&repo_root).unwrap();
         let prepared = prepare_run_in_worktree(&app, &task_id, None).unwrap();
         let prepared_run = prepared.run();
         let worktree = prepared_run.worktree.as_ref().unwrap();
-        assert_eq!(prepared_run.execution.phase, RuntimeExecutionPhase::PreparingWorkspace);
+        assert_eq!(
+            prepared_run.execution.phase,
+            RuntimeExecutionPhase::PreparingWorkspace
+        );
         assert_eq!(worktree.fork_commit, expected_head);
-        assert!(worktree.path.starts_with(app.paths.conversation_worktrees_dir()));
+        assert!(
+            worktree
+                .path
+                .starts_with(app.paths.conversation_worktrees_dir())
+        );
 
         let accepted = prepared.accept();
         let PreparedRunData {
@@ -13326,6 +13335,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 Some(RuntimeAttemptLocator {
@@ -13597,6 +13607,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13724,6 +13735,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13835,6 +13847,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13980,6 +13993,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 Some(RuntimeAttemptLocator {

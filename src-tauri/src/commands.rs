@@ -52,7 +52,7 @@ use gold_band::config::{
     ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
     FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
     MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
-    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference, ResolvedColorScheme,
+    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
     WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
@@ -7727,7 +7727,7 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
-    use gold_band::config::{ConversationWorkspaceEntry, RuntimeConfig};
+    use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::TaskState;

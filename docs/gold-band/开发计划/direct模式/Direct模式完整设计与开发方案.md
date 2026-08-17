@@ -1314,6 +1314,7 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - [x] 队列项保存稳定 item/prompt identity、正文、结构化引用、附件路径、创建时间和 dispatch 状态；authoring payload 由 attempt 级队列统一管理。
 - [x] lifecycle/list VM 只投影稳定 ID、正文与引用/附件计数；完整引用和附件路径仅由单条 restore command 按需返回，避免高频 session update 重复搬运整个队列 authoring payload。
 - [x] 删除只修改正文的 update 入口；保留 delete/use，并新增按需返回完整 authoring payload 的 restore command 与 `expectedRevision + orderedItemIds` reorder Tauri command，继续使用结构化 error code + params。
+- [x] 合并编译契约回归：桌面 command import 与 `generate_handler!` 只注册当前真实存在且被客户端消费的 restore/reorder/delete/use 接口，删除遗留的 update 注册；生产依赖与测试专用导入分层，避免合并后出现 unresolved command 或 unused import。
 - [x] reorder 在 attempt 队列锁内执行 revision CAS、完整 queued ID 集合与重复 ID 校验；成功后一次原子写入，stale/invalid 请求不修改 durable 队列。
 - [x] lifecycle 仅为 Direct 投影 `promptQueue`；Workflow/AUTO 的数据和 composer 规则不变。
 - [x] App turn hook 收敛为统一 prompt lifecycle：`Accepted { promptId }` 精确完成 durable 出队，`Finished { successful }` 决定是否继续排空；失败/取消只恢复 durable timeline 尚未接受的 dispatching 项。

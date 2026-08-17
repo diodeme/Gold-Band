@@ -60,8 +60,7 @@ use commands::{
     start_git_operation, start_git_state_monitor, start_github_login,
     start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
     submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
-    update_auto_template, update_conversation_queued_prompt, update_mcp_server,
-    update_notification_attention, update_profile,
+    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
     update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
     write_skill,
 };
@@ -308,7 +307,6 @@ fn run() -> anyhow::Result<()> {
             get_acp_tool_detail,
             renew_acp_session_lease,
             submit_conversation_prompt,
-            update_conversation_queued_prompt,
             reorder_conversation_queued_prompts,
             restore_conversation_queued_prompt,
             delete_conversation_queued_prompt,

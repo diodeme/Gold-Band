@@ -1179,6 +1179,8 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 
 2026-08-13 审阅 summary 与滚动状态回归：确认 Git `numstat` 与 CodeMirror diff 对移动/重复代码可能给出不同增删统计，审阅 item 现携带历史 numstat、workspace numstat 或 GitHub PR files API 的领域 summary，列表与 Diff Tab 统一消费；正文算法只渲染 chunks，权威 summary 缺失时才使用 comparison fallback。历史 Commit 列表和聚合文件列表使用 repository/workspace-scoped 独立轻量 scroll offset，相同 review 从 Diff 返回时在 viewport 重挂载并完成布局后恢复文件位置，分页在状态提交前把 Commit offset 归零；scroll handler 只写运行期数字，不发布 React state。鼠标 Commit 点击后主动释放普通 button focus，键盘 focus-visible 保留。以上修改不增加 Git/网络请求、正文解析、缓存条目或重渲染范围；布局后只执行一次常数级滚动恢复。
 
+2026-08-16 修复 unborn history 与空树端点统计：porcelain v2 的 `branch.oid (initial)` 在 Git 协议解析边界直接归一化为 `None`，snapshot 与 history 共享同一 canonical HEAD 事实，空仓库稳定返回空历史页；commit review 的 `beforeOid=None` 统一表示空树，使用当前仓库 `git hash-object -t tree --stdin` 动态获得匹配 SHA-1/SHA-256 object format 的空树 OID，再执行端点批量 numstat，不能把非 Root 的最终 Commit 错当成只与其父提交比较。真实临时仓库接口测试固定“重复保存的同路径从空树累计 +2/-0”和 unborn 空历史语义；正常历史与有 before 端点不增加命令，只有空树比较增加一次常数级 Git 调用，不读取正文、不引入文件级 N+1、缓存或新状态。
+
 2026-08-17 unborn repository 回归：Git porcelain v2 的 `branch.oid (initial)` 在 typed 解析入口统一规范化为 `None`，删除 snapshot 消费端的 sentinel 特判，使 snapshot、history 与 revision 共享同一 HEAD 语义。真实临时仓库接口测试固定 `git init` 后无首次提交时 snapshot 仍可读取未跟踪文件、repository 标记为 unborn 且 history 返回空页；不新增 Git 命令、前端状态、缓存或依赖。
 
 ## 18. 最终验收标准

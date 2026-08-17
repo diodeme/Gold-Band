@@ -1,5 +1,6 @@
+mod support;
+
 use camino::Utf8PathBuf;
-use gold_band::app::App;
 use gold_band::domain::SessionMode;
 use gold_band::provider::{
     DoctorResult, ProviderAdapter, ProviderCapabilities, ProviderInfo, ProviderResultPayload,
@@ -7,6 +8,8 @@ use gold_band::provider::{
 };
 use gold_band::runtime::RunState;
 use tempfile::tempdir;
+
+use support::app_with_available_claude_provider;
 
 #[derive(Clone, Default)]
 struct UnicodeTimelineProvider;
@@ -89,7 +92,7 @@ fn run_start_transitions_past_completed_worker_with_unicode_timeline() {
     let gold_band_home = repo_root.join("gold-band-home");
     unsafe { std::env::set_var("GOLD_BAND_HOME", gold_band_home.as_str()) };
 
-    let app = App::with_provider(repo_root, Box::new(UnicodeTimelineProvider));
+    let app = app_with_available_claude_provider(repo_root, Box::new(UnicodeTimelineProvider));
     let task_id = "task-001";
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();

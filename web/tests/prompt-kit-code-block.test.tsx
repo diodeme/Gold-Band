@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Markdown } from '@/components/prompt-kit/markdown';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -41,7 +42,7 @@ describe('prompt-kit fenced code blocks', () => {
     const root = createRoot(container);
 
     try {
-      await act(async () => root.render(<Markdown>{markdown}</Markdown>));
+      await act(async () => root.render(<TooltipProvider><Markdown>{markdown}</Markdown></TooltipProvider>));
       const buttons = container.querySelectorAll<HTMLButtonElement>('[data-streamdown="code-block-copy-button"]');
       expect(buttons).toHaveLength(2);
 
@@ -50,7 +51,13 @@ describe('prompt-kit fenced code blocks', () => {
       expect(jsonBody?.querySelectorAll('[style*="--sdm-c"]').length).toBeGreaterThan(1);
       expect(jsonBody?.querySelectorAll('code > span')).toHaveLength(3);
 
-      await act(async () => buttons[1]?.click());
+      const settledButtons = container.querySelectorAll<HTMLButtonElement>('[data-streamdown="code-block-copy-button"]');
+      expect(settledButtons[1]?.disabled).toBe(false);
+      expect(navigator.clipboard.writeText).toBe(writeText);
+      await act(async () => {
+        settledButtons[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
 
       expect(writeText).toHaveBeenCalledOnce();
       expect(writeText).toHaveBeenCalledWith('class AcpModule {}\n');

@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
+use gold_band::config::ProviderDiagnosticSnapshot;
 use gold_band::console::controller::{
     activate_current, cycle_focus, escape, move_right, refresh_tick, show_help_overlay,
     start_command_input, toggle_log_source,
@@ -12,7 +13,18 @@ use gold_band::console::view_models::build_view_model;
 use tempfile::tempdir;
 
 fn seed_branching_repo(repo_root: &Utf8PathBuf) -> App {
-    let app = App::new(repo_root.clone());
+    let app =
+        App::new(repo_root.clone()).with_provider_diagnostics_source(std::sync::Arc::new(|| {
+            Ok(std::collections::BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-17T00:00:00Z".to_string(),
+                    capabilities: None,
+                },
+            )]))
+        }));
     std::fs::create_dir_all(
         app.paths
             .task_dir("task-001")

@@ -24,7 +24,8 @@ use crate::domain::{
 };
 use crate::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, NodeDsl, ValidatedWorkflow, WorkflowDsl,
-    validate_workflow, validate_workflow_snapshot, workflow_contains_ai_dynamic,
+    validate_authoring_workflow, validate_workflow, validate_workflow_snapshot,
+    workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     AllowedWorkflowSnapshot, DYNAMIC_COMPLETION_ARTIFACT, DynamicAgentTaskSpec,
@@ -78,6 +79,7 @@ use crate::runtime_error::{
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
 use crate::storage::{append_jsonl, read_json, write_json};
+use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
 
 use super::ids::{
     generate_uuid, next_attempt_id, next_dynamic_resume_request_id, next_runtime_execution_id,
@@ -87,12 +89,14 @@ use super::node_executor::{execute_ai_node, re_evaluate_attempt};
 use super::profile_resolver::{resolve_profile_for_node, resolve_workflow_profiles};
 use super::state_access::{
     current_attempt_state, load_run_workflow, persist_runtime_state,
-    persist_runtime_state_if_execution_current, refresh_runtime_execution_if_current,
+    persist_runtime_state_if_execution_current,
+    persist_runtime_state_if_expected_execution_current, refresh_runtime_execution_if_current,
 };
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
 use super::{
-    AcpLiveEventContext, App, RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
+    AcpLiveEventContext, App, AttemptRuntimePauseResult, RuntimeInterventionKind,
+    RuntimeLifecycleEvent, is_run_continuable,
 };
 
 struct PreparedRunData {
@@ -186,6 +190,17 @@ static FIXED_RUN_CONTINUE_STARTING: OnceLock<Mutex<HashSet<String>>> = OnceLock:
 
 struct FixedRunContinueLease {
     key: String,
+}
+
+pub struct ManualCheckSubmissionLease {
+    _continue_lease: FixedRunContinueLease,
+}
+
+#[derive(Clone)]
+struct BackgroundDriveFallback {
+    run: RunState,
+    round: RoundState,
+    node: NodeState,
 }
 
 #[derive(Debug)]
@@ -645,15 +660,208 @@ fn terminalize_background_drive_error(
     fallback_node: &NodeState,
     error: &anyhow::Error,
 ) {
-    let mut run = app
-        .run_status(task_id, &fallback_run.id)
-        .unwrap_or_else(|_| fallback_run.clone());
-    let (mut round, mut node) = current_attempt_state(app, task_id, &run).unwrap_or_else(|_| {
-        run.current_round = Some(fallback_round.id.clone());
-        run.current_node = Some(fallback_node.node_id.clone());
-        run.current_attempt = Some(fallback_node.attempt_id.clone());
-        (fallback_round.clone(), fallback_node.clone())
-    });
+    terminalize_background_drive_error_with_policy(
+        app,
+        task_id,
+        fallback_run,
+        fallback_round,
+        fallback_node,
+        BackgroundDriveFailurePolicy::ActiveExecution,
+        error,
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundDriveFailurePolicy {
+    ActiveExecution,
+    PausedManualCheck,
+}
+
+fn terminalize_manual_check_precommit_error(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+    error: &anyhow::Error,
+) {
+    terminalize_background_drive_error_with_policy(
+        app,
+        task_id,
+        fallback_run,
+        fallback_round,
+        fallback_node,
+        BackgroundDriveFailurePolicy::PausedManualCheck,
+        error,
+    );
+}
+
+fn terminalize_background_drive_error_with_policy(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+    policy: BackgroundDriveFailurePolicy,
+    error: &anyhow::Error,
+) {
+    let convergence = match policy {
+        BackgroundDriveFailurePolicy::ActiveExecution => {
+            if let Some(execution_id) = fallback_node.runtime_execution_id.as_deref() {
+                app.pause_attempt_runtime_state_if_active_execution(
+                    task_id,
+                    &fallback_run.id,
+                    &fallback_round.id,
+                    &fallback_node.node_id,
+                    &fallback_node.attempt_id,
+                    execution_id,
+                    PauseReason::RuntimeAbnormal,
+                )
+            } else {
+                app.pause_attempt_runtime_state_if_active_without_execution(
+                    task_id,
+                    &fallback_run.id,
+                    &fallback_round.id,
+                    &fallback_node.node_id,
+                    &fallback_node.attempt_id,
+                    PauseReason::RuntimeAbnormal,
+                )
+            }
+        }
+        BackgroundDriveFailurePolicy::PausedManualCheck => app
+            .pause_attempt_runtime_state_if_paused_manual_check(
+                task_id,
+                &fallback_run.id,
+                &fallback_round.id,
+                &fallback_node.node_id,
+                &fallback_node.attempt_id,
+                PauseReason::RuntimeAbnormal,
+            ),
+    };
+
+    match convergence {
+        Ok(AttemptRuntimePauseResult::Converged) => {
+            emit_background_drive_error_from_fallback(
+                app,
+                task_id,
+                fallback_run,
+                fallback_round,
+                fallback_node,
+                error,
+            );
+        }
+        Ok(AttemptRuntimePauseResult::Superseded) => {
+            if policy == BackgroundDriveFailurePolicy::PausedManualCheck
+                || background_drive_attempt_is_partially_converged(
+                    app,
+                    task_id,
+                    fallback_run,
+                    fallback_round,
+                    fallback_node,
+                )
+            {
+                emit_background_drive_error_from_fallback(
+                    app,
+                    task_id,
+                    fallback_run,
+                    fallback_round,
+                    fallback_node,
+                    error,
+                );
+            }
+        }
+        Err(convergence_error) => {
+            if policy == BackgroundDriveFailurePolicy::ActiveExecution
+                && background_drive_execution_was_superseded(
+                    app,
+                    task_id,
+                    fallback_run,
+                    fallback_round,
+                    fallback_node,
+                )
+            {
+                return;
+            }
+            let combined_error = anyhow!(
+                "{error:#}; runtime failure convergence also failed: {convergence_error:#}"
+            );
+            emit_background_drive_error_from_fallback(
+                app,
+                task_id,
+                fallback_run,
+                fallback_round,
+                fallback_node,
+                &combined_error,
+            );
+        }
+    }
+}
+
+fn background_drive_execution_was_superseded(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+) -> bool {
+    let Ok(run) = app.run_status(task_id, &fallback_run.id) else {
+        return false;
+    };
+    if background_drive_attempt_is_partially_converged(
+        app,
+        task_id,
+        fallback_run,
+        fallback_round,
+        fallback_node,
+    ) {
+        return false;
+    }
+    let locator_matches = run.current_round.as_deref() == Some(fallback_round.id.as_str())
+        && run.current_node.as_deref() == Some(fallback_node.node_id.as_str())
+        && run.current_attempt.as_deref() == Some(fallback_node.attempt_id.as_str());
+    if !locator_matches || run.status != RunStatus::Running {
+        return true;
+    }
+    let node_path = app.paths.node_file(
+        task_id,
+        &fallback_run.id,
+        &fallback_round.id,
+        &fallback_node.node_id,
+        &fallback_node.attempt_id,
+    );
+    let Ok(node) = read_json::<NodeState>(&node_path) else {
+        return false;
+    };
+    node.runtime_execution_id != fallback_node.runtime_execution_id
+}
+
+fn background_drive_attempt_is_partially_converged(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+) -> bool {
+    app.run_status(task_id, &fallback_run.id).is_ok_and(|run| {
+        run.current_round.as_deref() == Some(fallback_round.id.as_str())
+            && run.current_node.as_deref() == Some(fallback_node.node_id.as_str())
+            && run.current_attempt.as_deref() == Some(fallback_node.attempt_id.as_str())
+            && run.status == RunStatus::Paused
+            && run.pause_reason == Some(PauseReason::RuntimeAbnormal)
+    })
+}
+
+fn emit_background_drive_error_from_fallback(
+    app: &App,
+    task_id: &str,
+    fallback_run: &RunState,
+    fallback_round: &RoundState,
+    fallback_node: &NodeState,
+    error: &anyhow::Error,
+) {
+    let mut run = fallback_run.clone();
+    let mut round = fallback_round.clone();
+    let mut node = fallback_node.clone();
     let now = now_rfc3339_like();
     run.status = RunStatus::Paused;
     run.outcome = None;
@@ -669,13 +877,25 @@ fn terminalize_background_drive_error(
     round.outcome = None;
     node.status = RunStatus::Paused;
     node.outcome = None;
-    node.finished_at = Some(now.clone());
+    node.runtime_execution_id = None;
+    node.finished_at = Some(now);
+    emit_background_drive_error(app, task_id, &run, &round, &node, error);
+}
+
+fn emit_background_drive_error(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+    error: &anyhow::Error,
+) {
     append_run_event_best_effort(
         &app.paths,
         task_id,
         &run.id,
         "background_drive_failed",
-        now,
+        now_rfc3339_like(),
         run_event_data(
             &ExecutionContext::for_run(task_id, &run.id)
                 .with_round(round.id.clone())
@@ -687,8 +907,7 @@ fn terminalize_background_drive_error(
             run.pause_reason,
         ),
     );
-    let _ = persist_runtime_state(app, task_id, &run, &round, &node);
-    emit_pause_side_effects(app, task_id, &run, &round, &node);
+    emit_pause_side_effects(app, task_id, run, round, node);
 }
 
 pub(crate) fn launch_prepared_run_background(
@@ -712,28 +931,44 @@ pub(crate) fn launch_prepared_run_background(
                 node,
             } = prepared.data;
             let fallback_node = node.clone();
-            let drive_result = prepare_run_worktree_background(
-                &app,
-                &task_id,
-                &mut run,
-                &round,
-                &node,
-            )
-            .and_then(|ready| {
-                if !ready {
-                    return Ok(());
-                }
-                drive_from_node(
+            // 用 catch_unwind 包裹 drive_from_node：panic 也走 terminalize_background_drive_error，
+            // 否则后台线程 panic 会跳过终止事件，导致订阅 scheduled_occurrence 的 occurrence 永久卡 running。
+            let drive_result = catch_unwind(AssertUnwindSafe(|| {
+                prepare_run_worktree_background(
                     &app,
                     &task_id,
-                    &validated,
-                    &resolved_profiles,
                     &mut run,
-                    &mut round,
-                    node,
+                    &round,
+                    &node,
                 )
-            });
-            if let Err(err) = drive_result {
+                .and_then(|ready| {
+                    if !ready {
+                        return Ok(());
+                    }
+                    drive_from_node(
+                        &app,
+                        &task_id,
+                        &validated,
+                        &resolved_profiles,
+                        &mut run,
+                        &mut round,
+                        node,
+                    )
+                })
+            }));
+            let err = match drive_result {
+                Ok(Ok(())) => None,
+                Ok(Err(err)) => Some(err),
+                Err(panic_payload) => Some(anyhow::anyhow!(
+                    "background drive panicked: {}",
+                    panic_payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                        .unwrap_or("<non-string panic payload>")
+                )),
+            };
+            if let Some(err) = err {
                 terminalize_background_drive_error(
                     &app,
                     &task_id,
@@ -761,7 +996,11 @@ pub(crate) fn prepare_run(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
-    prepare_run_for_workspace(app, task_id, workflow_override, false)
+    let workflow: WorkflowDsl = match workflow_override {
+        Some(path) => read_json(path)?,
+        None => app.executable_task_workflow(task_id)?,
+    };
+    prepare_run_from_workflow(app, task_id, workflow, false)
 }
 
 pub(crate) fn prepare_run_in_worktree(
@@ -769,23 +1008,34 @@ pub(crate) fn prepare_run_in_worktree(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
-    prepare_run_for_workspace(app, task_id, workflow_override, true)
+    let workflow: WorkflowDsl = match workflow_override {
+        Some(path) => read_json(path)?,
+        None => app.executable_task_workflow(task_id)?,
+    };
+    prepare_run_from_workflow(app, task_id, workflow, true)
 }
 
-fn prepare_run_for_workspace(
+pub(crate) fn prepare_run_with_authoring(
     app: &App,
     task_id: &str,
-    workflow_override: Option<&Utf8Path>,
+    authoring: &TaskAuthoringWorkflow,
+) -> Result<PreparedRun> {
+    let validated_authoring = validate_authoring_workflow(authoring.workflow.clone())?;
+    let workflow = validate_and_inject(
+        &validated_authoring.raw,
+        &authoring.model_bindings,
+        &app.config.agents,
+        &app.provider_diagnostics(),
+    )?;
+    prepare_run_from_workflow(app, task_id, workflow, false)
+}
+
+fn prepare_run_from_workflow(
+    app: &App,
+    task_id: &str,
+    workflow: WorkflowDsl,
     create_worktree: bool,
 ) -> Result<PreparedRun> {
-    let workflow_path = workflow_override
-        .map(|path| path.to_owned())
-        .unwrap_or_else(|| app.paths.workflow_file(task_id));
-    let mut workflow: WorkflowDsl = read_json(&workflow_path)?;
-    let model_normalizations = app.normalize_workflow_models(&mut workflow);
-    if workflow_override.is_none() && !model_normalizations.is_empty() {
-        write_json(&workflow_path, &workflow)?;
-    }
     let validated = validate_workflow_snapshot(workflow)?;
     let worktree_capability = if create_worktree {
         Some(GitRepositoryService::default().require_worktree(&app.paths.repo_root)?)
@@ -943,19 +1193,6 @@ fn prepare_run_for_workspace(
             None,
         ),
     );
-    for normalization in model_normalizations {
-        let mut event_data = run_event_data(&ctx, None, None, None, None);
-        event_data.details =
-            Some(serde_json::to_value(normalization).unwrap_or_else(|_| serde_json::json!({})));
-        append_run_event_best_effort(
-            &app.paths,
-            task_id,
-            &run.id,
-            "model_config_normalized",
-            now_rfc3339_like(),
-            event_data,
-        );
-    }
     write_progress_hint(
         &app.paths,
         task_id,
@@ -1329,6 +1566,7 @@ pub(crate) fn run_continue(
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<RunState> {
+    let _continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
     run_continue_with_launch_signal(
         app,
         task_id,
@@ -2002,18 +2240,16 @@ pub(crate) fn run_continue_background(
                 Some(background_execution_id.clone()),
             ) {
                 let info = runtime_continue_launch_error(&err);
-                let converged = app
-                    .pause_attempt_runtime_state_if_active_execution(
-                        &task_id,
-                        &run_id,
-                        &round_id,
-                        &node_id,
-                        &attempt_id,
-                        &background_execution_id,
-                        PauseReason::RuntimeAbnormal,
-                    )
-                    .unwrap_or(false);
-                if converged {
+                let convergence = app.pause_attempt_runtime_state_if_active_execution(
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    &background_execution_id,
+                    PauseReason::RuntimeAbnormal,
+                );
+                if !matches!(&convergence, Ok(AttemptRuntimePauseResult::Superseded)) {
                     let _ = app.emit_acp_session_update(AcpLiveEventContext {
                         task_id: task_id.clone(),
                         run_id: run_id.clone(),
@@ -2026,12 +2262,16 @@ pub(crate) fn run_continue_background(
                 }
                 let _ = launch_failure_sender.send(RuntimeContinueLaunch::Failed(info.clone()));
                 let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
+                let convergence_details = convergence
+                    .err()
+                    .map(|error| format!("; runtime failure convergence also failed: {error:#}"))
+                    .unwrap_or_default();
                 let _ = std::fs::write(
                     app.paths
                         .runs_dir(&task_id)
                         .join("desktop-continue-error.txt")
                         .as_std_path(),
-                    err.to_string(),
+                    format!("{err:#}{convergence_details}"),
                 );
             }
         })
@@ -2188,35 +2428,38 @@ pub(crate) fn submit_manual_check(
     attempt_id: &str,
     outcome: NodeOutcome,
 ) -> Result<RunState> {
+    let lease =
+        reserve_manual_check_submission(app, task_id, run_id, round_id, node_id, attempt_id)?;
+    let result = submit_manual_check_with_launch_signal(
+        app, task_id, run_id, round_id, node_id, attempt_id, outcome, None, None,
+    );
+    drop(lease);
+    result
+}
+
+fn submit_manual_check_with_launch_signal(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outcome: NodeOutcome,
+    mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    launch_fallback: Option<Arc<Mutex<Option<BackgroundDriveFallback>>>>,
+) -> Result<RunState> {
     ensure!(
         matches!(outcome, NodeOutcome::Success | NodeOutcome::Failure),
         "manual check outcome must be success or failure"
     );
+    validate_manual_check_submission(app, task_id, run_id, round_id, node_id, attempt_id)?;
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
     app.validate_workflow_agents(&validated)?;
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
-    ensure!(run.status == RunStatus::Paused, "run is not paused");
-    ensure!(
-        run.current_round.as_deref() == Some(round_id)
-            && run.current_node.as_deref() == Some(node_id)
-            && run.current_attempt.as_deref() == Some(attempt_id),
-        "manual check can only be submitted for the current paused attempt"
-    );
     let (mut round, mut node) = current_attempt_state(app, task_id, &run)?;
-    ensure!(round.id == round_id, "round mismatch for manual check");
-    ensure!(node.node_id == node_id, "node mismatch for manual check");
-    ensure!(
-        node.attempt_id == attempt_id,
-        "attempt mismatch for manual check"
-    );
-    ensure!(node.status == RunStatus::Paused, "node is not paused");
-    ensure!(
-        node.manual_check_pending,
-        "node is not waiting for manual check"
-    );
 
     node.status = RunStatus::Completed;
     node.outcome = Some(outcome);
@@ -2282,7 +2525,7 @@ pub(crate) fn submit_manual_check(
     );
     persist_runtime_state(app, task_id, &run, &round, &node)?;
     let decision = decide_next_step(&validated, &run, &round, &node);
-    if let Some(next) = apply_control_decision(
+    let next = apply_control_decision(
         app,
         task_id,
         &validated,
@@ -2292,7 +2535,21 @@ pub(crate) fn submit_manual_check(
         &node,
         decision,
         None,
-    )? {
+    )?;
+    if let Some(next) = next.as_ref()
+        && let Some(launch_fallback) = launch_fallback.as_ref()
+    {
+        *launch_fallback
+            .lock()
+            .map_err(|_| anyhow!("manual check launch fallback lock poisoned"))? =
+            Some(BackgroundDriveFallback {
+                run: run.clone(),
+                round: round.clone(),
+                node: next.node.clone(),
+            });
+    }
+    notify_runtime_continue_started(&mut launch, &run);
+    if let Some(next) = next {
         let prompt_state = AcpInvocationPromptState::workflow_transition(
             app.config.desktop_language,
             next.session_mode,
@@ -2325,6 +2582,52 @@ pub(crate) fn submit_manual_check(
     Ok(run)
 }
 
+pub(crate) fn validate_manual_check_submission(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<()> {
+    let run = app.run_status(task_id, run_id)?;
+    ensure!(run.status == RunStatus::Paused, "run is not paused");
+    ensure!(
+        run.current_round.as_deref() == Some(round_id)
+            && run.current_node.as_deref() == Some(node_id)
+            && run.current_attempt.as_deref() == Some(attempt_id),
+        "manual check can only be submitted for the current paused attempt"
+    );
+    let (round, node) = current_attempt_state(app, task_id, &run)?;
+    ensure!(round.id == round_id, "round mismatch for manual check");
+    ensure!(node.node_id == node_id, "node mismatch for manual check");
+    ensure!(
+        node.attempt_id == attempt_id,
+        "attempt mismatch for manual check"
+    );
+    ensure!(node.status == RunStatus::Paused, "node is not paused");
+    ensure!(
+        node.manual_check_pending,
+        "node is not waiting for manual check"
+    );
+    Ok(())
+}
+
+pub(crate) fn reserve_manual_check_submission(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> Result<ManualCheckSubmissionLease> {
+    let continue_lease = FixedRunContinueLease::acquire(app, task_id, run_id)?;
+    validate_manual_check_submission(app, task_id, run_id, round_id, node_id, attempt_id)?;
+    Ok(ManualCheckSubmissionLease {
+        _continue_lease: continue_lease,
+    })
+}
+
 pub(crate) fn submit_manual_check_background(
     app: &App,
     task_id: &str,
@@ -2333,38 +2636,104 @@ pub(crate) fn submit_manual_check_background(
     node_id: &str,
     attempt_id: &str,
     outcome: NodeOutcome,
+    _lease: ManualCheckSubmissionLease,
 ) -> Result<RunState> {
     let initial_run = app.run_status(task_id, run_id)?;
+    let (initial_round, initial_node) = current_attempt_state(app, task_id, &initial_run)?;
     let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
+    let spawn_failure_task_id = task_id.clone();
     let run_id = run_id.to_string();
     let round_id = round_id.to_string();
     let node_id = node_id.to_string();
     let attempt_id = attempt_id.to_string();
+    let fallback_run = initial_run.clone();
+    let fallback_round = initial_round.clone();
+    let fallback_node = initial_node.clone();
+    let (launch_sender, launch_receiver) = mpsc::channel();
+    let launch_failure_sender = launch_sender.clone();
+    let launch_fallback = Arc::new(Mutex::new(None));
+    let background_launch_fallback = launch_fallback.clone();
 
-    thread::spawn(move || {
-        let app = background_app;
-        if let Err(err) = submit_manual_check(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            outcome,
-        ) {
-            let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
-            let _ = std::fs::write(
-                app.paths
-                    .runs_dir(&task_id)
-                    .join("desktop-manual-check-error.txt")
-                    .as_std_path(),
-                err.to_string(),
-            );
-        }
-    });
+    if let Err(spawn_error) = thread::Builder::new()
+        .name("gold-band-manual-check".to_string())
+        .spawn(move || {
+            let app = background_app;
+            let submission = catch_unwind(AssertUnwindSafe(|| {
+                submit_manual_check_with_launch_signal(
+                    &app,
+                    &task_id,
+                    &run_id,
+                    &round_id,
+                    &node_id,
+                    &attempt_id,
+                    outcome,
+                    Some(launch_sender),
+                    Some(background_launch_fallback),
+                )
+            }));
+            let error = match submission {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => Some(error),
+                Err(panic_payload) => Some(anyhow::anyhow!(
+                    "manual check submission panicked: {}",
+                    panic_payload
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                        .unwrap_or("<non-string panic payload>")
+                )),
+            };
+            if let Some(error) = error {
+                let committed_fallback = launch_fallback
+                    .lock()
+                    .ok()
+                    .and_then(|fallback| fallback.clone());
+                if let Some(failure_fallback) = committed_fallback {
+                    terminalize_background_drive_error(
+                        &app,
+                        &task_id,
+                        &failure_fallback.run,
+                        &failure_fallback.round,
+                        &failure_fallback.node,
+                        &error,
+                    );
+                } else {
+                    terminalize_manual_check_precommit_error(
+                        &app,
+                        &task_id,
+                        &fallback_run,
+                        &fallback_round,
+                        &fallback_node,
+                        &error,
+                    );
+                }
+                let info = runtime_continue_launch_error(&error);
+                let _ = launch_failure_sender.send(RuntimeContinueLaunch::Failed(info));
+                let _ = std::fs::create_dir_all(app.paths.runs_dir(&task_id).as_std_path());
+                let _ = std::fs::write(
+                    app.paths
+                        .runs_dir(&task_id)
+                        .join("desktop-manual-check-error.txt")
+                        .as_std_path(),
+                    error.to_string(),
+                );
+            }
+        })
+    {
+        let error = anyhow::Error::from(spawn_error);
+        terminalize_manual_check_precommit_error(
+            app,
+            &spawn_failure_task_id,
+            &initial_run,
+            &initial_round,
+            &initial_node,
+            &error,
+        );
+        return Err(runtime_error(runtime_continue_launch_error(&error)));
+    }
 
-    Ok(initial_run)
+    wait_for_runtime_continue_launch(launch_receiver)
 }
 
 pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunState> {
@@ -3705,8 +4074,12 @@ fn freeze_allowed_workflow_snapshots(
             .iter()
             .find(|template| template.workflow.id.trim() == workflow_id)
             .ok_or_else(|| anyhow!("allowed workflow `{workflow_id}` not found"))?;
-        let mut workflow = template.workflow.clone();
-        app.normalize_workflow_models(&mut workflow);
+        let workflow = crate::workflow_model_binding::validate_and_inject(
+            &template.workflow,
+            &template.model_bindings,
+            &app.config.agents,
+            &app.provider_diagnostics(),
+        )?;
         let validated = validate_workflow(workflow)?;
         app.validate_workflow_agents(&validated)?;
         let contains_ai_dynamic = workflow_contains_ai_dynamic(&validated.raw);
@@ -11647,8 +12020,10 @@ fn drive_from_node_with_initial_session(
                 run.status = RunStatus::Paused;
                 run.pause_reason = Some(pause_reason);
                 run.updated_at = now_rfc3339_like();
-                run.transition_current_execution(
+                let active_locator = run.execution.locator.clone();
+                run.transition_execution(
                     RuntimeExecutionPhase::Paused,
+                    active_locator,
                     run.updated_at.clone(),
                 )?;
                 round.status = RunStatus::Paused;
@@ -11656,6 +12031,7 @@ fn drive_from_node_with_initial_session(
                 failed_node.status = RunStatus::Paused;
                 failed_node.outcome = None;
                 failed_node.finished_at = Some(run.updated_at.clone());
+                let expected_execution_id = failed_node.runtime_execution_id.take();
                 write_run_progress_best_effort(
                     &app.paths,
                     task_id,
@@ -11690,12 +12066,13 @@ fn drive_from_node_with_initial_session(
                     &failed_node,
                     &ctx,
                 );
-                if !persist_runtime_state_if_execution_current(
+                if !persist_runtime_state_if_expected_execution_current(
                     app,
                     task_id,
                     run,
                     round,
                     &failed_node,
+                    expected_execution_id.as_deref(),
                 )? {
                     return Ok(());
                 }
@@ -11730,12 +12107,19 @@ fn drive_from_node_with_initial_session(
             run.status = RunStatus::Paused;
             run.pause_reason = Some(pause_reason);
             run.updated_at = now_rfc3339_like();
-            run.transition_current_execution(
+            // Provider and AI-DYNAMIC callbacks may have advanced the
+            // authoritative execution locator to an inner leaf. Pausing the
+            // outer aggregate changes its phase, not the identity of the
+            // execution whose result is being committed.
+            let active_locator = run.execution.locator.clone();
+            run.transition_execution(
                 RuntimeExecutionPhase::Paused,
+                active_locator,
                 run.updated_at.clone(),
             )?;
             round.status = RunStatus::Paused;
             round.outcome = None;
+            let expected_execution_id = node.runtime_execution_id.take();
             let summary = format!(
                 "run {} paused at {}/{}/{}",
                 run.id, round.id, node.node_id, node.attempt_id
@@ -11774,7 +12158,14 @@ fn drive_from_node_with_initial_session(
                     run.pause_reason,
                 ),
             );
-            if !persist_runtime_state_if_execution_current(app, task_id, run, round, &node)? {
+            if !persist_runtime_state_if_expected_execution_current(
+                app,
+                task_id,
+                run,
+                round,
+                &node,
+                expected_execution_id.as_deref(),
+            )? {
                 return Ok(());
             }
             emit_pause_side_effects(app, task_id, run, round, &node);
@@ -12906,6 +13297,100 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_background_drive_error_does_not_override_a_newer_execution() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = events.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured_events.lock().unwrap().push(event);
+            }));
+        let task_id = "task-001";
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            updated_at: "2026-08-06T00:00:02Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::RunningNode,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "worker".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "2026-08-06T00:00:02Z",
+            ),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let current_node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-06T00:00:00Z".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            resolved_config: crate::domain::ResolvedConfig::new(),
+            uuid: None,
+            runtime_execution_id: Some("execution-b".to_string()),
+        };
+        persist_runtime_state(&app, task_id, &run, &round, &current_node).unwrap();
+        let mut stale_node = current_node.clone();
+        stale_node.runtime_execution_id = Some("execution-a".to_string());
+
+        terminalize_background_drive_error(
+            &app,
+            task_id,
+            &run,
+            &round,
+            &stale_node,
+            &anyhow!("late execution-a failure"),
+        );
+
+        let persisted_run = app.run_status(task_id, &run.id).unwrap();
+        let (_, persisted_node) = current_attempt_state(&app, task_id, &persisted_run).unwrap();
+        assert_eq!(persisted_run.status, RunStatus::Running);
+        assert_eq!(persisted_run.pause_reason, None);
+        assert_eq!(persisted_node.status, RunStatus::Running);
+        assert_eq!(
+            persisted_node.runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+        assert!(events.lock().unwrap().is_empty());
+    }
+
     fn test_context<'a>(app: &'a App, dynamic: &'a AiDynamicNode) -> DynamicExecutionContext<'a> {
         DynamicExecutionContext {
             app,
@@ -13087,6 +13572,482 @@ mod tests {
         let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
 
         assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
+    }
+
+    #[test]
+    fn manual_check_submission_rejects_a_stale_attempt_before_resume() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let task_id = "task-001";
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-002".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::AwaitingManualCheck,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "review".to_string(),
+                    attempt_id: "attempt-002".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "1Z",
+            ),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "review".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-002".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: BTreeMap::new(),
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            uuid: None,
+        };
+        persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
+
+        validate_manual_check_submission(
+            &app,
+            task_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        )
+        .unwrap();
+        assert!(
+            validate_manual_check_submission(
+                &app,
+                task_id,
+                &run.id,
+                &round.id,
+                &node.node_id,
+                "attempt-001",
+            )
+            .is_err()
+        );
+
+        let reservation = reserve_manual_check_submission(
+            &app,
+            task_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        )
+        .unwrap();
+        assert!(
+            reserve_manual_check_submission(
+                &app,
+                task_id,
+                &run.id,
+                &round.id,
+                &node.node_id,
+                &node.attempt_id,
+            )
+            .is_err(),
+            "a second manual decision cannot enter the same Run while submission is in flight"
+        );
+        drop(reservation);
+        assert!(
+            reserve_manual_check_submission(
+                &app,
+                task_id,
+                &run.id,
+                &round.id,
+                &node.node_id,
+                &node.attempt_id,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn manual_check_background_converges_a_precommit_failure() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let lifecycle_events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = lifecycle_events.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured_events.lock().unwrap().push(event);
+            }));
+        let task_id = "task-001";
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "missing-workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::AwaitingManualCheck,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "review".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "1Z",
+            ),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "review".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: BTreeMap::new(),
+            manual_check_pending: true,
+            runtime_execution_id: Some("manual-execution-001".to_string()),
+            uuid: None,
+        };
+        persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
+
+        let submission_lease = reserve_manual_check_submission(
+            &app,
+            task_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        )
+        .unwrap();
+        let error = submit_manual_check_background(
+            &app,
+            task_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+            NodeOutcome::Success,
+            submission_lease,
+        )
+        .expect_err("the command must not acknowledge before the decision is committed");
+
+        assert_eq!(
+            normalize_runtime_error(&error).code_str(),
+            "runtime.continue-launch-failed"
+        );
+        let converged = app.run_status(task_id, &run.id).unwrap();
+        assert_eq!(converged.status, RunStatus::Paused);
+        assert_eq!(converged.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                RuntimeLifecycleEvent::InterventionRequested {
+                    scheduled_occurrence_id: Some(occurrence_id),
+                    kind: RuntimeInterventionKind::RuntimeAbnormal,
+                    ..
+                } if occurrence_id == "occurrence-001"
+            )
+        }));
+    }
+
+    #[test]
+    fn manual_check_precommit_failure_does_not_pause_a_replacement_attempt() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let lifecycle_events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = lifecycle_events.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured_events.lock().unwrap().push(event);
+            }));
+        let task_id = "task-001";
+        let original_run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "missing-workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::AwaitingManualCheck,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "review".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "1Z",
+            ),
+        };
+        let original_round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: original_run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let original_node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "review".to_string(),
+            run_id: original_run.id.clone(),
+            round_id: original_round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: BTreeMap::new(),
+            manual_check_pending: true,
+            runtime_execution_id: Some("manual-execution-001".to_string()),
+            uuid: None,
+        };
+        persist_runtime_state(
+            &app,
+            task_id,
+            &original_run,
+            &original_round,
+            &original_node,
+        )
+        .unwrap();
+        let _reservation = reserve_manual_check_submission(
+            &app,
+            task_id,
+            &original_run.id,
+            &original_round.id,
+            &original_node.node_id,
+            &original_node.attempt_id,
+        )
+        .unwrap();
+
+        let mut replacement_run = original_run.clone();
+        replacement_run.status = RunStatus::Running;
+        replacement_run.pause_reason = None;
+        replacement_run.current_attempt = Some("attempt-002".to_string());
+        let mut replacement_round = original_round.clone();
+        replacement_round.status = RunStatus::Running;
+        let mut replacement_node = original_node.clone();
+        replacement_node.attempt_id = "attempt-002".to_string();
+        replacement_node.status = RunStatus::Running;
+        replacement_node.manual_check_pending = false;
+        replacement_node.runtime_execution_id = Some("execution-b".to_string());
+        persist_runtime_state(
+            &app,
+            task_id,
+            &replacement_run,
+            &replacement_round,
+            &replacement_node,
+        )
+        .unwrap();
+
+        terminalize_manual_check_precommit_error(
+            &app,
+            task_id,
+            &original_run,
+            &original_round,
+            &original_node,
+            &anyhow!("simulated precommit failure"),
+        );
+
+        let durable_run = app.run_status(task_id, &original_run.id).unwrap();
+        let durable_node: NodeState = read_json(&app.paths.node_file(
+            task_id,
+            &original_run.id,
+            &original_round.id,
+            &replacement_node.node_id,
+            &replacement_node.attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(durable_run.status, RunStatus::Running);
+        assert_eq!(durable_run.current_attempt.as_deref(), Some("attempt-002"));
+        assert_eq!(durable_node.status, RunStatus::Running);
+        assert_eq!(
+            durable_node.runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                RuntimeLifecycleEvent::InterventionRequested {
+                    scheduled_occurrence_id: Some(occurrence_id),
+                    attempt_id,
+                    kind: RuntimeInterventionKind::RuntimeAbnormal,
+                    ..
+                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
+            )
+        }));
+    }
+
+    #[test]
+    fn background_drive_persistence_failure_still_finishes_the_occurrence() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let lifecycle_events = Arc::new(Mutex::new(Vec::new()));
+        let captured_events = lifecycle_events.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                captured_events.lock().unwrap().push(event);
+            }));
+        let task_id = "task-001";
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: task_id.to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            updated_at: "1Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::RunningNode,
+                Some(RuntimeAttemptLocator {
+                    round_id: "round-001".to_string(),
+                    node_id: "worker".to_string(),
+                    attempt_id: "attempt-001".to_string(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                }),
+                "1Z",
+            ),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Running,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "1Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "1Z".to_string(),
+            finished_at: None,
+            resolved_config: BTreeMap::new(),
+            manual_check_pending: false,
+            runtime_execution_id: Some("execution-a".to_string()),
+            uuid: None,
+        };
+        persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
+        let round_path = app.paths.round_file(task_id, &run.id, &round.id);
+        std::fs::remove_file(round_path.as_std_path()).unwrap();
+        std::fs::create_dir_all(round_path.as_std_path()).unwrap();
+
+        terminalize_background_drive_error(
+            &app,
+            task_id,
+            &run,
+            &round,
+            &node,
+            &anyhow!("simulated background failure"),
+        );
+
+        let durable_run = app.run_status(task_id, &run.id).unwrap();
+        assert_eq!(durable_run.status, RunStatus::Paused);
+        assert_eq!(durable_run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert!(lifecycle_events.lock().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                RuntimeLifecycleEvent::InterventionRequested {
+                    scheduled_occurrence_id: Some(occurrence_id),
+                    attempt_id,
+                    kind: RuntimeInterventionKind::RuntimeAbnormal,
+                    ..
+                } if occurrence_id == "occurrence-001" && attempt_id == "attempt-001"
+            )
+        }));
     }
 
     fn test_worktree_node(id: &str) -> DynamicNodeState {

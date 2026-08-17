@@ -26,7 +26,7 @@ import {
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, WorkflowModelBindings, WorkflowVm } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -85,7 +85,7 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;

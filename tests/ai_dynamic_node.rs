@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
+use gold_band::config::ProviderDiagnosticSnapshot;
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
@@ -151,8 +152,11 @@ impl ProviderAdapter for DynamicProvider {
         req: WorkerInvocation,
         _live_update: Option<AcpLiveUpdate<'_>>,
         _session_update: Option<AcpSessionUpdate<'_>>,
-        _prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
         if req.output_contract.as_ref().is_some_and(|contract| {
             contract.emission_mode == OutputEmissionMode::PostTurnProjection
         }) {
@@ -202,6 +206,20 @@ impl ProviderAdapter for DynamicProvider {
     ) -> anyhow::Result<Option<String>> {
         Ok(worker_ref.open_command.clone())
     }
+}
+
+fn with_available_claude_diagnostics(app: App) -> App {
+    app.with_provider_diagnostics_source(Arc::new(|| {
+        Ok(std::collections::BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-08-17T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )]))
+    }))
 }
 
 impl DynamicProvider {
@@ -2047,7 +2065,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
     let task_id = "task-ai-dynamic-child-pause";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2117,6 +2138,28 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         Some(PauseReason::ProcessInterrupted)
     );
 
+    let durable_parent = app.run_status(task_id, "run-001").unwrap();
+    let parent_round: gold_band::runtime::RoundState =
+        gold_band::storage::read_json(&app.paths.round_file(task_id, "run-001", "round-001"))
+            .unwrap();
+    let parent_node: gold_band::runtime::NodeState = gold_band::storage::read_json(
+        &app.paths
+            .node_file(task_id, "run-001", "round-001", "router", "attempt-001"),
+    )
+    .unwrap();
+    assert_eq!(durable_parent.status, RunStatus::Paused);
+    assert_eq!(parent_round.status, RunStatus::Paused);
+    assert_eq!(parent_node.status, RunStatus::Paused);
+    assert_eq!(parent_node.runtime_execution_id, None);
+    assert_eq!(
+        durable_parent.execution.phase,
+        gold_band::runtime::RuntimeExecutionPhase::Paused
+    );
+    let locator = durable_parent.execution.locator.as_ref().unwrap();
+    assert_eq!(locator.node_id, "child-flow-node");
+    assert_eq!(locator.outer_node_id.as_deref(), Some("router"));
+    assert_eq!(locator.outer_attempt_id.as_deref(), Some("attempt-001"));
+
     let resumed = app.run_continue(task_id, "run-001", None, None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);
     assert_eq!(resumed.outcome, Some(RunOutcome::Success));
@@ -2141,7 +2184,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
     let task_id = "task-ai-dynamic-child-pause-user-message";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2230,7 +2276,7 @@ fn ai_dynamic_pause_all_running_sessions_recursively_pauses_child_run() {
     let task_id = "task-ai-dynamic-global-pause";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider));
+    let app = with_available_claude_diagnostics(App::with_provider(repo_root, Box::new(provider)));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2310,7 +2356,10 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
     let task_id = "task-ai-dynamic-child";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app

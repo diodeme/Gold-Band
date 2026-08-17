@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import i18n from '../src/i18n';
-import { agentAddMenuItemClassName, agentEditorSheetPresentation, agentIdInputValue, buildAgentCardSummary, buildAgentInput, closeAgentDeleteDialogState, closeAgentEditorState, hasManagedAgentInputChanged, isAgentIdEditable, type AgentDeleteDialogState, type AgentEditorState } from '../src/pages/AgentManagementPage';
-import type { ManagedAgentInput, ManagedAgentVm } from '../src/types';
+import { agentAddMenuItemClassName, agentDeleteActionDisabled, agentEditorSheetPresentation, agentIdInputValue, buildAgentCardSummary, buildAgentInput, closeAgentDeleteDialogState, closeAgentEditorState, ExternalSessionSyncHeading, hasManagedAgentInputChanged, isAgentIdEditable, type AgentDeleteDialogState, type AgentEditorState } from '../src/pages/AgentManagementPage';
+import type { AgentBindingUsageVm, ManagedAgentInput, ManagedAgentVm } from '../src/types';
 
 const agentManagementSource = readFileSync(
   fileURLToPath(new URL('../src/pages/AgentManagementPage.tsx', import.meta.url)),
@@ -213,6 +213,23 @@ describe('Agent management input mapping', () => {
     const state: AgentDeleteDialogState = { open: true, target };
 
     expect(closeAgentDeleteDialogState(state)).toEqual({ open: false, target });
+  });
+
+  it('allows Agent deletion only after binding usage loads successfully', () => {
+    const usage: AgentBindingUsageVm = {
+      workflowTemplateCount: 1,
+      taskCount: 2,
+      scheduledTaskCount: 3,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
+    };
+
+    expect(agentDeleteActionDisabled(true, null, null)).toBe(true);
+    expect(agentDeleteActionDisabled(false, null, 'read failed')).toBe(true);
+    expect(agentDeleteActionDisabled(false, null, null)).toBe(true);
+    expect(agentDeleteActionDisabled(false, usage, null)).toBe(false);
+    expect(i18n.t('agentManagement.deleteUsageRetry', { lng: 'zh-CN' })).toBe('重新统计');
+    expect(i18n.t('agentManagement.deleteUsageRetry', { lng: 'en' })).toBe('Retry count');
   });
 
   it('does not rewrite an Agent ID while an IME composition is active', () => {

@@ -33,12 +33,14 @@ use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValid
 use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::scheduler::db::ScheduledTaskDatabase;
 use gold_band::skill::SkillCommandError;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
 use gold_band::storage::{read_json, write_json};
 use std::path::{Component, Path, PathBuf};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
+    fs,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -70,7 +72,7 @@ use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
     load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
-use crate::conversation_workspace::workspace_entry_for_project;
+use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
@@ -811,7 +813,7 @@ fn prompt_turn_lifecycle_callback(
             schedule_direct_prompt_queue_drain(
                 app_handle.clone(),
                 project_id.clone(),
-                app.clone_for_background(),
+                direct_prompt_queue_drain_app(&app),
                 locator,
                 successful,
                 completion,
@@ -842,6 +844,14 @@ fn process_prompt_turn_lifecycle(
             schedule_finished(locator, successful, completion);
         }
     }
+}
+
+fn direct_prompt_queue_drain_app(app: &App) -> App {
+    app.clone_for_background()
+}
+
+fn queued_user_turn_app(app: &App) -> App {
+    app.clone_for_background().without_scheduled_turn_context()
 }
 
 fn schedule_direct_prompt_queue_drain(
@@ -897,7 +907,6 @@ fn schedule_direct_prompt_queue_drain(
     let expected_revision = queue.revision;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
-        let state = app_handle.state::<DesktopState>();
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -932,9 +941,14 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let _result = send_acp_prompt(
+        let queued_turn_app = configure_conversation_runtime_callbacks(
+            queued_user_turn_app(&app),
             app_handle.clone(),
-            state,
+            project_id.clone(),
+        );
+        let _result = send_acp_prompt_with_configured_app(
+            app_handle.clone(),
+            queued_turn_app,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
@@ -1217,6 +1231,8 @@ pub struct CreateTaskInputVm {
     pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
     pub workflow_template_id: Option<String>,
 }
 
@@ -1224,6 +1240,8 @@ pub struct CreateTaskInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1231,12 +1249,16 @@ pub struct SaveWorkflowInputVm {
 pub struct SaveWorkflowTemplateInputVm {
     pub name: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateWorkflowTemplateInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1425,6 +1447,206 @@ pub fn delete_agent(
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBindingUsageVm {
+    pub workflow_template_count: usize,
+    pub task_count: usize,
+    pub scheduled_task_count: usize,
+    pub unknown_task_count: usize,
+    pub unknown_scheduled_task_count: usize,
+}
+
+fn agent_usage_workspace_apps(
+    context: &crate::state::DesktopContext,
+    workspaces: &[gold_band::config::ConversationWorkspaceEntry],
+) -> anyhow::Result<Vec<App>> {
+    let current_app = context.app();
+    let mut seen_project_ids = BTreeSet::new();
+    let mut apps = Vec::new();
+    for workspace in workspaces {
+        let app = app_for_workspace(context, &workspace.workspace_path)?;
+        let project_key = if cfg!(windows) {
+            app.paths.project_id.to_ascii_lowercase()
+        } else {
+            app.paths.project_id.clone()
+        };
+        if seen_project_ids.insert(project_key) {
+            apps.push(app);
+        }
+    }
+    let current_project_key = if cfg!(windows) {
+        current_app.paths.project_id.to_ascii_lowercase()
+    } else {
+        current_app.paths.project_id.clone()
+    };
+    if seen_project_ids.insert(current_project_key) {
+        apps.push(current_app);
+    }
+    Ok(apps)
+}
+
+fn collect_agent_binding_usage(
+    agent_id: &ManagedAgentId,
+    templates: &WorkflowTemplateStore,
+    workspace_apps: &[App],
+) -> anyhow::Result<AgentBindingUsageVm> {
+    let agent_id = agent_id.as_str();
+    let workflow_template_count = templates
+        .templates
+        .iter()
+        .filter(|template| {
+            workflow_references_agent(&template.workflow, &template.model_bindings, agent_id)
+        })
+        .count();
+    let mut task_count = 0;
+    let mut scheduled_task_count = 0;
+    let mut unknown_task_count = 0;
+    let mut unknown_scheduled_task_count = 0;
+    for app in workspace_apps {
+        let tasks_dir = app.paths.tasks_dir();
+        if tasks_dir.exists() {
+            for entry in fs::read_dir(tasks_dir.as_std_path())? {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        unknown_task_count += 1;
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                if !path.is_dir() || !path.join("task.json").exists() {
+                    continue;
+                }
+                let Some(task_id) = path.file_name().and_then(|value| value.to_str()) else {
+                    unknown_task_count += 1;
+                    continue;
+                };
+                match app.task_authoring_workflow(task_id) {
+                    Ok(authoring)
+                        if workflow_references_agent(
+                            &authoring.workflow,
+                            &authoring.model_bindings,
+                            agent_id,
+                        ) =>
+                    {
+                        task_count += 1;
+                    }
+                    Ok(_) => {}
+                    Err(_) => unknown_task_count += 1,
+                }
+            }
+        }
+        let scheduler_db_path = app.paths.scheduler_db_path();
+        if !scheduler_db_path.exists() {
+            continue;
+        }
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?.scan_job_definitions()?;
+        unknown_scheduled_task_count += scan.invalid_count;
+        for definition in scan.definitions {
+            match scheduled_task_references_agent(&definition, agent_id) {
+                Ok(true) => scheduled_task_count += 1,
+                Ok(false) => {}
+                Err(_) => unknown_scheduled_task_count += 1,
+            }
+        }
+    }
+    Ok(AgentBindingUsageVm {
+        workflow_template_count,
+        task_count,
+        scheduled_task_count,
+        unknown_task_count,
+        unknown_scheduled_task_count,
+    })
+}
+
+fn workflow_references_agent(
+    workflow: &WorkflowDsl,
+    model_bindings: &gold_band::workflow_model_binding::WorkflowModelBindings,
+    agent_id: &str,
+) -> bool {
+    model_bindings
+        .bindings
+        .iter()
+        .any(|binding| binding.agent_id == agent_id)
+        || workflow.nodes.iter().any(|node| {
+            providers_for_node(node)
+                .iter()
+                .any(|provider| provider == agent_id)
+        })
+}
+
+fn auto_authoring_references_agent(
+    authoring: &gold_band::scheduler::AutoAuthoringIdentity,
+    agent_id: &str,
+) -> bool {
+    let agent_type = authoring.agent_type.trim();
+    let agent_strategy = authoring.agent_strategy.trim();
+    let primary_agent = if matches!(agent_type, "fixed" | "dynamic")
+        && !matches!(agent_strategy, "fixed" | "dynamic")
+    {
+        // Older snapshots wrote these constructor arguments in reverse order.
+        agent_strategy
+    } else {
+        agent_type
+    };
+    primary_agent == agent_id
+        || authoring.bootstrap_agent_type.as_deref() == Some(agent_id)
+        || authoring
+            .available_agent_types
+            .iter()
+            .any(|available| available == agent_id)
+}
+
+fn scheduled_task_references_agent(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+    agent_id: &str,
+) -> anyhow::Result<bool> {
+    if definition.content_snapshot.direct_agent_id.as_deref() == Some(agent_id) {
+        return Ok(true);
+    }
+    if definition
+        .content_snapshot
+        .auto_authoring
+        .as_ref()
+        .is_some_and(|authoring| auto_authoring_references_agent(authoring, agent_id))
+    {
+        return Ok(true);
+    }
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(false);
+    };
+    let authoring = serde_json::from_value::<
+        gold_band::workflow_model_binding::TaskAuthoringWorkflowCompat,
+    >(value)?
+    .into_current()
+    .0;
+    Ok(workflow_references_agent(
+        &authoring.workflow,
+        &authoring.model_bindings,
+        agent_id,
+    ))
+}
+
+#[tauri::command]
+pub async fn get_agent_binding_usage(
+    state: State<'_, DesktopState>,
+    agent_type: String,
+) -> CommandResult<AgentBindingUsageVm> {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let app_state = app.load_state().map_err(command_error)?;
+        let templates = app.workflow_templates().map_err(command_error)?;
+        let workspace_apps =
+            agent_usage_workspace_apps(&context, &app_state.conversation_workspaces)
+                .map_err(command_error)?;
+        collect_agent_binding_usage(&agent_id, &templates, &workspace_apps).map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1683,18 +1905,22 @@ pub async fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     let background_app = app.clone_for_background();
     let summary = tauri::async_runtime::spawn_blocking(move || {
-        background_app.create_task_from_requirement(CreateTaskInput {
+        let task_input = CreateTaskInput {
             title: input.title,
             description: input.description,
             requirement_file_name: input.requirement_file_name,
             requirement_content: input.requirement_content,
-            workflow: input.workflow,
+            workflow: input.workflow.clone(),
             workflow_template_id: input.workflow_template_id,
-        })
+        };
+        background_app.create_task_from_requirement_with_bindings(
+            task_input,
+            input.workflow,
+            input.model_bindings,
+        )
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
@@ -1709,16 +1935,19 @@ pub fn save_task_workflow(
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    app.save_task_workflow(&task_id, input.workflow)
+    app.save_task_workflow_with_bindings(&task_id, input.workflow, input.model_bindings)
         .map_err(command_error)?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
 #[tauri::command]
-pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandResult<WorkflowVm> {
-    let app = state.app().map_err(command_error)?;
+pub fn get_workflow(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<WorkflowVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
@@ -1735,9 +1964,8 @@ pub fn save_workflow_template(
     state: State<'_, DesktopState>,
     input: SaveWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.save_workflow_template(input.name, input.workflow)
+    app.save_workflow_template_with_bindings(input.name, input.workflow, input.model_bindings)
         .map_err(command_error)
 }
 
@@ -1747,10 +1975,24 @@ pub fn update_workflow_template(
     template_id: String,
     input: UpdateWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.update_workflow_template(&template_id, input.workflow)
-        .map_err(command_error)
+    if app
+        .workflow_templates()
+        .map_err(command_error)?
+        .templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .is_some_and(|template| template.is_built_in)
+    {
+        app.update_built_in_workflow_template_bindings(&template_id, input.model_bindings)
+    } else {
+        app.update_workflow_template_with_bindings(
+            &template_id,
+            input.workflow,
+            input.model_bindings,
+        )
+    }
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -2659,7 +2901,7 @@ pub async fn stop_active_session(
 }
 
 #[tauri::command]
-pub fn submit_manual_check(
+pub async fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -2681,9 +2923,32 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let submission_lease = app
+        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+        .map_err(command_error)?;
+    let resumed_occurrence_id = resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
+    let app = app
+        .into_inner()
+        .with_scheduled_occurrence_id(resumed_occurrence_id);
+    app.submit_manual_check_background(
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outcome,
+        submission_lease,
+    )
+    .map(run_summary_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -5506,37 +5771,6 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-fn ensure_workflow_agents_doctor_ready(
-    state: &DesktopState,
-    workflow: &WorkflowDsl,
-) -> CommandResult<()> {
-    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    for node in &workflow.nodes {
-        for provider in providers_for_node(node) {
-            let agent_id = ManagedAgentId::from_str(&provider).map_err(command_error)?;
-            match diagnostics.get(&agent_id) {
-                Some(diagnostic) if diagnostic.available => {}
-                Some(diagnostic) => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-failed",
-                        serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
-                    ));
-                }
-                None => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-required",
-                        serde_json::json!({ "agentType": provider }),
-                    ));
-                }
-            }
-        }
-    }
-    let app = state.app().map_err(command_error)?;
-    let validated = gold_band::dsl::validate_workflow(workflow.clone()).map_err(command_error)?;
-    app.validate_workflow_agents(&validated)
-        .map_err(command_error)
-}
-
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
         return CommandErrorVm::new(error.code, error.params());
@@ -5557,6 +5791,14 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::app::WorkflowTemplateCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::workflow_model_binding::WorkflowModelBindingError>()
+    {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
@@ -6832,18 +7074,15 @@ pub async fn respond_elicitation(
 
     // Reclaim the durable scheduled occurrence before writing the response file.
     // The ACP waiter may resume immediately after the file is visible.
-    if let Ok(coordinator) = state.scheduler_coordinator() {
-        coordinator
-            .resume_attention(
-                app.paths.repo_root.clone(),
-                task_id.clone(),
-                run_id.clone(),
-                round_id.clone(),
-                attempt_id.clone(),
-            )
-            .await
-            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
-    }
+    resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -6924,6 +7163,72 @@ pub async fn respond_elicitation(
     );
 
     Ok(())
+}
+
+fn scheduled_attention_requires_coordinator(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> crate::scheduled_service::ScheduledServiceResult<bool> {
+    let database_path = app.paths.scheduler_db_path();
+    if !database_path.exists() {
+        return Ok(false);
+    }
+    let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
+    Ok(database
+        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
+        .is_some())
+}
+
+async fn resume_scheduled_interaction(
+    state: &DesktopState,
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> CommandResult<Option<String>> {
+    let requires_coordinator =
+        scheduled_attention_requires_coordinator(app, task_id, run_id, round_id, attempt_id)
+            .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?;
+    if !requires_coordinator {
+        return Ok(None);
+    }
+
+    let coordinator = state.scheduler_coordinator().map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::CoordinatorUnavailable
+                .to_string(),
+            serde_json::json!({ "operation": "resume-attention" }),
+        )
+    })?;
+    coordinator
+        .resume_attention(
+            app.paths.repo_root.clone(),
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            attempt_id.to_string(),
+        )
+        .await
+        .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::NotFound.to_string(),
+                serde_json::json!({
+                    "operation": "resume-attention",
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "attemptId": attempt_id,
+                }),
+            )
+        })
+        .map(Some)
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -7421,8 +7726,17 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
+    use gold_band::config::{ConversationWorkspaceEntry, RuntimeConfig};
+    use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::dynamic::DynamicGraphState;
+    use gold_band::runtime::TaskState;
+    use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
+    use gold_band::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
@@ -7484,6 +7798,87 @@ mod tests {
         assert_eq!(error.params["availableValues"], serde_json::json!(["ask"]));
     }
     use std::sync::{Arc, Mutex};
+
+    fn bound_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: Some("slot-dev".to_string()),
+                    provider: None,
+                    model: None,
+                    profile: None,
+                    goal: None,
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    config_options: BTreeMap::new(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings {
+                bindings: vec![WorkerModelBinding {
+                    execution_slot_id: "slot-dev".to_string(),
+                    agent_id: agent_id.to_string(),
+                    model_id: None,
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                }],
+                ..WorkflowModelBindings::default()
+            },
+        }
+    }
+
+    fn dynamic_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider: agent_id.to_string(),
+                        bootstrap_model: None,
+                        permission_mode: None,
+                        bootstrap_config_options: Default::default(),
+                        acceptance_model: None,
+                        acceptance_config_options: Default::default(),
+                        routing_prompt: "route by task".to_string(),
+                        available_agents: vec![gold_band::dsl::DynamicAgentRef {
+                            provider: "agent-b".to_string(),
+                            model: None,
+                            permission_mode: None,
+                            config_options: Default::default(),
+                        }],
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        }
+    }
+
+    fn write_bound_task(app: &App, task_id: &str, agent_id: &str) {
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.workflow_file(task_id),
+            &bound_authoring(agent_id, &format!("workflow-{task_id}")),
+        )
+        .unwrap();
+    }
 
     fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
         ConversationPromptInput {
@@ -7601,6 +7996,415 @@ mod tests {
                 "personalization.font-stack-invalid"
             );
         }
+    }
+
+    #[test]
+    fn agent_usage_workspace_apps_include_registered_and_current_projects_once() {
+        let root = tempfile::tempdir().unwrap();
+        let current = Utf8PathBuf::from_path_buf(root.path().join("current")).unwrap();
+        let other = Utf8PathBuf::from_path_buf(root.path().join("other")).unwrap();
+        let context = crate::state::DesktopContext {
+            repo_root: current.clone(),
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        };
+        let workspaces = vec![
+            ConversationWorkspaceEntry {
+                project_id: "current-alias".to_string(),
+                workspace_path: current.to_string(),
+                name: "Current".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other-duplicate".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other duplicate".to_string(),
+                added_at: String::new(),
+            },
+        ];
+
+        let apps = agent_usage_workspace_apps(&context, &workspaces).unwrap();
+        let project_ids = apps
+            .iter()
+            .map(|app| app.paths.project_id.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(apps.len(), 2);
+        assert_eq!(project_ids.len(), 2);
+        assert!(project_ids.contains(&context.app().paths.project_id));
+    }
+
+    #[test]
+    fn agent_binding_usage_aggregates_tasks_and_schedules_across_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let first =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("first-workspace")).unwrap());
+        let second =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("second-workspace")).unwrap());
+        write_bound_task(&first, "task-first", "agent-a");
+        write_bound_task(&second, "task-second", "agent-a");
+        write_bound_task(&second, "task-unrelated", "agent-b");
+        write_json(
+            &first.paths.task_file("task-dynamic"),
+            &TaskState::new("task-dynamic"),
+        )
+        .unwrap();
+        write_json(
+            &first.paths.workflow_file("task-dynamic"),
+            &dynamic_authoring("agent-a", "workflow-task-dynamic"),
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(second.paths.scheduler_db_path()).unwrap();
+        let mut scheduled_workflow = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-agent-a",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_workflow.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-workflow")).unwrap());
+        database.save_job_definition(&scheduled_workflow).unwrap();
+
+        let mut scheduled_direct = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-direct-agent-a",
+            "direct",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_direct.content_snapshot.direct_agent_id = Some("agent-a".to_string());
+        database.save_job_definition(&scheduled_direct).unwrap();
+
+        let mut scheduled_auto = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-auto-agent-a",
+            "auto",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_auto.content_snapshot.auto_authoring =
+            Some(gold_band::scheduler::AutoAuthoringIdentity::new(
+                "agent-a",
+                "fixed",
+                None::<String>,
+                Vec::<String>::new(),
+                None::<String>,
+                Vec::<String>::new(),
+            ));
+        database.save_job_definition(&scheduled_auto).unwrap();
+
+        let template_authoring = bound_authoring("agent-a", "template-workflow");
+        let dynamic_template_authoring = dynamic_authoring("agent-a", "template-dynamic-workflow");
+        let templates = WorkflowTemplateStore {
+            version: gold_band::domain::VERSION.to_string(),
+            last_used_template_id: None,
+            last_created_workflow: None,
+            templates: vec![
+                WorkflowTemplate {
+                    id: "template-a".to_string(),
+                    name: "Template A".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: template_authoring.workflow,
+                    model_bindings: template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkflowTemplate {
+                    id: "template-dynamic".to_string(),
+                    name: "Dynamic Template".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: dynamic_template_authoring.workflow,
+                    model_bindings: dynamic_template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+            ],
+        };
+        let agent_id = ManagedAgentId::from_str("agent-a").unwrap();
+
+        let usage = collect_agent_binding_usage(&agent_id, &templates, &[first, second]).unwrap();
+
+        assert_eq!(
+            usage,
+            AgentBindingUsageVm {
+                workflow_template_count: 2,
+                task_count: 3,
+                scheduled_task_count: 3,
+                unknown_task_count: 0,
+                unknown_scheduled_task_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_only_requires_coordinator_for_matching_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+
+        assert!(
+            !scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+        assert!(!app.paths.scheduler_db_path().exists());
+
+        let database =
+            gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+                .unwrap();
+        let now = chrono::Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + chrono::Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                definition.id(),
+                now,
+                gold_band::scheduler::occurrence::OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "owner-1";
+        database
+            .claim_occurrence(
+                &occurrence.id,
+                owner_id,
+                now,
+                now + chrono::Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &occurrence.id,
+                owner_id,
+                gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+
+        assert!(
+            scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_maps_database_failure_to_storage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+        std::fs::create_dir_all(app.paths.scheduler_db_path()).unwrap();
+
+        let error = scheduled_attention_requires_coordinator(
+            &app,
+            "task-1",
+            "run-1",
+            "round-1",
+            "attempt-1",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+        );
+    }
+
+    #[test]
+    fn agent_binding_usage_isolates_damaged_tasks_and_scheduled_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("workspace")).unwrap());
+        write_bound_task(&app, "task-valid", "agent-a");
+        write_json(
+            &app.paths.task_file("task-invalid"),
+            &TaskState::new("task-invalid"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .workflow_file("task-invalid")
+                .parent()
+                .unwrap()
+                .as_std_path(),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.workflow_file("task-invalid").as_std_path(),
+            "{invalid",
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let mut valid = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-valid",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        valid.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-valid")).unwrap());
+        database.save_job_definition(&valid).unwrap();
+
+        let mut invalid_snapshot = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-invalid-snapshot",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        invalid_snapshot.content_snapshot.workflow_authoring = Some(serde_json::json!({
+            "workflow": "invalid"
+        }));
+        database.save_job_definition(&invalid_snapshot).unwrap();
+
+        drop(database);
+
+        let usage = collect_agent_binding_usage(
+            &ManagedAgentId::from_str("agent-a").unwrap(),
+            &WorkflowTemplateStore {
+                version: gold_band::domain::VERSION.to_string(),
+                last_used_template_id: None,
+                last_created_workflow: None,
+                templates: Vec::new(),
+            },
+            &[app],
+        )
+        .unwrap();
+
+        assert_eq!(usage.workflow_template_count, 0);
+        assert_eq!(usage.task_count, 1);
+        assert_eq!(usage.scheduled_task_count, 1);
+        assert_eq!(usage.unknown_task_count, 1);
+        assert_eq!(usage.unknown_scheduled_task_count, 1);
+    }
+
+    #[test]
+    fn workflow_agent_usage_covers_legacy_worker_and_ai_dynamic_roles() {
+        let mut legacy_worker = bound_authoring("agent-b", "legacy-worker");
+        legacy_worker.model_bindings.bindings.clear();
+        let NodeDsl::Worker(worker) = &mut legacy_worker.workflow.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.provider = Some("agent-a".to_string());
+
+        let fixed_dynamic = TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "fixed-dynamic".to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Fixed {
+                        provider: "agent-a".to_string(),
+                        model: None,
+                        permission_mode: None,
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        };
+        let dynamic_available = dynamic_authoring("agent-c", "dynamic-available");
+
+        assert!(workflow_references_agent(
+            &legacy_worker.workflow,
+            &legacy_worker.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &fixed_dynamic.workflow,
+            &fixed_dynamic.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &dynamic_available.workflow,
+            &dynamic_available.model_bindings,
+            "agent-b"
+        ));
+    }
+
+    #[test]
+    fn auto_authoring_usage_covers_current_secondary_and_legacy_identity_fields() {
+        let current = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-a",
+            "fixed",
+            None::<String>,
+            Vec::<String>::new(),
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let secondary = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-b",
+            "dynamic",
+            Some("agent-a"),
+            vec!["agent-a"],
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let legacy = gold_band::scheduler::AutoAuthoringIdentity {
+            agent_strategy: "agent-a".to_string(),
+            agent_type: "fixed".to_string(),
+            bootstrap_agent_type: None,
+            available_agent_types: Vec::new(),
+            global_goal: None,
+            allowed_workflow_ids: Vec::new(),
+        };
+
+        assert!(auto_authoring_references_agent(&current, "agent-a"));
+        assert!(auto_authoring_references_agent(&secondary, "agent-a"));
+        assert!(auto_authoring_references_agent(&legacy, "agent-a"));
+        assert!(!auto_authoring_references_agent(&legacy, "agent-b"));
     }
 
     #[test]
@@ -7776,7 +8580,6 @@ mod tests {
             "non-runtime-controlled"
         );
         assert!(timeline_path.is_dir());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8198,6 +9001,60 @@ mod tests {
     }
 
     #[test]
+    fn direct_queue_drain_keeps_the_originating_scheduled_turn_context() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-drain-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()));
+
+        let drain_app = direct_prompt_queue_drain_app(&app);
+
+        assert_eq!(drain_app.scheduled_occurrence_id(), Some("occurrence-001"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_user_turn_clears_only_the_scheduled_origin() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-queued-turn-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_callback = seen.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                *seen_for_callback.lock().unwrap() += 1;
+                Ok(())
+            }));
+
+        let queued_app = queued_user_turn_app(&app);
+        queued_app
+            .notify_prompt_turn_finished(
+                acp_live_event_context(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "node-001",
+                    "attempt-001",
+                    None,
+                    None,
+                ),
+                Some("turn-001".to_string()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(queued_app.scheduled_occurrence_id(), None);
+        assert_eq!(*seen.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn scheduled_acp_preflight_failure_emits_one_failed_turn() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-scheduled-acp-preflight-test-{}",
@@ -8491,7 +9348,7 @@ mod tests {
                 "source": "conversation",
                 "runMode": "workflow",
                 "workflowTemplateId": "default",
-                "includeInterview": true,
+                "includeOptionalEntry": true,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,
@@ -8534,6 +9391,22 @@ mod tests {
                 resolved_config: gold_band::domain::ResolvedConfig::new(),
                 uuid: None,
             },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .round_file(&locator.task_id, &locator.run_id, &locator.round_id),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": locator.round_id,
+                "run_id": locator.run_id,
+                "index": 1,
+                "status": "paused",
+                "outcome": null,
+                "trigger": "initial",
+                "started_at": "2026-08-12T00:00:00Z",
+                "trace": []
+            }),
         )
         .unwrap();
         let run = RunState {
@@ -8689,7 +9562,7 @@ mod tests {
                 "source": "conversation",
                 "runMode": "direct",
                 "workflowTemplateId": null,
-                "includeInterview": null,
+                "includeOptionalEntry": null,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,

@@ -4867,9 +4867,9 @@ export function ACPMessageList({
 function EmptyAcpState() {
   const { t } = useTranslation();
   return (
-    <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+    <p data-acp-empty-state="true" className="py-8 text-center text-sm text-muted-foreground">
       {t("acp.noEvents")}
-    </div>
+    </p>
   );
 }
 

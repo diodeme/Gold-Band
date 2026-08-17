@@ -60,6 +60,21 @@ describe('conversation visual hierarchy contract', () => {
     expect(composer).not.toContain('{status}');
   });
 
+  it('renders the ACP empty state as plain text without a framed surface', () => {
+    const dialog = source('../src/components/acp/ACPChatDialog.tsx');
+    const emptyState = dialog.slice(
+      dialog.indexOf('function EmptyAcpState()'),
+      dialog.indexOf('function AcpPendingTimelineState'),
+    );
+
+    expect(emptyState).toContain(
+      '<p data-acp-empty-state="true" className="py-8 text-center text-sm text-muted-foreground">',
+    );
+    expect(emptyState).not.toContain(
+      'rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground',
+    );
+  });
+
   it('places workspace headings above task titles and keeps time metadata subordinate', () => {
     const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
 

@@ -875,8 +875,8 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
     assert_eq!(run.status, RunStatus::Paused);
     assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
 
-    let continued = app
-        .run_continue(
+    let accepted = app
+        .run_continue_background(
             task_id,
             "run-001",
             Some("resume-user-001".to_string()),
@@ -884,6 +884,19 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
         )
         .unwrap();
 
+    assert_eq!(accepted.status, RunStatus::Running);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let continued = loop {
+        let current = app.run_status(task_id, "run-001").unwrap();
+        if current.status != RunStatus::Running {
+            break current;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "runtime continue did not reach a terminal state"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(continued.status, RunStatus::Completed);
     let invocations = provider.invocations.lock().unwrap();
     assert_eq!(invocations.len(), 2);
@@ -892,13 +905,28 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
         invocations[1].user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
+    let resume_prompt = invocations[1].resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.starts_with("请继续检查这个会话"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
+    assert!(resume_prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+    assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
+    assert!(!resume_prompt.contains("当前输出契约（如有）重新生效"));
     assert_eq!(
-        invocations[1].resume_prompt.as_deref(),
+        invocations[1]
+            .prompt_display
+            .as_ref()
+            .map(|input| input.display_text.as_str()),
         Some("请继续检查这个会话")
     );
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
         Some("resume-user-001")
+    );
+    assert_eq!(
+        invocations[1].runtime_control_intent,
+        RuntimeControlIntent::Resume
     );
 }
 

@@ -139,6 +139,17 @@ export function AcpConversationComposer({
   supersededSession,
 }: AcpConversationComposerProps) {
   const { t } = useTranslation();
+  const continueAndSend = runtimeContinueKind === 'continue-current-attempt' && canSubmit;
+  const runtimeContinueLabel = runtimeContinueKind === 'recover-completed-attempt'
+    ? t('acp.recoverWorkflow')
+    : continueAndSend
+      ? t('acp.continueAndSend')
+      : t('acp.continueWorkflow');
+  const runtimeContinueHint = runtimeContinueKind === 'recover-completed-attempt'
+    ? t('acp.recoverWorkflow')
+    : continueAndSend
+      ? t('acp.continueAndSendHint')
+      : t('acp.continueWorkflowHint');
   return (
     <div
       data-conversation-composer="acp"
@@ -275,13 +286,14 @@ export function AcpConversationComposer({
                 </PromptInputAction>
               ) : null}
               {showRuntimeContinue ? (
-                <PromptInputAction tooltip={t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}>
+                <PromptInputAction tooltip={runtimeContinueHint}>
                   <Button
                     type="button"
                     className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                     size="sm"
                     variant="secondary"
                     disabled={runtimeContinueSubmitting}
+                    aria-label={runtimeContinueHint}
                     onClick={() => { void onRuntimeContinue(); }}
                     data-acp-continue-workflow="true"
                   >
@@ -292,15 +304,16 @@ export function AcpConversationComposer({
                     )}
                     {runtimeContinueSubmitting
                       ? t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflowStarting' : 'acp.continueWorkflowStarting')
-                      : t(runtimeContinueKind === 'recover-completed-attempt' ? 'acp.recoverWorkflow' : 'acp.continueWorkflow')}
+                      : runtimeContinueLabel}
                   </Button>
                 </PromptInputAction>
               ) : null}
-              <PromptInputAction tooltip={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.send')}>
+              <PromptInputAction tooltip={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.sendMessage')}>
                 <Button
                   className={ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName}
                   size="sm"
                   disabled={!canSubmit}
+                  aria-label={queueSubmit ? t('acp.promptQueue.enqueue') : t('acp.sendMessage')}
                   onClick={onSubmit}
                   data-acp-send="true"
                 >

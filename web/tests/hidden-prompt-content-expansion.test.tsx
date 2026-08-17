@@ -113,4 +113,35 @@ describe('hidden prompt content links', () => {
       await act(async () => root.unmount());
     }
   });
+
+  it('does not render a link for a hidden section marked show=false', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<HiddenPromptMessageContent content={'用户消息\n<hidden data-gold-band-hidden="true" show="false" title="Gold Band runtime control">resume</hidden>'} />);
+      });
+
+      expect(container.querySelector('[data-hidden-prompt-link="true"]')).toBeNull();
+      expect(container.textContent).toContain('用户消息');
+      expect(container.textContent).not.toContain('resume');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 });

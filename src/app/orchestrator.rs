@@ -56,15 +56,17 @@ use crate::prompts::{
     AI_DYNAMIC_PROPOSAL_REPAIR_EN, AI_DYNAMIC_PROPOSAL_REPAIR_ZH_CN, AI_DYNAMIC_SYSTEM_EN,
     AI_DYNAMIC_SYSTEM_ZH_CN, AI_DYNAMIC_WORKFLOW_INVOCATION_EN,
     AI_DYNAMIC_WORKFLOW_INVOCATION_ZH_CN, PromptExecutionSurface, RUNTIME_CONTROL_RESUME_EN,
+    RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN, RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
     RUNTIME_CONTROL_RESUME_ZH_CN, RUNTIME_INVALID_OUTPUT_REPAIR_EN,
     RUNTIME_INVALID_OUTPUT_REPAIR_ZH_CN, RUNTIME_WORKFLOW_RESUME_EN, RUNTIME_WORKFLOW_RESUME_ZH_CN,
     prompt_by_language, render as render_template,
 };
 use crate::provider::{
-    OutputEmissionMode, PromptBundle, PromptHiddenSection, PromptOutputContract,
-    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
-    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    ConversationPromptInput, OutputEmissionMode, PromptBundle, PromptHiddenSection,
+    PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
+    ProviderRunStatus, RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    conversation_prompt_text, render_prompt_bundle, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
@@ -148,6 +150,7 @@ struct AcpInvocationPromptState {
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
+    prompt_display: Option<ConversationPromptInput>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     runtime_control_intent: RuntimeControlIntent,
@@ -409,6 +412,27 @@ fn localized_runtime_control_resume_prompt(language: DesktopLanguage) -> String 
     .to_string()
 }
 
+fn localized_runtime_control_resume_with_message_prompt(
+    language: DesktopLanguage,
+    input: &ConversationPromptInput,
+    artifact_emission_mode: Option<OutputEmissionMode>,
+) -> String {
+    render_template(
+        prompt_by_language(
+            language,
+            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN,
+            RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN,
+        ),
+        serde_json::json!({
+            "user_message": conversation_prompt_text(&input.display_text, &input.quotes),
+            "artifact_emission_mode": artifact_emission_mode,
+        }),
+    )
+    .expect("bundled runtime resume-with-message prompt renders")
+    .trim()
+    .to_string()
+}
+
 fn localized_workflow_resume_prompt(language: DesktopLanguage) -> String {
     prompt_by_language(
         language,
@@ -437,6 +461,7 @@ impl AcpInvocationPromptState {
             continue_ref,
             resume_prompt,
             resume_prompt_id: None,
+            prompt_display: None,
             resume_prompt_visibility: PromptVisibility::Visible,
             user_prompt_render_mode,
             runtime_control_intent: RuntimeControlIntent::Unchanged,
@@ -455,6 +480,7 @@ impl AcpInvocationPromptState {
             continue_ref,
             resume_prompt: Some(localized_runtime_control_resume_prompt(language)),
             resume_prompt_id: None,
+            prompt_display: None,
             resume_prompt_visibility: PromptVisibility::Hidden,
             user_prompt_render_mode: UserPromptRenderMode::RuntimeResume,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -468,7 +494,9 @@ impl AcpInvocationPromptState {
 #[allow(clippy::too_many_arguments)]
 fn apply_continue_input_to_prompt_state(
     state: &mut AcpInvocationPromptState,
-    prompt: Option<String>,
+    language: DesktopLanguage,
+    artifact_emission_mode: Option<OutputEmissionMode>,
+    input: Option<ConversationPromptInput>,
     prompt_id: Option<String>,
     input_attachment_paths: Vec<String>,
     model_override: Option<String>,
@@ -479,11 +507,14 @@ fn apply_continue_input_to_prompt_state(
     state.model_override = model_override;
     state.permission_mode_override = permission_mode_override;
 
-    if let Some(prompt) = prompt
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        state.resume_prompt = Some(prompt);
+    if let Some(mut input) = input.filter(|value| !value.display_text.trim().is_empty()) {
+        input.display_text = input.display_text.trim().to_string();
+        state.resume_prompt = Some(localized_runtime_control_resume_with_message_prompt(
+            language,
+            &input,
+            artifact_emission_mode,
+        ));
+        state.prompt_display = Some(input);
         state.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
         state.resume_prompt_visibility = PromptVisibility::Visible;
     }
@@ -493,7 +524,8 @@ fn apply_continue_input_to_prompt_state(
 fn runtime_control_resume_prompt_state(
     language: DesktopLanguage,
     continue_ref: serde_json::Value,
-    prompt: Option<String>,
+    artifact_emission_mode: Option<OutputEmissionMode>,
+    input: Option<ConversationPromptInput>,
     prompt_id: Option<String>,
     input_attachment_paths: Vec<String>,
     model_override: Option<String>,
@@ -502,7 +534,9 @@ fn runtime_control_resume_prompt_state(
     let mut state = AcpInvocationPromptState::runtime_control_resume(language, Some(continue_ref));
     apply_continue_input_to_prompt_state(
         &mut state,
-        prompt,
+        language,
+        artifact_emission_mode,
+        input,
         prompt_id,
         input_attachment_paths,
         model_override,
@@ -1043,6 +1077,7 @@ struct DynamicResumeOverride {
     attempt_id: String,
     prompt: String,
     prompt_id: Option<String>,
+    prompt_display: Option<ConversationPromptInput>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -1277,7 +1312,7 @@ pub(crate) fn run_continue(
         task_id,
         run_id,
         prompt_id,
-        prompt,
+        prompt.map(ConversationPromptInput::from),
         attachment_paths,
         model_override,
         permission_mode_override,
@@ -1292,7 +1327,7 @@ fn run_continue_with_launch_signal(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
-    prompt: Option<String>,
+    input: Option<ConversationPromptInput>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -1359,10 +1394,11 @@ fn run_continue_with_launch_signal(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
+        initial_prompt_display,
         initial_user_prompt_render_mode,
         initial_runtime_control_intent,
         initial_resume_input_attachment_paths,
-        initial_parent_continue_prompt,
+        initial_parent_continue_input,
         initial_parent_continue_prompt_id,
         initial_model_override,
         initial_permission_mode_override,
@@ -1376,18 +1412,16 @@ fn run_continue_with_launch_signal(
             }
             match validated.get_node(&node.node_id) {
                 Some(NodeDsl::AiDynamic(_)) => {
-                    let parent_continue_prompt = prompt
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
+                    let parent_continue_input = input.clone();
                     let mut prompt_state = AcpInvocationPromptState::runtime_control_resume(
                         app.config.desktop_language,
                         None,
                     );
                     apply_continue_input_to_prompt_state(
                         &mut prompt_state,
-                        prompt,
+                        app.config.desktop_language,
+                        None,
+                        input,
                         prompt_id,
                         attachment_paths,
                         model_override,
@@ -1399,16 +1433,17 @@ fn run_continue_with_launch_signal(
                         prompt_state.continue_ref,
                         prompt_state.resume_prompt,
                         prompt_state.resume_prompt_id,
+                        prompt_state.prompt_display,
                         prompt_state.user_prompt_render_mode,
                         prompt_state.runtime_control_intent,
                         prompt_state.input_attachment_paths,
-                        parent_continue_prompt,
+                        parent_continue_input,
                         parent_continue_prompt_id,
                         prompt_state.model_override,
                         prompt_state.permission_mode_override,
                     )
                 }
-                _ => {
+                Some(NodeDsl::Worker(worker)) => {
                     let continue_ref = read_json::<WorkerRefState>(&app.paths.worker_ref_file(
                         task_id,
                         run_id,
@@ -1423,7 +1458,11 @@ fn run_continue_with_launch_signal(
                     let prompt_state = runtime_control_resume_prompt_state(
                         app.config.desktop_language,
                         continue_ref,
-                        prompt,
+                        worker
+                            .output
+                            .as_ref()
+                            .map(|_| OutputEmissionMode::PostTurnProjection),
+                        input,
                         prompt_id,
                         attachment_paths,
                         model_override,
@@ -1434,6 +1473,7 @@ fn run_continue_with_launch_signal(
                         prompt_state.continue_ref,
                         prompt_state.resume_prompt,
                         prompt_state.resume_prompt_id,
+                        prompt_state.prompt_display,
                         prompt_state.user_prompt_render_mode,
                         prompt_state.runtime_control_intent,
                         prompt_state.input_attachment_paths,
@@ -1443,12 +1483,14 @@ fn run_continue_with_launch_signal(
                         prompt_state.permission_mode_override,
                     )
                 }
+                None => unreachable!("validated workflow contains the current node"),
             }
         }
         RunStatus::Completed if node.outcome == Some(NodeOutcome::Invalid) => {
             node = re_evaluate_attempt(app, task_id, &run.id, &round.id, node)?;
             (
                 SessionMode::New,
+                None,
                 None,
                 None,
                 None,
@@ -1476,10 +1518,11 @@ fn run_continue_with_launch_signal(
         initial_continue_ref,
         initial_resume_prompt,
         initial_resume_prompt_id,
+        initial_prompt_display,
         initial_user_prompt_render_mode,
         initial_resume_input_attachment_paths,
         initial_runtime_control_intent,
-        initial_parent_continue_prompt,
+        initial_parent_continue_input,
         initial_parent_continue_prompt_id,
         None,
         initial_model_override,
@@ -1500,7 +1543,7 @@ fn run_continue_dynamic_inner(
     dynamic_node_id: &str,
     dynamic_attempt_id: &str,
     prompt_id: Option<String>,
-    prompt: String,
+    input: Option<ConversationPromptInput>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -1539,39 +1582,7 @@ fn run_continue_dynamic_inner(
         outer_node_id,
         outer_attempt_id,
     ))?;
-    let mut prompt_state =
-        AcpInvocationPromptState::runtime_control_resume(app.config.desktop_language, None);
-    let explicit_prompt = prompt.trim().to_string();
-    if !explicit_prompt.is_empty() {
-        apply_continue_input_to_prompt_state(
-            &mut prompt_state,
-            Some(explicit_prompt),
-            prompt_id.clone(),
-            Vec::new(),
-            None,
-            None,
-        );
-    }
-    let resume_prompt = prompt_state
-        .resume_prompt
-        .clone()
-        .expect("continue prompt state always has a resume prompt");
-    let resume_override = DynamicResumeOverride {
-        request_id,
-        execution_id,
-        node_id: dynamic_node_id.to_string(),
-        attempt_id: dynamic_attempt_id.to_string(),
-        prompt: resume_prompt,
-        prompt_id,
-        attachment_paths,
-        model_override,
-        permission_mode_override,
-        user_prompt_render_mode: prompt_state.user_prompt_render_mode,
-        prompt_visibility: prompt_state.resume_prompt_visibility,
-        runtime_control_intent: prompt_state.runtime_control_intent,
-        launch_signal: launch.take(),
-    };
-    let dispatch = {
+    let (dispatch, prompt_state, resume_override) = {
         let lock = dynamic_state_lock_for(
             &app.paths.repo_root,
             task_id,
@@ -1626,7 +1637,42 @@ fn run_continue_dynamic_inner(
                     .is_some_and(PauseReason::allows_explicit_runtime_continue),
             "dynamic node `{dynamic_node_id}` is not paused"
         );
-        dispatch_dynamic_resume_override(
+        let target = &graph.nodes[target_index];
+        let artifact_emission_mode = dynamic_output_emission_mode_for_node(target);
+        let mut prompt_state =
+            AcpInvocationPromptState::runtime_control_resume(app.config.desktop_language, None);
+        if input.is_some() {
+            apply_continue_input_to_prompt_state(
+                &mut prompt_state,
+                app.config.desktop_language,
+                artifact_emission_mode,
+                input,
+                prompt_id.clone(),
+                Vec::new(),
+                None,
+                None,
+            );
+        }
+        let resume_override = DynamicResumeOverride {
+            request_id,
+            execution_id,
+            node_id: dynamic_node_id.to_string(),
+            attempt_id: dynamic_attempt_id.to_string(),
+            prompt: prompt_state
+                .resume_prompt
+                .clone()
+                .expect("continue prompt state always has a resume prompt"),
+            prompt_id,
+            prompt_display: prompt_state.prompt_display.clone(),
+            attachment_paths,
+            model_override,
+            permission_mode_override,
+            user_prompt_render_mode: prompt_state.user_prompt_render_mode,
+            prompt_visibility: prompt_state.resume_prompt_visibility,
+            runtime_control_intent: prompt_state.runtime_control_intent,
+            launch_signal: launch.take(),
+        };
+        let dispatch = dispatch_dynamic_resume_override(
             &app.paths.repo_root,
             task_id,
             run_id,
@@ -1634,7 +1680,8 @@ fn run_continue_dynamic_inner(
             outer_node_id,
             outer_attempt_id,
             resume_override.clone(),
-        )?
+        )?;
+        (dispatch, prompt_state, resume_override)
     };
     if matches!(
         dispatch,
@@ -1657,6 +1704,7 @@ fn run_continue_dynamic_inner(
         prompt_state.continue_ref,
         prompt_state.resume_prompt,
         prompt_state.resume_prompt_id,
+        prompt_state.prompt_display,
         prompt_state.user_prompt_render_mode,
         prompt_state.input_attachment_paths,
         prompt_state.runtime_control_intent,
@@ -1682,7 +1730,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
     dynamic_node_id: &str,
     dynamic_attempt_id: &str,
     prompt_id: Option<String>,
-    prompt: String,
+    input: Option<ConversationPromptInput>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -1725,7 +1773,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
                 &background_dynamic_node_id,
                 &background_dynamic_attempt_id,
                 prompt_id,
-                prompt,
+                input,
                 attachment_paths,
                 model_override,
                 permission_mode_override,
@@ -1825,7 +1873,7 @@ pub(crate) fn run_continue_background(
     task_id: &str,
     run_id: &str,
     prompt_id: Option<String>,
-    prompt: Option<String>,
+    input: Option<ConversationPromptInput>,
     attachment_paths: Vec<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
@@ -1904,7 +1952,7 @@ pub(crate) fn run_continue_background(
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
-    let prompt = prompt.clone();
+    let input = input.clone();
     let attachment_paths = attachment_paths.clone();
     let model_override = model_override.clone();
     let permission_mode_override = permission_mode_override.clone();
@@ -1924,7 +1972,7 @@ pub(crate) fn run_continue_background(
                 &task_id,
                 &run_id,
                 prompt_id,
-                prompt,
+                input,
                 attachment_paths,
                 model_override,
                 permission_mode_override,
@@ -2085,6 +2133,7 @@ pub(crate) fn run_recover_completed_background(
                 prompt_state.continue_ref,
                 prompt_state.resume_prompt,
                 prompt_state.resume_prompt_id,
+                prompt_state.prompt_display,
                 prompt_state.user_prompt_render_mode,
                 prompt_state.input_attachment_paths,
                 prompt_state.runtime_control_intent,
@@ -2239,6 +2288,7 @@ pub(crate) fn submit_manual_check(
             prompt_state.continue_ref,
             prompt_state.resume_prompt,
             prompt_state.resume_prompt_id,
+            prompt_state.prompt_display,
             prompt_state.user_prompt_render_mode,
             prompt_state.input_attachment_paths,
             prompt_state.runtime_control_intent,
@@ -3380,6 +3430,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         None,
+        None,
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
@@ -3408,7 +3459,7 @@ struct DynamicExecutionContext<'a> {
     run_uuid: Option<&'a str>,
     round_uuid: Option<&'a str>,
     outer_node_uuid: Option<&'a str>,
-    parent_continue_prompt: Option<String>,
+    parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 }
@@ -4278,13 +4329,17 @@ fn dynamic_output_emission_mode(node: &DynamicNodeState) -> OutputEmissionMode {
     }
 }
 
+fn dynamic_output_emission_mode_for_node(node: &DynamicNodeState) -> Option<OutputEmissionMode> {
+    dynamic_node_uses_completion_contract(node.kind).then(|| dynamic_output_emission_mode(node))
+}
+
 fn dynamic_output_contract_for_node(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
     node: &DynamicNodeState,
 ) -> Option<PromptOutputContract> {
-    dynamic_node_uses_completion_contract(node.kind)
-        .then(|| dynamic_output_contract(ctx, graph, dynamic_output_emission_mode(node)))
+    dynamic_output_emission_mode_for_node(node)
+        .map(|emission_mode| dynamic_output_contract(ctx, graph, emission_mode))
 }
 
 fn dynamic_attempt_id(_node: &DynamicNodeState) -> String {
@@ -4593,7 +4648,7 @@ fn execute_ai_dynamic_node(
     attempt_id: &str,
     dynamic: &AiDynamicNode,
     mut outer_node: NodeState,
-    parent_continue_prompt: Option<String>,
+    parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<NodeState> {
@@ -4610,7 +4665,7 @@ fn execute_ai_dynamic_node(
         run_uuid: run.uuid.as_deref(),
         round_uuid: round.uuid.as_deref(),
         outer_node_uuid: outer_node.uuid.as_deref(),
-        parent_continue_prompt,
+        parent_continue_input,
         parent_continue_prompt_id,
         resume_override,
     };
@@ -5269,7 +5324,7 @@ fn launch_ready_dynamic_nodes(
         let round_uuid = ctx.round_uuid.map(|s| s.to_string());
         let outer_node_uuid = ctx.outer_node_uuid.map(|s| s.to_string());
         let outer_runtime_execution_id = ctx.outer_runtime_execution_id.clone();
-        let parent_continue_prompt = ctx.parent_continue_prompt.clone();
+        let parent_continue_input = ctx.parent_continue_input.clone();
         let parent_continue_prompt_id = ctx.parent_continue_prompt_id.clone();
         let spawned_node_id = node_id_for_job.clone();
         let spawned_execution_id = node_clone.runtime_execution_id.clone();
@@ -5291,7 +5346,7 @@ fn launch_ready_dynamic_nodes(
                     run_uuid.as_deref(),
                     round_uuid.as_deref(),
                     outer_node_uuid.as_deref(),
-                    parent_continue_prompt,
+                    parent_continue_input,
                     parent_continue_prompt_id,
                     resume_override,
                 )
@@ -5721,7 +5776,7 @@ fn execute_dynamic_node_job(
     run_uuid: Option<&str>,
     round_uuid: Option<&str>,
     outer_node_uuid: Option<&str>,
-    parent_continue_prompt: Option<String>,
+    parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<DynamicExecutionResult> {
@@ -5774,7 +5829,7 @@ fn execute_dynamic_node_job(
         run_uuid,
         round_uuid,
         outer_node_uuid,
-        parent_continue_prompt,
+        parent_continue_input,
         parent_continue_prompt_id,
         resume_override,
     };
@@ -5982,6 +6037,7 @@ fn execute_dynamic_worker(
         );
         prompt_state.resume_prompt = Some(resume.prompt.clone());
         prompt_state.resume_prompt_id = resume.prompt_id.clone();
+        prompt_state.prompt_display = resume.prompt_display.clone();
         prompt_state.resume_prompt_visibility = resume.prompt_visibility;
         prompt_state.user_prompt_render_mode = resume.user_prompt_render_mode;
         prompt_state.input_attachment_paths = resume.attachment_paths.clone();
@@ -5993,6 +6049,7 @@ fn execute_dynamic_worker(
     let mut continue_ref = prompt_state.continue_ref;
     let mut resume_prompt = prompt_state.resume_prompt;
     let resume_prompt_id = prompt_state.resume_prompt_id;
+    let mut prompt_display = prompt_state.prompt_display;
     let logical_prompt_id = logical_prompt_id(resume_prompt_id.clone());
     let mut resume_prompt_visibility = prompt_state.resume_prompt_visibility;
     let mut user_prompt_render_mode = prompt_state.user_prompt_render_mode;
@@ -6095,6 +6152,7 @@ fn execute_dynamic_worker(
             continue_ref.clone(),
             resume_prompt.clone(),
             Some(logical_prompt_id.clone()),
+            prompt_display.clone(),
             resume_prompt_visibility,
             user_prompt_render_mode,
             resume_input_attachment_paths.clone(),
@@ -6404,6 +6462,7 @@ fn execute_dynamic_worker(
                     &node,
                     &validation_errors,
                 ));
+                prompt_display = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 runtime_control_intent = RuntimeControlIntent::Unchanged;
@@ -6459,6 +6518,7 @@ fn execute_dynamic_worker(
                     Some(errors) => dynamic_structured_repair_prompt(ctx, graph, &node, &errors),
                     None => dynamic_text_repair_prompt(ctx, graph, &node, err.to_string()),
                 });
+                prompt_display = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 runtime_control_intent = RuntimeControlIntent::Unchanged;
@@ -6570,7 +6630,8 @@ fn execute_dynamic_agent_stage(
         prompt_state = runtime_control_resume_prompt_state(
             ctx.app.config.desktop_language,
             saved_continue_ref,
-            Some(resume.prompt.clone()),
+            None,
+            resume.prompt_display.clone(),
             resume.prompt_id.clone(),
             resume.attachment_paths.clone(),
             resume.model_override.clone(),
@@ -6603,6 +6664,7 @@ fn execute_dynamic_agent_stage(
         prompt_state.continue_ref.clone(),
         prompt_state.resume_prompt.clone(),
         prompt_state.resume_prompt_id.clone(),
+        prompt_state.prompt_display.clone(),
         prompt_state.resume_prompt_visibility,
         prompt_state.user_prompt_render_mode,
         prompt_state.input_attachment_paths.clone(),
@@ -6780,18 +6842,18 @@ fn execute_dynamic_workflow_invocation(
                 .as_ref()
                 .filter(|resume| resume.node_id == node.id && resume.attempt_id == attempt_id)
             {
-                child_app.run_continue(
+                child_app.run_continue_with_prompt_input(
                     ctx.task_id,
                     child_run_id,
                     resume.prompt_id.clone(),
-                    Some(resume.prompt.clone()),
+                    resume.prompt_display.clone(),
                 )?
-            } else if ctx.parent_continue_prompt.is_some() {
-                child_app.run_continue(
+            } else if ctx.parent_continue_input.is_some() {
+                child_app.run_continue_with_prompt_input(
                     ctx.task_id,
                     child_run_id,
                     ctx.parent_continue_prompt_id.clone(),
-                    ctx.parent_continue_prompt.clone(),
+                    ctx.parent_continue_input.clone(),
                 )?
             } else {
                 child_app.run_continue(ctx.task_id, child_run_id, None, None)?
@@ -9222,7 +9284,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         run_uuid: None,
         round_uuid: None,
         outer_node_uuid: None,
-        parent_continue_prompt: None,
+        parent_continue_input: None,
         parent_continue_prompt_id: None,
         resume_override: None,
     };
@@ -9241,6 +9303,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
         continue_ref,
         Some(prompt),
         prompt_id,
+        None,
         PromptVisibility::Visible,
         UserPromptRenderMode::UserMessage,
         Vec::new(),
@@ -9253,6 +9316,27 @@ pub(crate) fn build_dynamic_prompt_bundle(
     render_prompt_bundle(&invocation)
 }
 
+pub(crate) fn run_continue_with_prompt_input(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    prompt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+) -> Result<RunState> {
+    run_continue_with_launch_signal(
+        app,
+        task_id,
+        run_id,
+        prompt_id,
+        input,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
 fn build_dynamic_worker_invocation(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
@@ -9263,6 +9347,7 @@ fn build_dynamic_worker_invocation(
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
+    prompt_display: Option<ConversationPromptInput>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
@@ -9520,6 +9605,7 @@ fn build_dynamic_worker_invocation(
         continue_ref,
         resume_prompt,
         resume_prompt_id,
+        prompt_display,
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: ctx.app.config.log_prompts,
@@ -11209,10 +11295,11 @@ fn drive_from_node_with_initial_session(
     initial_continue_ref: Option<serde_json::Value>,
     initial_resume_prompt: Option<String>,
     initial_resume_prompt_id: Option<String>,
+    initial_prompt_display: Option<ConversationPromptInput>,
     initial_user_prompt_render_mode: UserPromptRenderMode,
     initial_resume_input_attachment_paths: Vec<String>,
     initial_runtime_control_intent: RuntimeControlIntent,
-    parent_continue_prompt: Option<String>,
+    parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     dynamic_resume_override: Option<DynamicResumeOverride>,
     initial_model_override: Option<String>,
@@ -11223,6 +11310,7 @@ fn drive_from_node_with_initial_session(
     let mut continue_ref = initial_continue_ref;
     let mut resume_prompt = initial_resume_prompt;
     let mut resume_prompt_id = initial_resume_prompt_id;
+    let mut prompt_display = initial_prompt_display;
     let mut resume_prompt_visibility = if matches!(
         initial_user_prompt_render_mode,
         UserPromptRenderMode::RuntimeResume
@@ -11382,6 +11470,7 @@ fn drive_from_node_with_initial_session(
                             continue_ref.as_ref().cloned(),
                             resume_prompt.clone(),
                             Some(logical_prompt_id.clone()),
+                            prompt_display.clone(),
                             resume_prompt_visibility,
                             user_prompt_render_mode,
                             resume_input_attachment_paths.clone(),
@@ -11398,7 +11487,7 @@ fn drive_from_node_with_initial_session(
                     &current_attempt_id,
                     dynamic,
                     node.clone(),
-                    parent_continue_prompt.clone(),
+                    parent_continue_input.clone(),
                     parent_continue_prompt_id.clone(),
                     dynamic_resume_override.clone(),
                 ),
@@ -11772,6 +11861,7 @@ fn drive_from_node_with_initial_session(
                 continue_ref = Some(repair_continue_ref);
                 resume_prompt = Some(invalid_output_repair_prompt(schema));
                 resume_prompt_id = None;
+                prompt_display = None;
                 resume_prompt_visibility = PromptVisibility::Hidden;
                 user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
                 continue;
@@ -11893,6 +11983,7 @@ fn drive_from_node_with_initial_session(
             continue_ref = prompt_state.continue_ref;
             resume_prompt = prompt_state.resume_prompt;
             resume_prompt_id = prompt_state.resume_prompt_id;
+            prompt_display = prompt_state.prompt_display;
             resume_prompt_visibility = prompt_state.resume_prompt_visibility;
             resume_input_attachment_paths = prompt_state.input_attachment_paths;
             user_prompt_render_mode = prompt_state.user_prompt_render_mode;
@@ -11996,6 +12087,116 @@ mod tests {
             state.resume_prompt.as_deref(),
             Some("用户已选择将当前节点重新交由 Runtime 控制。当前输出契约（如有）重新生效。")
         );
+    }
+
+    #[test]
+    fn runtime_continue_with_message_separates_visible_input_from_hidden_control_prompt() {
+        let input = ConversationPromptInput {
+            display_text: "  请先补充回归测试  ".to_string(),
+            quotes: Vec::new(),
+        };
+        let state = runtime_control_resume_prompt_state(
+            DesktopLanguage::ZhCn,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            Some(OutputEmissionMode::PostTurnProjection),
+            Some(input),
+            Some("prompt-1".to_string()),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            state
+                .prompt_display
+                .as_ref()
+                .map(|value| value.display_text.as_str()),
+            Some("请先补充回归测试")
+        );
+        assert_eq!(
+            state.user_prompt_render_mode,
+            UserPromptRenderMode::UserMessage
+        );
+        assert_eq!(state.runtime_control_intent, RuntimeControlIntent::Resume);
+        assert_eq!(state.resume_prompt_visibility, PromptVisibility::Visible);
+
+        let prompt = state.resume_prompt.as_deref().unwrap_or_default();
+        assert!(prompt.starts_with("请先补充回归测试\n"));
+        assert!(prompt.contains("show=\"false\""));
+        assert!(prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
+        assert!(prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+        assert!(!prompt.contains("按当前输出契约输出 artifact"));
+        assert!(!prompt.contains("当前输出契约（如有）重新生效"));
+
+        let english_state = runtime_control_resume_prompt_state(
+            DesktopLanguage::En,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            Some(OutputEmissionMode::PostTurnProjection),
+            Some(ConversationPromptInput {
+                display_text: "Write another essay".to_string(),
+                quotes: Vec::new(),
+            }),
+            Some("prompt-2".to_string()),
+            Vec::new(),
+            None,
+            None,
+        );
+        let english_prompt = english_state.resume_prompt.as_deref().unwrap_or_default();
+        assert!(english_prompt.contains("fully carry out the user instruction in this message"));
+        assert!(english_prompt.contains("artifact-output constraints do not apply"));
+        assert!(english_prompt.contains("in a separate subsequent turn"));
+
+        let inline_state = runtime_control_resume_prompt_state(
+            DesktopLanguage::ZhCn,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            Some(OutputEmissionMode::InlineControl),
+            Some(ConversationPromptInput::from("继续调整方案".to_string())),
+            Some("prompt-3".to_string()),
+            Vec::new(),
+            None,
+            None,
+        );
+        let inline_prompt = inline_state.resume_prompt.as_deref().unwrap_or_default();
+        assert!(inline_prompt.contains("完成后按当前输出契约输出 artifact"));
+        assert!(!inline_prompt.contains("后续独立 turn"));
+
+        let inline_english_state = runtime_control_resume_prompt_state(
+            DesktopLanguage::En,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            Some(OutputEmissionMode::InlineControl),
+            Some(ConversationPromptInput::from(
+                "Continue adjusting the plan".to_string(),
+            )),
+            Some("prompt-4".to_string()),
+            Vec::new(),
+            None,
+            None,
+        );
+        let inline_english_prompt = inline_english_state
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default();
+        assert!(inline_english_prompt.contains("according to the current output contract"));
+        assert!(!inline_english_prompt.contains("separate subsequent turn"));
+
+        let no_contract_state = runtime_control_resume_prompt_state(
+            DesktopLanguage::ZhCn,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            None,
+            Some(ConversationPromptInput::from("继续普通任务".to_string())),
+            Some("prompt-5".to_string()),
+            Vec::new(),
+            None,
+            None,
+        );
+        let no_contract_prompt = no_contract_state
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default();
+        assert!(no_contract_prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(!no_contract_prompt.contains("artifact 输出约束"));
+        assert!(!no_contract_prompt.contains("输出 artifact"));
     }
 
     #[test]
@@ -12261,6 +12462,7 @@ mod tests {
             &validated,
             &node.node_id,
             SessionMode::New,
+            None,
             None,
             None,
             None,
@@ -12696,7 +12898,7 @@ mod tests {
             run_uuid: None,
             round_uuid: None,
             outer_node_uuid: None,
-            parent_continue_prompt: None,
+            parent_continue_input: None,
             parent_continue_prompt_id: None,
             resume_override: None,
         }
@@ -12715,6 +12917,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: format!("continue {node_id}"),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -13634,6 +13837,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
@@ -13663,6 +13867,7 @@ mod tests {
             &dynamic_attempt_id(&node),
             dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
+            None,
             None,
             None,
             None,
@@ -13726,6 +13931,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
@@ -13784,6 +13990,7 @@ mod tests {
             &dynamic_attempt_id(&node),
             dynamic_output_contract_for_node(&ctx, &graph, &node),
             SessionMode::New,
+            None,
             None,
             None,
             None,
@@ -13853,6 +14060,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
@@ -13905,6 +14113,7 @@ mod tests {
             &dynamic_attempt_id(&merge),
             None,
             SessionMode::New,
+            None,
             None,
             None,
             None,
@@ -13981,6 +14190,7 @@ mod tests {
             &dynamic_attempt_id(&acceptance),
             dynamic_output_contract_for_node(&ctx, &graph, &acceptance),
             SessionMode::New,
+            None,
             None,
             None,
             None,
@@ -14099,6 +14309,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             Vec::new(),
@@ -14142,6 +14353,7 @@ mod tests {
             Some(localized_workflow_resume_prompt(
                 ctx.app.config.desktop_language,
             )),
+            None,
             None,
             PromptVisibility::Visible,
             UserPromptRenderMode::WorkflowResume,
@@ -14208,9 +14420,25 @@ mod tests {
         let worker = test_worktree_node("implementation");
         let mut acceptance = test_worktree_node("acceptance");
         acceptance.kind = DynamicNodeKind::Acceptance;
-        let graph = test_dynamic_graph(vec![bootstrap.clone(), worker.clone(), acceptance.clone()]);
+        let mut merge = test_worktree_node("merge");
+        merge.kind = DynamicNodeKind::Merge;
+        let graph = test_dynamic_graph(vec![
+            bootstrap.clone(),
+            worker.clone(),
+            acceptance.clone(),
+            merge.clone(),
+        ]);
 
         assert!(dynamic_node_is_bootstrap_dispatch(&bootstrap));
+        assert_eq!(
+            dynamic_output_emission_mode_for_node(&bootstrap),
+            Some(OutputEmissionMode::InlineControl)
+        );
+        assert_eq!(
+            dynamic_output_emission_mode_for_node(&worker),
+            Some(OutputEmissionMode::PostTurnProjection)
+        );
+        assert_eq!(dynamic_output_emission_mode_for_node(&merge), None);
         assert_eq!(
             dynamic_output_contract_for_node(&ctx, &graph, &bootstrap)
                 .unwrap()
@@ -14571,6 +14799,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue morning".to_string(),
             prompt_id: Some("prompt-morning".to_string()),
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -14586,6 +14815,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue night".to_string(),
             prompt_id: Some("prompt-night".to_string()),
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -14831,6 +15061,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -14982,6 +15213,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15057,6 +15289,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15105,6 +15338,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15164,6 +15398,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue morning".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15212,6 +15447,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue night".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15469,6 +15705,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,
@@ -15800,6 +16037,7 @@ mod tests {
             attempt_id: "attempt-001".to_string(),
             prompt: "continue".to_string(),
             prompt_id: None,
+            prompt_display: None,
             user_prompt_render_mode: UserPromptRenderMode::UserMessage,
             prompt_visibility: PromptVisibility::Visible,
             runtime_control_intent: RuntimeControlIntent::Resume,

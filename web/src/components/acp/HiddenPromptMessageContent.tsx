@@ -153,7 +153,7 @@ export function projectHiddenPromptDisplayParts(
 ) {
   const hiddenParts = parts
     .map((part, sourceIndex) => ({ part, sourceIndex }))
-    .filter(({ part }) => part.type === "hidden");
+    .filter(({ part }) => part.type === "hidden" && part.show);
   const visibleText = parts
     .filter((part) => part.type === "visible")
     .map((part) => part.text)

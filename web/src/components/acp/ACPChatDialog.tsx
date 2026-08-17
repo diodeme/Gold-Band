@@ -2814,9 +2814,11 @@ export function ACPChatDialog(
   const submitPrompt = async (
     submission: ConversationPromptInput,
     draftSnapshot?: AcpComposerDraft,
+    target: "conversation" | "runtime-continue" = "conversation",
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes } = submission;
-    const enqueueing = composerState.submitTarget === "queue-prompt";
+    const enqueueing = target === "conversation"
+      && composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
       if (queueSubmitPending || cancelling || stopInProgress) return;
       setQueueSubmitPending(true);
@@ -2866,9 +2868,9 @@ export function ACPChatDialog(
         }
         setQueueSubmitPending(false);
       }
-      return;
+      return submissionAccepted;
     }
-    if (sending || activeAwaitingResponse || sessionActive || cancelling) return;
+    if (sending || activeAwaitingResponse || sessionActive || cancelling) return false;
     setSending(true);
     setPromptCommandPending(true);
     setSendError(null);
@@ -2877,7 +2879,7 @@ export function ACPChatDialog(
       attPaths = await resolveAttachmentPaths();
     } catch {
       setSending(false);
-      return;
+      return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
     const optimisticEvent = optimisticUserEvent(
@@ -2893,7 +2895,7 @@ export function ACPChatDialog(
     if (draftSnapshot && !detachedDraft) {
       setSending(false);
       setPromptCommandPending(false);
-      return;
+      return false;
     }
     if (detachedDraft) setComposerContextError(null);
     if (localLifecycle?.promptQueue) {
@@ -2911,20 +2913,34 @@ export function ACPChatDialog(
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     let submissionAccepted = false;
     try {
-      const result = await submitConversationPrompt(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        submission,
-        promptId,
-        effective ?? null,
-        outerNodeId,
-        outerAttemptId,
-        attPaths.length > 0 ? attPaths : undefined,
-      );
+      const result = target === "runtime-continue"
+        ? await continueConversationRuntime(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            outerNodeId,
+            outerAttemptId,
+            submission,
+            promptId,
+            attPaths.length > 0 ? attPaths : undefined,
+          )
+        : await submitConversationPrompt(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            submission,
+            promptId,
+            effective ?? null,
+            outerNodeId,
+            outerAttemptId,
+            attPaths.length > 0 ? attPaths : undefined,
+          );
       const updated = result.session ?? null;
       if (updated) applySessionUpdate(updated);
       if (result.lifecycle) {
@@ -2933,7 +2949,17 @@ export function ACPChatDialog(
         );
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      if (result.kind === "rejected") {
+      if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(optimisticEvent.timestamp);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "processing" }
+              : event,
+          ),
+        );
+      } else if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
         setActiveTurnPrompt(null);
@@ -2999,10 +3025,15 @@ export function ACPChatDialog(
         updateOptimisticEvents((current) =>
           current.filter((event) => event.id !== optimisticEvent.id),
         );
-        return;
+        return true;
       }
       await refreshSessionAfterConfigUnavailable(error);
-      setSendError(displayAppError(t, error));
+      const message = displayAppError(t, error);
+      if (target === "runtime-continue") {
+        setRuntimeContinueError(message);
+      } else {
+        setSendError(message);
+      }
       setAwaitingResponse(false);
       setActiveTurnPrompt(null);
       setActiveTurnPromptId(null);
@@ -3025,6 +3056,7 @@ export function ACPChatDialog(
       setSending(false);
       setPromptCommandPending(false);
     }
+    return submissionAccepted;
   };
 
   const applyQueueLifecycle = (lifecycle?: ConversationAttemptLifecycleVm | null) => {
@@ -3124,10 +3156,9 @@ export function ACPChatDialog(
   };
 
   const send = async () => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
+    if (!canSubmitPrompt) return;
     const draftSnapshot = composerDraft.draft;
-    const submission = createUserPromptSubmission(trimmed, quotes);
+    const submission = createUserPromptSubmission(prompt, quotes);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -3261,6 +3292,23 @@ export function ACPChatDialog(
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
+      if (
+        localLifecycle?.continueKind === 'continue-current-attempt'
+        && canSubmitPrompt
+      ) {
+        const accepted = await submitPrompt(
+          createUserPromptSubmission(prompt, quotes),
+          composerDraft.draft,
+          "runtime-continue",
+        );
+        if (!accepted) {
+          setRuntimeContinueSubmitting(false);
+          return;
+        }
+        setRuntimeStopAccepted(false);
+        onSessionStopped?.();
+        return;
+      }
       const recoveryRevision = localLifecycle?.runtime.revision;
       let result;
       if (localLifecycle?.continueKind === 'recover-completed-attempt') {

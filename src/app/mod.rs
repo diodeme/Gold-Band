@@ -43,8 +43,9 @@ use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
-    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
+    ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
+    ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
+    render_prompt_bundle,
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
@@ -75,6 +76,7 @@ use self::orchestrator::{
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
+    run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
@@ -3248,6 +3250,7 @@ impl App {
             continue_ref,
             Some(prompt),
             prompt_id,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
             Vec::new(),
@@ -3307,6 +3310,22 @@ impl App {
         )
     }
 
+    pub fn run_continue_with_prompt_input(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        input: Option<ConversationPromptInput>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_with_prompt_input(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            input,
+        )
+    }
+
     pub fn run_continue_with_model_override(
         &self,
         task_id: &str,
@@ -3360,7 +3379,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             None,
             None,
@@ -3380,7 +3399,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             model_override,
             None,
@@ -3392,7 +3411,7 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
-        prompt: Option<String>,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3402,7 +3421,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,
@@ -3441,7 +3460,7 @@ impl App {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
         prompt_id: Option<String>,
-        prompt: String,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3456,7 +3475,7 @@ impl App {
             dynamic_node_id,
             dynamic_attempt_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,

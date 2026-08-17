@@ -211,7 +211,11 @@ describe('quick conversation workspace control', () => {
     });
 
     const infoBar = host.querySelector<HTMLElement>('[data-conversation-workspace-info="true"]');
+    const workspaceTrigger = infoBar?.querySelector<HTMLElement>('[data-slot="select-trigger"]');
     expect(infoBar).not.toBeNull();
+    expect(workspaceTrigger).not.toBeNull();
+    expect(workspaceTrigger!.className).toContain('dark:bg-transparent');
+    expect(workspaceTrigger!.className).not.toContain('dark:bg-gold-surface-high/35');
     expect(infoBar!.className).toContain('mx-12');
     expect(infoBar!.className).toContain('h-8');
     expect(infoBar!.className).toContain('items-center');

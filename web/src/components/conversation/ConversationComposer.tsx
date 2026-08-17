@@ -93,6 +93,9 @@ export function ConversationWorkspaceControl({
   const controlClassName = variant === 'info'
     ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-sm text-foreground shadow-none`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
+  const triggerSurfaceClassName = variant === 'info'
+    ? 'bg-transparent hover:bg-gold-surface-high/55 dark:bg-transparent dark:hover:bg-gold-surface-high/55'
+    : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
   const triggerEvents = {
     onPointerEnter: showTooltipIfOverflowing,
     onPointerLeave: hideTooltip,
@@ -125,7 +128,7 @@ export function ConversationWorkspaceControl({
             <SelectTrigger
               ref={selectTriggerRef}
               {...triggerEvents}
-              className={`${controlClassName} hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}
+              className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
             >
               {value}
             </SelectTrigger>

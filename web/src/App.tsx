@@ -153,6 +153,7 @@ import {
   conversationPageMatchesRun,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
+  resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
@@ -1872,9 +1873,11 @@ export function App() {
       onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
       onChooseWorkspace={() => setWorkspacePickerOpen(true)}
       onConversationNew={() => {
-        const targetPid = conversationPage.kind === 'conversation-run'
-          ? conversationPage.projectId
-          : effectiveWorkspaceId;
+        const targetPid = resolveConversationHomeWorkspaceId(
+          conversationPage,
+          draftConversationWorkspaceId,
+          effectiveWorkspaceId,
+        );
         if (targetPid) setDraftConversationWorkspaceId(targetPid);
         setConversationPage({ kind: 'conversation-home' });
       }}

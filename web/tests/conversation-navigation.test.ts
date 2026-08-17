@@ -6,6 +6,7 @@ import {
   conversationPageMatchesRun,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
+  resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import type { ConversationPage, ConversationRunVm, ConversationSessionTreeVm } from '@/types';
@@ -71,6 +72,30 @@ describe('conversation navigation presentation transaction', () => {
   it('switches non-conversation destinations immediately', () => {
     const requested: ConversationPage = { kind: 'conversation-home' };
     expect(isConversationRunNavigationLoading(requested, oldRun)).toBe(false);
+  });
+
+  it('keeps the quick-chat draft workspace when returning from settings', () => {
+    expect(resolveConversationHomeWorkspaceId(
+      { kind: 'settings' },
+      'project-draft',
+      'project-last-session',
+    )).toBe('project-draft');
+  });
+
+  it('starts quick chat in the current run workspace when leaving a conversation', () => {
+    expect(resolveConversationHomeWorkspaceId(
+      { kind: 'conversation-run', projectId: 'project-run', taskId: 'task-1', runId: 'run-1' },
+      'project-draft',
+      'project-last-session',
+    )).toBe('project-run');
+  });
+
+  it('falls back to the last session workspace when no quick-chat draft exists', () => {
+    expect(resolveConversationHomeWorkspaceId(
+      { kind: 'settings' },
+      null,
+      'project-last-session',
+    )).toBe('project-last-session');
   });
 
   it('commits a selected session locator immediately and clears stale session content', () => {
@@ -146,9 +171,11 @@ describe('conversation sidebar navigation wiring', () => {
   it('routes task and run selections through the cache-aware conversation navigation entry', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
     const taskSelection = source.match(/onConversationSelectTask=\{[\s\S]*?onConversationSelectRun=/)?.[0] ?? '';
+    const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
     const runSelection = source.match(/onConversationSelectRun=\{[\s\S]*?onConversationPauseRun=/)?.[0] ?? '';
 
     expect(taskSelection).toContain('onSelectConversation({');
+    expect(quickChatSelection).toContain('resolveConversationHomeWorkspaceId(');
     expect(runSelection).toContain('onSelectConversation({');
     expect(taskSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
     expect(runSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');

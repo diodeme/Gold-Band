@@ -44,6 +44,15 @@ export function conversationPageForRun(run: ConversationRunVm): Extract<Conversa
   };
 }
 
+export function resolveConversationHomeWorkspaceId(
+  currentPage: ConversationPage,
+  draftWorkspaceId: string | null,
+  lastActiveWorkspaceId: string | null,
+): string | null {
+  if (currentPage.kind === 'conversation-run') return currentPage.projectId;
+  return draftWorkspaceId ?? lastActiveWorkspaceId;
+}
+
 export function isConversationRunNavigationLoading(
   requested: ConversationPage,
   loadedRun: ConversationRunVm | null,

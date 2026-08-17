@@ -216,14 +216,23 @@ describe('quick conversation workspace control', () => {
     expect(infoBar).not.toBeNull();
     expect(workspaceTrigger).not.toBeNull();
     expect(workLocationTrigger).not.toBeNull();
+    expect(workspaceTrigger!.dataset.contextControl).toBe('workspace');
+    expect(workLocationTrigger!.dataset.contextControl).toBe('work-location');
+    expect(workLocationTrigger!.getAttribute('data-theme-role')).toBeNull();
     for (const trigger of [workspaceTrigger!, workLocationTrigger!]) {
-      expect(trigger.dataset.contextSelected).toBe('true');
-      expect(trigger.className).toContain('bg-accent');
-      expect(trigger.className).toContain('text-accent-foreground');
-      expect(trigger.className).toContain('hover:bg-accent/80');
-      expect(trigger.className).toContain('dark:bg-accent');
-      expect(trigger.className).toContain('dark:hover:bg-accent/80');
+      const classes = trigger.className.split(' ');
+      expect(classes).toContain('bg-transparent');
+      expect(classes).not.toContain('bg-accent');
+      expect(classes).toContain('transition-colors');
+      expect(classes).toContain('hover:bg-accent');
+      expect(classes).toContain('focus-visible:bg-accent');
+      expect(classes).toContain('data-[state=open]:bg-accent');
+      expect(classes).toContain('dark:bg-transparent');
+      expect(classes).toContain('dark:hover:bg-accent/50');
     }
+    expect(workspaceTrigger!.className.split(' ')).toContain('data-[size=default]:h-7');
+    expect(workLocationTrigger!.className.split(' ')).toContain('h-7');
+    expect(workLocationTrigger!.className.split(' ')).toContain('has-[>svg]:px-2');
     expect(infoBar!.className).toContain('mx-12');
     expect(infoBar!.className).toContain('h-8');
     expect(infoBar!.className).toContain('items-center');
@@ -236,5 +245,37 @@ describe('quick conversation workspace control', () => {
     expect(infoBar!.className).not.toContain('bg-muted/45');
     expect(infoBar!.className).not.toContain('pt-2');
     expect(host.querySelector('[data-conversation-workspace-value="true"]')?.textContent).toBe('Gold Band');
+  });
+
+  it('does not restore pointer focus to the work-location trigger after the menu closes', async () => {
+    await act(async () => {
+      root.render(
+        <ConversationWorkspaceInfoBar
+          projectId="gold-band"
+          workspaceName="Fallback workspace"
+          workspaces={workspaces}
+          workLocation="worktree"
+          busy={false}
+          onWorkspaceChange={() => {}}
+          onWorkLocationChange={() => {}}
+        />,
+      );
+    });
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-conversation-work-location-trigger="true"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger!.focus();
+      dispatchPointerEvent(trigger!, 'pointerdown');
+    });
+    expect(document.body.querySelector('[data-slot="dropdown-menu-content"]')).not.toBeNull();
+
+    await act(async () => {
+      dispatchPointerEvent(document.body, 'pointerdown');
+      dispatchPointerEvent(document.body, 'pointerup');
+    });
+
+    expect(document.body.querySelector('[data-slot="dropdown-menu-content"]')).toBeNull();
+    expect(document.activeElement).not.toBe(trigger);
   });
 });

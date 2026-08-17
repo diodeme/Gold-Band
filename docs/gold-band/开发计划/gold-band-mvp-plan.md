@@ -1216,7 +1216,7 @@ attempt-001/
 
 ## 2026-08-17：快速会话上下文选择器选中态统一
 
-- 根因：工作空间与工作位置都已有明确 canonical 选择值，但顶部信息栏只让工作位置在部分交互态显示强调，工作空间保持透明，两个同级上下文选择器的视觉投影不一致；这是既有样式契约不完整，不是状态或持久化缺失。
-- 实现：继续复用现有 shadcn `SelectTrigger`、`Button` 与主题 token，为信息栏内两个触发器共享持久 `accent / accent-foreground` 选中态；不改变定时任务胶囊变体、菜单、焦点归还、工作位置校验或偏好作用域。
-- 回归要求：现有 jsdom 组件接口测试固定两个触发器都暴露已选上下文标记并使用同一套浅色/深色主题选中 class；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下检查浅色/深色、菜单关闭、hover/focus 和窄宽度表现。
+- 根因：工作空间 `SelectTrigger` 和工作位置 `Button` 是同级上下文控件，但两者复用了不同 primitive 默认值：交互态没有统一，且 `SelectTrigger` 的 `data-[size=default]:h-9` 以更高选择器优先级覆盖业务层 `h-7`，造成静态背景与高度不一致。问题属于共享视觉契约缺失，不是选择状态或持久化缺失。
+- 实现：继续复用现有 shadcn `SelectTrigger`、`Button` 与主题 token；两个专用上下文触发器的 surface 只由共享交互 class 管理，工作位置按钮不再叠加通用 `button-ghost` 主题 recipe。静态态统一透明，hover / focus / menu open 统一使用 `accent / accent-foreground`，并显式把两者收敛为 28px 高、相同圆角和水平内边距。工作位置菜单复用工作空间已有的指针/键盘关闭分流：指针关闭阻止 Radix 回灌焦点并 blur，键盘关闭保留 focus restoration。定时任务胶囊变体、工作位置校验和偏好作用域不变。
+- 回归要求：现有 jsdom 组件接口测试固定两个触发器静态透明、交互态 accent、Select size variant 与 Button 高度/内边距，并固定指针关闭工作位置菜单后触发器不重新获得焦点；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下用 computed style 检查静态、hover、菜单展开/外部关闭、浅色/深色和窄宽度表现。
 - 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。

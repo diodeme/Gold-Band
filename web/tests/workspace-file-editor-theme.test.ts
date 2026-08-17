@@ -22,6 +22,7 @@ describe('workspace file editor theme contract', () => {
     for (const token of [
       'var(--foreground)',
       'var(--muted-foreground)',
+      'var(--link)',
       'var(--gold-running)',
       'var(--gold-success)',
       'var(--gold-warning)',
@@ -31,10 +32,15 @@ describe('workspace file editor theme contract', () => {
     }
   });
 
-  it('replaces the merge-view insertion underline with a solid highlight', () => {
-    expect(editorExtensionsSource).toContain("'&.cm-merge-b .cm-changedText': {");
+  it('keeps semantic diff line backgrounds and softens the inline changed-text layer', () => {
+    expect(editorExtensionsSource).toContain("'.cm-deletedChunk, .cm-deletedLine': { backgroundColor: 'color-mix(in srgb, var(--destructive) 10%, transparent)' }");
+    expect(editorExtensionsSource).toContain("'.cm-insertedLine': { backgroundColor: 'color-mix(in srgb, var(--gold-success) 10%, transparent)' }");
+    expect(editorExtensionsSource).toContain("'.cm-deletedText': { backgroundColor: 'color-mix(in srgb, var(--destructive) 12%, transparent)' }");
+    expect(editorExtensionsSource).toContain("backgroundColor: 'color-mix(in srgb, var(--gold-success) 12%, transparent)'");
     expect(editorExtensionsSource).toContain("backgroundImage: 'none'");
-    expect(editorExtensionsSource).not.toContain("'.cm-merge-b .cm-changedText'");
+    expect(editorExtensionsSource).not.toContain('var(--destructive) 25%');
+    expect(editorExtensionsSource).not.toContain('var(--gold-success) 22%');
+    expect(editorExtensionsSource).not.toContain('&.cm-merge-b .cm-activeLine');
   });
 
   it('uses the application text-selection token for CodeMirror selections', () => {
@@ -43,7 +49,7 @@ describe('workspace file editor theme contract', () => {
   });
 
   it('maps Markdown links and code surfaces to contrast-safe semantic tokens', () => {
-    expect(styles).toContain('--atomic-editor-link: var(--gold-running)');
+    expect(styles).toContain('--atomic-editor-link: var(--link)');
     expect(styles).toContain('--atomic-editor-code-bg: color-mix(in srgb, var(--gold-surface-high) 72%, var(--background))');
     expect(styles).not.toContain('--atomic-editor-link: var(--primary)');
   });

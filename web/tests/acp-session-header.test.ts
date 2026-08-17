@@ -122,13 +122,31 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('aria-label="复制 session ID"');
     expect(html).toContain('items-baseline');
     expect(html).toContain('gap-1.5');
-    expect(html).toContain('text-[10px] leading-5');
+    expect(html).toContain('bg-content-header px-5 pb-1 pt-0');
+    expect(html).toContain('text-ui-micro leading-5');
+    expect(html).not.toContain('text-[10px] leading-5');
     expect(html).not.toContain('px-1 py-0.5 text-[10px]');
     expect(html).not.toContain('Bypass Permissions');
     expect(html).not.toContain('权限');
   });
 
-  it('combines the Direct title, session identity and diagnostics in one header row', () => {
+  it('does not expose a missing session id while a new session is initializing', () => {
+    const value = session();
+    value.sessionId = null;
+
+    const html = renderHeader({
+      session: value,
+      rawActive: false,
+      rawLoading: false,
+      onToggleRaw: () => undefined,
+      onOpenSystemPrompt: () => undefined,
+    });
+
+    expect(html).toContain('Claude');
+    expect(html).not.toContain('无 session id');
+  });
+
+  it('combines the Direct title, session identity and diagnostics in one header row with its calibrated outer spacing', () => {
     const html = renderHeader({
       session: session(),
       rawActive: false,
@@ -145,7 +163,7 @@ describe('ACPSessionHeader', () => {
     expect(html).toContain('Claude');
     expect(html).toContain('session-1');
     expect(html).toContain('原始帧');
-    expect(html).toContain('py-0.5');
+    expect(html).toContain('bg-content-header px-5 py-1.5');
     expect(html).toContain('gap-1');
     expect(html).toContain('mr-2 min-w-0 max-w-[40%] shrink');
     expect(html).not.toContain('lucide-pencil');

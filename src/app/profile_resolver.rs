@@ -64,6 +64,7 @@ mod tests {
             control: Default::default(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "worker".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 model: None,
                 profile: profile.map(str::to_string),

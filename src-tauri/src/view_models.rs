@@ -9,15 +9,17 @@ use std::{
 
 use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
+use gold_band::acp::events::load_session_metadata;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerState, RuntimeConfig,
+    AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
+    ManagedAgentConfig, ManagedAgentId, McpServerState, PersonalizationPreference, RuntimeConfig,
     RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
     select_config_options_from_capabilities, supported_models_from_capabilities,
@@ -35,17 +37,19 @@ use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
+use crate::avatar::{AvatarPreferencesVm, load_resolved_avatar_preferences};
+use crate::wallpaper::{WallpaperPreferencesVm, load_resolved_wallpaper_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesVm {
-    pub theme: DesktopThemePreference,
+    pub appearance: AppearancePreference,
+    pub personalization: PersonalizationPreference,
     pub language: DesktopLanguage,
-    pub font: DesktopFontPreference,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
     pub avatars: AvatarPreferencesVm,
+    pub wallpapers: WallpaperPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,7 +146,6 @@ pub struct RightWorkspaceLayoutVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileWorkspaceLayoutVm {
-    pub preferred_width: u32,
     pub split_min_width: u32,
     pub tree_default_width: u32,
     pub tree_min_width: u32,
@@ -363,6 +366,7 @@ pub struct WorkflowVm {
     pub runs: Vec<RunGroupVm>,
     pub control: Option<WorkflowControlVm>,
     pub workflow_json: Option<String>,
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -883,6 +887,7 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
@@ -1171,20 +1176,22 @@ pub enum RoundSelectionInput {
 }
 
 pub fn preferences_vm(
-    theme: DesktopThemePreference,
+    appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
     avatars: AvatarPreferencesVm,
+    wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
-        theme,
+        appearance,
+        personalization,
         language,
-        font,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
         avatars,
+        wallpapers,
     }
 }
 
@@ -1235,7 +1242,6 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
                 default_width: right_workspace.default_width,
                 max_width: right_workspace.max_width,
                 file: FileWorkspaceLayoutVm {
-                    preferred_width: right_workspace.file.preferred_width,
                     split_min_width: right_workspace.file.split_min_width,
                     tree_default_width: right_workspace.file.tree_default_width,
                     tree_min_width: right_workspace.file.tree_min_width,
@@ -1293,12 +1299,18 @@ pub fn bootstrap_vm(
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
         preferences: preferences_vm(
-            app.config.desktop_theme,
+            app.config.appearance.clone(),
+            app.config.personalization.clone(),
             app.config.desktop_language,
-            app.config.desktop_font.clone(),
             app.config.use_local_claude,
             app.config.log_level,
-            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
+            load_resolved_avatar_preferences(
+                &app.paths.user_gold_band_dir(),
+                &app.config.personalization,
+            )
+            .unwrap_or_default(),
+            load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir())
+                .unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -1528,8 +1540,13 @@ pub fn task_detail_vm(app: &App, task_id: &str) -> Result<TaskDetailVm> {
 pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
     let summary = app.task_summary(task_id)?;
     let task = task_row_vm(app, &summary)?;
-    let workflow_json = read_optional_text(&app.paths.workflow_file(task_id))?;
-    let workflow = read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)).ok();
+    let authoring = app.task_authoring_workflow(task_id).ok();
+    let workflow = authoring
+        .as_ref()
+        .map(|authoring| authoring.workflow.clone());
+    let workflow_json = workflow
+        .as_ref()
+        .and_then(|workflow| serde_json::to_string_pretty(workflow).ok());
     let graph = workflow
         .as_ref()
         .map(|workflow| workflow_graph_vm(app, workflow))
@@ -1545,11 +1562,20 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
         runs,
         control,
         workflow_json,
+        model_bindings: authoring
+            .map(|authoring| authoring.model_bindings)
+            .unwrap_or_default(),
     })
 }
 
 pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetailVm> {
     let run = app.run_status(task_id, run_id)?;
+    let progress = app.run_progress(task_id, run_id)?.filter(|progress| {
+        progress
+            .get("runtimeRevision")
+            .and_then(serde_json::Value::as_u64)
+            == Some(run.execution.revision)
+    });
     let rounds = app
         .round_list(task_id, run_id)?
         .into_iter()
@@ -1559,7 +1585,7 @@ pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetail
         run: run_summary_vm(run),
         rounds,
         events: app.run_events(task_id, run_id)?,
-        progress: app.run_progress(task_id, run_id)?,
+        progress,
     })
 }
 
@@ -1819,13 +1845,6 @@ pub(crate) fn latest_control_failure_vm(
             .or_else(|| {
                 summary.and_then(|summary| control_failure_from_summary(summary, data, &event))
             });
-    }
-    if latest.is_none() {
-        if let Some(progress) = app.run_progress(task_id, run_id)? {
-            if let Some(summary) = progress.get("summary").and_then(|value| value.as_str()) {
-                latest = control_failure_from_summary(summary, &progress, &serde_json::Value::Null);
-            }
-        }
     }
     Ok(latest)
 }
@@ -2489,7 +2508,7 @@ fn dynamic_graph_state_optional(
         .paths
         .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
     path.exists()
-        .then(|| read_json::<DynamicGraphState>(&path).ok())
+        .then(|| load_dynamic_graph(&path, &app.paths.repo_root).ok())
         .flatten()
 }
 
@@ -3577,11 +3596,11 @@ pub fn dynamic_acp_session_vm(
         return Ok(None);
     }
     let mut session = if let Some(json) = preloaded_session_json {
-        json
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -3627,10 +3646,7 @@ pub fn dynamic_acp_session_vm(
         .or_else(|| extract_system_prompt_append(&raw_path));
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
@@ -3858,10 +3874,7 @@ pub fn dynamic_acp_session_status(
     );
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -3925,11 +3938,11 @@ pub fn acp_session_vm(
     }
 
     let mut session = if let Some(json) = preloaded_session_json {
-        json
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -4017,13 +4030,13 @@ pub fn acp_session_vm(
     trace_acp_session_query(
         &mut query_trace,
         "lifecycle-fuse",
-        serde_json::json!({ "status": session.get("status").and_then(Value::as_str) }),
+        serde_json::json!({
+            "availability": session.get("availability").and_then(Value::as_str),
+            "latestTurnStatus": session.get("latestTurnStatus").and_then(Value::as_str),
+        }),
     );
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
@@ -4274,10 +4287,7 @@ pub fn acp_session_status(
         &mut session,
     )?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -4299,15 +4309,10 @@ fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<s
         return None;
     }
     if snapshot_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&snapshot_path)
-                .unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&snapshot_path).unwrap_or_default());
     }
     if session_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&session_path).unwrap_or_default());
     }
     Some(serde_json::json!({}))
 }
@@ -6166,15 +6171,9 @@ fn apply_stale_session_completion_fuse_common(
     if prompt_active {
         return Ok(false);
     }
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
-    if !is_acp_session_active_status(metadata_status) {
-        return Ok(false);
-    }
     if raw_has_successful_session_close(raw_path) {
-        session["status"] = serde_json::json!("cancelled");
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
         return Ok(true);
@@ -6185,10 +6184,13 @@ fn apply_stale_session_completion_fuse_common(
     if !node_completed {
         return Ok(false);
     }
+    if !matches!(session_metadata_status(session), "idle" | "unknown") {
+        return Ok(false);
+    }
     if node_completed && pid_path.exists() {
         let _ = fs::remove_file(pid_path.as_std_path());
     }
-    session["status"] = serde_json::json!("completed");
+    session["latestTurnStatus"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
         session["stopReason"] = serde_json::json!("end_turn");
     }
@@ -6769,6 +6771,65 @@ fn effective_acp_session_status(
     }
 }
 
+fn session_metadata_status(session: &serde_json::Value) -> &str {
+    let availability = session
+        .get("availability")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    if availability.eq_ignore_ascii_case("closing") {
+        return "closing";
+    }
+    match session
+        .get("latestTurnStatus")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+    {
+        "completed" => "completed",
+        "cancelled" => "cancelled",
+        "failed" => "failed",
+        _ if matches!(availability, "established" | "restorable") => "idle",
+        _ => "unknown",
+    }
+}
+
+fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
+    load_session_metadata(path, None)
+        .ok()
+        .and_then(|metadata| serde_json::to_value(metadata).ok())
+}
+
+fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
+    let legacy_status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(status) = legacy_status else {
+        return session;
+    };
+    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
+    let session_established = session
+        .get("sessionId")
+        .or_else(|| session.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    session["availability"] = serde_json::json!(match normalized.as_str() {
+        "closing" | "cancelling" | "cancel-requested" => "closing",
+        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
+        _ if session_established => "established",
+        _ => "unavailable",
+    });
+    session["latestTurnStatus"] = serde_json::json!(match normalized.as_str() {
+        "completed" | "complete" => "completed",
+        "cancelled" | "canceled" => "cancelled",
+        "failed" | "failure" | "error" | "killed" => "failed",
+        _ => "none",
+    });
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session
+}
+
 fn is_acp_session_stopping_status(status: &str) -> bool {
     matches!(
         status
@@ -6781,6 +6842,10 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+    let catalog_observed_at = session
+        .get("configCatalogObservedAt")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
@@ -6839,6 +6904,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
         config_option_overrides,
@@ -7547,7 +7613,7 @@ fn count_round_outputs(
 
 fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<String, String> {
     read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
-        .or_else(|_| read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)))
+        .or_else(|_| app.task_workflow(task_id))
         .map(|workflow| {
             workflow
                 .nodes
@@ -7733,7 +7799,10 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::app::App;
+    use gold_band::domain::{PauseReason, RunStatus, VERSION};
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {
@@ -7751,7 +7820,6 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({
-                "preferredWidth": 760,
                 "splitMinWidth": 500,
                 "treeDefaultWidth": 280,
                 "treeMinWidth": 200,
@@ -7765,6 +7833,60 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["workflowCanvas"]["windowMinWidth"],
             640
+        );
+    }
+
+    #[test]
+    fn run_detail_only_exposes_progress_for_the_authoritative_runtime_revision() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "t0".to_string(),
+            updated_at: "t1".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState {
+                revision: 7,
+                phase: RuntimeExecutionPhase::Paused,
+                locator: None,
+                updated_at: "t1".to_string(),
+            },
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 6, "status": "running" }),
+        )
+        .unwrap();
+
+        let stale = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert!(stale.progress.is_none());
+
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 7, "status": "paused" }),
+        )
+        .unwrap();
+        let current = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert_eq!(
+            current
+                .progress
+                .as_ref()
+                .and_then(|value| value["status"].as_str()),
+            Some("paused")
         );
     }
 
@@ -8159,7 +8281,11 @@ mod tests {
         )
     }
 
-    fn plan_permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
+    fn multi_option_permission_event_at(
+        request_id: &str,
+        status: &str,
+        timestamp: u64,
+    ) -> AcpUiEventVm {
         acp_event_at(
             request_id,
             "permissionRequest",
@@ -8168,8 +8294,8 @@ mod tests {
             Some(json!({
                 "requestId": request_id,
                 "options": [
-                    { "optionId": "keep-planning", "name": "继续规划", "kind": "keep_planning" },
-                    { "optionId": "accept-plan", "name": "Accept plan", "kind": "accept" }
+                    { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                    { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }
                 ]
             })),
         )
@@ -8355,7 +8481,7 @@ mod tests {
             &app.paths
                 .dynamic_graph_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
             &json!({
-                "version": "0.1",
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": {
                     "version": "0.1",
                     "id": "dynamic-run-001",
@@ -8472,11 +8598,8 @@ mod tests {
 
     #[test]
     fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-dynamic-round-graph-test-{}",
-            std::process::id()
-        ));
-        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let directory = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
         let app = App::new(repo_root);
         seed_dynamic_round_graph_fixture(&app);
 
@@ -8517,8 +8640,6 @@ mod tests {
             dynamic_exit_sequence < accept_sequence,
             "AI-DYNAMIC exit should rank before the next workflow node"
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -8532,7 +8653,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8545,7 +8666,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("completed")
         );
         assert!(!pid_path.exists());
@@ -8563,7 +8686,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8575,7 +8698,7 @@ mod tests {
         .unwrap();
 
         assert!(!fused);
-        assert_eq!(session["status"], "running");
+        assert_eq!(session["latestTurnStatus"], "none");
         assert!(session["stopReason"].is_null());
 
         fs::remove_dir_all(dir).unwrap();
@@ -8607,7 +8730,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8620,8 +8743,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 
@@ -8638,7 +8763,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "failed" });
+        let mut session = json!({ "availability": "restorable", "latestTurnStatus": "failed" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8651,7 +8776,9 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("failed")
         );
 
@@ -8777,7 +8904,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8790,7 +8917,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
@@ -8825,7 +8954,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8838,8 +8967,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 
@@ -9284,8 +9415,8 @@ mod tests {
         let elapsed = elapsed_for(
             vec![
                 gold_band_prompt_at(100),
-                plan_permission_event_at("plan-permission-1", "pending", 110),
-                plan_permission_event_at("plan-permission-1", "selected", 160),
+                multi_option_permission_event_at("permission-1", "pending", 110),
+                multi_option_permission_event_at("permission-1", "selected", 160),
                 text_event_at(180),
             ],
             false,

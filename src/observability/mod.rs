@@ -95,6 +95,7 @@ pub enum ProgressStage {
 #[serde(rename_all = "camelCase")]
 pub struct RunProgressSnapshot {
     pub version: String,
+    pub runtime_revision: u64,
     pub status: RunStatus,
     pub current_round_id: Option<String>,
     pub current_node_id: Option<String>,
@@ -264,6 +265,7 @@ pub fn write_run_progress_best_effort(
 ) {
     let snapshot = RunProgressSnapshot {
         version: VERSION.to_string(),
+        runtime_revision: run.execution.revision,
         status: run.status,
         current_round_id: run.current_round.clone(),
         current_node_id: run.current_node.clone(),

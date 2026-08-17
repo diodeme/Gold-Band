@@ -340,6 +340,16 @@ MVP 范围：
 
 ---
 
+## 13. 2026-08-16 悬浮提示组件统一
+
+- 桌面端产品提示统一消费项目 shadcn/Radix Tooltip 与全局 Provider，浏览器原生 `title` 不再承担视觉提示；`aria-label` 继续独立提供图标按钮的无障碍名称。详细交互约束以 `docs/gold-band/rules/ui-interaction.md` 为唯一真源。
+- 统一范围覆盖窗口标题栏、工作流节点快捷操作与画布控制、会话/ACP 消息及 composer、轮次文件变更、附件、文件与源码管理、运行模式和定时任务页面，以及 Markdown 代码复制与图片下载控制。
+- React Flow 与 Streamdown 等依赖会间接创建原生 `title` 的控制项必须通过官方扩展接口组合现有 Tooltip，保留原有缩放、复制、图片加载/下载、键盘 focus 和流式渲染能力，不修改依赖源码或在运行时扫描、删除 DOM 属性。
+- React Flow 画布控制继续使用统一的 Lucide 线性图标；组合 `ControlButton` 时必须在工作流画布样式边界显式恢复 `fill: none / stroke: currentColor`，不得让依赖针对自带填充图标的通用 SVG 样式吞掉放大、缩小图标中的 `+ / −` 语义。
+- Tooltip 只投影已有标签或路径，不新增业务状态；内容过长时允许换行或安全断词，提示层不得改变原控件布局与点击目标。
+
+---
+
 ## 12. 一句话总结
 
 > 桌面端的基础模型是“左侧一级功能导航 + 右侧递进式任务编排页面栈”，任务从列表进入工作流，再进入 Round 详情查看节点、日志、会话、artifact 与 attachment。

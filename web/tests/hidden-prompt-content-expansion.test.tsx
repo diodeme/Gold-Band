@@ -5,11 +5,6 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HiddenPromptMessageContent } from '@/components/acp/HiddenPromptMessageContent';
-import {
-  ChatContainerContent,
-  ChatContainerRoot,
-  type ChatContainerContext,
-} from '@/components/prompt-kit/chat-container';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,8 +14,8 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe('hidden prompt content expansion', () => {
-  it('projects appended runtime context above the visible user message', async () => {
+describe('hidden prompt content links', () => {
+  it('projects appended runtime context as an icon link above the visible user message', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -37,6 +32,7 @@ describe('hidden prompt content expansion', () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
+    const onOpenSection = vi.fn();
 
     try {
       await act(async () => {
@@ -45,18 +41,28 @@ describe('hidden prompt content expansion', () => {
           '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">',
           'runtime suspended',
           '</hidden>',
-        ].join('\n')} />);
+        ].join('\n')} onOpenSection={onOpenSection} />);
       });
 
       const contentRoot = container.firstElementChild;
-      expect(contentRoot?.firstElementChild?.getAttribute('data-slot')).toBe('collapsible');
+      const link = contentRoot?.querySelector<HTMLButtonElement>('[data-hidden-prompt-link="true"]');
+      expect(link?.querySelector('svg')).not.toBeNull();
+      expect(link?.textContent).toContain('acp.hiddenRuntimeContext');
+      expect(contentRoot?.querySelector('[data-slot="collapsible"]')).toBeNull();
       expect(contentRoot?.children[1]?.textContent).toContain('本次目标变更');
+
+      await act(async () => link?.click());
+      expect(onOpenSection).toHaveBeenCalledWith({
+        sourceIndex: 1,
+        title: 'Gold Band runtime context',
+        label: 'acp.hiddenRuntimeContext',
+      });
     } finally {
       await act(async () => root.unmount());
     }
   });
 
-  it('uses the shared chat disclosure lifecycle when opening and closing', async () => {
+  it('opens each hidden section by its stable parsed part index without inline expansion', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       unobserve() {}
@@ -71,11 +77,14 @@ describe('hidden prompt content expansion', () => {
       value: () => [],
     });
 
-    const contextRef = React.createRef<ChatContainerContext>();
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
+    const onOpenSection = vi.fn();
     const content = [
+      '<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">',
+      'system detail',
+      '</hidden>',
       '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">',
       'runtime detail',
       '</hidden>',
@@ -85,32 +94,52 @@ describe('hidden prompt content expansion', () => {
 
     try {
       await act(async () => {
-        root.render(
-          <ChatContainerRoot contextRef={contextRef} resize="instant" initial="instant">
-            <ChatContainerContent scrollClassName="overflow-y-auto">
-              <HiddenPromptMessageContent content={content} />
-            </ChatContainerContent>
-          </ChatContainerRoot>,
-        );
+        root.render(<HiddenPromptMessageContent content={content} onOpenSection={onOpenSection} />);
       });
 
-      const trigger = container.querySelector<HTMLButtonElement>(
-        '[data-slot="collapsible-trigger"]',
-      );
-      expect(trigger).not.toBeNull();
+      const links = container.querySelectorAll<HTMLButtonElement>('[data-hidden-prompt-link="true"]');
+      expect(links).toHaveLength(2);
 
       await act(async () => {
-        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        links[1]?.click();
       });
-      expect(trigger?.getAttribute('aria-expanded')).toBe('true');
-      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(onOpenSection).toHaveBeenCalledWith({
+        sourceIndex: 2,
+        title: 'Gold Band runtime context',
+        label: 'acp.hiddenRuntimeContext',
+      });
+      expect(container.textContent).not.toContain('runtime detail');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 
+  it('does not render a link for a hidden section marked show=false', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
+      window.setTimeout(() => callback(performance.now()), 0)
+    ));
+    vi.stubGlobal('cancelAnimationFrame', (frameId: number) => window.clearTimeout(frameId));
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
       await act(async () => {
-        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        await new Promise((resolve) => window.setTimeout(resolve, 5));
+        root.render(<HiddenPromptMessageContent content={'用户消息\n<hidden data-gold-band-hidden="true" show="false" title="Gold Band runtime control">resume</hidden>'} />);
       });
-      expect(trigger?.getAttribute('aria-expanded')).toBe('false');
-      expect(contextRef.current?.isAtBottom).toBe(true);
+
+      expect(container.querySelector('[data-hidden-prompt-link="true"]')).toBeNull();
+      expect(container.textContent).toContain('用户消息');
+      expect(container.textContent).not.toContain('resume');
     } finally {
       await act(async () => root.unmount());
     }

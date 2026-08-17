@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Clipboard, FileDiff, GitCommitHorizontal, GitMerge, LoaderCircle, Route, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronLeft, ChevronRight, Clipboard, GitCommitHorizontal, GitMerge, LoaderCircle, Route, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import {
@@ -21,10 +21,13 @@ import {
   type SourceControlWorkspaceResource,
 } from '../right-workspace-context';
 import { diffReviewStore, gitDiffReviewItemId, type GitDiffReviewItem } from './diff-review-store';
+import { SourceControlDiffFileRow } from './SourceControlDiffFileRow';
 import { sourceControlStore, type SourceControlSessionSnapshot } from './source-control-store';
 
 const HISTORY_PAGE_SIZE = 300;
-const HISTORY_SPLIT_MIN_WIDTH = 620;
+export const HISTORY_LIST_MIN_WIDTH = 220;
+export const HISTORY_REVIEW_MIN_WIDTH = 280;
+export const HISTORY_SPLIT_MIN_WIDTH = 520;
 
 export function SourceControlHistoryView({
   resource,
@@ -40,6 +43,7 @@ export function SourceControlHistoryView({
   const { t } = useTranslation();
   const workspace = useRightWorkspace();
   const { ref, responsiveState } = useWorkspaceResponsiveState(HISTORY_SPLIT_MIN_WIDTH);
+  const commitScrollRef = useRef<HTMLDivElement>(null);
   const [compactView, setCompactView] = useState<'list' | 'detail'>('list');
   const [reachabilityOpen, setReachabilityOpen] = useState(false);
   const commits = session.history?.commits ?? [];
@@ -51,6 +55,11 @@ export function SourceControlHistoryView({
   const visibleOids = useMemo(() => pageCommits.map((commit) => commit.oid), [pageCommits]);
   const hasOlderLoadedPage = session.historyPage + 1 < pageCount;
   const canShowOlderHistory = hasOlderLoadedPage || Boolean(session.history?.nextCursor);
+
+  useEffect(() => {
+    const viewport = commitScrollRef.current;
+    if (viewport) viewport.scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, resource.workspacePath).commitList;
+  }, [resource.projectId, resource.workspacePath, session.historyPage]);
 
   useEffect(() => {
     if (session.selectedCommitOids.size > 0 && !responsiveState.split) setCompactView('detail');
@@ -83,14 +92,18 @@ export function SourceControlHistoryView({
   const list = (
     <section className="flex h-full min-h-0 flex-col" aria-label={t('sourceControl.commitList')}>
       {session.selectedCommitOids.size > 1 ? (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/45 px-2 text-[11px] text-muted-foreground">
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/45 px-2 text-ui-caption text-muted-foreground">
           <span className="min-w-0 flex-1 truncate">{t('sourceControl.selectedCommitCount', { count: session.selectedCommitOids.size })}</span>
           <Button type="button" size="xs" variant="ghost" onClick={() => sourceControlStore.clearCommitSelection(resource.projectId, resource.workspacePath)}>
             <X className="size-3" />{t('common.clear')}
           </Button>
         </div>
       ) : null}
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportRef={commitScrollRef}
+        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, resource.workspacePath, 'commit-list', event.currentTarget.scrollTop)}
+      >
         <div className="py-1" role="listbox" aria-multiselectable="true">
           {pageCommits.map((commit) => (
             <CommitRow
@@ -110,7 +123,7 @@ export function SourceControlHistoryView({
         <Button type="button" size="xs" variant="ghost" disabled={session.historyPage === 0 || busy} onClick={() => sourceControlStore.setHistoryPage(resource.projectId, resource.workspacePath, session.historyPage - 1)}>
           <ChevronLeft className="size-3" />{t('sourceControl.newerCommits')}
         </Button>
-        <span className="text-[10px] tabular-nums text-muted-foreground">{t('sourceControl.historyPage', { page: session.historyPage + 1, count: pageCount })}</span>
+        <span className="text-ui-micro tabular-nums text-muted-foreground">{t('sourceControl.historyCurrentPage', { page: session.historyPage + 1 })}</span>
         <Button type="button" size="xs" variant="ghost" disabled={!canShowOlderHistory || busy} onClick={showOlder}>
           {session.pendingAction?.kind === 'history-more' ? <LoaderCircle className="size-3 animate-spin" /> : null}
           {t('sourceControl.olderCommits')}<ChevronRight className="size-3" />
@@ -128,7 +141,7 @@ export function SourceControlHistoryView({
         const items = reviewItems(resource.workspacePath, session.commitReview.files);
         const item = items[fileIndex];
         if (!item) return;
-        const reviewSessionId = `${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
+        const reviewSessionId = `${resource.projectId}:${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`;
         diffReviewStore.save({ id: reviewSessionId, projectId: resource.projectId, revision: session.commitReview.revision, items });
         void workspace.openResource({
           kind: 'file-diff',
@@ -141,7 +154,7 @@ export function SourceControlHistoryView({
           gitSource: item.source,
           reviewSessionId,
           reviewItemId: item.id,
-          reviewLanding: 'first',
+          reviewLanding: 'top',
         });
       }}
     />
@@ -158,9 +171,9 @@ export function SourceControlHistoryView({
       <div className="min-h-0 flex-1">
         {responsiveState.split && session.selectedCommitOids.size > 0 ? (
           <ResizablePanelGroup orientation="horizontal" className="h-full">
-            <ResizablePanel id="commit-list" defaultSize="43%" minSize={260} className="min-w-0">{list}</ResizablePanel>
+            <ResizablePanel id="commit-list" defaultSize="43%" minSize={HISTORY_LIST_MIN_WIDTH} className="min-w-0">{list}</ResizablePanel>
             <ResizableHandle className="bg-border/50" />
-            <ResizablePanel id="commit-review" defaultSize="57%" minSize={300} className="min-w-0">{detail}</ResizablePanel>
+            <ResizablePanel id="commit-review" defaultSize="57%" minSize={HISTORY_REVIEW_MIN_WIDTH} className="min-w-0">{detail}</ResizablePanel>
           </ResizablePanelGroup>
         ) : compactView === 'detail' && session.selectedCommitOids.size > 0 ? detail : list}
       </div>
@@ -193,12 +206,15 @@ const CommitRow = memo(function CommitRow({ commit, selected, focused, runtimeLa
   const { t } = useTranslation();
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild onContextMenu={() => onContextMenu(commit.oid)}>
+      <ContextMenuTrigger className="block" onContextMenu={() => onContextMenu(commit.oid)}>
         <button
           type="button"
           role="option"
           aria-selected={selected}
-          onClick={(event) => onSelect(commit, event)}
+          onClick={(event) => {
+            onSelect(commit, event);
+            if (event.detail > 0) event.currentTarget.blur();
+          }}
           className={cn(
             "flex h-12 w-full select-none items-center gap-2 px-2 text-left outline-none [content-visibility:auto] [contain-intrinsic-size:auto_48px] hover:bg-muted/45 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50",
             selected && "bg-primary/10 hover:bg-primary/15",
@@ -211,9 +227,9 @@ const CommitRow = memo(function CommitRow({ commit, selected, focused, runtimeLa
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-xs font-medium">{commit.subject}</span>
-              {commit.runtimeCheckpoint ? <span className="shrink-0 rounded bg-primary/10 px-1 text-[9px] text-primary">{runtimeLabel}</span> : null}
+              {commit.runtimeCheckpoint ? <span className="shrink-0 rounded bg-primary/10 px-1 text-ui-nano text-primary">{runtimeLabel}</span> : null}
             </span>
-            <span className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+            <span className="mt-0.5 flex items-center gap-2 text-ui-micro text-muted-foreground">
               <span className="font-mono">{commit.oid.slice(0, 8)}</span>
               <span className="truncate">{commit.author.name}</span>
               <span className="ml-auto shrink-0">{formatCommitTime(commit.author.timestamp)}</span>
@@ -237,6 +253,18 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
   onOpenFile: (file: GitCommitReviewFileVm, fileIndex: number) => void;
 }) {
   const { t } = useTranslation();
+  const workspace = useRightWorkspace();
+  const reviewScrollRef = useRef<HTMLDivElement>(null);
+  const reviewKey = session.commitReview
+    ? `${session.commitReview.revision}:${session.commitReview.selectedOids.join(',')}`
+    : null;
+  useEffect(() => {
+    const viewport = reviewScrollRef.current;
+    if (!viewport) return;
+    const scrollTop = sourceControlStore.historyScrollPositions(resource.projectId, resource.workspacePath, reviewKey).reviewList;
+    const frame = restoreReviewScrollPosition(viewport, scrollTop, (apply) => window.requestAnimationFrame(apply));
+    return () => window.cancelAnimationFrame(frame);
+  }, [resource.projectId, resource.workspacePath, reviewKey, workspace.activeTabKey]);
   if (session.historyDetailLoading) return <CenteredState icon={<LoaderCircle className="size-4 animate-spin" />} text={t('sourceControl.commitReviewLoading')} />;
   const review = session.commitReview;
   if (!review) return <CenteredState text={t('sourceControl.selectCommitHint')} />;
@@ -245,31 +273,47 @@ function CommitReviewPanel({ resource, session, onOpenFile }: {
     <section className="flex h-full min-h-0 flex-col" aria-label={t('sourceControl.commitReview')}>
       <header className="shrink-0 border-b border-border/50 px-3 py-2">
         <div className="flex items-center gap-2 text-xs font-medium">
-          <FileDiff className="size-3.5" />
+          <GitCommitHorizontal className="size-3.5" />
           <span>{t('sourceControl.commitReviewCount', { count: review.totals.commitCount })}</span>
         </div>
-        <div className="mt-1 flex gap-3 text-[10px] tabular-nums text-muted-foreground">
+        <div className="mt-1 flex gap-3 text-ui-micro tabular-nums text-muted-foreground">
           <span>{t('sourceControl.changedFileCount', { count: review.totals.fileCount })}</span>
         </div>
       </header>
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportRef={reviewScrollRef}
+        onViewportScroll={(event) => sourceControlStore.setHistoryScrollPosition(resource.projectId, resource.workspacePath, 'review-list', event.currentTarget.scrollTop, reviewKey)}
+      >
         <div className="py-1">
           {review.files.map((file, fileIndex) => (
-            <button key={`${file.beforeOid ?? ''}:${file.beforePath ?? ''}:${file.afterOid}:${file.path}`} type="button" className="flex h-9 w-full min-w-0 items-center gap-2 px-3 text-left hover:bg-muted/45" onClick={() => onOpenFile(file, fileIndex)}>
-              <FileDiff className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-xs">{file.path}</span>
-              {(pathCounts.get(file.path) ?? 0) > 1
-                ? <span className="font-mono text-[10px] text-muted-foreground">{file.afterOid.slice(0, 8)}</span>
+            <SourceControlDiffFileRow
+              key={`${file.beforeOid ?? ''}:${file.beforePath ?? ''}:${file.afterOid}:${file.path}`}
+              path={file.path}
+              oldPath={file.oldPath}
+              kind={file.kind}
+              addedLines={file.addedLines}
+              deletedLines={file.deletedLines}
+              onClick={() => onOpenFile(file, fileIndex)}
+              className="px-2"
+              pathDetail={(pathCounts.get(file.path) ?? 0) > 1
+                ? <span className="shrink-0 font-mono text-ui-micro text-muted-foreground">{file.afterOid.slice(0, 8)}</span>
                 : null}
-              {file.oldPath ? <span className="max-w-24 truncate text-[10px] text-muted-foreground">← {file.oldPath}</span> : null}
-              <span className="text-[10px] uppercase text-muted-foreground">{file.kind}</span>
-              <ChevronRight className="size-3 text-muted-foreground" />
-            </button>
+            />
           ))}
         </div>
       </ScrollArea>
     </section>
   );
+}
+
+export function restoreReviewScrollPosition(
+  viewport: Pick<HTMLDivElement, 'scrollTop'>,
+  scrollTop: number,
+  scheduleFrame: (apply: () => void) => number,
+) {
+  viewport.scrollTop = scrollTop;
+  return scheduleFrame(() => { viewport.scrollTop = scrollTop; });
 }
 
 export function commitReviewPathCounts(files: GitCommitReviewFileVm[]): Map<string, number> {
@@ -302,6 +346,7 @@ function reviewItems(workspacePath: string | null | undefined, files: GitCommitR
       beforePath: file.beforePath ?? null,
       afterOid: file.afterOid,
     },
+    stats: { addedLines: file.addedLines ?? null, deletedLines: file.deletedLines ?? null },
   }));
 }
 

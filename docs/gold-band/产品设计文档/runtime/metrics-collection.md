@@ -271,7 +271,7 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 
 1. wb 启动时注册唯一订阅 `desktop.metrics`；其他渠道不注册。
 2. subscriber 只做纯映射和 `try_send`，不等待锁、不扫文件、不执行 HTTP。
-3. 队列容量 2048；满时按确认决策直接丢弃新指标并写诊断日志，terminal 也不例外。事实生产队列记录 queue/capacity/eventKind，HTTP 上报队列额外记录 eventId/executionId；worker 断开使用独立原因。snapshot 队列满或断开时记录 path/revision，不输出快照内容。
+3. 队列容量 2048；满时按确认决策直接丢弃新指标并写诊断日志，terminal 也不例外。事实生产队列记录 queue/capacity/eventKind，HTTP 上报队列额外记录 eventId/executionId；worker 断开使用独立原因。snapshot 队列满或断开时记录 path/revision，不输出快照内容。observability 状态更新入口在同一短锁区间内完成内存更新、快照 clone 和非阻塞 `try_send`，不得在锁内或调用线程执行 JSON 序列化、建目录、文件读写或替换。
 4. reporter 每 2 秒或累计 100 条发送一批；按已冻结 `reportedAt` 的年月拆批，跨月事件不得进入同一请求。
 5. 连接超时 3 秒、总超时 10 秒；timeout/5xx 最多重试 2 次，4xx 不重试。
 6. 正常退出最多等待 500 ms 尽力 flush，不阻塞强制退出。
@@ -297,7 +297,9 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 
 每个 execution 维护单调 `eventRevision`；六个 Count、permission/elicitation request ID 去重集合和分模型 usage accumulator 由生命周期状态所有者统一管理，metrics subscriber 不自行累加。
 
-采集状态保存到 execution 独立的 `observability.snapshot.json`：业务状态先持久化，随后通过后台队列原子写 snapshot。新 execution 的 `collectionStateRecovered` 省略；成功恢复为 `true`；仅在确实存在但损坏的 snapshot 恢复失败时为 `false`。outer-run 的 counters 与 acceptanceAttempts 由同一状态和同一 snapshot 管理。
+采集状态由内存中的 execution state 作为当前进程内的权威事实源，并通过有界后台队列尽力保存到 execution 独立的 `observability.snapshot.json`。writer 复用 `AtomicWriteFile` 的跨平台原子替换语义，Windows 上目标文件已存在时也必须可连续覆盖。队列满、writer 断开、序列化或写入失败只降低指标和重启恢复精度，不得改变 Direct、Workflow、AUTO 的业务状态或推进结果。outer-run 的 counters 与 acceptanceAttempts 仍由同一内存状态管理，不复制第二套 canonical state。
+
+当前阶段明确以会话非阻塞优先：observability 热路径不从 snapshot 同步恢复，新进程或已释放的 execution 从零状态开始，`collectionStateRecovered` 省略。因此 `eventRevision`、counters、usage 与 request ID 去重只保证当前内存生命周期内连续；跨进程精确恢复属于后续优化，只有能保持热路径零文件 I/O、零等待时才可重新接入。
 
 ## 10. 验收标准
 
@@ -305,7 +307,7 @@ run 进入 running 后发布 started；node attempt 在 provider 调用开始和
 - Workflow pause/resume/node failure，AUTO outer/leaf failure 和每次 acceptance 可追溯。
 - Direct 首轮不重复计数；AUTO workflow invocation 与 child Workflow 不重复聚合成本。
 - provider/model、分模型 token、ACP 时间来自真实执行快照；模型切换前后 usage 不串归属。
-- eventRevision 在重启、异步分发和重试后保持单调；同 revision 不产生两份不同事件。
+- eventRevision 在同一内存 execution 生命周期和异步分发期间保持单调；当前阶段不以牺牲会话非阻塞性保证跨进程连续。
 - 六个 Count 均符合状态转换定义，只出现在交付层终态，父子执行不重复计数。
 - `metrics.log` 包含每次请求的日志时间和完整请求体，且不包含 API Key。
 - 每条事件包含产生时的原始 `userId/workspace`。
@@ -342,3 +344,9 @@ core 的不可变事实与 `ExecutionObservabilityState` 已实现；状态对�
 - Direct 同一 task 的 executionId/attemptId 保持 task UUID；首轮之后的用户新输入在同一 attempt 快照累加 `followUpCount`，usage 与 manualContinueCount 等计数也继续按累计快照上报。active turn 结束后仍通过同 attempt snapshot/usage baseline 识别后续输入，不依赖内存态。
 - `followUpCount` 只统计用户新提交的 Direct prompt；permission/elicitation/automatic recovery 等 runtime-continue 不计入。
 - 服务端 delivery stat 同步增加 `follow_up_count` 列，客户端 DTO 同步输出 `followUpCount`。
+
+### 11.4 Snapshot 非阻塞与 Windows 覆盖加固（2026-08-17）
+
+- 删除 observability 同步持久化入口；状态 mutex 内只更新内存、clone snapshot 并向容量 2048 的单 writer 执行 `try_send`，调用线程不再序列化或访问文件系统。
+- 首次状态更新不再在全局 mutex 内同步加载历史 snapshot；本阶段接受重启后的 revision/counters/usage 精度下降，确保 continue、permission、elicitation 和 lifecycle 推进不等待磁盘。
+- snapshot writer 复用仓库统一的 `storage::write_json` / `AtomicWriteFile::commit()`，支持 Windows 对既有目标文件的原子覆盖；所有失败仅记录诊断。

@@ -1,7 +1,35 @@
-export type DesktopThemePreference = 'system' | 'light' | 'light-gray' | 'dark' | 'black';
-export type ConcreteDesktopTheme = Exclude<DesktopThemePreference, 'system'>;
-export type DesktopThemeMode = 'light' | 'dark';
-export type DesktopFontPreference = string;
+export type ColorSchemePreference = 'system' | 'light' | 'dark';
+export type ResolvedColorScheme = Exclude<ColorSchemePreference, 'system'>;
+export type VisualQuality = 'full' | 'performance';
+export interface AppearancePreference {
+  schemaVersion: 2;
+  themeId: string;
+  colorScheme: ColorSchemePreference;
+  visualQualityByTheme: Record<string, VisualQuality>;
+}
+export type FontStackPreference = { source: 'theme' } | { source: 'custom'; families: string[] };
+export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
+export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
+export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export interface WallpaperSchemePersonalization {
+  image: WallpaperImagePreference;
+  opacityPercent: number;
+}
+export interface PersonalizationPreference {
+  schemaVersion: 4;
+  typography: {
+    ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
+    editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
+  };
+  wallpaper: {
+    byColorScheme: Record<ResolvedColorScheme, WallpaperSchemePersonalization>;
+  };
+  avatars: {
+    agent: { image: AvatarPreference; shape: AvatarShapePreference };
+    user: { image: AvatarPreference; shape: AvatarShapePreference };
+  };
+}
 export type DesktopLanguage = 'zh-cn' | 'en';
 export type AvatarKind = 'agent' | 'user';
 export type AvatarShape = 'circle' | 'square';
@@ -10,12 +38,26 @@ export type DesktopWindowFrameStyle = 'native-compositor' | 'app-outline';
 export type UpdateCheckStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'not-available' | 'error';
 
 export interface PreferencesVm {
-  theme: DesktopThemePreference;
+  appearance: AppearancePreference;
+  personalization: PersonalizationPreference;
   language: DesktopLanguage;
-  font: DesktopFontPreference;
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;
+  wallpapers: WallpaperPreferencesVm;
+}
+
+export interface WallpaperImageVm {
+  id: string;
+  imageUrl: string;
+  thumbnailUrl: string;
+  createdAt: string;
+  width: number;
+  height: number;
+}
+
+export interface WallpaperPreferencesVm {
+  recentWallpapers: WallpaperImageVm[];
 }
 
 export interface AvatarImageVm {
@@ -286,7 +328,6 @@ export interface WorkspaceLayoutVm {
 }
 
 export interface FileWorkspaceLayoutVm {
-  preferredWidth: number;
   splitMinWidth: number;
   treeDefaultWidth: number;
   treeMinWidth: number;
@@ -544,7 +585,11 @@ export interface GitWorkspaceStatusVm {
   staged: GitFileChangeVm[];
   unstaged: GitFileChangeVm[];
   untracked: GitFileChangeVm[];
-  operationInProgress?: { kind: string } | null;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
 }
 
 export type GitRefKindVm = 'local-branch' | 'remote-branch' | 'tag';
@@ -647,6 +692,8 @@ export interface GitCommitReviewFileVm {
   beforeOid?: string | null;
   beforePath?: string | null;
   afterOid: string;
+  addedLines?: number | null;
+  deletedLines?: number | null;
 }
 
 export interface GitCommitReviewVm {
@@ -694,7 +741,8 @@ export type GitMutationVm =
   | { kind: 'branch-delete-safe'; name: string }
   | { kind: 'tag-create'; name: string; target?: string | null; style: 'annotated' | 'lightweight'; message?: string | null }
   | { kind: 'tag-delete-local'; name: string }
-  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null };
+  | { kind: 'worktree-create'; path: string; sourceRef: string; newBranch?: string | null }
+  | { kind: 'worktree-remove'; path: string };
 
 export type GitMutationRequestVm = GitMutationVm & {
   expectedRevision?: string | null;
@@ -716,7 +764,12 @@ export type GitOperationInputVm =
   | { kind: 'push'; remote: string; branch: string; setUpstream: boolean }
   | { kind: 'push-tag'; remote: string; tag: string }
   | { kind: 'stash-create'; message?: string | null; includeUntracked: boolean }
-  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean };
+  | { kind: 'stash-apply'; stashRef: string; restoreIndex: boolean }
+  | { kind: 'merge-continue' }
+  | { kind: 'merge-abort' }
+  | { kind: 'rebase-continue' }
+  | { kind: 'rebase-skip' }
+  | { kind: 'rebase-abort' };
 
 export type GitOperationRequestVm = GitOperationInputVm & {
   expectedRevision?: string | null;
@@ -835,7 +888,7 @@ export interface GitHubPullRequestDetailVm extends GitHubPullRequestSummaryVm {
   additions: number;
   deletions: number;
   changedFiles: number;
-  files: Array<{ path: string; additions: number; deletions: number }>;
+  files: Array<{ path: string; oldPath?: string | null; kind: GitFileChangeKindVm; additions: number; deletions: number }>;
   latestReviews: Array<{ author?: GitHubActorVm | null; state: string }>;
 }
 
@@ -876,7 +929,7 @@ export interface GitHubIssueQueryVm {
 export type GitComparisonSourceVm =
   | { kind: 'workspace'; workspacePath?: string | null; path: string; area: 'staged' | 'unstaged' }
   | { kind: 'commit'; workspacePath?: string | null; path: string; beforeOid?: string | null; beforePath?: string | null; afterOid: string }
-  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string };
+  | { kind: 'github-pr'; workspacePath?: string | null; host: string; repository: string; prNumber: number; baseOid: string; headOid: string; path: string; beforePath?: string | null };
 
 export interface GitFileComparisonVm {
   path: string;
@@ -900,6 +953,7 @@ export interface WorkflowVm {
   runs: RunGroupVm[];
   control?: WorkflowControlVm | null;
   workflowJson?: string | null;
+  modelBindings: WorkflowModelBindings;
 }
 
 export interface WorkflowDsl {
@@ -921,6 +975,7 @@ export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
   id: string;
+  executionSlotId?: string | null;
   provider?: string | null;
   model?: string | null;
   profile?: string | null;
@@ -1009,6 +1064,7 @@ export interface CreateTaskInput {
   requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   workflowTemplateId?: string | null;
 }
 
@@ -1022,9 +1078,38 @@ export interface WorkflowTemplateStore {
 export interface WorkflowTemplate {
   id: string;
   name: string;
+  isBuiltIn: boolean;
+  optionalEntryStage?: {
+    nodeId: string;
+    labelKey: string;
+    defaultEnabled: boolean;
+  } | null;
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentBindingUsageVm {
+  workflowTemplateCount: number;
+  taskCount: number;
+  scheduledTaskCount: number;
+  unknownTaskCount: number;
+  unknownScheduledTaskCount: number;
+}
+
+export interface WorkflowModelBindings {
+  definitionRevision: string;
+  bindingRevision: number;
+  bindings: WorkerModelBinding[];
+}
+
+export interface WorkerModelBinding {
+  executionSlotId: string;
+  agentId: string;
+  modelId?: string | null;
+  permissionModeId?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface AutoTemplateStore {
@@ -1409,6 +1494,7 @@ export interface AcpEventPageVm {
 }
 
 export interface AcpSessionConfigVm {
+  catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
   configOptionOverrides?: Record<string, string>;
@@ -1787,7 +1873,17 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 export type ConversationPage =
   | { kind: 'conversation-home' }
   | { kind: 'scheduled-task-create' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
+  | {
+      kind: 'conversation-run';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      roundId?: string;
+      nodeId?: string;
+      attemptId?: string;
+      outerNodeId?: string;
+      outerAttemptId?: string;
+    }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -1827,6 +1923,11 @@ export interface ScheduledOccurrenceVm {
   attemptId?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+}
+
+export interface ScheduledOccurrencePageVm {
+  items: ScheduledOccurrenceVm[];
+  nextCursor?: string | null;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -1888,7 +1989,7 @@ export interface ScheduledTaskEditVm {
   attachmentNames: string[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   schedule: ScheduledScheduleSpec;
@@ -1905,7 +2006,7 @@ export interface UpdateScheduledTaskInput {
   content: string;
   runMode: string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
@@ -2019,14 +2120,18 @@ export interface ConversationRuntimeFacetVm {
   active: boolean;
   continuable: boolean;
   phase: string;
+  revision?: number | null;
+}
+
+export interface ConversationControlFacetVm {
+  mode: 'runtime-controlled' | 'non-runtime-controlled';
 }
 
 export interface ConversationAcpFacetVm {
-  status?: string | null;
-  phase?: 'starting' | 'running' | 'cancel-requested' | null;
-  active: boolean;
+  sessionAvailability: 'established' | 'restorable' | 'unavailable' | 'closing';
+  liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested';
+  latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
-  terminal: boolean;
 }
 
 export interface ConversationComposerVm {
@@ -2036,6 +2141,16 @@ export interface ConversationComposerVm {
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+  supersededBy?: ConversationSessionTargetVm | null;
+}
+
+export interface ConversationSessionTargetVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
 }
 
 export interface AppExitRequestVm {
@@ -2053,7 +2168,19 @@ export interface ConversationQueuedPromptVm {
   id: string;
   content: string;
   attachmentCount: number;
+  quoteCount: number;
   createdAt: string;
+}
+
+export interface UserPromptQuote {
+  id: string;
+  sourceMessageKey: string;
+  text: string;
+}
+
+export interface ConversationPromptInput {
+  displayText: string;
+  quotes: UserPromptQuote[];
 }
 
 export interface ConversationPromptQueueVm {
@@ -2064,10 +2191,11 @@ export interface ConversationPromptQueueVm {
 
 export interface ConversationAttemptLifecycleVm {
   runtime: ConversationRuntimeFacetVm;
+  control: ConversationControlFacetVm;
   acp: ConversationAcpFacetVm;
   displayStatus: string;
   runtimeDisplay: RuntimeDisplayVm;
-  continueKind?: 'action' | null;
+  continueKind?: 'continue-current-attempt' | 'recover-completed-attempt' | null;
   composer: ConversationComposerVm;
   promptQueue?: ConversationPromptQueueVm | null;
 }
@@ -2144,6 +2272,19 @@ export interface ConversationRunVm {
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
   scheduledTaskId?: string | null;
+  worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ConversationQueuedPromptDraftVm {
+  content: string;
+  quotes: UserPromptQuote[];
+  attachmentPaths: string[];
+}
+
+export interface ConversationRunWorktreeVm {
+  path: string;
+  branch: string;
+  forkCommit: string;
 }
 
 export interface ConversationSessionSwitchVm {
@@ -2169,7 +2310,7 @@ export interface ConversationActiveSessionVm {
 export interface ConversationRunModeVm {
   mode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  optionalEntryPreferences?: Record<string, boolean>;
   directConfig?: ConversationDirectConfigVm | null;
   directPreferences?: Record<string, ConversationDirectConfigVm>;
   autoConfig?: ConversationAutoConfigVm | null;
@@ -2214,11 +2355,14 @@ export interface ConversationCreateInput {
   content: string;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
+  workLocation?: ConversationWorkLocation;
 }
+
+export type ConversationWorkLocation = 'main' | 'worktree';
 
 export interface ConversationValidationResultVm {
   valid: boolean;
@@ -2229,6 +2373,12 @@ export interface ConversationMissingItemVm {
   code: string;
   label: string;
   recoveryPath: string;
+  params: Record<string, unknown>;
+}
+
+export interface WorkflowRepairTarget {
+  workflowTemplateId: string;
+  nodeId: string;
 }
 
 export interface ConversationSearchResultVm {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Button } from '@/components/ui/button';
 import { AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -33,5 +35,13 @@ describe('ui Button', () => {
       SheetTrigger,
       TooltipTrigger,
     ].forEach(expectForwardRef);
+  });
+
+  it('routes select triggers through the shared input theme role', () => {
+    const selectSource = readFileSync(
+      fileURLToPath(new URL('../src/components/ui/select.tsx', import.meta.url)),
+      'utf8',
+    );
+    expect(selectSource).toContain('data-theme-role="input"');
   });
 });

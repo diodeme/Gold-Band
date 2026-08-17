@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
-import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowTemplate, WorkflowTemplateStore } from '../types';
+import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
 import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import {
@@ -24,7 +24,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
-import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
 
 interface RunModeManagementPageProps {
@@ -34,6 +34,7 @@ interface RunModeManagementPageProps {
   runMode: ConversationRunModeVm;
   agentRegistry: AgentRegistryVm | null;
   workflowTemplates: WorkflowTemplateStore | null;
+  repairTarget?: WorkflowRepairTarget | null;
   onProjectChange: (projectId: string) => void;
   onSave: (mode: ConversationRunModeVm) => void | Promise<void>;
   onWorkflowTemplatesChange?: (store: WorkflowTemplateStore) => void;
@@ -79,10 +80,12 @@ export function TemplateActionRow({
   auxiliaryAction,
   notice,
   showSaveCurrent = true,
+  saveCurrentDisabled = false,
   saving,
   saveCurrentLabel,
   savingLabel,
   onSaveCurrent,
+  restoreAction,
   name,
   namePlaceholder,
   onNameChange,
@@ -94,10 +97,12 @@ export function TemplateActionRow({
   auxiliaryAction?: ReactNode;
   notice?: ReactNode;
   showSaveCurrent?: boolean;
+  saveCurrentDisabled?: boolean;
   saving: boolean;
   saveCurrentLabel: string;
   savingLabel: string;
   onSaveCurrent: () => void;
+  restoreAction?: ReactNode;
   name: string;
   namePlaceholder: string;
   onNameChange: (value: string) => void;
@@ -111,10 +116,11 @@ export function TemplateActionRow({
         {picker}
         {auxiliaryAction}
         {showSaveCurrent ? (
-          <Button size="sm" disabled={saving} onClick={onSaveCurrent}>
+          <Button size="sm" disabled={saving || saveCurrentDisabled} onClick={onSaveCurrent}>
             {saving ? savingLabel : saveCurrentLabel}
           </Button>
         ) : null}
+        {restoreAction}
         <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
         <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
           {saveAsLabel}
@@ -159,7 +165,7 @@ export function RunModeProjectSelector({
               <SelectItem key={workspace.projectId} value={workspace.projectId}>
                 <span className="block min-w-0">
                   <span className="block truncate">{workspace.name}</span>
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{workspace.workspacePath}</span>
+                  <span className="mt-0.5 block truncate text-ui-caption text-muted-foreground">{workspace.workspacePath}</span>
                 </span>
               </SelectItem>
             ))}
@@ -238,6 +244,7 @@ export function RunModeManagementPage({
   runMode,
   agentRegistry,
   workflowTemplates,
+  repairTarget = null,
   onProjectChange,
   onSave,
   onWorkflowTemplatesChange,
@@ -274,6 +281,7 @@ export function RunModeManagementPage({
   // Workflow template editor state
   const [wfEditTemplateId, setWfEditTemplateId] = useState<string | null>(null);
   const [wfEditWorkflow, setWfEditWorkflow] = useState<WorkflowDsl | null>(null);
+  const [wfEditModelBindings, setWfEditModelBindings] = useState<WorkflowModelBindings>({ definitionRevision: '', bindingRevision: 0, bindings: [] });
   const [wfTemplatePickerOpen, setWfTemplatePickerOpen] = useState(false);
   const [wfSaveName, setWfSaveName] = useState('');
   const [wfDeleteTarget, setWfDeleteTarget] = useState<WorkflowTemplate | null>(null);
@@ -286,6 +294,7 @@ export function RunModeManagementPage({
   const previousProjectIdRef = useRef(projectId);
   const prunedAutoConfigRef = useRef<string | null>(null);
   const prunedAutoTemplateRef = useRef<string | null>(null);
+  const handledRepairTargetRef = useRef<string | null>(null);
 
   useEffect(() => {
     setWfTemplateStore(workflowTemplates);
@@ -305,6 +314,23 @@ export function RunModeManagementPage({
   const availableAgentMap = useMemo(() => new Map(availableAgents.map((item) => [item.provider, item])), [availableAgents]);
   const acceptanceModels = bootstrapModels;
   const acceptanceThoughtLevel = findAcpThoughtLevel(selectedBootstrapAgent?.configOptions);
+
+  useEffect(() => {
+    if (!repairTarget) return;
+    const repairKey = `${repairTarget.workflowTemplateId}:${repairTarget.nodeId}`;
+    if (handledRepairTargetRef.current === repairKey) return;
+    const template = workflowTemplateList.find((item) => item.id === repairTarget.workflowTemplateId);
+    if (!template || !template.workflow.nodes.some((node) => node.id === repairTarget.nodeId)) return;
+    handledRepairTargetRef.current = repairKey;
+    setMode('workflow');
+    setWorkflowTemplateId(template.id);
+    setWfEditTemplateId(template.id);
+    setWfEditWorkflow(template.workflow);
+    setWfEditModelBindings(template.modelBindings);
+    setWfSaveName('');
+    setWfNotice(null);
+    setWfError(null);
+  }, [repairTarget, workflowTemplateList]);
 
   useEffect(() => {
     const projectChanged = previousProjectIdRef.current !== projectId;
@@ -342,6 +368,7 @@ export function RunModeManagementPage({
         : null;
       setWfEditTemplateId(selectedTemplate?.id ?? null);
       setWfEditWorkflow(selectedTemplate?.workflow ?? null);
+      setWfEditModelBindings(selectedTemplate?.modelBindings ?? { definitionRevision: '', bindingRevision: 0, bindings: [] });
       setWfSaveName('');
       setWfLastUsedHintDismissed(selectedTemplate?.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
       wfEditorInitialized.current = Boolean(selectedTemplate);
@@ -645,6 +672,7 @@ export function RunModeManagementPage({
     const initialWorkflow = initialTemplate?.workflow ?? null;
     setWfEditTemplateId(initialTemplate?.id ?? null);
     setWfEditWorkflow(initialWorkflow);
+    setWfEditModelBindings(initialTemplate?.modelBindings ?? { definitionRevision: '', bindingRevision: 0, bindings: [] });
     setWfSaveName('');
     setWfLastUsedHintDismissed(initialTemplate?.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
     setWfNotice(null);
@@ -665,6 +693,7 @@ export function RunModeManagementPage({
     setWorkflowTemplateId(found.id);
     setWfEditTemplateId(found.id);
     setWfEditWorkflow(found.workflow);
+    setWfEditModelBindings(found.modelBindings);
     setWfSaveName('');
     setWfLastUsedHintDismissed(found.id === effectiveWorkflowTemplates?.lastUsedTemplateId);
     setWfNotice(null);
@@ -676,6 +705,7 @@ export function RunModeManagementPage({
     const draft = createBlankWorkflowTemplateEditorState();
     setWfEditTemplateId(draft.templateId);
     setWfEditWorkflow(draft.workflow);
+    setWfEditModelBindings({ definitionRevision: '', bindingRevision: 0, bindings: [] });
     setWfSaveName(draft.saveName);
     setWfTemplatePickerOpen(false);
     setWfNotice(null);
@@ -684,9 +714,12 @@ export function RunModeManagementPage({
 
   const selectedWfTemplate = effectiveWorkflowTemplates?.templates.find((t) => t.id === wfEditTemplateId) ?? null;
   const wfTemplateLabel = selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : (wfEditWorkflow ? t('taskList.create.unsavedWorkflowTemplate') : t('taskList.create.workflowTemplatePlaceholder'));
-  const canUpdateWfTemplate = Boolean(wfEditTemplateId && wfEditTemplateId !== 'default');
+  const wfDefinitionChanged = hasWorkflowDraftChanges(wfEditWorkflow, selectedWfTemplate?.workflow);
+  const wfBindingsChanged = hasWorkflowBindingDraftChanges(wfEditModelBindings, selectedWfTemplate?.modelBindings);
+  const canUpdateWfTemplate = Boolean(wfEditTemplateId) && (!selectedWfTemplate?.isBuiltIn || !wfDefinitionChanged);
+  const wfSaveCurrentDisabled = !canUpdateWfTemplate || (!wfDefinitionChanged && !wfBindingsChanged);
   const showDefaultWorkflowSaveAsNotice = shouldShowDefaultWorkflowSaveAsNotice(
-    wfEditTemplateId,
+    selectedWfTemplate,
     wfEditWorkflow,
     selectedWfTemplate?.workflow,
   );
@@ -699,9 +732,9 @@ export function RunModeManagementPage({
     onWorkflowTemplatesChange?.(store);
   };
 
-  const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true): WorkflowDsl | null => {
+  const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true, validateModelBindings = false): WorkflowDsl | null => {
     const supportedAgents = agents.filter((agent) => agent.diagnostic?.available === true);
-    const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId, wfEditModelBindings, validateModelBindings);
     if (!validation.valid) {
       setWfError(validation.issues.map((issue) => issue.message).join('\n'));
       return null;
@@ -723,11 +756,11 @@ export function RunModeManagementPage({
       setWfError(t('runMode.validationTemplateNameDuplicated', { name: wfSaveName.trim() }));
       return;
     }
-    const validated = validateWfForTemplate(wfEditWorkflow, false);
+    const validated = validateWfForTemplate(wfEditWorkflow, false, false);
     if (!validated) return;
     setWfSaving(true);
     try {
-      const nextStore = await saveWorkflowTemplate(wfSaveName.trim(), validated);
+      const nextStore = await saveWorkflowTemplate(wfSaveName.trim(), validated, wfEditModelBindings);
       const selected = findSavedWorkflowTemplate(nextStore, wfSaveName.trim());
       if (!selected) {
         throw new Error('Saved workflow template was not returned by the template store.');
@@ -735,6 +768,7 @@ export function RunModeManagementPage({
       setWorkflowTemplateId(selected.id);
       setWfEditTemplateId(selected.id);
       setWfEditWorkflow(selected.workflow);
+      setWfEditModelBindings(selected.modelBindings);
       persistRunModeSelection('workflow', undefined, selected.id);
       applyWorkflowTemplateStore(nextStore);
       setWfSaveName('');
@@ -749,14 +783,15 @@ export function RunModeManagementPage({
 
   const saveWfCurrent = async () => {
     if (!wfEditWorkflow || !canUpdateWfTemplate) return;
-    const validated = validateWfForTemplate(wfEditWorkflow);
+    const validated = validateWfForTemplate(wfEditWorkflow, true, selectedWfTemplate?.isBuiltIn === true);
     if (!validated) return;
     setWfSaving(true);
     try {
-      const nextStore = await updateWorkflowTemplate(wfEditTemplateId!, validated);
+      const nextStore = await updateWorkflowTemplate(wfEditTemplateId!, validated, wfEditModelBindings);
       const selected = nextStore.templates.find((t) => t.id === wfEditTemplateId) ?? null;
       applyWorkflowTemplateStore(nextStore);
       setWfEditWorkflow(selected?.workflow ?? wfEditWorkflow);
+      if (selected) setWfEditModelBindings(selected.modelBindings);
       setWfNotice(t('taskList.create.workflowTemplateUpdated'));
       setTimeout(() => setWfNotice(null), 3000);
     } catch (error) {
@@ -766,8 +801,17 @@ export function RunModeManagementPage({
     }
   };
 
+  const restoreWfDefinition = () => {
+    if (!selectedWfTemplate?.isBuiltIn) return;
+    const restored = restoreBuiltInWorkflowDefinition(selectedWfTemplate.workflow, wfEditModelBindings);
+    setWfEditWorkflow(restored.workflow);
+    setWfEditModelBindings(restored.modelBindings);
+    setWfError(null);
+    setWfNotice(null);
+  };
+
   const deleteWfTemplate = async () => {
-    if (!wfDeleteTarget || wfDeleteTarget.id === 'default') return;
+    if (!wfDeleteTarget || wfDeleteTarget.isBuiltIn) return;
     setWfSaving(true);
     try {
       const nextStore = await deleteWorkflowTemplate(wfDeleteTarget.id);
@@ -777,6 +821,7 @@ export function RunModeManagementPage({
         : nextStore.templates.find((t) => t.id === wfEditTemplateId) ?? nextStore.templates[0] ?? null;
       setWfEditTemplateId(nextSelected?.id ?? null);
       setWfEditWorkflow(nextSelected?.workflow ?? null);
+      setWfEditModelBindings(nextSelected?.modelBindings ?? { definitionRevision: '', bindingRevision: 0, bindings: [] });
       setWfDeleteTarget(null);
       setWfSaveName('');
       setWfNotice(t('taskList.create.workflowTemplateDeleted'));
@@ -892,8 +937,8 @@ export function RunModeManagementPage({
         title={<span className="text-title">{t('runMode.title')}</span>}
       />
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-6 pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className={cn('min-h-0 flex-1 px-6 pt-4', mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6')}>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <RunModeTabsToolbar
             mode={mode}
             onModeChange={changeMode}
@@ -1029,7 +1074,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -1045,7 +1090,7 @@ export function RunModeManagementPage({
                         <SelectItem key={item.agentType} value={item.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{item.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -1216,8 +1261,9 @@ export function RunModeManagementPage({
             </section>
           </div>
         ) : (
-          <div className="space-y-4">
-            <TemplateActionRow
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="shrink-0">
+              <TemplateActionRow
               label={t('taskList.create.workflowTemplate')}
               picker={(
                 <Popover open={wfTemplatePickerOpen} onOpenChange={setWfTemplatePickerOpen}>
@@ -1242,7 +1288,7 @@ export function RunModeManagementPage({
                     <div className={templatePickerSavedListClass}>
                       {workflowTemplateList.map((tpl) => {
                         const selected = tpl.id === wfEditTemplateId;
-                        const isDefault = tpl.id === 'default';
+                        const isDefault = tpl.isBuiltIn;
                         return (
                           <div key={tpl.id} className={cn('flex items-center gap-1 rounded-sm p-1', selected && 'bg-accent text-accent-foreground')}>
                             <button
@@ -1279,17 +1325,20 @@ export function RunModeManagementPage({
                 </button>
               ) : null}
               notice={showDefaultWorkflowSaveAsNotice ? t('taskList.create.defaultWorkflowSaveAsNotice') : null}
-              showSaveCurrent={canUpdateWfTemplate}
+              showSaveCurrent={Boolean(wfEditTemplateId)}
+              saveCurrentDisabled={wfSaveCurrentDisabled}
               saving={wfSaving}
               saveCurrentLabel={t('taskList.create.saveCurrentWorkflow')}
               savingLabel={t('taskList.create.savingWorkflowTemplate')}
               onSaveCurrent={() => void saveWfCurrent()}
+              restoreAction={selectedWfTemplate?.isBuiltIn && wfDefinitionChanged ? <Button size="sm" variant="outline" disabled={wfSaving} onClick={restoreWfDefinition}>{t('taskList.create.restoreOtherWorkflowChanges')}</Button> : null}
               name={wfSaveName}
               namePlaceholder={t('taskList.create.workflowTemplateName')}
               onNameChange={setWfSaveName}
               saveAsLabel={t('taskList.create.saveAsWorkflow')}
               onSaveAs={() => void saveWfAsNew()}
-            />
+              />
+            </div>
 
             {wfNotice ? (
               <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-600">{wfNotice}</div>
@@ -1299,18 +1348,23 @@ export function RunModeManagementPage({
             ) : null}
 
             {/* Embedded workflow editor */}
-            <div className="min-h-[480px] min-w-0">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {wfEditWorkflow ? (
                   <WorkflowEditor
+                    className="h-full min-h-0"
                     value={wfEditWorkflow}
+                    modelBindings={wfEditModelBindings}
                     agentRegistry={agentRegistry}
                     profiles={profiles}
                     workflowTemplates={effectiveWorkflowTemplates}
                     currentTemplateId={wfEditTemplateId}
                     currentTemplateName={selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null}
+                    focusNodeId={repairTarget?.workflowTemplateId === wfEditTemplateId ? repairTarget.nodeId : null}
+                    validateModelBindings={selectedWfTemplate?.isBuiltIn === true}
                     showSaveAction={false}
                     allowAiDynamic={true}
                     onChange={setWfEditWorkflow}
+                    onModelBindingsChange={setWfEditModelBindings}
                     onSave={async () => {
                       if (canUpdateWfTemplate) await saveWfCurrent();
                       else await saveWfAsNew();
@@ -1318,7 +1372,7 @@ export function RunModeManagementPage({
                   />
               ) : null}
               {!wfEditWorkflow ? (
-                <div className="flex h-[480px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+                <div className="flex size-full min-h-0 items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
                   {workflowTemplateList.length > 0
                     ? t('taskList.create.newWorkflowTemplate')
                     : t('taskList.create.noWorkflowTemplate')}
@@ -1385,15 +1439,18 @@ function MultiToggle({ items, selected, onChange, emptyLabel }: { items: Array<{
         {selectableItems.map((item, index) => {
           const active = selectedSet.has(item.id);
           return (
-            <button
-              key={`${item.id}-${index}`}
-              type="button"
-              className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
-              onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
-              title={item.id}
-            >
-              <span className="block max-w-52 truncate">{item.label}</span>
-            </button>
+            <Tooltip key={`${item.id}-${index}`}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className={cn('max-w-full rounded-full border px-2.5 py-1 text-xs transition-colors', active ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border/60 bg-background/35 text-muted-foreground hover:text-foreground')}
+                  onClick={() => onChange(active ? selected.filter((id) => id !== item.id) : [...selected, item.id])}
+                >
+                  <span className="block max-w-52 truncate">{item.label}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[360px] break-all">{item.id}</TooltipContent>
+            </Tooltip>
           );
         })}
       </div>

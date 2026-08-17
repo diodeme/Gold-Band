@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::acp::events::{current_timestamp, load_timeline_items};
+use crate::acp::events::{current_timestamp, load_session_metadata_value, load_timeline_items};
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
-use crate::storage::{ensure_parent_dir, read_json, write_json};
+use crate::storage::{ensure_parent_dir, write_json};
 
 const SNAPSHOT_FILE: &str = "acp.snapshot.json";
 const SESSION_FILE: &str = "acp.session.json";
@@ -50,6 +50,59 @@ pub fn mark_runtime_interrupted(attempt_dir: &Utf8Path) -> Result<AcpRuntimeCont
         TurnControlMode::NonRuntimeControlled,
         TurnControlTransitionCause::RuntimeInterrupted,
     )
+}
+
+pub fn prepare_manual_follow_up(
+    attempt_dir: &Utf8Path,
+) -> Result<Option<(Option<String>, String)>> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let cursor = load_runtime_control_cursor_unlocked(attempt_dir)?;
+    if cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.current_mode == TurnControlMode::NonRuntimeControlled)
+    {
+        return Ok(None);
+    }
+    Ok(Some((
+        cursor.map(|cursor| cursor.transition_id),
+        format!("runtime-control-{}", Uuid::new_v4().simple()),
+    )))
+}
+
+pub fn commit_manual_follow_up(
+    attempt_dir: &Utf8Path,
+    source_transition_id: Option<&str>,
+    transition_id: &str,
+) -> Result<bool> {
+    let lock = cursor_lock(attempt_dir);
+    let _guard = lock
+        .lock()
+        .map_err(|_| anyhow!("runtime control cursor lock poisoned"))?;
+    let cursor = load_runtime_control_cursor_unlocked(attempt_dir)?;
+    let source_matches = match (source_transition_id, cursor.as_ref()) {
+        (None, None) => true,
+        (Some(source_transition_id), Some(cursor)) => {
+            cursor.current_mode == TurnControlMode::RuntimeControlled
+                && cursor.transition_id == source_transition_id
+        }
+        _ => false,
+    };
+    if !source_matches {
+        return Ok(false);
+    }
+    persist_cursor_unlocked(
+        attempt_dir,
+        &AcpRuntimeControlCursor {
+            current_mode: TurnControlMode::NonRuntimeControlled,
+            transition_id: transition_id.to_string(),
+            transition_cause: TurnControlTransitionCause::ManualFollowUp,
+            changed_at: current_timestamp(),
+        },
+    )?;
+    Ok(true)
 }
 
 pub fn prepare_workflow_continued(attempt_dir: &Utf8Path) -> Result<Option<(String, String)>> {
@@ -128,7 +181,7 @@ fn load_persisted_cursor_unlocked(
     let mut timeline_scan_complete = false;
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let Ok(value) = read_json::<Value>(&path) else {
+        let Ok(value) = load_session_metadata_value(&path, None) else {
             continue;
         };
         timeline_scan_complete |= value
@@ -214,10 +267,11 @@ fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()>
 
 fn session_value(path: &Utf8Path) -> Result<Value> {
     if path.exists() {
-        return read_json(path);
+        return load_session_metadata_value(path, None);
     }
     Ok(serde_json::json!({
-        "status": "cancelled",
+        "availability": "established",
+        "latestTurnStatus": "none",
         "restored": false,
         "createdAt": current_timestamp(),
     }))
@@ -227,6 +281,46 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::acp::events::{AcpUiEvent, write_timeline_items};
+
+    #[test]
+    fn runtime_control_cursor_does_not_invent_a_terminal_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        for name in [SNAPSHOT_FILE, SESSION_FILE] {
+            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
+            assert_eq!(metadata["latestTurnStatus"], "none");
+            assert_eq!(
+                metadata["runtimeControl"]["currentMode"],
+                "non-runtime-controlled"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_control_cursor_preserves_an_existing_turn_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        write_json(
+            &attempt_dir.join(SNAPSHOT_FILE),
+            &serde_json::json!({
+                "sessionId": "session-existing",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": current_timestamp(),
+            }),
+        )
+        .unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        let metadata = load_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["latestTurnStatus"], "completed");
+        assert_eq!(metadata["sessionId"], "session-existing");
+    }
 
     #[test]
     fn non_runtime_stop_does_not_create_another_transition() {
@@ -241,6 +335,66 @@ mod tests {
                 .unwrap()
                 .transition_id,
             first.transition_id
+        );
+    }
+
+    #[test]
+    fn accepted_manual_follow_up_persists_non_runtime_control_to_both_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let (source_id, transition_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
+
+        assert!(source_id.is_none());
+        assert!(load_runtime_control_cursor(attempt_dir).unwrap().is_none());
+        assert!(
+            commit_manual_follow_up(attempt_dir, source_id.as_deref(), &transition_id).unwrap()
+        );
+
+        for name in [SNAPSHOT_FILE, SESSION_FILE] {
+            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
+            assert_eq!(
+                metadata["runtimeControl"]["currentMode"],
+                "non-runtime-controlled"
+            );
+            assert_eq!(
+                metadata["runtimeControl"]["transitionCause"],
+                "manual-follow-up"
+            );
+            assert_eq!(metadata["runtimeControl"]["transitionId"], transition_id);
+        }
+    }
+
+    #[test]
+    fn repeated_manual_follow_up_keeps_existing_non_runtime_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let (_, transition_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
+        assert!(commit_manual_follow_up(attempt_dir, None, &transition_id).unwrap());
+
+        assert!(prepare_manual_follow_up(attempt_dir).unwrap().is_none());
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            transition_id
+        );
+    }
+
+    #[test]
+    fn stale_manual_follow_up_cannot_overwrite_a_new_control_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let (_, stale_transition_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
+        let interrupted = mark_runtime_interrupted(attempt_dir).unwrap();
+
+        assert!(!commit_manual_follow_up(attempt_dir, None, &stale_transition_id).unwrap());
+        assert_eq!(
+            load_runtime_control_cursor(attempt_dir)
+                .unwrap()
+                .unwrap()
+                .transition_id,
+            interrupted.transition_id
         );
     }
 
@@ -263,6 +417,31 @@ mod tests {
         let resumed = load_runtime_control_cursor(attempt_dir).unwrap().unwrap();
         assert_eq!(resumed.current_mode, TurnControlMode::RuntimeControlled);
         assert_eq!(resumed.transition_id, resumed_id);
+    }
+
+    #[test]
+    fn manual_follow_up_after_resume_can_return_to_runtime_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let interrupted = mark_runtime_interrupted(attempt_dir).unwrap();
+        let (interrupted_id, resumed_id) =
+            prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert_eq!(interrupted_id, interrupted.transition_id);
+        assert!(commit_workflow_continued(attempt_dir, &interrupted_id, &resumed_id).unwrap());
+
+        let (source_id, manual_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
+        assert_eq!(source_id.as_deref(), Some(resumed_id.as_str()));
+        assert!(commit_manual_follow_up(attempt_dir, source_id.as_deref(), &manual_id).unwrap());
+        let (manual_source_id, resumed_again_id) =
+            prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert_eq!(manual_source_id, manual_id);
+        assert!(
+            commit_workflow_continued(attempt_dir, &manual_source_id, &resumed_again_id).unwrap()
+        );
+
+        let cursor = load_runtime_control_cursor(attempt_dir).unwrap().unwrap();
+        assert_eq!(cursor.current_mode, TurnControlMode::RuntimeControlled);
+        assert_eq!(cursor.transition_id, resumed_again_id);
     }
 
     #[test]

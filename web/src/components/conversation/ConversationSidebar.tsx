@@ -44,7 +44,8 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
-  activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
@@ -63,7 +64,8 @@ interface ConversationSidebarProps {
 export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
-  activeWorkspaceId,
+  defaultExpandedWorkspaceId,
+  workspaceRevealRequest,
   onSelect,
   onNewConversation,
   onSearch,
@@ -110,33 +112,31 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
-  const prevExpandTargetRef = useRef<string | null>(null);
+  const workspaceExpansionInitializedRef = useRef(false);
+  const handledWorkspaceRevealRequestRef = useRef(workspaceRevealRequest?.requestId ?? null);
   const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
+  const initialWorkspaceId = active.kind === 'conversation-run'
+    ? active.projectId
+    : (defaultExpandedWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
 
   useEffect(() => {
-    const targetWorkspaceId: string | null = active.kind === 'conversation-run'
-      ? active.projectId
-      : (activeWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
+    const initialize = !workspaceExpansionInitializedRef.current && vm.workspaces.length > 0;
+    setExpandedWorkspaces((current) => reconcileConversationSidebarExpandedWorkspaces(
+      current,
+      vm.workspaces.map((workspace) => workspace.projectId),
+      initialize ? initialWorkspaceId : null,
+    ));
+    if (initialize) workspaceExpansionInitializedRef.current = true;
+  }, [initialWorkspaceId, vm.workspaces]);
 
-    const prevTarget = prevExpandTargetRef.current;
-    prevExpandTargetRef.current = targetWorkspaceId;
-    const targetChanged = targetWorkspaceId !== prevTarget;
-
-    setExpandedWorkspaces((prev) => {
-      const next: Record<string, boolean> = {};
-      vm.workspaces.forEach((ws) => {
-        if (!targetChanged && prev[ws.projectId] != null) {
-          next[ws.projectId] = prev[ws.projectId];
-          return;
-        }
-        next[ws.projectId] = ws.projectId === targetWorkspaceId || targetWorkspaceId == null;
-      });
-      if (targetWorkspaceId && next[targetWorkspaceId] === false) {
-        next[targetWorkspaceId] = true;
-      }
-      return next;
-    });
-  }, [active, activeWorkspaceId, vm.workspaces, vm.lastActiveWorkspaceId]);
+  useEffect(() => {
+    if (!workspaceRevealRequest
+      || handledWorkspaceRevealRequestRef.current === workspaceRevealRequest.requestId) return;
+    handledWorkspaceRevealRequestRef.current = workspaceRevealRequest.requestId;
+    setExpandedWorkspaces((current) => current[workspaceRevealRequest.projectId]
+      ? current
+      : { ...current, [workspaceRevealRequest.projectId]: true });
+  }, [workspaceRevealRequest]);
 
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
@@ -209,7 +209,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   return (
     <TooltipProvider>
       <>
-        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
+        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-2.5 text-sidebar-foreground">
+        <div data-conversation-sidebar-region="fixed-navigation" className="shrink-0">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -225,10 +226,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           />
         </div>
 
-        <Separator className="mx-1 my-0 opacity-45" />
+        <Separator className="mx-1 my-1 opacity-45" />
 
         {/* Navigation */}
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-0.5">
           <SidebarButton
             compact
             active={activeNavigationKey === 'agents'}
@@ -254,24 +255,30 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             compact
             active={activeNavigationKey === 'scheduled-tasks'}
             icon={<AlarmClock />}
-            label="定时任务"
+            label={t('scheduled.management.title')}
             onClick={() => onSelect({ kind: 'scheduled-tasks' })}
           />
         </div>
+        </div>
 
-        {/* Pinned section — fixed, collapsible, outside scroll */}
+        {/* Pinned and workspace sections share the conversation scroll region. */}
+        <ScrollArea
+          data-conversation-sidebar-region="scrollable-conversations"
+          className="min-h-0 flex-1"
+        >
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0 border-y border-border/55 py-1">
+          <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[14px] font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              data-conversation-sidebar-heading="pinned"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
               {t('conversation.sidebar.pinned')}
             </button>
             {!pinnedCollapsed ? (
-              <div>
+              <div className="mt-1 space-y-3">
                 {Object.entries(pinnedTasksByWorkspace).map(([projectId, tasks]) => {
                   const ws = workspacesByProjectId.get(projectId);
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
@@ -279,14 +286,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
                         <span className="truncate">{ws?.name ?? projectId}</span>
                       </button>
                       {!isWsCollapsed ? (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {tasks.map((task) => (
                             <TaskRow
                               key={`pinned-${task.projectId}-${task.taskId}`}
@@ -318,18 +325,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             ) : null}
           </div>
         ) : (
-          <Separator className="mx-1 my-0.75 opacity-45" />
+          <Separator className="mx-1 my-1.5 opacity-45" />
         )}
 
         {/* Workspace sections — scrollable with sticky headers */}
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="pt-2.5">
+          <div className="pt-2">
             {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-2.5">
-                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
+              <div
+                key={ws.projectId}
+                data-conversation-workspace-group={ws.projectId}
+                className="mb-2"
+              >
+                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    data-conversation-workspace-id={ws.projectId}
+                    aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
                     onClick={() => toggleWorkspace(ws.projectId)}
                   >
                     <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
@@ -359,7 +371,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   </span>
                 </div>
                 {expandedWorkspaces[ws.projectId] ? (
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
                         key={`${task.projectId}-${task.taskId}`}
@@ -395,7 +407,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             {onAddWorkspace ? (
               <button
                 type="button"
-                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                 onClick={onAddWorkspace}
               >
                 <Plus className="size-3.5" />
@@ -413,7 +425,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
 
 
         {/* Settings */}
-        <Separator className="mx-1 my-0.75 opacity-45" />
+        <Separator className="mx-1 my-1.5 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
         </aside>
 
@@ -664,20 +676,24 @@ function TaskRow({
   const taskRow = (
     <div
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground cursor-pointer',
+        isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
       )}
       onClick={handleRowClick}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
           <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            <img
-              src={agentIconSrc(task.agentIdentity.iconKey)}
-              alt=""
-              title={task.agentIdentity.displayName}
-              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <img
+                  src={agentIconSrc(task.agentIdentity.iconKey)}
+                  alt=""
+                  className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
+                />
+              </TooltipTrigger>
+              <TooltipContent>{task.agentIdentity.displayName}</TooltipContent>
+            </Tooltip>
           </span>
         ) : (
           <span className={cn('size-1.5 rounded-full', latestColor)} />
@@ -687,7 +703,7 @@ function TaskRow({
         {editing ? (
           <input
             ref={editInputRef}
-            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
+            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-sm outline-none"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitRename}
@@ -695,13 +711,13 @@ function TaskRow({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px]">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
           </span>
         )}
         {relativeTime ? (
-          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
+          <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
       <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
@@ -750,7 +766,7 @@ function TaskRow({
               >
                 <div
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
+                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
@@ -766,9 +782,9 @@ function TaskRow({
                   }}
                 >
                   <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground/75">{run.runId}</span>
                   {runTime ? (
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground/55">{runTime}</span>
                   ) : null}
                 </div>
               </RunStopMenu>
@@ -816,8 +832,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-6.5 gap-2 justify-start rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-6.5 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}
@@ -838,6 +854,28 @@ export function prioritizeConversationSidebarWorkspace(sidebar: ConversationSide
     ...sidebar.workspaces.slice(workspaceIndex + 1),
   ];
   return { ...sidebar, workspaces, lastActiveWorkspaceId: projectId };
+}
+
+export interface ConversationSidebarWorkspaceRevealRequest {
+  projectId: string;
+  requestId: number;
+}
+
+export function reconcileConversationSidebarExpandedWorkspaces(
+  current: Record<string, boolean>,
+  projectIds: string[],
+  initialWorkspaceId: string | null,
+): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  let changed = Object.keys(current).length !== projectIds.length;
+  for (const projectId of projectIds) {
+    const expanded = Object.prototype.hasOwnProperty.call(current, projectId)
+      ? current[projectId]
+      : initialWorkspaceId == null || projectId === initialWorkspaceId;
+    next[projectId] = expanded;
+    if (current[projectId] !== expanded) changed = true;
+  }
+  return changed ? next : current;
 }
 
 export function conversationSidebarTaskKey(projectId: string, taskId: string) {

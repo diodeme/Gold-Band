@@ -7,12 +7,12 @@ export type AcpComposerMode =
   | 'invalid-workflow'
   | 'runtime-error'
   | 'permission-blocked'
+  | 'session-superseded'
   | 'submitting';
 
 export type AcpComposerSubmitTarget =
   | 'acp-prompt'
   | 'queue-prompt'
-  | 'permission-response'
   | 'none';
 
 export type AcpComposerProcessingKind =
@@ -31,15 +31,6 @@ export type AcpComposerPlaceholderKind =
   | 'default'
   | 'runtime-controlled'
   | 'stopping'
-  | 'plan-intervention'
-  | 'message';
-
-export type AcpComposerHintKind =
-  | 'default'
-  | 'permission-pending'
-  | 'stopping'
-  | 'sending'
-  | 'status'
   | 'message';
 
 export interface AcpRuntimeComposerStateInput {
@@ -52,7 +43,6 @@ export interface AcpRuntimeComposerStateInput {
   acpStatus?: string | null;
   prompt: string;
   waitingForPermission: boolean;
-  hasPlanIntervention: boolean;
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
@@ -63,6 +53,7 @@ export interface AcpRuntimeComposerStateInput {
   hasResponseAfterTurn: boolean;
   hasTimelineItems: boolean;
   hasEffectiveEvents: boolean;
+  initialTimelinePending?: boolean;
   timelineProcessingKind: AcpComposerProcessingKind;
 }
 
@@ -84,7 +75,6 @@ export interface AcpRuntimeComposerState {
   statusActive: boolean;
   showStatus: boolean;
   placeholderKind: AcpComposerPlaceholderKind;
-  hintKind: AcpComposerHintKind;
   message?: string | null;
 }
 
@@ -97,13 +87,17 @@ export function deriveAcpRuntimeComposerState(
     && backendProcessingKind === 'preparing-workspace';
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
   const localTurnInFlight = Boolean(input.localTurnInFlight);
-  const lifecycleAcpRunning = Boolean(input.lifecycle?.acp.active) && !Boolean(input.lifecycle?.acp.stopping);
-  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
-    Boolean(input.lifecycle?.acp.terminal) || isSessionTerminalStatus(input.acpStatus)
+  const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
+    input.lifecycle?.acp.liveTurnActivity ?? 'idle',
   );
-  const acpActive = !acpTerminal && Boolean(input.lifecycle?.acp.active);
+  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
+    (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none'
+      || (!input.lifecycle && isSessionTerminalStatus(input.acpStatus))
+  );
+  const acpActive = !acpTerminal && lifecycleAcpRunning;
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
-  const waitingForPermission = input.waitingForPermission && !input.hasPlanIntervention;
+  const waitingForPermission = input.waitingForPermission;
+  const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
@@ -114,10 +108,11 @@ export function deriveAcpRuntimeComposerState(
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = false;
   const reportedBackendMode = normalizeComposerMode(backend?.mode);
+  const sessionSuperseded = reportedBackendMode === 'session-superseded';
   const backendMode = acpTerminal && reportedBackendMode === 'stopping'
     ? 'normal'
     : reportedBackendMode;
-  const mode = composerModeFromBackend({
+  const mode = sessionSuperseded ? 'session-superseded' : composerModeFromBackend({
     backendMode,
     waitingForPermission,
     stopInProgress,
@@ -144,27 +139,28 @@ export function deriveAcpRuntimeComposerState(
     input.sending ||
     waitingForOptimisticPrompt ||
     awaitingResponse ||
+    initialTimelinePending ||
     sessionActive ||
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
-  const composerLocked = waitingForPermission;
+  const composerLocked = waitingForPermission && !directQueueFacet;
   const staleStoppingBackend = acpTerminal && reportedBackendMode === 'stopping';
   const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
   const directInputDisabled =
-    composerLocked ||
     stopInProgress ||
+    initialTimelinePending ||
     mode === 'invalid-workflow' ||
     mode === 'runtime-error';
   const inputDisabled = (
     directQueueFacet
       ? directInputDisabled
       : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
-  ) && !input.hasPlanIntervention;
+  );
   const canSubmit = Boolean(input.prompt.trim())
     && submitTarget !== 'none'
     && !queueAtCapacity
     && !(input.sending && submitTarget !== 'queue-prompt')
-    && !inputDisabledForSubmit(inputDisabled, input.hasPlanIntervention, mode);
+    && !inputDisabled;
   const processingKind = processingKindForInput(
     input,
     stopInProgress,
@@ -177,11 +173,11 @@ export function deriveAcpRuntimeComposerState(
     && processingKind === 'launching-next-node'
     && !turnSubmitting
     && !awaitingResponse;
-  const statusActive =
+  const statusActive = !sessionSuperseded &&
     !input.waitingForPermission &&
     !composerLocked &&
     !directTurnHandoff &&
-    (turnSubmitting || awaitingResponse || sessionActive || stopInProgress || mode === 'runtime-active');
+    (turnSubmitting || awaitingResponse || initialTimelinePending || sessionActive || stopInProgress || mode === 'runtime-active');
   const externalMessage = externalMessageForMode(input, mode, runtimeErrorMessage);
 
   return {
@@ -189,7 +185,7 @@ export function deriveAcpRuntimeComposerState(
     submitTarget,
     inputDisabled,
     canSubmit,
-    canStop:
+    canStop: !sessionSuperseded && (
       (!acpTerminal && Boolean(backend?.canStop)) ||
       (backendWorkspacePreparing && Boolean(backend?.canStop)) ||
       sessionActive ||
@@ -197,7 +193,8 @@ export function deriveAcpRuntimeComposerState(
       input.sending ||
       waitingForOptimisticPrompt ||
       localTurnInFlight ||
-      cancelling,
+      cancelling
+    ),
     stopInProgress,
     sessionActive,
     acpActive,
@@ -208,11 +205,12 @@ export function deriveAcpRuntimeComposerState(
     externalMessage,
     processingKind,
     statusActive,
-    showStatus: !input.waitingForPermission && statusActive,
-    placeholderKind: directQueueFacet
-      ? 'default'
-      : placeholderKindForMode(input, mode, activePromptLocked),
-    hintKind: hintKindForMode(input, mode, statusActive, turnSubmitting),
+    showStatus: !sessionSuperseded && !input.waitingForPermission && statusActive,
+    placeholderKind: initialTimelinePending
+      ? 'runtime-controlled'
+      : directQueueFacet
+        ? 'default'
+        : placeholderKindForMode(input, mode, activePromptLocked),
     message: externalMessage,
   };
 }
@@ -223,13 +221,13 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
 ) {
   if (!local?.runtime.active) return false;
   if (!incoming) return true;
-  if (incoming.runtime.active || incoming.acp.active || incoming.acp.stopping) {
+  if (incoming.runtime.active || incoming.acp.liveTurnActivity !== 'idle' || incoming.acp.stopping) {
     return false;
   }
   if (incoming.composer.mode === 'runtime-error') return false;
   return (
     incoming.runtime.phase === 'paused' &&
-    incoming.continueKind === 'action' &&
+    Boolean(incoming.continueKind) &&
     incoming.composer.mode === 'normal'
   );
 }
@@ -250,11 +248,9 @@ function shouldRouteDirectSubmissionToQueue(input: {
   awaitingResponse: boolean;
 }) {
   if (
-    input.mode === 'permission-blocked' ||
     input.mode === 'invalid-workflow' ||
     input.mode === 'runtime-error' ||
-    input.mode === 'stopping' ||
-    input.input.hasPlanIntervention
+    input.mode === 'stopping'
   ) {
     return false;
   }
@@ -312,6 +308,7 @@ function normalizeComposerMode(mode?: string | null): AcpComposerMode {
     normalized === 'invalid-workflow' ||
     normalized === 'runtime-error' ||
     normalized === 'permission-blocked' ||
+    normalized === 'session-superseded' ||
     normalized === 'submitting'
   ) {
     return normalized;
@@ -339,24 +336,17 @@ function submitTargetFromBackend(
   mode: AcpComposerMode,
   backendSubmitTarget?: string | null,
 ): AcpComposerSubmitTarget {
-  if (mode === 'permission-blocked' || input.hasPlanIntervention) return 'permission-response';
+  if (mode === 'permission-blocked') return 'none';
   if (mode === 'invalid-workflow' || mode === 'runtime-error' || mode === 'stopping') return 'none';
   const normalized = normalizeStatus(backendSubmitTarget);
   if (
     normalized === 'acp-prompt' ||
     normalized === 'queue-prompt' ||
-    normalized === 'permission-response' ||
     normalized === 'none'
   ) {
     return normalized;
   }
   return 'none';
-}
-
-function inputDisabledForSubmit(inputDisabled: boolean, hasPlanIntervention: boolean, mode: AcpComposerMode) {
-  if (hasPlanIntervention) return false;
-  if (mode === 'normal') return false;
-  return inputDisabled;
 }
 
 function processingKindForInput(
@@ -381,25 +371,10 @@ function placeholderKindForMode(
   mode: AcpComposerMode,
   activePromptLocked: boolean,
 ): AcpComposerPlaceholderKind {
-  if (input.hasPlanIntervention) return 'plan-intervention';
   if (input.waitingForPermission) return 'runtime-controlled';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
   if (activePromptLocked) return 'runtime-controlled';
-  return 'default';
-}
-
-function hintKindForMode(
-  input: AcpRuntimeComposerStateInput,
-  mode: AcpComposerMode,
-  statusActive: boolean,
-  turnSubmitting: boolean,
-): AcpComposerHintKind {
-  if (input.waitingForPermission) return 'permission-pending';
-  if (mode === 'stopping') return 'stopping';
-  if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
-  if (turnSubmitting) return 'sending';
-  if (statusActive) return 'status';
   return 'default';
 }
 

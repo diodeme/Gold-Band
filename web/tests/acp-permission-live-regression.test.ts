@@ -95,6 +95,8 @@ describe('live ACP permission delivery', () => {
     );
 
     expect(html).toContain('data-conversation-intervention-layer="true"');
+    expect(html).toContain('mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)]');
+    expect(html).toContain('space-y-4 px-5 pb-10');
     expect(html).toContain('acp-permission-request-card');
     expect(html).toContain('mcp__code_graph__list_projects');
     expect(html).toContain('Allow');

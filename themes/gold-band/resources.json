@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "assets": [
+    {
+      "id": "inter-latin-variable",
+      "kind": "font",
+      "path": "assets/fonts/inter-latin-variable.woff2",
+      "licenseId": "inter-ofl",
+      "required": true
+    },
+    {
+      "id": "misans-variable",
+      "kind": "font",
+      "path": "assets/fonts/misans-vf.woff2",
+      "licenseId": "misans-apache",
+      "required": true
+    }
+  ]
+}

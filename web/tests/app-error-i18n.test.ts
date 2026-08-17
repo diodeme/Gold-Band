@@ -15,6 +15,11 @@ describe('app error i18n', () => {
     expect(i18n.t('runMode.autoSection', { lng: 'en' })).toBe('AUTO Mode');
   });
 
+  it('localizes the ACP attachment action', () => {
+    expect(i18n.t('acp.attachHint', { lng: 'zh-CN' })).toBe('添加附件');
+    expect(i18n.t('acp.attachHint', { lng: 'en' })).toBe('Attach files');
+  });
+
   it('renders active ACP prompt config-save guard as a user action', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'acp.active-prompt-blocks-config-save',
@@ -33,6 +38,20 @@ describe('app error i18n', () => {
     expect(message).toBe('找不到该工作空间。');
   });
 
+  it('renders prompt queue reorder conflicts as recoverable structured errors', () => {
+    const conflict = displayAppError(i18n.t.bind(i18n), {
+      code: 'conversation.prompt-queue-revision-conflict',
+      params: {},
+    });
+    const invalidOrder = displayAppError(i18n.t.bind(i18n), {
+      code: 'conversation.prompt-queue-invalid-order',
+      params: {},
+    });
+
+    expect(conflict).toBe('待发送顺序已发生变化，请在列表更新后重试。');
+    expect(invalidOrder).toBe('待发送顺序无效，请重试。');
+  });
+
   it('does not expose interpolation placeholders when an error has no message parameter', () => {
     const message = displayAppError(i18n.t.bind(i18n), {
       code: 'app.unexpected',
@@ -41,5 +60,16 @@ describe('app error i18n', () => {
 
     expect(message).toBe('操作失败，请重试。');
     expect(message).not.toContain('{{message}}');
+  });
+
+  it('localizes scheduled occurrence resume failures', () => {
+    for (const [code, zh, en] of [
+      ['SCHEDULED_COORDINATOR_UNAVAILABLE', '定时任务运行服务暂不可用，请重试。', 'The scheduled task service is unavailable. Try again.'],
+      ['SCHEDULED_NOT_FOUND', '待恢复的定时任务执行已不存在，请刷新后重试。', 'The scheduled run to resume no longer exists. Refresh and try again.'],
+      ['SCHEDULED_STORAGE_FAILED', '无法更新定时任务执行状态，请重试。', 'The scheduled run state could not be updated. Try again.'],
+    ] as const) {
+      expect(displayAppError(i18n.t.bind(i18n), { code, params: {} })).toBe(zh);
+      expect(i18n.t(`errors.${code}`, { lng: 'en' })).toBe(en);
+    }
   });
 });

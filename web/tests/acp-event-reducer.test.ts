@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acpSessionEventsSignature,
   mergeAcpEventWindows,
+  projectLatestAcpUsageUpdate,
 } from "@/lib/acp-event-reducer";
 import type { AcpSessionVm, AcpUiEventVm } from "@/types";
 
@@ -38,6 +39,53 @@ function session(events: AcpUiEventVm[]): Pick<AcpSessionVm, "events" | "eventPa
 }
 
 describe("ACP event reducer", () => {
+  it("projects the latest hidden usage update into the current session", () => {
+    const current = {
+      usage: { used: 128_399, size: 258_400, inputTokens: 42 },
+    } as AcpSessionVm;
+    const projected = projectLatestAcpUsageUpdate(current, [
+      event({
+        id: "session-usage-session-1",
+        kind: "usageUpdate",
+        seq: 20,
+        raw: { sessionUpdate: "usage_update", used: 124_491, size: 258_400 },
+      }),
+      event({
+        id: "session-usage-session-1",
+        kind: "usageUpdate",
+        seq: 21,
+        raw: {
+          sessionUpdate: "usage_update",
+          used: 7_920,
+          size: 258_400,
+          _meta: { goldBand: { source: "contextCompactionCompleted" } },
+        },
+      }),
+    ]);
+
+    expect(projected?.usage).toEqual({
+      used: 7_920,
+      size: 258_400,
+      inputTokens: 42,
+    });
+  });
+
+  it("ignores zero usage transition samples when projecting live state", () => {
+    const current = {
+      usage: { used: 32_606, size: 1_000_000 },
+    } as AcpSessionVm;
+    const projected = projectLatestAcpUsageUpdate(current, [
+      event({
+        id: "session-usage-session-1",
+        kind: "usageUpdate",
+        seq: 22,
+        raw: { sessionUpdate: "usage_update", used: 0, size: 1_000_000 },
+      }),
+    ]);
+
+    expect(projected?.usage).toEqual({ used: 32_606, size: 1_000_000 });
+  });
+
   it("replaces partial realtime text with the later complete stream snapshot", () => {
     const merged = mergeAcpEventWindows(
       [

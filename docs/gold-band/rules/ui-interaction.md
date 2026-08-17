@@ -85,6 +85,8 @@
 
 ## 6. 选择器与滚动组件
 
+- 产品 UI 的选择控件必须复用项目已有的 shadcn/ui、prompt-kit 或共享封装；禁止直接使用原生 `<select>`，也不得自行实现已有基础控件的等价版本。
+- 仅在共享组件无法提供所需平台能力或无障碍能力时允许例外；必须在同一改动中记录理由、保留键盘/焦点/读屏能力，并为全局契约测试增加范围最小且可审计的例外。
 - 日期、时间、时区等选择器优先使用 shadcn/ui、Radix 或成熟组合组件。
 - 选择器不能只支持滚轮或点击，必须保留键盘操作和直接输入能力。
 - 选中态统一使用主题 `accent`，不得硬编码亮色、黑色或独立品牌色。
@@ -153,3 +155,12 @@
 涉及图标、颜色或主题 token 时，还必须在浅色与深色主题下分别检查静态态、hover、选中和禁用状态；不能只以单张截图或单一主题验收。
 
 禁止只验证某一张截图对应的固定尺寸。
+
+## 12. 主题样式级联
+
+- 主题 recipe 生成的展示声明必须位于 CSS `components` layer，作为主题 role 的组件默认值；不得使用未分层的高优先级选择器或 `!important` 越过组件显式 utility/variant。无障碍 `prefers-reduced-motion` 规则可以强制关闭动效。
+- 组件覆盖只用于真实变体、交互状态和组件拓扑，例如 focus ring、单边 separator、joined control、透明 variant，以及显式声明的阴影、圆角和动效；禁止在组件中按 `themeId` 特判视觉样式。
+- 迁移现有主题时，必须由各主题 recipe 明确声明需要保持的边框、圆角、阴影、颜色、材质、状态和动效，不得把旧主题外观硬编码回共享组件。
+- Dialog、Sheet、AlertDialog 必须 Portal 到 `body` 的专用 overlay host；host 不得包含非 `none` 的 `transform`、`filter`、`backdrop-filter`、`contain`，也不得使用会裁剪后代的 `overflow`。
+- Dropdown Menu、Context Menu 的 Radix Content/SubContent 定位节点只负责定位、焦点和外部交互事件；位移、缩放、淡入淡出、材质、圆角和内容裁剪必须放在其内部视觉层，禁止在定位节点上施加开合 transform 动画或 filter。
+- 验收时必须检查生成 CSS 的 layer 与顺序，并至少在两个主题下通过 computed style 覆盖代表性静态态、hover/focus 态、outline 按钮、input 和 joined/split control，确认主题默认值生效且组件显式变体可覆盖。

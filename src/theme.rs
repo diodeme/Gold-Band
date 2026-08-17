@@ -577,8 +577,6 @@ pub struct ThemeFontStack {
     pub id: String,
     pub display_name: LocalizedThemeName,
     pub default_faces: Vec<String>,
-    pub by_script: Option<BTreeMap<String, Vec<String>>>,
-    pub by_locale: Option<BTreeMap<String, Vec<String>>>,
     pub system_fallbacks: Vec<String>,
 }
 

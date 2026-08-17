@@ -140,7 +140,7 @@ describe('theme runtime asset projection', () => {
   });
 
   it('resolves scheme overrides, rejects wrong asset kinds, and disables only wallpapers in performance mode', () => {
-    const light = resolveAppearance(preference(), 'en');
+    const light = resolveAppearance(preference());
     expect(light.icons['navigation.search']).toMatchObject({
       url: '/theme-assets/builtin.gold-band/icon-default.png', renderMode: 'mask', nativeSize: 16,
     });
@@ -148,7 +148,7 @@ describe('theme runtime asset projection', () => {
     expect(light.wallpapers.app?.url).toBe('/theme-assets/builtin.gold-band/wallpaper-light.png');
     expect(light.wallpapers.workspace).toBeUndefined();
 
-    const dark = resolveAppearance(preference({ colorScheme: 'dark' }), 'en');
+    const dark = resolveAppearance(preference({ colorScheme: 'dark' }));
     expect(dark.icons['navigation.search']).toMatchObject({
       url: '/theme-assets/builtin.gold-band/icon-dark.png', renderMode: 'image', nativeSize: 20,
     });
@@ -156,7 +156,7 @@ describe('theme runtime asset projection', () => {
 
     const performance = resolveAppearance(preference({
       visualQualityByTheme: { 'builtin.gold-band': 'performance' },
-    }), 'en');
+    }));
     expect(performance.wallpapers).toEqual({});
     expect(performance.icons).toEqual(light.icons);
     expect(performance.semantic).toBe(light.semantic);
@@ -174,7 +174,7 @@ describe('theme runtime asset projection', () => {
     vi.stubGlobal('window', { dispatchEvent: vi.fn() });
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
 
-    applyAppearance(preference(), 'en');
+    applyAppearance(preference());
     expect(FakeImage.instances).toHaveLength(1);
     expect(surface.properties.has('--gb-wallpaper-image')).toBe(false);
     FakeImage.instances[0].onload?.();
@@ -182,7 +182,7 @@ describe('theme runtime asset projection', () => {
     expect(surface.properties.get('--gb-wallpaper-size')).toBe('cover');
     expect(surface.properties.get('--gb-wallpaper-overlay-color')).toBe('var(--background)');
 
-    applyAppearance(preference({ colorScheme: 'dark' }), 'en');
+    applyAppearance(preference({ colorScheme: 'dark' }));
     expect(surface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
     FakeImage.instances[1].onerror?.();
     expect(surface.properties.has('--gb-wallpaper-image')).toBe(false);
@@ -200,9 +200,9 @@ describe('theme runtime asset projection', () => {
     vi.stubGlobal('window', { dispatchEvent: vi.fn() });
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
 
-    applyAppearance(preference(), 'en');
+    applyAppearance(preference());
     const oldImage = FakeImage.instances[0];
-    applyAppearance(preference({ colorScheme: 'dark' }), 'en');
+    applyAppearance(preference({ colorScheme: 'dark' }));
     const currentImage = FakeImage.instances[1];
     currentImage.onload?.();
     expect(surface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-dark.png');
@@ -224,7 +224,7 @@ describe('theme runtime asset projection', () => {
     vi.stubGlobal('window', { dispatchEvent: vi.fn() });
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
 
-    applyAppearance(preference(), 'en');
+    applyAppearance(preference());
     applyWallpaperPersonalization(
       {
         byColorScheme: {
@@ -269,7 +269,7 @@ describe('theme runtime asset projection', () => {
     previewWallpaperOpacity('dark', 25);
     expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.35');
 
-    applyAppearance(preference({ colorScheme: 'dark' }), 'en');
+    applyAppearance(preference({ colorScheme: 'dark' }));
     const darkCustomImage = FakeImage.instances.at(-1)!;
     expect(darkCustomImage.src).toContain('user-wallpaper-dark/full');
     darkCustomImage.onload?.();
@@ -298,7 +298,7 @@ describe('theme runtime asset projection', () => {
     vi.stubGlobal('window', { dispatchEvent: vi.fn() });
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
 
-    applyAppearance(preference(), 'en');
+    applyAppearance(preference());
     applyWallpaperPersonalization(
       {
         byColorScheme: {
@@ -347,7 +347,7 @@ describe('theme runtime asset projection', () => {
     vi.stubGlobal('window', { dispatchEvent: vi.fn() });
     vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
 
-    applyAppearance(preference(), 'en');
+    applyAppearance(preference());
     FakeImage.instances[0].onload?.();
     expect(appSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
 

@@ -1,7 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { z } from 'zod';
 import { isTauriRuntime } from './api/shared';
-import type { AppearancePreference, PersonalizationPreference, ResolvedColorScheme, VisualQuality, WallpaperPreferencesVm } from './types';
+import type { AppearancePreference, DesktopLanguage, PersonalizationPreference, ResolvedColorScheme, VisualQuality, WallpaperPreferencesVm } from './types';
 import {
   MAX_FONT_FAMILY_CODE_POINTS,
   MAX_FONT_STACK_FAMILIES,
@@ -23,7 +23,6 @@ export interface ThemePreviewPalette {
 }
 export interface ResolvedTypography {
   families: string[];
-  displayName: string;
   size: number;
   lineHeight: number;
 }
@@ -92,12 +91,17 @@ export function getThemePackage(themeId: string): ThemePackage {
   return themeCatalog.get(themeId) ?? themeCatalog.get(defaultAppearancePreference.themeId)!;
 }
 
+export function themeFontStackDisplayName(themeId: string, stackId: string, language: DesktopLanguage): string {
+  const stack = getThemePackage(themeId).fonts?.stacks.find((candidate) => candidate.id === stackId);
+  return stack?.displayName[language === 'zh-cn' ? 'zh-CN' : 'en'] ?? stackId;
+}
+
 export function resolveColorScheme(preference: AppearancePreference['colorScheme']): ResolvedColorScheme {
   if (preference !== 'system') return preference;
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
-export function resolveAppearance(preference: AppearancePreference, locale = currentRuntimeLocale()): EffectiveAppearance {
+export function resolveAppearance(preference: AppearancePreference): EffectiveAppearance {
   const normalized = normalizeAppearancePreference(preference);
   const theme = getThemePackage(normalized.themeId);
   const colorScheme = resolveColorScheme(normalized.colorScheme);
@@ -128,47 +132,22 @@ export function resolveAppearance(preference: AppearancePreference, locale = cur
     scheme, material, shape: scheme.shape, elevation: scheme.elevation, motion: scheme.motion,
     scrollbar: scheme.scrollbar, semantic: scheme.semantic, recipes: theme.recipes,
     typography: {
-      ui: resolveTypography(theme, scheme.typography.uiStackId, scheme.typography.uiSize, scheme.typography.uiLineHeight, locale, 'sans-serif'),
-      editor: resolveTypography(theme, scheme.typography.editorStackId, scheme.typography.editorSize, scheme.typography.editorLineHeight, locale, 'monospace'),
+      ui: resolveTypography(theme, scheme.typography.uiStackId, scheme.typography.uiSize, scheme.typography.uiLineHeight, 'sans-serif'),
+      editor: resolveTypography(theme, scheme.typography.editorStackId, scheme.typography.editorSize, scheme.typography.editorLineHeight, 'monospace'),
     },
     icons, wallpapers,
   };
 }
 
-function currentRuntimeLocale() {
-  if (typeof document !== 'undefined' && document.documentElement?.lang) return document.documentElement.lang;
-  if (typeof navigator !== 'undefined' && navigator.language) return navigator.language;
-  return 'en';
-}
-
-function resolveTypography(theme: ThemePackage, stackId: string, size: number, lineHeight: number, locale: string, fallback: 'sans-serif' | 'monospace'): ResolvedTypography {
+function resolveTypography(theme: ThemePackage, stackId: string, size: number, lineHeight: number, fallback: 'sans-serif' | 'monospace'): ResolvedTypography {
   const fallbackFamilies = fallback === 'monospace'
     ? ['JetBrains Mono', 'SFMono-Regular', 'Consolas']
     : ['Inter Variable', 'Gold Band MiSans', 'Microsoft YaHei UI', 'PingFang SC'];
   const stack = theme.fonts?.stacks.find((candidate) => candidate.id === stackId);
-  if (!stack || !theme.fonts) return { families: fallbackFamilies, displayName: fallbackFamilies[0], size, lineHeight };
-  const localeInfo = safeLocale(locale);
-  const languageScript = localeInfo.language && localeInfo.script ? `${localeInfo.language}-${localeInfo.script}` : undefined;
-  const faceIds = stack.byLocale?.[localeInfo.exact]
-    ?? (languageScript ? stack.byLocale?.[languageScript] : undefined)
-    ?? (localeInfo.script ? stack.byScript?.[localeInfo.script] : undefined)
-    ?? stack.defaultFaces;
+  if (!stack || !theme.fonts) return { families: fallbackFamilies, size, lineHeight };
   const faces = new Map(theme.fonts.faces.map((face) => [face.id, face.runtimeFamily]));
-  const families = normalizeFontFamilies([...faceIds.map((id) => faces.get(id) ?? ''), ...stack.systemFallbacks]);
-  const language = localeInfo.language === 'zh' ? 'zh-CN' : 'en';
-  return { families: families.length ? families : fallbackFamilies, displayName: stack.displayName[language], size, lineHeight };
-}
-
-function safeLocale(locale: string) {
-  try {
-    const exact = new Intl.Locale(locale);
-    const maximized = exact.maximize();
-    return { exact: exact.toString(), language: maximized.language, script: maximized.script };
-  } catch {
-    const exact = new Intl.Locale('en');
-    const maximized = exact.maximize();
-    return { exact: exact.toString(), language: maximized.language, script: maximized.script };
-  }
+  const families = normalizeFontFamilies([...stack.defaultFaces.map((id) => faces.get(id) ?? ''), ...stack.systemFallbacks]);
+  return { families: families.length ? families : fallbackFamilies, size, lineHeight };
 }
 
 const semanticVariableNames: Record<keyof SemanticThemeTokens, string> = {
@@ -196,8 +175,8 @@ let currentWallpaperPersonalization: PersonalizationPreference['wallpaper'] | nu
 let currentWallpaperPreferences: WallpaperPreferencesVm = { recentWallpapers: [] };
 let currentThemeIconSnapshot: { themeId: string; icons: EffectiveAppearance['icons'] } = { themeId: 'builtin.gold-band', icons: {} };
 export function getCurrentThemeIconSnapshot() { return currentThemeIconSnapshot; }
-export function applyAppearance(preference: AppearancePreference, locale?: string): EffectiveAppearance {
-  const effective = resolveAppearance(preference, locale);
+export function applyAppearance(preference: AppearancePreference): EffectiveAppearance {
+  const effective = resolveAppearance(preference);
   const root = document.documentElement;
   root.dataset.theme = effective.themeId;
   root.dataset.colorScheme = effective.colorScheme;

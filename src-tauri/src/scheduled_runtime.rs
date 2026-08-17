@@ -6292,6 +6292,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::Terminal,
                 None,
@@ -6342,6 +6343,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 None,
@@ -6377,6 +6379,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::Terminal,
                 None,
@@ -6401,6 +6404,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 None,

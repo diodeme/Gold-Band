@@ -3778,13 +3778,15 @@ fn apply_intervention_node_context(
         ) else {
             return;
         };
-        let Ok(graph) = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
-            &context.task_id,
-            &context.run_id,
-            &context.round_id,
-            outer_node_id,
-            outer_attempt_id,
-        )) else {
+        let Ok(graph) =
+            read_json::<gold_band::dynamic::DynamicGraphState>(&app.paths.dynamic_graph_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ))
+        else {
             return;
         };
         let Some(dynamic_node) = graph.nodes.iter().find(|node| node.id == context.node_id) else {
@@ -11016,6 +11018,8 @@ mod tests {
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid.clone()),
                 last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -11047,6 +11051,7 @@ mod tests {
             started_at: started_at.clone(),
             finished_at: None,
             manual_check_pending: false,
+            runtime_execution_id: None,
             resolved_config: Default::default(),
             uuid: Some(node_uuid.clone()),
         };
@@ -11142,6 +11147,8 @@ mod tests {
                 pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
                 uuid: Some(run_uuid),
                 last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -11174,8 +11181,7 @@ mod tests {
             "chainId": "bootstrap",
             "depth": 0,
             "dependsOn": [],
-            "workspace": { "mode": "readonly" },
-            "workspacePath": null,
+            "workspaceId": "workspace-main",
             "provider": "codex-acp",
             "profile": null,
             "permissionMode": null,
@@ -11217,6 +11223,23 @@ mod tests {
                 },
                 "nodes": [dynamic_node],
                 "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:00Z"
+                }],
                 "proposals": []
             }),
         )

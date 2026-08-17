@@ -68,6 +68,9 @@ Gold Band provides a unified desktop entry point:
    - `AUTO`: let AI-DYNAMIC dynamically split and schedule open-ended or complex goals.
 5. Enter a requirement and inspect output, interaction requests, attachments, artifacts, and runtime state in the conversation detail view.
 
+> [!IMPORTANT]
+> The project does not yet have Apple Developer Program credentials, so the macOS Release is not signed with Developer ID or notarized by Apple. Follow the [macOS Installation and Troubleshooting Guide](docs/guide/macos-install.md) for installation options and Gatekeeper troubleshooting.
+
 ## Run Modes
 
 ### DIRECT

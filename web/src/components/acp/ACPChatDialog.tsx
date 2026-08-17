@@ -114,6 +114,7 @@ import {
 import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  type AcpProviderConfigCatalog,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -298,8 +299,17 @@ export interface AcpDirectSessionHeaderProps {
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
 
+function isAcpSessionConfigValueUnavailableError(error: unknown) {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && (error as { code?: unknown }).code === "acp.session-config-value-unavailable",
+  );
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
+  providerCatalog?: AcpProviderConfigCatalog | null;
   sessionEstablished?: boolean;
   sessionReferenceId?: string | null;
   projectId: string;
@@ -752,6 +762,7 @@ export function reconcileAcpEventPageForUpdate(
 export function ACPChatDialog(
   {
     session,
+    providerCatalog,
     sessionEstablished = false,
     sessionReferenceId,
     projectId,
@@ -970,6 +981,7 @@ export function ACPChatDialog(
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
+  const configMutationGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef(new AcpLatestWinsEventBuffer<AcpUiEventVm>());
@@ -1286,8 +1298,8 @@ export function ACPChatDialog(
     [agentCommands.commands, prompt],
   );
   const sessionConfigViewModel = useMemo(
-    () => createAcpSessionConfigViewModel(effective?.config),
-    [effective?.config],
+    () => createAcpSessionConfigViewModel(effective?.config, providerCatalog),
+    [effective?.config, providerCatalog],
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
@@ -1654,6 +1666,27 @@ export function ACPChatDialog(
     });
   }, [componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeSessionUpdate, sessionIdentity]);
 
+  const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
+    if (!isAcpSessionConfigValueUnavailableError(error)) return;
+    try {
+      const updated = await getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId,
+        outerAttemptId,
+      );
+      if (updated) applySessionUpdate(updated, "config-unavailable-refresh");
+    } catch {
+      // Preserve the original structured command error if the recovery read also fails.
+    }
+  }, [applySessionUpdate, attemptId, branchId, effectiveEventPageSize, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
+
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
     if (!lifecycle) return;
     onLifecycleSnapshot?.({
@@ -1682,7 +1715,10 @@ export function ACPChatDialog(
 
   const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
     const base = latestSessionRef.current;
-    if (!base) return;
+    if (!base) return null;
+    const previousConfig = base.config ? { ...base.config } : null;
+    const generation = configMutationGenerationRef.current + 1;
+    configMutationGenerationRef.current = generation;
     const updated: AcpSessionVm = {
       ...base,
       config: {
@@ -1691,6 +1727,23 @@ export function ACPChatDialog(
       },
     };
     configGenerationRef.current += 1;
+    latestSessionRef.current = updated;
+    setCurrentSession(updated);
+    return { generation, patch, previousConfig };
+  }, []);
+
+  const rollbackSessionConfig = useCallback((mutation: NonNullable<ReturnType<typeof patchSessionConfig>>) => {
+    if (configMutationGenerationRef.current !== mutation.generation) return;
+    const base = latestSessionRef.current;
+    if (!base) return;
+    const config = { ...(base.config ?? {}) };
+    const mutableConfig = config as Record<string, unknown>;
+    for (const key of Object.keys(mutation.patch)) {
+      const previousValue = (mutation.previousConfig as Record<string, unknown> | null)?.[key];
+      if (previousValue === undefined) delete mutableConfig[key];
+      else mutableConfig[key] = previousValue;
+    }
+    const updated = { ...base, config };
     latestSessionRef.current = updated;
     setCurrentSession(updated);
   }, []);
@@ -1703,7 +1756,7 @@ export function ACPChatDialog(
       "model",
       modelId,
     ) : null;
-    patchSessionConfig({
+    const mutation = patchSessionConfig({
       modelOverrideId: modelId,
       ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
     });
@@ -1726,6 +1779,8 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session model:", error);
       });
   }, [
@@ -1735,9 +1790,11 @@ export function ACPChatDialog(
     outerAttemptId,
     outerNodeId,
     patchSessionConfig,
+    rollbackSessionConfig,
     roundId,
     runId,
     taskId,
+    t,
   ]);
 
   const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string | null) => {
@@ -1748,7 +1805,7 @@ export function ACPChatDialog(
       "mode",
       permissionModeId,
     ) : null;
-    patchSessionConfig({
+    const mutation = patchSessionConfig({
       permissionModeOverrideId: permissionModeId,
       ...(permissionModeId ? { currentModeId: permissionModeId, currentModeName: selected?.name ?? permissionModeId } : {}),
     });
@@ -1771,6 +1828,8 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session permission mode:", error);
       });
   }, [
@@ -1780,9 +1839,11 @@ export function ACPChatDialog(
     outerAttemptId,
     outerNodeId,
     patchSessionConfig,
+    rollbackSessionConfig,
     roundId,
     runId,
     taskId,
+    t,
   ]);
 
   const handleAcpSessionConfigOptionChange = useCallback((optionId: string, optionValue: string | null) => {
@@ -1790,7 +1851,7 @@ export function ACPChatDialog(
     const next = { ...current };
     if (optionValue) next[optionId] = optionValue;
     else delete next[optionId];
-    patchSessionConfig({ configOptionOverrides: next });
+    const mutation = patchSessionConfig({ configOptionOverrides: next });
     setAcpSessionConfigOption(
       projectId,
       taskId,
@@ -1811,9 +1872,11 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session config option:", error);
       });
-  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, roundId, runId, taskId]);
+  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, rollbackSessionConfig, roundId, runId, taskId, t]);
 
   const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
     const normalizedEvents = updates
@@ -2234,6 +2297,7 @@ export function ACPChatDialog(
                 ...incoming.config,
                 modelOverrideId: cfg.modelOverrideId,
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
+                configOptionOverrides: cfg.configOptionOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
                 currentModeId: cfg.currentModeId,
@@ -2937,6 +3001,7 @@ export function ACPChatDialog(
         );
         return;
       }
+      await refreshSessionAfterConfigUnavailable(error);
       setSendError(displayAppError(t, error));
       setAwaitingResponse(false);
       setActiveTurnPrompt(null);
@@ -3230,6 +3295,7 @@ export function ACPChatDialog(
       setRuntimeStopAccepted(false);
       onSessionStopped?.();
     } catch (error) {
+      await refreshSessionAfterConfigUnavailable(error);
       setRuntimeContinueError(displayAppError(t, error));
       setRuntimeContinueSubmitting(false);
     }
@@ -4168,6 +4234,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const { t } = useTranslation();
   const {
     modelOverrideId,
+    modelOverrideName,
     canSelectUnspecifiedModel,
     permissionModeOverrideId,
     permissionModeOverrideName,
@@ -4204,6 +4271,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
         models={availableModels}
         modelValue={modelOverrideId}
+        modelValueLabel={modelOverrideName}
         thoughtLevel={thoughtLevel ? {
           id: thoughtLevel.id,
           category: thoughtLevel.category,
@@ -4214,9 +4282,11 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             value: option.id,
             name: option.name,
             description: option.description,
+            available: option.available,
           })),
         } : null}
         thoughtValue={thoughtLevel?.overrideValue}
+        thoughtValueLabel={thoughtLevel?.overrideValueName}
         showUnspecifiedModel={canSelectUnspecifiedModel}
         showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}

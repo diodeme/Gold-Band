@@ -1187,3 +1187,14 @@ attempt-001/
 - 边界与回归：Vitest 覆盖从设置返回保留 draft、从会话发起时使用当前会话 workspace、无 draft 时回退最近会话 workspace，并固定入口接入统一决策。`lastConversationWorkspace`、会话列表最近 workspace 置顶和后端状态结构不变，单纯切换快速对话 workspace 不触发排序。
 - 本轮验收：导航与最近工作空间排序 2 个定向 Vitest 文件共 30 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 在真实页面完成“快速对话 → 设置 → 快速对话”返回验证，恢复 `/chat`、workspace 上下文不变且浏览器错误日志为空；浏览器预览仅提供单 workspace，双 workspace 差异由接口级导航测试固定。
 - 性能与过度设计评审：决策为固定三项的 O(1) 分支，只在用户点击导航时执行；不新增 effect、状态、持久字段、I/O、依赖、缓存、队列或渲染订阅，现有 App 级 draft 已足以表达跨页面生命周期，无需升级为跨重启偏好。
+
+## 2026-08-17：已发起 ACP 会话动态配置目录
+
+- 根因与数据边界：此前把 Run 发起时的不可变配置快照和 ACP Provider 的可变能力目录绑定在一起，导致 Doctor 已发现新模型、权限或 select config option 后，历史 session 仍只能看到旧目录。修复后 Run 初始绑定继续不可变；session override 继续按 attempt 持久化；可选目录改为 Doctor / Session 最近成功观测的投影，不新增独立 catalog aggregate。
+- 权威与时间规则：Session 通过 `session/new / resume / load` 持久化目录及 `configCatalogObservedAt`，Doctor 通过既有 Agent registry 提供同一 Provider parser 的目录。Doctor 仅在严格更新时覆盖展示和选择校验，同时间或更晚 Session 优先；失败 Doctor、空 capabilities 和无关 Agent 更新不覆盖当前 session 的最近成功目录或当前值。
+- 惰性确认：选择 Doctor-only 配置时持久化 override 与 `configCatalogRefreshRequiredAt`；下次 continue 复用现有 attached-session registry、singleflight 和 resume/load 链路，对原 session 强制重载一次。Session 响应目录先落盘再应用 override；仍不支持时返回 `acp.session-config-value-unavailable` 的 Config / Manual 结构化错误并阻止 prompt，不静默回退默认模型。前端补拉最新 Session，将失效 override 保留为禁用项，用户改选后继续。
+- 前端状态边界：会话页只从当前 session provider 派生 Doctor catalog，并与低频 session config view model 合并；Doctor current value 不进入业务 session。配置选择继续使用 optimistic patch，但以单调 mutation generation 约束失败回滚，早期失败不覆盖后续选择或期间到达的新目录；结构化不可用错误显示统一 i18n 文案。
+- 性能影响：每次 Agent registry 或当前 session config 变化只对当前 Provider 的小型目录做一次 O(catalog) 投影，签名不包含纯时间戳，流式消息不会触发配置栏重渲染。只有用户实际选择 Doctor-only 值后的下一次 continue 增加一次 resume/load；不扫描历史 attempt、不批量改写 session、不增加轮询、无界缓存、队列或扩大锁范围，无明显性能风险，无需专项 benchmark。
+- 过度设计评审：现有 Run snapshot、session metadata、Agent registry、attached runtime registry 和 resume/load 已足以表达全部不变量；仅增加两个 session metadata 时间字段与结构化错误，不新增 catalog 服务、后台同步器或跨层 identity，复杂度与低频竞态风险匹配。
+- 回归要求：Rust 接口测试固定 Doctor 严格更新时写 refresh marker、Session 同时间优先、attached session 只触发一次 reload，以及失效配置归类为 Config / Manual 并携带可用值；Web 测试固定 Doctor/Session 投影、current value 所有权、失效项禁用和无关 Agent 更新不改变配置签名。合入前执行桌面 crate check、Web 生产构建，并用前端 deep link 验证正常与窄宽度选择器。
+- 本轮验收：4 个 Rust 定向接口测试通过；ACP session config 与错误 i18n 共 26 个 Web 测试通过；`cargo check -p gold-band-desktop` 与 Web 生产构建通过。内置浏览器 deep link 实测模型复合目录、权限目录和相邻菜单切换；720×900 下文档 `scrollWidth === clientWidth`、两个配置触发器与 352px 菜单均未越界，控制台无 error/warn。预览数据不含历史 session，Doctor/Session 新旧目录和 stale override 由上述接口测试验收。

@@ -20,6 +20,7 @@ import { conversationRunWorkspaceResourceKey, useRightWorkspace, type Conversati
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import {
   isRuntimeControlledConversationLifecycle,
   type ConversationSessionFollowMode,
@@ -374,6 +375,10 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
+  const selectedProviderCatalog = useMemo(
+    () => acpProviderConfigCatalog(agentRegistry, selectedSession?.provider),
+    [agentRegistry, selectedSession?.provider],
+  );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
@@ -499,6 +504,7 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
+            providerCatalog={selectedProviderCatalog}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}

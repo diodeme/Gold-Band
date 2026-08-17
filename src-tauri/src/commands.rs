@@ -34,11 +34,11 @@ use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
 use gold_band::skill::SkillCommandError;
-use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use gold_band::storage::{read_json, write_json};
 use std::path::{Component, Path, PathBuf};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -57,7 +57,8 @@ use gold_band::observability::set_runtime_log_level;
 use gold_band::provider::{
     ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
     MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
-    conversation_prompt_text,
+    conversation_prompt_text, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -5819,6 +5820,305 @@ fn current_acp_session_config_option_overrides(
         .unwrap_or_default()
 }
 
+#[derive(Debug, Clone, Default)]
+struct AcpCatalogSelectOption {
+    category: String,
+    values: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpSessionConfigCatalog {
+    observed_at: Option<String>,
+    models: Option<BTreeSet<String>>,
+    modes: Option<BTreeSet<String>>,
+    config_options: Option<BTreeMap<String, AcpCatalogSelectOption>>,
+}
+
+impl AcpSessionConfigCatalog {
+    fn from_value(value: &serde_json::Value, observed_at: Option<String>) -> Self {
+        let select_options = select_config_options_from_capabilities(Some(value));
+        let config_options = value.get("configOptions").map(|_| {
+            select_options
+                .iter()
+                .map(|option| {
+                    (
+                        option.id.clone(),
+                        AcpCatalogSelectOption {
+                            category: option.category.clone().unwrap_or_else(|| option.id.clone()),
+                            values: option
+                                .options
+                                .iter()
+                                .map(|value| value.value.clone())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let models = select_options
+            .iter()
+            .any(|option| option.category.as_deref() == Some("model"))
+            .then(|| {
+                supported_models_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("models")
+                    .map(|models| acp_catalog_grouped_ids(models, "availableModels", true))
+            });
+        let modes = select_options
+            .iter()
+            .any(|option| option.id == "mode" || option.category.as_deref() == Some("mode"))
+            .then(|| {
+                supported_modes_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("modes")
+                    .map(|modes| acp_catalog_grouped_ids(modes, "availableModes", false))
+            });
+        Self {
+            observed_at,
+            models,
+            modes,
+            config_options,
+        }
+    }
+
+    fn supports_model(&self, value: &str) -> Option<bool> {
+        self.models.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_mode(&self, value: &str) -> Option<bool> {
+        self.modes.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_config_value(&self, option_id: &str, value: &str) -> Option<bool> {
+        self.config_options.as_ref().map(|options| {
+            options
+                .get(option_id)
+                .is_some_and(|option| option.values.contains(value))
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AcpSessionConfigCatalogContext {
+    session: AcpSessionConfigCatalog,
+    newer_doctor: Option<AcpSessionConfigCatalog>,
+}
+
+impl AcpSessionConfigCatalogContext {
+    fn effective(&self) -> &AcpSessionConfigCatalog {
+        self.newer_doctor.as_ref().unwrap_or(&self.session)
+    }
+}
+
+fn acp_catalog_grouped_ids(
+    value: &serde_json::Value,
+    list_key: &str,
+    model: bool,
+) -> BTreeSet<String> {
+    value
+        .get(list_key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let key = if model { "modelId" } else { "id" };
+            item.get(key)
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("value"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn acp_catalog_timestamp(value: &str) -> Option<i64> {
+    value
+        .trim()
+        .trim_end_matches('Z')
+        .parse::<i64>()
+        .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(value.trim())
+                .ok()
+                .map(|value| value.timestamp())
+        })
+}
+
+fn acp_catalog_observation_is_newer(candidate: &str, current: Option<&str>) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    if candidate == current {
+        return false;
+    }
+    match (
+        acp_catalog_timestamp(candidate),
+        acp_catalog_timestamp(current),
+    ) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate > current,
+    }
+}
+
+fn acp_session_config_catalog_context(
+    app: &App,
+    locator: &AttemptLocator,
+    session: &serde_json::Value,
+) -> AcpSessionConfigCatalogContext {
+    let session_catalog = AcpSessionConfigCatalog::from_value(
+        session,
+        session
+            .get("configCatalogObservedAt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    );
+    let newer_doctor = acp_turn_provider_id(app, locator)
+        .and_then(|provider| app.provider_diagnostics().remove(&provider))
+        .filter(|diagnostic| diagnostic.available)
+        .and_then(|diagnostic| {
+            let capabilities = diagnostic.capabilities?;
+            acp_catalog_observation_is_newer(
+                &diagnostic.checked_at,
+                session_catalog.observed_at.as_deref(),
+            )
+            .then(|| {
+                AcpSessionConfigCatalog::from_value(&capabilities, Some(diagnostic.checked_at))
+            })
+        });
+    AcpSessionConfigCatalogContext {
+        session: session_catalog,
+        newer_doctor,
+    }
+}
+
+fn acp_session_config_value_unavailable(
+    category: &str,
+    config_id: &str,
+    value: &str,
+    available_values: impl IntoIterator<Item = String>,
+) -> CommandErrorVm {
+    CommandErrorVm::new(
+        gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE,
+        serde_json::json!({
+            "category": category,
+            "configId": config_id,
+            "value": value,
+            "availableValues": available_values.into_iter().collect::<Vec<_>>(),
+        }),
+    )
+}
+
+fn validate_acp_catalog_model(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_model(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "model",
+            "model",
+            value,
+            catalog.models.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_mode(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_mode(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "mode",
+            "mode",
+            value,
+            catalog.modes.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_config_value(
+    catalog: &AcpSessionConfigCatalog,
+    option_id: &str,
+    value: &str,
+) -> CommandResult<()> {
+    let option = catalog
+        .config_options
+        .as_ref()
+        .and_then(|options| options.get(option_id));
+    if option.is_some_and(|option| option.values.contains(value)) {
+        return Ok(());
+    }
+    Err(acp_session_config_value_unavailable(
+        option
+            .map(|option| option.category.as_str())
+            .unwrap_or("config"),
+        option_id,
+        value,
+        option
+            .map(|option| option.values.clone())
+            .unwrap_or_default(),
+    ))
+}
+
+fn apply_acp_catalog_refresh_marker(
+    session: &mut serde_json::Value,
+    catalogs: &AcpSessionConfigCatalogContext,
+) {
+    let Some(doctor) = catalogs.newer_doctor.as_ref() else {
+        return;
+    };
+    let model_requires_refresh = session
+        .get("modelOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_model(value) == Some(true)
+                && catalogs.session.supports_model(value) != Some(true)
+        });
+    let mode_requires_refresh = session
+        .get("permissionModeOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_mode(value) == Some(true)
+                && catalogs.session.supports_mode(value) != Some(true)
+        });
+    let option_requires_refresh = session
+        .get("configOptionOverrides")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|overrides| {
+            overrides.iter().any(|(option_id, value)| {
+                value.as_str().is_some_and(|value| {
+                    doctor.supports_config_value(option_id, value) == Some(true)
+                        && catalogs.session.supports_config_value(option_id, value) != Some(true)
+                })
+            })
+        });
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if model_requires_refresh || mode_requires_refresh || option_requires_refresh {
+        if let Some(observed_at) = doctor.observed_at.as_ref() {
+            object.insert(
+                "configCatalogRefreshRequiredAt".to_string(),
+                serde_json::Value::String(observed_at.clone()),
+            );
+        }
+    } else {
+        object.remove("configCatalogRefreshRequiredAt");
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SearchTasksInput {
@@ -5865,6 +6165,15 @@ pub async fn set_acp_session_model(
     model_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -5897,6 +6206,14 @@ pub async fn set_acp_session_model(
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(model_id) = model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_model(catalogs.effective(), model_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(model_id) = model_id
@@ -5925,14 +6242,8 @@ pub async fn set_acp_session_model(
         }
         set_acp_config_option_current_value(&mut value, "model", model_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5982,6 +6293,15 @@ pub async fn set_acp_session_permission_mode(
     permission_mode_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -6014,6 +6334,14 @@ pub async fn set_acp_session_permission_mode(
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(permission_mode_id) = permission_mode_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_mode(catalogs.effective(), permission_mode_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(permission_mode_id) = permission_mode_id
@@ -6042,14 +6370,8 @@ pub async fn set_acp_session_permission_mode(
         }
         set_acp_config_option_current_value(&mut value, "mode", permission_mode_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -6100,6 +6422,15 @@ pub async fn set_acp_session_config_option(
     option_value: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -6132,50 +6463,13 @@ pub async fn set_acp_session_config_option(
         )
     })?;
     let option_id = option_id.trim();
-    let config_option = value
-        .get("configOptions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|options| {
-            options.iter().find(|option| {
-                option.get("id").and_then(serde_json::Value::as_str) == Some(option_id)
-            })
-        })
-        .cloned()
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "acp.config-option-not-found",
-                serde_json::json!({ "optionId": option_id }),
-            )
-        })?;
-    if config_option
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        != Some("select")
-    {
-        return Err(CommandErrorVm::new(
-            "acp.config-option-not-select",
-            serde_json::json!({ "optionId": option_id }),
-        ));
-    }
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
     let normalized_value = option_value
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(selected) = normalized_value {
-        let supported = config_option
-            .get("options")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|options| {
-                options.iter().any(|option| {
-                    option.get("value").and_then(serde_json::Value::as_str) == Some(selected)
-                })
-            });
-        if !supported {
-            return Err(CommandErrorVm::new(
-                "acp.config-option-value-unsupported",
-                serde_json::json!({ "optionId": option_id, "value": selected }),
-            ));
-        }
+        validate_acp_catalog_config_value(catalogs.effective(), option_id, selected)?;
     }
     if let Some(session) = value.as_object_mut() {
         let overrides = session
@@ -6201,13 +6495,8 @@ pub async fn set_acp_session_config_option(
     if let Some(selected) = normalized_value {
         set_acp_config_option_current_value(&mut value, option_id, selected);
     }
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -7127,6 +7416,66 @@ mod tests {
     use camino::Utf8PathBuf;
     use gold_band::dynamic::DynamicGraphState;
     use gold_band::storage::write_json;
+
+    #[test]
+    fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
+        let mut session = serde_json::json!({
+            "configCatalogObservedAt": "100Z",
+            "modelOverride": "new-model",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "options": [{ "value": "old-model" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "model",
+                        "category": "model",
+                        "type": "select",
+                        "options": [{ "value": "new-model" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+
+        validate_acp_catalog_model(catalogs.effective(), "new-model").unwrap();
+        apply_acp_catalog_refresh_marker(&mut session, &catalogs);
+
+        assert_eq!(
+            session
+                .get("configCatalogRefreshRequiredAt")
+                .and_then(serde_json::Value::as_str),
+            Some("200Z")
+        );
+    }
+
+    #[test]
+    fn session_catalog_wins_ties_and_unavailable_values_are_structured() {
+        assert!(!acp_catalog_observation_is_newer("200Z", Some("200Z")));
+        assert!(!acp_catalog_observation_is_newer("199Z", Some("200Z")));
+        assert!(acp_catalog_observation_is_newer("201Z", Some("200Z")));
+
+        let catalog = AcpSessionConfigCatalog::from_value(
+            &serde_json::json!({
+                "modes": { "availableModes": [{ "id": "ask" }] }
+            }),
+            Some("200Z".to_string()),
+        );
+        let error = validate_acp_catalog_mode(&catalog, "full").unwrap_err();
+        assert_eq!(
+            error.code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(error.params["category"], "mode");
+        assert_eq!(error.params["value"], "full");
+        assert_eq!(error.params["availableValues"], serde_json::json!(["ask"]));
+    }
     use std::sync::{Arc, Mutex};
 
     fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {

@@ -886,6 +886,7 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
@@ -6832,6 +6833,10 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+    let catalog_observed_at = session
+        .get("configCatalogObservedAt")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
@@ -6890,6 +6895,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
         config_option_overrides,

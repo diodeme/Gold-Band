@@ -1462,6 +1462,7 @@ export interface AcpEventPageVm {
 }
 
 export interface AcpSessionConfigVm {
+  catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
   configOptionOverrides?: Record<string, string>;

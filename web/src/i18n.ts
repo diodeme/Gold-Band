@@ -379,6 +379,7 @@ const resources = {
         },
         acp: {
           "missing-provider": "当前节点缺少 provider 配置。",
+          "session-config-value-unavailable": "所选会话配置已不可用，请从最新列表中重新选择。",
           "active-prompt-blocks-config-save": "当前有会话正在运行，请先停止会话后再保存配置。",
           "invalid-conversation-branch-id": "该 Agent 会话链接无效或已失效。",
           "session-query-failed": "会话内容加载失败，请重试。",
@@ -2484,6 +2485,8 @@ const resources = {
         acp: {
           "missing-provider":
             "The current node is missing provider configuration.",
+          "session-config-value-unavailable":
+            "The selected session configuration is no longer available. Choose another value from the latest list.",
           "invalid-conversation-branch-id":
             "This Agent conversation link is invalid or no longer available.",
           "session-query-failed": "The conversation could not be loaded. Try again.",

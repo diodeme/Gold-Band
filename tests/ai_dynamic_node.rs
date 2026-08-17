@@ -181,7 +181,8 @@ impl ProviderAdapter for DynamicProvider {
                 .emission_mode = OutputEmissionMode::InlineControl;
             finalize_req.session_mode = SessionMode::Continue;
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-            finalize_req.input_attachment_paths.clear();
+            finalize_req.task_input_attachment_paths.clear();
+            finalize_req.user_input_attachment_paths.clear();
             if !resumed_control_turn {
                 finalize_req.resume_prompt = Some("finalize artifact".to_string());
                 finalize_req.resume_prompt_id = Some(format!(
@@ -1407,7 +1408,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         invocations
             .iter()
             .filter(|invocation| is_business_invocation(invocation))
-            .all(|invocation| invocation.input_attachment_paths == vec![image_path_string.clone()])
+            .all(|invocation| {
+                invocation.task_input_attachment_paths == vec![image_path_string.clone()]
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(
         invocations
@@ -1415,7 +1419,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .filter(|invocation| {
                 invocation.user_prompt_render_mode == UserPromptRenderMode::RuntimeFinalize
             })
-            .all(|invocation| invocation.input_attachment_paths.is_empty())
+            .all(|invocation| {
+                invocation.task_input_attachment_paths.is_empty()
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(invocations.iter().all(|invocation| {
         invocation
@@ -1434,7 +1441,7 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         Some(AcpContentBlock::Image(block)) => {
             let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
             assert_eq!(block.mime_type, "image/png");
-            assert_eq!(block.uri.as_deref(), Some(expected_uri.as_str()));
+            assert_eq!(block.link.uri, expected_uri);
         }
         _ => panic!("expected image content block"),
     }

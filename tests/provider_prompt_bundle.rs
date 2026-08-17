@@ -119,7 +119,8 @@ fn invocation() -> WorkerInvocation {
                 "~/.gold-band/projects/D--Projects-code-ai-Gold-Band/.../report.md",
             ),
         }],
-        input_attachment_paths: Vec::new(),
+        task_input_attachment_paths: Vec::new(),
+        user_input_attachment_paths: Vec::new(),
         mcp_servers: Vec::new(),
         scheduled_context: None,
     }

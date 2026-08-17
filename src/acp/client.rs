@@ -986,52 +986,53 @@ fn provider_thread_is_active(update: &Value) -> bool {
         .is_some_and(|status| status.eq_ignore_ascii_case("active"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpOutputPolicy {
-    Conversation,
-    ArtifactContract,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AcpPromptOutput {
     /// Every visible agent text chunk, including ACP v1 chunks without a
     /// provider-owned message identity. Direct conversation surfaces consume
     /// this projection.
     pub visible_text: String,
-    /// Text backed by a non-empty provider-owned `messageId`. Artifact
-    /// contracts consume only this projection.
-    pub identified_text: String,
-    pub identified_outputs: Vec<String>,
-    /// Anonymous output remains visible in the timeline but is never promoted
-    /// to a strict artifact candidate.
-    pub anonymous_text: String,
-    pub anonymous_chunk_count: u64,
+    /// The final bounded Agent messages in canonical stream order. Runtime may
+    /// inspect at most these three messages and only scans backward when the
+    /// terminal message has provider-owned stable identity.
+    pub recent_messages: Vec<AcpPromptMessageOutput>,
+    /// Whether any Agent message in this prompt turn had provider-owned stable
+    /// identity. Together with the terminal entry in `recent_messages`, this
+    /// identifies a stable stream followed by an anonymous terminal message.
+    pub observed_stable_message: bool,
 }
 
-impl AcpPromptOutput {
-    fn has_identified_text(&self) -> bool {
-        !self.identified_text.trim().is_empty()
-    }
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AcpPromptMessageOutput {
+    pub text: String,
+    pub has_stable_id: bool,
+}
 
-    fn has_anonymous_text(&self) -> bool {
-        self.anonymous_chunk_count > 0 && !self.anonymous_text.trim().is_empty()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AcpPromptMessageStreamIdentity {
+    Stable(String),
+    Anonymous,
 }
 
 #[derive(Debug, Clone, Default)]
 struct AcpPromptOutputAccumulator {
     output: AcpPromptOutput,
-    collecting_identified_output: bool,
+    active_message: Option<AcpPromptMessageStreamIdentity>,
     visible_chars: usize,
-    identified_chars: usize,
-    identified_output_chars: usize,
-    anonymous_chars: usize,
+    last_message_chars: usize,
 }
 
+const ACP_PROMPT_OUTPUT_MESSAGE_LIMIT: usize = 3;
+
 impl AcpPromptOutputAccumulator {
-    fn observe(&mut self, update: &Value, event: &AcpUiEvent) {
+    fn observe(&mut self, _update: &Value, event: &AcpUiEvent) {
         if event.kind != "textDelta" {
-            self.collecting_identified_output = false;
+            // Match the canonical timeline's text stream boundary. An
+            // elicitation is an intervention inside the current message; all
+            // other non-text events end it.
+            if event.kind != "elicitationRequest" {
+                self.active_message = None;
+            }
             return;
         }
         let content = event.content.as_deref().unwrap_or_default();
@@ -1042,28 +1043,26 @@ impl AcpPromptOutputAccumulator {
             256_000,
         );
 
-        if agent_message_id(update).is_some() {
-            if !self.collecting_identified_output {
-                self.output.identified_outputs.push(String::new());
-                self.collecting_identified_output = true;
-                self.identified_output_chars = 0;
+        let message_identity = stable_message_stream_identity(event)
+            .map(AcpPromptMessageStreamIdentity::Stable)
+            .unwrap_or(AcpPromptMessageStreamIdentity::Anonymous);
+        let has_stable_id = matches!(message_identity, AcpPromptMessageStreamIdentity::Stable(_));
+        if self.active_message.as_ref() != Some(&message_identity) {
+            self.last_message_chars = 0;
+            self.output.recent_messages.push(AcpPromptMessageOutput {
+                text: String::new(),
+                has_stable_id,
+            });
+            if self.output.recent_messages.len() > ACP_PROMPT_OUTPUT_MESSAGE_LIMIT {
+                self.output.recent_messages.remove(0);
             }
+        }
+        self.active_message = Some(message_identity);
+        self.output.observed_stable_message |= has_stable_id;
+        if let Some(message) = self.output.recent_messages.last_mut() {
             append_bounded(
-                &mut self.output.identified_text,
-                &mut self.identified_chars,
-                content,
-                256_000,
-            );
-            if let Some(output) = self.output.identified_outputs.last_mut() {
-                append_bounded(output, &mut self.identified_output_chars, content, 64_000);
-            }
-        } else {
-            self.collecting_identified_output = false;
-            self.identified_output_chars = 0;
-            self.output.anonymous_chunk_count = self.output.anonymous_chunk_count.saturating_add(1);
-            append_bounded(
-                &mut self.output.anonymous_text,
-                &mut self.anonymous_chars,
+                &mut message.text,
+                &mut self.last_message_chars,
                 content,
                 64_000,
             );
@@ -1071,33 +1070,7 @@ impl AcpPromptOutputAccumulator {
     }
 }
 
-pub const ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE: &str = "acp.unidentified-agent-output";
 const CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE: &str = "contextCompactionCompleted";
-
-fn unidentified_agent_output_failure(
-    output_policy: AcpOutputPolicy,
-    output: &AcpPromptOutput,
-) -> Option<AcpPromptFailure> {
-    (output_policy == AcpOutputPolicy::ArtifactContract
-        && !output.has_identified_text()
-        && output.has_anonymous_text())
-    .then(|| AcpPromptFailure {
-        code: ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE.to_string(),
-        message: "ACP artifact prompt produced only agent output without messageId".to_string(),
-        details: Some(output.anonymous_text.chars().take(2_000).collect()),
-        raw: json!({
-            "outputPolicy": "artifact-contract",
-            "anonymousChunkCount": output.anonymous_chunk_count,
-        }),
-    })
-}
-
-fn agent_message_id(update: &Value) -> Option<&str> {
-    (update.get("sessionUpdate").and_then(Value::as_str) == Some("agent_message_chunk"))
-        .then(|| update.get("messageId").and_then(Value::as_str))
-        .flatten()
-        .filter(|message_id| !message_id.trim().is_empty())
-}
 
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
@@ -1565,7 +1538,6 @@ struct AcpRuntime<'a> {
     control: Arc<ProviderControl>,
     stop_probe: Option<RuntimeStopProbe>,
     runtime_policy: AcpRuntimePolicy,
-    output_policy: AcpOutputPolicy,
     attached_config_fingerprint: Option<u64>,
     provider_freshness: ProviderFreshnessBaseline,
     sync_required: bool,
@@ -1803,7 +1775,6 @@ pub fn run_prompt(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: AcpRuntimePolicy,
-    output_policy: AcpOutputPolicy,
     live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
@@ -1831,7 +1802,6 @@ pub fn run_prompt(
         live_update,
         stop_probe,
     )?;
-    runtime.output_policy = output_policy;
     runtime.model_override = model.clone();
     runtime.permission_mode_override = permission_mode.clone();
     runtime.config_option_overrides = config_options.clone();
@@ -1950,14 +1920,10 @@ pub fn run_prompt(
         runtime.is_prompt_cancel_requested(),
         prompt_result.as_ref().err(),
     );
-    // Cancellation owns the user-visible terminal state. Anonymous ACP v1
-    // output is a strict-contract failure only after the bounded terminal
-    // drain has made the complete prompt output observable.
-    let terminal_failure = (!cancellation.observed && prompt_result.is_ok())
-        .then(|| {
-            unidentified_agent_output_failure(runtime.output_policy, &runtime.prompt_output.output)
-        })
-        .flatten();
+    // Cancellation owns the user-visible terminal state. Text without a
+    // provider message identity is still ordinary prompt output; Runtime owns
+    // output-contract validation after the bounded terminal drain completes.
+    let terminal_failure: Option<AcpPromptFailure> = None;
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
             let status = if cancellation.observed {
@@ -2788,7 +2754,6 @@ impl<'a> AcpRuntime<'a> {
             control,
             stop_probe,
             runtime_policy,
-            output_policy: AcpOutputPolicy::Conversation,
             attached_config_fingerprint: None,
             provider_freshness: ProviderFreshnessBaseline::Unknown,
             sync_required: false,
@@ -6383,10 +6348,10 @@ mod tests {
     use crate::domain::TurnControlMode;
 
     use super::{
-        ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE, AcpCancelDrainTimeout, AcpContextCompactionState,
-        AcpOutputPolicy, AcpPromptFailure, AcpPromptOutputAccumulator, AcpPromptRetryState,
-        AcpPromptRouteDrainTimeout, AcpPromptRouteUnavailable, AcpPromptTokenUsage, AcpRuntime,
-        AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
+        AcpCancelDrainTimeout, AcpContextCompactionState, AcpPromptFailure,
+        AcpPromptOutputAccumulator, AcpPromptRetryState, AcpPromptRouteDrainTimeout,
+        AcpPromptRouteUnavailable, AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy,
+        AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
         PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
         RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
@@ -6406,8 +6371,7 @@ mod tests {
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
-        unregister_provider_control,
+        take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
 
     fn non_runtime_control_test_prompt(prompt_id: &str) -> PromptBundle {
@@ -7574,7 +7538,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_output_separates_visible_identified_and_anonymous_text() {
+    fn prompt_output_tracks_anonymous_terminal_message_after_stable_output() {
         let identified = json!({
             "sessionUpdate": "agent_message_chunk",
             "messageId": "answer-1",
@@ -7595,10 +7559,148 @@ mod tests {
         );
 
         assert_eq!(output.output.visible_text, "answerwarning");
-        assert_eq!(output.output.identified_text, "answer");
-        assert_eq!(output.output.identified_outputs, vec!["answer"]);
-        assert_eq!(output.output.anonymous_text, "warning");
-        assert_eq!(output.output.anonymous_chunk_count, 1);
+        assert_eq!(output.output.recent_messages.len(), 2);
+        assert_eq!(output.output.recent_messages[0].text, "answer");
+        assert!(output.output.recent_messages[0].has_stable_id);
+        assert_eq!(output.output.recent_messages[1].text, "warning");
+        assert!(!output.output.recent_messages[1].has_stable_id);
+        assert!(output.output.observed_stable_message);
+    }
+
+    #[test]
+    fn prompt_output_keeps_recent_stable_messages_in_order() {
+        let first = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "{\"status\":\"success\"}" }
+        });
+        let second = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-2",
+            "content": { "type": "text", "text": "final text" }
+        });
+        let mut output = AcpPromptOutputAccumulator::default();
+        output.observe(
+            &first,
+            &normalize_session_update(1, Some("session-1".to_string()), &first),
+        );
+        output.observe(
+            &second,
+            &normalize_session_update(2, Some("session-1".to_string()), &second),
+        );
+
+        assert_eq!(
+            output.output.visible_text,
+            "{\"status\":\"success\"}final text"
+        );
+        assert_eq!(output.output.recent_messages.len(), 2);
+        assert_eq!(
+            output.output.recent_messages[0].text,
+            "{\"status\":\"success\"}"
+        );
+        assert_eq!(output.output.recent_messages[1].text, "final text");
+        assert!(
+            output
+                .output
+                .recent_messages
+                .iter()
+                .all(|message| message.has_stable_id)
+        );
+        assert!(output.output.observed_stable_message);
+    }
+
+    #[test]
+    fn prompt_output_groups_adjacent_anonymous_chunks_as_one_message() {
+        let first = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "{\"result\":" }
+        });
+        let second = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "true}" }
+        });
+        let mut output = AcpPromptOutputAccumulator::default();
+        output.observe(
+            &first,
+            &normalize_session_update(1, Some("session-1".to_string()), &first),
+        );
+        output.observe(
+            &second,
+            &normalize_session_update(2, Some("session-1".to_string()), &second),
+        );
+
+        assert_eq!(output.output.recent_messages.len(), 1);
+        assert_eq!(output.output.recent_messages[0].text, "{\"result\":true}");
+        assert!(!output.output.recent_messages[0].has_stable_id);
+        assert!(!output.output.observed_stable_message);
+    }
+
+    #[test]
+    fn prompt_output_does_not_reuse_anonymous_text_before_stream_boundary() {
+        let earlier = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "{\"result\":true}" }
+        });
+        let boundary_update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "tool-1",
+            "title": "Work",
+            "status": "completed"
+        });
+        let final_message = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "final text" }
+        });
+        let mut output = AcpPromptOutputAccumulator::default();
+        output.observe(
+            &earlier,
+            &normalize_session_update(1, Some("session-1".to_string()), &earlier),
+        );
+        output.observe(
+            &boundary_update,
+            &normalize_session_update(2, Some("session-1".to_string()), &boundary_update),
+        );
+        output.observe(
+            &final_message,
+            &normalize_session_update(3, Some("session-1".to_string()), &final_message),
+        );
+
+        assert_eq!(output.output.visible_text, "{\"result\":true}final text");
+        assert_eq!(output.output.recent_messages.len(), 2);
+        assert_eq!(output.output.recent_messages[1].text, "final text");
+        assert!(!output.output.recent_messages[1].has_stable_id);
+        assert!(!output.output.observed_stable_message);
+    }
+
+    #[test]
+    fn prompt_output_retains_at_most_three_messages() {
+        let mut output = AcpPromptOutputAccumulator::default();
+        for (seq, id, text) in [
+            (1, "answer-1", "one"),
+            (2, "answer-2", "two"),
+            (3, "answer-3", "three"),
+            (4, "answer-4", "four"),
+        ] {
+            let update = json!({
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": id,
+                "content": { "type": "text", "text": text }
+            });
+            output.observe(
+                &update,
+                &normalize_session_update(seq, Some("session-1".to_string()), &update),
+            );
+        }
+
+        assert_eq!(
+            output
+                .output
+                .recent_messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["two", "three", "four"]
+        );
     }
 
     #[test]
@@ -7806,50 +7908,6 @@ mod tests {
                 .and_then(|stream| stream.text.as_ref())
                 .map(|stream| stream.content.as_str()),
             Some("B")
-        );
-    }
-
-    #[test]
-    fn output_policy_is_provider_agnostic_and_requires_identified_artifact_output() {
-        let anonymous = json!({
-            "sessionUpdate": "agent_message_chunk",
-            "content": { "type": "text", "text": "provider warning" }
-        });
-        let identified = json!({
-            "sessionUpdate": "agent_message_chunk",
-            "messageId": "answer-1",
-            "content": { "type": "text", "text": "answer" }
-        });
-        let mut anonymous_only = AcpPromptOutputAccumulator::default();
-        anonymous_only.observe(
-            &anonymous,
-            &normalize_session_update(1, Some("session-1".to_string()), &anonymous),
-        );
-
-        assert!(
-            unidentified_agent_output_failure(
-                AcpOutputPolicy::Conversation,
-                &anonymous_only.output,
-            )
-            .is_none()
-        );
-        let failure = unidentified_agent_output_failure(
-            AcpOutputPolicy::ArtifactContract,
-            &anonymous_only.output,
-        )
-        .expect("anonymous-only artifact output must fail strict settlement");
-        assert_eq!(failure.code, ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE);
-
-        anonymous_only.observe(
-            &identified,
-            &normalize_session_update(2, Some("session-1".to_string()), &identified),
-        );
-        assert!(
-            unidentified_agent_output_failure(
-                AcpOutputPolicy::ArtifactContract,
-                &anonymous_only.output,
-            )
-            .is_none()
         );
     }
 

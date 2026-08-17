@@ -9952,12 +9952,12 @@ fn build_dynamic_worker_invocation(
 
     let step_started_at =
         dynamic_invocation_build_step_begin(ctx, node, attempt_id, "input_attachment_paths");
-    let mut input_attachment_paths = if matches!(session_mode, SessionMode::New) {
+    let task_input_attachment_paths = if matches!(session_mode, SessionMode::New) {
         super::task_input_attachment_paths(ctx.app, ctx.task_id)
     } else {
         Vec::new()
     };
-    input_attachment_paths.extend(resume_input_attachment_paths);
+    let user_input_attachment_paths = resume_input_attachment_paths;
     dynamic_invocation_build_step_end(
         ctx,
         node,
@@ -9965,7 +9965,8 @@ fn build_dynamic_worker_invocation(
         "input_attachment_paths",
         step_started_at,
         serde_json::json!({
-            "count": input_attachment_paths.len(),
+            "taskInputCount": task_input_attachment_paths.len(),
+            "userInputCount": user_input_attachment_paths.len(),
         }),
     );
 
@@ -10010,7 +10011,8 @@ fn build_dynamic_worker_invocation(
         attachments_dir: Some(attachments_dir),
         cold_artifacts: Vec::new(),
         cold_attachments: Vec::new(),
-        input_attachment_paths,
+        task_input_attachment_paths,
+        user_input_attachment_paths,
         mcp_servers: Vec::new(),
         scheduled_context: None,
     };
@@ -10024,7 +10026,8 @@ fn build_dynamic_worker_invocation(
             "hasOutputContract": invocation.output_contract.is_some(),
             "predecessorCount": invocation.predecessors.len(),
             "systemSectionCount": invocation.extra_system_sections.len(),
-            "inputAttachmentCount": invocation.input_attachment_paths.len(),
+            "inputAttachmentCount": invocation.task_input_attachment_paths.len()
+                + invocation.user_input_attachment_paths.len(),
         }),
     );
     Ok(invocation)
@@ -12185,15 +12188,19 @@ fn drive_from_node_with_initial_session(
                         now_rfc3339_like(),
                         run_event_data(
                             &ctx,
-                            Some(ProgressStage::Completed),
-                            Some(node.status),
+                            Some(ProgressStage::Paused),
+                            Some(RunStatus::Paused),
                             Some(format!(
                                 "invalid output repair exhausted at {}/{}/{}",
                                 round.id, node.node_id, node.attempt_id
                             )),
-                            None,
+                            Some(PauseReason::RuntimeAbnormal),
                         ),
                     );
+                    node.status = RunStatus::Paused;
+                    node.outcome = None;
+                    node.finished_at = Some(now_rfc3339_like());
+                    let expected_execution_id = node.runtime_execution_id.take();
                     apply_control_decision(
                         app,
                         task_id,
@@ -12202,8 +12209,8 @@ fn drive_from_node_with_initial_session(
                         run,
                         round,
                         &node,
-                        ControlDecision::CompleteRun(RunOutcome::Failure),
-                        node.runtime_execution_id.as_deref(),
+                        ControlDecision::PauseRun(PauseReason::RuntimeAbnormal),
+                        expected_execution_id.as_deref(),
                     )?;
                     return Ok(());
                 }

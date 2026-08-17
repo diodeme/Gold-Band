@@ -125,8 +125,8 @@
 说明：
 - 仅当 `status = paused` 时允许为非 null
 - `process-interrupted` 表示用户停止、关闭或启动恢复等主动中断，可通过 runtime continue 恢复当前 attempt
-- `runtime-abnormal` 表示可恢复异常暂停，包括本地 IO/资源、ACP transport、driver 异常，以及 auth/quota/rate-limit/provider/model/catalog/workspace 等用户处理外部条件后可继续的异常；它需要以异常视觉提醒用户，但仍可通过 runtime continue 恢复
-- `error-blocked` 表示 workflow/DSL/control edge、AI-DYNAMIC proposal repair 耗尽、runtime invariant 等当前路径不可继续的阻塞，不提供当前 session 的直接 continue 入口
+- `runtime-abnormal` 表示可恢复异常暂停，包括本地 IO/资源、ACP transport、driver 异常、artifact 控制 turn 出现“已有稳定消息但最终消息无稳定 ID”的不可信终态，以及 auth/quota/rate-limit/provider/model/catalog/workspace 等用户处理外部条件后可继续的异常；它需要以异常视觉提醒用户，但仍可通过 runtime continue 恢复
+- `error-blocked` 表示 workflow/DSL/control edge、输出修复所需的 session / continue identity 缺失、runtime invariant 等当前路径不可继续的阻塞，不提供当前 session 的直接 continue 入口；有可用 continue identity 的输出 repair 耗尽属于可恢复的 `runtime-abnormal`
 - `waiting-for-user-input` 与 `permission-requested` 表示 runtime 等待用户明确决策
 
 `pauseReason` 是外层生命周期字段。更细的异常语义由 run progress / run events 中的 `RuntimeErrorInfo` 表达：`recovery=auto` 表示 runtime 正在或已经进行 bounded retry，耗尽后降级为 `runtime-abnormal`；`recovery=manual` 表示用户处理外部条件后可继续；`recovery=blocked` 表示不能普通 continue。旧 run 没有 `RuntimeErrorInfo` 时，`runtime-abnormal` 默认视为 manual，`error-blocked` 默认视为 blocked。

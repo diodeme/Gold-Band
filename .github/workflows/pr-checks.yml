@@ -43,6 +43,9 @@ jobs:
       - name: Test release checksums
         run: npm run test:release-checksums
 
+      - name: Test README and guide i18n links
+        run: npm run test:readme-i18n
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

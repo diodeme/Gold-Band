@@ -1797,7 +1797,7 @@ const resources = {
           title: "指标上报",
           enable: "开启指标上报",
           enableDescription:
-            "开启后，客户端会定时上报心跳和节点执行指标到配置的服务器。",
+            "开启后，客户端会按应用与任务生命周期事件上报心跳和节点执行指标到配置的服务器。",
           baseUrl: "上报服务地址",
           heartbeatEndpoint: "心跳接口地址",
           nodeMetricsEndpoint: "节点详情接口地址",
@@ -3875,7 +3875,7 @@ const resources = {
           title: "Metrics Reporting",
           enable: "Enable metrics reporting",
           enableDescription:
-            "When enabled, the client periodically reports heartbeat and node execution metrics to the configured server.",
+            "When enabled, the client reports heartbeat and node execution metrics from application and task lifecycle events.",
           baseUrl: "Reporting server URL",
           heartbeatEndpoint: "Heartbeat endpoint",
           nodeMetricsEndpoint: "Node metrics endpoint",

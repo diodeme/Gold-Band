@@ -612,6 +612,25 @@ impl AcpTurnBatchProgress {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
+    /// The desktop process has reached the point where lifecycle subscribers
+    /// are registered and may evaluate startup reporting configuration.
+    ApplicationStarted,
+    /// A real user activity signal was observed by the desktop client.
+    UserActivityObserved,
+    /// A user-triggered top-level Conversation run was accepted and received
+    /// a new canonical run id. Follow-ups, continue, same-run retry, scheduled
+    /// execution, and AUTO child runs do not emit this fact.
+    ConversationRunStarted {
+        project_id: String,
+        task_id: String,
+        run_id: String,
+        run_mode: crate::config::ConversationRunMode,
+    },
+    /// A scheduled-task definition and its input snapshot were durably created.
+    ScheduledTaskCreated {
+        project_id: String,
+        scheduled_task_id: String,
+    },
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
@@ -755,7 +774,12 @@ impl RuntimeLifecycleEvent {
             } => {
                 *scheduled_occurrence_id = occurrence_id;
             }
-            Self::NodeStarted { .. } | Self::NodeCompleted { .. } => {}
+            Self::ApplicationStarted
+            | Self::UserActivityObserved
+            | Self::ConversationRunStarted { .. }
+            | Self::ScheduledTaskCreated { .. }
+            | Self::NodeStarted { .. }
+            | Self::NodeCompleted { .. } => {}
         }
     }
 }

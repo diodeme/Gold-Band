@@ -3616,6 +3616,9 @@ pub fn create_conversation_run_vm(
     // Start the workflow in the background so the conversation surface can
     // display the session as soon as the first ACP events arrive.
     let run = app.run_start_background(&task_id, None)?;
+    if let Some(run_mode) = conversation_run_mode_from_label(&input.run_mode) {
+        emit_conversation_run_started(app, &input.project_id, &task_id, &run.id, run_mode);
+    }
 
     // Return early VM from the run
     conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
@@ -3715,6 +3718,7 @@ pub fn rerun_conversation_task_vm(
     project_id: &str,
     task_id: &str,
 ) -> anyhow::Result<ConversationRunVm> {
+    let run_mode = conversation_run_mode(app, task_id);
     // Pause running run if any
     if let Ok(summaries) = app.task_summaries() {
         if let Some(ts) = summaries.iter().find(|s| s.task.id == task_id) {
@@ -3731,6 +3735,9 @@ pub fn rerun_conversation_task_vm(
     }
     // Start new run in the background; live ACP events drive the UI refresh.
     let run = app.run_start_background(task_id, None)?;
+    if let Some(run_mode) = run_mode {
+        emit_conversation_run_started(app, project_id, task_id, &run.id, run_mode);
+    }
     conversation_run_vm(app, project_id, task_id, &run.id, None).or_else(|_| {
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
@@ -3779,6 +3786,23 @@ pub fn rerun_conversation_task_vm(
     })
 }
 
+fn emit_conversation_run_started(
+    app: &App,
+    project_id: &str,
+    task_id: &str,
+    run_id: &str,
+    run_mode: ConversationRunMode,
+) {
+    app.emit_lifecycle_event(
+        gold_band::app::RuntimeLifecycleEvent::ConversationRunStarted {
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+            run_mode,
+        },
+    );
+}
+
 pub fn switch_conversation_session_vm(
     app: &App,
     task_id: &str,
@@ -3819,6 +3843,8 @@ pub fn switch_conversation_session_vm(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
@@ -3827,14 +3853,15 @@ mod tests {
         build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
         conversation_run_vm, conversation_sidebar_vm_from_sources,
         conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
-        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
-        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
+        create_conversation_run_vm, create_conversation_task_vm,
+        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
+        find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
         scheduled_task_vms_from_sources, switch_conversation_session_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
-    use gold_band::app::{App, CreateTaskInput};
+    use gold_band::app::{App, CreateTaskInput, RuntimeLifecycleEvent};
     use gold_band::config::ConversationRunMode;
     use gold_band::domain::TurnControlMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
@@ -5058,6 +5085,59 @@ mod tests {
         });
 
         assert!(created.is_ok(), "{created:?}");
+    }
+
+    #[test]
+    fn conversation_new_run_and_rerun_publish_canonical_started_facts() {
+        let app = App::new(temp_repo_root());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_subscriber = events.clone();
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::ConversationRunStarted {
+                project_id,
+                task_id,
+                run_id,
+                run_mode,
+            } = event
+            {
+                events_for_subscriber
+                    .lock()
+                    .unwrap()
+                    .push((project_id, task_id, run_id, run_mode));
+            }
+        }));
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "start a direct conversation".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        let created = create_conversation_run_vm(&app, &input).unwrap();
+        let rerun = rerun_conversation_task_vm(&app, &input.project_id, &created.task_id).unwrap();
+
+        assert_ne!(created.run_id, rerun.run_id);
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, input.project_id);
+        assert_eq!(events[0].1, created.task_id);
+        assert_eq!(events[0].2, created.run_id);
+        assert_eq!(events[0].3, ConversationRunMode::Direct);
+        assert_eq!(events[1].0, input.project_id);
+        assert_eq!(events[1].1, rerun.task_id);
+        assert_eq!(events[1].2, rerun.run_id);
+        assert_eq!(events[1].3, ConversationRunMode::Direct);
     }
 
     #[test]

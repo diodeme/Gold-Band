@@ -77,7 +77,7 @@ use commands_conversation::{
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::configure_storage_paths;
 use gold_band::storage::sqlite::init_search_index;
-// Heartbeat reporter is event-driven; initialized via DesktopState::reevaluate_heartbeat_config().
+// Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;

@@ -3,7 +3,8 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gold_band::app::App;
+use gold_band::app::observability::RuntimeLifecycleBus;
+use gold_band::app::{App, RuntimeLifecycleEvent};
 use gold_band::scheduler::db::{
     ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
@@ -180,10 +181,14 @@ pub struct ScheduledTaskService {
     resolve_workspace: WorkspaceResolver,
     list_workspaces: WorkspaceLister,
     coordinator: Arc<dyn ScheduledCoordinator>,
+    lifecycle_bus: RuntimeLifecycleBus,
 }
 
 impl ScheduledTaskService {
     pub fn desktop(app_handle: AppHandle) -> Self {
+        let lifecycle_bus = app_handle
+            .state::<crate::state::DesktopState>()
+            .lifecycle_bus();
         let resolve_handle = app_handle.clone();
         let resolve_workspace = Arc::new(move |project_id: &str| {
             resolve_conversation_workspace(&resolve_handle, project_id)
@@ -194,6 +199,7 @@ impl ScheduledTaskService {
             resolve_workspace,
             list_workspaces,
             coordinator: Arc::new(DesktopScheduledCoordinator { app_handle }),
+            lifecycle_bus,
         }
     }
 
@@ -211,6 +217,10 @@ impl ScheduledTaskService {
         workspaces: &[(&App, &str)],
         coordinator: Arc<dyn ScheduledCoordinator>,
     ) -> Self {
+        let lifecycle_bus = workspaces
+            .first()
+            .map(|(app, _)| app.lifecycle_bus.clone())
+            .unwrap_or_default();
         let specifications = workspaces
             .iter()
             .map(|(app, name)| {
@@ -246,6 +256,7 @@ impl ScheduledTaskService {
             resolve_workspace,
             list_workspaces,
             coordinator,
+            lifecycle_bus,
         }
     }
 
@@ -433,6 +444,11 @@ impl ScheduledTaskService {
                 .create_job(&definition, derived_next_run_at(&definition))
                 .map_err(ScheduledServiceError::from_database)
         })?;
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::ScheduledTaskCreated {
+                project_id: record.definition.project_id.clone(),
+                scheduled_task_id: record.definition.id.clone(),
+            });
         self.coordinator
             .notify(SchedulerCommand::JobCreated(record.definition.clone()))?;
         let _ = workspace.workspace_name;
@@ -1131,7 +1147,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::{TimeZone, Utc};
-    use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID};
+    use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID, RuntimeLifecycleEvent};
     use gold_band::scheduler::db::ScheduledTaskDatabase;
     use gold_band::scheduler::occurrence::{
         OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
@@ -1156,12 +1172,21 @@ mod tests {
         database: Mutex<Option<ScheduledTaskDatabase>>,
         start_count: Mutex<usize>,
         commands: Mutex<Vec<SchedulerCommand>>,
+        fail_notify: bool,
     }
 
     impl CoordinatorSpy {
         fn with_database(database: ScheduledTaskDatabase) -> Self {
             Self {
                 database: Mutex::new(Some(database)),
+                ..Self::default()
+            }
+        }
+
+        fn with_failing_notify(database: ScheduledTaskDatabase) -> Self {
+            Self {
+                database: Mutex::new(Some(database)),
+                fail_notify: true,
                 ..Self::default()
             }
         }
@@ -1178,6 +1203,9 @@ mod tests {
     impl ScheduledCoordinator for CoordinatorSpy {
         fn notify(&self, command: SchedulerCommand) -> super::ScheduledServiceResult<()> {
             self.commands.lock().unwrap().push(command);
+            if self.fail_notify {
+                return Err(super::ScheduledServiceError::internal("notify-created-job"));
+            }
             Ok(())
         }
 
@@ -1230,11 +1258,19 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
+            Self::with_notify_failure(false)
+        }
+
+        fn with_notify_failure(fail_notify: bool) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let root = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
             let app = App::new(root);
             let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
-            let coordinator = Arc::new(CoordinatorSpy::with_database(database.clone()));
+            let coordinator = Arc::new(if fail_notify {
+                CoordinatorSpy::with_failing_notify(database.clone())
+            } else {
+                CoordinatorSpy::with_database(database.clone())
+            });
             let service =
                 ScheduledTaskService::for_test(&app, "Test workspace", coordinator.clone());
             Self {
@@ -1344,6 +1380,42 @@ mod tests {
                 .scheduled_task_dir(result.definition.id())
                 .join("inputs/report.txt")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn durable_create_fact_is_published_before_coordinator_notification() {
+        let fixture = Fixture::with_notify_failure(true);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_subscriber = events.clone();
+        fixture
+            .app
+            .lifecycle_bus
+            .subscribe_inline(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::ScheduledTaskCreated {
+                    project_id,
+                    scheduled_task_id,
+                } = event
+                {
+                    events_for_subscriber
+                        .lock()
+                        .unwrap()
+                        .push((project_id, scheduled_task_id));
+                }
+            }));
+
+        let error = fixture.service.create(fixture.create_input()).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::StorageFailed);
+        let definitions = fixture.database.list_job_definitions().unwrap();
+        assert_eq!(
+            definitions.len(),
+            1,
+            "durable create must survive notify failure"
+        );
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            &[(definitions[0].project_id.clone(), definitions[0].id.clone())]
         );
     }
 

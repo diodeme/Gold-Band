@@ -10,7 +10,7 @@
 
 V2 将两个接口重新定义为：
 
-1. `heartbeat`：上报用户启动和真实界面活动，用于活跃、回访、首次观测用户留存、启动次数及版本/OS 分布。
+1. `heartbeat`：上报用户启动、真实界面活动、三种模式顶层 run 启动和定时任务创建事实，用于活跃/留存及事件分类统计。
 2. `metrics/batch`：批量上报可持久化、可重放、可去重的执行领域事件。
 
 三种处理模式使用同一事件信封，但统计主单位不同：
@@ -108,6 +108,8 @@ heartbeat 只服务：
 - 周活跃回访率；
 - 首次观测用户次周留存；
 - 人均应用启动次数；
+- Direct、Workflow、AUTO 顶层 run 启动次数；
+- 定时任务 durable 创建次数；
 - 客户端当天最后版本与 OS 的活跃用户分布。
 
 不统计账号、设备、workspace、在线时长、操作强度或执行状态。Direct、Workflow、AUTO 的执行事实由 metrics/batch 负责。
@@ -126,9 +128,9 @@ heartbeat 只服务：
 
 | 字段 | 约束 | 作用 |
 |---|---|---|
-| `heartbeatId` | UUID；每个逻辑 heartbeat 一次 | 服务端幂等；appStarted 重试复用 |
+| `heartbeatId` | UUID；每个逻辑 heartbeat 一次 | 服务端幂等；同一逻辑事件的有限重试复用 |
 | `userId` | trim 后 1～128 字符并规范化为小写 | WB 模式活跃与留存主体 |
-| `reason` | `appStarted/activity` | 启动次数与普通活动 |
+| `reason` | `appStarted/activity/directStarted/workflowStarted/autoStarted/scheduledTaskCreated` | 应用启动、活动、三种用户顶层 run 与定时任务创建 |
 | `clientVersion` | 1～64 字符 | 当天最后版本分布 |
 | `os` | `windows/macos/linux` | 当天最后 OS 分布 |
 
@@ -148,9 +150,19 @@ metrics 配置、endpoint 和 API Key 就绪后立即发送，不等待 workspac
 
 窗口回前台、pointerdown、keydown，以及 Direct/Workflow/AUTO 的启动、重跑、继续等业务命令统一触发 activity。鼠标移动、滚动、动画、repaint 和纯后台执行不触发。
 
-任意 heartbeat 成功后 15 分钟内不发送 activity；失败后退避 1 分钟，必须等待下一次真实操作，不定时补发。已有请求 in-flight 时合并，不排队、不写 durable outbox。
+appStarted 或 activity 成功后 15 分钟内不发送 activity；activity 失败后退避 1 分钟，必须等待下一次真实操作，不定时补发。已有 appStarted/activity 请求 in-flight 时合并 activity，不排队、不写 durable outbox；但 appStarted 是必须保留的进程启动事实，若 activity 先占用共享发送槽，客户端先登记 appStarted 请求，并在 activity 完成释放槽位后立即续发。四类业务事实的结果不改变这些时间戳。
 
-userId 使用 `whoami::username()` 读取各系统用户名，trim 并小写化；失败、空值或 unknown 时跳过，禁止环境变量 fallback。heartbeat 不维护三种模式的 active execution，执行状态全部由 metrics/batch 负责。
+#### directStarted / workflowStarted / autoStarted
+
+`Started` 统一表示用户发起的顶层 Conversation 模式运行已被 Gold Band 接受并创建新的 canonical `runId`。当前 Conversation 新建和 rerun 都计一次；Direct follow-up/queued prompt、continue、same-run retry、旧工作台 `start_run`、定时后台 execution 与 AUTO dynamic/child run 不计。
+
+#### scheduledTaskCreated
+
+定时任务定义和输入快照完成 durable 事务后计一次，发生在 coordinator `JobCreated` 通知之前。编辑、启停、删除和定时执行不计；coordinator 通知失败不撤销已经形成的 durable 创建事实。
+
+六类信号统一经现有 `RuntimeLifecycleBus` 发布，由异步 metrics subscriber 映射 reason 和调用 reporter。producer 不读取 metrics 配置、不等待 HTTP、不接收上报结果；subscriber failure 不改变任务 command 结果或 canonical state。四类业务事实不参与 activity 节流/in-flight，暂时故障执行固定次数进程内重试并复用同一 heartbeatId；配置 generation 变化后取消旧重试，不建设 durable outbox。
+
+userId 使用 `whoami::username()` 读取各系统用户名，trim 并小写化；失败、空值或 unknown 时跳过，禁止环境变量 fallback。heartbeat 不维护三种模式的 active execution，终局和执行明细全部由 metrics/batch 负责。
 
 ### 2.4 控制台处理
 
@@ -622,7 +634,7 @@ analytics_outbox
 
 - `AnalyticsRecorder`：字段规范化和 SQLite 插入。
 - `AnalyticsUploader`：后台批量上传、退避重试和确认。
-- `RuntimeLifecycleBus`：继续服务 UI/通知，不承担网络可靠性。
+- `RuntimeLifecycleBus`：继续服务 UI/通知和 heartbeat transient 投影；不承担 metrics/batch 的 durable 网络可靠性。
 
 Recorder 可作为 inline subscriber 只做快速 SQLite 插入；网络请求始终后台执行。Uploader 在事务内 claim 事件并设置 60 秒 lease，崩溃后由过期 lease 恢复，不依赖不可靠的永久 sending 状态。
 
@@ -864,7 +876,7 @@ V2 第一阶段只发布每 provider/model 的 unit 完成率、input/output/cac
 
 - intervention 全量接入。
 - 服务端构建 execution_transition_fact 与 intervention_fact，保留 pause/resume 和人工干预历史。
-- heartbeat 五字段、appStarted/activity 触发、两表事务、长期日聚合与月分区。
+- heartbeat 五字段、六值 reason、生命周期总线投影、两表事务、长期日聚合与月分区。
 - AUTO acceptance/proposal 指标。
 - 分层 token 效率和受控模型实验。
 
@@ -890,4 +902,4 @@ V2 第一阶段只发布每 provider/model 的 unit 完成率、input/output/cac
 ## 12. 变更记录
 
 - V1：以 heartbeat + node metrics 为基础，规划 run/pause/intervention 新端点。
-- V2：取消新端点，保留 heartbeat 与 metrics/batch；heartbeat 收敛为 userId、appStarted/activity 和版本/OS，删除 workspace、session、客户端时间与执行周期心跳，只物化长期 userId 日活、回访和首次观测留存。
+- V2：取消新端点，保留 heartbeat 与 metrics/batch；heartbeat 收敛为五字段六值 reason，删除 workspace、session、客户端时间与执行周期心跳，支持 userId 活跃/留存及用户顶层模式启动、定时任务创建的分类统计。

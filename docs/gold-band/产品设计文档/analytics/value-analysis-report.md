@@ -75,7 +75,7 @@ AUTO 是 outer run + AI-DYNAMIC graph：
 
 ### 4.1 活跃与留存
 
-heartbeat 以规范化 `userId` 作为 WB 模式的用户口径，不上传 workspace，不建设设备或 session 身份。上报只包含 appStarted 与 activity：应用启动；窗口回前台、真实点击、键盘输入，以及 Direct、Workflow、AUTO 的启动/重跑/继续等有效操作。任意成功后统一节流 15 分钟，纯后台执行不产生 heartbeat。
+heartbeat 以规范化 `userId` 作为 WB 模式的用户口径，不上传 workspace，不建设设备或 session 身份。reason 包含 appStarted、activity、directStarted、workflowStarted、autoStarted 和 scheduledTaskCreated。activity 来自窗口回前台、真实点击、键盘输入及有效业务命令，appStarted/activity 成功后保持 15 分钟 activity 节流；四类业务事实独立发送，不改变 activity 时间戳。三种 Started 只统计用户顶层新 canonical runId，排除 follow-up、continue、same-run retry、旧工作台、定时后台执行和 AUTO child run；定时任务只在 durable 创建后统计。
 
 可计算：
 
@@ -94,7 +94,7 @@ DAU/MAU(D) = DAU(D) / MAU(D)
 
 客户端版本和 OS 使用用户当天最后值，每个用户每天只进入一个版本和一个 OS 分组。userId 通过跨平台系统能力读取并按不区分大小写规范化；WB 当前用户群不存在同名冲突。
 
-不计算账号级、设备级或 workspace 级指标，不从 heartbeat 推导在线时长或活动强度。业务价值是判断用户是否持续回来、启动频次是否变化，以及新版本是否覆盖活跃用户。
+不计算账号级、设备级或 workspace 级指标，不从 heartbeat 推导在线时长、活动强度、执行成功率或 token。业务价值是判断用户是否持续回来、启动频次是否变化、三种模式是否被用户实际启动、定时任务是否被创建，以及新版本是否覆盖活跃用户。
 ### 4.2 终局覆盖率：所有结果指标的可信度前提
 
 ```text
@@ -310,7 +310,7 @@ V2 第一阶段不得宣称：
 1. **可信执行主链**：三种模式 started/finished + durable outbox。先解决分母、终局和数据丢失。
 2. **执行单元与 token**：attempt UUID、usage delta、provider/resolvedModel、AUTO 父子关系。解决成本和归因。
 3. **干预与可靠性**：pause/resume/intervention。解决产品瓶颈定位。
-4. **活跃与留存**：heartbeatId 去重、appStarted 启动次数、userId 日聚合、周活跃回访与完整 cohort 留存。
+4. **活跃与使用入口**：heartbeatId 去重、appStarted、三种模式 Started、scheduledTaskCreated、userId 日聚合、周活跃回访与完整 cohort 留存。
 5. **高级模型决策**：任务分层、价格和受控实验。
 
 一句话总结：V2 不再用节点快照勉强解释所有模式，而是让 Direct turn、Workflow run、AUTO outer/dynamic graph 各自按正确统计单位进入同一事件体系；先保证数据可信，再谈成功率、成本和模型决策。

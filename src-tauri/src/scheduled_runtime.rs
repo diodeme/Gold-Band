@@ -2392,9 +2392,12 @@ fn scheduled_occurrence_id(event: &RuntimeLifecycleEvent) -> Option<String> {
             scheduled_occurrence_id,
             ..
         } => scheduled_occurrence_id.clone(),
-        RuntimeLifecycleEvent::NodeStarted { .. } | RuntimeLifecycleEvent::NodeCompleted { .. } => {
-            None
-        }
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::NodeStarted { .. }
+        | RuntimeLifecycleEvent::NodeCompleted { .. } => None,
     }
 }
 
@@ -2489,7 +2492,11 @@ pub(crate) fn finish_occurrence_for_event(
                 Some(ScheduledError::new(code)),
             )
         }
-        RuntimeLifecycleEvent::RunPaused { .. }
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. } => return Ok(None),
     };

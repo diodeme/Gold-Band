@@ -32,8 +32,8 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
-    workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
+    validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
@@ -45,8 +45,8 @@ use crate::process::recover_persisted_process_group;
 use crate::provider::{
     ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
     ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
-    render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    render_prompt_bundle, supported_models_from_capabilities,
+    supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
@@ -56,6 +56,10 @@ use crate::runtime::{
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
     write_json,
+};
+use crate::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
+    migrate_authoring_workflow, reconcile_authoring_workflow_for_save, validate_and_inject,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -68,12 +72,15 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
+pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
     build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
+    reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
@@ -82,6 +89,7 @@ use self::orchestrator::{
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
+    validate_manual_check_submission as orchestrator_validate_manual_check_submission,
 };
 
 #[derive(Debug, Clone)]
@@ -191,6 +199,41 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 }
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
+const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalEntryStage {
+    pub node_id: String,
+    pub label_key: String,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkflowTemplateCommandError {
+    #[error("workflow-template.readonly-built-in")]
+    ReadonlyBuiltIn,
+    #[error("workflow.optional-entry.invalid")]
+    InvalidOptionalEntry { reason: &'static str },
+}
+
+impl WorkflowTemplateCommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ReadonlyBuiltIn => "workflow-template.readonly-built-in",
+            Self::InvalidOptionalEntry { .. } => "workflow.optional-entry.invalid",
+        }
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::ReadonlyBuiltIn => serde_json::json!({}),
+            Self::InvalidOptionalEntry { reason } => serde_json::json!({ "reason": reason }),
+        }
+    }
+}
 
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
@@ -199,8 +242,36 @@ fn default_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认工作流".to_string(),
+        name: "默认完整工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "interview".to_string(),
+            label_key: "conversation.home.includeInterview".to_string(),
+            default_enabled: true,
+        }),
         workflow: default_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn default_lightweight_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
+    let now = now_rfc3339_like();
+    WorkflowTemplate {
+        id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
+        name: "默认轻量工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "grill".to_string(),
+            label_key: "conversation.home.includeGrill".to_string(),
+            default_enabled: true,
+        }),
+        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -214,6 +285,10 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
         (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::ZhCn, "grill") => {
+            "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。"
+        }
+        (DesktopLanguage::ZhCn, "dev-test") => "在当前工作区完成需求实现、自动化测试和必要回归。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
@@ -228,6 +303,12 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
         }
+        (DesktopLanguage::En, "grill") => {
+            "Challenge the requirement until shared understanding is reached and produce grill-consensus.md."
+        }
+        (DesktopLanguage::En, "dev-test") => {
+            "Implement the requirement and run automated verification in the current workspace."
+        }
         _ => "Execute this workflow node.",
     }
 }
@@ -238,7 +319,7 @@ fn default_workflow_dsl(
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        provider: &str,
+        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -249,7 +330,8 @@ fn default_workflow_dsl(
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
-            provider: Some(provider.to_string()),
+            execution_slot_id: None,
+            provider: None,
             model: None,
             profile: Some(
                 profiles
@@ -269,7 +351,7 @@ fn default_workflow_dsl(
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: Some("bypassPermissions".to_string()),
+            permission_mode: None,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -281,8 +363,8 @@ fn default_workflow_dsl(
         id: "task-workflow".to_string(),
         entry: "interview".to_string(),
         control: WorkflowControl {
-            max_attempts: None,
-            max_rounds: None,
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
         },
         nodes: vec![
             worker(
@@ -424,6 +506,117 @@ fn default_workflow_dsl(
     }
 }
 
+fn default_lightweight_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
+    fn worker(
+        _provider: &str,
+        profiles: &DefaultProfileIds,
+        id: &str,
+        role_key: &str,
+        goal: &str,
+        validation: bool,
+    ) -> NodeDsl {
+        let artifact = validation.then(|| format!("{id}-result"));
+        NodeDsl::Worker(WorkerNode {
+            id: id.to_string(),
+            execution_slot_id: None,
+            provider: None,
+            model: None,
+            profile: Some(
+                profiles
+                    .get(role_key)
+                    .expect("default role id exists")
+                    .to_string(),
+            ),
+            goal: Some(goal.to_string()),
+            output: artifact.clone().map(|artifact| OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact,
+                schema: Some(serde_json::json!({
+                    "reason": "String",
+                    "result": "boolean",
+                })),
+            }),
+            success_condition: validation.then(|| JsonConditionDsl::Expression {
+                expression: "$.result == true".to_string(),
+            }),
+            permission_mode: None,
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        })
+    }
+
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "task-workflow-lightweight".to_string(),
+        entry: "grill".to_string(),
+        control: WorkflowControl {
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
+        },
+        nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "grill",
+                "grill",
+                default_workflow_goal(language, "grill"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "dev-test",
+                "dev-test",
+                default_workflow_goal(language, "dev-test"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "accept",
+                "accept",
+                default_workflow_goal(language, "accept"),
+                true,
+            ),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "grill".to_string(),
+                to: "dev-test".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "dev-test".to_string(),
+                to: "accept".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: NEW_ROUND_NODE.to_string(),
+                on: EdgeOutcome::Failure,
+                session: None,
+                new_round_entry: Some("dev-test".to_string()),
+            },
+        ],
+    }
+}
+
 fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
     let slug = name
         .trim()
@@ -455,6 +648,113 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
         candidate = format!("{base}-{index}");
     }
     candidate
+}
+
+fn upsert_built_in_workflow_template(
+    templates: &mut Vec<WorkflowTemplate>,
+    built_in: WorkflowTemplate,
+    index: usize,
+) -> Result<()> {
+    if let Some(current_index) = templates
+        .iter()
+        .position(|template| template.id == built_in.id)
+    {
+        let mut next = built_in;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: templates[current_index].workflow.clone(),
+            model_bindings: templates[current_index].model_bindings.clone(),
+        };
+        next.model_bindings = persisted.model_bindings.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut next.workflow,
+            &mut next.model_bindings,
+            Some(&persisted),
+            Some(&next.id),
+        )?;
+        templates[current_index] = next;
+        if current_index != index {
+            let template = templates.remove(current_index);
+            templates.insert(index.min(templates.len()), template);
+        }
+    } else {
+        let mut built_in = built_in;
+        reconcile_authoring_workflow_for_save(
+            &mut built_in.workflow,
+            &mut built_in.model_bindings,
+            None,
+            Some(&built_in.id),
+        )?;
+        templates.insert(index.min(templates.len()), built_in);
+    }
+    Ok(())
+}
+
+pub fn apply_optional_entry_preference(
+    template: &WorkflowTemplate,
+    include_optional_entry: Option<bool>,
+    workflow: &mut WorkflowDsl,
+) -> Result<Option<bool>> {
+    let Some(stage) = template.optional_entry_stage.as_ref() else {
+        return Ok(None);
+    };
+    if !template.is_built_in {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "requires-built-in-template",
+        }
+        .into());
+    }
+    if workflow.entry != stage.node_id {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "must-be-workflow-entry",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == stage.node_id) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "entry-node-missing",
+        }
+        .into());
+    }
+    let mut successors = workflow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == stage.node_id && edge.on == EdgeOutcome::Success)
+        .map(|edge| edge.to.as_str());
+    let next_entry =
+        successors
+            .next()
+            .ok_or(WorkflowTemplateCommandError::InvalidOptionalEntry {
+                reason: "missing-success-successor",
+            })?;
+    if successors.next().is_some() {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "multiple-success-successors",
+        }
+        .into());
+    }
+    if next_entry == END_NODE || next_entry == NEW_ROUND_NODE {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-must-be-real-node",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == next_entry) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-node-missing",
+        }
+        .into());
+    }
+
+    let include = include_optional_entry.unwrap_or(stage.default_enabled);
+    if !include {
+        let next_entry = next_entry.to_string();
+        workflow.nodes.retain(|node| node.id() != stage.node_id);
+        workflow
+            .edges
+            .retain(|edge| edge.from != stage.node_id && edge.to != stage.node_id);
+        workflow.entry = next_entry;
+    }
+    Ok(Some(include))
 }
 
 fn next_auto_template_id(store: &AutoTemplateStore) -> String {
@@ -496,7 +796,13 @@ pub struct WorkflowTemplateStore {
 pub struct WorkflowTemplate {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub is_built_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: WorkflowModelBindings,
     #[serde(alias = "created_at")]
     pub created_at: String,
     #[serde(alias = "updated_at")]
@@ -785,6 +1091,20 @@ pub struct App {
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptRuntimePauseResult {
+    Converged,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptRuntimePausePolicy<'a> {
+    CurrentAttempt,
+    ActiveExecution(&'a str),
+    ActiveAttemptWithoutExecution,
+    PausedManualCheck,
+}
+
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
     Arc::new(sqlite::index_task_with_retry)
 }
@@ -906,13 +1226,14 @@ fn validate_ai_dynamic_allowed_workflows(
                 }
                 .into());
             }
-            let validated = validate_workflow(template.workflow.clone()).map_err(|error| {
-                WorkflowValidationError::AiDynamicInvalidWorkflow {
-                    node_id: dynamic.id.clone(),
-                    workflow_name: template.name.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            let validated =
+                validate_authoring_workflow(template.workflow.clone()).map_err(|error| {
+                    WorkflowValidationError::AiDynamicInvalidWorkflow {
+                        node_id: dynamic.id.clone(),
+                        workflow_name: template.name.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
             if !dynamic.control.allow_nested_dynamic && workflow_contains_ai_dynamic(&validated.raw)
             {
                 return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
@@ -984,58 +1305,6 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
                 .collect(),
         },
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelConfigNormalization {
-    pub node_id: String,
-    pub scope: String,
-    pub provider: Option<String>,
-    pub previous_model: String,
-}
-
-fn provider_model_is_stale(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    provider: &str,
-    model: &str,
-) -> bool {
-    let supported_models = diagnostics
-        .get(provider)
-        .filter(|diagnostic| diagnostic.available)
-        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
-        .unwrap_or_default();
-    !supported_models.is_empty()
-        && !supported_models
-            .iter()
-            .any(|option| option.id == model || option.name.as_deref() == Some(model))
-}
-
-fn clear_stale_model(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    node_id: &str,
-    scope: &str,
-    provider: &str,
-    model: &mut Option<String>,
-    normalizations: &mut Vec<ModelConfigNormalization>,
-) {
-    let Some(configured) = model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    if !provider_model_is_stale(diagnostics, provider, configured) {
-        return;
-    }
-    normalizations.push(ModelConfigNormalization {
-        node_id: node_id.to_string(),
-        scope: scope.to_string(),
-        provider: Some(provider.to_string()),
-        previous_model: configured.to_string(),
-    });
-    *model = None;
 }
 
 impl App {
@@ -1676,13 +1945,20 @@ impl App {
         name: String,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.save_workflow_template_with_bindings(name, workflow, WorkflowModelBindings::default())
+    }
+
+    pub fn save_workflow_template_with_bindings(
+        &self,
+        name: String,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let name = name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
         }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1696,8 +1972,8 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
@@ -1707,7 +1983,10 @@ impl App {
         store.templates.push(WorkflowTemplate {
             id: id.clone(),
             name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
             workflow: validated.raw,
+            model_bindings,
             created_at: now.clone(),
             updated_at: now,
         });
@@ -1721,18 +2000,48 @@ impl App {
         template_id: &str,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.update_workflow_template_with_bindings(
+            template_id,
+            workflow,
+            WorkflowModelBindings::default(),
+        )
+    }
+
+    pub fn update_workflow_template_with_bindings(
+        &self,
+        template_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let template_id = template_id.trim();
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be updated");
-        }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
+        let persisted_template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: persisted_template.workflow.clone(),
+            model_bindings: persisted_template.model_bindings.clone(),
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            None,
+        )?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
             &store,
@@ -1746,8 +2055,46 @@ impl App {
             .templates
             .iter_mut()
             .find(|template| template.id == template_id)
-            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+            .expect("persisted workflow template was resolved before validation");
         template.workflow = validated.raw;
+        template.model_bindings = model_bindings;
+        template.updated_at = now_rfc3339_like();
+        store.last_used_template_id = Some(template_id.to_string());
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn update_built_in_workflow_template_bindings(
+        &self,
+        template_id: &str,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut store = self.load_workflow_template_store()?;
+        let template_index = store
+            .templates
+            .iter()
+            .position(|template| template.id == template_id && template.is_built_in)
+            .ok_or(WorkflowTemplateCommandError::ReadonlyBuiltIn)?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: store.templates[template_index].workflow.clone(),
+            model_bindings: store.templates[template_index].model_bindings.clone(),
+        };
+        let mut workflow = persisted.workflow.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            Some(template_id),
+        )?;
+        validate_and_inject(
+            &workflow,
+            &model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?;
+        let template = &mut store.templates[template_index];
+        template.workflow = workflow;
+        template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
         self.save_workflow_template_store(&store)?;
@@ -1759,11 +2106,15 @@ impl App {
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be deleted");
-        }
-
         let mut store = self.load_workflow_template_store()?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
         let original_len = store.templates.len();
         store
             .templates
@@ -1898,6 +2249,8 @@ impl App {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
+        let lightweight_template =
+            default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -1910,18 +2263,19 @@ impl App {
         }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
-            if store.templates.is_empty() {
-                store.templates.push(default_template);
-            } else if let Some(template) = store
-                .templates
-                .iter_mut()
-                .find(|template| template.id == "default")
-            {
-                *template = default_template;
-            } else {
-                store.templates.insert(0, default_template);
+            for template in &mut store.templates {
+                migrate_authoring_workflow(
+                    &mut template.workflow,
+                    &mut template.model_bindings,
+                    template.is_built_in.then_some(template.id.as_str()),
+                )?;
             }
-            self.normalize_workflow_template_store_models(&mut store);
+            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+            if let Some(workflow) = store.last_created_workflow.as_mut() {
+                let mut ignored = WorkflowModelBindings::default();
+                migrate_authoring_workflow(workflow, &mut ignored, None)?;
+            }
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
@@ -1929,31 +2283,69 @@ impl App {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
-            templates: vec![default_template],
+            templates: vec![default_template, lightweight_template],
         };
-        self.normalize_workflow_template_store_models(&mut store);
+        for template in &mut store.templates {
+            migrate_authoring_workflow(
+                &mut template.workflow,
+                &mut template.model_bindings,
+                template.is_built_in.then_some(template.id.as_str()),
+            )?;
+        }
         self.save_workflow_template_store(&store)?;
         Ok(store)
-    }
-
-    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
-        let now = now_rfc3339_like();
-        for template in &mut store.templates {
-            if !self
-                .normalize_workflow_models(&mut template.workflow)
-                .is_empty()
-            {
-                template.updated_at = now.clone();
-            }
-        }
-        if let Some(workflow) = store.last_created_workflow.as_mut() {
-            self.normalize_workflow_models(workflow);
-        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
         fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
         write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
+        let path = self.paths.workflow_file(task_id);
+        let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+        let (mut current, legacy) = compat.into_current();
+        let migrated =
+            migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)?;
+        if legacy || migrated {
+            write_json(&path, &current)?;
+        }
+        Ok(current)
+    }
+
+    pub fn task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        Ok(self.task_authoring_workflow(task_id)?.workflow)
+    }
+
+    pub fn executable_task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        let authoring = self.task_authoring_workflow(task_id)?;
+        Ok(validate_and_inject(
+            &authoring.workflow,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?)
+    }
+
+    fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        mut authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        let path = self.paths.workflow_file(task_id);
+        let persisted = if path.exists() {
+            let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+            Some(compat.into_current().0)
+        } else {
+            None
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut authoring.workflow,
+            &mut authoring.model_bindings,
+            persisted.as_ref(),
+            None,
+        )?;
+        write_json(&path, &authoring)
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -1976,10 +2368,9 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        mut workflow: WorkflowDsl,
+        workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
-        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -2123,9 +2514,22 @@ impl App {
         }
 
         let mut workflow = input.workflow.clone();
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.create_task_from_requirement_with_bindings(input, workflow, model_bindings)
+    }
+
+    pub fn create_task_from_requirement_with_bindings(
+        &self,
+        input: CreateTaskInput,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        if input.requirement_content.trim().is_empty() {
+            bail!("requirement content cannot be empty");
+        }
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         let selected_template = input
@@ -2163,7 +2567,13 @@ impl App {
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
-        write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            &task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw.clone(),
+                model_bindings,
+            },
+        )?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
@@ -2189,16 +2599,32 @@ impl App {
     }
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
-        self.task_show(task_id)?;
         let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.save_task_workflow_with_bindings(task_id, workflow, model_bindings)
+    }
+
+    pub fn save_task_workflow_with_bindings(
+        &self,
+        task_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.task_show(task_id)?;
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
-        write_json(&self.paths.workflow_file(task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw,
+                model_bindings,
+            },
+        )?;
         self.task_summary(task_id)
     }
 
@@ -2894,7 +3320,13 @@ impl App {
         reason: PauseReason,
     ) -> Result<()> {
         self.pause_attempt_runtime_state_with_policy(
-            task_id, run_id, round_id, node_id, attempt_id, reason, false, None,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::CurrentAttempt,
         )
         .map(|_| ())
     }
@@ -2909,7 +3341,7 @@ impl App {
         attempt_id: &str,
         execution_id: &str,
         reason: PauseReason,
-    ) -> Result<bool> {
+    ) -> Result<AttemptRuntimePauseResult> {
         self.pause_attempt_runtime_state_with_policy(
             task_id,
             run_id,
@@ -2917,8 +3349,49 @@ impl App {
             node_id,
             attempt_id,
             reason,
-            true,
-            Some(execution_id),
+            AttemptRuntimePausePolicy::ActiveExecution(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_without_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_paused_manual_check(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::PausedManualCheck,
         )
     }
 
@@ -2931,9 +3404,8 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         reason: PauseReason,
-        require_active_attempt: bool,
-        expected_execution_id: Option<&str>,
-    ) -> Result<bool> {
+        policy: AttemptRuntimePausePolicy<'_>,
+    ) -> Result<AttemptRuntimePauseResult> {
         let state_lock =
             attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
         let _guard = state_lock
@@ -2948,26 +3420,51 @@ impl App {
         } else {
             None
         };
-        if let Some(expected_execution_id) = expected_execution_id
+        let run_path = self.paths.run_file(task_id, run_id);
+        let mut run = if run_path.exists() {
+            Some(read_json::<RunState>(&run_path)?)
+        } else {
+            None
+        };
+        let locator_matches = run.as_ref().is_some_and(|run| {
+            run.current_round.as_deref() == Some(round_id)
+                && run.current_node.as_deref() == Some(node_id)
+                && run.current_attempt.as_deref() == Some(attempt_id)
+        });
+        let active_attempt = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Running);
+        let paused_manual_check = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Paused)
             && node
                 .as_ref()
-                .and_then(|node| node.runtime_execution_id.as_deref())
-                != Some(expected_execution_id)
-        {
-            return Ok(false);
-        }
-        let run_path = self.paths.run_file(task_id, run_id);
-        let mut active_attempt = false;
-        if run_path.exists() {
-            let mut run: RunState = read_json(&run_path)?;
-            active_attempt = run.status == RunStatus::Running
-                && run.current_round.as_deref() == Some(round_id)
-                && run.current_node.as_deref() == Some(node_id)
-                && run.current_attempt.as_deref() == Some(attempt_id);
-            if require_active_attempt && !active_attempt {
-                return Ok(false);
+                .is_some_and(|node| node.status == RunStatus::Paused && node.manual_check_pending);
+        let policy_matches = match policy {
+            AttemptRuntimePausePolicy::CurrentAttempt => true,
+            AttemptRuntimePausePolicy::ActiveExecution(expected_execution_id) => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .and_then(|node| node.runtime_execution_id.as_deref())
+                        == Some(expected_execution_id)
             }
-            if active_attempt {
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .is_some_and(|node| node.runtime_execution_id.is_none())
+            }
+            AttemptRuntimePausePolicy::PausedManualCheck => paused_manual_check,
+        };
+        if !policy_matches {
+            return Ok(AttemptRuntimePauseResult::Superseded);
+        }
+
+        if let Some(run) = run.as_mut() {
+            if active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck) {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
@@ -2976,8 +3473,6 @@ impl App {
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
-        } else if require_active_attempt {
-            return Ok(false);
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
@@ -3001,7 +3496,7 @@ impl App {
             }
         }
 
-        Ok(active_attempt)
+        Ok(AttemptRuntimePauseResult::Converged)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -3496,6 +3991,32 @@ impl App {
         )
     }
 
+    pub fn validate_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        orchestrator_validate_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
+    pub fn reserve_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<ManualCheckSubmissionLease> {
+        orchestrator_reserve_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
     pub fn submit_manual_check_background(
         &self,
         task_id: &str,
@@ -3504,9 +4025,10 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         outcome: NodeOutcome,
+        lease: ManualCheckSubmissionLease,
     ) -> Result<RunState> {
         orchestrator_submit_manual_check_background(
-            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome, lease,
         )
     }
 
@@ -3546,6 +4068,14 @@ impl App {
         orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run_with_authoring(
+        &self,
+        task_id: &str,
+        authoring: &TaskAuthoringWorkflow,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_with_authoring(self, task_id, authoring)
+    }
+
     pub fn launch_prepared_run_background(
         &self,
         task_id: &str,
@@ -3581,77 +4111,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn normalize_workflow_models(
-        &self,
-        workflow: &mut WorkflowDsl,
-    ) -> Vec<ModelConfigNormalization> {
-        let diagnostics = self.provider_diagnostics();
-        let mut normalizations = Vec::new();
-        for node in &mut workflow.nodes {
-            match node {
-                NodeDsl::Worker(worker) => {
-                    if let Some(provider) = worker.provider.as_deref() {
-                        clear_stale_model(
-                            &diagnostics,
-                            &worker.id,
-                            "worker",
-                            provider,
-                            &mut worker.model,
-                            &mut normalizations,
-                        );
-                    }
-                }
-                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed {
-                        provider, model, ..
-                    } => clear_stale_model(
-                        &diagnostics,
-                        &dynamic.id,
-                        "fixed",
-                        provider,
-                        model,
-                        &mut normalizations,
-                    ),
-                    AiDynamicAgentStrategy::Dynamic {
-                        bootstrap_provider,
-                        bootstrap_model,
-                        acceptance_model,
-                        available_agents,
-                        ..
-                    } => {
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "bootstrap",
-                            bootstrap_provider,
-                            bootstrap_model,
-                            &mut normalizations,
-                        );
-                        for agent in available_agents.iter_mut() {
-                            clear_stale_model(
-                                &diagnostics,
-                                &dynamic.id,
-                                "available-agent",
-                                &agent.provider,
-                                &mut agent.model,
-                                &mut normalizations,
-                            );
-                        }
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "acceptance",
-                            bootstrap_provider,
-                            acceptance_model,
-                            &mut normalizations,
-                        );
-                    }
-                },
-            }
-        }
-        normalizations
     }
 
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
@@ -3728,7 +4187,7 @@ impl App {
 
             let workflow_path = self.paths.workflow_file(task_id);
             if workflow_path.exists() {
-                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                let workflow = self.task_workflow(task_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.task_count += 1;
                 }
@@ -3874,15 +4333,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let mut workflow: WorkflowDsl = match read_json(&path) {
-            Ok(workflow) => workflow,
+        let authoring = match self.task_authoring_workflow(task_id) {
+            Ok(authoring) => authoring,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
-        if !self.normalize_workflow_models(&mut workflow).is_empty() {
-            write_json(&path, &workflow)?;
-        }
+        let workflow = authoring.workflow;
 
-        let validated = match validate_workflow(workflow.clone()) {
+        let validated = match validate_authoring_workflow(workflow.clone()) {
             Ok(validated) => validated,
             Err(err) => {
                 let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
@@ -3890,8 +4347,18 @@ impl App {
             }
         };
 
-        if let Err(err) = self.validate_workflow_agents(&validated) {
-            return Ok((Some(err.to_string()), None));
+        let executable = match validate_and_inject(
+            &validated.raw,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        ) {
+            Ok(executable) => executable,
+            Err(err) => return Ok((Some(err.to_string()), None)),
+        };
+        if let Err(err) = validate_workflow(executable) {
+            let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
+            return Ok((Some(err.to_string()), validation_error));
         }
 
         match resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language) {
@@ -3928,9 +4395,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
-        OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore,
-        next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
+        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -3955,6 +4422,9 @@ mod tests {
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
+    use crate::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindingError, WorkflowModelBindings,
+    };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -4070,7 +4540,7 @@ mod tests {
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
 
-        assert!(
+        assert_eq!(
             app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
@@ -4080,7 +4550,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Converged
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
@@ -4096,8 +4567,8 @@ mod tests {
         )
         .unwrap();
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
-        assert!(
-            !app.pause_attempt_runtime_state_if_active_execution(
+        assert_eq!(
+            app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
                 "round-001",
@@ -4106,7 +4577,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Superseded
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         let node: NodeState = read_json(&app.paths.node_file(
@@ -4351,6 +4823,7 @@ mod tests {
             entry: "dev".to_string(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
@@ -4422,7 +4895,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = test_app(repo_root);
+        let app = test_app_with_provider_capabilities(repo_root, serde_json::json!({}));
         let mut workflow = worker_workflow(None, None);
         let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
             panic!("expected worker workflow")
@@ -4447,6 +4920,73 @@ mod tests {
 
         assert!(!app.paths.run_dir(&created.task.id, &run_id).exists());
         assert!(app.paths.task_file(&created.task.id).exists());
+    }
+
+    #[test]
+    fn prepared_run_authoring_override_is_run_scoped() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                }]
+            }),
+        );
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Scheduled override".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "use the scheduled model".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let authoring_path = app.paths.workflow_file(&created.task.id);
+        let original_authoring = std::fs::read(authoring_path.as_std_path()).unwrap();
+        let mut scheduled_authoring = app.task_authoring_workflow(&created.task.id).unwrap();
+        scheduled_authoring.model_bindings.bindings[0].model_id = Some("sonnet".to_string());
+        scheduled_authoring.model_bindings.binding_revision += 1;
+
+        let scheduled = app
+            .prepare_run_with_authoring(&created.task.id, &scheduled_authoring)
+            .unwrap();
+        let scheduled_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &scheduled.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(scheduled_worker) = &scheduled_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(scheduled_worker.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            std::fs::read(authoring_path.as_std_path()).unwrap(),
+            original_authoring
+        );
+        drop(scheduled);
+
+        let manual = app.prepare_run(&created.task.id, None).unwrap();
+        let manual_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &manual.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(manual_worker) = &manual_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(manual_worker.model, None);
     }
 
     #[test]
@@ -4647,11 +5187,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
+    fn ai_dynamic_stale_models_are_preserved_for_explicit_validation() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app_with_provider_capabilities(
+        let _app = test_app_with_provider_capabilities(
             repo_root,
             serde_json::json!({
                 "configOptions": [
@@ -4699,13 +5239,7 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let mut normalized_workflow = workflow;
-        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
-        assert_eq!(normalizations.len(), 1);
-        assert_eq!(normalizations[0].scope, "available-agent");
-        assert_eq!(normalizations[0].previous_model, "future-model");
-
-        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+        let NodeDsl::AiDynamic(dynamic) = &workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4714,12 +5248,12 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        assert!(validate_workflow(normalized_workflow).is_ok());
+        assert_eq!(available_agents[0].model.as_deref(), Some("future-model"));
+        assert!(validate_workflow(workflow).is_ok());
     }
 
     #[test]
-    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+    fn workflow_template_and_task_authoring_preserve_stale_model_ids() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -4801,7 +5335,10 @@ mod tests {
             templates: vec![WorkflowTemplate {
                 id: "custom".to_string(),
                 name: "Custom".to_string(),
+                is_built_in: false,
+                optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
+                model_bindings: WorkflowModelBindings::default(),
                 created_at: "2026-07-28T00:00:00Z".to_string(),
                 updated_at: "2026-07-28T00:00:00Z".to_string(),
             }],
@@ -4827,14 +5364,14 @@ mod tests {
             else {
                 unreachable!();
             };
-            assert_eq!(available_agents[0].model, None);
+            assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
             let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
                 unreachable!();
             };
             let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
                 unreachable!();
             };
-            assert_eq!(*model, None);
+            assert_eq!(model.as_deref(), Some("gpt-5.4"));
         }
 
         let task = app
@@ -4847,9 +5384,9 @@ mod tests {
                 workflow_template_id: None,
             })
             .unwrap();
-        let persisted_authoring: WorkflowDsl =
+        let persisted_authoring: TaskAuthoringWorkflow =
             read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
-        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4858,14 +5395,71 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+        assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.workflow.nodes[1] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
             unreachable!();
         };
-        assert_eq!(*model, None);
+        assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn save_task_workflow_rejects_duplicate_model_binding_slots() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+        let workflow = WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-duplicate-bindings".to_string(),
+            entry: "dev".to_string(),
+            control: WorkflowControl::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                execution_slot_id: Some("slot-dev".to_string()),
+                provider: None,
+                model: None,
+                profile: None,
+                goal: None,
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                config_options: BTreeMap::new(),
+                manual_check: None,
+                prompt_envelope: Default::default(),
+            })],
+            edges: Vec::new(),
+        };
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-dev".to_string(),
+            agent_id: "agent-a".to_string(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+
+        let error = app
+            .save_task_workflow_with_bindings("task-001", workflow, bindings)
+            .unwrap_err();
+        let binding_error = error.downcast_ref::<WorkflowModelBindingError>().unwrap();
+
+        assert_eq!(
+            binding_error,
+            &WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-dev".to_string(),
+            }
+        );
+        assert!(!app.paths.workflow_file("task-001").exists());
     }
 
     #[test]

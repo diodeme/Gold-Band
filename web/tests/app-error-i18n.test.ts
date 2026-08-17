@@ -61,4 +61,15 @@ describe('app error i18n', () => {
     expect(message).toBe('操作失败，请重试。');
     expect(message).not.toContain('{{message}}');
   });
+
+  it('localizes scheduled occurrence resume failures', () => {
+    for (const [code, zh, en] of [
+      ['SCHEDULED_COORDINATOR_UNAVAILABLE', '定时任务运行服务暂不可用，请重试。', 'The scheduled task service is unavailable. Try again.'],
+      ['SCHEDULED_NOT_FOUND', '待恢复的定时任务执行已不存在，请刷新后重试。', 'The scheduled run to resume no longer exists. Refresh and try again.'],
+      ['SCHEDULED_STORAGE_FAILED', '无法更新定时任务执行状态，请重试。', 'The scheduled run state could not be updated. Try again.'],
+    ] as const) {
+      expect(displayAppError(i18n.t.bind(i18n), { code, params: {} })).toBe(zh);
+      expect(i18n.t(`errors.${code}`, { lng: 'en' })).toBe(en);
+    }
+  });
 });

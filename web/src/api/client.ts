@@ -55,6 +55,7 @@ import type {
   UpdaterSettingsVm,
   MetricsSettingsVm,
   WorkflowDsl,
+  WorkflowModelBindings,
   ConversationAttemptLifecycleVm,
   ConversationQueuedPromptDraftVm,
   ConversationTaskActivityVm,
@@ -230,6 +231,7 @@ export interface RuntimeApi {
   createAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   updateAgent(agentType: string, input: ManagedAgentInput): Promise<AgentRegistryVm>;
   deleteAgent(agentType: string): Promise<AgentRegistryVm>;
+  getAgentBindingUsage(agentType: string): Promise<import('../types').AgentBindingUsageVm>;
   doctorAgent(agentType: string): Promise<AgentRegistryVm>;
   getTaskList(): Promise<TaskListVm>;
   getProfiles(): Promise<ProfileListVm>;
@@ -242,12 +244,12 @@ export interface RuntimeApi {
   selectRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   removeRecentWorkspace(workspace: string): Promise<AppBootstrapVm>;
   getTaskDetail(taskId: string): Promise<TaskDetailVm>;
-  getWorkflow(taskId: string): Promise<WorkflowVm>;
+  getWorkflow(taskId: string, projectId?: string | null): Promise<WorkflowVm>;
   createTask(input: CreateTaskInput): Promise<WorkflowVm>;
-  saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl): Promise<WorkflowVm>;
+  saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowVm>;
   getWorkflowTemplates(): Promise<WorkflowTemplateStore>;
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl): Promise<WorkflowTemplateStore>;
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowTemplateStore>;
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings?: WorkflowModelBindings): Promise<WorkflowTemplateStore>;
   deleteWorkflowTemplate(templateId: string): Promise<WorkflowTemplateStore>;
   getAutoTemplates(): Promise<AutoTemplateStore>;
   saveAutoTemplate(name: string, config: ConversationAutoConfigVm): Promise<AutoTemplateStore>;
@@ -329,7 +331,7 @@ export interface RuntimeApi {
   getScheduledTask(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskEditVm>;
   updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
   deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
-  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number): Promise<ScheduledOccurrenceVm[]>;
+  listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null): Promise<import('../types').ScheduledOccurrencePageVm>;
   getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;

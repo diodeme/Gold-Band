@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getAcpRawFrames, getAcpSession, getAgentRegistry, getProfiles } from '@/api';
+import { getAcpRawFrames, getAcpSession, getAgentRegistry, getProfiles, getWorkflow } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
 import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
 import { GraphView } from '@/components/GraphView';
@@ -19,6 +19,8 @@ import type {
   GraphNodeVm,
   ProfileVm,
   WorkflowDsl,
+  WorkflowModelBindings,
+  WorkflowVm,
 } from '@/types';
 import {
   type RawFramesWorkspaceResource,
@@ -40,7 +42,7 @@ interface ConversationRunWorkspaceResourcePanelProps {
   resource: ConversationRunWorkspaceResource;
   run: ConversationRunVm;
   agentRegistry: AgentRegistryVm | null;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
   onNodeOpenSession?: (node: GraphNodeVm) => void;
 }
 
@@ -101,20 +103,20 @@ function WorkflowViewPanel({ run, onNodeOpenSession }: { run: ConversationRunVm;
 }
 
 interface WorkflowDraftCacheEntry {
-  baselineSignature: string;
+  baselineWorkflow: WorkflowDsl;
+  baselineModelBindings: WorkflowModelBindings;
   draft: WorkflowDsl;
   editorDraft: WorkflowEditorSessionDraft;
 }
 
 const workflowDraftCache = new BoundedLruCache<string, WorkflowDraftCacheEntry>(24);
 
-function workflowSignature(workflow: WorkflowDsl | null) {
-  return workflow ? JSON.stringify(workflow) : '';
-}
-
 function workflowDraftIsDirty(entry: WorkflowDraftCacheEntry) {
-  const baseline = entry.baselineSignature ? JSON.parse(entry.baselineSignature) as WorkflowDsl : null;
-  return workflowEditorSessionDraftIsDirty(baseline, entry.editorDraft);
+  return workflowEditorSessionDraftIsDirty(
+    entry.baselineWorkflow,
+    entry.baselineModelBindings,
+    entry.editorDraft,
+  );
 }
 
 export function confirmCloseConversationRunWorkspaceResource(
@@ -138,44 +140,58 @@ function WorkflowEditPanel({
   resource: WorkflowEditWorkspaceResource;
   run: ConversationRunVm;
   initialAgentRegistry: AgentRegistryVm | null;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
 }) {
   const { t } = useTranslation();
-  const parsedWorkflow = useMemo(() => parseWorkflowJson(run.workflowJson), [run.workflowJson]);
-  const initialBaselineSignature = workflowSignature(parsedWorkflow);
-  const cached = workflowDraftCache.peek(resource.key);
-  const [draft, setDraft] = useState<WorkflowDsl | null>(() => cached?.draft ?? parsedWorkflow);
+  const translateRef = useRef(t);
+  translateRef.current = t;
+  const cached = useMemo(() => workflowDraftCache.peek(resource.key), [resource.key]);
+  const [authoring, setAuthoring] = useState<WorkflowVm | null>(null);
+  const [draft, setDraft] = useState<WorkflowDsl | null>(() => cached?.draft ?? null);
   const [editorDraft, setEditorDraft] = useState<WorkflowEditorSessionDraft | null>(() => cached?.editorDraft ?? null);
-  const [baselineSignature, setBaselineSignature] = useState(() => cached?.baselineSignature ?? initialBaselineSignature);
+  const [baselineWorkflow, setBaselineWorkflow] = useState<WorkflowDsl | null>(() => cached?.baselineWorkflow ?? null);
+  const [baselineModelBindings, setBaselineModelBindings] = useState<WorkflowModelBindings | null>(() => cached?.baselineModelBindings ?? null);
   const [registry, setRegistry] = useState(initialAgentRegistry);
   const [profiles, setProfiles] = useState<ProfileVm[]>([]);
   const [dependenciesLoading, setDependenciesLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const dirty = Boolean(draft) && (editorDraft
-    ? workflowDraftIsDirty({ baselineSignature, draft: draft!, editorDraft })
-    : workflowSignature(draft) !== baselineSignature);
+  const dirty = Boolean(
+    draft
+    && editorDraft
+    && baselineWorkflow
+    && baselineModelBindings
+    && workflowEditorSessionDraftIsDirty(baselineWorkflow, baselineModelBindings, editorDraft),
+  );
 
   useEffect(() => {
     let active = true;
     Promise.all([
-      registry ? Promise.resolve(registry) : getAgentRegistry().catch(() => ({ agents: [], catalog: [] })),
+      initialAgentRegistry ? Promise.resolve(initialAgentRegistry) : getAgentRegistry().catch(() => ({ agents: [], catalog: [] })),
       getProfiles().then((result) => result.profiles).catch(() => []),
-    ]).then(([nextRegistry, nextProfiles]) => {
-      if (!active) return;
-      setRegistry(nextRegistry);
-      setProfiles(nextProfiles);
-      setDependenciesLoading(false);
-    });
+      getWorkflow(run.taskId, run.projectId),
+    ])
+      .then(([nextRegistry, nextProfiles, nextAuthoring]) => {
+        if (!active) return;
+        const nextWorkflow = parseWorkflowJson(nextAuthoring.workflowJson);
+        if (!nextWorkflow) throw new Error('workflow.authoring.invalid');
+        const cachedDraft = workflowDraftCache.peek(resource.key);
+        setRegistry(nextRegistry);
+        setProfiles(nextProfiles);
+        setAuthoring(nextAuthoring);
+        setDraft(cachedDraft?.draft ?? nextWorkflow);
+        setEditorDraft(cachedDraft?.editorDraft ?? null);
+        setBaselineWorkflow(cachedDraft?.baselineWorkflow ?? nextWorkflow);
+        setBaselineModelBindings(cachedDraft?.baselineModelBindings ?? nextAuthoring.modelBindings);
+      })
+      .catch((error) => {
+        if (active) setLoadError(displayAppError(translateRef.current, error));
+      })
+      .finally(() => {
+        if (active) setDependenciesLoading(false);
+      });
     return () => { active = false; };
-  }, []);
-
-  useEffect(() => {
-    if (dirty || initialBaselineSignature === baselineSignature) return;
-    setDraft(parsedWorkflow);
-    setEditorDraft(null);
-    setBaselineSignature(initialBaselineSignature);
-    workflowDraftCache.delete(resource.key);
-  }, [baselineSignature, dirty, initialBaselineSignature, parsedWorkflow, resource.key]);
+  }, [initialAgentRegistry, resource.key, run.projectId, run.taskId]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -187,16 +203,26 @@ function WorkflowEditPanel({
   const handleEditorDraftChange = useCallback((next: WorkflowEditorSessionDraft) => {
     setDraft(next.workflow);
     setEditorDraft(next);
-    workflowDraftCache.set(resource.key, { baselineSignature, draft: next.workflow, editorDraft: next });
-  }, [baselineSignature, resource.key]);
+    if (!baselineWorkflow || !baselineModelBindings) return;
+    workflowDraftCache.set(resource.key, {
+      baselineWorkflow,
+      baselineModelBindings,
+      draft: next.workflow,
+      editorDraft: next,
+    });
+  }, [baselineModelBindings, baselineWorkflow, resource.key]);
 
-  const handleSave = useCallback(async (next: WorkflowDsl) => {
+  const handleSave = useCallback(async (next: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setSaving(true);
     try {
-      await onSaveWorkflow?.(JSON.stringify(next));
-      const signature = workflowSignature(next);
-      setDraft(next);
-      setBaselineSignature(signature);
+      const saved = await onSaveWorkflow?.(JSON.stringify(next), modelBindings);
+      const savedWorkflow = parseWorkflowJson(saved?.workflowJson) ?? next;
+      const savedBindings = saved?.modelBindings ?? modelBindings;
+      if (saved) setAuthoring(saved);
+      setDraft(savedWorkflow);
+      setEditorDraft(null);
+      setBaselineWorkflow(savedWorkflow);
+      setBaselineModelBindings(savedBindings);
       workflowDraftCache.delete(resource.key);
     } finally {
       setSaving(false);
@@ -204,6 +230,9 @@ function WorkflowEditPanel({
   }, [onSaveWorkflow, resource.key]);
 
   if (dependenciesLoading) return <WorkspaceLoadingState />;
+  if (loadError) {
+    return <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-sm text-destructive">{loadError}</div>;
+  }
   if (!draft) {
     return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">{t('common.empty')}</div>;
   }
@@ -221,6 +250,7 @@ function WorkflowEditPanel({
       <div className={goldThemedScrollbarClassName('min-h-0 flex-1 overflow-auto')}>
         <WorkflowEditor
           value={draft}
+          modelBindings={editorDraft?.modelBindings ?? authoring?.modelBindings}
           agentRegistry={registry}
           profiles={profiles}
           saving={saving}

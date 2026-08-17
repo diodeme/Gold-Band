@@ -59,6 +59,21 @@ describe('ScheduledTaskManagementPage', () => {
     expect(source).toContain('presentation="workspace"');
   });
 
+  it('keeps existing rows on refresh errors and exposes per-task pending state', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskManagementPage.tsx', import.meta.url)), 'utf8');
+
+    expect(source).toContain('setLoadError(true)');
+    expect(source).not.toContain('.catch(() => setTasks([]))');
+    expect(source).toContain('pendingTaskActions');
+    expect(source).toContain('pendingTaskActionsRef');
+    expect(source).toContain('taskListRequestIdRef');
+    expect(source).toContain('taskMutationGenerationRef');
+    expect(source).toContain("filter === 'enabled'");
+    expect(source).not.toContain("filter === 'running'");
+  });
+
   it('uses the full workspace width and a responsive row contract', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -87,7 +102,23 @@ describe('ScheduledTaskDetailPage', () => {
     expect(source).toContain("t('scheduled.detail.history')");
     expect(source).toContain('statusFilter');
     expect(source).toContain('scheduledOccurrenceTarget');
+    expect(source).toContain('historyNextCursor');
+    expect(source).toContain('snapshotRefreshCoordinatorRef');
+    expect(source).toContain('createScheduledTaskDetailRefreshCoordinator');
+    expect(source).toContain('coordinator.beginForegroundRequest()');
+    expect(source).toContain('coordinator.isCurrent(generation)');
+    expect(source).toContain("status === 'all' ? null : status");
+    expect(source).not.toContain('occurrences.filter((occurrence) => occurrence.status === statusFilter)');
+    expect(source).not.toContain('}, [t, task]);');
     // Event handlers only react to the matching task id
     expect(source).toContain("event.scheduledTaskId !== scheduledTaskId");
+  });
+
+  it('shows structured elicitation submission failures instead of silently reopening the question', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const source = readFileSync(fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)), 'utf8');
+
+    expect(source).toContain('setSendError(displayAppError(t, error))');
   });
 });

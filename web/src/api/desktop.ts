@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -16,6 +16,10 @@ export interface MetricsSettingsVm {
 }
 
 const noopUnlisten = () => {};
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
 
 export function wallpaperAssetUrl(token: string): string {
   return convertFileSrc(token, 'gold-band-wallpaper');
@@ -211,6 +215,9 @@ export const desktopApi: RuntimeApi = {
   deleteAgent(agentType: string) {
     return invokeCommand('delete_agent', { agentType });
   },
+  getAgentBindingUsage(agentType: string) {
+    return invokeCommand('get_agent_binding_usage', { agentType });
+  },
   doctorAgent(agentType: string) {
     return invokeCommand('doctor_agent', { agentType });
   },
@@ -250,23 +257,23 @@ export const desktopApi: RuntimeApi = {
   getTaskDetail(taskId: string) {
     return invokeCommand('get_task_detail', { taskId });
   },
-  getWorkflow(taskId: string) {
-    return invokeCommand('get_workflow', { taskId });
+  getWorkflow(taskId: string, projectId?: string | null) {
+    return invokeCommand('get_workflow', { projectId, taskId });
   },
   createTask(input: CreateTaskInput) {
     return invokeCommand('create_task', { input });
   },
-  saveTaskWorkflow(projectId, taskId, workflow) {
-    return invokeCommand('save_task_workflow', { projectId, taskId, input: { workflow } });
+  saveTaskWorkflow(projectId, taskId, workflow, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('save_task_workflow', { projectId, taskId, input: { workflow, modelBindings } });
   },
   getWorkflowTemplates() {
     return invokeCommand('get_workflow_templates');
   },
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
-    return invokeCommand('save_workflow_template', { input: { name, workflow } });
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('save_workflow_template', { input: { name, workflow, modelBindings } });
   },
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
-    return invokeCommand('update_workflow_template', { templateId, input: { workflow } });
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('update_workflow_template', { templateId, input: { workflow, modelBindings } });
   },
   deleteWorkflowTemplate(templateId: string) {
     return invokeCommand('delete_workflow_template', { templateId });
@@ -510,8 +517,8 @@ export const desktopApi: RuntimeApi = {
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit) {
-    return invokeCommand<ScheduledOccurrenceVm[]>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, limit });
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
+    return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });

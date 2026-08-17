@@ -6,6 +6,7 @@ import {
   validateDirectConfig,
   validateWorkflowTemplateForConversationStart,
   validateWorkflowTemplateForConversationStartWithFreshProfiles,
+  workflowRepairTargetForTemplate,
 } from '../src/lib/run-mode-validation';
 import type { AgentRegistryVm, ProfileVm, WorkflowTemplateStore } from '../src/types';
 
@@ -66,6 +67,7 @@ const workflowTemplates: WorkflowTemplateStore = {
   templates: [{
     id: 'invalid-template',
     name: '非法工作流',
+    isBuiltIn: false,
     createdAt: '',
     updatedAt: '',
     workflow: {
@@ -164,6 +166,37 @@ describe('run mode validation', () => {
     expect(issues).toContain('ai-dynamic1 节点的权限模式不属于当前 Agent。');
   });
 
+  it('locates the first invalid Worker for the workflow repair action', () => {
+    const templates: WorkflowTemplateStore = {
+      version: '1',
+      templates: [{
+        id: 'repair-template',
+        name: 'Repair',
+        isBuiltIn: true,
+        createdAt: '',
+        updatedAt: '',
+        workflow: {
+          version: '0.1',
+          id: 'repair-workflow',
+          entry: 'first',
+          control: {},
+          nodes: [
+            { id: 'first', type: 'worker', executionSlotId: 'slot-first', profile: 'profile-1' },
+            { id: 'second', type: 'worker', executionSlotId: 'slot-second', profile: 'profile-1' },
+          ],
+          edges: [{ from: 'first', to: 'second', on: 'success' }, { from: 'second', to: '$end', on: 'success' }],
+        },
+        modelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      }],
+      lastUsedTemplateId: 'repair-template',
+    };
+
+    expect(workflowRepairTargetForTemplate('repair-template', agentRegistry, profiles, templates, t)).toEqual({
+      workflowTemplateId: 'repair-template',
+      nodeId: 'first',
+    });
+  });
+
   it('refreshes profiles before validating a workflow conversation start', async () => {
     const freshProfile: ProfileVm = {
       id: 'fresh-profile',
@@ -182,6 +215,7 @@ describe('run mode validation', () => {
       templates: [{
         id: 'fresh-template',
         name: '新角色工作流',
+        isBuiltIn: false,
         createdAt: '',
         updatedAt: '',
         workflow: {
@@ -192,11 +226,12 @@ describe('run mode validation', () => {
           nodes: [{
             id: 'dev',
             type: 'worker',
-            provider: 'claude-acp',
+            executionSlotId: 'slot-dev',
             profile: freshProfile.id,
           }],
           edges: [{ from: 'dev', to: '$end', on: 'success' }],
         },
+        modelBindings: { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot-dev', agentId: 'claude-acp' }] },
       }],
       lastUsedTemplateId: 'fresh-template',
     };

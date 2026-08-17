@@ -6,6 +6,7 @@ use crate::config::DesktopLanguage;
 
 pub const PROFILE_PLAN_ZH_CN: &str = include_str!("prompts/zh-CN/profile/plan.md");
 pub const PROFILE_DEV_ZH_CN: &str = include_str!("prompts/zh-CN/profile/dev.md");
+pub const PROFILE_DEV_TEST_ZH_CN: &str = include_str!("prompts/zh-CN/profile/dev-test.md");
 pub const PROFILE_REVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/review.md");
 pub const PROFILE_TEST_ZH_CN: &str = include_str!("prompts/zh-CN/profile/test.md");
 pub const PROFILE_ACCEPT_ZH_CN: &str = include_str!("prompts/zh-CN/profile/accept.md");
@@ -14,6 +15,7 @@ pub const PROFILE_INTERVIEW_ZH_CN: &str = include_str!("prompts/zh-CN/profile/in
 pub const PROFILE_GRILLME_ZH_CN: &str = include_str!("prompts/zh-CN/profile/GrillMe.md");
 pub const PROFILE_PLAN_EN: &str = include_str!("prompts/en/profile/plan.md");
 pub const PROFILE_DEV_EN: &str = include_str!("prompts/en/profile/dev.md");
+pub const PROFILE_DEV_TEST_EN: &str = include_str!("prompts/en/profile/dev-test.md");
 pub const PROFILE_REVIEW_EN: &str = include_str!("prompts/en/profile/review.md");
 pub const PROFILE_TEST_EN: &str = include_str!("prompts/en/profile/test.md");
 pub const PROFILE_ACCEPT_EN: &str = include_str!("prompts/en/profile/accept.md");

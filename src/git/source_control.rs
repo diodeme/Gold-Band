@@ -1929,39 +1929,36 @@ impl GitSourceControlService {
         after_oid: &str,
         paths: &[String],
     ) -> Result<HashMap<String, CommitFileStats>> {
-        let output = if let Some(before_oid) = before_oid {
-            let mut args = vec![
-                "diff".to_string(),
-                "--numstat".to_string(),
-                "-z".to_string(),
-                "-M".to_string(),
-                "-C".to_string(),
-                before_oid.to_string(),
-                after_oid.to_string(),
-                "--".to_string(),
-            ];
-            args.extend(paths.iter().cloned());
-            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.runner
-                .require(cwd, &args, "git.commit-diff-query-failed")?
+        let empty_tree_oid;
+        let before_oid = if let Some(before_oid) = before_oid {
+            before_oid
         } else {
-            let mut args = vec![
-                "diff-tree".to_string(),
-                "--root".to_string(),
-                "--no-commit-id".to_string(),
-                "-r".to_string(),
-                "--numstat".to_string(),
-                "-z".to_string(),
-                "-M".to_string(),
-                "-C".to_string(),
-                after_oid.to_string(),
-                "--".to_string(),
-            ];
-            args.extend(paths.iter().cloned());
-            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.runner
-                .require(cwd, &args, "git.commit-diff-query-failed")?
+            empty_tree_oid = self
+                .runner
+                .require_with_input(
+                    cwd,
+                    &["hash-object", "-t", "tree", "--stdin"],
+                    &[],
+                    "git.commit-diff-query-failed",
+                )?
+                .stdout_text();
+            empty_tree_oid.as_str()
         };
+        let mut args = vec![
+            "diff".to_string(),
+            "--numstat".to_string(),
+            "-z".to_string(),
+            "-M".to_string(),
+            "-C".to_string(),
+            before_oid.to_string(),
+            after_oid.to_string(),
+            "--".to_string(),
+        ];
+        args.extend(paths.iter().cloned());
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = self
+            .runner
+            .require(cwd, &args, "git.commit-diff-query-failed")?;
         parse_commit_numstat(&output.stdout)
     }
 
@@ -4378,6 +4375,7 @@ mod tests {
         let bytes = b"# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n1 M. N... 100644 100644 100644 abc def file with spaces.txt\0\
 2 R. N... 100644 100644 100644 abc def R100 renamed.txt\0old\nname.txt\0? new file.txt\0";
         let status = parse_porcelain_v2(bytes).unwrap();
+        assert_eq!(status.branch.oid.as_deref(), Some("abc"));
         assert_eq!(status.branch.head.as_deref(), Some("main"));
         assert_eq!(status.branch.ahead, 2);
         assert_eq!(status.branch.behind, 1);
@@ -4385,6 +4383,14 @@ mod tests {
         assert_eq!(status.staged[0].path, "file with spaces.txt");
         assert_eq!(status.staged[1].old_path.as_deref(), Some("old\nname.txt"));
         assert_eq!(status.untracked[0].path, "new file.txt");
+    }
+
+    #[test]
+    fn porcelain_v2_normalizes_initial_oid_to_unborn() {
+        let status = parse_porcelain_v2(b"# branch.oid (initial)\n# branch.head main\0").unwrap();
+
+        assert_eq!(status.branch.oid, None);
+        assert_eq!(status.branch.head.as_deref(), Some("main"));
     }
 
     #[test]

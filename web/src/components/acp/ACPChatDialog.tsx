@@ -197,9 +197,11 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  isAcpSessionLoadingSurfaceState,
   isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
+  resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -1237,11 +1239,13 @@ export function ACPChatDialog(
   const initializingSessionShell = useMemo(
     () =>
       showInitializingSessionShell &&
-      runtimeActiveFromContext &&
       !baseSession &&
       !liveSessionShell &&
       !establishedSessionShell
-        ? createLiveAcpSessionShell(loadedEvents, "running")
+        ? createLiveAcpSessionShell(
+            loadedEvents,
+            runtimeActiveFromContext ? "running" : "completed",
+          )
         : null,
     [
       baseSession,
@@ -1347,6 +1351,13 @@ export function ACPChatDialog(
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
+  const timelineSurfaceState = resolveAcpTimelineSurfaceState({
+    hasTimelineItems: timeline.length > 0,
+    initialSessionLoading: initialSessionQueryState === "loading",
+    runtimeActive: runtimeActiveFromContext,
+    initializationOwner: Boolean(showInitializingSessionShell),
+    sending,
+  });
   const acpSessionActive = isSessionActiveStatus(effective?.status);
   const sessionActive = acpSessionActive || runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle" || promptCommandPending;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
@@ -1485,6 +1496,7 @@ export function ACPChatDialog(
     hasResponseAfterTurn: hasTurnResponse,
     hasTimelineItems: timeline.length > 0,
     hasEffectiveEvents: effectiveEvents.length > 0,
+    initialTimelinePending: timelineSurfaceState === 'pending',
     timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
   });
   const stopInProgress = composerState.stopInProgress;
@@ -3580,8 +3592,13 @@ export function ACPChatDialog(
     return <AcpInterruptedState label={t("acp.sessionInterrupted")} transparent={wallpaperSurface} />;
   }
 
-  if (sessionShellState === 'loading') {
-    return <AcpLoadingState label={t("common.loading")} transparent={wallpaperSurface} />;
+  if (isAcpSessionLoadingSurfaceState(sessionShellState)) {
+    return (
+      <AcpLoadingState
+        label={t("common.loading")}
+        transparent={wallpaperSurface}
+      />
+    );
   }
 
   if (!effective) {
@@ -3665,13 +3682,11 @@ export function ACPChatDialog(
               ) : (
                 <div className="h-3" />
               )}
-              {timeline.length === 0 &&
-              !isSessionActiveStatus(effective.status) &&
-              !sending ? (
+              {timelineSurfaceState === 'empty' ? (
                 <div className="p-5">
                   <EmptyAcpState />
                 </div>
-              ) : timeline.length === 0 ? (
+              ) : timelineSurfaceState === 'pending' ? (
                 <div className="p-5">
                   <AcpPendingTimelineState label={composerStatusLabel} />
                 </div>
@@ -4528,11 +4543,7 @@ export function ACPSessionHeader({
                 {sessionIdTooltip.phase === "idle" ? session.sessionId : t("acp.sessionIdCopied")}
               </TooltipContent>
             </Tooltip>
-          ) : (
-            <span className="truncate text-ui-micro leading-5 text-muted-foreground/82">
-              {t("acp.noSessionId")}
-            </span>
-          )}
+          ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showSystemPromptAction ? (

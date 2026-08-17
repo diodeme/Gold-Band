@@ -1005,12 +1005,34 @@ fn prepare_run_worktree_background(
     let Some(worktree) = run.worktree.clone() else {
         return Ok(true);
     };
-    GitWorkspaceManager::default().ensure_worktree(
+    let preparation_started_at = Instant::now();
+    tracing::info!(
+        target: "gold_band::perf",
+        task_id,
+        run_id = run.id.as_str(),
+        repository_root = app.paths.repo_root.as_str(),
+        workspace_root = worktree.path.as_str(),
+        branch = worktree.branch.as_str(),
+        "conversation worktree preparation started"
+    );
+    let preparation_result = GitWorkspaceManager::default().ensure_worktree(
         &app.paths.repo_root,
         &worktree.path,
         &worktree.branch,
         &worktree.fork_commit,
-    )?;
+    );
+    tracing::info!(
+        target: "gold_band::perf",
+        task_id,
+        run_id = run.id.as_str(),
+        repository_root = app.paths.repo_root.as_str(),
+        workspace_root = worktree.path.as_str(),
+        branch = worktree.branch.as_str(),
+        elapsed_ms = preparation_started_at.elapsed().as_millis(),
+        status = if preparation_result.is_ok() { "ok" } else { "error" },
+        "conversation worktree preparation completed"
+    );
+    preparation_result?;
 
     let state_lock = super::attempt_runtime_state_lock(
         app,

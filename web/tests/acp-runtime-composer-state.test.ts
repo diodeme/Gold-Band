@@ -146,6 +146,23 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('keeps a new-session composer locked while its first timeline item catches up', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle(),
+      acpStatus: 'completed',
+      hasTimelineItems: false,
+      hasEffectiveEvents: false,
+      initialTimelinePending: true,
+    }));
+
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.showStatus).toBe(true);
+    expect(state.processingKind).toBe('launching');
+    expect(state.placeholderKind).toBe('runtime-controlled');
+  });
+
   it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

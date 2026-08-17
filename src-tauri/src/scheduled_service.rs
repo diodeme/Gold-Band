@@ -332,6 +332,7 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
         };
@@ -495,6 +496,7 @@ impl ScheduledTaskService {
             direct_config: input.direct_config.clone(),
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
         };

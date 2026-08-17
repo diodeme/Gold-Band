@@ -7845,6 +7845,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState {
                 revision: 7,
                 phase: RuntimeExecutionPhase::Paused,

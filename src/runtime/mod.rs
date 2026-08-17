@@ -3,6 +3,7 @@ use crate::domain::{
     SessionMode, VERSION,
 };
 use anyhow::{Result, ensure};
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -199,6 +200,14 @@ pub struct TaskState {
     pub uuid: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWorktreeState {
+    pub path: Utf8PathBuf,
+    pub branch: String,
+    pub fork_commit: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunState {
     pub version: String,
@@ -221,6 +230,10 @@ pub struct RunState {
     pub uuid: Option<String>,
     #[serde(default)]
     pub last_executed_node: Option<LastExecutedNode>,
+    /// Runtime-owned worktree selected when this run was created. `None`
+    /// means the run executes in the project's main workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<RunWorktreeState>,
     /// Authoritative Workflow Runtime phase. ACP session/turn state must never
     /// infer or mutate this aggregate.
     #[serde(default)]
@@ -373,6 +386,20 @@ pub fn validate_run_state(state: &RunState) -> Result<()> {
         !(state.current_attempt.is_some() && state.current_node.is_none()),
         "currentAttempt requires currentNode"
     );
+    if let Some(worktree) = state.worktree.as_ref() {
+        ensure!(
+            !worktree.path.as_str().trim().is_empty(),
+            "worktree path cannot be empty"
+        );
+        ensure!(
+            !worktree.branch.trim().is_empty(),
+            "worktree branch cannot be empty"
+        );
+        ensure!(
+            !worktree.fork_commit.trim().is_empty(),
+            "worktree fork commit cannot be empty"
+        );
+    }
     // A zero revision exists only in in-memory legacy/test fixtures. App
     // storage access reconciles it before exposing or writing the run.
     ensure!(
@@ -466,6 +493,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 phase,
                 Some(RuntimeAttemptLocator {
@@ -565,5 +593,27 @@ mod tests {
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
         assert_eq!(run.execution.revision, 1);
         assert!(!run.reconcile_legacy_execution());
+    }
+
+    #[test]
+    fn run_worktree_state_round_trips_and_legacy_runs_default_to_main_workspace() {
+        let mut run = test_run(
+            RunStatus::Running,
+            RuntimeExecutionPhase::PreparingWorkspace,
+        );
+        run.worktree = Some(RunWorktreeState {
+            path: Utf8PathBuf::from("D:/GoldBand/worktrees/abc123"),
+            branch: "gold-band/conversation/abc123".to_string(),
+            fork_commit: "0123456789abcdef".to_string(),
+        });
+
+        let serialized = serde_json::to_value(&run).unwrap();
+        let restored: RunState = serde_json::from_value(serialized).unwrap();
+        assert_eq!(restored.worktree, run.worktree);
+
+        let mut legacy = serde_json::to_value(&run).unwrap();
+        legacy.as_object_mut().unwrap().remove("worktree");
+        let restored_legacy: RunState = serde_json::from_value(legacy).unwrap();
+        assert!(restored_legacy.worktree.is_none());
     }
 }

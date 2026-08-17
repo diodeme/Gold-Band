@@ -2232,6 +2232,13 @@ export interface ConversationRunVm {
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
   scheduledTaskId?: string | null;
+  worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ConversationRunWorktreeVm {
+  path: string;
+  branch: string;
+  forkCommit: string;
 }
 
 export interface ConversationQueuedPromptDraftVm {
@@ -2312,7 +2319,10 @@ export interface ConversationCreateInput {
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
+  workLocation?: ConversationWorkLocation;
 }
+
+export type ConversationWorkLocation = 'main' | 'worktree';
 
 export interface ConversationValidationResultVm {
   valid: boolean;

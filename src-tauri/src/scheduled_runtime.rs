@@ -3069,6 +3069,7 @@ fn scheduled_create_input(
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
+        work_location: Default::default(),
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
     })
@@ -3686,6 +3687,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
@@ -3763,6 +3765,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
@@ -5100,6 +5103,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let run_file = app.paths.run_file(task_id, run_id);

@@ -334,6 +334,7 @@ interface ACPChatDialogProps {
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
   wallpaperSurface?: boolean;
+  worktreePath?: string | null;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -779,6 +780,7 @@ export function ACPChatDialog(
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
     wallpaperSurface = false,
+    worktreePath,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -1499,6 +1501,7 @@ export function ACPChatDialog(
     || quotes.length > 0;
   const showComposerInfoPanel = showComposerStatus
     || composerSessionSeconds != null
+    || Boolean(worktreePath)
     || hasAcpUsagePanelContent(effective?.usage);
   const composerInfoTabTarget = !showComposerInfoPanel
     ? null
@@ -3654,6 +3657,7 @@ export function ACPChatDialog(
                 usage={effective?.usage}
                 processingLabel={showComposerStatus ? composerStatusLabel : null}
                 sessionSeconds={composerSessionSeconds}
+                worktreePath={worktreePath}
                 className="absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-[''] after:pointer-events-none after:absolute after:-right-2.5 after:bottom-px after:size-2.5 after:rounded-bl-md after:border-b after:border-l after:border-border after:content-['']"
               />
             {!readOnly && showManualCheckActions ? (

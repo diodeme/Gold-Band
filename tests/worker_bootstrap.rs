@@ -1910,6 +1910,7 @@ fn error_blocked_run_is_not_continuable() {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        worktree: None,
         execution: Default::default(),
     };
 

@@ -518,6 +518,7 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             showInitializingSessionShell={selectedLeaf.current}
             wallpaperSurface
+            worktreePath={run.worktree?.path}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

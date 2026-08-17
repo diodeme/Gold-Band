@@ -510,6 +510,15 @@ pub struct ConversationRunVm {
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
     pub scheduled_task_id: Option<String>,
+    pub worktree: Option<ConversationRunWorktreeVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRunWorktreeVm {
+    pub path: String,
+    pub branch: String,
+    pub fork_commit: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -756,6 +765,14 @@ pub struct ConversationDynamicControlVm {
     pub allow_nested_dynamic: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationWorkLocationVm {
+    #[default]
+    Main,
+    Worktree,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationCreateInputVm {
@@ -767,6 +784,8 @@ pub struct ConversationCreateInputVm {
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub work_location: ConversationWorkLocationVm,
     #[serde(default)]
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -910,6 +929,8 @@ pub(crate) struct ConversationMetadata {
     pub(crate) initial_attachment_names: Option<Vec<String>>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
+    #[serde(default)]
+    pub(crate) work_location: ConversationWorkLocationVm,
     #[serde(default)]
     pub(crate) scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -3346,6 +3367,7 @@ pub fn conversation_run_vm(
         scheduled_task_id: conversation_metadata
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
+        worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
     })
 }
 
@@ -3456,6 +3478,10 @@ pub fn validate_conversation_create_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
+    if input.work_location == ConversationWorkLocationVm::Worktree {
+        gold_band::git::GitRepositoryService::default()
+            .require_worktree(&app.paths.repo_root)?;
+    }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     if input.content.trim().is_empty() {
@@ -3839,6 +3865,10 @@ pub fn prepare_conversation_task_vm(
     if gold_band::dsl::workflow_contains_ai_dynamic(&workflow) {
         gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
+    if input.work_location == ConversationWorkLocationVm::Worktree {
+        gold_band::git::GitRepositoryService::default()
+            .require_worktree(&app.paths.repo_root)?;
+    }
 
     // Create task
     let summary = app.create_task_from_requirement(CreateTaskInput {
@@ -3870,7 +3900,7 @@ pub fn prepare_conversation_task_vm(
         .as_ref()
         .and_then(|config| direct_agent_identity(app, &config.agent_type));
     let meta = ConversationMetadata {
-        version: "2".to_string(),
+        version: "3".to_string(),
         source: "conversation-ui".to_string(),
         run_mode: input.run_mode.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
@@ -3898,6 +3928,7 @@ pub fn prepare_conversation_task_vm(
         ),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
+        work_location: input.work_location,
         scheduled_task_id: input.scheduled_task_id.clone(),
         scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
@@ -3930,11 +3961,18 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationRunVm> {
-    let (task_id, task_uuid, title) = create_conversation_task_vm(app, input)?;
+    let prepared_task = prepare_conversation_task_vm(app, input)?;
+    let task_id = prepared_task.task_id().to_string();
+    let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
+    let title = prepared_task.title().to_string();
 
-    // Start the workflow in the background so the conversation surface can
-    // display the session as soon as the first ACP events arrive.
-    let run = app.run_start_background(&task_id, None)?;
+    let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
+        app.prepare_run_in_worktree(&task_id, None)?
+    } else {
+        app.prepare_run(&task_id, None)?
+    };
+    let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
+    prepared_task.accept();
 
     // Return early VM from the run
     conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
@@ -3974,6 +4012,7 @@ pub fn create_conversation_run_vm(
             pause_reason: None,
             runtime_error_message: None,
             scheduled_task_id: input.scheduled_task_id.clone(),
+            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
     })
 }
@@ -4048,8 +4087,15 @@ pub fn rerun_conversation_task_vm(
             }
         }
     }
-    // Start new run in the background; live ACP events drive the UI refresh.
-    let run = app.run_start_background(task_id, None)?;
+    let work_location = read_conversation_metadata(app, task_id)
+        .map(|metadata| metadata.work_location)
+        .unwrap_or_default();
+    let prepared_run = if work_location == ConversationWorkLocationVm::Worktree {
+        app.prepare_run_in_worktree(task_id, None)?
+    } else {
+        app.prepare_run(task_id, None)?
+    };
+    let run = app.launch_prepared_run_background(task_id, prepared_run.accept())?;
     conversation_run_vm(app, project_id, task_id, &run.id, None).or_else(|_| {
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
@@ -4094,7 +4140,18 @@ pub fn rerun_conversation_task_vm(
             pause_reason: None,
             runtime_error_message: None,
             scheduled_task_id: None,
+            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
+    })
+}
+
+fn conversation_run_worktree_vm(
+    worktree: Option<&gold_band::runtime::RunWorktreeState>,
+) -> Option<ConversationRunWorktreeVm> {
+    worktree.map(|worktree| ConversationRunWorktreeVm {
+        path: worktree.path.to_string(),
+        branch: worktree.branch.clone(),
+        fork_commit: worktree.fork_commit.clone(),
     })
 }
 
@@ -4141,7 +4198,8 @@ mod tests {
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
-        ConversationTaskActivityVm, ConversationWorkspaceSource, ConversationWorkspaceVm,
+        ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
+        ConversationWorkspaceVm,
         PromptActivity, apply_workflow_interview_preference, attempt_control_mode,
         build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
         conversation_auto_title, conversation_run_vm, conversation_session_successors_from_state,
@@ -4149,7 +4207,7 @@ mod tests {
         conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
         find_leaf_by_key, lifecycle_is_active, scheduled_task_vms_from_sources,
-        switch_conversation_session_vm,
+        switch_conversation_session_vm, validate_conversation_create_vm,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -5572,6 +5630,28 @@ mod tests {
     }
 
     #[test]
+    fn worktree_validation_preserves_the_non_git_preflight_error_code() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run in an isolated worktree".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_interview: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: None,
+            work_location: ConversationWorkLocationVm::Worktree,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+        };
+
+        let error = validate_conversation_create_vm(&app, &input).unwrap_err();
+
+        assert_eq!(error.to_string(), "run.git-repository-required");
+    }
+
+    #[test]
     fn scheduled_task_materialization_creates_task_without_starting_run() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
@@ -5588,6 +5668,7 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: None,
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
         };
@@ -5614,6 +5695,7 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
         };

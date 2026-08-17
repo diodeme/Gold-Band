@@ -48,7 +48,9 @@ import {
   removeConversationWorkspace,
   syncConversationWorkspace,
   saveConversationRunMode,
+  saveConversationPreference,
   saveLastConversationWorkspace,
+  getGitCapability,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
   subscribeScheduledTaskUpdates,
@@ -137,6 +139,12 @@ import {
   type ConversationRunModesByWorkspace,
 } from '@/lib/conversation-run-mode-config';
 import { ConversationRunModePersistence } from '@/lib/conversation-run-mode-persistence';
+import {
+  CONVERSATION_WORK_LOCATION_PREFERENCE_KEY,
+  conversationWorkLocationForProject,
+  parseConversationWorkLocationPreference,
+  setConversationWorkLocationForProject,
+} from '@/lib/conversation-work-location';
 import { createDefaultAvatarPreferences } from '@/lib/avatar';
 import { createDefaultWallpaperPreferences } from '@/lib/wallpaper';
 import { AvatarPreferencesProvider } from '@/components/avatar/AvatarPreferencesContext';
@@ -177,6 +185,7 @@ import type {
   ConversationTaskActivityVm,
   ConversationPage,
   ConversationRunModeVm,
+  ConversationWorkLocation,
   ConversationRunVm,
   ConversationSessionLeafVm,
   ConversationSessionTreeVm,
@@ -307,6 +316,7 @@ function selectedConversationLeaf(tree?: ConversationSessionTreeVm | null) {
 }
 
 export function App() {
+  const { t } = useTranslation();
   const initialRoute = routeFromPath(window.location.pathname);
   const [uiMode, setUiMode] = useState<DesktopUiMode>(initialRoute.uiMode);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -472,6 +482,13 @@ export function App() {
     : effectiveWorkspaceId;
   const defaultProjectId = draftWorkspace?.projectId ?? 'default';
   const defaultWorkspaceName = draftWorkspace?.name ?? 'Default Workspace';
+  const conversationWorkLocationPreference = parseConversationWorkLocationPreference(
+    conversationSidebar.preferences?.[CONVERSATION_WORK_LOCATION_PREFERENCE_KEY],
+  );
+  const conversationWorkLocation = conversationWorkLocationForProject(
+    conversationWorkLocationPreference,
+    defaultProjectId,
+  );
   const conversationRunMode = conversationRunModeForWorkspace(conversationRunModesByWorkspace, defaultProjectId);
   const [roundSelection, setRoundSelection] = useState<RoundSelection>({ kind: 'round' });
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
@@ -485,14 +502,70 @@ export function App() {
   const [loading, setLoading] = useState<VisibleRefreshMode | null>(null);
   const [busy, setBusy] = useState(false);
   const preferenceSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const conversationWorkLocationSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [gitRequirement, setGitRequirement] = useState<{
     status: 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
-    runKind: 'auto' | 'workflow';
+    runKind: 'auto' | 'workflow' | 'worktree';
     projectId?: string | null;
   } | null>(null);
+
+  const persistConversationWorkLocation = useCallback((
+    location: ConversationWorkLocation,
+    projectId: string,
+  ) => {
+    const save = conversationWorkLocationSaveQueueRef.current.then(async () => {
+      const currentSidebar = conversationSidebarRef.current;
+      const currentPreference = parseConversationWorkLocationPreference(
+        currentSidebar.preferences?.[CONVERSATION_WORK_LOCATION_PREFERENCE_KEY],
+      );
+      const nextPreference = setConversationWorkLocationForProject(
+        currentPreference,
+        projectId,
+        location,
+      );
+      await saveConversationPreference(CONVERSATION_WORK_LOCATION_PREFERENCE_KEY, nextPreference);
+      setConversationSidebar((current) => {
+        const next = {
+          ...current,
+          preferences: {
+            ...current.preferences,
+            [CONVERSATION_WORK_LOCATION_PREFERENCE_KEY]: nextPreference,
+          },
+        };
+        conversationSidebarRef.current = next;
+        return next;
+      });
+    });
+    conversationWorkLocationSaveQueueRef.current = save.catch(() => {});
+    return save;
+  }, []);
+
+  const selectConversationWorkLocation = useCallback(async (
+    location: ConversationWorkLocation,
+    projectId: string,
+  ) => {
+    try {
+      if (location === 'main') {
+        await persistConversationWorkLocation(location, projectId);
+        return;
+      }
+      const capability = await getGitCapability(projectId);
+      if (capability.status !== 'ready') {
+        setGitRequirement({
+          status: capability.status,
+          runKind: 'worktree',
+          projectId,
+        });
+        return;
+      }
+      await persistConversationWorkLocation(location, projectId);
+    } catch (err) {
+      setError(displayAppError(t, err));
+    }
+  }, [persistConversationWorkLocation, t]);
 
   const loadConversationRunMode = useCallback((projectId: string) => {
     const requestId = (conversationRunModeRequestRef.current.get(projectId) ?? 0) + 1;
@@ -570,8 +643,6 @@ export function App() {
     () => availableUpdateVersion !== null && updateBadges.announcementClosedVersion !== availableUpdateVersion,
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
   );
-  const { t } = useTranslation();
-
   useEffect(() => {
     applyAppearance(preferences.appearance, preferences.language);
   }, [preferences.appearance, preferences.language]);
@@ -2074,6 +2145,7 @@ export function App() {
           profiles={profiles}
           busy={busy}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
+          workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
           onSubmit={async (input) => {
@@ -2131,7 +2203,9 @@ export function App() {
               if (gitStatus) {
                 setGitRequirement({
                   status: gitStatus,
-                  runKind: input.runMode === 'auto' ? 'auto' : 'workflow',
+                  runKind: input.workLocation === 'worktree'
+                    ? 'worktree'
+                    : input.runMode === 'auto' ? 'auto' : 'workflow',
                   projectId: input.projectId,
                 });
                 return displayAppError(t, err);
@@ -2154,18 +2228,35 @@ export function App() {
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
+          onWorkLocationChange={selectConversationWorkLocation}
         />
         {gitRequirement ? (
           <GitRequirementDialog
-            key={`${gitRequirement.projectId ?? 'default'}:${gitRequirement.status}`}
+            key={`${gitRequirement.projectId ?? 'default'}:${gitRequirement.runKind}:${gitRequirement.status}`}
             open
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
-            onReady={() => setGitRequirement(null)}
-            onUseOtherWorkflow={() => {
+            onReady={async () => {
+              const requirement = gitRequirement;
               setGitRequirement(null);
-              setConversationPage({ kind: 'run-mode-management' });
+              if (requirement.runKind === 'worktree' && requirement.projectId) {
+                try {
+                  await persistConversationWorkLocation('worktree', requirement.projectId);
+                } catch (err) {
+                  setError(displayAppError(t, err));
+                }
+              }
+            }}
+            onUseOtherWorkflow={() => {
+              const requirement = gitRequirement;
+              setGitRequirement(null);
+              if (requirement.runKind === 'worktree' && requirement.projectId) {
+                void persistConversationWorkLocation('main', requirement.projectId)
+                  .catch((err) => setError(displayAppError(t, err)));
+              } else {
+                setConversationPage({ kind: 'run-mode-management' });
+              }
             }}
             onOpenChange={(open) => { if (!open) setGitRequirement(null); }}
           />
@@ -2334,6 +2425,7 @@ export function App() {
         workflowTemplates={conversationWorkflowTemplates}
         profiles={profiles}
         busy={busy}
+        workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
@@ -2344,6 +2436,7 @@ export function App() {
           setDraftConversationWorkspaceId(projectId);
           void loadConversationRunMode(projectId);
         }}
+        onWorkLocationChange={selectConversationWorkLocation}
       />
     );
   }

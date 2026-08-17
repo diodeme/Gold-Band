@@ -74,7 +74,7 @@ interface ConversationWorkspaceControlProps {
   variant?: 'toolbar' | 'info';
 }
 
-const SELECTED_CONTEXT_CONTROL_CLASS_NAME = 'bg-accent text-accent-foreground hover:bg-accent/80 dark:bg-accent dark:hover:bg-accent/80';
+const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
 
 export function ConversationWorkspaceControl({
   projectId,
@@ -94,10 +94,10 @@ export function ConversationWorkspaceControl({
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>();
   const controlClassName = variant === 'info'
-    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-sm text-foreground shadow-none`
+    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-2 rounded-md border border-transparent px-2 text-sm shadow-none data-[size=default]:h-7`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
   const triggerSurfaceClassName = variant === 'info'
-    ? SELECTED_CONTEXT_CONTROL_CLASS_NAME
+    ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
     : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
   const triggerEvents = {
     onPointerEnter: showTooltipIfOverflowing,
@@ -114,7 +114,7 @@ export function ConversationWorkspaceControl({
   };
   const value = (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-accent-foreground' : 'text-muted-foreground/80')} />
+      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
       <TooltipTrigger asChild>
         <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
           {selectedWorkspaceName}
@@ -131,7 +131,7 @@ export function ConversationWorkspaceControl({
             <SelectTrigger
               ref={selectTriggerRef}
               {...triggerEvents}
-              data-context-selected={variant === 'info' ? 'true' : undefined}
+              data-context-control={variant === 'info' ? 'workspace' : undefined}
               className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
             >
               {value}
@@ -161,7 +161,7 @@ export function ConversationWorkspaceControl({
           <div
             {...triggerEvents}
             tabIndex={0}
-            data-context-selected={variant === 'info' ? 'true' : undefined}
+            data-context-control={variant === 'info' ? 'workspace' : undefined}
             className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
           >
             {value}
@@ -196,6 +196,8 @@ export function ConversationWorkspaceInfoBar({
 }: ConversationWorkspaceInfoBarProps) {
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
+  const locationTriggerRef = useRef<HTMLButtonElement>(null);
+  const locationMenuUsedPointerRef = useRef(false);
 
   const selectLocation = async (location: ConversationWorkLocation) => {
     if (checkingLocation || location === workLocation) return;
@@ -228,21 +230,43 @@ export function ConversationWorkspaceInfoBar({
         <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
+            ref={locationTriggerRef}
             type="button"
-            variant="ghost"
+            variant={null}
             size="sm"
             disabled={busy || checkingLocation}
             aria-label={t('conversation.home.workLocation')}
             data-conversation-work-location-trigger="true"
-            data-context-selected="true"
-            className={cn('h-7 min-w-0 gap-2 rounded-md px-2 text-sm font-normal', SELECTED_CONTEXT_CONTROL_CLASS_NAME)}
+            data-context-control="work-location"
+            onPointerDown={() => {
+              locationMenuUsedPointerRef.current = true;
+            }}
+            onKeyDown={() => {
+              locationMenuUsedPointerRef.current = false;
+            }}
+            className={cn('h-7 min-w-0 gap-2 rounded-md px-2 text-sm font-normal has-[>svg]:px-2', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
           >
-            {checkingLocation ? <Loader2 className="size-3.5 animate-spin" /> : <LocationIcon className="size-3.5" />}
+            {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
             <span className="truncate">{locationLabel}</span>
-            <ChevronDown className="size-3.5 text-muted-foreground" />
+            <ChevronDown className="size-4 text-muted-foreground opacity-50" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-56">
+        <DropdownMenuContent
+          align="start"
+          className="min-w-56"
+          onPointerDownCapture={() => {
+            locationMenuUsedPointerRef.current = true;
+          }}
+          onKeyDownCapture={() => {
+            locationMenuUsedPointerRef.current = false;
+          }}
+          onCloseAutoFocus={(event) => {
+            if (!locationMenuUsedPointerRef.current) return;
+            event.preventDefault();
+            locationTriggerRef.current?.blur();
+            locationMenuUsedPointerRef.current = false;
+          }}
+        >
           <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
             {t('conversation.home.workLocation')}
           </div>

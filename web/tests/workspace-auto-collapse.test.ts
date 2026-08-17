@@ -8,21 +8,59 @@ import {
   reduceFileWorkspaceResponsiveState,
   reduceWorkspaceAutoCollapse,
   resolveFileWorkspaceResizeDirection,
-  resolveRightWorkspacePanelMaxWidth,
   resolveRightWorkspaceWidthFromLayout,
+  resolveWorkspaceCanonicalLayout,
   resolveWorkspacePanelWidthFromLayout,
+  resolveWorkspaceUserResizeTarget,
   shouldOpenRightWorkspaceSheet,
-  shouldPersistRightWorkspaceWidth,
   workspaceAutoCollapsePresentationChanged,
+  workspaceCanonicalLayoutMissingPanel,
+  workspaceCanonicalLayoutNeedsConvergence,
   workspaceLayoutProfileForPage,
   workspaceLayoutProfileForSurface,
   type FileWorkspaceResponsiveState,
   type WorkspaceAutoCollapseState,
 } from '@/components/workspace/workspace-layout';
 
-const initial = (): WorkspaceAutoCollapseState => ({ previousWidth: 1_100, left: false, right: false });
+const initial = (): WorkspaceAutoCollapseState => ({
+  previousWidth: 1_100,
+  left: false,
+  right: false,
+  rightOwnsWindowResize: false,
+});
 
 describe('workspace auto collapse state machine', () => {
+  it('resolves all three panels as one canonical layout transaction', () => {
+    const layout = resolveWorkspaceCanonicalLayout({
+      groupWidth: 1_288,
+      centerMinWidth: 360,
+      leftVisible: true,
+      leftWidth: 176,
+      rightVisible: true,
+      rightPreferredWidth: 690,
+    });
+
+    expect(layout).not.toBeNull();
+    expect(layout!['workspace-navigation'] * 12.88).toBeCloseTo(176, 5);
+    expect(layout!['workspace-center'] * 12.88).toBeCloseTo(422, 5);
+    expect(layout!['workspace-right'] * 12.88).toBeCloseTo(690, 5);
+  });
+
+  it('constrains the right workspace without sacrificing the visible navigation', () => {
+    const layout = resolveWorkspaceCanonicalLayout({
+      groupWidth: 918,
+      centerMinWidth: 360,
+      leftVisible: true,
+      leftWidth: 176,
+      rightVisible: true,
+      rightPreferredWidth: 690,
+    });
+
+    expect(layout!['workspace-navigation'] * 9.18).toBeCloseTo(176, 5);
+    expect(layout!['workspace-center'] * 9.18).toBeCloseTo(360, 5);
+    expect(layout!['workspace-right'] * 9.18).toBeCloseTo(382, 5);
+  });
+
   it('allows the navigation sidebar to shrink to its compact readable width', () => {
     expect(WORKSPACE_SIDEBAR_MIN_WIDTH).toBe(176);
   });
@@ -127,7 +165,7 @@ describe('workspace auto collapse state machine', () => {
 
   it('restores both automatically collapsed panels after a single maximize jump', () => {
     const restored = reduceWorkspaceAutoCollapse(
-      { previousWidth: 700, left: true, right: true },
+      { previousWidth: 700, left: true, right: true, rightOwnsWindowResize: false },
       {
         availableWidth: 1_100,
         centerMinWidth: 420,
@@ -161,7 +199,12 @@ describe('workspace auto collapse state machine', () => {
       rightMinWidth: 320,
       rightWidthForStableLeftRestore: 540,
     };
-    let state: WorkspaceAutoCollapseState = { previousWidth: 640, left: true, right: true };
+    let state: WorkspaceAutoCollapseState = {
+      previousWidth: 640,
+      left: true,
+      right: true,
+      rightOwnsWindowResize: false,
+    };
     let dualColumnsBecameVisible = false;
 
     for (let availableWidth = 641; availableWidth <= 1_300; availableWidth += 1) {
@@ -191,7 +234,7 @@ describe('workspace auto collapse state machine', () => {
     expect(manualLeft).toMatchObject({ left: false, right: true });
 
     const noWorkspace = reduceWorkspaceAutoCollapse(
-      { previousWidth: 700, left: true, right: true },
+      { previousWidth: 700, left: true, right: true, rightOwnsWindowResize: false },
       { availableWidth: 720, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: false },
     );
     expect(noWorkspace.right).toBe(false);
@@ -199,13 +242,13 @@ describe('workspace auto collapse state machine', () => {
 
   it('applies the responsive order when a workspace opens at an already narrow width', () => {
     const openedWithRoomAfterNavigation = reduceWorkspaceAutoCollapse(
-      { previousWidth: 800, left: false, right: false },
+      { previousWidth: 800, left: false, right: false, rightOwnsWindowResize: false },
       { availableWidth: 950, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true },
     );
     expect(openedWithRoomAfterNavigation).toMatchObject({ left: true, right: false });
 
     const openedCompact = reduceWorkspaceAutoCollapse(
-      { previousWidth: 700, left: false, right: false },
+      { previousWidth: 700, left: false, right: false, rightOwnsWindowResize: false },
       { availableWidth: 700, centerMinWidth: 420, centerAutoCollapseWidth: 480, sidebarWidth: 256, sidebarManuallyCollapsed: false, wantsRight: true },
     );
     expect(openedCompact).toMatchObject({ left: true, right: true });
@@ -247,6 +290,40 @@ describe('workspace auto collapse state machine', () => {
     expect(crossed).toMatchObject({ left: true, right: false });
   });
 
+  it('lets the right workspace absorb window growth until its preference is restored', () => {
+    const input = {
+      centerMinWidth: 360,
+      centerAutoCollapseWidth: 420,
+      sidebarWidth: 176,
+      sidebarManuallyCollapsed: false,
+      wantsRight: true,
+      rightPreferredWidth: 690,
+    };
+    let state: WorkspaceAutoCollapseState = {
+      previousWidth: 918,
+      left: false,
+      right: false,
+      rightOwnsWindowResize: true,
+    };
+    let presentationUpdates = 0;
+
+    for (let availableWidth = 919; availableWidth < 1_226; availableWidth += 1) {
+      const next = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth });
+      if (workspaceAutoCollapsePresentationChanged(state, next)) presentationUpdates += 1;
+      state = next;
+      expect(state.rightOwnsWindowResize).toBe(true);
+    }
+
+    const restored = reduceWorkspaceAutoCollapse(state, { ...input, availableWidth: 1_226 });
+    expect(presentationUpdates).toBe(0);
+    expect(restored).toMatchObject({
+      left: false,
+      right: false,
+      rightOwnsWindowResize: false,
+    });
+    expect(workspaceAutoCollapsePresentationChanged(state, restored)).toBe(true);
+  });
+
   it('converts any completed panel layout into a bounded persisted pixel width', () => {
     expect(resolveWorkspacePanelWidthFromLayout({
       layout: { 'workspace-navigation': 20 },
@@ -262,6 +339,13 @@ describe('workspace auto collapse state machine', () => {
       minWidth: 200,
       maxWidth: 420,
     })).toBe(420);
+    expect(resolveWorkspacePanelWidthFromLayout({
+      layout: { 'workspace-navigation': 0 },
+      panelId: 'workspace-navigation',
+      groupWidth: 1_600,
+      minWidth: 176,
+      maxWidth: 420,
+    })).toBeNull();
   });
 
   it('converts the completed panel layout into a persisted right-side pixel width', () => {
@@ -269,31 +353,89 @@ describe('workspace auto collapse state machine', () => {
     expect(resolveRightWorkspaceWidthFromLayout({ 'workspace-center': 100 }, 1_600)).toBeNull();
   });
 
-  it('caps automatic right-panel growth at the preference and unlocks the configured range for direct resizing', () => {
-    expect(resolveRightWorkspacePanelMaxWidth({
-      preferredWidth: 760,
-      minWidth: 320,
-      maxWidth: 1440,
-      userResizing: false,
-    })).toBe(760);
-    expect(resolveRightWorkspacePanelMaxWidth({
-      preferredWidth: 760,
-      minWidth: 320,
-      maxWidth: 1440,
-      userResizing: true,
-    })).toBe(1440);
-    expect(resolveRightWorkspacePanelMaxWidth({
-      preferredWidth: 200,
-      minWidth: 320,
-      maxWidth: 1440,
-      userResizing: false,
-    })).toBe(320);
+  it('attributes a completed user resize from the changed outer panel', () => {
+    const previousLayout = {
+      'workspace-navigation': 13.869,
+      'workspace-center': 28.369,
+      'workspace-right': 57.762,
+    };
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-center': 63.436, 'workspace-right': 22.695 },
+      isUserInteraction: true,
+    })).toBe('right');
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-navigation': 20, 'workspace-center': 22.238 },
+      isUserInteraction: true,
+    })).toBe('left');
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-navigation': 20, 'workspace-right': 51.631 },
+      isUserInteraction: true,
+    })).toBeNull();
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: {
+        'workspace-navigation': 23.743,
+        'workspace-center': 28.169,
+        'workspace-right': 48.088,
+      },
+      isUserInteraction: true,
+    })).toBe('left');
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-navigation': 20, 'workspace-right': 51.631 },
+      isUserInteraction: true,
+      focusedTarget: 'right',
+    })).toBe('right');
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-navigation': 13.87, 'workspace-right': 57.761 },
+      isUserInteraction: true,
+    })).toBeNull();
+    expect(resolveWorkspaceUserResizeTarget({
+      previousLayout,
+      layout: { ...previousLayout, 'workspace-center': 63.436, 'workspace-right': 22.695 },
+      isUserInteraction: false,
+    })).toBeNull();
   });
 
-  it('persists right width only for a direct right-separator interaction', () => {
-    expect(shouldPersistRightWorkspaceWidth(true, true)).toBe(true);
-    expect(shouldPersistRightWorkspaceWidth(true, false)).toBe(false);
-    expect(shouldPersistRightWorkspaceWidth(false, true)).toBe(false);
+  it('detects when a canonical group layout left a visible outer panel collapsed', () => {
+    const target = {
+      'workspace-navigation': 13.772,
+      'workspace-center': 33.489,
+      'workspace-right': 52.739,
+    };
+    const applied = {
+      'workspace-navigation': 0,
+      'workspace-center': 50.078,
+      'workspace-right': 49.922,
+    };
+
+    expect(workspaceCanonicalLayoutMissingPanel(target, applied, 'workspace-navigation')).toBe(true);
+    expect(workspaceCanonicalLayoutMissingPanel(target, applied, 'workspace-right')).toBe(false);
+  });
+
+  it('detects a partially constrained layout that still needs canonical convergence', () => {
+    const target = {
+      'workspace-navigation': 332 / 13.6,
+      'workspace-center': 544 / 13.6,
+      'workspace-right': 484 / 13.6,
+    };
+    const constrained = {
+      'workspace-navigation': 236 / 13.6,
+      'workspace-center': 640 / 13.6,
+      'workspace-right': 484 / 13.6,
+    };
+    const withinOnePixel = {
+      ...target,
+      'workspace-navigation': 331.5 / 13.6,
+      'workspace-center': 544.5 / 13.6,
+    };
+
+    expect(workspaceCanonicalLayoutNeedsConvergence(target, constrained, 1_360)).toBe(true);
+    expect(workspaceCanonicalLayoutNeedsConvergence(target, withinOnePixel, 1_360)).toBe(false);
   });
 
   it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {

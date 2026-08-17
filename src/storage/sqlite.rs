@@ -443,7 +443,12 @@ impl SearchIndex {
             .map(|s| {
                 (
                     s.adapter_id.as_str(),
-                    s.status.as_str(),
+                    match s.latest_turn_status {
+                        crate::acp::events::AcpLatestTurnStatus::None => "none",
+                        crate::acp::events::AcpLatestTurnStatus::Completed => "completed",
+                        crate::acp::events::AcpLatestTurnStatus::Cancelled => "cancelled",
+                        crate::acp::events::AcpLatestTurnStatus::Failed => "failed",
+                    },
                     s.title.as_deref().unwrap_or(""),
                     s.created_at.as_str(),
                     s.updated_at.as_str(),
@@ -831,11 +836,11 @@ impl SearchIndex {
 fn read_snapshot(attempt_dir: &Utf8Path) -> Option<AcpSessionMetadata> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     if snapshot_path.exists() {
-        return read_json(&snapshot_path).ok();
+        return crate::acp::events::load_session_metadata(&snapshot_path, None).ok();
     }
     let session_path = attempt_dir.join("acp.session.json");
     if session_path.exists() {
-        return read_json(&session_path).ok();
+        return crate::acp::events::load_session_metadata(&session_path, None).ok();
     }
     None
 }

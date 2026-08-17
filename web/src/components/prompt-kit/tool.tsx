@@ -86,7 +86,7 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
 
   const getStateBadge = () => {
     const baseClasses = audit
-      ? "shrink-0 text-[11px] font-medium"
+      ? "shrink-0 text-ui-caption font-medium tabular-nums"
       : "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
     switch (state) {
       case "input-streaming":
@@ -112,11 +112,14 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
 
   return (
     <div
+      data-prompt-kit-tool="true"
+      data-theme-role="tool-card"
+      data-tool-variant={variant}
       className={cn(
         "border-border min-w-0 max-w-full overflow-hidden",
         audit
           ? "border-b border-border/35 bg-transparent last:border-b-0"
-          : "rounded-xl border bg-card/75 shadow-sm shadow-background/30",
+          : "rounded-lg border border-border/45 bg-transparent shadow-none",
         className,
       )}
     >
@@ -125,35 +128,51 @@ const Tool = ({ toolPart, labels, defaultOpen = false, open, className, icon, on
           <Button
             variant="ghost"
             className={cn(
-              "h-auto w-full min-w-0 justify-between overflow-hidden font-normal hover:bg-muted/20",
+              "grid h-auto w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden font-normal hover:bg-muted/20",
               audit
                 ? "min-h-8 rounded-md px-1.5 py-1"
-                : "rounded-none px-3 py-2",
+                : "min-h-9 rounded-lg px-2 py-1.5",
             )}
           >
-            <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div
+              data-tool-primary="true"
+              className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 overflow-hidden"
+            >
               <span
                 className={cn(
                   "flex shrink-0 items-center justify-center text-muted-foreground",
-                  audit ? "size-5" : "size-7 rounded-lg bg-muted",
+                  audit ? "size-5" : "size-6",
                 )}
               >
                 {getStateIcon()}
               </span>
-              <span className={cn("min-w-0 flex-1 truncate text-left font-mono", audit ? "text-xs" : "text-sm")}>
-                <span className="font-semibold text-foreground">{toolPart.type}</span>
-                {summary ? <span className="ml-2 text-xs text-muted-foreground">{summary}</span> : null}
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-left">
+                <span
+                  data-tool-name="true"
+                  className={cn(
+                    "min-w-0 truncate font-medium text-foreground",
+                    summary ? "shrink" : "flex-1",
+                    audit ? "text-xs" : "text-sm",
+                  )}
+                >
+                  {toolPart.type}
+                </span>
+                {summary ? (
+                  <span data-tool-summary="true" className="min-w-0 flex-1 truncate rounded-md bg-muted/55 px-1.5 py-0.5 font-mono text-ui-caption text-muted-foreground">
+                    {summary}
+                  </span>
+                ) : null}
               </span>
             </div>
-            <span className={cn("ml-3 flex shrink-0 items-center", audit ? "gap-2" : "gap-3")}>
+            <span data-tool-actions="true" className={cn("ml-3 flex shrink-0 items-center", audit ? "gap-2" : "gap-3")}>
               {getStateBadge()}
               <ChevronDown className={cn(audit ? "size-3.5" : "size-4", "shrink-0 text-muted-foreground transition-transform", isOpen && "rotate-180")} />
             </span>
           </Button>
         </CollapsibleTrigger>
         {renderContent && isOpen ? (
-          <CollapsibleContent className={cn("border-border min-w-0 max-w-full overflow-hidden", !audit && "border-t", animated && "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down")}>
-            <div className={cn("min-w-0 max-w-full space-y-2 overflow-hidden", audit ? "ml-7 border-l border-border/40 px-3 py-2" : "bg-background/50 p-2.5")}>
+          <CollapsibleContent className={cn("border-border min-w-0 max-w-full overflow-hidden", animated && "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down")}>
+            <div data-tool-detail="true" className={cn("min-w-0 max-w-full space-y-2 overflow-hidden border-l border-border/40 py-2 pl-3 pr-2", audit ? "ml-2.5" : "ml-3")}>
               {(orderedInput && orderedInput.length > 0) || (input && Object.keys(input).length > 0) ? (
                 <div>
                   <h4 className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">{labels.input}</h4>

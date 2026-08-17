@@ -48,6 +48,8 @@ fn run_state_with_uuid_fields() {
         new_rounds_opened: 0,
         pause_reason: None,
         last_executed_node: None,
+        worktree: None,
+        execution: Default::default(),
     };
     let json = serde_json::to_string(&run).unwrap();
     let parsed: RunState = serde_json::from_str(&json).unwrap();
@@ -86,6 +88,8 @@ fn run_state_with_last_executed_node_serde() {
             finished_at: Some("200Z".into()),
             attempt_dir: Some("attempts/n1".into()),
         }),
+        worktree: None,
+        execution: Default::default(),
     };
     let json = serde_json::to_string(&run).unwrap();
     let parsed: RunState = serde_json::from_str(&json).unwrap();
@@ -151,6 +155,7 @@ fn node_state_with_uuid() {
         started_at: "1Z".into(),
         finished_at: None,
         manual_check_pending: false,
+        runtime_execution_id: Some("runtime-execution-test".into()),
         resolved_config: Default::default(),
     };
     let json = serde_json::to_string(&node).unwrap();

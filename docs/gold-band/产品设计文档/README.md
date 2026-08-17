@@ -7,6 +7,7 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
 ## 2. 交互层
 - [交互层概览](interaction/overview.md)
+- [定时任务交互设计](interaction/app/scheduled-task-management.md)
 - [CLI 规范](interaction/cli.md)
 - [Console 概览](interaction/console-overview.md)
 - [Console 信息架构](interaction/console-information-architecture.md)
@@ -34,10 +35,14 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
 ## 5. Runtime / Layout
 - [Runtime 概览](runtime/overview.md)
+- [定时任务运行时设计](runtime/scheduled-task.md)
+- [定时任务 CRUD 与生命周期](runtime/scheduled-task-crud-design.md)
+- [定时任务运行时实现补充](runtime/scheduled-task-runtime-implementation.md)
 - [控制层](runtime/control.md)
 - [目录布局](runtime/layout.md)
 - 状态文件规范
   - [task.json](runtime/state/task.json.md)
+  - [scheduled-task.json](runtime/state/scheduled-task.json.md)
   - [run.json](runtime/state/run.json.md)
   - [round.json](runtime/state/round.json.md)
   - [node.json](runtime/state/node.json.md)

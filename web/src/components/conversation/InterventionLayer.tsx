@@ -10,9 +10,14 @@ export function InterventionLayer({
   className?: string;
 }) {
   return (
-    <div className={cn('space-y-4 px-5 pb-5', className)} data-conversation-intervention-layer="true">
+    <div
+      className={cn(
+        'mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] space-y-4 px-5 pb-10',
+        className,
+      )}
+      data-conversation-intervention-layer="true"
+    >
       {children}
     </div>
   );
 }
-

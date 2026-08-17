@@ -45,7 +45,8 @@ function leaf(overrides: Partial<ConversationSessionLeafVm> = {}) {
     runtimeDisplay: successDisplay,
     lifecycle: {
       runtime: { status: 'completed', outcome: 'success', pauseReason: null, resumable: false, current: false, active: false, continuable: false, phase: 'terminal' },
-      acp: { status: 'completed', active: false, stopping: false, terminal: true },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
       displayStatus: 'success',
       runtimeDisplay: successDisplay,
       continueKind: null,

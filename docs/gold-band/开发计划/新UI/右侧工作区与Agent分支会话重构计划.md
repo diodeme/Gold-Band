@@ -75,7 +75,7 @@
 - 点击资源链接时，以稳定 `resourceKey` 查找已有 Tab；存在则激活，不重复创建。
 - 关闭当前 Tab 后激活相邻 Tab。
 - 关闭最后一个 Tab 后同步收起右侧工作区并清空激活态；需要使用空白入口页时通过顶栏右栏开关重新打开，工作区显隐仍由独立 `requestedOpen` 控制。
-- Tab 过多时允许原生横向滚动且不压缩到不可读宽度；只有 Tab 条真实溢出时才显示小号完整 Tab 菜单，未溢出时隐藏该入口。Tab 条使用无两端按钮的 4px 专用横向滚动条，不修改全局会话滚动条。Tab 之间保留轻量间距；激活项使用圆角弱底色和常显的低透明度关闭按钮，未激活项透明并在 hover 时反馈，不使用整格矩形、竖分隔线或底部选中横线。
+- Tab 过多时允许原生横向滚动且不压缩到不可读宽度；只有 Tab 条真实溢出时才显示小号完整 Tab 菜单，未溢出时隐藏该入口。Tab 条复用应用统一的 `gold-themed-scrollbar` 平台能力分支，不为局部高度切换浏览器滚动条渲染路径。Tab 之间保留轻量间距；激活项使用圆角弱底色和常显的低透明度关闭按钮，未激活项透明并在 hover 时反馈，不使用整格矩形、竖分隔线或底部选中横线。
 - 多个 Tab 可以同时处于打开状态，但只挂载当前激活 Tab 的内容 DOM。
 - 非激活 Agent Tab 只维护轻量状态和 attention 标记；激活时恢复分页窗口与滚动位置并补拉最新内容。
 - 自动响应式收起只隐藏工作区，不关闭 Tab，不丢失 Tab 状态。
@@ -106,7 +106,7 @@ interface RightWorkspaceState {
 
 Tab 描述只保存资源定位与所属 `scopeKey`，不直接保存 timeline、文件内容等大对象。快速对话使用 draft scope，具体会话使用 project/task/run scope；轻量状态按 scope 进入 24 项运行期 LRU。宽度属于全局 UI preference，不放入 scope state；资源缓存、实时状态和 DOM 生命周期独立管理。
 
-共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。两个开关复用 shadcn `Button`，统一使用 28px 点击区、14px 图标和低对比打开态。右栏开关只在快速对话与会话详情展示，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在应用运行期记忆；像素宽度单独跨重启持久化。
+共享顶栏左侧按品牌、左侧导航开关排序，右侧工作区开关进入尾部操作区；Windows/Linux 中排在自定义窗口控制之前，macOS 中通过正常 flex 流停在右端并保留左侧原生 traffic lights 安全区，不使用绝对定位。顶栏统一使用 36px 紧凑高度，品牌图标容器为 24×36px，应用标题使用独立的 16px/700 字重，不复用全局映射为 520 的 `font-bold`；两个开关复用 shadcn `Button`，继续使用 28px 点击区、14px 图标和低对比打开态。Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。右栏开关只在快速对话与会话详情展示，可在没有 Tab 时打开空白入口页。Tab 集合和激活态只在应用运行期记忆；像素宽度单独跨重启持久化。
 
 ### 5.3 会话 scope 与 LRU
 
@@ -484,9 +484,11 @@ ACP live event(branchId)
 - 建立布局 profile、自动折叠状态机、迟滞和宽度 preference。
 - 共享顶栏改为品牌在前、左右栏开关在后；右栏开关与资源 Tab 解耦，无资源时呈现空白入口页。
 - 左右栏开关缩小按钮与图标尺寸并保留独立打开态；左栏入口留在品牌后，右栏入口通过尾部 flex 操作区靠近窗口右侧，降低识别成本并兼容 macOS 原生 traffic lights。
+- 共享顶栏由 44px 收紧为 36px，品牌图标容器同步收紧，应用标题由 14px 提升为 16px 并使用独立 700 字重，绕开全局 520 `font-bold` 映射；帮助入口与左右栏开关统一落在 28px 操作节奏，Windows/Linux 自定义窗口控制只收紧纵向高度，保留既有横向命中宽度和原生拖拽/最大化生命周期。
 - 修正右栏宽度恢复：Provider 接收异步 preference hydrate，拖动结束使用 group layout 用户事件持久化真实像素宽度。
+- 统一 Shell 边界线：中间区顶部/左侧边界、右侧 Panel 顶边与右栏 separator 共享不透明 `workspace-divider` 主题 token；中间区和右侧区分别绘制同为 1 CSS px 的顶边，保证横向边界连续并与 separator 形成 T 形交点，消除半透明叠色与右侧缺线造成的交点色差/粗细错觉；不修改 Resizable 拖拽命中区和宽度热路径。
 - 实现通用 Tab model、激活、关闭、去重、溢出列表。
-- Tab 溢出入口改为由 `ResizeObserver + scrollWidth/clientWidth` 驱动，只在真实溢出时出现；修正为 Gold Band 主题滚动条并将该横向轨道独立压缩到 4px。Tab 条显式恢复 WebKit 伪元素控制权，避免 Chromium 的 `scrollbar-width: thin` 覆盖专属尺寸和两端按钮隐藏规则。
+- Tab 溢出入口改为由 `ResizeObserver + scrollWidth/clientWidth` 驱动，只在真实溢出时出现；横向滚动复用 Gold Band 主题滚动条。早期将该轨道独立压缩到 4px、显式恢复 WebKit 伪元素控制权的方案已被应用级互斥渲染策略替换，避免现代 Chromium/WebView2 在标准属性与 WebKit 伪元素之间混用。
 - 会话页面 `centerMinWidth` 从设计初值 420px 校准到 360px；上下文卡片、工作流画布和设置 profile 保持不变。
 - 使用静态 Agent resource 验证 docked/compact Sheet 两种模式。
 - 在 `WorkspaceShell` 共同边界提供 shadcn `TooltipProvider`，确保中间会话、右侧 Dock 与紧凑 Sheet 复用含 Tooltip 的会话组件时拥有相同 UI 上下文；不在 Agent 面板内重复补 Provider。
@@ -629,6 +631,7 @@ ACP live event(branchId)
 - 根事件只进入根 timeline，Agent 事件只进入所属 Agent timeline。
 - Agent index 能恢复父子层级、状态和统计。
 - 应用重启后打开 Agent link 能恢复历史并继续接收实时更新。
+- 快速对话 draft、定时创建与会话详情共用全局右栏宽度偏好；任一页面完成 separator 拖拽后，切换页面、折叠重开或重启应用都恢复同一有界像素宽度，不得回退到 Panel 首次注册尺寸或最小宽度。实现使用 `react-resizable-panels` 的 imperative `resize()` 在离散展示/hydrate 时恢复，pointermove 热路径不写 React state 或存储。
 - 文件名和目录只使用 Gold Band 稳定 ID，不使用未经处理的 provider ID。
 - storage query 使用结构化错误码，不返回后端对客文案。
 

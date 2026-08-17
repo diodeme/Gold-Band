@@ -4,7 +4,10 @@ use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
 pub use crate::domain::SessionRef;
-use crate::domain::{DEFAULT_PROVIDER, InvocationKind, SessionMode, VERSION};
+use crate::domain::{
+    DEFAULT_PROVIDER, InvocationKind, SessionMode, TurnControlMode, TurnControlTransitionCause,
+    VERSION,
+};
 use crate::prompts::{
     PromptExecutionSurface, RUNTIME_ARTIFACT_FINALIZE_EN, RUNTIME_ARTIFACT_FINALIZE_ZH_CN,
     RUNTIME_HIDDEN_CONTEXT_EN, RUNTIME_HIDDEN_CONTEXT_ZH_CN, RUNTIME_SYSTEM_EN,
@@ -18,7 +21,7 @@ use crate::runtime_error::{
 };
 use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +30,56 @@ use std::str::FromStr;
 use tracing::debug;
 
 use crate::acp::events::AttachmentMeta;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPromptQuote {
+    pub id: String,
+    pub source_message_key: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptInput {
+    pub display_text: String,
+    #[serde(default)]
+    pub quotes: Vec<UserPromptQuote>,
+}
+
+impl From<String> for ConversationPromptInput {
+    fn from(prompt: String) -> Self {
+        Self {
+            display_text: prompt.clone(),
+            quotes: Vec::new(),
+        }
+    }
+}
+
+pub const MAX_USER_PROMPT_QUOTE_CHARS: usize = 12_000;
+pub const MAX_USER_PROMPT_QUOTES: usize = 64;
+pub const MAX_USER_PROMPT_QUOTE_ID_BYTES: usize = 128;
+pub const MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES: usize = 512;
+
+pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) -> String {
+    let display_text = display_text.trim();
+    if quotes.is_empty() {
+        return display_text.to_string();
+    }
+    let quote_blocks = quotes
+        .iter()
+        .map(|quote| {
+            quote
+                .text
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("{quote_blocks}\n\n{display_text}")
+}
 
 /// Content block types for ACP session/prompt requests.
 #[derive(Debug, Clone, Serialize)]
@@ -129,9 +182,23 @@ impl DoctorResult {
 pub enum UserPromptRenderMode {
     RequirementTask,
     WorkflowResume,
+    RuntimeResume,
     RuntimeFinalize,
     RuntimeRepair,
     UserMessage,
+}
+
+/// Describes whether accepting the prompt changes Runtime control ownership.
+/// This is intentionally independent from `SessionMode`: continuing an ACP
+/// session does not by itself imply either a manual follow-up or a Runtime
+/// resume transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeControlIntent {
+    #[default]
+    Unchanged,
+    ManualFollowUp,
+    Resume,
 }
 
 impl Default for UserPromptRenderMode {
@@ -143,6 +210,10 @@ impl Default for UserPromptRenderMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerInvocation {
     pub invocation_kind: InvocationKind,
+    #[serde(default)]
+    pub turn_control_mode: TurnControlMode,
+    #[serde(default)]
+    pub runtime_control_intent: RuntimeControlIntent,
     #[serde(default)]
     pub prompt_envelope: crate::dsl::PromptEnvelopeMode,
     pub execution_surface: PromptExecutionSurface,
@@ -180,6 +251,8 @@ pub struct WorkerInvocation {
     pub continue_ref: Option<serde_json::Value>,
     pub resume_prompt: Option<String>,
     pub resume_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_display: Option<ConversationPromptInput>,
     #[serde(default)]
     pub resume_prompt_visibility: PromptVisibility,
     pub stream_mode: StreamMode,
@@ -194,6 +267,18 @@ pub struct WorkerInvocation {
     pub input_attachment_paths: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_context: Option<ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTaskContextInfo {
+    pub title: String,
+    pub mode: String,
+    pub session_policy: String,
+    pub trigger_kind: String,
+    pub triggered_at: String,
+    pub instruction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,6 +363,7 @@ const ARTIFACT_EMISSION_STATE_FILE: &str = "artifact-emission.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum ArtifactEmissionPhase {
+    BusinessTurn,
     Finalizing,
 }
 
@@ -287,16 +373,16 @@ struct ArtifactEmissionState {
     phase: ArtifactEmissionPhase,
 }
 
-fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
-    if matches!(
-        req.user_prompt_render_mode,
-        UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
-    ) {
-        return Ok(true);
-    }
-    let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostTurnProjectionEntry {
+    RunBusinessTurn,
+    ResumeFinalization,
+}
+
+fn artifact_emission_checkpoint(attempt_dir: &Utf8Path) -> Result<Option<ArtifactEmissionState>> {
+    let state_path = attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
     if !state_path.exists() {
-        return Ok(false);
+        return Ok(None);
     }
     let state: ArtifactEmissionState = read_json(&state_path).map_err(|error| {
         runtime_error(blocked_runtime_error_info(
@@ -321,7 +407,53 @@ fn post_turn_projection_is_finalizing(req: &WorkerInvocation) -> Result<bool> {
             }),
         )));
     }
-    Ok(state.phase == ArtifactEmissionPhase::Finalizing)
+    Ok(Some(state))
+}
+
+fn write_artifact_emission_phase(
+    attempt_dir: &Utf8Path,
+    phase: ArtifactEmissionPhase,
+) -> Result<()> {
+    write_json(
+        &attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
+        &ArtifactEmissionState {
+            version: VERSION.to_string(),
+            phase,
+        },
+    )
+}
+
+fn prepare_post_turn_projection(req: &WorkerInvocation) -> Result<PostTurnProjectionEntry> {
+    if matches!(
+        req.user_prompt_render_mode,
+        UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+    ) {
+        return Ok(PostTurnProjectionEntry::ResumeFinalization);
+    }
+
+    match artifact_emission_checkpoint(&req.attempt_dir)?.map(|state| state.phase) {
+        Some(ArtifactEmissionPhase::Finalizing)
+            if req.user_prompt_render_mode == UserPromptRenderMode::UserMessage =>
+        {
+            // A continue-with-message at the finalize boundary opens a new durable
+            // business turn. If that turn is interrupted, the next continue must
+            // resume business work instead of skipping directly back to artifact
+            // finalization.
+            write_artifact_emission_phase(&req.attempt_dir, ArtifactEmissionPhase::BusinessTurn)?;
+            Ok(PostTurnProjectionEntry::RunBusinessTurn)
+        }
+        Some(ArtifactEmissionPhase::Finalizing) => Ok(PostTurnProjectionEntry::ResumeFinalization),
+        Some(ArtifactEmissionPhase::BusinessTurn) | None => {
+            Ok(PostTurnProjectionEntry::RunBusinessTurn)
+        }
+    }
+}
+
+pub(crate) fn post_turn_projection_checkpoint_is_finalizing(
+    attempt_dir: &Utf8Path,
+) -> Result<bool> {
+    Ok(artifact_emission_checkpoint(attempt_dir)?
+        .is_some_and(|state| state.phase == ArtifactEmissionPhase::Finalizing))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,9 +512,16 @@ pub struct OutputArtifactPayload {
 pub struct PromptBundle {
     pub system_prompt: String,
     pub user_prompt: String,
+    pub display_text: Option<String>,
+    pub quotes: Vec<UserPromptQuote>,
     pub prompt_id: Option<String>,
     pub visibility: PromptVisibility,
     pub hidden_reason: Option<String>,
+    pub turn_control_mode: TurnControlMode,
+    pub runtime_control_intent: RuntimeControlIntent,
+    pub runtime_control_transition_id: Option<String>,
+    pub runtime_control_source_transition_id: Option<String>,
+    pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
 }
@@ -650,6 +789,13 @@ pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRuntimePhase {
+    FinalizingArtifact,
+}
+
+pub type ProviderRuntimePhaseUpdate<'a> = &'a dyn Fn(ProviderRuntimePhase) -> Result<()>;
+
 pub trait ProviderAdapter: Send + Sync {
     fn describe_provider(&self) -> ProviderInfo;
     fn doctor(&self) -> DoctorResult;
@@ -669,6 +815,16 @@ pub trait ProviderAdapter: Send + Sync {
         _prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         self.run_worker_with_live_update(req, live_update)
+    }
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        _runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        self.run_worker_with_callbacks(req, live_update, session_update, prompt_accepted)
     }
     fn open_session(&self, worker_ref: &SessionRef) -> Result<()>;
     fn build_continue_command(&self, worker_ref: &SessionRef) -> Result<Option<String>>;
@@ -1042,7 +1198,7 @@ impl AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
-            acp_output_policy(req.output_contract.as_ref()),
+            acp_output_policy(req.turn_control_mode, req.output_contract.as_ref()),
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1061,13 +1217,15 @@ impl AcpProvider {
                     .clone()
                     .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
+                turn_control_mode: req.turn_control_mode,
             }),
         )?;
         let terminal = classify_acp_prompt_run(&run);
-        let result_payload = matches!(
-            terminal.status,
-            ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-        )
+        let result_payload = (req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && matches!(
+                terminal.status,
+                ProviderRunStatus::Success | ProviderRunStatus::Interrupted
+            ))
         .then(|| {
             req.output_contract
                 .as_ref()
@@ -1097,6 +1255,7 @@ impl AcpProvider {
         live_update: Option<AcpLiveUpdate<'_>>,
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
         let mut contract = req
             .output_contract
@@ -1106,9 +1265,9 @@ impl AcpProvider {
             req.user_prompt_render_mode,
             UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
         );
-        let finalizing = post_turn_projection_is_finalizing(&req)?;
+        let entry = prepare_post_turn_projection(&req)?;
 
-        if !finalizing {
+        if entry == PostTurnProjectionEntry::RunBusinessTurn {
             let work_result = self.run_worker_once_with_callbacks(
                 req.clone(),
                 live_update,
@@ -1122,14 +1281,10 @@ impl AcpProvider {
             }
         }
 
-        let state_path = req.attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE);
-        write_json(
-            &state_path,
-            &ArtifactEmissionState {
-                version: VERSION.to_string(),
-                phase: ArtifactEmissionPhase::Finalizing,
-            },
-        )?;
+        write_artifact_emission_phase(&req.attempt_dir, ArtifactEmissionPhase::Finalizing)?;
+        if let Some(runtime_phase_update) = runtime_phase_update {
+            runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
+        }
         let worker_ref: WorkerRefState = read_json(&req.attempt_dir.join("worker-ref.json"))
             .context("post-turn artifact finalization requires durable worker-ref")?;
         ensure!(
@@ -1242,14 +1397,34 @@ impl ProviderAdapter for AcpProvider {
         session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
-        if req.output_contract.as_ref().is_some_and(|contract| {
-            contract.emission_mode == OutputEmissionMode::PostTurnProjection
-        }) {
+        self.run_worker_with_runtime_callbacks(
+            req,
+            live_update,
+            session_update,
+            prompt_accepted,
+            None,
+        )
+    }
+
+    fn run_worker_with_runtime_callbacks(
+        &self,
+        req: WorkerInvocation,
+        live_update: Option<AcpLiveUpdate<'_>>,
+        session_update: Option<AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
+    ) -> Result<ProviderRunResult> {
+        if req.turn_control_mode == TurnControlMode::RuntimeControlled
+            && req.output_contract.as_ref().is_some_and(|contract| {
+                contract.emission_mode == OutputEmissionMode::PostTurnProjection
+            })
+        {
             self.run_post_turn_projection_with_callbacks(
                 req,
                 live_update,
                 session_update,
                 prompt_accepted,
+                runtime_phase_update,
             )
         } else {
             self.run_worker_once_with_callbacks(req, live_update, session_update, prompt_accepted)
@@ -1268,8 +1443,13 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
-fn acp_output_policy(contract: Option<&PromptOutputContract>) -> client::AcpOutputPolicy {
-    if contract.is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+fn acp_output_policy(
+    turn_control_mode: TurnControlMode,
+    contract: Option<&PromptOutputContract>,
+) -> client::AcpOutputPolicy {
+    if turn_control_mode == TurnControlMode::RuntimeControlled
+        && contract
+            .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
     {
         client::AcpOutputPolicy::ArtifactContract
     } else {
@@ -1408,12 +1588,13 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             }
         }
         UserPromptRenderMode::WorkflowResume
+        | UserPromptRenderMode::RuntimeResume
         | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair
         | UserPromptRenderMode::UserMessage => String::new(),
     };
 
-    let (system_prompt, user_prompt) = match req.prompt_envelope {
+    let (system_prompt, mut user_prompt) = match req.prompt_envelope {
         crate::dsl::PromptEnvelopeMode::RuntimeManaged => (
             render_system_prompt(req)?,
             render_user_prompt(req, &requirement_text),
@@ -1427,6 +1608,12 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             },
         ),
     };
+    if req.turn_control_mode == TurnControlMode::NonRuntimeControlled
+        && req.user_prompt_render_mode == UserPromptRenderMode::UserMessage
+        && !req.extra_hidden_sections.is_empty()
+    {
+        user_prompt = append_extra_hidden_sections(&user_prompt, &req.extra_hidden_sections);
+    }
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
     // Resolve task input attachments
@@ -1444,6 +1631,15 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     Ok(PromptBundle {
         system_prompt,
         user_prompt,
+        display_text: req
+            .prompt_display
+            .as_ref()
+            .map(|input| input.display_text.clone()),
+        quotes: req
+            .prompt_display
+            .as_ref()
+            .map(|input| input.quotes.clone())
+            .unwrap_or_default(),
         // Prompt identity is an orchestration concern, independent of ACP
         // session mode.  In particular, an automatic retry may start a new
         // ACP session while remaining the same visible user turn.
@@ -1454,10 +1650,16 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
             PromptVisibility::Visible
         },
         hidden_reason: match req.user_prompt_render_mode {
+            UserPromptRenderMode::RuntimeResume => Some("runtimeControlResume".to_string()),
             UserPromptRenderMode::RuntimeFinalize => Some("artifactFinalize".to_string()),
             UserPromptRenderMode::RuntimeRepair => Some("invalidOutputRepair".to_string()),
             _ => None,
         },
+        turn_control_mode: req.turn_control_mode,
+        runtime_control_intent: req.runtime_control_intent,
+        runtime_control_transition_id: None,
+        runtime_control_source_transition_id: None,
+        runtime_control_transition_cause: None,
         attachment_metas,
         content_blocks,
     })
@@ -1477,6 +1679,7 @@ fn render_system_prompt(req: &WorkerInvocation) -> Result<String> {
 fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String {
     match req.user_prompt_render_mode {
         UserPromptRenderMode::UserMessage
+        | UserPromptRenderMode::RuntimeResume
         | UserPromptRenderMode::RuntimeFinalize
         | UserPromptRenderMode::RuntimeRepair => req
             .resume_prompt
@@ -1486,11 +1689,18 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
             .to_string(),
         UserPromptRenderMode::WorkflowResume | UserPromptRenderMode::RequirementTask => {
             let hidden_context = render_hidden_context(req);
-            let continue_goal = matches!(req.user_prompt_render_mode, UserPromptRenderMode::WorkflowResume).then(|| {
-                match req.runtime_context.language {
-                    crate::config::DesktopLanguage::ZhCn => "根据最新反馈进行调整，确保后续节点能够成功；如果当前节点有输出格式要求，仍然严格按 system prompt 中的输出约束输出。".to_string(),
-                    crate::config::DesktopLanguage::En => "Adjust according to the latest feedback and ensure downstream nodes can succeed. If this node has output format requirements, still strictly follow the output contract in the system prompt.".to_string(),
-                }
+            let continue_goal = matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::WorkflowResume
+            )
+            .then(|| {
+                prompt_by_language(
+                    req.runtime_context.language,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_ZH_CN,
+                    crate::prompts::RUNTIME_WORKFLOW_RESUME_EN,
+                )
+                .trim()
+                .to_string()
             });
 
             let content = render_template(
@@ -1529,6 +1739,23 @@ fn render_user_prompt(req: &WorkerInvocation, requirement_text: &str) -> String 
     }
 }
 
+fn append_extra_hidden_sections(prompt: &str, sections: &[PromptHiddenSection]) -> String {
+    let content = sections
+        .iter()
+        .map(|section| section.content.trim())
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if content.is_empty() {
+        return prompt.to_string();
+    }
+    format!(
+        "{}\n\n{}",
+        prompt.trim(),
+        gold_band_hidden_block("Gold Band runtime context", &content)
+    )
+}
+
 fn render_hidden_context(req: &WorkerInvocation) -> String {
     let extra_sections = req
         .extra_hidden_sections
@@ -1556,7 +1783,47 @@ fn render_hidden_context(req: &WorkerInvocation) -> String {
         content.push_str(section.content.trim());
     }
     let content = compact_hidden_context_spacing(&content);
+    let content = if let Some(scheduled) = render_scheduled_context(req) {
+        format!("{content}\n\n{scheduled}")
+    } else {
+        content
+    };
     gold_band_hidden_block("Gold Band runtime context", &content)
+}
+
+fn render_scheduled_context(req: &WorkerInvocation) -> Option<String> {
+    let ctx = req.scheduled_context.as_ref()?;
+    let template = prompt_by_language(
+        req.runtime_context.language,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_ZH_CN,
+        crate::prompts::RUNTIME_SCHEDULED_TASK_CONTEXT_EN,
+    );
+    let rendered = crate::prompts::render(
+        template,
+        &ScheduledTaskContextTemplateContext {
+            scheduled_title: &ctx.title,
+            scheduled_mode: &ctx.mode,
+            scheduled_session_policy: &ctx.session_policy,
+            scheduled_trigger_kind: &ctx.trigger_kind,
+            scheduled_triggered_at: &ctx.triggered_at,
+            scheduled_instruction: ctx.instruction.as_deref(),
+        },
+    )
+    .ok()?;
+    Some(gold_band_hidden_block(
+        "Gold Band scheduled task context",
+        &rendered,
+    ))
+}
+
+#[derive(Serialize)]
+struct ScheduledTaskContextTemplateContext<'a> {
+    scheduled_title: &'a str,
+    scheduled_mode: &'a str,
+    scheduled_session_policy: &'a str,
+    scheduled_trigger_kind: &'a str,
+    scheduled_triggered_at: &'a str,
+    scheduled_instruction: Option<&'a str>,
 }
 
 fn compact_hidden_context_spacing(content: &str) -> String {
@@ -2085,6 +2352,8 @@ mod tests {
         };
         WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -2112,6 +2381,7 @@ mod tests {
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,
+            prompt_display: None,
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
@@ -2121,6 +2391,7 @@ mod tests {
             cold_attachments: Vec::new(),
             input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
+            scheduled_context: None,
         }
     }
 
@@ -2316,16 +2587,20 @@ mod tests {
         let deferred = test_output_contract(OutputEmissionMode::PostTurnProjection);
 
         assert_eq!(
-            acp_output_policy(None),
+            acp_output_policy(TurnControlMode::RuntimeControlled, None),
             client::AcpOutputPolicy::Conversation
         );
         assert_eq!(
-            acp_output_policy(Some(&deferred)),
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&deferred)),
             client::AcpOutputPolicy::Conversation
         );
         assert_eq!(
-            acp_output_policy(Some(&inline)),
+            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&inline)),
             client::AcpOutputPolicy::ArtifactContract
+        );
+        assert_eq!(
+            acp_output_policy(TurnControlMode::NonRuntimeControlled, Some(&inline)),
+            client::AcpOutputPolicy::Conversation
         );
     }
 
@@ -2375,25 +2650,122 @@ mod tests {
     }
 
     #[test]
-    fn durable_finalizing_state_skips_the_business_phase_on_resume() {
+    fn runtime_system_exempts_interrupted_free_conversation_from_artifact_semantics() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.output_contract = Some(test_output_contract(OutputEmissionMode::InlineControl));
+
+        let zh = render_prompt_bundle(&req).unwrap();
+        assert!(zh.system_prompt.contains("用户主动打断当前工作"));
+        assert!(
+            zh.system_prompt
+                .contains("无需遵守本节的 artifact 输出语义")
+        );
+        assert!(zh.system_prompt.contains("角色预设的执行流程"));
+        assert!(
+            zh.system_prompt
+                .contains("用户指引不得覆盖下方 artifact 输出契约")
+        );
+
+        req.runtime_context.language = crate::config::DesktopLanguage::En;
+        let en = render_prompt_bundle(&req).unwrap();
+        assert!(
+            en.system_prompt
+                .contains("If the user interrupts the current work")
+        );
+        assert!(
+            en.system_prompt
+                .contains("do not need to follow the artifact-output semantics")
+        );
+        assert!(
+            en.system_prompt
+                .contains("execution process prescribed by the role")
+        );
+        assert!(
+            en.system_prompt
+                .contains("cannot override the artifact output contract")
+        );
+    }
+
+    #[test]
+    fn runtime_resume_remains_a_hidden_control_prompt() {
+        let mut req = test_worker_invocation(Utf8PathBuf::from("/run/attempt-001"));
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt =
+            Some("resume runtime control with the user's latest task instructions".to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(
+            prompt.hidden_reason.as_deref(),
+            Some("runtimeControlResume")
+        );
+        assert_eq!(
+            prompt.user_prompt,
+            "resume runtime control with the user's latest task instructions"
+        );
+    }
+
+    #[test]
+    fn durable_finalizing_state_routes_resume_by_prompt_semantics() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let req = test_worker_invocation(attempt_dir.clone());
+        let mut req = test_worker_invocation(attempt_dir.clone());
 
-        assert!(!post_turn_projection_is_finalizing(&req).unwrap());
-        write_json(
-            &attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
-            &ArtifactEmissionState {
-                version: VERSION.to_string(),
-                phase: ArtifactEmissionPhase::Finalizing,
-            },
-        )
-        .unwrap();
-        assert!(post_turn_projection_is_finalizing(&req).unwrap());
+        assert_eq!(
+            prepare_post_turn_projection(&req).unwrap(),
+            PostTurnProjectionEntry::RunBusinessTurn
+        );
+        write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+        req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        assert_eq!(
+            prepare_post_turn_projection(&req).unwrap(),
+            PostTurnProjectionEntry::ResumeFinalization
+        );
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
 
         let mut repair_req = test_worker_invocation(attempt_dir.join("repair"));
         repair_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
-        assert!(post_turn_projection_is_finalizing(&repair_req).unwrap());
+        assert_eq!(
+            prepare_post_turn_projection(&repair_req).unwrap(),
+            PostTurnProjectionEntry::ResumeFinalization
+        );
+    }
+
+    #[test]
+    fn continue_with_message_at_finalize_boundary_reopens_a_durable_business_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+
+        let mut user_message_req = test_worker_invocation(attempt_dir.clone());
+        user_message_req.session_mode = SessionMode::Continue;
+        user_message_req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+        user_message_req.resume_prompt = Some("user message\n<hidden>resume</hidden>".to_string());
+
+        assert_eq!(
+            prepare_post_turn_projection(&user_message_req).unwrap(),
+            PostTurnProjectionEntry::RunBusinessTurn
+        );
+        assert!(!post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
+        let state = artifact_emission_checkpoint(&attempt_dir)
+            .unwrap()
+            .expect("continue-with-message persists the business checkpoint");
+        assert_eq!(state.phase, ArtifactEmissionPhase::BusinessTurn);
+
+        let mut pure_resume_req = test_worker_invocation(attempt_dir.clone());
+        pure_resume_req.session_mode = SessionMode::Continue;
+        pure_resume_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeResume;
+        pure_resume_req.resume_prompt = Some("resume runtime control".to_string());
+        assert_eq!(
+            prepare_post_turn_projection(&pure_resume_req).unwrap(),
+            PostTurnProjectionEntry::RunBusinessTurn
+        );
+
+        write_artifact_emission_phase(&attempt_dir, ArtifactEmissionPhase::Finalizing).unwrap();
+        assert!(post_turn_projection_checkpoint_is_finalizing(&attempt_dir).unwrap());
     }
 
     #[test]
@@ -2407,7 +2779,7 @@ mod tests {
         .unwrap();
         let req = test_worker_invocation(attempt_dir);
 
-        let error = post_turn_projection_is_finalizing(&req).unwrap_err();
+        let error = prepare_post_turn_projection(&req).unwrap_err();
         let info = crate::runtime_error::normalize_runtime_error(&error);
 
         assert!(error.to_string().contains("artifact emission state"));
@@ -2514,6 +2886,8 @@ mod tests {
         };
         let mut req = WorkerInvocation {
             invocation_kind: InvocationKind::WorkerGeneric,
+            turn_control_mode: TurnControlMode::RuntimeControlled,
+            runtime_control_intent: RuntimeControlIntent::Unchanged,
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
             execution_surface: PromptExecutionSurface::Workflow,
             profile: None,
@@ -2541,6 +2915,7 @@ mod tests {
             continue_ref: None,
             resume_prompt: None,
             resume_prompt_id: None,
+            prompt_display: None,
             resume_prompt_visibility: PromptVisibility::Visible,
             stream_mode: StreamMode::StreamJson,
             log_prompts: false,
@@ -2550,6 +2925,7 @@ mod tests {
             cold_attachments: Vec::new(),
             input_attachment_paths: Vec::new(),
             mcp_servers: Vec::new(),
+            scheduled_context: None,
         };
 
         let prompt = render_prompt_bundle(&req).unwrap();

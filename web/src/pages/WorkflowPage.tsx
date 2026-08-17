@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
 import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
@@ -32,7 +32,7 @@ interface WorkflowPageProps {
   onStartRun: (taskId: string) => Promise<RunSummaryVm | undefined>;
   onContinueRun: (taskId: string, runId: string) => void;
   onStopRun: (taskId: string, runId: string) => void;
-  onSaveWorkflow: (taskId: string, workflow: WorkflowDsl) => Promise<WorkflowVm | undefined>;
+  onSaveWorkflow: (taskId: string, workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm | undefined>;
   onOpenProfileManagement: () => void;
 }
 
@@ -68,6 +68,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
+  const [modelBindingsDraft, setModelBindingsDraft] = useState<WorkflowModelBindings | null>(null);
   const [workflowSaveError, setWorkflowSaveError] = useState<string | null>(null);
   const [validationRequestId, setValidationRequestId] = useState(0);
 
@@ -78,6 +79,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const closeWorkflowDrawer = useCallback(() => {
     setWorkflowDrawerMode(null);
     setWorkflowDraft(null);
+    setModelBindingsDraft(null);
     setWorkflowSaveError(null);
   }, []);
 
@@ -140,11 +142,11 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     setValidationRequestId((value) => value + 1);
   };
 
-  const saveWorkflow = async (workflow: WorkflowDsl) => {
+  const saveWorkflow = async (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => {
     setSavingWorkflow(true);
     try {
       setWorkflowSaveError(null);
-      await onSaveWorkflow(vm.task.id, workflow);
+      await onSaveWorkflow(vm.task.id, workflow, modelBindings);
       setWorkflowDraft(null);
       setWorkflowDrawerMode(null);
     } catch (error) {
@@ -217,7 +219,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
               <div className="min-h-0 flex-1" style={{ minHeight: historyBodyMinHeight }}>
                 {pagedRuns.length ? (
                   <div className="overflow-hidden rounded-xl border bg-card/55 shadow-sm shadow-background/10">
-                    <div className={cn(historyRowGridClass, 'hidden border-b bg-muted/20 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid')}>
+                    <div className={cn(historyRowGridClass, 'hidden border-b bg-muted/20 px-4 py-2 text-ui-caption font-semibold uppercase tracking-[0.16em] text-muted-foreground lg:grid')}>
                       <span>{t('workflow.idGroup')}</span>
                       <span>{t('common.status')}</span>
                       <span>{t('workflow.historyProgress')}</span>
@@ -286,7 +288,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-4 p-5">
-              {vm.control && vm.task.workflowExists ? (
+              {vm.control && vm.task.workflowExists && !editingWorkflow ? (
                 <div className="flex flex-wrap items-center gap-2 rounded-xl border border-primary/20 bg-muted/20 p-2">
                   <ControlPill label={t('workflow.maxAttempts')} value={vm.control.maxAttempts ?? t('workflow.unlimited')} />
                   <ControlPill label={t('workflow.maxRounds')} value={vm.control.maxRounds ?? t('workflow.unlimited')} />
@@ -296,7 +298,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 workflowDraft ? (
                   <>
                     {workflowSaveError ? <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">{workflowSaveError}</div> : null}
-                    <WorkflowEditor value={workflowDraft} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} />
+                    <WorkflowEditor value={workflowDraft} modelBindings={modelBindingsDraft ?? vm.modelBindings} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} validateModelBindings={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} onModelBindingsChange={setModelBindingsDraft} />
                   </>
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (
@@ -343,7 +345,7 @@ function workflowLifecycleFor(task: TaskRowVm): WorkflowLifecycle {
 function ControlPill({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex min-h-9 min-w-[176px] flex-1 items-center justify-between gap-3 rounded-lg border bg-card/55 px-3 py-1.5">
-      <span className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+      <span className="text-ui-caption uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
       <strong className="shrink-0 text-sm text-foreground">{value}</strong>
     </div>
   );
@@ -424,7 +426,7 @@ function RunGroupRow({ group, graph, expanded, onToggle, onOpenRound, onStopRun,
 function HistoryCell({ label, value, title, className }: { label: ReactNode; value: ReactNode; title?: string | null; className?: string }) {
   const content = (
     <div className={cn('min-w-0 space-y-0.5', className)}>
-      <span className="block truncate text-[11px] font-medium text-muted-foreground/70">{label}</span>
+      <span className="block truncate text-ui-caption font-medium text-muted-foreground/70">{label}</span>
       <strong className="block min-w-0 truncate text-sm font-medium text-foreground">{value}</strong>
     </div>
   );
@@ -458,7 +460,7 @@ function RoundRow({ runId, graph, round, onOpen, t }: { runId: string; graph: Gr
       <span className={cn('absolute -left-[27px] top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border-2 ring-4 ring-muted/20', timelineDotClass(round.outcome ?? round.status), running && 'workflow-timeline-dot-running')} />
       <div className="flex min-w-0 items-center gap-2 pl-1">
         <strong className="truncate text-sm text-foreground">{round.id}</strong>
-        <Badge variant="secondary" className="text-[11px]">#{round.index}</Badge>
+        <Badge variant="secondary" className="text-ui-caption">#{round.index}</Badge>
       </div>
       <div className="min-w-0"><StatusBadge value={summaryStatusValue(round.status, round.outcome)} label={displayStatus(t, summaryStatusValue(round.status, round.outcome))} /></div>
       <HistoryCell label={t('workflow.currentNode')} value={running ? <span className="inline-flex min-w-0 items-center gap-2"><span className="workflow-running-dot bg-gold-running" /> <span className="truncate">{currentNode}</span></span> : currentNode} title={currentNode} />

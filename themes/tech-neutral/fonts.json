@@ -1,0 +1,20 @@
+{
+  "faces": [
+    { "id": "inter-variable", "family": "Inter Variable", "assetId": "inter-latin-variable", "weightMin": 100, "weightMax": 900, "style": "normal", "display": "swap", "coverage": { "scripts": ["Latn"] } },
+    { "id": "misans-variable", "family": "Gold Band MiSans", "assetId": "misans-variable", "weightMin": 250, "weightMax": 520, "style": "normal", "display": "swap", "coverage": { "scripts": ["Hans", "Latn"], "locales": ["zh-CN"] } }
+  ],
+  "stacks": [
+    {
+      "id": "theme-ui",
+      "displayName": { "zh-CN": "Inter Variable · MiSans", "en": "Inter Variable · MiSans" },
+      "defaultFaces": ["inter-variable", "misans-variable"],
+      "systemFallbacks": ["Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "sans-serif"]
+    },
+    {
+      "id": "theme-editor",
+      "displayName": { "zh-CN": "JetBrains Mono", "en": "JetBrains Mono" },
+      "defaultFaces": [],
+      "systemFallbacks": ["JetBrains Mono", "SFMono-Regular", "Consolas", "monospace"]
+    }
+  ]
+}

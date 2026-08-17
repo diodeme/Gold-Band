@@ -7,7 +7,7 @@
 - Round 节点详情的会话 Tab 已切换为 ACP Dialog / Chat UI，legacy progress/raw stream 不再作为主会话视图。
 - ACP Dialog / Chat UI 已接入 prompt-kit copy-in 组件：`ChatContainer`、`Message`、`PromptInput`、`Tool`、`ChainOfThought`。
 - 权限请求可落盘为 pending event，并通过 Tauri `respond_acp_permission` 写入 response 文件供 provider loop 恢复。
-- Plan 决策权限保留 composer 输入；用户提交自然语言反馈时自动选择继续规划并在当前 turn 完成后发送反馈。
+- 所有 ACP permission 统一由权限卡片显式响应；Direct 会话在 permission pending 时，composer 消息仍进入既有 prompt queue，不再根据选项文案自动选择权限。
 - ACP prompt 会在发送 `session/prompt` 前持久化 synthetic `userTextDelta`，用于展示初始 prompt 和继续输入。
 - Raw frames 诊断读取已从普通 session 刷新路径中解耦，普通刷新只统计行数；详情视图按 JSONL 行做后端分页、关键词检索、direction 和 kind/method 过滤，默认打开最新页，不把全量 `acp.raw.jsonl` 传给前端。
 - ACP Message List 已使用内容尺寸监听补齐流式消息增高时的底部贴合，并限制只有非底部顶部预取区才加载更早历史，避免生成回复时误触发 prepend 后跳顶。回归覆盖 Activity 展开期间“pending 权限卡收缩为审计行 → 工具增长 → 下一张 pending 权限卡插入”的连续高度变化：已有贴底锁必须保持，用户主动上滚后不得强制追回底部。

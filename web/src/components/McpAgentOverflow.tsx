@@ -61,7 +61,7 @@ export function McpAgentOverflow({
                     type="button"
                     size="icon"
                     variant="secondary"
-                    className="h-6 w-7 min-w-7 shrink-0 rounded-full p-0 text-[10px] font-medium tabular-nums"
+                    className="h-6 w-7 min-w-7 shrink-0 rounded-full p-0 text-ui-micro font-medium tabular-nums"
                     aria-label={t('contextManagement.mcp.moreAgents', { count: layout.hiddenCount, defaultValue: `还有 ${layout.hiddenCount} 个 Agent` })}
                   >
                     +{layout.hiddenCount}
@@ -74,7 +74,7 @@ export function McpAgentOverflow({
             </Tooltip>
           </TooltipProvider>
           <PopoverContent side="top" align="start" sideOffset={8} className="w-64 p-2">
-            <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            <div className="px-2 pb-1 text-ui-micro font-medium uppercase tracking-wide text-muted-foreground">
               {t('contextManagement.mcp.agentCompatibility', 'Agent 兼容性')}
             </div>
             <ScrollArea className="max-h-72">

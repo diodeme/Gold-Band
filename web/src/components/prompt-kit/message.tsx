@@ -64,7 +64,7 @@ const MessageContent = ({
   )
 
   return (
-    <div className={classNames} {...props}>
+    <div data-theme-role={variant === "user" ? "message-user" : variant === "assistant" ? "message-assistant" : "activity"} className={classNames} {...props}>
       {children}
     </div>
   )

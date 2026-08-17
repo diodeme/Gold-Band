@@ -8,9 +8,12 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
+use crate::provider::UserPromptQuote;
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock, write_json,
+    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, read_json, with_jsonl_file_lock,
+    write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -39,7 +42,12 @@ pub struct AcpSessionMetadata {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub availability: AcpSessionAvailability,
+    #[serde(default)]
+    pub latest_turn_status: AcpLatestTurnStatus,
     pub restored: bool,
     pub stop_reason: Option<String>,
     pub capabilities: Value,
@@ -49,6 +57,15 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    /// Time when this session last observed a model/mode/config-option catalog
+    /// from the ACP provider. Catalog freshness must not be inferred from the
+    /// session's general `updated_at`, which also changes for ordinary turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_catalog_observed_at: Option<String>,
+    /// A newer successful Doctor catalog selected by the user must be checked
+    /// against this concrete session before its override is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_catalog_refresh_required_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +79,15 @@ pub struct AcpSessionMetadata {
     /// continue the same user turn without scanning the timeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_retry: Option<AcpPromptRetryState>,
+    /// Latest invocation-level Runtime/NonRuntime transition. This lives in
+    /// existing ACP session metadata so terminal snapshot rewrites preserve
+    /// the one-time suspension-context cursor without a new state file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_control: Option<AcpRuntimeControlCursor>,
+    /// Negative cache for legacy attempts without Runtime control metadata.
+    /// Once set, ordinary conversation turns never rescan the full timeline.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub runtime_control_timeline_scan_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub used_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +120,26 @@ pub struct AcpSessionMetadata {
     pub timing: Option<AcpSessionTiming>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpSessionAvailability {
+    Established,
+    Restorable,
+    #[default]
+    Unavailable,
+    Closing,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpLatestTurnStatus {
+    #[default]
+    None,
+    Completed,
+    Cancelled,
+    Failed,
 }
 
 /// Durable retry identity for the latest logical prompt turn.
@@ -738,15 +784,13 @@ pub fn read_session_metrics(session_path: &Utf8Path) -> SessionMetrics {
     // 1. Read acp.snapshot.json (acp.session.json may not exist)
     let snapshot_path = session_path.parent().map(|p| p.join("acp.snapshot.json"));
     if let Some(ref sp) = snapshot_path {
-        if let Ok(contents) = std::fs::read_to_string(sp.as_std_path()) {
-            if let Ok(meta) = serde_json::from_str::<AcpSessionMetadata>(&contents) {
-                input = meta.input_tokens.unwrap_or(0);
-                output = meta.output_tokens.unwrap_or(0);
-                cache_read = meta.cached_read_tokens.unwrap_or(0);
-                total = meta.total_tokens.unwrap_or(0);
-                if let Some(t) = &meta.timing {
-                    session_elapsed_seconds = t.session_elapsed_seconds;
-                }
+        if let Ok(meta) = load_session_metadata(sp, None) {
+            input = meta.input_tokens.unwrap_or(0);
+            output = meta.output_tokens.unwrap_or(0);
+            cache_read = meta.cached_read_tokens.unwrap_or(0);
+            total = meta.total_tokens.unwrap_or(0);
+            if let Some(t) = &meta.timing {
+                session_elapsed_seconds = t.session_elapsed_seconds;
             }
         }
     }
@@ -1342,6 +1386,64 @@ pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) ->
     write_json(path, metadata)
 }
 
+/// Loads ACP metadata and performs the development-stage, one-time migration
+/// away from the ambiguous legacy `status` field. The migrated representation
+/// is written back immediately so every later reader sees the split schema.
+pub fn load_session_metadata(
+    path: &Utf8Path,
+    established_session_id: Option<String>,
+) -> Result<AcpSessionMetadata> {
+    Ok(serde_json::from_value(load_session_metadata_value(
+        path,
+        established_session_id,
+    )?)?)
+}
+
+/// Value-level metadata loader used by lightweight control/read-model paths.
+/// Migration happens before typed deserialization so old minimal metadata
+/// shells can be upgraded without inventing unrelated adapter fields.
+pub fn load_session_metadata_value(
+    path: &Utf8Path,
+    established_session_id: Option<String>,
+) -> Result<Value> {
+    let mut value: Value = read_json(path)?;
+    let Some(legacy_status) = value
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(value);
+    };
+    let normalized = legacy_status.trim().to_ascii_lowercase().replace('_', "-");
+    if value.get("sessionId").is_none()
+        && let Some(session_id) = established_session_id
+    {
+        value["sessionId"] = Value::String(session_id);
+    }
+    value["availability"] = Value::String(
+        match normalized.as_str() {
+            "closing" | "cancelling" | "cancel-requested" => "closing",
+            "failed" | "failure" | "error" | "killed" => "restorable",
+            _ => "established",
+        }
+        .to_string(),
+    );
+    value["latestTurnStatus"] = Value::String(
+        match normalized.as_str() {
+            "completed" | "complete" => "completed",
+            "cancelled" | "canceled" => "cancelled",
+            "failed" | "failure" | "error" | "killed" => "failed",
+            _ => "none",
+        }
+        .to_string(),
+    );
+    if let Some(object) = value.as_object_mut() {
+        object.remove("status");
+    }
+    write_json(path, &value)?;
+    Ok(value)
+}
+
 pub fn normalize_session_update(
     seq: u64,
     session_id: Option<String>,
@@ -1386,7 +1488,8 @@ pub fn normalize_session_update(
         status: compaction_phase
             .map(|phase| match phase {
                 "started" => "running".to_string(),
-                _ => "completed".to_string(),
+                "completed" => "completed".to_string(),
+                _ => "interrupted".to_string(),
             })
             .or_else(|| extract_status(update)),
         started_seq: None,
@@ -1410,16 +1513,34 @@ pub fn normalize_session_update(
     event
 }
 
-/// Claude-compatible ACP adapters currently expose context compaction as two
-/// standalone agent control messages. Normalize them at the provider boundary
-/// so consumers do not need to interpret assistant prose.
+const CLAUDE_COMPACTION_STARTED_MESSAGE: &str = "Compacting...";
+const CLAUDE_COMPACTION_COMPLETED_MESSAGE: &str = "Compacting completed.";
+const PROVIDER_CONTEXT_COMPACTION_META_POINTER: &str = "/_meta/contextCompaction";
+
+/// Normalize provider compaction signals at the ACP boundary so consumers only
+/// observe the canonical context-compaction lifecycle. Structured metadata is
+/// preferred; Claude-compatible standalone control messages remain a narrow
+/// compatibility fallback until ACP standardizes compaction updates.
 pub fn context_compaction_phase(update: &Value) -> Option<&'static str> {
-    if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
+    let update_kind = update.get("sessionUpdate").and_then(Value::as_str)?;
+    if matches!(update_kind, "tool_call" | "tool_call_update")
+        && update
+            .pointer(PROVIDER_CONTEXT_COMPACTION_META_POINTER)
+            .is_some_and(Value::is_object)
+    {
+        return match extract_status(update)?.to_ascii_lowercase().as_str() {
+            "in_progress" => Some("started"),
+            "completed" | "success" | "succeeded" => Some("completed"),
+            "failed" | "error" | "cancelled" | "canceled" => Some("interrupted"),
+            _ => None,
+        };
+    }
+    if update_kind != "agent_message_chunk" {
         return None;
     }
     match extract_text(update)?.trim() {
-        "Compacting..." => Some("started"),
-        "Compacting completed." => Some("completed"),
+        CLAUDE_COMPACTION_STARTED_MESSAGE => Some("started"),
+        CLAUDE_COMPACTION_COMPLETED_MESSAGE => Some("completed"),
         _ => None,
     }
 }
@@ -1721,6 +1842,26 @@ pub fn user_prompt_event(
     hidden_from_chat: bool,
     attachments: Vec<AttachmentMeta>,
 ) -> AcpUiEvent {
+    user_prompt_event_with_quotes(
+        seq,
+        session_id,
+        content,
+        prompt_id,
+        hidden_from_chat,
+        attachments,
+        Vec::new(),
+    )
+}
+
+pub fn user_prompt_event_with_quotes(
+    seq: u64,
+    session_id: String,
+    content: String,
+    prompt_id: Option<String>,
+    hidden_from_chat: bool,
+    attachments: Vec<AttachmentMeta>,
+    quotes: Vec<UserPromptQuote>,
+) -> AcpUiEvent {
     let mut raw = serde_json::json!({
         "source": "goldBandPrompt",
         "synthetic": true,
@@ -1734,6 +1875,9 @@ pub fn user_prompt_event(
     }
     if !attachments.is_empty() {
         raw["attachments"] = serde_json::to_value(&attachments).unwrap_or_default();
+    }
+    if !quotes.is_empty() {
+        raw["quotes"] = serde_json::to_value(&quotes).unwrap_or_default();
     }
     AcpUiEvent {
         id: format!("gold-band-user-prompt-{seq}"),
@@ -1840,14 +1984,18 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpSessionMetadata, AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
-        annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
-        append_timeline_patch, cancel_latest_processing_prompt_retry,
-        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
-        elicitation_response_event, extract_usage_fields, kind_to_ui_kind,
-        latest_timeline_source_seq, load_timeline_items, normalize_session_update,
-        permission_request_event, user_prompt_event, write_timeline_items,
+        AcpLatestTurnStatus, AcpSessionAvailability, AcpSessionMetadata, AcpTimingState,
+        AcpUiEvent, agent_transcript_tool_output, annotate_latest_runtime_control_output,
+        append_raw_frame, append_structured_diagnostic, append_timeline_patch,
+        cancel_latest_processing_prompt_retry, compact_live_conversation_event,
+        context_compaction_phase, elicitation_request_event, elicitation_response_event,
+        extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata,
+        load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
+        user_prompt_event_with_quotes, write_timeline_items,
     };
+    use crate::provider::UserPromptQuote;
+    use crate::storage::{read_json, write_json};
+    use camino::Utf8PathBuf;
     use serde_json::{Value, json};
 
     #[test]
@@ -2088,6 +2236,74 @@ mod tests {
         assert_eq!(completed.kind, "contextCompaction");
         assert_eq!(completed.status.as_deref(), Some("completed"));
         assert_eq!(completed.content, None);
+    }
+
+    #[test]
+    fn normalizes_structured_tool_compaction_as_the_same_typed_lifecycle() {
+        let started_update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "compact-1",
+            "kind": "think",
+            "title": "Compact conversation",
+            "status": "in_progress",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+        let completed_update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "compact-1",
+            "title": "Compact conversation",
+            "status": "completed",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+
+        assert_eq!(context_compaction_phase(&started_update), Some("started"));
+        assert_eq!(
+            context_compaction_phase(&completed_update),
+            Some("completed")
+        );
+
+        let started = normalize_session_update(10, Some("session-1".to_string()), &started_update);
+        assert_eq!(started.kind, "contextCompaction");
+        assert_eq!(started.status.as_deref(), Some("running"));
+        assert_eq!(started.tool_call_id.as_deref(), Some("compact-1"));
+        assert_eq!(started.content, None);
+
+        let completed =
+            normalize_session_update(20, Some("session-1".to_string()), &completed_update);
+        assert_eq!(completed.kind, "contextCompaction");
+        assert_eq!(completed.status.as_deref(), Some("completed"));
+        assert_eq!(completed.tool_call_id.as_deref(), Some("compact-1"));
+        assert_eq!(completed.content, None);
+    }
+
+    #[test]
+    fn does_not_infer_compaction_from_a_tool_title_without_structured_metadata() {
+        let update = json!({
+            "sessionUpdate": "tool_call",
+            "toolCallId": "ordinary-tool",
+            "title": "Compact conversation",
+            "status": "in_progress",
+        });
+
+        assert_eq!(context_compaction_phase(&update), None);
+        let event = normalize_session_update(11, None, &update);
+        assert_eq!(event.kind, "toolCall");
+        assert_eq!(event.status.as_deref(), Some("in_progress"));
+    }
+
+    #[test]
+    fn maps_structured_failed_compaction_to_interrupted() {
+        let update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "compact-1",
+            "status": "failed",
+            "_meta": {"contextCompaction": {"version": 1}},
+        });
+
+        assert_eq!(context_compaction_phase(&update), Some("interrupted"));
+        let event = normalize_session_update(21, None, &update);
+        assert_eq!(event.kind, "contextCompaction");
+        assert_eq!(event.status.as_deref(), Some("interrupted"));
     }
 
     #[test]
@@ -2365,6 +2581,37 @@ mod tests {
     }
 
     #[test]
+    fn legacy_session_status_migrates_once_to_split_lifecycle_facets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.snapshot.json")).unwrap();
+        write_json(
+            &path,
+            &json!({
+                "adapterId": "codex-acp",
+                "adapterDisplayName": "Codex",
+                "cwd": "C:/tmp/attempt",
+                "status": "completed",
+                "restored": true,
+                "stopReason": "end_turn",
+                "capabilities": {},
+                "createdAt": "1785232749Z",
+                "updatedAt": "1785233025Z"
+            }),
+        )
+        .unwrap();
+
+        let metadata = load_session_metadata(&path, Some("session-123".to_string())).unwrap();
+        assert_eq!(metadata.session_id.as_deref(), Some("session-123"));
+        assert_eq!(metadata.availability, AcpSessionAvailability::Established);
+        assert_eq!(metadata.latest_turn_status, AcpLatestTurnStatus::Completed);
+
+        let persisted: Value = read_json(&path).unwrap();
+        assert!(persisted.get("status").is_none());
+        assert_eq!(persisted["availability"], "established");
+        assert_eq!(persisted["latestTurnStatus"], "completed");
+    }
+
+    #[test]
     fn session_metadata_serializes_cumulative_attempt_token_totals_separately() {
         let metadata: AcpSessionMetadata = serde_json::from_value(json!({
             "adapterId": "codex-acp",
@@ -2437,6 +2684,33 @@ mod tests {
                 .and_then(|raw| raw.get("promptId"))
                 .and_then(|value| value.as_str()),
             Some("prompt-123")
+        );
+    }
+
+    #[test]
+    fn user_prompt_event_persists_explicit_quotes_without_changing_display_content() {
+        let event = user_prompt_event_with_quotes(
+            7,
+            "session-123".to_string(),
+            "> 用户自己输入的正文".to_string(),
+            Some("prompt-123".to_string()),
+            false,
+            Vec::new(),
+            vec![UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: "message-1".to_string(),
+                text: "Agent 原文".to_string(),
+            }],
+        );
+
+        assert_eq!(event.content.as_deref(), Some("> 用户自己输入的正文"));
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/quotes/0/text"))
+                .and_then(Value::as_str),
+            Some("Agent 原文")
         );
     }
 

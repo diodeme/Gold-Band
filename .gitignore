@@ -1,5 +1,6 @@
 /target
 /release
+/target-codex-scheduled
 .idea
 .vscode
 node_modules/
@@ -23,3 +24,5 @@ node_modules/
 !.claude/settings.json
 draft/*
 .agents
+.codex-*/
+coverage

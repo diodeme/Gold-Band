@@ -14,16 +14,17 @@ pub use self::notification::{
     direct_conversation_agent_label, make_dedup_key, make_dedup_key_with_suffix,
     make_turn_dedup_key, reason_key,
 };
+pub use self::orchestrator::{AcceptedRun, PreparedRun};
 
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
-    ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState, ManagedAgentConfig,
-    ManagedAgentId, McpServerConfig, McpServerHealthResult, ProviderDiagnosticSnapshot,
-    RuntimeConfig, RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
+    AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
+    DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
+    McpServerHealthResult, PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig,
+    RuntimeLogLevel, SettingsConfig, SkillMeta, SkillSource, StateConfig,
 };
 use crate::control::{ControlDecision, decide_next_step};
 use crate::domain::{NodeOutcome, RunOutcome};
@@ -31,46 +32,63 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
-    workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
+    validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
-    DynamicGraphState, DynamicNodeStatus, DynamicRunStatus, dynamic_leaf_is_active,
+    DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
     refresh_dynamic_current_leaf_ids,
 };
+use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
-    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
+    ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
+    render_prompt_bundle, supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RunState, TaskState, WorkerRefState, validate_node_state,
-    validate_round_state, validate_run_state, validate_task_state, validate_worker_ref_state,
+    NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
+    WorkerRefState, validate_node_state, validate_round_state, validate_run_state,
+    validate_task_state, validate_worker_ref_state,
 };
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
     write_json,
+};
+use crate::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
+    migrate_authoring_workflow, reconcile_authoring_workflow_for_save, validate_and_inject,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use self::ids::{generate_uuid, next_task_id, next_workflow_id, now_rfc3339_like};
+use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
+pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, pause_dynamic_leaf_runtime_state,
+    build_dynamic_prompt_bundle, dynamic_state_lock_for,
+    launch_prepared_run_background as orchestrator_launch_prepared_run_background,
+    pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
+    prepare_run as orchestrator_prepare_run,
+    prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
+    reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
     run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
+    run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
+    run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
+    validate_manual_check_submission as orchestrator_validate_manual_check_submission,
 };
 
 #[derive(Debug, Clone)]
@@ -79,11 +97,59 @@ pub struct ProviderDoctorProbe {
     pub commands: Vec<AcpCommandItem>,
 }
 use self::profile_resolver::resolve_workflow_profiles;
+
+struct OwnedTaskDirectory {
+    path: Utf8PathBuf,
+    armed: bool,
+}
+
+impl OwnedTaskDirectory {
+    fn new(path: Utf8PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OwnedTaskDirectory {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_dir_all(self.path.as_std_path());
+        }
+    }
+}
 use self::profiles::{
     DefaultProfileIds, create_profile, delete_profile as delete_profile_file,
     ensure_default_user_profiles, import_profiles_from_folder, list_profiles, show_profile,
     update_profile,
 };
+
+const ATTEMPT_RUNTIME_STATE_LOCK_SHARDS: usize = 64;
+static ATTEMPT_RUNTIME_STATE_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
+
+pub(crate) fn attempt_runtime_state_lock(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+) -> &'static Mutex<()> {
+    let key = format!(
+        "{}/{task_id}/{run_id}/{round_id}/{node_id}/{attempt_id}",
+        app.paths.repo_root
+    );
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let shard = hasher.finish() as usize % ATTEMPT_RUNTIME_STATE_LOCK_SHARDS;
+    &ATTEMPT_RUNTIME_STATE_LOCKS.get_or_init(|| {
+        (0..ATTEMPT_RUNTIME_STATE_LOCK_SHARDS)
+            .map(|_| Mutex::new(()))
+            .collect()
+    })[shard]
+}
 pub use self::profiles::{
     ImportProfilesInput, ImportProfilesResult, ProfileCommandError, ProfileEntry, ProfileInput,
     ProfileList, ProfileScope,
@@ -132,6 +198,41 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 }
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
+const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalEntryStage {
+    pub node_id: String,
+    pub label_key: String,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkflowTemplateCommandError {
+    #[error("workflow-template.readonly-built-in")]
+    ReadonlyBuiltIn,
+    #[error("workflow.optional-entry.invalid")]
+    InvalidOptionalEntry { reason: &'static str },
+}
+
+impl WorkflowTemplateCommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ReadonlyBuiltIn => "workflow-template.readonly-built-in",
+            Self::InvalidOptionalEntry { .. } => "workflow.optional-entry.invalid",
+        }
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::ReadonlyBuiltIn => serde_json::json!({}),
+            Self::InvalidOptionalEntry { reason } => serde_json::json!({ "reason": reason }),
+        }
+    }
+}
 
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
@@ -140,8 +241,36 @@ fn default_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认工作流".to_string(),
+        name: "默认完整工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "interview".to_string(),
+            label_key: "conversation.home.includeInterview".to_string(),
+            default_enabled: true,
+        }),
         workflow: default_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn default_lightweight_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
+    let now = now_rfc3339_like();
+    WorkflowTemplate {
+        id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
+        name: "默认轻量工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "grill".to_string(),
+            label_key: "conversation.home.includeGrill".to_string(),
+            default_enabled: true,
+        }),
+        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -155,6 +284,10 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
         (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::ZhCn, "grill") => {
+            "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。"
+        }
+        (DesktopLanguage::ZhCn, "dev-test") => "在当前工作区完成需求实现、自动化测试和必要回归。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
@@ -169,6 +302,12 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
         }
+        (DesktopLanguage::En, "grill") => {
+            "Challenge the requirement until shared understanding is reached and produce grill-consensus.md."
+        }
+        (DesktopLanguage::En, "dev-test") => {
+            "Implement the requirement and run automated verification in the current workspace."
+        }
         _ => "Execute this workflow node.",
     }
 }
@@ -179,7 +318,7 @@ fn default_workflow_dsl(
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        provider: &str,
+        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -190,7 +329,8 @@ fn default_workflow_dsl(
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
-            provider: Some(provider.to_string()),
+            execution_slot_id: None,
+            provider: None,
             model: None,
             profile: Some(
                 profiles
@@ -210,7 +350,7 @@ fn default_workflow_dsl(
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: Some("bypassPermissions".to_string()),
+            permission_mode: None,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -222,8 +362,8 @@ fn default_workflow_dsl(
         id: "task-workflow".to_string(),
         entry: "interview".to_string(),
         control: WorkflowControl {
-            max_attempts: None,
-            max_rounds: None,
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
         },
         nodes: vec![
             worker(
@@ -365,6 +505,117 @@ fn default_workflow_dsl(
     }
 }
 
+fn default_lightweight_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
+    fn worker(
+        _provider: &str,
+        profiles: &DefaultProfileIds,
+        id: &str,
+        role_key: &str,
+        goal: &str,
+        validation: bool,
+    ) -> NodeDsl {
+        let artifact = validation.then(|| format!("{id}-result"));
+        NodeDsl::Worker(WorkerNode {
+            id: id.to_string(),
+            execution_slot_id: None,
+            provider: None,
+            model: None,
+            profile: Some(
+                profiles
+                    .get(role_key)
+                    .expect("default role id exists")
+                    .to_string(),
+            ),
+            goal: Some(goal.to_string()),
+            output: artifact.clone().map(|artifact| OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact,
+                schema: Some(serde_json::json!({
+                    "reason": "String",
+                    "result": "boolean",
+                })),
+            }),
+            success_condition: validation.then(|| JsonConditionDsl::Expression {
+                expression: "$.result == true".to_string(),
+            }),
+            permission_mode: None,
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        })
+    }
+
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "task-workflow-lightweight".to_string(),
+        entry: "grill".to_string(),
+        control: WorkflowControl {
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
+        },
+        nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "grill",
+                "grill",
+                default_workflow_goal(language, "grill"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "dev-test",
+                "dev-test",
+                default_workflow_goal(language, "dev-test"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "accept",
+                "accept",
+                default_workflow_goal(language, "accept"),
+                true,
+            ),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "grill".to_string(),
+                to: "dev-test".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "dev-test".to_string(),
+                to: "accept".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: NEW_ROUND_NODE.to_string(),
+                on: EdgeOutcome::Failure,
+                session: None,
+                new_round_entry: Some("dev-test".to_string()),
+            },
+        ],
+    }
+}
+
 fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
     let slug = name
         .trim()
@@ -396,6 +647,113 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
         candidate = format!("{base}-{index}");
     }
     candidate
+}
+
+fn upsert_built_in_workflow_template(
+    templates: &mut Vec<WorkflowTemplate>,
+    built_in: WorkflowTemplate,
+    index: usize,
+) -> Result<()> {
+    if let Some(current_index) = templates
+        .iter()
+        .position(|template| template.id == built_in.id)
+    {
+        let mut next = built_in;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: templates[current_index].workflow.clone(),
+            model_bindings: templates[current_index].model_bindings.clone(),
+        };
+        next.model_bindings = persisted.model_bindings.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut next.workflow,
+            &mut next.model_bindings,
+            Some(&persisted),
+            Some(&next.id),
+        )?;
+        templates[current_index] = next;
+        if current_index != index {
+            let template = templates.remove(current_index);
+            templates.insert(index.min(templates.len()), template);
+        }
+    } else {
+        let mut built_in = built_in;
+        reconcile_authoring_workflow_for_save(
+            &mut built_in.workflow,
+            &mut built_in.model_bindings,
+            None,
+            Some(&built_in.id),
+        )?;
+        templates.insert(index.min(templates.len()), built_in);
+    }
+    Ok(())
+}
+
+pub fn apply_optional_entry_preference(
+    template: &WorkflowTemplate,
+    include_optional_entry: Option<bool>,
+    workflow: &mut WorkflowDsl,
+) -> Result<Option<bool>> {
+    let Some(stage) = template.optional_entry_stage.as_ref() else {
+        return Ok(None);
+    };
+    if !template.is_built_in {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "requires-built-in-template",
+        }
+        .into());
+    }
+    if workflow.entry != stage.node_id {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "must-be-workflow-entry",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == stage.node_id) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "entry-node-missing",
+        }
+        .into());
+    }
+    let mut successors = workflow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == stage.node_id && edge.on == EdgeOutcome::Success)
+        .map(|edge| edge.to.as_str());
+    let next_entry =
+        successors
+            .next()
+            .ok_or(WorkflowTemplateCommandError::InvalidOptionalEntry {
+                reason: "missing-success-successor",
+            })?;
+    if successors.next().is_some() {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "multiple-success-successors",
+        }
+        .into());
+    }
+    if next_entry == END_NODE || next_entry == NEW_ROUND_NODE {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-must-be-real-node",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == next_entry) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-node-missing",
+        }
+        .into());
+    }
+
+    let include = include_optional_entry.unwrap_or(stage.default_enabled);
+    if !include {
+        let next_entry = next_entry.to_string();
+        workflow.nodes.retain(|node| node.id() != stage.node_id);
+        workflow
+            .edges
+            .retain(|edge| edge.from != stage.node_id && edge.to != stage.node_id);
+        workflow.entry = next_entry;
+    }
+    Ok(Some(include))
 }
 
 fn next_auto_template_id(store: &AutoTemplateStore) -> String {
@@ -437,7 +795,13 @@ pub struct WorkflowTemplateStore {
 pub struct WorkflowTemplate {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub is_built_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: WorkflowModelBindings,
     #[serde(alias = "created_at")]
     pub created_at: String,
     #[serde(alias = "updated_at")]
@@ -613,6 +977,7 @@ pub enum RuntimeLifecycleEvent {
     RunPaused {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -626,6 +991,7 @@ pub enum RuntimeLifecycleEvent {
     InterventionRequested {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -639,6 +1005,7 @@ pub enum RuntimeLifecycleEvent {
     RunCompleted {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -651,13 +1018,14 @@ pub enum RuntimeLifecycleEvent {
         /// Direct 首轮以 Agent 回复语义展示；普通 Workflow/AUTO 为 None。
         completion_agent_label: Option<String>,
     },
-    /// 非 runtime-continue 的 ACP prompt turn 已结束。
+    /// 非 Runtime 控制的 ACP prompt turn 已结束。
     ///
     /// Direct 后续对话以及 Workflow/AUTO 节点完成后的手动追问统一走该事件；
     /// runtime 自身继续执行仍由 RunCompleted/InterventionRequested 表达，避免双重通知。
     AcpTurnFinished {
         event_id: String,
         occurred_at: String,
+        scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
         run_id: String,
@@ -673,6 +1041,32 @@ pub enum RuntimeLifecycleEvent {
         batch_progress: AcpTurnBatchProgress,
         task_title: Option<String>,
     },
+}
+
+impl RuntimeLifecycleEvent {
+    fn set_scheduled_occurrence_id(&mut self, occurrence_id: Option<String>) {
+        match self {
+            Self::RunPaused {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::InterventionRequested {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::RunCompleted {
+                scheduled_occurrence_id,
+                ..
+            }
+            | Self::AcpTurnFinished {
+                scheduled_occurrence_id,
+                ..
+            } => {
+                *scheduled_occurrence_id = occurrence_id;
+            }
+            Self::NodeStarted { .. } | Self::NodeCompleted { .. } => {}
+        }
+    }
 }
 
 pub struct App {
@@ -692,6 +1086,22 @@ pub struct App {
         Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
     >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
+    scheduled_occurrence_id: Option<String>,
+    scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptRuntimePauseResult {
+    Converged,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptRuntimePausePolicy<'a> {
+    CurrentAttempt,
+    ActiveExecution(&'a str),
+    ActiveAttemptWithoutExecution,
+    PausedManualCheck,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -725,15 +1135,21 @@ pub fn is_run_continuable(run: &RunState) -> bool {
         && run.outcome.is_none()
         && matches!(
             run.pause_reason,
-            Some(
-                PauseReason::ProcessInterrupted
-                    | PauseReason::RuntimeAbnormal
-                    | PauseReason::WaitingForUserInput
-            )
+            Some(PauseReason::ProcessInterrupted | PauseReason::RuntimeAbnormal)
         )
         && run.current_round.is_some()
         && run.current_node.is_some()
         && run.current_attempt.is_some()
+}
+
+pub fn is_completed_attempt_recoverable(run: &RunState, node: &NodeState) -> bool {
+    is_run_continuable(run)
+        && run.current_round.as_deref() == Some(node.round_id.as_str())
+        && run.current_node.as_deref() == Some(node.node_id.as_str())
+        && run.current_attempt.as_deref() == Some(node.attempt_id.as_str())
+        && node.status == RunStatus::Completed
+        && node.outcome == Some(NodeOutcome::Success)
+        && !node.manual_check_pending
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -809,13 +1225,14 @@ fn validate_ai_dynamic_allowed_workflows(
                 }
                 .into());
             }
-            let validated = validate_workflow(template.workflow.clone()).map_err(|error| {
-                WorkflowValidationError::AiDynamicInvalidWorkflow {
-                    node_id: dynamic.id.clone(),
-                    workflow_name: template.name.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            let validated =
+                validate_authoring_workflow(template.workflow.clone()).map_err(|error| {
+                    WorkflowValidationError::AiDynamicInvalidWorkflow {
+                        node_id: dynamic.id.clone(),
+                        workflow_name: template.name.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
             if !dynamic.control.allow_nested_dynamic && workflow_contains_ai_dynamic(&validated.raw)
             {
                 return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
@@ -889,59 +1306,70 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelConfigNormalization {
-    pub node_id: String,
-    pub scope: String,
-    pub provider: Option<String>,
-    pub previous_model: String,
-}
-
-fn provider_model_is_stale(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    provider: &str,
-    model: &str,
-) -> bool {
-    let supported_models = diagnostics
-        .get(provider)
-        .filter(|diagnostic| diagnostic.available)
-        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
-        .unwrap_or_default();
-    !supported_models.is_empty()
-        && !supported_models
-            .iter()
-            .any(|option| option.id == model || option.name.as_deref() == Some(model))
-}
-
-fn clear_stale_model(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    node_id: &str,
-    scope: &str,
-    provider: &str,
-    model: &mut Option<String>,
-    normalizations: &mut Vec<ModelConfigNormalization>,
-) {
-    let Some(configured) = model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    if !provider_model_is_stale(diagnostics, provider, configured) {
-        return;
-    }
-    normalizations.push(ModelConfigNormalization {
-        node_id: node_id.to_string(),
-        scope: scope.to_string(),
-        provider: Some(provider.to_string()),
-        previous_model: configured.to_string(),
-    });
-    *model = None;
-}
-
 impl App {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transition_runtime_execution_phase(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        inner: Option<(&str, &str)>,
+        phase: RuntimeExecutionPhase,
+    ) -> Result<RunState> {
+        let state_lock = attempt_runtime_state_lock(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let mut run = self.run_status(task_id, run_id)?;
+        if run.status != RunStatus::Running
+            || run.current_round.as_deref() != Some(round_id)
+            || run.current_node.as_deref() != Some(outer_node_id)
+            || run.current_attempt.as_deref() != Some(outer_attempt_id)
+        {
+            bail!("runtime execution locator is no longer current");
+        }
+        let locator = match inner {
+            Some((node_id, attempt_id)) => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: node_id.to_string(),
+                attempt_id: attempt_id.to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            None => RuntimeAttemptLocator {
+                round_id: round_id.to_string(),
+                node_id: outer_node_id.to_string(),
+                attempt_id: outer_attempt_id.to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+        };
+        let phase = if phase == RuntimeExecutionPhase::RunningNode
+            && matches!(
+                run.execution.phase,
+                RuntimeExecutionPhase::FinalizingArtifact
+                    | RuntimeExecutionPhase::RepairingArtifact
+            ) {
+            run.execution.phase
+        } else {
+            phase
+        };
+        run.updated_at = now_rfc3339_like();
+        run.transition_execution(phase, Some(locator), run.updated_at.clone())?;
+        validate_run_state(&run)?;
+        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        Ok(run)
+    }
+
     pub fn new(repo_root: Utf8PathBuf) -> Self {
         Self::with_config(repo_root, RuntimeConfig::default())
     }
@@ -957,6 +1385,8 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -1002,6 +1432,8 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
+            scheduled_task_context: self.scheduled_task_context.clone(),
         }
     }
 
@@ -1035,6 +1467,35 @@ impl App {
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
         self.lifecycle_bus = lifecycle_bus;
+        self
+    }
+
+    pub fn with_scheduled_occurrence_id(mut self, occurrence_id: Option<String>) -> Self {
+        self.scheduled_occurrence_id = occurrence_id;
+        self
+    }
+
+    pub fn scheduled_occurrence_id(&self) -> Option<&str> {
+        self.scheduled_occurrence_id.as_deref()
+    }
+
+    pub fn with_scheduled_task_context(
+        mut self,
+        context: Option<crate::provider::ScheduledTaskContextInfo>,
+    ) -> Self {
+        self.scheduled_task_context = context;
+        self
+    }
+
+    pub fn scheduled_task_context(&self) -> Option<&crate::provider::ScheduledTaskContextInfo> {
+        self.scheduled_task_context.as_ref()
+    }
+
+    /// Convert a scheduler-scoped app clone back to ordinary conversation
+    /// semantics before dispatching a later user-authored prompt turn.
+    pub fn without_scheduled_turn_context(mut self) -> Self {
+        self.scheduled_occurrence_id = None;
+        self.scheduled_task_context = None;
         self
     }
 
@@ -1112,7 +1573,10 @@ impl App {
         Ok(())
     }
 
-    pub fn emit_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
+    pub fn emit_lifecycle_event(&self, mut event: RuntimeLifecycleEvent) {
+        if let Some(occurrence_id) = self.scheduled_occurrence_id.clone() {
+            event.set_scheduled_occurrence_id(Some(occurrence_id));
+        }
         self.lifecycle_bus.emit(event);
     }
 
@@ -1143,9 +1607,22 @@ impl App {
         Ok(settings)
     }
 
-    pub fn set_user_desktop_theme(&self, theme: DesktopThemePreference) -> Result<SettingsConfig> {
+    pub fn set_user_desktop_appearance(
+        &self,
+        appearance: AppearancePreference,
+    ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        self.save_settings(&settings)?;
+        Ok(settings)
+    }
+
+    pub fn set_user_desktop_personalization(
+        &self,
+        personalization: PersonalizationPreference,
+    ) -> Result<SettingsConfig> {
+        let mut settings = self.load_settings()?;
+        settings.personalization = Some(personalization.normalized());
         self.save_settings(&settings)?;
         Ok(settings)
     }
@@ -1159,38 +1636,24 @@ impl App {
 
     pub fn set_user_desktop_preferences(
         &self,
-        theme: DesktopThemePreference,
+        appearance: AppearancePreference,
+        personalization: PersonalizationPreference,
         language: DesktopLanguage,
-        font: DesktopFontPreference,
+        use_local_claude: bool,
+        verbose_logging: bool,
     ) -> Result<SettingsConfig> {
         let mut settings = self.load_settings()?;
-        settings.desktop_theme = Some(theme);
+        settings.appearance = Some(appearance);
+        settings.personalization = Some(personalization.normalized());
         settings.desktop_language = Some(language);
-        settings.desktop_font = Some(font);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_use_local_claude(&self, use_local_claude: bool) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
         settings.use_local_claude = Some(use_local_claude);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_log_level(&self, log_level: RuntimeLogLevel) -> Result<SettingsConfig> {
-        let mut settings = self.load_settings()?;
-        settings.log_level = Some(log_level);
-        self.save_settings(&settings)?;
-        Ok(settings)
-    }
-
-    pub fn set_user_verbose_logging(&self, enabled: bool) -> Result<SettingsConfig> {
-        self.set_user_log_level(if enabled {
+        settings.log_level = Some(if verbose_logging {
             RuntimeLogLevel::Debug
         } else {
             RuntimeLogLevel::Info
-        })
+        });
+        self.save_settings(&settings)?;
+        Ok(settings)
     }
 
     pub fn set_user_desktop_updater_url_override(
@@ -1233,14 +1696,7 @@ impl App {
         Ok(state)
     }
 
-    pub fn set_user_desktop_workspace(
-        &self,
-        workspace: &str,
-    ) -> Result<(SettingsConfig, StateConfig)> {
-        let mut settings = self.load_settings()?;
-        settings.desktop_workspace = Some(workspace.to_string());
-        self.save_settings(&settings)?;
-
+    pub fn record_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
         let mut state = self.load_state()?;
         state
             .recent_desktop_workspaces
@@ -1251,7 +1707,7 @@ impl App {
         state.recent_desktop_workspaces.truncate(8);
         self.save_state(&state)?;
 
-        Ok((settings, state))
+        Ok(state)
     }
 
     pub fn remove_user_recent_desktop_workspace(&self, workspace: &str) -> Result<StateConfig> {
@@ -1488,13 +1944,20 @@ impl App {
         name: String,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.save_workflow_template_with_bindings(name, workflow, WorkflowModelBindings::default())
+    }
+
+    pub fn save_workflow_template_with_bindings(
+        &self,
+        name: String,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let name = name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
         }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1508,8 +1971,8 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
@@ -1519,7 +1982,10 @@ impl App {
         store.templates.push(WorkflowTemplate {
             id: id.clone(),
             name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
             workflow: validated.raw,
+            model_bindings,
             created_at: now.clone(),
             updated_at: now,
         });
@@ -1533,18 +1999,48 @@ impl App {
         template_id: &str,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.update_workflow_template_with_bindings(
+            template_id,
+            workflow,
+            WorkflowModelBindings::default(),
+        )
+    }
+
+    pub fn update_workflow_template_with_bindings(
+        &self,
+        template_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let template_id = template_id.trim();
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be updated");
-        }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
+        let persisted_template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: persisted_template.workflow.clone(),
+            model_bindings: persisted_template.model_bindings.clone(),
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            None,
+        )?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
             &store,
@@ -1558,8 +2054,46 @@ impl App {
             .templates
             .iter_mut()
             .find(|template| template.id == template_id)
-            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+            .expect("persisted workflow template was resolved before validation");
         template.workflow = validated.raw;
+        template.model_bindings = model_bindings;
+        template.updated_at = now_rfc3339_like();
+        store.last_used_template_id = Some(template_id.to_string());
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn update_built_in_workflow_template_bindings(
+        &self,
+        template_id: &str,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut store = self.load_workflow_template_store()?;
+        let template_index = store
+            .templates
+            .iter()
+            .position(|template| template.id == template_id && template.is_built_in)
+            .ok_or(WorkflowTemplateCommandError::ReadonlyBuiltIn)?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: store.templates[template_index].workflow.clone(),
+            model_bindings: store.templates[template_index].model_bindings.clone(),
+        };
+        let mut workflow = persisted.workflow.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            Some(template_id),
+        )?;
+        validate_and_inject(
+            &workflow,
+            &model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?;
+        let template = &mut store.templates[template_index];
+        template.workflow = workflow;
+        template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
         self.save_workflow_template_store(&store)?;
@@ -1571,11 +2105,15 @@ impl App {
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be deleted");
-        }
-
         let mut store = self.load_workflow_template_store()?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
         let original_len = store.templates.len();
         store
             .templates
@@ -1710,6 +2248,8 @@ impl App {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
+        let lightweight_template =
+            default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -1722,18 +2262,19 @@ impl App {
         }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
-            if store.templates.is_empty() {
-                store.templates.push(default_template);
-            } else if let Some(template) = store
-                .templates
-                .iter_mut()
-                .find(|template| template.id == "default")
-            {
-                *template = default_template;
-            } else {
-                store.templates.insert(0, default_template);
+            for template in &mut store.templates {
+                migrate_authoring_workflow(
+                    &mut template.workflow,
+                    &mut template.model_bindings,
+                    template.is_built_in.then_some(template.id.as_str()),
+                )?;
             }
-            self.normalize_workflow_template_store_models(&mut store);
+            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+            if let Some(workflow) = store.last_created_workflow.as_mut() {
+                let mut ignored = WorkflowModelBindings::default();
+                migrate_authoring_workflow(workflow, &mut ignored, None)?;
+            }
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
@@ -1741,31 +2282,69 @@ impl App {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
-            templates: vec![default_template],
+            templates: vec![default_template, lightweight_template],
         };
-        self.normalize_workflow_template_store_models(&mut store);
+        for template in &mut store.templates {
+            migrate_authoring_workflow(
+                &mut template.workflow,
+                &mut template.model_bindings,
+                template.is_built_in.then_some(template.id.as_str()),
+            )?;
+        }
         self.save_workflow_template_store(&store)?;
         Ok(store)
-    }
-
-    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
-        let now = now_rfc3339_like();
-        for template in &mut store.templates {
-            if !self
-                .normalize_workflow_models(&mut template.workflow)
-                .is_empty()
-            {
-                template.updated_at = now.clone();
-            }
-        }
-        if let Some(workflow) = store.last_created_workflow.as_mut() {
-            self.normalize_workflow_models(workflow);
-        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
         fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
         write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
+        let path = self.paths.workflow_file(task_id);
+        let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+        let (mut current, legacy) = compat.into_current();
+        let migrated =
+            migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)?;
+        if legacy || migrated {
+            write_json(&path, &current)?;
+        }
+        Ok(current)
+    }
+
+    pub fn task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        Ok(self.task_authoring_workflow(task_id)?.workflow)
+    }
+
+    pub fn executable_task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        let authoring = self.task_authoring_workflow(task_id)?;
+        Ok(validate_and_inject(
+            &authoring.workflow,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?)
+    }
+
+    fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        mut authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        let path = self.paths.workflow_file(task_id);
+        let persisted = if path.exists() {
+            let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+            Some(compat.into_current().0)
+        } else {
+            None
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut authoring.workflow,
+            &mut authoring.model_bindings,
+            persisted.as_ref(),
+            None,
+        )?;
+        write_json(&path, &authoring)
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -1788,10 +2367,9 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        mut workflow: WorkflowDsl,
+        workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
-        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -1895,6 +2473,8 @@ impl App {
             acp_session_update: None,
             prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
+            scheduled_occurrence_id: None,
+            scheduled_task_context: None,
         }
     }
 
@@ -1933,9 +2513,22 @@ impl App {
         }
 
         let mut workflow = input.workflow.clone();
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.create_task_from_requirement_with_bindings(input, workflow, model_bindings)
+    }
+
+    pub fn create_task_from_requirement_with_bindings(
+        &self,
+        input: CreateTaskInput,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        if input.requirement_content.trim().is_empty() {
+            bail!("requirement content cannot be empty");
+        }
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         let selected_template = input
@@ -1957,7 +2550,8 @@ impl App {
         }
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
 
-        let task_id = next_task_id(&self.paths.tasks_dir())?;
+        let (task_id, task_dir) = reserve_next_task_dir(&self.paths.tasks_dir())?;
+        let mut owned_task_dir = OwnedTaskDirectory::new(task_dir.clone());
         let task = TaskState {
             version: VERSION.to_string(),
             id: task_id.clone(),
@@ -1966,20 +2560,22 @@ impl App {
             uuid: Some(generate_uuid()),
         };
         validate_task_state(&task)?;
-        fs::create_dir_all(
-            self.paths
-                .task_dir(&task_id)
-                .join("authoring")
-                .as_std_path(),
-        )?;
+        fs::create_dir_all(task_dir.join("authoring").as_std_path())?;
         write_json(&self.paths.task_file(&task_id), &task)?;
         fs::write(
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
-        write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            &task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw.clone(),
+                model_bindings,
+            },
+        )?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
+        owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
         Ok(summary)
     }
@@ -2002,16 +2598,32 @@ impl App {
     }
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
-        self.task_show(task_id)?;
         let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.save_task_workflow_with_bindings(task_id, workflow, model_bindings)
+    }
+
+    pub fn save_task_workflow_with_bindings(
+        &self,
+        task_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.task_show(task_id)?;
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
-        write_json(&self.paths.workflow_file(task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw,
+                model_bindings,
+            },
+        )?;
         self.task_summary(task_id)
     }
 
@@ -2047,7 +2659,14 @@ impl App {
     }
 
     pub fn run_list(&self, task_id: &str) -> Result<Vec<RunState>> {
-        self.read_json_dir_sorted(&self.paths.runs_dir(task_id))
+        let mut runs: Vec<RunState> = self.read_json_dir_sorted(&self.paths.runs_dir(task_id))?;
+        for run in &mut runs {
+            if run.reconcile_legacy_execution() {
+                write_json(&self.paths.run_file(task_id, &run.id), run)?;
+            }
+            validate_run_state(run)?;
+        }
+        Ok(runs)
     }
 
     pub fn latest_run(&self, task_id: &str) -> Result<Option<RunState>> {
@@ -2437,7 +3056,11 @@ impl App {
     }
 
     pub fn run_status(&self, task_id: &str, run_id: &str) -> Result<RunState> {
-        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        let path = self.paths.run_file(task_id, run_id);
+        let mut run: RunState = read_json(&path)?;
+        if run.reconcile_legacy_execution() {
+            write_json(&path, &run)?;
+        }
         validate_run_state(&run)?;
         Ok(run)
     }
@@ -2523,48 +3146,45 @@ impl App {
         let graph_path = self
             .paths
             .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
-        let Ok(mut graph) = read_json::<DynamicGraphState>(&graph_path) else {
+        let Ok(state_lock) = dynamic_state_lock_for(
+            &self.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+        ) else {
             return;
         };
+        let _guard = state_lock.lock();
+        let Ok(mut graph) = load_dynamic_graph(&graph_path, &self.paths.repo_root) else {
+            return;
+        };
+        let interrupted_nodes = graph
+            .nodes
+            .iter()
+            .map(|dynamic_node| {
+                (
+                    dynamic_node.id.clone(),
+                    dynamic_leaf_is_active(dynamic_node.status),
+                    dynamic_node.child_run_id.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
 
         for dynamic_node in &mut graph.nodes {
-            if dynamic_leaf_is_active(dynamic_node.status) {
-                let dynamic_node_dir = self.paths.dynamic_node_dir(
-                    task_id,
-                    run_id,
-                    round_id,
-                    node_id,
-                    attempt_id,
-                    &dynamic_node.id,
-                );
-                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
-                    for entry in entries.flatten() {
-                        let attempt_path = entry.path();
-                        if !attempt_path.is_dir() {
-                            continue;
-                        }
-                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
-                            continue;
-                        };
-                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
-                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
-                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
-                    }
-                }
-            }
-            if let Some(child_run_id) = dynamic_node.child_run_id.clone() {
-                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
-            }
             if dynamic_node.status != DynamicNodeStatus::Completed {
                 dynamic_node.status = DynamicNodeStatus::Paused;
                 dynamic_node.outcome = None;
                 dynamic_node.pause_reason = Some(pause_reason);
                 dynamic_node.runtime_error = None;
+                dynamic_node.runtime_execution_id = None;
                 dynamic_node.finished_at = Some(now_rfc3339_like());
             }
         }
 
         graph.run.status = DynamicRunStatus::Paused;
+        graph.run.phase = DynamicRunPhase::Executing;
         graph.run.outcome = None;
         graph.run.pause_reason = Some(pause_reason);
         refresh_dynamic_current_leaf_ids(&mut graph);
@@ -2589,56 +3209,104 @@ impl App {
                 dynamic_node,
             );
         }
+        drop(_guard);
+
+        for (dynamic_node_id, was_active, child_run_id) in interrupted_nodes {
+            if was_active {
+                let dynamic_node_dir = self.paths.dynamic_node_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    node_id,
+                    attempt_id,
+                    &dynamic_node_id,
+                );
+                if let Ok(entries) = fs::read_dir(dynamic_node_dir.as_std_path()) {
+                    for entry in entries.flatten() {
+                        let attempt_path = entry.path();
+                        if !attempt_path.is_dir() {
+                            continue;
+                        }
+                        let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
+                            continue;
+                        };
+                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
+                        self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
+                        self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
+                    }
+                }
+            }
+            if let Some(child_run_id) = child_run_id {
+                let _ = self.run_pause(task_id, &child_run_id, pause_reason);
+            }
+        }
     }
 
     pub fn run_pause(&self, task_id: &str, run_id: &str, reason: PauseReason) -> Result<RunState> {
-        let mut run = self.run_status(task_id, run_id)?;
-        if run.status != RunStatus::Running {
-            return Ok(run);
-        }
-        let now = now_rfc3339_like();
-        let current_round = run.current_round.clone();
-        let current_node = run.current_node.clone();
-        let current_attempt = run.current_attempt.clone();
-        self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
-        run.status = RunStatus::Paused;
-        run.outcome = None;
-        run.pause_reason = Some(reason);
-        run.updated_at = now.clone();
-        validate_run_state(&run)?;
-        write_json(&self.paths.run_file(task_id, run_id), &run)?;
+        loop {
+            let observed = self.run_status(task_id, run_id)?;
+            if observed.status != RunStatus::Running {
+                return Ok(observed);
+            }
+            let (Some(round_id), Some(node_id), Some(attempt_id)) = (
+                observed.current_round.clone(),
+                observed.current_node.clone(),
+                observed.current_attempt.clone(),
+            ) else {
+                return Err(anyhow!("running run has no current attempt locator"));
+            };
+            let state_lock =
+                attempt_runtime_state_lock(self, task_id, run_id, &round_id, &node_id, &attempt_id);
+            let guard = state_lock
+                .lock()
+                .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+            let mut run = self.run_status(task_id, run_id)?;
+            if run.status != RunStatus::Running {
+                return Ok(run);
+            }
+            if run.current_round.as_deref() != Some(round_id.as_str())
+                || run.current_node.as_deref() != Some(node_id.as_str())
+                || run.current_attempt.as_deref() != Some(attempt_id.as_str())
+            {
+                drop(guard);
+                continue;
+            }
 
-        if let Some(round_id) = current_round.as_deref() {
-            let mut round: RoundState =
-                read_json(&self.paths.round_file(task_id, run_id, round_id))?;
+            let now = now_rfc3339_like();
+            run.status = RunStatus::Paused;
+            run.outcome = None;
+            run.pause_reason = Some(reason);
+            run.updated_at = now.clone();
+            run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
+            validate_run_state(&run)?;
+            write_json(&self.paths.run_file(task_id, run_id), &run)?;
+
+            let round_path = self.paths.round_file(task_id, run_id, &round_id);
+            let mut round: RoundState = read_json(&round_path)?;
             round.status = RunStatus::Paused;
             round.outcome = None;
             validate_round_state(&round)?;
-            write_json(&self.paths.round_file(task_id, run_id, round_id), &round)?;
+            write_json(&round_path, &round)?;
 
-            if let (Some(node_id), Some(attempt_id)) =
-                (current_node.as_deref(), current_attempt.as_deref())
-            {
-                let node_path = self
-                    .paths
-                    .node_file(task_id, run_id, round_id, node_id, attempt_id);
-                if node_path.exists() {
-                    let mut node: NodeState = read_json(&node_path)?;
-                    if node.status != RunStatus::Completed {
-                        node.status = RunStatus::Paused;
-                        node.outcome = None;
-                        node.finished_at = Some(now.clone());
-                        validate_node_state(&node)?;
-                        write_json(&node_path, &node)?;
-                    }
-                    self.update_dynamic_descendants_best_effort(
-                        task_id, run_id, round_id, node_id, attempt_id, reason,
-                    );
+            let node_path = self
+                .paths
+                .node_file(task_id, run_id, &round_id, &node_id, &attempt_id);
+            if node_path.exists() {
+                let mut node: NodeState = read_json(&node_path)?;
+                if node.status != RunStatus::Completed {
+                    node.status = RunStatus::Paused;
+                    node.outcome = None;
+                    node.runtime_execution_id = None;
+                    node.finished_at = Some(now);
+                    validate_node_state(&node)?;
+                    write_json(&node_path, &node)?;
                 }
             }
-        }
+            drop(guard);
 
-        Ok(run)
+            self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            return Ok(run);
+        }
     }
 
     pub fn pause_attempt_runtime_state(
@@ -2650,19 +3318,157 @@ impl App {
         attempt_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::CurrentAttempt,
+        )
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::ActiveExecution(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_without_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_paused_manual_check(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::PausedManualCheck,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pause_attempt_runtime_state_with_policy(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+        policy: AttemptRuntimePausePolicy<'_>,
+    ) -> Result<AttemptRuntimePauseResult> {
+        let state_lock =
+            attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
         let now = now_rfc3339_like();
+        let node_path = self
+            .paths
+            .node_file(task_id, run_id, round_id, node_id, attempt_id);
+        let mut node = if node_path.exists() {
+            Some(read_json::<NodeState>(&node_path)?)
+        } else {
+            None
+        };
         let run_path = self.paths.run_file(task_id, run_id);
-        if run_path.exists() {
-            let mut run: RunState = read_json(&run_path)?;
-            if run.status == RunStatus::Running
-                && run.current_round.as_deref() == Some(round_id)
+        let mut run = if run_path.exists() {
+            Some(read_json::<RunState>(&run_path)?)
+        } else {
+            None
+        };
+        let locator_matches = run.as_ref().is_some_and(|run| {
+            run.current_round.as_deref() == Some(round_id)
                 && run.current_node.as_deref() == Some(node_id)
                 && run.current_attempt.as_deref() == Some(attempt_id)
-            {
+        });
+        let active_attempt = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Running);
+        let paused_manual_check = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Paused)
+            && node
+                .as_ref()
+                .is_some_and(|node| node.status == RunStatus::Paused && node.manual_check_pending);
+        let policy_matches = match policy {
+            AttemptRuntimePausePolicy::CurrentAttempt => true,
+            AttemptRuntimePausePolicy::ActiveExecution(expected_execution_id) => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .and_then(|node| node.runtime_execution_id.as_deref())
+                        == Some(expected_execution_id)
+            }
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .is_some_and(|node| node.runtime_execution_id.is_none())
+            }
+            AttemptRuntimePausePolicy::PausedManualCheck => paused_manual_check,
+        };
+        if !policy_matches {
+            return Ok(AttemptRuntimePauseResult::Superseded);
+        }
+
+        if let Some(run) = run.as_mut() {
+            if active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck) {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
                 run.updated_at = now.clone();
+                run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
@@ -2678,21 +3484,18 @@ impl App {
             }
         }
 
-        let node_path = self
-            .paths
-            .node_file(task_id, run_id, round_id, node_id, attempt_id);
-        if node_path.exists() {
-            let mut node: NodeState = read_json(&node_path)?;
+        if let Some(node) = node.as_mut() {
             if node.status != RunStatus::Completed {
                 node.status = RunStatus::Paused;
                 node.outcome = None;
+                node.runtime_execution_id = None;
                 node.finished_at = Some(now);
                 validate_node_state(&node)?;
                 write_json(&node_path, &node)?;
             }
         }
 
-        Ok(())
+        Ok(AttemptRuntimePauseResult::Converged)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -2713,6 +3516,31 @@ impl App {
             outer_node_id,
             outer_attempt_id,
             node_id,
+            reason,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_dynamic_attempt_runtime_state_if_active_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        execution_id: &str,
+        reason: PauseReason,
+    ) -> Result<bool> {
+        pause_dynamic_leaf_runtime_state_if_active_execution(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            execution_id,
             reason,
         )
     }
@@ -2758,13 +3586,18 @@ impl App {
                 .unwrap_or("session");
             serde_json::json!({
                 "sessionId": session_id,
-                "status": "cancelled",
+                "availability": "established",
+                "latestTurnStatus": "cancelled",
                 "restored": false,
                 "createdAt": crate::acp::events::current_timestamp(),
             })
         };
         let now = crate::acp::events::current_timestamp();
-        session["status"] = serde_json::json!("cancelled");
+        if let Some(object) = session.as_object_mut() {
+            object.remove("status");
+        }
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(now.clone());
         if session.get("updated_at").is_some() {
@@ -2822,22 +3655,24 @@ impl App {
     }
 
     fn attempt_has_active_acp_session(&self, attempt_dir: &Utf8Path) -> bool {
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let session_path = attempt_dir.join("acp.session.json");
-        let metadata = if snapshot_path.exists() {
-            read_json::<serde_json::Value>(&snapshot_path).ok()
-        } else if session_path.exists() {
-            read_json::<serde_json::Value>(&session_path).ok()
-        } else {
-            None
-        };
-        let Some(metadata) = metadata else {
-            return false;
-        };
-        let Some(status) = metadata.get("status").and_then(|value| value.as_str()) else {
-            return false;
-        };
-        is_acp_session_active_status(status)
+        if acp_client::prompt_activity(attempt_dir).is_some() {
+            return true;
+        }
+        let path = ["acp.snapshot.json", "acp.session.json"]
+            .into_iter()
+            .map(|name| attempt_dir.join(name))
+            .find(|path| path.exists());
+        path.and_then(|path| crate::acp::events::load_session_metadata_value(&path, None).ok())
+            .is_some_and(|metadata| {
+                metadata
+                    .get("sessionId")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                    && metadata
+                        .get("latestTurnStatus")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("none")
+            })
     }
 
     pub fn run_open_session(
@@ -2895,7 +3730,9 @@ impl App {
         )?;
         validate_round_state(&round)?;
         validate_node_state(&node)?;
-        let invocation = self::node_executor::build_worker_invocation(
+        let run: RunState = read_json(&self.paths.run_file(task_id, run_id))?;
+        validate_run_state(&run)?;
+        let mut invocation = self::node_executor::build_worker_invocation(
             self,
             task_id,
             run_id,
@@ -2907,12 +3744,16 @@ impl App {
             continue_ref,
             Some(prompt),
             prompt_id,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
             Vec::new(),
             None,
             None,
         )?;
+        invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
+        invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
+        invocation.extra_hidden_sections.clear();
         render_prompt_bundle(&invocation)
     }
 
@@ -2960,6 +3801,22 @@ impl App {
             Vec::new(),
             None,
             None,
+        )
+    }
+
+    pub fn run_continue_with_prompt_input(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        input: Option<ConversationPromptInput>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_with_prompt_input(
+            self,
+            task_id,
+            run_id,
+            prompt_id,
+            input,
         )
     }
 
@@ -3016,7 +3873,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             None,
             None,
@@ -3036,7 +3893,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             model_override,
             None,
@@ -3048,7 +3905,7 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
-        prompt: Option<String>,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3058,10 +3915,31 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_recover_completed_background(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        expected_revision: u64,
+    ) -> Result<RunState> {
+        orchestrator_run_recover_completed_background(
+            self,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            expected_revision,
         )
     }
 
@@ -3076,7 +3954,7 @@ impl App {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
         prompt_id: Option<String>,
-        prompt: String,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3091,7 +3969,7 @@ impl App {
             dynamic_node_id,
             dynamic_attempt_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,
@@ -3112,6 +3990,32 @@ impl App {
         )
     }
 
+    pub fn validate_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        orchestrator_validate_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
+    pub fn reserve_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<ManualCheckSubmissionLease> {
+        orchestrator_reserve_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
     pub fn submit_manual_check_background(
         &self,
         task_id: &str,
@@ -3120,9 +4024,10 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         outcome: NodeOutcome,
+        lease: ManualCheckSubmissionLease,
     ) -> Result<RunState> {
         orchestrator_submit_manual_check_background(
-            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome, lease,
         )
     }
 
@@ -3144,6 +4049,38 @@ impl App {
         workflow_override: Option<&Utf8Path>,
     ) -> Result<RunState> {
         orchestrator_run_start_background(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run_in_worktree(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run_with_authoring(
+        &self,
+        task_id: &str,
+        authoring: &TaskAuthoringWorkflow,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_with_authoring(self, task_id, authoring)
+    }
+
+    pub fn launch_prepared_run_background(
+        &self,
+        task_id: &str,
+        prepared: AcceptedRun,
+    ) -> Result<RunState> {
+        orchestrator_launch_prepared_run_background(self, task_id, prepared)
     }
 
     pub fn validate_workflow_node_agent_options(&self, node: &NodeDsl) -> Result<()> {
@@ -3173,77 +4110,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn normalize_workflow_models(
-        &self,
-        workflow: &mut WorkflowDsl,
-    ) -> Vec<ModelConfigNormalization> {
-        let diagnostics = self.provider_diagnostics();
-        let mut normalizations = Vec::new();
-        for node in &mut workflow.nodes {
-            match node {
-                NodeDsl::Worker(worker) => {
-                    if let Some(provider) = worker.provider.as_deref() {
-                        clear_stale_model(
-                            &diagnostics,
-                            &worker.id,
-                            "worker",
-                            provider,
-                            &mut worker.model,
-                            &mut normalizations,
-                        );
-                    }
-                }
-                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed {
-                        provider, model, ..
-                    } => clear_stale_model(
-                        &diagnostics,
-                        &dynamic.id,
-                        "fixed",
-                        provider,
-                        model,
-                        &mut normalizations,
-                    ),
-                    AiDynamicAgentStrategy::Dynamic {
-                        bootstrap_provider,
-                        bootstrap_model,
-                        acceptance_model,
-                        available_agents,
-                        ..
-                    } => {
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "bootstrap",
-                            bootstrap_provider,
-                            bootstrap_model,
-                            &mut normalizations,
-                        );
-                        for agent in available_agents.iter_mut() {
-                            clear_stale_model(
-                                &diagnostics,
-                                &dynamic.id,
-                                "available-agent",
-                                &agent.provider,
-                                &mut agent.model,
-                                &mut normalizations,
-                            );
-                        }
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "acceptance",
-                            bootstrap_provider,
-                            acceptance_model,
-                            &mut normalizations,
-                        );
-                    }
-                },
-            }
-        }
-        normalizations
     }
 
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
@@ -3320,7 +4186,7 @@ impl App {
 
             let workflow_path = self.paths.workflow_file(task_id);
             if workflow_path.exists() {
-                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                let workflow = self.task_workflow(task_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.task_count += 1;
                 }
@@ -3466,15 +4332,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let mut workflow: WorkflowDsl = match read_json(&path) {
-            Ok(workflow) => workflow,
+        let authoring = match self.task_authoring_workflow(task_id) {
+            Ok(authoring) => authoring,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
-        if !self.normalize_workflow_models(&mut workflow).is_empty() {
-            write_json(&path, &workflow)?;
-        }
+        let workflow = authoring.workflow;
 
-        let validated = match validate_workflow(workflow.clone()) {
+        let validated = match validate_authoring_workflow(workflow.clone()) {
             Ok(validated) => validated,
             Err(err) => {
                 let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
@@ -3482,8 +4346,18 @@ impl App {
             }
         };
 
-        if let Err(err) = self.validate_workflow_agents(&validated) {
-            return Ok((Some(err.to_string()), None));
+        let executable = match validate_and_inject(
+            &validated.raw,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        ) {
+            Ok(executable) => executable,
+            Err(err) => return Ok((Some(err.to_string()), None)),
+        };
+        if let Err(err) = validate_workflow(executable) {
+            let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
+            return Ok((Some(err.to_string()), validation_error));
         }
 
         match resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language) {
@@ -3494,12 +4368,6 @@ impl App {
 
     pub fn find_active_or_resumable_run_id(&self, task_id: &str) -> Result<Option<String>> {
         let runs = self.run_list(task_id)?;
-        if let Some(run) = runs.iter().rev().find(|run| {
-            run.status == RunStatus::Running
-                && self.paths.run_progress_file(task_id, &run.id).exists()
-        }) {
-            return Ok(Some(run.id.clone()));
-        }
         if let Some(run) = runs
             .iter()
             .rev()
@@ -3523,43 +4391,41 @@ impl App {
     }
 }
 
-fn is_acp_session_active_status(status: &str) -> bool {
-    matches!(
-        status
-            .trim()
-            .to_ascii_lowercase()
-            .replace('_', "-")
-            .as_str(),
-        "pending" | "running" | "in-progress" | "sending" | "cancelling" | "cancel-requested"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
-        RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
+        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
-        ConsoleThemeName, DesktopLanguage, DesktopThemePreference, DesktopUpdateBadgeState,
-        ProviderDiagnosticSnapshot, RuntimeConfig, catalog_agent_default_config,
+        AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
+        DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
+        PersonalizationPreference, ProviderDiagnosticSnapshot, RuntimeConfig, RuntimeLogLevel,
+        catalog_agent_default_config,
     };
     use crate::domain::{
-        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunStatus, SessionMode, VERSION,
+        NodeOutcome, NodeType, PauseReason, RoundTrigger, RunOutcome, RunStatus, SessionMode,
+        VERSION,
     };
     use crate::dsl::{
         AiDynamicAgentStrategy, NodeDsl, WorkerNode, WorkflowControl, WorkflowDsl,
         validate_workflow,
     };
     use crate::dynamic::{
-        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunState,
-        DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
+        DynamicGraphState, DynamicNodeKind, DynamicNodeState, DynamicNodeStatus, DynamicRunPhase,
+        DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership, WorkspaceState,
+        WorkspaceStatus,
     };
     use crate::observability::touch_log_file_best_effort;
-    use crate::runtime::{NodeState, RoundState, RunState, TaskState};
+    use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
+    use crate::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindingError, WorkflowModelBindings,
+    };
     use camino::Utf8PathBuf;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -3569,6 +4435,312 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    fn write_fixed_attempt_fixture(
+        app: &App,
+        status: RunStatus,
+        reason: Option<PauseReason>,
+        runtime_execution_id: Option<&str>,
+    ) {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("worker".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: reason,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: "run-001".to_string(),
+            index: 1,
+            status,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "worker".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            finished_at: (status == RunStatus::Paused).then(|| "2026-08-10T00:00:01Z".to_string()),
+            manual_check_pending: false,
+            runtime_execution_id: runtime_execution_id.map(str::to_string),
+            resolved_config: Default::default(),
+            uuid: None,
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.round_file("task-001", "run-001", "round-001"),
+            &round,
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file("task-001", "run-001", "round-001", "worker", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+
+        let error = app
+            .run_continue_background("task-001", "run-001", None, None)
+            .unwrap_err();
+        let runtime_error = error
+            .downcast_ref::<crate::runtime_error::RuntimeError>()
+            .expect("background continue returns a structured launch error");
+        assert_eq!(
+            runtime_error.info.code_str(),
+            "runtime.continue-launch-failed"
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 3);
+    }
+
+    #[test]
+    fn late_fixed_continue_failure_only_pauses_the_original_active_attempt() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+
+        assert_eq!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap(),
+            AttemptRuntimePauseResult::Converged
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        app.pause_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
+        assert_eq!(
+            app.pause_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "worker",
+                "attempt-001",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap(),
+            AttemptRuntimePauseResult::Superseded
+        );
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(node.status, RunStatus::Running);
+        assert_eq!(node.runtime_execution_id.as_deref(), Some("execution-b"));
+    }
+
+    #[test]
+    fn run_pause_invalidates_the_execution_before_a_late_runtime_write() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run: RunState =
+            read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let mut stale_round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut stale_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+
+        app.run_pause("task-001", "run-001", PauseReason::ProcessInterrupted)
+            .unwrap();
+        stale_run.status = RunStatus::Completed;
+        stale_run.outcome = Some(RunOutcome::Success);
+        stale_round.status = RunStatus::Completed;
+        stale_round.outcome = Some(RunOutcome::Success);
+        stale_node.status = RunStatus::Completed;
+        stale_node.outcome = Some(NodeOutcome::Success);
+        stale_node.finished_at = Some("2026-08-10T00:00:02Z".to_string());
+        assert!(
+            !super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &mut stale_run,
+                &stale_round,
+                &stale_node,
+            )
+            .unwrap()
+        );
+
+        let durable_run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let durable_node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(durable_run.status, RunStatus::Paused);
+        assert_eq!(
+            durable_run.pause_reason,
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(durable_run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(durable_run.execution.revision, 2);
+        assert_eq!(durable_node.status, RunStatus::Paused);
+        assert_eq!(durable_node.runtime_execution_id, None);
+    }
+
+    #[test]
+    fn node_completion_preserves_newer_durable_execution_phase() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        let mut stale_run = app.run_status("task-001", "run-001").unwrap();
+        let round: RoundState =
+            read_json(&app.paths.round_file("task-001", "run-001", "round-001")).unwrap();
+        let mut node: NodeState = read_json(&app.paths.node_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "worker",
+            "attempt-001",
+        ))
+        .unwrap();
+        let mut durable_run = stale_run.clone();
+        durable_run
+            .transition_current_execution(
+                RuntimeExecutionPhase::FinalizingArtifact,
+                "2026-08-10T00:00:02Z",
+            )
+            .unwrap();
+        write_json(&app.paths.run_file("task-001", "run-001"), &durable_run).unwrap();
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.finished_at = Some("2026-08-10T00:00:03Z".to_string());
+
+        assert!(
+            super::state_access::persist_runtime_state_if_execution_current(
+                &app,
+                "task-001",
+                &mut stale_run,
+                &round,
+                &node,
+            )
+            .unwrap()
+        );
+
+        let persisted: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(
+            persisted.execution.phase,
+            RuntimeExecutionPhase::FinalizingArtifact
+        );
+        assert_eq!(persisted.execution.revision, durable_run.execution.revision);
+    }
+
+    #[test]
+    fn startup_recovery_pauses_running_runtime_execution_authoritatively() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+
+        let recovered = app.recover_interrupted_running_sessions().unwrap();
+
+        assert_eq!(recovered.len(), 1);
+        let run = app.run_status("task-001", "run-001").unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(run.execution.revision, 2);
+    }
+
+    #[test]
+    fn active_or_resumable_run_selection_does_not_depend_on_progress_files() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        write_fixed_attempt_fixture(
+            &app,
+            RunStatus::Paused,
+            Some(PauseReason::ProcessInterrupted),
+            None,
+        );
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-999"),
+            &serde_json::json!({ "status": "running" }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.find_active_or_resumable_run_id("task-001").unwrap(),
+            Some("run-001".to_string())
+        );
+        assert!(app.paths.run_progress_file("task-001", "run-001").exists() == false);
     }
 
     fn test_path_config() -> StoragePathConfig {
@@ -3650,6 +4822,7 @@ mod tests {
             entry: "dev".to_string(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
@@ -3715,10 +4888,127 @@ mod tests {
         assert_eq!(renamed_results[0].task_id, created.task.id);
     }
 
+    #[test]
+    fn prepared_run_drop_removes_only_the_unaccepted_run() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app_with_provider_capabilities(repo_root, serde_json::json!({}));
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Prepared run".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "prepare without launching".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+
+        let prepared = app.prepare_run(&created.task.id, None).unwrap();
+        let run_id = prepared.run().id.clone();
+        assert!(app.paths.run_dir(&created.task.id, &run_id).exists());
+
+        drop(prepared);
+
+        assert!(!app.paths.run_dir(&created.task.id, &run_id).exists());
+        assert!(app.paths.task_file(&created.task.id).exists());
+    }
+
+    #[test]
+    fn prepared_run_authoring_override_is_run_scoped() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                }]
+            }),
+        );
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Scheduled override".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "use the scheduled model".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let authoring_path = app.paths.workflow_file(&created.task.id);
+        let original_authoring = std::fs::read(authoring_path.as_std_path()).unwrap();
+        let mut scheduled_authoring = app.task_authoring_workflow(&created.task.id).unwrap();
+        scheduled_authoring.model_bindings.bindings[0].model_id = Some("sonnet".to_string());
+        scheduled_authoring.model_bindings.binding_revision += 1;
+
+        let scheduled = app
+            .prepare_run_with_authoring(&created.task.id, &scheduled_authoring)
+            .unwrap();
+        let scheduled_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &scheduled.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(scheduled_worker) = &scheduled_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(scheduled_worker.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            std::fs::read(authoring_path.as_std_path()).unwrap(),
+            original_authoring
+        );
+        drop(scheduled);
+
+        let manual = app.prepare_run(&created.task.id, None).unwrap();
+        let manual_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &manual.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(manual_worker) = &manual_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(manual_worker.model, None);
+    }
+
+    #[test]
+    fn owned_task_directory_rolls_back_until_disarmed() {
+        let temp = tempdir().unwrap();
+        let rollback_dir = Utf8PathBuf::from_path_buf(temp.path().join("rollback")).unwrap();
+        std::fs::create_dir_all(rollback_dir.as_std_path()).unwrap();
+        drop(OwnedTaskDirectory::new(rollback_dir.clone()));
+        assert!(!rollback_dir.exists());
+
+        let committed_dir = Utf8PathBuf::from_path_buf(temp.path().join("committed")).unwrap();
+        std::fs::create_dir_all(committed_dir.as_std_path()).unwrap();
+        let mut owned = OwnedTaskDirectory::new(committed_dir.clone());
+        owned.disarm();
+        drop(owned);
+        assert!(committed_dir.exists());
+    }
+
     fn sample_run_paused_event() -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunPaused {
             event_id: "project-1:run-1:round-1:node-1:attempt-1:waiting-for-user-input".to_string(),
             occurred_at: "2026-01-01T00:00:00".to_string(),
+            scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-1".to_string(),
             run_id: "run-1".to_string(),
@@ -3749,6 +5039,8 @@ mod tests {
             pause_reason: Some(reason),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         }
     }
 
@@ -3760,7 +5052,7 @@ mod tests {
         assert!(super::is_run_continuable(&resumability_run(
             PauseReason::ProcessInterrupted
         )));
-        assert!(super::is_run_continuable(&resumability_run(
+        assert!(!super::is_run_continuable(&resumability_run(
             PauseReason::WaitingForUserInput
         )));
         assert!(!super::is_run_continuable(&resumability_run(
@@ -3894,11 +5186,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
+    fn ai_dynamic_stale_models_are_preserved_for_explicit_validation() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app_with_provider_capabilities(
+        let _app = test_app_with_provider_capabilities(
             repo_root,
             serde_json::json!({
                 "configOptions": [
@@ -3946,13 +5238,7 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let mut normalized_workflow = workflow;
-        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
-        assert_eq!(normalizations.len(), 1);
-        assert_eq!(normalizations[0].scope, "available-agent");
-        assert_eq!(normalizations[0].previous_model, "future-model");
-
-        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+        let NodeDsl::AiDynamic(dynamic) = &workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -3961,12 +5247,12 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        assert!(validate_workflow(normalized_workflow).is_ok());
+        assert_eq!(available_agents[0].model.as_deref(), Some("future-model"));
+        assert!(validate_workflow(workflow).is_ok());
     }
 
     #[test]
-    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+    fn workflow_template_and_task_authoring_preserve_stale_model_ids() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -4048,7 +5334,10 @@ mod tests {
             templates: vec![WorkflowTemplate {
                 id: "custom".to_string(),
                 name: "Custom".to_string(),
+                is_built_in: false,
+                optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
+                model_bindings: WorkflowModelBindings::default(),
                 created_at: "2026-07-28T00:00:00Z".to_string(),
                 updated_at: "2026-07-28T00:00:00Z".to_string(),
             }],
@@ -4074,14 +5363,14 @@ mod tests {
             else {
                 unreachable!();
             };
-            assert_eq!(available_agents[0].model, None);
+            assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
             let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
                 unreachable!();
             };
             let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
                 unreachable!();
             };
-            assert_eq!(*model, None);
+            assert_eq!(model.as_deref(), Some("gpt-5.4"));
         }
 
         let task = app
@@ -4094,9 +5383,9 @@ mod tests {
                 workflow_template_id: None,
             })
             .unwrap();
-        let persisted_authoring: WorkflowDsl =
+        let persisted_authoring: TaskAuthoringWorkflow =
             read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
-        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4105,14 +5394,71 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+        assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.workflow.nodes[1] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
             unreachable!();
         };
-        assert_eq!(*model, None);
+        assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn save_task_workflow_rejects_duplicate_model_binding_slots() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+        let workflow = WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-duplicate-bindings".to_string(),
+            entry: "dev".to_string(),
+            control: WorkflowControl::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                execution_slot_id: Some("slot-dev".to_string()),
+                provider: None,
+                model: None,
+                profile: None,
+                goal: None,
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                config_options: BTreeMap::new(),
+                manual_check: None,
+                prompt_envelope: Default::default(),
+            })],
+            edges: Vec::new(),
+        };
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-dev".to_string(),
+            agent_id: "agent-a".to_string(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+
+        let error = app
+            .save_task_workflow_with_bindings("task-001", workflow, bindings)
+            .unwrap_err();
+        let binding_error = error.downcast_ref::<WorkflowModelBindingError>().unwrap();
+
+        assert_eq!(
+            binding_error,
+            &WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-dev".to_string(),
+            }
+        );
+        assert!(!app.paths.workflow_file("task-001").exists());
     }
 
     #[test]
@@ -4134,6 +5480,74 @@ mod tests {
         let bg = app.clone_for_background();
         bg.emit_lifecycle_event(sample_run_paused_event());
         assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn scheduled_origin_is_injected_into_background_lifecycle_events() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::RunCompleted {
+                    scheduled_occurrence_id,
+                    ..
+                } = event
+                {
+                    seen_for_callback
+                        .lock()
+                        .unwrap()
+                        .push(scheduled_occurrence_id);
+                }
+            }));
+
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-completed".to_string(),
+            occurred_at: "2026-08-03T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "node-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "node".to_string(),
+            outcome: RunOutcome::Success,
+            task_title: None,
+            completion_agent_label: None,
+        });
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("occurrence-001".to_string())]
+        );
+    }
+
+    #[test]
+    fn queued_user_turn_drops_scheduler_occurrence_and_prompt_context() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
+                title: "Daily review".to_string(),
+                mode: "direct".to_string(),
+                session_policy: "continuous".to_string(),
+                trigger_kind: "cron".to_string(),
+                triggered_at: "2026-08-03T00:00:00Z".to_string(),
+                instruction: Some("Review changes".to_string()),
+            }));
+
+        let ordinary_turn = app.clone_for_background().without_scheduled_turn_context();
+
+        assert_eq!(app.scheduled_occurrence_id(), Some("occurrence-001"));
+        assert!(app.scheduled_task_context().is_some());
+        assert_eq!(ordinary_turn.scheduled_occurrence_id(), None);
+        assert!(ordinary_turn.scheduled_task_context().is_none());
     }
 
     #[test]
@@ -4272,6 +5686,7 @@ mod tests {
             outcome: None,
             pause_reason: None,
             runtime_error: None,
+            runtime_execution_id: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -4318,6 +5733,8 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -4352,13 +5769,14 @@ mod tests {
                 started_at: started_at.clone(),
                 finished_at: None,
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },
         )
         .unwrap();
         let graph = DynamicGraphState {
-            version: VERSION.to_string(),
+            version: crate::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION.to_string(),
             run: DynamicRunState {
                 version: VERSION.to_string(),
                 id: "dynamic-run-001".to_string(),
@@ -4367,6 +5785,7 @@ mod tests {
                 parent_node_id: outer_node_id.to_string(),
                 parent_attempt_id: outer_attempt_id.to_string(),
                 status: DynamicRunStatus::Running,
+                phase: DynamicRunPhase::Executing,
                 outcome: None,
                 pause_reason: None,
                 started_at: started_at.clone(),
@@ -4441,7 +5860,8 @@ mod tests {
                     &attempt_dir.join("acp.session.json"),
                     &serde_json::json!({
                         "sessionId": format!("{}-session", node.id),
-                        "status": "completed"
+                        "availability": "established",
+                        "latestTurnStatus": "completed"
                     }),
                 )
                 .unwrap();
@@ -4478,7 +5898,9 @@ mod tests {
             let session: serde_json::Value =
                 read_json(&attempt_dir.join("acp.session.json")).unwrap();
             assert_eq!(
-                session.get("status").and_then(|value| value.as_str()),
+                session
+                    .get("latestTurnStatus")
+                    .and_then(|value| value.as_str()),
                 Some("cancelled")
             );
             assert_eq!(
@@ -4532,13 +5954,13 @@ mod tests {
 
         assert_eq!(
             running_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
             completed_session
-                .get("status")
+                .get("latestTurnStatus")
                 .and_then(|value| value.as_str()),
             Some("completed")
         );
@@ -4650,6 +6072,105 @@ mod tests {
     }
 
     #[test]
+    fn late_dynamic_continue_failure_does_not_override_user_stop() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut first_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        first_execution.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![first_execution]);
+
+        app.pause_dynamic_attempt_runtime_state(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            "good-night",
+            PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+        let mut resumed_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
+        resumed_execution.runtime_execution_id = Some("execution-b".to_string());
+        write_dynamic_pause_fixture(&app, vec![resumed_execution]);
+        assert!(
+            !app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.pause_reason, None);
+        assert_eq!(graph.run.status, DynamicRunStatus::Running);
+        assert_eq!(graph.run.pause_reason, None);
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Running);
+        assert_eq!(
+            graph.nodes[0].runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+    }
+
+    #[test]
+    fn dynamic_continue_failure_reclaims_rearmed_leaf_state() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let app = dynamic_pause_test_app(&temp);
+        let mut rearmed = dynamic_pause_node("good-night", DynamicNodeStatus::Ready);
+        rearmed.runtime_execution_id = Some("execution-a".to_string());
+        write_dynamic_pause_fixture(&app, vec![rearmed]);
+
+        assert!(
+            app.pause_dynamic_attempt_runtime_state_if_active_execution(
+                "task-001",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "good-night",
+                "execution-a",
+                PauseReason::RuntimeAbnormal,
+            )
+            .unwrap()
+        );
+
+        let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        let graph: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            "task-001",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        ))
+        .unwrap();
+        assert_eq!(run.status, RunStatus::Paused);
+        assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.run.status, DynamicRunStatus::Paused);
+        assert_eq!(graph.run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(graph.nodes[0].status, DynamicNodeStatus::Paused);
+        assert_eq!(
+            graph.nodes[0].pause_reason,
+            Some(PauseReason::RuntimeAbnormal)
+        );
+    }
+
+    #[test]
     fn cancel_all_active_acp_attempts_also_cancels_follow_up_session_on_completed_run() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -4682,6 +6203,8 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
             },
         )
         .unwrap();
@@ -4716,6 +6239,7 @@ mod tests {
                 started_at: "2026-06-28T00:00:00Z".to_string(),
                 finished_at: Some("2026-06-28T00:00:01Z".to_string()),
                 manual_check_pending: false,
+                runtime_execution_id: None,
                 resolved_config: Default::default(),
                 uuid: None,
             },
@@ -4729,7 +6253,8 @@ mod tests {
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
                 "sessionId": "session-follow-up",
-                "status": "running"
+                "availability": "established",
+                "latestTurnStatus": "none"
             }),
         )
         .unwrap();
@@ -4754,7 +6279,9 @@ mod tests {
 
         let session: serde_json::Value = read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert!(
@@ -4762,6 +6289,38 @@ mod tests {
                 .join("acp.elicitation-response.elicit-001.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn runtime_control_only_metadata_is_not_an_active_acp_session() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app(repo_root);
+        let attempt_dir = app.paths.attempt_dir(
+            "task-001",
+            "run-001",
+            "round-001",
+            "node-001",
+            "attempt-001",
+        );
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "availability": "established",
+                "latestTurnStatus": "none",
+                "runtimeControl": {
+                    "currentMode": "non-runtime-controlled",
+                    "transitionId": "runtime-control-test",
+                    "transitionCause": "runtime-interrupted",
+                    "changedAt": "1Z"
+                }
+            }),
+        )
+        .unwrap();
+
+        assert!(!app.attempt_has_active_acp_session(&attempt_dir));
     }
 
     #[test]
@@ -4813,19 +6372,38 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
+        let mut personalization = PersonalizationPreference::default();
+        personalization.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec!["Microsoft YaHei UI".to_string()],
+        };
+        personalization.typography.ui.font_size = FontSizePreference::Custom { px: 16 };
+        personalization.typography.editor.font_stack = FontStackPreference::Custom {
+            families: vec!["Fira Code".to_string()],
+        };
+        personalization.typography.editor.font_size = FontSizePreference::Custom { px: 13 };
         app.set_user_desktop_preferences(
-            DesktopThemePreference::Dark,
+            AppearancePreference {
+                schema_version: 2,
+                theme_id: "builtin.tech-neutral".to_string(),
+                color_scheme: ColorSchemePreference::Dark,
+                visual_quality_by_theme: BTreeMap::new(),
+            },
+            personalization.clone(),
             DesktopLanguage::En,
-            "Fira Code".to_string(),
+            true,
+            true,
         )
         .unwrap();
-        app.set_user_use_local_claude(true).unwrap();
 
         let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_theme, Some(DesktopThemePreference::Dark));
+        let appearance = settings.appearance.expect("appearance should persist");
+        assert_eq!(appearance.theme_id, "builtin.tech-neutral");
+        assert_eq!(appearance.color_scheme, ColorSchemePreference::Dark);
+        assert!(appearance.visual_quality_by_theme.is_empty());
         assert_eq!(settings.desktop_language, Some(DesktopLanguage::En));
-        assert_eq!(settings.desktop_font, Some("Fira Code".to_string()));
+        assert_eq!(settings.personalization, Some(personalization));
         assert_eq!(settings.use_local_claude, Some(true));
+        assert!(matches!(settings.log_level, Some(RuntimeLogLevel::Debug)));
 
         let state = app.load_state().unwrap();
         assert!(state.desktop_updater_last_checked_at.is_none());
@@ -4872,19 +6450,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_persists_to_both_files() {
+    fn workspace_selection_only_updates_legacy_recent_list() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/MyRepo")
+        app.record_user_recent_desktop_workspace("D:/Projects/MyRepo")
             .unwrap();
-
-        let settings = app.load_settings().unwrap();
-        assert_eq!(
-            settings.desktop_workspace.as_deref(),
-            Some("D:/Projects/MyRepo")
-        );
 
         let state = app.load_state().unwrap();
         assert!(
@@ -4900,9 +6472,12 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
 
         let state = app.load_state().unwrap();
         // A should be at position 0 (most recent), B at position 1, no duplicates
@@ -4917,16 +6492,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
-        app.set_user_desktop_workspace("D:/Projects/A").unwrap();
-        app.set_user_desktop_workspace("D:/Projects/B").unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/A")
+            .unwrap();
+        app.record_user_recent_desktop_workspace("D:/Projects/B")
+            .unwrap();
 
         let state = app
             .remove_user_recent_desktop_workspace("D:/Projects/A")
             .unwrap();
 
         assert_eq!(state.recent_desktop_workspaces, vec!["D:/Projects/B"]);
-        let settings = app.load_settings().unwrap();
-        assert_eq!(settings.desktop_workspace.as_deref(), Some("D:/Projects/B"));
     }
 
     #[test]
@@ -4936,7 +6511,7 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root.clone());
         for i in 0..10 {
-            app.set_user_desktop_workspace(&format!("D:/Projects/Repo{i}"))
+            app.record_user_recent_desktop_workspace(&format!("D:/Projects/Repo{i}"))
                 .unwrap();
         }
 

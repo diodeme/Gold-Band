@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
+  isAcpSessionLoadingSurfaceState,
   missingAcpSessionRetryDelay,
+  resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from '@/lib/acp-session-shell';
@@ -80,19 +82,51 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('loading');
   });
 
-  it('treats ready session payloads and live shells as available', () => {
+  it('does not let summary, established-session, or live-shell projections bypass the content request', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: true,
       baseSessionReady: true,
       hasLiveSessionShell: false,
       initialSessionLoading: true,
-    })).toBe('available');
+    })).toBe('loading');
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
       baseSessionReady: false,
       hasLiveSessionShell: true,
       initialSessionLoading: true,
+    })).toBe('loading');
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      hasEstablishedSessionShell: true,
+      initialSessionLoading: true,
+    })).toBe('loading');
+  });
+
+  it('treats content and shell projections as available after the content request succeeds', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
     })).toBe('available');
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: true,
+      initialSessionLoading: false,
+    })).toBe('available');
+  });
+
+  it('shows the request error state when the content request fails', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: false,
+      initialSessionLoadFailed: true,
+    })).toBe('error');
   });
 
   it('reports missing only after loading has completed without a session', () => {
@@ -108,6 +142,28 @@ describe('resolveAcpSessionShellState', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
       baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
+  it('keeps a current new session in its initializing shell while terminal data catches up', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: false,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
+  it('does not replace a current ready startup projection with historical content loading', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
       hasLiveSessionShell: false,
       initialSessionLoading: true,
       runtimeActive: true,
@@ -157,6 +213,51 @@ describe('resolveAcpSessionShellState', () => {
   });
 });
 
+describe('isAcpSessionLoadingSurfaceState', () => {
+  it('only renders generic historical content loading as an isolated loading surface', () => {
+    expect(isAcpSessionLoadingSurfaceState('loading')).toBe(true);
+    expect(isAcpSessionLoadingSurfaceState('initializing')).toBe(false);
+  });
+
+  it('does not hide available, interrupted, or failed sessions behind the loading surface', () => {
+    expect(isAcpSessionLoadingSurfaceState('available')).toBe(false);
+    expect(isAcpSessionLoadingSurfaceState('interrupted')).toBe(false);
+    expect(isAcpSessionLoadingSurfaceState('error')).toBe(false);
+  });
+});
+
+describe('resolveAcpTimelineSurfaceState', () => {
+  it('shows the timeline as soon as the first displayable item arrives', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: true,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      initializationOwner: true,
+      sending: true,
+    })).toBe('timeline');
+  });
+
+  it('keeps a current new session pending while its persisted timeline catches up', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: false,
+      initialSessionLoading: false,
+      runtimeActive: false,
+      initializationOwner: true,
+      sending: false,
+    })).toBe('pending');
+  });
+
+  it('shows empty only after a non-initializing inactive query confirms no timeline', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: false,
+      initialSessionLoading: false,
+      runtimeActive: false,
+      initializationOwner: false,
+      sending: false,
+    })).toBe('empty');
+  });
+});
+
 describe('isAcpSessionInitializationFailed', () => {
   const failedInput = {
     runtimeStatus: 'paused',
@@ -177,7 +278,7 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'runtime-abnormal',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
       runtimeErrorMessage: "Codex doesn't support MCP SSE transport protocol",
     })).toBe(true);
   });
@@ -211,13 +312,14 @@ describe('isAcpSessionInitializationFailed', () => {
     expect(isAcpSessionInitializationFailed({
       ...failedInput,
       runtimePauseReason: 'waiting-for-user-input',
-      runtimeComposerMode: 'interrupted-input',
+      runtimeComposerMode: 'normal',
     })).toBe(false);
   });
 });
 
 describe('isAcpSessionInitializationInterrupted', () => {
   const interruptedInput = {
+    orchestrated: true,
     runtimeStatus: 'paused',
     runtimePauseReason: 'process-interrupted',
     runtimeActive: false,
@@ -228,6 +330,13 @@ describe('isAcpSessionInitializationInterrupted', () => {
 
   it('identifies a stopped runtime attempt that never established an ACP session', () => {
     expect(isAcpSessionInitializationInterrupted(interruptedInput)).toBe(true);
+  });
+
+  it('keeps Direct attempts on the free-conversation path after an early stop', () => {
+    expect(isAcpSessionInitializationInterrupted({
+      ...interruptedInput,
+      orchestrated: false,
+    })).toBe(false);
   });
 
   it('keeps established or displayable interrupted sessions on the normal conversation path', () => {

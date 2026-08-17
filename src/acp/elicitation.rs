@@ -106,22 +106,31 @@ pub fn wait_for_elicitation_response(
     elicitation_id: &str,
     timeout: Duration,
 ) -> Result<ElicitationResponseState> {
+    wait_for_elicitation_response_until_cancelled(attempt_dir, elicitation_id, timeout, || false)
+}
+
+pub fn wait_for_elicitation_response_until_cancelled(
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+    timeout: Duration,
+    is_cancel_requested: impl Fn() -> bool,
+) -> Result<ElicitationResponseState> {
     let path = elicitation_response_file(attempt_dir, elicitation_id);
     let started_at = std::time::Instant::now();
     loop {
-        if path.exists() {
-            // The response file is a durable hand-off signal. The runtime must
-            // keep it until the ACP response has been persisted and sent, then
-            // remove request and response files together.
-            return read_json(&path);
-        }
-        if is_elicitation_cancel_requested(attempt_dir) {
+        if is_cancel_requested() {
             return Ok(ElicitationResponseState {
                 elicitation_id: elicitation_id.to_string(),
                 action: ElicitationAction::Decline,
                 content: None,
                 decided_at: current_timestamp(),
             });
+        }
+        if path.exists() {
+            // The response file is a durable hand-off signal. The runtime must
+            // keep it until the ACP response has been persisted and sent, then
+            // remove request and response files together.
+            return read_json(&path);
         }
         if started_at.elapsed() >= timeout {
             return Ok(ElicitationResponseState {
@@ -242,33 +251,6 @@ pub fn upsert_elicitation_response_event(
     items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
     write_timeline_items(&timeline_path, &items)
 }
-// ── Elicitation-specific cancel mechanism ──
-// Separate from permission domain to avoid semantic coupling.
-
-fn elicitation_cancel_request_file(attempt_dir: &Utf8Path) -> Utf8PathBuf {
-    attempt_dir.join("acp.elicitation-cancel.json")
-}
-
-/// Write a cancel marker file to notify the blocking poll loop.
-pub fn request_elicitation_cancel(attempt_dir: &Utf8Path, at: String) -> Result<()> {
-    let path = elicitation_cancel_request_file(attempt_dir);
-    write_json(&path, &serde_json::json!({ "cancelledAt": at }))
-}
-
-/// Clear the cancel marker file.
-pub fn clear_elicitation_cancel_request(attempt_dir: &Utf8Path) -> Result<()> {
-    let path = elicitation_cancel_request_file(attempt_dir);
-    if path.exists() {
-        std::fs::remove_file(path.as_std_path())?;
-    }
-    Ok(())
-}
-
-/// Check if cancel has been requested.
-pub fn is_elicitation_cancel_requested(attempt_dir: &Utf8Path) -> bool {
-    elicitation_cancel_request_file(attempt_dir).exists()
-}
-
 /// 根据 elicitation 响应构造 JSON-RPC result
 pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value {
     let action_str = match response.action {
@@ -477,19 +459,51 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_elicitation_response_cancelled() {
+    fn elicitation_wait_declines_when_turn_cancel_is_requested() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
-        // 写入取消标记
-        request_elicitation_cancel(&attempt_dir, "2026-01-01T00:00:00Z".to_string()).unwrap();
-        let response = wait_for_elicitation_response(
+        let checks = std::cell::Cell::new(0_u8);
+
+        let response = wait_for_elicitation_response_until_cancelled(
             &attempt_dir,
-            "elicit-cancelled",
+            "elicit-late-after-cancel",
             Duration::from_secs(10),
+            || {
+                let next = checks.get().saturating_add(1);
+                checks.set(next);
+                next >= 2
+            },
         )
         .unwrap();
+
         assert!(matches!(response.action, ElicitationAction::Decline));
-        // 清理
-        let _ = clear_elicitation_cancel_request(&attempt_dir);
+        assert_eq!(response.content, None);
+        assert!(!elicitation_response_file(&attempt_dir, "elicit-late-after-cancel").exists());
+    }
+
+    #[test]
+    fn elicitation_cancel_wins_over_a_simultaneous_user_response() {
+        let (_dir, attempt_dir) = dummy_attempt_dir();
+        write_json(
+            &elicitation_response_file(&attempt_dir, "elicit-race"),
+            &ElicitationResponseState {
+                elicitation_id: "elicit-race".to_string(),
+                action: ElicitationAction::Accept,
+                content: Some(serde_json::json!({ "confirmed": true })),
+                decided_at: current_timestamp(),
+            },
+        )
+        .unwrap();
+
+        let response = wait_for_elicitation_response_until_cancelled(
+            &attempt_dir,
+            "elicit-race",
+            Duration::from_secs(10),
+            || true,
+        )
+        .unwrap();
+
+        assert!(matches!(response.action, ElicitationAction::Decline));
+        assert_eq!(response.content, None);
     }
 
     #[test]

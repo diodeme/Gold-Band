@@ -1311,8 +1311,11 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 数据与接口：
 
 - [x] 新增 attempt 级 `acp.prompt-queue.json`、`PromptQueue / QueuedPrompt / QueuedPromptState`，FIFO 上限统一为 10。
-- [x] 队列项保存稳定 item/prompt identity、正文、附件、创建时间和 dispatch 状态；编辑不改变位置。
-- [x] 新增 update/delete/use Tauri commands，继续使用结构化 error code + params。
+- [x] 队列项保存稳定 item/prompt identity、正文、结构化引用、附件路径、创建时间和 dispatch 状态；authoring payload 由 attempt 级队列统一管理。
+- [x] lifecycle/list VM 只投影稳定 ID、正文与引用/附件计数；完整引用和附件路径仅由单条 restore command 按需返回，避免高频 session update 重复搬运整个队列 authoring payload。
+- [x] 删除只修改正文的 update 入口；保留 delete/use，并新增按需返回完整 authoring payload 的 restore command 与 `expectedRevision + orderedItemIds` reorder Tauri command，继续使用结构化 error code + params。
+- [x] 合并编译契约回归：桌面 command import 与 `generate_handler!` 只注册当前真实存在且被客户端消费的 restore/reorder/delete/use 接口，删除遗留的 update 注册；生产依赖与测试专用导入分层，避免合并后出现 unresolved command 或 unused import。
+- [x] reorder 在 attempt 队列锁内执行 revision CAS、完整 queued ID 集合与重复 ID 校验；成功后一次原子写入，stale/invalid 请求不修改 durable 队列。
 - [x] lifecycle 仅为 Direct 投影 `promptQueue`；Workflow/AUTO 的数据和 composer 规则不变。
 - [x] App turn hook 收敛为统一 prompt lifecycle：`Accepted { promptId }` 精确完成 durable 出队，`Finished { successful }` 决定是否继续排空；失败/取消只恢复 durable timeline 尚未接受的 dispatching 项。
 
@@ -1332,23 +1335,26 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 
 - [x] Direct 运行中 composer 保持可输入，发送按钮显示“加入队列”；满 10 条时禁止继续入队。
 - [x] 队列紧贴 composer 上方、位于 usage/token 行下方；默认展示 3 条，可展开至全部 10 条。
-- [x] 队列 surface 属于 attempt 底部常驻区域，不属于 active/idle/stopped/runtime-error 的 composer 分支；只要持久化队列非空，停止、刷新或重新进入会话后仍展示并可编辑、删除。
+- [x] 队列 surface 属于 attempt 底部常驻区域，不属于 active/idle/stopped/runtime-error 的 composer 分支；只要持久化队列非空，停止、刷新或重新进入会话后仍展示并可恢复到 composer、排序、删除。
 - [x] Direct 队列能力由 run mode 显式传入 composer 状态机；首次 prompt 尚处于本地“发送中”、后端 active lifecycle 尚未回传时，后续提交也立即路由到 `queue-prompt`，不出现短暂锁输入。
 - [x] Conversation run/session-tree 初始与刷新快照和单 attempt lifecycle 接口统一装配同一持久化队列，杜绝停止态刷新丢失队列。
-- [x] 使用 shadcn Collapsible/Button/Tooltip/Textarea、Tailwind 和现有 prompt-kit composer；提供编辑、使用、删除 icon action 与无障碍标签。
+- [x] 使用 shadcn Collapsible/Button/Tooltip、Tailwind 和现有 prompt-kit composer；排序复用 `dnd-kit` pointer/keyboard sensor 与专用手柄，不自研拖拽状态机；提供编辑、使用、删除 icon action 与无障碍标签。
 - [x] 入队响应不创建 optimistic 用户气泡、不进入 awaiting response；自动出队仍写标准用户 timeline 消息并复用标准样式。
-- [x] 编辑原位保存；停止/空闲后可指定使用；删除立即回灌后端 lifecycle。
+- [x] 编辑把正文、结构化引用和附件路径完整恢复为当前 session composer draft，并删除原 durable 队列项；composer 已有草稿时禁止覆盖。附件文件元数据延迟补齐且只在 draft identity 未变化时替换，不能覆盖用户随后修改。停止/空闲后仍可指定使用；删除立即回灌后端 lifecycle。
+- [x] 默认前三条与展开后的全部十条均按 stable item ID 投影；拖拽结束立即显示有界 optimistic order，后端 lifecycle revision 到达后收敛，冲突时回滚本次视觉排序。
 - [x] 修复 completed Direct session 进入 follow-up `session/resume` 时的会话壳竞态：同 attempt 快照合并不再降级已持久化的 `sessionEstablished / sessionId`；详细 session payload 短暂缺失时由持久化引用保持历史会话壳、composer 和待发送队列，不再误显示“ACP 会话失败”。
 - [x] 根因修正：排队的 lifecycle-only 更新不再被认为 session 清空；订阅层只在带有非空 authoritative session payload 时替换当前会话，从根上避免排队操作在 `session/resume` 窗口清掉 composer。
 - [x] 首轮自动出队根因修正：创建/重跑与继续入口统一装配 ACP live、session snapshot、prompt lifecycle callback；首轮 `end_turn` 现在也会产生后继的 Direct 队列调度。
+- [x] 连续自动出队生命周期断链修正：自动队列恢复走标准 `send_acp_prompt` 入口；底层发送接口只接受 `ConfiguredConversationApp`，从类型边界禁止裸 `App` 绕过 callbacks。drain 保留触发 turn 的生命周期上下文，后继用户消息再显式切回普通会话上下文；scheduled continuous 统一安装 live/session/prompt lifecycle callbacks 并保留 occurrence identity。
 
 接口级回归：
 
-- [x] Rust：容量、FIFO/编辑位置、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、prompt lifecycle accepted identity、durable accepted 精确出队、普通 prompt 不创建队列存储、取消不回队、接受前失败恢复、v1 迁移和重启孤儿恢复。
+- [x] Rust：容量、FIFO、重排成功/no-op、stale revision、重复或缺失 ID 不写入、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、prompt lifecycle accepted identity、durable accepted 精确出队、普通 prompt 不创建队列存储、取消不回队、接受前失败恢复、v1 迁移和重启孤儿恢复。
+- [x] Rust lifecycle 集成回归：三条队列逐轮执行 `claim -> Accepted 立即出队 -> Finished 调度下一条`，固定连续 FIFO 排空和消息进入 timeline 后不再留在队列的接口契约；底层发送的受控类型同时提供编译期回归门禁。
 - [x] Web semantic composer：Direct active 可输入/可入队、容量满、非 Direct active 仍锁定。
 - [x] Web semantic composer：Direct 首次发送过渡期即使 lifecycle 尚未携带 queue，也可输入并入队。
 - [x] Rust conversation run VM：停止态 selected leaf 仍投影持久化队列。
-- [x] Web DOM：默认 3 条/展开、原位编辑、icon aria-label、运行中禁用手动使用。
+- [x] Web DOM：默认 3 条/展开、完整 payload 恢复入口、已有 composer 草稿保护、pointer/keyboard 排序手柄、stable ID 顺序计算、icon aria-label、运行中禁用手动使用。
 - [x] Web 会话壳：已建立 session 的 detail payload 临时为空时仍渲染 composer；same-attempt resume refresh 不丢失 session 引用和历史 payload。
 - [ ] 完整 Rust/Web test 与 build。
 - [ ] Direct deep link 页面验收（位置、展开、编辑、删除、停止后使用、深浅主题）并清理测试资源。

@@ -17,7 +17,6 @@ export const FALLBACK_WORKSPACE_LAYOUT: WorkspaceLayoutVm = {
     defaultWidth: 440,
     maxWidth: 1440,
     file: {
-      preferredWidth: 760,
       splitMinWidth: 500,
       treeDefaultWidth: 280,
       treeMinWidth: 200,
@@ -59,9 +58,13 @@ export interface WorkspaceAutoCollapseState {
   previousWidth: number;
   left: boolean;
   right: boolean;
+  rightOwnsWindowResize: boolean;
 }
 
-export type WorkspaceAutoCollapsePresentation = Pick<WorkspaceAutoCollapseState, 'left' | 'right'>;
+export type WorkspaceAutoCollapsePresentation = Pick<
+  WorkspaceAutoCollapseState,
+  'left' | 'right' | 'rightOwnsWindowResize'
+>;
 
 export interface FileWorkspaceResponsiveState {
   split: boolean;
@@ -97,6 +100,7 @@ export interface WorkspaceAutoCollapseInput {
   sidebarManuallyCollapsed: boolean;
   wantsRight: boolean;
   rightMinWidth?: number;
+  rightPreferredWidth?: number;
   rightWidthForStableLeftRestore?: number;
 }
 
@@ -116,6 +120,7 @@ export function reduceWorkspaceAutoCollapse(
     sidebarManuallyCollapsed,
     wantsRight,
     rightMinWidth = RIGHT_WORKSPACE_MIN_WIDTH,
+    rightPreferredWidth = rightMinWidth,
     rightWidthForStableLeftRestore = rightMinWidth,
   } = input;
   if (availableWidth <= 0) return state;
@@ -147,15 +152,63 @@ export function reduceWorkspaceAutoCollapse(
     }
   }
 
-  if (state.previousWidth === availableWidth && state.left === left && state.right === right) return state;
-  return { previousWidth: availableWidth, left, right };
+  const leftVisible = !sidebarManuallyCollapsed && !left;
+  const rightVisible = wantsRight && !right;
+  const preferredRightLayoutWidth = Math.max(rightMinWidth, rightPreferredWidth);
+  const rightOwnsWindowResize = rightVisible && availableWidth < (
+    centerMinWidth
+    + (leftVisible ? desiredSidebarWidth : 0)
+    + preferredRightLayoutWidth
+  );
+
+  if (
+    state.previousWidth === availableWidth
+    && state.left === left
+    && state.right === right
+    && state.rightOwnsWindowResize === rightOwnsWindowResize
+  ) return state;
+  return { previousWidth: availableWidth, left, right, rightOwnsWindowResize };
 }
 
 export function workspaceAutoCollapsePresentationChanged(
   current: WorkspaceAutoCollapsePresentation,
   next: WorkspaceAutoCollapsePresentation,
 ) {
-  return current.left !== next.left || current.right !== next.right;
+  return current.left !== next.left
+    || current.right !== next.right
+    || current.rightOwnsWindowResize !== next.rightOwnsWindowResize;
+}
+
+export function resolveWorkspaceCanonicalLayout({
+  groupWidth,
+  centerMinWidth,
+  leftVisible,
+  leftWidth,
+  rightVisible,
+  rightPreferredWidth,
+}: {
+  groupWidth: number;
+  centerMinWidth: number;
+  leftVisible: boolean;
+  leftWidth: number;
+  rightVisible: boolean;
+  rightPreferredWidth: number;
+}): Layout | null {
+  if (groupWidth <= 0) return null;
+  const resolvedLeftWidth = leftVisible ? Math.min(leftWidth, groupWidth) : 0;
+  const rightCapacity = Math.max(0, groupWidth - resolvedLeftWidth - centerMinWidth);
+  const resolvedRightWidth = rightVisible
+    ? Math.min(rightPreferredWidth, rightCapacity)
+    : 0;
+  const resolvedCenterWidth = Math.max(
+    0,
+    groupWidth - resolvedLeftWidth - resolvedRightWidth,
+  );
+  return {
+    'workspace-navigation': resolvedLeftWidth / groupWidth * 100,
+    'workspace-center': resolvedCenterWidth / groupWidth * 100,
+    'workspace-right': resolvedRightWidth / groupWidth * 100,
+  };
 }
 
 export function reduceFileWorkspaceResponsiveState(
@@ -185,7 +238,7 @@ export function resolveWorkspacePanelWidthFromLayout({
   maxWidth: number;
 }) {
   const percentage = layout[panelId];
-  if (percentage == null || groupWidth <= 0) return null;
+  if (percentage == null || percentage <= 0 || groupWidth <= 0) return null;
   return clamp(
     Math.round(groupWidth * percentage / 100),
     minWidth,
@@ -207,22 +260,62 @@ export function resolveRightWorkspaceWidthFromLayout(
   });
 }
 
-export function resolveRightWorkspacePanelMaxWidth({
-  preferredWidth,
-  minWidth,
-  maxWidth,
-  userResizing,
+export type WorkspaceUserResizeTarget = 'left' | 'right' | null;
+
+const WORKSPACE_LAYOUT_PERCENTAGE_EPSILON = 0.01;
+
+export function resolveWorkspaceUserResizeTarget({
+  previousLayout,
+  layout,
+  isUserInteraction,
+  focusedTarget = null,
 }: {
-  preferredWidth: number;
-  minWidth: number;
-  maxWidth: number;
-  userResizing: boolean;
-}) {
-  return userResizing ? maxWidth : clamp(preferredWidth, minWidth, maxWidth);
+  previousLayout: Layout | null;
+  layout: Layout;
+  isUserInteraction: boolean;
+  focusedTarget?: WorkspaceUserResizeTarget;
+}): WorkspaceUserResizeTarget {
+  if (!isUserInteraction || previousLayout == null) return null;
+  if (focusedTarget != null) return focusedTarget;
+  const panelChanged = (panelId: string) => {
+    const previous = previousLayout[panelId];
+    const current = layout[panelId];
+    return previous != null
+      && current != null
+      && Math.abs(previous - current) > WORKSPACE_LAYOUT_PERCENTAGE_EPSILON;
+  };
+  const leftChanged = panelChanged('workspace-navigation');
+  const rightChanged = panelChanged('workspace-right');
+  if (leftChanged && rightChanged) {
+    const leftDelta = Math.abs(previousLayout['workspace-navigation'] - layout['workspace-navigation']);
+    const rightDelta = Math.abs(previousLayout['workspace-right'] - layout['workspace-right']);
+    if (Math.abs(leftDelta - rightDelta) <= WORKSPACE_LAYOUT_PERCENTAGE_EPSILON) return null;
+    return leftDelta > rightDelta ? 'left' : 'right';
+  }
+  if (!leftChanged && !rightChanged) return null;
+  return leftChanged ? 'left' : 'right';
 }
 
-export function shouldPersistRightWorkspaceWidth(isUserInteraction: boolean, hasResizeIntent: boolean) {
-  return isUserInteraction && hasResizeIntent;
+export function workspaceCanonicalLayoutMissingPanel(
+  target: Layout,
+  applied: Layout,
+  panelId: string,
+) {
+  return (target[panelId] ?? 0) > WORKSPACE_LAYOUT_PERCENTAGE_EPSILON
+    && (applied[panelId] ?? 0) <= WORKSPACE_LAYOUT_PERCENTAGE_EPSILON;
+}
+
+export function workspaceCanonicalLayoutNeedsConvergence(
+  target: Layout,
+  applied: Layout,
+  groupWidth: number,
+  tolerancePixels = 1,
+) {
+  if (groupWidth <= 0) return false;
+  return Object.entries(target).some(([panelId, targetPercentage]) => {
+    const appliedPercentage = applied[panelId] ?? 0;
+    return Math.abs(targetPercentage - appliedPercentage) * groupWidth / 100 > tolerancePixels;
+  });
 }
 
 export function shouldOpenRightWorkspaceSheet({
@@ -241,7 +334,7 @@ export function workspaceLayoutProfileForPage(
   page: ConversationPage,
   layout: WorkspaceLayoutVm,
 ): WorkspaceLayoutProfileVm {
-  if (page.kind === 'conversation-home' || page.kind === 'conversation-run') return layout.conversation;
+  if (page.kind === 'conversation-home' || page.kind === 'scheduled-task-create' || page.kind === 'conversation-run') return layout.conversation;
   if (page.kind === 'contexts') return layout.contextCards;
   if (page.kind === 'settings') return layout.settings;
   return layout.workflowCanvas;

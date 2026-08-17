@@ -1,9 +1,14 @@
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import i18n from '../src/i18n';
-import { agentAddMenuItemClassName, agentEditorSheetPresentation, agentIdInputValue, buildAgentCardSummary, buildAgentInput, closeAgentDeleteDialogState, closeAgentEditorState, ExternalSessionSyncHeading, hasManagedAgentInputChanged, isAgentIdEditable, type AgentDeleteDialogState, type AgentEditorState } from '../src/pages/AgentManagementPage';
-import type { ManagedAgentInput, ManagedAgentVm } from '../src/types';
+import { agentAddMenuItemClassName, agentDeleteActionDisabled, agentEditorSheetPresentation, agentIdInputValue, buildAgentCardSummary, buildAgentInput, closeAgentDeleteDialogState, closeAgentEditorState, ExternalSessionSyncHeading, hasManagedAgentInputChanged, isAgentIdEditable, type AgentDeleteDialogState, type AgentEditorState } from '../src/pages/AgentManagementPage';
+import type { AgentBindingUsageVm, ManagedAgentInput, ManagedAgentVm } from '../src/types';
+
+const agentManagementSource = readFileSync(
+  fileURLToPath(new URL('../src/pages/AgentManagementPage.tsx', import.meta.url)),
+  'utf8',
+);
 
 function agentInput(overrides: Partial<ManagedAgentInput> = {}): ManagedAgentInput {
   return {
@@ -47,7 +52,19 @@ describe('Agent management input mapping', () => {
     ]);
   });
 
-  it('keeps every user-editable ManagedAgentConfig field when saving', () => {
+  it('keeps cross-client session controls out of Agent cards and create/edit UI', () => {
+    expect(agentManagementSource).not.toContain('external-session-sync-support');
+    expect(agentManagementSource).not.toContain('id="external-session-sync"');
+    expect(agentManagementSource).not.toContain('ExternalSessionSyncHeading');
+    expect(agentManagementSource).not.toContain("t('agentManagement.externalSessionSyncSupport')");
+    expect(agentManagementSource).not.toContain("t('agentManagement.externalSessionSync')");
+    expect(buildAgentCardSummary(agentInputVm({
+      externalSessionSyncSupported: true,
+      externalSessionSyncEnabled: true,
+    }), (key) => key).map((item) => item.key)).not.toContain('externalSessionSync');
+  });
+
+  it('preserves hidden external-session settings when saving other Agent fields', () => {
     expect(buildAgentInput(agentInput({
       primaryAgentDir: '  .claude-custom  ',
       externalSessionSyncSupported: true,
@@ -136,25 +153,6 @@ describe('Agent management input mapping', () => {
     })).toBe(true);
   });
 
-  it('marks external session sync as beta and explains the shared-context risk', () => {
-    const markup = renderToStaticMarkup(createElement(ExternalSessionSyncHeading, {
-      label: i18n.t('agentManagement.externalSessionSync', { lng: 'zh-CN' }),
-      betaLabel: i18n.t('agentManagement.externalSessionSyncBeta', { lng: 'zh-CN' }),
-      helpLabel: i18n.t('agentManagement.externalSessionSyncHelpLabel', { lng: 'zh-CN' }),
-      helpText: i18n.t('agentManagement.externalSessionSyncHelp', { lng: 'zh-CN' }),
-    }));
-
-    expect(markup).toContain('data-slot="badge"');
-    expect(markup).toContain('Beta');
-    expect(markup).toContain('aria-label="了解外部会话同步"');
-    expect(i18n.t('agentManagement.externalSessionSyncHelp', { lng: 'zh-CN' }))
-      .toBe('同步同一个 Session 在其他客户端中发生过的对话。');
-    expect(i18n.t('agentManagement.externalSessionSyncDescription', { lng: 'zh-CN' }))
-      .toContain('否则可能造成历史顺序或上下文理解错误');
-    expect(i18n.t('agentManagement.externalSessionSyncDescription', { lng: 'en' }))
-      .toContain('otherwise history order or context may be misinterpreted');
-  });
-
   it('presents the stable identifier as an Agent ID instead of a user-selectable type', () => {
     expect(i18n.t('agentManagement.agentId', { lng: 'zh-CN' })).toBe('Agent ID');
     expect(i18n.t('agentManagement.agentIdDescription', { lng: 'zh-CN' })).toContain('创建后不可修改');
@@ -217,6 +215,23 @@ describe('Agent management input mapping', () => {
     expect(closeAgentDeleteDialogState(state)).toEqual({ open: false, target });
   });
 
+  it('allows Agent deletion only after binding usage loads successfully', () => {
+    const usage: AgentBindingUsageVm = {
+      workflowTemplateCount: 1,
+      taskCount: 2,
+      scheduledTaskCount: 3,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
+    };
+
+    expect(agentDeleteActionDisabled(true, null, null)).toBe(true);
+    expect(agentDeleteActionDisabled(false, null, 'read failed')).toBe(true);
+    expect(agentDeleteActionDisabled(false, null, null)).toBe(true);
+    expect(agentDeleteActionDisabled(false, usage, null)).toBe(false);
+    expect(i18n.t('agentManagement.deleteUsageRetry', { lng: 'zh-CN' })).toBe('重新统计');
+    expect(i18n.t('agentManagement.deleteUsageRetry', { lng: 'en' })).toBe('Retry count');
+  });
+
   it('does not rewrite an Agent ID while an IME composition is active', () => {
     expect(agentIdInputValue('入-my', true)).toBe('入-my');
     expect(agentIdInputValue('入-my', false)).toBe('-my');
@@ -233,3 +248,22 @@ describe('Agent management input mapping', () => {
     expect(agentAddMenuItemClassName).not.toContain('shadow-[');
   });
 });
+
+function agentInputVm(overrides: Partial<ManagedAgentVm> = {}): ManagedAgentVm {
+  return {
+    agentType: 'claude-acp',
+    displayName: 'Claude',
+    command: 'npx',
+    args: [],
+    env: [],
+    iconKey: 'claude',
+    primaryAgentDir: '.claude',
+    projectPrimaryAgentDir: null,
+    compatibleAgentDirs: [],
+    supportsSystemPrompt: true,
+    externalSessionSyncSupported: false,
+    externalSessionSyncEnabled: false,
+    diagnostic: null,
+    ...overrides,
+  };
+}

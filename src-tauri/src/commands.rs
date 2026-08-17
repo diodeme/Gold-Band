@@ -3,7 +3,9 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
+use gold_band::acp::events::{
+    AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
+};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -13,8 +15,9 @@ use gold_band::acp::prompt_queue::{
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
     clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension, complete_accepted_prompt,
     delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
-    record_auto_dispatch_reply_completion, release_queued_prompt, request_auto_dispatch_suspension,
-    settle_dispatching_prompts, suspend_auto_dispatch, update_queued_prompt,
+    record_auto_dispatch_reply_completion, release_queued_prompt, reorder_queued_prompts,
+    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
+    take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
@@ -27,14 +30,17 @@ use gold_band::app::{
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::scheduler::db::ScheduledTaskDatabase;
 use gold_band::skill::SkillCommandError;
-use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use gold_band::storage::{read_json, write_json};
 use std::path::{Component, Path, PathBuf};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fs,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -42,10 +48,20 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
+    FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
+    MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
+    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
+    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
+use gold_band::provider::{
+    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
+    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
+    conversation_prompt_text, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -54,9 +70,9 @@ use uuid::Uuid;
 
 use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
-    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
+    load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
-use crate::conversation_workspace::workspace_entry_for_project;
+use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
@@ -74,12 +90,19 @@ use crate::view_models::{
     WorkflowVm, acp_activity_detail_vm_for_attempt, acp_raw_frame_page_vm, acp_session_vm,
     acp_tool_detail_vm_for_attempt, agent_registry_vm, bootstrap_vm, dynamic_acp_session_vm,
     log_page_vm, mcp_server_list_vm, preferences_vm, round_detail_vm, run_detail_vm,
-    run_summary_vm, runtime_display_vm, skill_content_vm, skill_list_vm, skill_meta_vm,
-    task_detail_vm, task_list_vm, workflow_vm,
+    run_summary_vm, skill_content_vm, skill_list_vm, skill_meta_vm, task_detail_vm, task_list_vm,
+    workflow_vm,
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
-    conversation_run_mode, conversation_task_activity_from_prompt,
+    conversation_is_orchestrated, conversation_run_mode, conversation_session_successor,
+    conversation_task_activity_from_prompt,
+};
+use crate::wallpaper::{
+    ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput, import_wallpaper_image,
+    load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
+    select_recent_wallpaper,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -225,30 +248,7 @@ fn runtime_continue_started_lifecycle_for_locator(
     app: &App,
     locator: &AttemptLocator,
 ) -> Option<ConversationAttemptLifecycleVm> {
-    lifecycle_for_locator(app, locator).map(|mut lifecycle| {
-        lifecycle.runtime.status = "running".to_string();
-        lifecycle.runtime.outcome = None;
-        lifecycle.runtime.pause_reason = None;
-        lifecycle.runtime.resumable = false;
-        lifecycle.runtime.current = true;
-        lifecycle.runtime.active = true;
-        lifecycle.runtime.continuable = false;
-        lifecycle.runtime.phase = "provider-running".to_string();
-        lifecycle.display_status = "running".to_string();
-        lifecycle.runtime_display = runtime_display_vm(Some("running"), None, true, None, false);
-        lifecycle.continue_kind = None;
-        lifecycle.composer.mode = "runtime-active".to_string();
-        lifecycle.composer.submit_target = if lifecycle.prompt_queue.is_some() {
-            "queue-prompt".to_string()
-        } else {
-            "none".to_string()
-        };
-        lifecycle.composer.processing_kind = "processing".to_string();
-        lifecycle.composer.status_key = Some("conversation.runtime.runtimeActive".to_string());
-        lifecycle.composer.can_stop = true;
-        lifecycle.composer.lock_input = lifecycle.prompt_queue.is_none();
-        lifecycle
-    })
+    lifecycle_for_locator(app, locator)
 }
 
 fn current_attempt_manual_check_pending(
@@ -300,7 +300,11 @@ fn dynamic_leaf_runtime_continue_required(
     locator: &AttemptLocator,
     run: &RunState,
 ) -> CommandResult<bool> {
-    if run.pause_reason == Some(PauseReason::ErrorBlocked) {
+    if run.status == RunStatus::Paused
+        && !run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
+    {
         return Ok(false);
     }
     let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -308,14 +312,23 @@ fn dynamic_leaf_runtime_continue_required(
     else {
         return Ok(false);
     };
-    let dynamic_graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+    let dynamic_graph_path = app.paths.dynamic_graph_file(
         &locator.task_id,
         &locator.run_id,
         &locator.round_id,
         outer_node_id,
         outer_attempt_id,
-    ))
-    .map_err(command_error)?;
+    );
+    let dynamic_graph =
+        load_dynamic_graph(&dynamic_graph_path, &app.paths.repo_root).map_err(command_error)?;
+    if dynamic_graph.run.status == DynamicRunStatus::Paused
+        && !dynamic_graph
+            .run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
+    {
+        return Ok(false);
+    }
     let dynamic_node = dynamic_graph
         .nodes
         .iter()
@@ -327,10 +340,20 @@ fn dynamic_leaf_runtime_continue_required(
             ))
         })?;
     if dynamic_node.status == DynamicNodeStatus::Paused && dynamic_node.outcome.is_none() {
-        return Ok(true);
+        return Ok(dynamic_node
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue));
     }
-    let stale_resumable_leaf = (run.status == RunStatus::Paused
-        || dynamic_graph.run.status == DynamicRunStatus::Paused)
+    let stale_resumable_parent = (run.status == RunStatus::Paused
+        && run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue))
+        || (dynamic_graph.run.status == DynamicRunStatus::Paused
+            && dynamic_graph
+                .run
+                .pause_reason
+                .is_some_and(PauseReason::allows_explicit_runtime_continue));
+    let stale_resumable_leaf = stale_resumable_parent
         && matches!(
             dynamic_node.status,
             DynamicNodeStatus::Ready | DynamicNodeStatus::Running
@@ -346,7 +369,7 @@ fn runtime_continue_required(
     run: &RunState,
     manual_check_pending: bool,
 ) -> CommandResult<bool> {
-    if manual_check_pending {
+    if !conversation_is_orchestrated(app, &locator.task_id) || manual_check_pending {
         return Ok(false);
     }
     if locator.matches_run_current(run) && locator.outer_node_id().is_some() {
@@ -354,11 +377,82 @@ fn runtime_continue_required(
     }
     if run.status == RunStatus::Paused
         && gold_band::app::is_run_continuable(run)
+        && run
+            .pause_reason
+            .is_some_and(PauseReason::allows_explicit_runtime_continue)
         && locator.matches_run_current(run)
     {
         return Ok(true);
     }
     Ok(false)
+}
+
+fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> CommandResult<bool> {
+    if !conversation_is_orchestrated(app, &locator.task_id) {
+        return Ok(false);
+    }
+    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+        (locator.outer_node_id(), locator.outer_attempt_id())
+    {
+        let node = read_json::<gold_band::dynamic::DynamicNodeState>(&app.paths.dynamic_node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            outer_node_id,
+            outer_attempt_id,
+            &locator.node_id,
+        ))
+        .map_err(command_error)?;
+        return Ok(node.status == DynamicNodeStatus::Running);
+    }
+    let node = read_json::<NodeState>(&app.paths.node_file(
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+    ))
+    .map_err(command_error)?;
+    Ok(node.status == RunStatus::Running && !node.manual_check_pending)
+}
+
+fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    if let Some(target) = conversation_session_successor(
+        app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    )
+    .map_err(command_error)?
+    {
+        return Err(CommandErrorVm::new(
+            "conversation.session-superseded",
+            serde_json::json!({
+                "roundId": target.round_id,
+                "nodeId": target.node_id,
+                "attemptId": target.attempt_id,
+                "outerNodeId": target.outer_node_id,
+                "outerAttemptId": target.outer_attempt_id,
+            }),
+        ));
+    }
+    if attempt_is_runtime_controlled(app, locator)? {
+        return Err(CommandErrorVm::new(
+            "runtime.conversation-not-available",
+            serde_json::json!({
+                "taskId": locator.task_id,
+                "runId": locator.run_id,
+                "roundId": locator.round_id,
+                "nodeId": locator.node_id,
+                "attemptId": locator.attempt_id,
+            }),
+        ));
+    }
+    Ok(())
 }
 
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
@@ -437,6 +531,7 @@ fn emit_acp_turn_finished(
             turn_id,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: locator.task_id.clone(),
         run_id: locator.run_id.clone(),
@@ -452,6 +547,26 @@ fn emit_acp_turn_finished(
             .ok()
             .and_then(|task| task.title),
     });
+}
+
+fn finish_acp_prompt_preflight<T>(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: &str,
+    agent_label: &str,
+    result: CommandResult<T>,
+) -> CommandResult<T> {
+    if result.is_err() && app.scheduled_occurrence_id().is_some() {
+        emit_acp_turn_finished(
+            app,
+            locator,
+            turn_id,
+            agent_label,
+            AcpTurnOutcome::Failed,
+            AcpTurnBatchProgress::terminal(1),
+        );
+    }
+    result
 }
 
 #[derive(Debug, Clone)]
@@ -517,7 +632,7 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
-fn resolve_command_app(
+pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
 ) -> Result<App, CommandErrorVm> {
@@ -630,7 +745,7 @@ fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
+) -> Result<ConfiguredConversationApp, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     Ok(configure_conversation_runtime_callbacks(
@@ -640,11 +755,27 @@ fn resolve_command_app_with_emitters(
     ))
 }
 
+pub(crate) struct ConfiguredConversationApp(App);
+
+impl std::ops::Deref for ConfiguredConversationApp {
+    type Target = App;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ConfiguredConversationApp {
+    fn into_inner(self) -> App {
+        self.0
+    }
+}
+
 pub(crate) fn configure_conversation_runtime_callbacks(
     app: App,
     app_handle: AppHandle,
     project_id: Option<String>,
-) -> App {
+) -> ConfiguredConversationApp {
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
     let prompt_turn_lifecycle = prompt_turn_lifecycle_callback(
@@ -652,9 +783,11 @@ pub(crate) fn configure_conversation_runtime_callbacks(
         app.clone_for_background(),
         project_id.clone(),
     );
-    app.with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
-        .with_prompt_turn_lifecycle(prompt_turn_lifecycle)
+    ConfiguredConversationApp(
+        app.with_acp_live_update(live_update)
+            .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
+            .with_prompt_turn_lifecycle(prompt_turn_lifecycle),
+    )
 }
 
 fn prompt_turn_lifecycle_callback(
@@ -676,42 +809,59 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        match event {
-            AcpPromptLifecycleEvent::Accepted { prompt_id } => {
-                let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
-            }
-            AcpPromptLifecycleEvent::Finished {
-                prompt_id,
+        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                direct_prompt_queue_drain_app(&app),
+                locator,
                 successful,
-            } => {
-                let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
-                    turn_id,
-                    agent_label: acp_turn_agent_label(&app, &locator),
-                });
-                schedule_direct_prompt_queue_drain(
-                    app_handle.clone(),
-                    project_id.clone(),
-                    locator,
-                    successful,
-                    completion,
-                );
-            }
-        }
+                completion,
+            );
+        });
         Ok(())
     })
+}
+
+fn process_prompt_turn_lifecycle(
+    app: &App,
+    locator: AttemptLocator,
+    event: AcpPromptLifecycleEvent,
+    mut schedule_finished: impl FnMut(AttemptLocator, bool, Option<DeferredTurnCompletion>),
+) {
+    match event {
+        AcpPromptLifecycleEvent::Accepted { prompt_id } => {
+            let _ = complete_accepted_prompt(&locator.attempt_dir(app), &prompt_id);
+        }
+        AcpPromptLifecycleEvent::Finished {
+            prompt_id,
+            successful,
+        } => {
+            let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
+                turn_id,
+                agent_label: acp_turn_agent_label(app, &locator),
+            });
+            schedule_finished(locator, successful, completion);
+        }
+    }
+}
+
+fn direct_prompt_queue_drain_app(app: &App) -> App {
+    app.clone_for_background()
+}
+
+fn queued_user_turn_app(app: &App) -> App {
+    app.clone_for_background().without_scheduled_turn_context()
 }
 
 fn schedule_direct_prompt_queue_drain(
     app_handle: AppHandle,
     project_id: Option<String>,
+    app: App,
     locator: AttemptLocator,
     successful: bool,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
-    let state = app_handle.state::<DesktopState>();
-    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-        return;
-    };
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -757,10 +907,6 @@ fn schedule_direct_prompt_queue_drain(
     let expected_revision = queue.revision;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
-        let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-            return;
-        };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -795,16 +941,24 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let _result = send_acp_prompt(
+        let queued_turn_app = configure_conversation_runtime_callbacks(
+            queued_user_turn_app(&app),
             app_handle.clone(),
-            state,
+            project_id.clone(),
+        );
+        let _result = send_acp_prompt_with_configured_app(
+            app_handle.clone(),
+            queued_turn_app,
             project_id.clone(),
             locator.task_id.clone(),
             locator.run_id.clone(),
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            claimed.content.clone(),
+            ConversationPromptInput {
+                display_text: claimed.content.clone(),
+                quotes: claimed.quotes.clone(),
+            },
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -875,6 +1029,21 @@ pub struct ConversationPromptQueueMutationVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationQueuedPromptDraftVm {
+    pub content: String,
+    pub quotes: Vec<UserPromptQuote>,
+    pub attachment_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueRestoreVm {
+    pub draft: ConversationQueuedPromptDraftVm,
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActiveSessionStopVm {
     pub operation_id: String,
     pub status: String,
@@ -898,6 +1067,15 @@ pub(crate) async fn prepare_app_exit_inner(
     state: &DesktopState,
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
+
+    // Stop the scheduler before stopping ACP/runtime sessions so no new
+    // occurrence can acquire a lease while desktop cleanup is in progress.
+    // `shutdown` waits for both the coordinator acknowledgement and task join.
+    if let Ok(coordinator) = state.scheduler_coordinator()
+        && let Err(error) = coordinator.shutdown().await
+    {
+        result.record_warning("app-exit.scheduler-shutdown-failed", &error);
+    }
 
     match state.app() {
         Ok(runtime_app) => {
@@ -1053,6 +1231,8 @@ pub struct CreateTaskInputVm {
     pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
     pub workflow_template_id: Option<String>,
 }
 
@@ -1060,6 +1240,8 @@ pub struct CreateTaskInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1067,12 +1249,16 @@ pub struct SaveWorkflowInputVm {
 pub struct SaveWorkflowTemplateInputVm {
     pub name: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateWorkflowTemplateInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1261,6 +1447,206 @@ pub fn delete_agent(
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBindingUsageVm {
+    pub workflow_template_count: usize,
+    pub task_count: usize,
+    pub scheduled_task_count: usize,
+    pub unknown_task_count: usize,
+    pub unknown_scheduled_task_count: usize,
+}
+
+fn agent_usage_workspace_apps(
+    context: &crate::state::DesktopContext,
+    workspaces: &[gold_band::config::ConversationWorkspaceEntry],
+) -> anyhow::Result<Vec<App>> {
+    let current_app = context.app();
+    let mut seen_project_ids = BTreeSet::new();
+    let mut apps = Vec::new();
+    for workspace in workspaces {
+        let app = app_for_workspace(context, &workspace.workspace_path)?;
+        let project_key = if cfg!(windows) {
+            app.paths.project_id.to_ascii_lowercase()
+        } else {
+            app.paths.project_id.clone()
+        };
+        if seen_project_ids.insert(project_key) {
+            apps.push(app);
+        }
+    }
+    let current_project_key = if cfg!(windows) {
+        current_app.paths.project_id.to_ascii_lowercase()
+    } else {
+        current_app.paths.project_id.clone()
+    };
+    if seen_project_ids.insert(current_project_key) {
+        apps.push(current_app);
+    }
+    Ok(apps)
+}
+
+fn collect_agent_binding_usage(
+    agent_id: &ManagedAgentId,
+    templates: &WorkflowTemplateStore,
+    workspace_apps: &[App],
+) -> anyhow::Result<AgentBindingUsageVm> {
+    let agent_id = agent_id.as_str();
+    let workflow_template_count = templates
+        .templates
+        .iter()
+        .filter(|template| {
+            workflow_references_agent(&template.workflow, &template.model_bindings, agent_id)
+        })
+        .count();
+    let mut task_count = 0;
+    let mut scheduled_task_count = 0;
+    let mut unknown_task_count = 0;
+    let mut unknown_scheduled_task_count = 0;
+    for app in workspace_apps {
+        let tasks_dir = app.paths.tasks_dir();
+        if tasks_dir.exists() {
+            for entry in fs::read_dir(tasks_dir.as_std_path())? {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        unknown_task_count += 1;
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                if !path.is_dir() || !path.join("task.json").exists() {
+                    continue;
+                }
+                let Some(task_id) = path.file_name().and_then(|value| value.to_str()) else {
+                    unknown_task_count += 1;
+                    continue;
+                };
+                match app.task_authoring_workflow(task_id) {
+                    Ok(authoring)
+                        if workflow_references_agent(
+                            &authoring.workflow,
+                            &authoring.model_bindings,
+                            agent_id,
+                        ) =>
+                    {
+                        task_count += 1;
+                    }
+                    Ok(_) => {}
+                    Err(_) => unknown_task_count += 1,
+                }
+            }
+        }
+        let scheduler_db_path = app.paths.scheduler_db_path();
+        if !scheduler_db_path.exists() {
+            continue;
+        }
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?.scan_job_definitions()?;
+        unknown_scheduled_task_count += scan.invalid_count;
+        for definition in scan.definitions {
+            match scheduled_task_references_agent(&definition, agent_id) {
+                Ok(true) => scheduled_task_count += 1,
+                Ok(false) => {}
+                Err(_) => unknown_scheduled_task_count += 1,
+            }
+        }
+    }
+    Ok(AgentBindingUsageVm {
+        workflow_template_count,
+        task_count,
+        scheduled_task_count,
+        unknown_task_count,
+        unknown_scheduled_task_count,
+    })
+}
+
+fn workflow_references_agent(
+    workflow: &WorkflowDsl,
+    model_bindings: &gold_band::workflow_model_binding::WorkflowModelBindings,
+    agent_id: &str,
+) -> bool {
+    model_bindings
+        .bindings
+        .iter()
+        .any(|binding| binding.agent_id == agent_id)
+        || workflow.nodes.iter().any(|node| {
+            providers_for_node(node)
+                .iter()
+                .any(|provider| provider == agent_id)
+        })
+}
+
+fn auto_authoring_references_agent(
+    authoring: &gold_band::scheduler::AutoAuthoringIdentity,
+    agent_id: &str,
+) -> bool {
+    let agent_type = authoring.agent_type.trim();
+    let agent_strategy = authoring.agent_strategy.trim();
+    let primary_agent = if matches!(agent_type, "fixed" | "dynamic")
+        && !matches!(agent_strategy, "fixed" | "dynamic")
+    {
+        // Older snapshots wrote these constructor arguments in reverse order.
+        agent_strategy
+    } else {
+        agent_type
+    };
+    primary_agent == agent_id
+        || authoring.bootstrap_agent_type.as_deref() == Some(agent_id)
+        || authoring
+            .available_agent_types
+            .iter()
+            .any(|available| available == agent_id)
+}
+
+fn scheduled_task_references_agent(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+    agent_id: &str,
+) -> anyhow::Result<bool> {
+    if definition.content_snapshot.direct_agent_id.as_deref() == Some(agent_id) {
+        return Ok(true);
+    }
+    if definition
+        .content_snapshot
+        .auto_authoring
+        .as_ref()
+        .is_some_and(|authoring| auto_authoring_references_agent(authoring, agent_id))
+    {
+        return Ok(true);
+    }
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(false);
+    };
+    let authoring = serde_json::from_value::<
+        gold_band::workflow_model_binding::TaskAuthoringWorkflowCompat,
+    >(value)?
+    .into_current()
+    .0;
+    Ok(workflow_references_agent(
+        &authoring.workflow,
+        &authoring.model_bindings,
+        agent_id,
+    ))
+}
+
+#[tauri::command]
+pub async fn get_agent_binding_usage(
+    state: State<'_, DesktopState>,
+    agent_type: String,
+) -> CommandResult<AgentBindingUsageVm> {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let app_state = app.load_state().map_err(command_error)?;
+        let templates = app.workflow_templates().map_err(command_error)?;
+        let workspace_apps =
+            agent_usage_workspace_apps(&context, &app_state.conversation_workspaces)
+                .map_err(command_error)?;
+        collect_agent_binding_usage(&agent_id, &templates, &workspace_apps).map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1519,18 +1905,22 @@ pub async fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     let background_app = app.clone_for_background();
     let summary = tauri::async_runtime::spawn_blocking(move || {
-        background_app.create_task_from_requirement(CreateTaskInput {
+        let task_input = CreateTaskInput {
             title: input.title,
             description: input.description,
             requirement_file_name: input.requirement_file_name,
             requirement_content: input.requirement_content,
-            workflow: input.workflow,
+            workflow: input.workflow.clone(),
             workflow_template_id: input.workflow_template_id,
-        })
+        };
+        background_app.create_task_from_requirement_with_bindings(
+            task_input,
+            input.workflow,
+            input.model_bindings,
+        )
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
@@ -1545,16 +1935,19 @@ pub fn save_task_workflow(
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    app.save_task_workflow(&task_id, input.workflow)
+    app.save_task_workflow_with_bindings(&task_id, input.workflow, input.model_bindings)
         .map_err(command_error)?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
 #[tauri::command]
-pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandResult<WorkflowVm> {
-    let app = state.app().map_err(command_error)?;
+pub fn get_workflow(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<WorkflowVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
@@ -1571,9 +1964,8 @@ pub fn save_workflow_template(
     state: State<'_, DesktopState>,
     input: SaveWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.save_workflow_template(input.name, input.workflow)
+    app.save_workflow_template_with_bindings(input.name, input.workflow, input.model_bindings)
         .map_err(command_error)
 }
 
@@ -1583,10 +1975,24 @@ pub fn update_workflow_template(
     template_id: String,
     input: UpdateWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.update_workflow_template(&template_id, input.workflow)
-        .map_err(command_error)
+    if app
+        .workflow_templates()
+        .map_err(command_error)?
+        .templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .is_some_and(|template| template.is_built_in)
+    {
+        app.update_built_in_workflow_template_bindings(&template_id, input.model_bindings)
+    } else {
+        app.update_workflow_template_with_bindings(
+            &template_id,
+            input.workflow,
+            input.model_bindings,
+        )
+    }
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -1682,23 +2088,579 @@ pub fn start_run(
 }
 
 #[tauri::command]
-pub fn get_git_capability(
+pub async fn get_git_capability(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    Ok(gold_band::git::GitRepositoryService::default().probe(&app.paths.repo_root))
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        Ok(gold_band::git::GitRepositoryService::default().probe(&project_root))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn initialize_git_repository(
+pub async fn initialize_git_repository(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
 ) -> CommandResult<gold_band::git::GitCapability> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    gold_band::git::GitRepositoryService::default()
-        .initialize(&app.paths.repo_root)
-        .map_err(command_error)
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        gold_band::git::GitRepositoryService::default()
+            .initialize(&project_root)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_source_control_snapshot(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitSourceControlSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .snapshot(&project_id, &workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_history(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitHistoryQuery,
+) -> CommandResult<gold_band::git::GitHistoryPage> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .history(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_detail(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    oid: String,
+) -> CommandResult<gold_band::git::GitCommitDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_detail(&workspace.workspace_path, &oid)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_review(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitCommitReviewQuery,
+) -> CommandResult<gold_band::git::GitCommitReview> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_review(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_commit_reachability(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    query: gold_band::git::GitCommitReachabilityQuery,
+) -> CommandResult<gold_band::git::GitCommitReachability> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .commit_reachability(&workspace.workspace_path, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn execute_git_mutation(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitMutationRequest,
+) -> CommandResult<gold_band::git::GitMutationResult> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .execute_mutation(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_git_comparison(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    source: gold_band::git::GitComparisonSource,
+) -> CommandResult<gold_band::git::GitFileComparison> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace_path = source.workspace_path();
+        let workspace = service
+            .resolve_scoped_workspace(&project_root, workspace_path.map(camino::Utf8Path::new))
+            .map_err(command_error)?;
+        match &source {
+            gold_band::git::GitComparisonSource::GitHubPr {
+                host,
+                repository,
+                pr_number,
+                base_oid,
+                head_oid,
+                path,
+                before_path,
+                ..
+            } => gold_band::git::GitHubCliService::default()
+                .pull_request_revision_comparison(
+                    &workspace.workspace_path,
+                    host,
+                    repository,
+                    *pr_number,
+                    base_oid,
+                    head_oid,
+                    path,
+                    before_path.as_deref(),
+                )
+                .map_err(command_error),
+            _ => service
+                .comparison(&workspace.workspace_path, &source)
+                .map_err(command_error),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_git_operation(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitOperationRequest,
+) -> CommandResult<gold_band::git::GitOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://git-operation-updated", operation);
+        });
+        service
+            .start_operation_with_update_sink(&workspace.workspace_path, &input, Some(update_sink))
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_git_state_monitor(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
+    watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    monitor_runtime: State<'_, crate::git_state_monitor::GitStateMonitorRuntime>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    let debounce_ms = app.config.workspace_files.watch_debounce_ms;
+    let (identity, targets) = spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let identity = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let targets = service
+            .metadata_watch_targets(&identity.workspace_path)
+            .map_err(command_error)?;
+        Ok((identity, targets))
+    })
+    .await?;
+    watch_runtime.start_workspace(
+        app_handle.clone(),
+        file_runtime.inner().clone(),
+        project_id.clone(),
+        identity.workspace_path.as_std_path().to_path_buf(),
+        debounce_ms,
+    )?;
+    if let Err(error) = monitor_runtime.start(
+        app_handle,
+        project_id.clone(),
+        &identity.common_dir,
+        &identity.workspace_path,
+        targets,
+        debounce_ms,
+    ) {
+        let _ = watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path());
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn stop_git_state_monitor(
+    state: State<'_, DesktopState>,
+    watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    monitor_runtime: State<'_, crate::git_state_monitor::GitStateMonitorRuntime>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<()> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    let identity = spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)
+    })
+    .await?;
+    monitor_runtime.stop(&identity.common_dir, &identity.workspace_path)?;
+    watch_runtime.stop_workspace(&project_id, identity.workspace_path.as_std_path())
+}
+
+#[tauri::command]
+pub async fn get_git_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .get_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_git_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitSourceControlService::default()
+            .cancel_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_capability(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitHubCapability> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .capability(&workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_github_login(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitHubOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://github-operation-updated", operation);
+        });
+        gold_band::git::GitHubCliService::default()
+            .start_login_with_update_sink(&workspace.workspace_path, &host, Some(update_sink))
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitHubCliService::default()
+            .get_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_github_operation(
+    operation_id: String,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    spawn_blocking_command(move || {
+        gold_band::git::GitHubCliService::default()
+            .cancel_operation(&operation_id)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_github_pull_requests(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    query: gold_band::git::GitHubPullRequestQuery,
+) -> CommandResult<Vec<gold_band::git::GitHubPullRequestSummary>> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .list_pull_requests(&workspace.workspace_path, &host, &repository, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_pull_request(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    number: u64,
+) -> CommandResult<gold_band::git::GitHubPullRequestDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .pull_request_detail(&workspace.workspace_path, &host, &repository, number)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn preflight_github_pull_request(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitHubPullRequestPreflightInput,
+) -> CommandResult<gold_band::git::GitHubPullRequestPreflight> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .preflight_pull_request(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn start_github_pull_request_create(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitHubPullRequestCreateInput,
+) -> CommandResult<gold_band::git::GitHubOperation> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        let event_app_handle = app_handle.clone();
+        let update_sink: gold_band::git::GitHubOperationUpdateSink = Arc::new(move |operation| {
+            let _ = event_app_handle.emit("gold-band://github-operation-updated", operation);
+        });
+        gold_band::git::GitHubCliService::default()
+            .start_pull_request_create_with_update_sink(
+                &workspace.workspace_path,
+                input,
+                Some(update_sink),
+            )
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_github_issues(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    query: gold_band::git::GitHubIssueQuery,
+) -> CommandResult<Vec<gold_band::git::GitHubIssueSummary>> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .list_issues(&workspace.workspace_path, &host, &repository, &query)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_github_issue(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    host: String,
+    repository: String,
+    number: u64,
+) -> CommandResult<gold_band::git::GitHubIssueDetail> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let git = gold_band::git::GitSourceControlService::default();
+        let workspace = git
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        gold_band::git::GitHubCliService::default()
+            .issue_detail(&workspace.workspace_path, &host, &repository, number)
+            .map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1708,13 +2670,146 @@ pub fn continue_run(
     project_id: Option<String>,
     task_id: String,
     run_id: String,
-    prompt_id: Option<String>,
-    prompt: Option<String>,
 ) -> CommandResult<RunSummaryVm> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    app.run_continue_background(&task_id, &run_id, prompt_id, prompt)
+    app.run_continue_background(&task_id, &run_id, None, None)
         .map(run_summary_vm)
         .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn continue_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    prompt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    if let Some(input) = input.as_ref() {
+        validate_conversation_prompt_input(input)?;
+    }
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_status(&locator.task_id, &locator.run_id)
+            .map_err(command_error)?;
+        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
+        if !runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
+            return Err(CommandErrorVm::new(
+                "runtime.continue-not-available",
+                serde_json::json!({
+                    "taskId": locator.task_id,
+                    "runId": locator.run_id,
+                    "roundId": locator.round_id,
+                    "nodeId": locator.node_id,
+                    "attemptId": locator.attempt_id,
+                }),
+            ));
+        }
+        if client::prompt_activity(&locator.attempt_dir(&app)).is_some() {
+            return Err(CommandErrorVm::new(
+                "runtime.continue-already-active",
+                serde_json::json!({}),
+            ));
+        }
+        let attempt_dir = locator.attempt_dir(&app);
+        let model_override = current_acp_session_model_override(&attempt_dir);
+        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
+        let attachment_paths = attachment_paths.unwrap_or_default();
+        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
+            (locator.outer_node_id(), locator.outer_attempt_id())
+        {
+            app.run_continue_dynamic_inner_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                prompt_id,
+                input,
+                attachment_paths,
+                model_override,
+                permission_mode_override,
+            )
+        } else {
+            app.run_continue_background_with_config_overrides(
+                &locator.task_id,
+                &locator.run_id,
+                prompt_id,
+                input,
+                attachment_paths,
+                model_override,
+                permission_mode_override,
+            )
+        }
+        .map(run_summary_vm)
+        .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-continue-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn recover_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    expected_revision: u64,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_recover_completed_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                expected_revision,
+            )
+            .map(run_summary_vm)
+            .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-recovery-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1806,7 +2901,7 @@ pub async fn stop_active_session(
 }
 
 #[tauri::command]
-pub fn submit_manual_check(
+pub async fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -1828,9 +2923,32 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let submission_lease = app
+        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+        .map_err(command_error)?;
+    let resumed_occurrence_id = resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
+    let app = app
+        .into_inner()
+        .with_scheduled_occurrence_id(resumed_occurrence_id);
+    app.submit_manual_check_background(
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outcome,
+        submission_lease,
+    )
+    .map(run_summary_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -2117,6 +3235,8 @@ fn maybe_emit_permission_intervention(
             PERMISSION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
@@ -2155,6 +3275,8 @@ fn maybe_emit_elicitation_intervention(
             ELICITATION_REQUESTED_DEDUP_SUFFIX,
         ),
         occurred_at: current_timestamp(),
+        scheduled_occurrence_id: app
+            .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
         project_id: project_id.to_string(),
         task_id: context.task_id.clone(),
         run_id: context.run_id.clone(),
@@ -2777,7 +3899,7 @@ fn emit_prompt_queue_lifecycle(
 }
 
 #[tauri::command]
-pub fn update_conversation_queued_prompt(
+pub fn reorder_conversation_queued_prompts(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -2786,8 +3908,8 @@ pub fn update_conversation_queued_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    item_id: String,
-    content: String,
+    expected_revision: u64,
+    ordered_item_ids: Vec<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ConversationPromptQueueMutationVm> {
@@ -2801,9 +3923,49 @@ pub fn update_conversation_queued_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    update_queued_prompt(&locator.attempt_dir(&app), &item_id, content)
-        .map_err(prompt_queue_command_error)?;
+    reorder_queued_prompts(
+        &locator.attempt_dir(&app),
+        expected_revision,
+        ordered_item_ids,
+    )
+    .map_err(prompt_queue_command_error)?;
     Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[tauri::command]
+pub fn restore_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueRestoreVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let (item, _) = take_queued_prompt(&locator.attempt_dir(&app), &item_id)
+        .map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueRestoreVm {
+        draft: ConversationQueuedPromptDraftVm {
+            content: item.content,
+            quotes: item.quotes,
+            attachment_paths: item.attachment_paths,
+        },
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
 }
@@ -2886,19 +4048,17 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        claimed.content.clone(),
+        ConversationPromptInput {
+            display_text: claimed.content.clone(),
+            quotes: claimed.quotes.clone(),
+        },
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
     )
     .await;
-    let runtime_started = result
-        .as_ref()
-        .is_ok_and(|result| result.kind == "runtime-continue-started");
-    if !runtime_started {
-        let _ = settle_dispatching_prompts(&attempt_dir);
-    }
+    let _ = settle_dispatching_prompts(&attempt_dir);
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
     result
 }
@@ -2913,7 +4073,7 @@ pub async fn submit_conversation_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
@@ -2929,12 +4089,12 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    validate_conversation_prompt_input(&input)?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
-    let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let attempt_dir = locator.attempt_dir(&app);
@@ -2947,7 +4107,7 @@ pub async fn submit_conversation_prompt(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, prompt, attachment_paths.unwrap_or_default())
+        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
         emit_acp_session_update(
             &app_handle,
@@ -2997,53 +4157,7 @@ pub async fn submit_conversation_prompt(
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
     }
-    let submit_target = if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-        "runtime-continue"
-    } else {
-        "acp-prompt"
-    };
-
-    if submit_target == "runtime-continue" {
-        let attempt_dir = locator.attempt_dir(&app);
-        let model_override = current_acp_session_model_override(&attempt_dir);
-        let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
-        let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-            (locator.outer_node_id(), locator.outer_attempt_id())
-        {
-            app.run_continue_dynamic_inner_background(
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                prompt_id,
-                prompt,
-                attachment_paths.unwrap_or_default(),
-                model_override,
-                permission_mode_override,
-            )
-        } else {
-            app.run_continue_background_with_config_overrides(
-                &locator.task_id,
-                &locator.run_id,
-                prompt_id,
-                Some(prompt),
-                attachment_paths.unwrap_or_default(),
-                model_override,
-                permission_mode_override,
-            )
-        }
-        .map(run_summary_vm)
-        .map_err(command_error)?;
-        return Ok(ConversationPromptSubmitVm {
-            kind: "runtime-continue-started".to_string(),
-            session: None,
-            run: Some(run),
-            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
-        });
-    }
+    ensure_conversation_prompt_available(&app, &locator)?;
 
     let session = send_acp_prompt(
         app_handle,
@@ -3054,7 +4168,7 @@ pub async fn submit_conversation_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        prompt,
+        input,
         prompt_id,
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3079,13 +4193,48 @@ pub async fn send_acp_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    validate_conversation_prompt_input(&input)?;
+    send_acp_prompt_with_configured_app(
+        app_handle,
+        app,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        input,
+        prompt_id,
+        outer_node_id,
+        outer_attempt_id,
+        attachment_paths,
+    )
+    .await
+}
+
+pub(crate) async fn send_acp_prompt_with_configured_app(
+    app_handle: AppHandle,
+    app: ConfiguredConversationApp,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    input: ConversationPromptInput,
+    prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = app.into_inner();
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -3095,23 +4244,6 @@ pub async fn send_acp_prompt(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    if let Ok(run) = app.run_status(&task_id, &run_id) {
-        let manual_check_pending = current_attempt_manual_check_pending(&app, &locator, &run)?;
-        if runtime_continue_required(&app, &locator, &run, manual_check_pending)? {
-            return Err(CommandErrorVm::new(
-                "acp.runtime-submit-required",
-                serde_json::json!({
-                    "taskId": task_id,
-                    "runId": run_id,
-                    "roundId": round_id,
-                    "nodeId": node_id,
-                    "attemptId": attempt_id,
-                    "outerNodeId": outer_node_id,
-                    "outerAttemptId": outer_attempt_id,
-                }),
-            ));
-        }
-    }
     let turn_id = prompt_id
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
@@ -3120,6 +4252,8 @@ pub async fn send_acp_prompt(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
+    let preflight = ensure_conversation_prompt_available(&app, &locator);
+    finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -3132,6 +4266,11 @@ pub async fn send_acp_prompt(
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        let ConversationPromptInput {
+            display_text,
+            quotes,
+        } = input;
+        let prompt = conversation_prompt_text(&display_text, &quotes);
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -3198,6 +4337,8 @@ pub async fn send_acp_prompt(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            prompt_bundle.display_text = Some(display_text.clone());
+            prompt_bundle.quotes = quotes.clone();
             // Resolve attachments
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
@@ -3306,6 +4447,7 @@ pub async fn send_acp_prompt(
                         outer_attempt_id,
                         &node_id,
                     )),
+                    turn_control_mode: prompt_bundle.turn_control_mode,
                 }),
             )
             .map_err(command_error)?;
@@ -3367,6 +4509,8 @@ pub async fn send_acp_prompt(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        prompt_bundle.display_text = Some(display_text);
+        prompt_bundle.quotes = quotes;
         // Resolve attachments
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
@@ -3471,6 +4615,7 @@ pub async fn send_acp_prompt(
                     &node_id,
                     &attempt_id,
                 )),
+                turn_control_mode: prompt_bundle.turn_control_mode,
             }),
         )
         .map_err(command_error)?;
@@ -3560,8 +4705,8 @@ pub async fn send_acp_prompt(
     );
 
     // Fire-and-forget: index this attempt for cross-session search
-    spawn_index_attempt(
-        state.inner(),
+    spawn_index_attempt_for_app(
+        &app_for_emit,
         &task_id_for_emit,
         &run_id_for_emit,
         &round_id_for_emit,
@@ -3668,6 +4813,7 @@ fn stop_acp_session(
     locator: AttemptLocator,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state, project_id.as_deref())?;
+    let runtime_was_controlled = attempt_is_runtime_controlled(&app, &locator)?;
     let requested_at = current_timestamp();
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
@@ -3709,6 +4855,9 @@ fn stop_acp_session(
     }
 
     request_acp_cancel_and_persist_interrupted_snapshot(&app, &attempt_dir);
+    if runtime_was_controlled {
+        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
+    }
 
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
@@ -3770,6 +4919,7 @@ fn persist_active_session_stop(
     locator: &AttemptLocator,
 ) -> CommandResult<Utf8PathBuf> {
     let attempt_dir = locator.attempt_dir(app);
+    let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     {
@@ -3794,8 +4944,9 @@ fn persist_active_session_stop(
         )
         .map_err(command_error)?;
     }
-    app.persist_cancelled_session_snapshot(&attempt_dir)
-        .map_err(command_error)?;
+    if runtime_was_controlled {
+        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
+    }
     client::request_prompt_cancel(&attempt_dir);
     Ok(attempt_dir)
 }
@@ -3848,8 +4999,30 @@ fn spawn_index_attempt(
     outer_attempt_id: Option<&str>,
 ) {
     let Ok(app) = state.app() else { return };
-    let attempt_dir = resolve_acp_attempt_dir(
+    spawn_index_attempt_for_app(
         &app,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+}
+
+fn spawn_index_attempt_for_app(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) {
+    let attempt_dir = resolve_acp_attempt_dir(
+        app,
         task_id,
         run_id,
         round_id,
@@ -4089,25 +5262,62 @@ pub fn show_worker_ref(
 #[tauri::command]
 pub fn save_desktop_preferences(
     state: State<'_, DesktopState>,
-    theme: DesktopThemePreference,
+    mut appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
     use_local_claude: bool,
     verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
+    if appearance.schema_version != 2 {
+        return Err(CommandErrorVm::new(
+            "theme.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": appearance.schema_version }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    if !theme_catalog
+        .iter()
+        .any(|theme| theme.id == appearance.theme_id)
+    {
+        return Err(CommandErrorVm::new(
+            "theme.active-package-missing",
+            serde_json::json!({ "themeId": appearance.theme_id }),
+        ));
+    }
+    let mut personalization = normalize_personalization_preference(personalization)?;
+    appearance.visual_quality_by_theme.retain(|theme_id, _| {
+        theme_catalog.iter().any(|theme| {
+            theme.id == *theme_id
+                && theme
+                    .capabilities
+                    .contains(&gold_band::theme::ThemeCapability::VisualQualityProfiles)
+        })
+    });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    match reconcile_wallpaper_personalization(&app.paths.user_gold_band_dir(), &mut personalization)
+    {
+        Ok(_) => {}
+        Err(error) => warn!(
+            error_code = error.code,
+            "wallpaper personalization reconciliation skipped"
+        ),
+    }
     if context.config.use_local_claude != use_local_claude {
         ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
         gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
             .map_err(command_error)?;
     }
-    app.set_user_desktop_preferences(theme, language, font.clone())
-        .map_err(command_error)?;
-    app.set_user_use_local_claude(use_local_claude)
-        .map_err(command_error)?;
     let settings = app
-        .set_user_verbose_logging(verbose_logging)
+        .set_user_desktop_preferences(
+            appearance.clone(),
+            personalization.clone(),
+            language,
+            use_local_claude,
+            verbose_logging,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -4115,22 +5325,118 @@ pub fn save_desktop_preferences(
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
     Ok(preferences_vm(
-        theme,
+        appearance,
+        personalization.clone(),
         language,
-        font,
         use_local_claude,
         log_level,
-        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?,
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
     ))
+}
+
+fn normalize_personalization_preference(
+    mut preference: PersonalizationPreference,
+) -> CommandResult<PersonalizationPreference> {
+    if preference.schema_version != 4 {
+        return Err(CommandErrorVm::new(
+            "personalization.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": preference.schema_version }),
+        ));
+    }
+    for typography in [
+        &mut preference.typography.ui,
+        &mut preference.typography.editor,
+    ] {
+        if let FontStackPreference::Custom { families } = &mut typography.font_stack {
+            if families.is_empty() || families.len() > MAX_FONT_STACK_FAMILIES {
+                return Err(CommandErrorVm::new(
+                    "personalization.font-stack-invalid",
+                    serde_json::json!({ "count": families.len() }),
+                ));
+            }
+            let mut seen = HashSet::new();
+            for family in families.iter_mut() {
+                *family = family.trim().to_string();
+                if family.is_empty()
+                    || family.chars().count() > MAX_FONT_FAMILY_CHARS
+                    || family
+                        .chars()
+                        .any(|character| matches!(character, ',' | ';' | '{' | '}'))
+                    || !seen.insert(family.to_lowercase())
+                {
+                    return Err(CommandErrorVm::new(
+                        "personalization.font-stack-invalid",
+                        serde_json::json!({ "count": families.len() }),
+                    ));
+                }
+            }
+        }
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.ui.font_size {
+        *px = normalize_desktop_ui_font_size(*px);
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.editor.font_size {
+        *px = normalize_desktop_editor_font_size(*px);
+    }
+    for avatar in [&preference.avatars.agent, &preference.avatars.user] {
+        if matches!(&avatar.image, AvatarPreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.avatar-invalid",
+                serde_json::json!({}),
+            ));
+        }
+    }
+    for wallpaper in [
+        &preference.wallpaper.by_color_scheme.light,
+        &preference.wallpaper.by_color_scheme.dark,
+    ] {
+        if matches!(&wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
+            .contains(&wallpaper.opacity_percent)
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-opacity-invalid",
+                serde_json::json!({
+                    "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                    "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                }),
+            ));
+        }
+    }
+    Ok(preference)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar(
     state: State<'_, DesktopState>,
     input: SaveDesktopAvatarInput,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let kind = input.kind;
+    let shape = input.shape;
+    let avatars =
+        save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)?;
+    let profile = avatar_profile(&avatars, kind);
+    let asset_id = profile.selected_avatar_id.clone().ok_or_else(|| {
+        CommandErrorVm::new("personalization.avatar-invalid", serde_json::json!({}))
+    })?;
+    let mut personalization = context.config.personalization.clone();
+    let target = avatar_personalization_mut(&mut personalization, kind);
+    target.image = AvatarPreference::User { asset_id };
+    target.shape = AvatarShapePreference::Custom {
+        value: personalization_avatar_shape(shape),
+    };
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
@@ -4138,32 +5444,226 @@ pub fn select_recent_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
     avatar_id: String,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
     select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
-        .map_err(avatar_command_error)
+        .map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::User {
+        asset_id: avatar_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar_shape(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-    shape: AvatarShape,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+    shape: Option<AvatarShape>,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    if let Some(shape) = shape {
+        save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape)
+            .map_err(avatar_command_error)?;
+    }
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).shape =
+        shape.map_or(AvatarShapePreference::Theme, |value| {
+            AvatarShapePreference::Custom {
+                value: personalization_avatar_shape(value),
+            }
+        });
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn clear_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::Theme;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub async fn import_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: ImportDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let color_scheme = input.color_scheme;
+    let initial_context = state.context().map_err(command_error)?;
+    let root = initial_context.app().paths.user_gold_band_dir();
+    let retained_asset_ids = [
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .light
+            .image,
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .dark
+            .image,
+    ]
+    .into_iter()
+    .filter_map(|image| match image {
+        WallpaperImagePreference::User { asset_id } => Some(asset_id.clone()),
+        WallpaperImagePreference::Theme => None,
+    })
+    .collect::<HashSet<_>>();
+    let saved = spawn_blocking_command(move || {
+        import_wallpaper_image(&root, input, &retained_asset_ids).map_err(wallpaper_command_error)
+    })
+    .await?;
+    // Image processing runs off-thread; merge into the latest preference
+    // snapshot so an unrelated settings change cannot be overwritten.
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(color_scheme)
+        .image = WallpaperImagePreference::User {
+        asset_id: saved.asset_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub async fn select_recent_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: SelectRecentDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let root = state
+        .context()
+        .map_err(command_error)?
+        .app()
+        .paths
+        .user_gold_band_dir();
+    let selected_id = input.wallpaper_id.clone();
+    spawn_blocking_command(move || {
+        select_recent_wallpaper(&root, &selected_id).map_err(wallpaper_command_error)
+    })
+    .await?;
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::User {
+        asset_id: input.wallpaper_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub fn save_desktop_wallpaper_opacity(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopWallpaperOpacityInput,
+) -> CommandResult<PreferencesVm> {
+    if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
+        .contains(&input.opacity_percent)
+    {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-opacity-invalid",
+            serde_json::json!({
+                "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            }),
+        ));
+    }
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .opacity_percent = input.opacity_percent;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub fn restore_theme_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: RestoreThemeDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::Theme;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+fn avatar_profile(
+    avatars: &AvatarPreferencesVm,
+    kind: AvatarKind,
+) -> &crate::avatar::AvatarProfileVm {
+    match kind {
+        AvatarKind::Agent => &avatars.agent,
+        AvatarKind::User => &avatars.user,
+    }
+}
+
+fn avatar_personalization_mut(
+    personalization: &mut PersonalizationPreference,
+    kind: AvatarKind,
+) -> &mut gold_band::config::AvatarPersonalization {
+    match kind {
+        AvatarKind::Agent => &mut personalization.avatars.agent,
+        AvatarKind::User => &mut personalization.avatars.user,
+    }
+}
+
+fn personalization_avatar_shape(shape: AvatarShape) -> PersonalizationAvatarShape {
+    match shape {
+        AvatarShape::Circle => PersonalizationAvatarShape::Circle,
+        AvatarShape::Square => PersonalizationAvatarShape::Square,
+    }
+}
+
+fn persist_desktop_personalization(
+    state: &DesktopState,
+    context: &crate::state::DesktopContext,
+    personalization: PersonalizationPreference,
+) -> CommandResult<PreferencesVm> {
+    let app = context.app();
+    let settings = app
+        .set_user_desktop_personalization(personalization.clone())
+        .map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let avatars =
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?;
+    let wallpapers =
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default();
+    Ok(preferences_vm(
+        context.config.appearance.clone(),
+        personalization,
+        context.config.desktop_language,
+        context.config.use_local_claude,
+        context.config.log_level,
+        avatars,
+        wallpapers,
+    ))
 }
 
 fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {
+    CommandErrorVm::new(error.code, error.params)
+}
+
+fn wallpaper_command_error(error: crate::wallpaper::WallpaperError) -> CommandErrorVm {
     CommandErrorVm::new(error.code, error.params)
 }
 
@@ -4271,40 +5771,15 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-fn ensure_workflow_agents_doctor_ready(
-    state: &DesktopState,
-    workflow: &WorkflowDsl,
-) -> CommandResult<()> {
-    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    for node in &workflow.nodes {
-        for provider in providers_for_node(node) {
-            let agent_id = ManagedAgentId::from_str(&provider).map_err(command_error)?;
-            match diagnostics.get(&agent_id) {
-                Some(diagnostic) if diagnostic.available => {}
-                Some(diagnostic) => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-failed",
-                        serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
-                    ));
-                }
-                None => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-required",
-                        serde_json::json!({ "agentType": provider }),
-                    ));
-                }
-            }
-        }
-    }
-    let app = state.app().map_err(command_error)?;
-    let validated = gold_band::dsl::validate_workflow(workflow.clone()).map_err(command_error)?;
-    app.validate_workflow_agents(&validated)
-        .map_err(command_error)
-}
-
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
         return CommandErrorVm::new(error.code, error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitServiceError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::git::GitHubServiceError>() {
+        return CommandErrorVm::new(error.code, error.params.clone());
     }
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
@@ -4316,6 +5791,14 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::app::WorkflowTemplateCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::workflow_model_binding::WorkflowModelBindingError>()
+    {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
@@ -4334,9 +5817,61 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
         PromptQueueError::NotFound => "conversation.prompt-queue-item-not-found",
         PromptQueueError::Dispatching => "conversation.prompt-queue-item-dispatching",
         PromptQueueError::Empty => "conversation.prompt-queue-empty",
+        PromptQueueError::RevisionConflict => "conversation.prompt-queue-revision-conflict",
+        PromptQueueError::InvalidOrder => "conversation.prompt-queue-invalid-order",
         PromptQueueError::Storage => "conversation.prompt-queue-storage-failed",
     };
     CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+fn validate_conversation_prompt_input(input: &ConversationPromptInput) -> CommandResult<()> {
+    if input.display_text.trim().is_empty() {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-empty",
+            serde_json::json!({}),
+        ));
+    }
+    if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-quote-count-exceeded",
+            serde_json::json!({ "maxQuotes": MAX_USER_PROMPT_QUOTES }),
+        ));
+    }
+    let mut quote_ids = HashSet::with_capacity(input.quotes.len());
+    let mut quote_chars = 0usize;
+    for quote in &input.quotes {
+        if quote.id.trim().is_empty()
+            || quote.source_message_key.trim().is_empty()
+            || quote.text.trim().is_empty()
+            || !quote_ids.insert(quote.id.as_str())
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if quote.id.len() > MAX_USER_PROMPT_QUOTE_ID_BYTES
+            || quote.source_message_key.len() > MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-metadata-too-long",
+                serde_json::json!({
+                    "maxIdBytes": MAX_USER_PROMPT_QUOTE_ID_BYTES,
+                    "maxSourceKeyBytes": MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES,
+                }),
+            ));
+        }
+        let remaining = MAX_USER_PROMPT_QUOTE_CHARS.saturating_sub(quote_chars);
+        let chars = quote.text.chars().take(remaining + 1).count();
+        quote_chars += chars;
+        if quote_chars > MAX_USER_PROMPT_QUOTE_CHARS {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-limit-exceeded",
+                serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
@@ -4495,9 +6030,8 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
     } else {
         return None;
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| {
             value
                 .get(override_key)
@@ -4528,12 +6062,310 @@ fn current_acp_session_config_option_overrides(
     } else {
         return Default::default();
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| value.get("configOptionOverrides").cloned())
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpCatalogSelectOption {
+    category: String,
+    values: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpSessionConfigCatalog {
+    observed_at: Option<String>,
+    models: Option<BTreeSet<String>>,
+    modes: Option<BTreeSet<String>>,
+    config_options: Option<BTreeMap<String, AcpCatalogSelectOption>>,
+}
+
+impl AcpSessionConfigCatalog {
+    fn from_value(value: &serde_json::Value, observed_at: Option<String>) -> Self {
+        let select_options = select_config_options_from_capabilities(Some(value));
+        let config_options = value.get("configOptions").map(|_| {
+            select_options
+                .iter()
+                .map(|option| {
+                    (
+                        option.id.clone(),
+                        AcpCatalogSelectOption {
+                            category: option.category.clone().unwrap_or_else(|| option.id.clone()),
+                            values: option
+                                .options
+                                .iter()
+                                .map(|value| value.value.clone())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let models = select_options
+            .iter()
+            .any(|option| option.category.as_deref() == Some("model"))
+            .then(|| {
+                supported_models_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("models")
+                    .map(|models| acp_catalog_grouped_ids(models, "availableModels", true))
+            });
+        let modes = select_options
+            .iter()
+            .any(|option| option.id == "mode" || option.category.as_deref() == Some("mode"))
+            .then(|| {
+                supported_modes_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("modes")
+                    .map(|modes| acp_catalog_grouped_ids(modes, "availableModes", false))
+            });
+        Self {
+            observed_at,
+            models,
+            modes,
+            config_options,
+        }
+    }
+
+    fn supports_model(&self, value: &str) -> Option<bool> {
+        self.models.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_mode(&self, value: &str) -> Option<bool> {
+        self.modes.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_config_value(&self, option_id: &str, value: &str) -> Option<bool> {
+        self.config_options.as_ref().map(|options| {
+            options
+                .get(option_id)
+                .is_some_and(|option| option.values.contains(value))
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AcpSessionConfigCatalogContext {
+    session: AcpSessionConfigCatalog,
+    newer_doctor: Option<AcpSessionConfigCatalog>,
+}
+
+impl AcpSessionConfigCatalogContext {
+    fn effective(&self) -> &AcpSessionConfigCatalog {
+        self.newer_doctor.as_ref().unwrap_or(&self.session)
+    }
+}
+
+fn acp_catalog_grouped_ids(
+    value: &serde_json::Value,
+    list_key: &str,
+    model: bool,
+) -> BTreeSet<String> {
+    value
+        .get(list_key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let key = if model { "modelId" } else { "id" };
+            item.get(key)
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("value"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn acp_catalog_timestamp(value: &str) -> Option<i64> {
+    value
+        .trim()
+        .trim_end_matches('Z')
+        .parse::<i64>()
+        .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(value.trim())
+                .ok()
+                .map(|value| value.timestamp())
+        })
+}
+
+fn acp_catalog_observation_is_newer(candidate: &str, current: Option<&str>) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    if candidate == current {
+        return false;
+    }
+    match (
+        acp_catalog_timestamp(candidate),
+        acp_catalog_timestamp(current),
+    ) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate > current,
+    }
+}
+
+fn acp_session_config_catalog_context(
+    app: &App,
+    locator: &AttemptLocator,
+    session: &serde_json::Value,
+) -> AcpSessionConfigCatalogContext {
+    let session_catalog = AcpSessionConfigCatalog::from_value(
+        session,
+        session
+            .get("configCatalogObservedAt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    );
+    let newer_doctor = acp_turn_provider_id(app, locator)
+        .and_then(|provider| app.provider_diagnostics().remove(&provider))
+        .filter(|diagnostic| diagnostic.available)
+        .and_then(|diagnostic| {
+            let capabilities = diagnostic.capabilities?;
+            acp_catalog_observation_is_newer(
+                &diagnostic.checked_at,
+                session_catalog.observed_at.as_deref(),
+            )
+            .then(|| {
+                AcpSessionConfigCatalog::from_value(&capabilities, Some(diagnostic.checked_at))
+            })
+        });
+    AcpSessionConfigCatalogContext {
+        session: session_catalog,
+        newer_doctor,
+    }
+}
+
+fn acp_session_config_value_unavailable(
+    category: &str,
+    config_id: &str,
+    value: &str,
+    available_values: impl IntoIterator<Item = String>,
+) -> CommandErrorVm {
+    CommandErrorVm::new(
+        gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE,
+        serde_json::json!({
+            "category": category,
+            "configId": config_id,
+            "value": value,
+            "availableValues": available_values.into_iter().collect::<Vec<_>>(),
+        }),
+    )
+}
+
+fn validate_acp_catalog_model(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_model(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "model",
+            "model",
+            value,
+            catalog.models.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_mode(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_mode(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "mode",
+            "mode",
+            value,
+            catalog.modes.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_config_value(
+    catalog: &AcpSessionConfigCatalog,
+    option_id: &str,
+    value: &str,
+) -> CommandResult<()> {
+    let option = catalog
+        .config_options
+        .as_ref()
+        .and_then(|options| options.get(option_id));
+    if option.is_some_and(|option| option.values.contains(value)) {
+        return Ok(());
+    }
+    Err(acp_session_config_value_unavailable(
+        option
+            .map(|option| option.category.as_str())
+            .unwrap_or("config"),
+        option_id,
+        value,
+        option
+            .map(|option| option.values.clone())
+            .unwrap_or_default(),
+    ))
+}
+
+fn apply_acp_catalog_refresh_marker(
+    session: &mut serde_json::Value,
+    catalogs: &AcpSessionConfigCatalogContext,
+) {
+    let Some(doctor) = catalogs.newer_doctor.as_ref() else {
+        return;
+    };
+    let model_requires_refresh = session
+        .get("modelOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_model(value) == Some(true)
+                && catalogs.session.supports_model(value) != Some(true)
+        });
+    let mode_requires_refresh = session
+        .get("permissionModeOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_mode(value) == Some(true)
+                && catalogs.session.supports_mode(value) != Some(true)
+        });
+    let option_requires_refresh = session
+        .get("configOptionOverrides")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|overrides| {
+            overrides.iter().any(|(option_id, value)| {
+                value.as_str().is_some_and(|value| {
+                    doctor.supports_config_value(option_id, value) == Some(true)
+                        && catalogs.session.supports_config_value(option_id, value) != Some(true)
+                })
+            })
+        });
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if model_requires_refresh || mode_requires_refresh || option_requires_refresh {
+        if let Some(observed_at) = doctor.observed_at.as_ref() {
+            object.insert(
+                "configCatalogRefreshRequiredAt".to_string(),
+                serde_json::Value::String(observed_at.clone()),
+            );
+        }
+    } else {
+        object.remove("configCatalogRefreshRequiredAt");
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -4582,6 +6414,15 @@ pub async fn set_acp_session_model(
     model_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -4602,18 +6443,26 @@ pub async fn set_acp_session_model(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(model_id) = model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_model(catalogs.effective(), model_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(model_id) = model_id
@@ -4642,14 +6491,8 @@ pub async fn set_acp_session_model(
         }
         set_acp_config_option_current_value(&mut value, "model", model_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -4699,6 +6542,15 @@ pub async fn set_acp_session_permission_mode(
     permission_mode_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -4719,18 +6571,26 @@ pub async fn set_acp_session_permission_mode(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(permission_mode_id) = permission_mode_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_mode(catalogs.effective(), permission_mode_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(permission_mode_id) = permission_mode_id
@@ -4759,14 +6619,8 @@ pub async fn set_acp_session_permission_mode(
         }
         set_acp_config_option_current_value(&mut value, "mode", permission_mode_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -4817,6 +6671,15 @@ pub async fn set_acp_session_config_option(
     option_value: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -4836,63 +6699,26 @@ pub async fn set_acp_session_config_option(
     } else {
         return Ok(None);
     };
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
     let option_id = option_id.trim();
-    let config_option = value
-        .get("configOptions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|options| {
-            options.iter().find(|option| {
-                option.get("id").and_then(serde_json::Value::as_str) == Some(option_id)
-            })
-        })
-        .cloned()
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "acp.config-option-not-found",
-                serde_json::json!({ "optionId": option_id }),
-            )
-        })?;
-    if config_option
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        != Some("select")
-    {
-        return Err(CommandErrorVm::new(
-            "acp.config-option-not-select",
-            serde_json::json!({ "optionId": option_id }),
-        ));
-    }
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
     let normalized_value = option_value
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(selected) = normalized_value {
-        let supported = config_option
-            .get("options")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|options| {
-                options.iter().any(|option| {
-                    option.get("value").and_then(serde_json::Value::as_str) == Some(selected)
-                })
-            });
-        if !supported {
-            return Err(CommandErrorVm::new(
-                "acp.config-option-value-unsupported",
-                serde_json::json!({ "optionId": option_id, "value": selected }),
-            ));
-        }
+        validate_acp_catalog_config_value(catalogs.effective(), option_id, selected)?;
     }
     if let Some(session) = value.as_object_mut() {
         let overrides = session
@@ -4918,13 +6744,8 @@ pub async fn set_acp_session_config_option(
     if let Some(selected) = normalized_value {
         set_acp_config_option_current_value(&mut value, option_id, selected);
     }
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5234,7 +7055,7 @@ fn list_conversation_directory_entries(
 }
 
 #[tauri::command]
-pub fn respond_elicitation(
+pub async fn respond_elicitation(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -5250,6 +7071,18 @@ pub fn respond_elicitation(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+
+    // Reclaim the durable scheduled occurrence before writing the response file.
+    // The ACP waiter may resume immediately after the file is visible.
+    resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -5330,6 +7163,72 @@ pub fn respond_elicitation(
     );
 
     Ok(())
+}
+
+fn scheduled_attention_requires_coordinator(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> crate::scheduled_service::ScheduledServiceResult<bool> {
+    let database_path = app.paths.scheduler_db_path();
+    if !database_path.exists() {
+        return Ok(false);
+    }
+    let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
+    Ok(database
+        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
+        .is_some())
+}
+
+async fn resume_scheduled_interaction(
+    state: &DesktopState,
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> CommandResult<Option<String>> {
+    let requires_coordinator =
+        scheduled_attention_requires_coordinator(app, task_id, run_id, round_id, attempt_id)
+            .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?;
+    if !requires_coordinator {
+        return Ok(None);
+    }
+
+    let coordinator = state.scheduler_coordinator().map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::CoordinatorUnavailable
+                .to_string(),
+            serde_json::json!({ "operation": "resume-attention" }),
+        )
+    })?;
+    coordinator
+        .resume_attention(
+            app.paths.repo_root.clone(),
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            attempt_id.to_string(),
+        )
+        .await
+        .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::NotFound.to_string(),
+                serde_json::json!({
+                    "operation": "resume-attention",
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "attemptId": attempt_id,
+                }),
+            )
+        })
+        .map(Some)
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -5827,8 +7726,233 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
+    use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
+    use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
+    use gold_band::dynamic::DynamicGraphState;
+    use gold_band::runtime::TaskState;
+    use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
+    use gold_band::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
+        let mut session = serde_json::json!({
+            "configCatalogObservedAt": "100Z",
+            "modelOverride": "new-model",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "options": [{ "value": "old-model" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "model",
+                        "category": "model",
+                        "type": "select",
+                        "options": [{ "value": "new-model" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+
+        validate_acp_catalog_model(catalogs.effective(), "new-model").unwrap();
+        apply_acp_catalog_refresh_marker(&mut session, &catalogs);
+
+        assert_eq!(
+            session
+                .get("configCatalogRefreshRequiredAt")
+                .and_then(serde_json::Value::as_str),
+            Some("200Z")
+        );
+    }
+
+    #[test]
+    fn session_catalog_wins_ties_and_unavailable_values_are_structured() {
+        assert!(!acp_catalog_observation_is_newer("200Z", Some("200Z")));
+        assert!(!acp_catalog_observation_is_newer("199Z", Some("200Z")));
+        assert!(acp_catalog_observation_is_newer("201Z", Some("200Z")));
+
+        let catalog = AcpSessionConfigCatalog::from_value(
+            &serde_json::json!({
+                "modes": { "availableModes": [{ "id": "ask" }] }
+            }),
+            Some("200Z".to_string()),
+        );
+        let error = validate_acp_catalog_mode(&catalog, "full").unwrap_err();
+        assert_eq!(
+            error.code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(error.params["category"], "mode");
+        assert_eq!(error.params["value"], "full");
+        assert_eq!(error.params["availableValues"], serde_json::json!(["ask"]));
+    }
     use std::sync::{Arc, Mutex};
+
+    fn bound_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: Some("slot-dev".to_string()),
+                    provider: None,
+                    model: None,
+                    profile: None,
+                    goal: None,
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    config_options: BTreeMap::new(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings {
+                bindings: vec![WorkerModelBinding {
+                    execution_slot_id: "slot-dev".to_string(),
+                    agent_id: agent_id.to_string(),
+                    model_id: None,
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                }],
+                ..WorkflowModelBindings::default()
+            },
+        }
+    }
+
+    fn dynamic_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider: agent_id.to_string(),
+                        bootstrap_model: None,
+                        permission_mode: None,
+                        bootstrap_config_options: Default::default(),
+                        acceptance_model: None,
+                        acceptance_config_options: Default::default(),
+                        routing_prompt: "route by task".to_string(),
+                        available_agents: vec![gold_band::dsl::DynamicAgentRef {
+                            provider: "agent-b".to_string(),
+                            model: None,
+                            permission_mode: None,
+                            config_options: Default::default(),
+                        }],
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        }
+    }
+
+    fn write_bound_task(app: &App, task_id: &str, agent_id: &str) {
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.workflow_file(task_id),
+            &bound_authoring(agent_id, &format!("workflow-{task_id}")),
+        )
+        .unwrap();
+    }
+
+    fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
+        ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: source_message_key.to_string(),
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
+        let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
+        assert!(validate_conversation_prompt_input(&valid).is_ok());
+
+        let mut duplicate = valid.clone();
+        duplicate.quotes.push(duplicate.quotes[0].clone());
+        assert_eq!(
+            validate_conversation_prompt_input(&duplicate)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-invalid"
+        );
+
+        let over_limit = prompt_with_quote(
+            "textDelta-answer-1",
+            &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        );
+        assert_eq!(
+            validate_conversation_prompt_input(&over_limit)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-limit-exceeded"
+        );
+        let mut too_many = valid.clone();
+        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
+            .map(|index| gold_band::provider::UserPromptQuote {
+                id: format!("quote-{index}"),
+                source_message_key: format!("source-{index}"),
+                text: "x".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            validate_conversation_prompt_input(&too_many)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-count-exceeded"
+        );
+
+        let too_long_id = ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
+                source_message_key: "arbitrary-source".to_string(),
+                text: "用户提供的任意引用内容".to_string(),
+            }],
+        };
+        assert_eq!(
+            validate_conversation_prompt_input(&too_long_id)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-metadata-too-long"
+        );
+
+        assert!(
+            validate_conversation_prompt_input(&prompt_with_quote(
+                "code-selection:anywhere",
+                "引用不需要在消息时间线中存在",
+            ))
+            .is_ok()
+        );
+    }
 
     #[test]
     fn blocking_command_runs_outside_the_caller_thread() {
@@ -5841,6 +7965,477 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn personalization_font_stack_validation_preserves_order_and_rejects_invalid_input() {
+        let mut valid = PersonalizationPreference::default();
+        valid.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec![" Segoe UI ".to_string(), "Gold Band MiSans".to_string()],
+        };
+        let normalized = normalize_personalization_preference(valid).unwrap();
+        assert_eq!(
+            normalized.typography.ui.font_stack,
+            FontStackPreference::Custom {
+                families: vec!["Segoe UI".to_string(), "Gold Band MiSans".to_string()],
+            }
+        );
+
+        for families in [
+            vec![],
+            vec!["Segoe UI".to_string(), "segoe ui".to_string()],
+            vec!["bad,font".to_string()],
+            vec!["x".repeat(MAX_FONT_FAMILY_CHARS + 1)],
+        ] {
+            let mut invalid = PersonalizationPreference::default();
+            invalid.typography.ui.font_stack = FontStackPreference::Custom { families };
+            assert_eq!(
+                normalize_personalization_preference(invalid)
+                    .unwrap_err()
+                    .code,
+                "personalization.font-stack-invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_usage_workspace_apps_include_registered_and_current_projects_once() {
+        let root = tempfile::tempdir().unwrap();
+        let current = Utf8PathBuf::from_path_buf(root.path().join("current")).unwrap();
+        let other = Utf8PathBuf::from_path_buf(root.path().join("other")).unwrap();
+        let context = crate::state::DesktopContext {
+            repo_root: current.clone(),
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        };
+        let workspaces = vec![
+            ConversationWorkspaceEntry {
+                project_id: "current-alias".to_string(),
+                workspace_path: current.to_string(),
+                name: "Current".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other-duplicate".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other duplicate".to_string(),
+                added_at: String::new(),
+            },
+        ];
+
+        let apps = agent_usage_workspace_apps(&context, &workspaces).unwrap();
+        let project_ids = apps
+            .iter()
+            .map(|app| app.paths.project_id.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(apps.len(), 2);
+        assert_eq!(project_ids.len(), 2);
+        assert!(project_ids.contains(&context.app().paths.project_id));
+    }
+
+    #[test]
+    fn agent_binding_usage_aggregates_tasks_and_schedules_across_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let first =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("first-workspace")).unwrap());
+        let second =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("second-workspace")).unwrap());
+        write_bound_task(&first, "task-first", "agent-a");
+        write_bound_task(&second, "task-second", "agent-a");
+        write_bound_task(&second, "task-unrelated", "agent-b");
+        write_json(
+            &first.paths.task_file("task-dynamic"),
+            &TaskState::new("task-dynamic"),
+        )
+        .unwrap();
+        write_json(
+            &first.paths.workflow_file("task-dynamic"),
+            &dynamic_authoring("agent-a", "workflow-task-dynamic"),
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(second.paths.scheduler_db_path()).unwrap();
+        let mut scheduled_workflow = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-agent-a",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_workflow.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-workflow")).unwrap());
+        database.save_job_definition(&scheduled_workflow).unwrap();
+
+        let mut scheduled_direct = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-direct-agent-a",
+            "direct",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_direct.content_snapshot.direct_agent_id = Some("agent-a".to_string());
+        database.save_job_definition(&scheduled_direct).unwrap();
+
+        let mut scheduled_auto = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-auto-agent-a",
+            "auto",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_auto.content_snapshot.auto_authoring =
+            Some(gold_band::scheduler::AutoAuthoringIdentity::new(
+                "agent-a",
+                "fixed",
+                None::<String>,
+                Vec::<String>::new(),
+                None::<String>,
+                Vec::<String>::new(),
+            ));
+        database.save_job_definition(&scheduled_auto).unwrap();
+
+        let template_authoring = bound_authoring("agent-a", "template-workflow");
+        let dynamic_template_authoring = dynamic_authoring("agent-a", "template-dynamic-workflow");
+        let templates = WorkflowTemplateStore {
+            version: gold_band::domain::VERSION.to_string(),
+            last_used_template_id: None,
+            last_created_workflow: None,
+            templates: vec![
+                WorkflowTemplate {
+                    id: "template-a".to_string(),
+                    name: "Template A".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: template_authoring.workflow,
+                    model_bindings: template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkflowTemplate {
+                    id: "template-dynamic".to_string(),
+                    name: "Dynamic Template".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: dynamic_template_authoring.workflow,
+                    model_bindings: dynamic_template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+            ],
+        };
+        let agent_id = ManagedAgentId::from_str("agent-a").unwrap();
+
+        let usage = collect_agent_binding_usage(&agent_id, &templates, &[first, second]).unwrap();
+
+        assert_eq!(
+            usage,
+            AgentBindingUsageVm {
+                workflow_template_count: 2,
+                task_count: 3,
+                scheduled_task_count: 3,
+                unknown_task_count: 0,
+                unknown_scheduled_task_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_only_requires_coordinator_for_matching_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+
+        assert!(
+            !scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+        assert!(!app.paths.scheduler_db_path().exists());
+
+        let database =
+            gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+                .unwrap();
+        let now = chrono::Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + chrono::Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                definition.id(),
+                now,
+                gold_band::scheduler::occurrence::OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "owner-1";
+        database
+            .claim_occurrence(
+                &occurrence.id,
+                owner_id,
+                now,
+                now + chrono::Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &occurrence.id,
+                owner_id,
+                gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+
+        assert!(
+            scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_maps_database_failure_to_storage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+        std::fs::create_dir_all(app.paths.scheduler_db_path()).unwrap();
+
+        let error = scheduled_attention_requires_coordinator(
+            &app,
+            "task-1",
+            "run-1",
+            "round-1",
+            "attempt-1",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+        );
+    }
+
+    #[test]
+    fn agent_binding_usage_isolates_damaged_tasks_and_scheduled_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("workspace")).unwrap());
+        write_bound_task(&app, "task-valid", "agent-a");
+        write_json(
+            &app.paths.task_file("task-invalid"),
+            &TaskState::new("task-invalid"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .workflow_file("task-invalid")
+                .parent()
+                .unwrap()
+                .as_std_path(),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.workflow_file("task-invalid").as_std_path(),
+            "{invalid",
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let mut valid = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-valid",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        valid.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-valid")).unwrap());
+        database.save_job_definition(&valid).unwrap();
+
+        let mut invalid_snapshot = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-invalid-snapshot",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        invalid_snapshot.content_snapshot.workflow_authoring = Some(serde_json::json!({
+            "workflow": "invalid"
+        }));
+        database.save_job_definition(&invalid_snapshot).unwrap();
+
+        drop(database);
+
+        let usage = collect_agent_binding_usage(
+            &ManagedAgentId::from_str("agent-a").unwrap(),
+            &WorkflowTemplateStore {
+                version: gold_band::domain::VERSION.to_string(),
+                last_used_template_id: None,
+                last_created_workflow: None,
+                templates: Vec::new(),
+            },
+            &[app],
+        )
+        .unwrap();
+
+        assert_eq!(usage.workflow_template_count, 0);
+        assert_eq!(usage.task_count, 1);
+        assert_eq!(usage.scheduled_task_count, 1);
+        assert_eq!(usage.unknown_task_count, 1);
+        assert_eq!(usage.unknown_scheduled_task_count, 1);
+    }
+
+    #[test]
+    fn workflow_agent_usage_covers_legacy_worker_and_ai_dynamic_roles() {
+        let mut legacy_worker = bound_authoring("agent-b", "legacy-worker");
+        legacy_worker.model_bindings.bindings.clear();
+        let NodeDsl::Worker(worker) = &mut legacy_worker.workflow.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.provider = Some("agent-a".to_string());
+
+        let fixed_dynamic = TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "fixed-dynamic".to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Fixed {
+                        provider: "agent-a".to_string(),
+                        model: None,
+                        permission_mode: None,
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        };
+        let dynamic_available = dynamic_authoring("agent-c", "dynamic-available");
+
+        assert!(workflow_references_agent(
+            &legacy_worker.workflow,
+            &legacy_worker.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &fixed_dynamic.workflow,
+            &fixed_dynamic.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &dynamic_available.workflow,
+            &dynamic_available.model_bindings,
+            "agent-b"
+        ));
+    }
+
+    #[test]
+    fn auto_authoring_usage_covers_current_secondary_and_legacy_identity_fields() {
+        let current = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-a",
+            "fixed",
+            None::<String>,
+            Vec::<String>::new(),
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let secondary = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-b",
+            "dynamic",
+            Some("agent-a"),
+            vec!["agent-a"],
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let legacy = gold_band::scheduler::AutoAuthoringIdentity {
+            agent_strategy: "agent-a".to_string(),
+            agent_type: "fixed".to_string(),
+            bootstrap_agent_type: None,
+            available_agent_types: Vec::new(),
+            global_goal: None,
+            allowed_workflow_ids: Vec::new(),
+        };
+
+        assert!(auto_authoring_references_agent(&current, "agent-a"));
+        assert!(auto_authoring_references_agent(&secondary, "agent-a"));
+        assert!(auto_authoring_references_agent(&legacy, "agent-a"));
+        assert!(!auto_authoring_references_agent(&legacy, "agent-b"));
+    }
+
+    #[test]
+    fn personalization_wallpaper_validation_rejects_invalid_identity_and_opacity() {
+        let mut invalid_identity = PersonalizationPreference::default();
+        invalid_identity
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::User {
+            asset_id: "  ".to_string(),
+        };
+        assert_eq!(
+            normalize_personalization_preference(invalid_identity)
+                .unwrap_err()
+                .code,
+            "personalization.wallpaper-invalid"
+        );
+
+        for opacity_percent in [0, 19, 101] {
+            let mut invalid_opacity = PersonalizationPreference::default();
+            invalid_opacity
+                .wallpaper
+                .for_color_scheme_mut(ResolvedColorScheme::Dark)
+                .opacity_percent = opacity_percent;
+            assert_eq!(
+                normalize_personalization_preference(invalid_opacity)
+                    .unwrap_err()
+                    .code,
+                "personalization.wallpaper-opacity-invalid"
+            );
+        }
     }
 
     #[test]
@@ -5979,9 +8574,12 @@ mod tests {
         assert_eq!(run["status"], "paused");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
-        assert_eq!(snapshot["status"], "cancelled");
+        assert_eq!(snapshot["latestTurnStatus"], "none");
+        assert_eq!(
+            snapshot["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
         assert!(timeline_path.is_dir());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6403,6 +9001,121 @@ mod tests {
     }
 
     #[test]
+    fn direct_queue_drain_keeps_the_originating_scheduled_turn_context() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-drain-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()));
+
+        let drain_app = direct_prompt_queue_drain_app(&app);
+
+        assert_eq!(drain_app.scheduled_occurrence_id(), Some("occurrence-001"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_user_turn_clears_only_the_scheduled_origin() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-queued-turn-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_callback = seen.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                *seen_for_callback.lock().unwrap() += 1;
+                Ok(())
+            }));
+
+        let queued_app = queued_user_turn_app(&app);
+        queued_app
+            .notify_prompt_turn_finished(
+                acp_live_event_context(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "node-001",
+                    "attempt-001",
+                    None,
+                    None,
+                ),
+                Some("turn-001".to_string()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(queued_app.scheduled_occurrence_id(), None);
+        assert_eq!(*seen.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scheduled_acp_preflight_failure_emits_one_failed_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-scheduled-acp-preflight-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_subscriber = seen.clone();
+        let app = App::new(repo_root)
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if let RuntimeLifecycleEvent::AcpTurnFinished { .. } = event {
+                    seen_for_subscriber.lock().unwrap().push(event);
+                }
+            }));
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+
+        let result: CommandResult<()> = finish_acp_prompt_preflight(
+            &app,
+            &locator,
+            "turn-001",
+            "Claude",
+            Err(CommandErrorVm::new(
+                "runtime.conversation-not-available",
+                serde_json::json!({}),
+            )),
+        );
+
+        assert_eq!(
+            result.unwrap_err().code,
+            "runtime.conversation-not-available"
+        );
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RuntimeLifecycleEvent::AcpTurnFinished {
+                scheduled_occurrence_id,
+                turn_id,
+                outcome,
+                ..
+            } => {
+                assert_eq!(scheduled_occurrence_id.as_deref(), Some("occurrence-001"));
+                assert_eq!(turn_id, "turn-001");
+                assert_eq!(*outcome, AcpTurnOutcome::Failed);
+            }
+            event => panic!("expected AcpTurnFinished, got {event:?}"),
+        }
+        drop(events);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn acp_live_event_context_preserves_standard_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
@@ -6442,10 +9155,87 @@ mod tests {
     }
 
     #[test]
+    fn prompt_lifecycle_acceptance_and_completion_drain_every_queued_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-drain-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        let expected_contents = ["first", "second", "third"];
+        for content in expected_contents {
+            enqueue_prompt(&attempt_dir, content.to_string(), Vec::new()).unwrap();
+        }
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        let mut current = match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap()
+        {
+            AutoClaimResult::Claimed(item) => Some(item),
+            result => panic!("expected first queued prompt, got {result:?}"),
+        };
+        let mut dispatched_contents = Vec::new();
+
+        while let Some(item) = current.take() {
+            dispatched_contents.push(item.content.clone());
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: item.prompt_id.clone(),
+                },
+                |_, _, _| panic!("accepted must not schedule the next prompt"),
+            );
+            assert!(
+                load_prompt_queue(&attempt_dir)
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|queued| queued.prompt_id != item.prompt_id),
+                "accepted prompt must leave the queue before its provider turn finishes"
+            );
+
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id: Some(item.prompt_id),
+                    successful: true,
+                },
+                |_, successful, completion| {
+                    assert!(successful);
+                    assert!(completion.is_some());
+                    let queue = load_prompt_queue(&attempt_dir).unwrap();
+                    current =
+                        match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap() {
+                            AutoClaimResult::Claimed(item) => Some(item),
+                            AutoClaimResult::Empty => None,
+                            result => panic!("unexpected automatic claim result: {result:?}"),
+                        };
+                },
+            );
+        }
+
+        assert_eq!(dispatched_contents, expected_contents);
+        assert!(load_prompt_queue(&attempt_dir).unwrap().items.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
             occurred_at: "2026-06-25T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-001".to_string(),
             run_id: "run-001".to_string(),
@@ -6470,6 +9260,7 @@ mod tests {
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
                 event_id: "event-completed".to_string(),
                 occurred_at: "2026-06-25T00:00:01Z".to_string(),
+                scheduled_occurrence_id: None,
                 project_id: "project-1".to_string(),
                 task_id: "task-001".to_string(),
                 run_id: "run-001".to_string(),
@@ -6484,6 +9275,341 @@ mod tests {
             .unwrap();
         assert_eq!(completed.status, RunStatus::Completed);
         assert_eq!(completed.outcome, Some(RunOutcome::Success));
+    }
+
+    #[test]
+    fn fixed_runtime_continue_rejects_structured_intervention_states() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-runtime-continue-eligibility-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let mut run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-10T00:00:00Z".to_string(),
+            updated_at: "2026-08-10T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-001".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        run.pause_reason = Some(PauseReason::RuntimeAbnormal);
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!runtime_continue_required(&app, &locator, &run, true).unwrap());
+
+        for reason in [
+            PauseReason::WaitingForUserInput,
+            PauseReason::PermissionRequested,
+            PauseReason::ErrorBlocked,
+        ] {
+            run.pause_reason = Some(reason);
+            assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stopped_workflow_allows_conversation_without_consuming_runtime_continue() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-stopped-workflow-conversation-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "workflow",
+                "workflowTemplateId": "default",
+                "includeOptionalEntry": true,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-12T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        write_json(
+            &app.paths.node_file(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                node_id: locator.node_id.clone(),
+                node_type: gold_band::domain::NodeType::Worker,
+                run_id: locator.run_id.clone(),
+                round_id: locator.round_id.clone(),
+                attempt_id: locator.attempt_id.clone(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "2026-08-12T00:00:00Z".to_string(),
+                finished_at: Some("2026-08-12T00:00:01Z".to_string()),
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .round_file(&locator.task_id, &locator.run_id, &locator.round_id),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": locator.round_id,
+                "run_id": locator.run_id,
+                "index": 1,
+                "status": "paused",
+                "outcome": null,
+                "trigger": "initial",
+                "started_at": "2026-08-12T00:00:00Z",
+                "trace": []
+            }),
+        )
+        .unwrap();
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: locator.run_id.clone(),
+            task_id: locator.task_id.clone(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some(locator.round_id.clone()),
+            current_node: Some(locator.node_id.clone()),
+            current_attempt: Some(locator.attempt_id.clone()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+
+        assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
+        assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
+
+        let persisted_node: NodeState = read_json(&app.paths.node_file(
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(persisted_node.status, RunStatus::Paused);
+        assert_eq!(persisted_node.outcome, None);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn superseded_workflow_attempt_rejects_prompt_with_latest_target_locator() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-superseded-session-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        write_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "workflow",
+                "workflowTemplateId": "default",
+                "includeInterview": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-16T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &serde_json::json!({
+                "version": "0.1",
+                "id": "session-owner",
+                "entry": "review",
+                "control": {},
+                "nodes": [
+                    { "type": "worker", "id": "review", "provider": "claude-acp" }
+                ],
+                "edges": [
+                    { "from": "review", "to": "review", "on": "failure", "session": "continue" }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "success",
+                "trigger": "initial",
+                "started_at": "2026-08-16T00:00:00Z",
+                "trace": [
+                    { "sequence": 1, "node_id": "review", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-08-16T00:00:00Z" },
+                    { "sequence": 2, "node_id": "review", "attempt_id": "attempt-002", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:01Z" }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .worker_ref_file(task_id, run_id, round_id, "review", "attempt-001"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "provider": "claude-acp",
+                "mode": "new",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": { "acpSessionId": "session-001" },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+
+        let locator = AttemptLocator::new(
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            "review".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let error = ensure_conversation_prompt_available(&app, &locator).unwrap_err();
+
+        assert_eq!(error.code, "conversation.session-superseded");
+        assert_eq!(error.params["roundId"], round_id);
+        assert_eq!(error.params["nodeId"], "review");
+        assert_eq!(error.params["attemptId"], "attempt-002");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_runtime_never_requires_explicit_workflow_continue() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-runtime-continue-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        write_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "direct",
+                "workflowTemplateId": null,
+                "includeOptionalEntry": null,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-12T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "node-001".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let run = RunState {
+            version: gold_band::domain::VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:00:01Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("node-001".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+
+        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
+        assert!(!attempt_is_runtime_controlled(&app, &locator).unwrap());
+        assert!(ensure_conversation_prompt_available(&app, &locator).is_ok());
+        assert!(!gold_band::config::ConversationRunMode::Direct.is_orchestrated());
+        assert!(gold_band::config::ConversationRunMode::Auto.is_orchestrated());
+        assert!(gold_band::config::ConversationRunMode::Workflow.is_orchestrated());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6520,6 +9646,8 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -6573,7 +9701,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
@@ -6640,6 +9768,20 @@ mod tests {
         );
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
+        let mut waiting_run = run.clone();
+        waiting_run.pause_reason = Some(PauseReason::WaitingForUserInput);
+        assert!(!runtime_continue_required(&app, &locator, &waiting_run, false).unwrap());
+        let graph_path = app.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let mut blocked_graph: DynamicGraphState = read_json(&graph_path).unwrap();
+        blocked_graph.run.pause_reason = Some(PauseReason::ErrorBlocked);
+        write_json(&graph_path, &blocked_graph).unwrap();
+        assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
         let dynamic_run = serde_json::json!({
             "version": gold_band::domain::VERSION,
             "id": "dynamic-run-001",
@@ -6665,7 +9807,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
@@ -6728,6 +9870,8 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -6781,7 +9925,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],

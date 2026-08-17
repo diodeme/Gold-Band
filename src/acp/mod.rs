@@ -3,6 +3,7 @@ pub mod branches;
 pub mod client;
 pub mod commands;
 pub mod connection;
+pub mod control;
 pub mod elicitation;
 pub mod events;
 pub mod history;

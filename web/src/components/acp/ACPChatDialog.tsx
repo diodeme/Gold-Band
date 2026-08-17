@@ -187,6 +187,7 @@ import {
 } from "@/lib/acp-event-reducer";
 import {
   deriveAcpRuntimeComposerState,
+  isAcceptedQueuePromptSubmitKind,
   mergeConversationAttemptLifecycle,
   shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
@@ -2858,10 +2859,11 @@ export function ACPChatDialog(
           outerAttemptId,
           attachmentPaths.length > 0 ? attachmentPaths : undefined,
         );
-        if (result.kind !== "queued") {
+        if (!isAcceptedQueuePromptSubmitKind(result.kind)) {
           throw new Error(`unexpected prompt queue response: ${result.kind}`);
         }
         submissionAccepted = true;
+        if (result.session) applySessionUpdate(result.session, "queue-prompt-submit");
         if (detachedDraft) {
           releaseSubmittedAttachments(detachedDraft.attachments);
           requestAnimationFrame(() => composerTextareaRef.current?.focus());

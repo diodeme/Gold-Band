@@ -13,6 +13,8 @@ import type { ConversationDirectoryWorkspaceResource } from './right-workspace-c
 import { WorkspaceFileEditor } from './files/WorkspaceFileEditor';
 import { FileWorkspaceSplitLayout } from './files/FileWorkspacePanel';
 import { WorkspaceDirectoryContextMenu } from './files/WorkspaceDirectoryContextMenu';
+import { isMarkdownDocumentPath } from './files/markdown-document';
+import { ReadonlyMarkdownWorkspaceViewer } from './files/ReadonlyMarkdownWorkspaceViewer';
 
 type Node = WorkspaceDirectoryEntryVm & { id: string; children: Node[] | null; loading: boolean };
 
@@ -159,7 +161,9 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
   const onCopyFailed = useCallback(() => showActionFailure('copy'), [showActionFailure]);
   const content = !selected ? <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.chooseFromTree')}</div>
     : !snapshot ? <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>
-      : snapshot.kind === 'text' ? <WorkspaceFileEditor documentKey={`conversation-directory:${selected.canonicalPath}`} value={snapshot.content} editable={false} language={snapshot.language} highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} />
+      : snapshot.kind === 'text' ? (isMarkdownDocumentPath(selected.canonicalPath)
+        ? <ReadonlyMarkdownWorkspaceViewer documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} />
+        : <WorkspaceFileEditor documentKey={`${resource.key}:${selected.canonicalPath}`} value={snapshot.content} editable={false} language={snapshot.language} highlight contentRevision={0} target={null} targetRevision={0} onChange={() => undefined} onSave={() => undefined} initialStateJson={null} onPersistState={() => undefined} />)
         : snapshot.kind === 'image' ? <div className="flex h-full items-center justify-center overflow-auto p-4"><img src={workspaceFilePreviewUrl(snapshot.previewGrant.token)} alt={snapshot.name} className="max-h-full max-w-full object-contain" /></div>
           : <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.unsupportedTitle')}</div>;
   const tree = <ConversationDirectoryTree roots={roots} loading={loading} selectedPath={selected?.canonicalPath ?? null} actionFailure={actionFailure} onLoadDirectory={load} onOpenFile={openFile} onCopyFailed={onCopyFailed} onOpenInFileManager={openInManager} />;

@@ -118,7 +118,8 @@ interface MarkdownRuntimeState {
 
 归属规则：
 
-- `MarkdownRuntimeState` 与文件 Tab 的内容、授权和撤销历史同生命周期，归 `FileContentStore` 管理。
+- 可编辑项目文件的 `MarkdownRuntimeState` 与文件 Tab 的内容、授权和撤销历史同生命周期，归 `FileContentStore` 管理。
+- 运行目录、会话附件等只读 Markdown 只保留以完整 `documentKey` 为身份的瞬时 mode，由统一只读文档适配器管理；文档身份变化时自然重建该会话，不进入全局 Context，也不复制内容或授权状态。
 - React 组件只订阅并渲染状态，不持有权威 preview token 集合。
 - 关闭 Tab、LRU 淘汰、重新加载文档或图片引用被删除时，store 释放不再使用的 preview token。
 - preview grant 到期前由 store 按当前引用批量轮换；新 grant 原子替换状态后才释放旧 token。续签失败保留当前图像并按退避时间重试，图片 `error` 与页面重新可见可触发幂等补发。
@@ -307,6 +308,7 @@ markdownEmbeddedImageMaxConcurrent = 4
 ### 13.1 前端接口与 store 测试
 
 - `.md` 默认实时预览，其他文本不受影响。
+- 运行目录与会话附件的 `.md` 复用统一只读适配器，保持 `editable=false`，支持实时预览/源码切换，并在超阈值时固定源码模式。
 - 模式按 resource key 保存，关闭资源后释放。
 - 切换模式不改变源码；同一 View 原地重配置后保持 selection、undo history 与语义视口锚点。
 - 复制的是当前内存源码，不是落盘旧内容。
@@ -383,3 +385,10 @@ markdownEmbeddedImageMaxConcurrent = 4
 - [x] 前端、Rust 接口和组件测试覆盖关键验收。
 - [ ] 真实 UI 的深浅主题、宽窄布局和编辑流程由需求方验证。
 - [x] 产品设计文档和上层开发计划同步更新。
+
+## 16. 2026-08-17 运行目录只读 Markdown 补齐
+
+- [x] 新增统一只读 Markdown 文档适配器，集中管理只读属性、文档级 mode 和长度阈值。
+- [x] 运行目录按 canonical path 识别 Markdown，不再把 `.md` 作为缺少 mode 的普通文本查看器打开。
+- [x] 会话附件复用同一适配器，删除重复的 mode 重置 effect。
+- [x] 增加组件与运行目录 DOM 契约测试，覆盖默认实时预览、源码切换、文档身份重置、只读属性和超阈值降级。

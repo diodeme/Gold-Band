@@ -158,6 +158,14 @@ function browserCompletedConversationRun(): ConversationRunVm {
     cwd: 'D:/Projects/code/ai/Gold-Band',
     status: 'completed',
     stopReason: 'end_turn',
+    systemPromptAppend: [
+      '# Browser system prompt',
+      '',
+      'This **system prompt** verifies the rendered/source workspace modes.',
+      '',
+      '- Attempt: `attempt-001`',
+      '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+    ].join('\n'),
     usage: {
       used: 25_400,
       size: 258_400,
@@ -173,7 +181,22 @@ function browserCompletedConversationRun(): ConversationRunVm {
         seq: 1,
         timestamp: '2026-08-04 10:00',
         kind: 'userTextDelta',
-        content: '> 这是用户自己输入的 Markdown 引用。\n\n请更新工作区配置并补充说明。',
+        content: [
+          '<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">',
+          '# Stable system prompt',
+          '',
+          'You are the Gold Band browser preview agent.',
+          '</hidden>',
+          '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">',
+          '# Runtime context',
+          '',
+          '- Attempt: `attempt-001`',
+          '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+          '</hidden>',
+          '> 这是用户自己输入的 Markdown 引用。',
+          '',
+          '请更新工作区配置并补充说明。',
+        ].join('\n'),
         raw: {
           promptId: 'browser-prompt-052',
           quotes: Array.from({ length: 8 }, (_, index) => ({
@@ -1128,7 +1151,15 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _query, fallback, _outerNodeId, _outerAttemptId) {
+  getAcpSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, query, fallback, _outerNodeId, _outerAttemptId) {
+    if (runId === 'run-052' || runId === 'run-053') {
+      const session = (runId === 'run-053'
+        ? browserQueuedConversationRun()
+        : browserCompletedConversationRun()).selectedSession;
+      if (session && (!query?.branchId || session.branchId === query.branchId)) {
+        return Promise.resolve(session);
+      }
+    }
     return Promise.resolve(fallback ?? null);
   },
   getAcpActivityDetail() {

@@ -6,11 +6,13 @@ import {
   CONVERSATION_WORKSPACE_LRU_LIMIT,
   ConversationWorkspaceStore,
   conversationRunWorkspaceResourceKey,
+  createHiddenPromptSectionWorkspaceResource,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
+  hiddenPromptSectionWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
@@ -48,6 +50,47 @@ describe('right workspace resource model', () => {
     expect(acpAttemptWorkspaceResourceKey('raw-frames', locator('agent-a'))).toBe(
       'raw-frames:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a',
     );
+    expect(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).toBe(
+      'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+    );
+    expect(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-b'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).not.toBe(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    }));
+
+    expect(createHiddenPromptSectionWorkspaceResource({
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      title: 'Hidden runtime context',
+      locator: locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).toEqual({
+      kind: 'hidden-prompt-section',
+      key: 'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      title: 'Hidden runtime context',
+      description: null,
+      attention: false,
+      locator: {
+        ...locator('agent-a'),
+        eventId: 'prompt-1',
+        eventSeq: 42,
+        partIndex: 2,
+      },
+    });
   });
 
   it('opens, activates, and deduplicates resources by stable key', () => {

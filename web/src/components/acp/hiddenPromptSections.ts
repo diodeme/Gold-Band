@@ -1,6 +1,14 @@
+import type { AcpUiEventVm } from "@/types";
+
 export type ParsedPromptPart =
   | { type: "visible"; text: string }
   | { type: "hidden"; title?: string; text: string };
+
+export interface HiddenPromptEventSectionLocator {
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
+}
 
 const HIDDEN_CLOSE = "</hidden>";
 
@@ -53,6 +61,19 @@ export function parseGoldBandHiddenSections(content: string): ParsedPromptPart[]
   }
 
   return parts.length > 0 ? parts : [{ type: "visible", text: content }];
+}
+
+export function resolveGoldBandHiddenSection(
+  events: AcpUiEventVm[],
+  locator: HiddenPromptEventSectionLocator,
+) {
+  const event = events.find((candidate) => (
+    candidate.id === locator.eventId
+    && (candidate.endedSeq ?? candidate.seq) === locator.eventSeq
+  ));
+  if (!event?.content) return null;
+  const part = parseGoldBandHiddenSections(event.content)[locator.partIndex];
+  return part?.type === "hidden" ? part : null;
 }
 
 function pushVisible(parts: ParsedPromptPart[], text: string) {

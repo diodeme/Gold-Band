@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { projectHiddenPromptDisplayParts, visiblePromptText } from '../../src/components/acp/HiddenPromptMessageContent';
-import { parseGoldBandHiddenSections } from '../../src/components/acp/hiddenPromptSections';
+import {
+  parseGoldBandHiddenSections,
+  resolveGoldBandHiddenSection,
+} from '../../src/components/acp/hiddenPromptSections';
 
 describe('Gold Band hidden prompt sections', () => {
   it('splits visible and Gold Band hidden sections in order', () => {
@@ -65,5 +68,40 @@ describe('Gold Band hidden prompt sections', () => {
 
     expect(display.map(({ part }) => part.type)).toEqual(['hidden', 'hidden', 'visible']);
     expect(display[2]?.part).toEqual({ type: 'visible', text: '# Requirement\nhi' });
+  });
+
+  it('resolves a hidden section only from the exact canonical event revision and part index', () => {
+    const events = [{
+      id: 'prompt-1',
+      seq: 21,
+      endedSeq: 23,
+      timestamp: '2026-08-17T10:00:00Z',
+      kind: 'userTextDelta',
+      content: [
+        '<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">system</hidden>',
+        '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">runtime</hidden>',
+        '# Requirement',
+      ].join('\n'),
+    }];
+
+    expect(resolveGoldBandHiddenSection(events, {
+      eventId: 'prompt-1',
+      eventSeq: 23,
+      partIndex: 2,
+    })).toEqual({
+      type: 'hidden',
+      title: 'Gold Band runtime context',
+      text: 'runtime',
+    });
+    expect(resolveGoldBandHiddenSection(events, {
+      eventId: 'prompt-1',
+      eventSeq: 22,
+      partIndex: 2,
+    })).toBeNull();
+    expect(resolveGoldBandHiddenSection(events, {
+      eventId: 'prompt-2',
+      eventSeq: 23,
+      partIndex: 2,
+    })).toBeNull();
   });
 });

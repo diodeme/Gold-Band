@@ -19,7 +19,9 @@ import {
   CircleAlert,
   CircleStop,
   Clock,
+  Code2,
   Copy,
+  Eye,
   FileText,
   Image as ImageIcon,
   ListTodo,
@@ -83,6 +85,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
+  createHiddenPromptSectionWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -95,6 +98,7 @@ import {
   loadSystemPromptViewMode,
   saveSystemPromptViewMode,
   SYSTEM_PROMPT_VIEW_MODES,
+  type SystemPromptViewMode,
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
@@ -145,7 +149,10 @@ import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel, hasAcpUsagePanelContent } from "@/components/acp/AcpUsagePanel";
-import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import {
+  HiddenPromptMessageContent,
+  type HiddenPromptSectionOpenRequest,
+} from "@/components/acp/HiddenPromptMessageContent";
 import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
@@ -4480,9 +4487,15 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
 export const SystemPromptPanel = memo(function SystemPromptPanel({
   prompt,
   options,
+  documentKey,
+  resourceKind = "system-prompt",
+  emptyMessage,
 }: {
   prompt?: string | null;
   options?: Array<{ attemptId: string; prompt?: string | null }>;
+  documentKey?: string;
+  resourceKind?: string;
+  emptyMessage?: string;
 }) {
   const { t } = useTranslation();
   const availableOptions = useMemo(
@@ -4495,15 +4508,12 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   useEffect(() => setSelectedAttemptId(latestAttemptId), [latestAttemptId]);
   const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
   const content = (selectedPrompt ?? prompt)?.trim() || "";
-  const onMarkdownModeChange = (mode: "source" | "live-preview") => {
-    const nextMode = mode === "live-preview"
-      ? SYSTEM_PROMPT_VIEW_MODES.rendered
-      : SYSTEM_PROMPT_VIEW_MODES.raw;
+  const onViewModeChange = (nextMode: SystemPromptViewMode) => {
     setViewMode(nextMode);
     saveSystemPromptViewMode(nextMode);
   };
   return (
-    <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource="system-prompt">
+    <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource={resourceKind}>
       <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
         <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.attemptSelectorClassName}>
           {availableOptions.length > 1 ? (
@@ -4518,29 +4528,111 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
           ) : null}
         </div>
         {content ? (
-          <WorkspaceFileEditor
-            documentKey={`system-prompt:${selectedAttemptId ?? "current"}`}
-            value={content}
-            editable={false}
-            language="markdown"
-            highlight
-            contentRevision={0}
-            target={null}
-            targetRevision={0}
-            onChange={() => undefined}
-            onSave={() => undefined}
-            initialStateJson={null}
-            onPersistState={() => undefined}
-            markdownMode={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? "live-preview" : "source"}
-            onMarkdownModeChange={onMarkdownModeChange}
+          <ReadonlyMarkdownDocument
+            documentKey={documentKey ?? `system-prompt:${selectedAttemptId ?? "current"}`}
+            content={content}
+            viewMode={viewMode}
+            onViewModeChange={onViewModeChange}
           />
         ) : (
-          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div></div>
+          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{emptyMessage ?? t("acp.systemPromptEmpty")}</div></div>
         )}
       </div>
     </div>
   );
 });
+
+function ReadonlyMarkdownDocument({
+  documentKey,
+  content,
+  viewMode,
+  onViewModeChange,
+}: {
+  documentKey: string;
+  content: string;
+  viewMode: SystemPromptViewMode;
+  onViewModeChange: (mode: SystemPromptViewMode) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rendered = viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered;
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+  const copySource = async () => {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1_500);
+  };
+  const toggleLabel = rendered
+    ? t("workspace.filesPanel.viewMarkdownSource")
+    : t("acp.renderMarkdown");
+  return (
+    <div
+      className="relative h-full min-h-0 min-w-0"
+      data-readonly-markdown-mode={viewMode}
+    >
+      <div
+        className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-md border border-border/50 bg-background/88 p-0.5 shadow-sm backdrop-blur"
+        data-readonly-markdown-toolbar="true"
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={() => void copySource()}
+              aria-label={t(copied ? "acp.markdownSourceCopied" : "acp.copyMarkdownSource")}
+            >
+              {copied ? <Check className="size-3 text-emerald-600" /> : <Copy className="size-3" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t(copied ? "acp.markdownSourceCopied" : "acp.copyMarkdownSource")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={() => onViewModeChange(rendered
+                ? SYSTEM_PROMPT_VIEW_MODES.raw
+                : SYSTEM_PROMPT_VIEW_MODES.rendered)}
+              aria-label={toggleLabel}
+            >
+              {rendered ? <Code2 className="size-3" /> : <Eye className="size-3" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{toggleLabel}</TooltipContent>
+        </Tooltip>
+      </div>
+      {rendered ? (
+        <div className={goldThemedScrollbarClassName("h-full overflow-y-auto px-6 py-5 pr-12")}>
+          <Markdown className="mx-auto w-full max-w-4xl" streaming={false}>{content}</Markdown>
+        </div>
+      ) : (
+        <WorkspaceFileEditor
+          documentKey={documentKey}
+          value={content}
+          editable={false}
+          language="markdown"
+          highlight
+          contentRevision={0}
+          target={null}
+          targetRevision={0}
+          onChange={() => undefined}
+          onSave={() => undefined}
+          initialStateJson={null}
+          onPersistState={() => undefined}
+          markdownMode={null}
+        />
+      )}
+    </div>
+  );
+}
 
 export function ACPMessageList({
   timeline,
@@ -5239,6 +5331,17 @@ const MessageBubble = memo(function MessageBubble({
     : (event.content ?? "");
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
   const quotableAgentMessage = !isUser && !streamingDraft && !failed && messageText.trim().length > 0;
+  const openHiddenPromptSection = useCallback((request: HiddenPromptSectionOpenRequest) => {
+    if (!branchLocator || !workspace?.scopeKey || event.optimistic) return;
+    void workspace.openResource(createHiddenPromptSectionWorkspaceResource({
+      scopeKey: workspace.scopeKey,
+      title: request.label,
+      locator: branchLocator,
+      eventId: event.id,
+      eventSeq: event.endedSeq ?? event.seq,
+      partIndex: request.sourceIndex,
+    }));
+  }, [branchLocator, event.endedSeq, event.id, event.optimistic, event.seq, workspace]);
   const openArtifact = useCallback((name: string) => {
     if (!branchLocator || !workspace?.scopeKey) return;
     void workspace.openResource({
@@ -5288,7 +5391,12 @@ const MessageBubble = memo(function MessageBubble({
             )}
           >
             {isUser ? (
-              <HiddenPromptMessageContent content={event.content ?? ""} />
+              <HiddenPromptMessageContent
+                content={event.content ?? ""}
+                onOpenSection={branchLocator && workspace?.scopeKey && !event.optimistic
+                  ? openHiddenPromptSection
+                  : undefined}
+              />
             ) : (
               <Markdown streaming={streamingDraft}>{messageText}</Markdown>
             )}

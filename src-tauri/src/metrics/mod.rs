@@ -305,6 +305,13 @@ pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
     Arc::new(move |event: RuntimeLifecycleEvent| {
+        if let Some(reason) = heartbeat_reason_for_event(&event) {
+            if let Some(state) = app.try_state::<DesktopState>() {
+                let _ = state.record_heartbeat_reason(reason);
+            }
+            return;
+        }
+
         // ── Guard: settings check (shared by both branches) ──
         let settings = match app.try_state::<DesktopState>() {
             Some(state) => match state.context() {
@@ -576,10 +583,33 @@ pub fn create_metrics_subscriber<R: Runtime>(
     })
 }
 
+fn heartbeat_reason_for_event(event: &RuntimeLifecycleEvent) -> Option<heartbeat::HeartbeatReason> {
+    use gold_band::config::ConversationRunMode;
+    use heartbeat::HeartbeatReason;
+
+    match event {
+        RuntimeLifecycleEvent::ApplicationStarted => Some(HeartbeatReason::AppStarted),
+        RuntimeLifecycleEvent::UserActivityObserved => Some(HeartbeatReason::Activity),
+        RuntimeLifecycleEvent::ConversationRunStarted { run_mode, .. } => Some(match run_mode {
+            ConversationRunMode::Direct => HeartbeatReason::DirectStarted,
+            ConversationRunMode::Workflow => HeartbeatReason::WorkflowStarted,
+            ConversationRunMode::Auto => HeartbeatReason::AutoStarted,
+        }),
+        RuntimeLifecycleEvent::ScheduledTaskCreated { .. } => {
+            Some(HeartbeatReason::ScheduledTaskCreated)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{heartbeat_channel_enabled, metrics_settings, normalize_metrics_base_url};
-    use gold_band::config::RuntimeConfig;
+    use super::{
+        heartbeat::HeartbeatReason, heartbeat_channel_enabled, heartbeat_reason_for_event,
+        metrics_settings, normalize_metrics_base_url,
+    };
+    use gold_band::app::RuntimeLifecycleEvent;
+    use gold_band::config::{ConversationRunMode, RuntimeConfig};
 
     #[test]
     fn normalizes_metrics_base_url_from_service_root_or_known_endpoint() {
@@ -629,5 +659,43 @@ mod tests {
         assert!(heartbeat_channel_enabled("wb"));
         assert!(!heartbeat_channel_enabled("default"));
         assert!(!heartbeat_channel_enabled("enterprise"));
+    }
+
+    #[test]
+    fn lifecycle_facts_map_to_the_six_heartbeat_reasons() {
+        let run_event = |run_mode| RuntimeLifecycleEvent::ConversationRunStarted {
+            project_id: "project-1".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            run_mode,
+        };
+
+        assert_eq!(
+            heartbeat_reason_for_event(&RuntimeLifecycleEvent::ApplicationStarted),
+            Some(HeartbeatReason::AppStarted)
+        );
+        assert_eq!(
+            heartbeat_reason_for_event(&RuntimeLifecycleEvent::UserActivityObserved),
+            Some(HeartbeatReason::Activity)
+        );
+        assert_eq!(
+            heartbeat_reason_for_event(&run_event(ConversationRunMode::Direct)),
+            Some(HeartbeatReason::DirectStarted)
+        );
+        assert_eq!(
+            heartbeat_reason_for_event(&run_event(ConversationRunMode::Workflow)),
+            Some(HeartbeatReason::WorkflowStarted)
+        );
+        assert_eq!(
+            heartbeat_reason_for_event(&run_event(ConversationRunMode::Auto)),
+            Some(HeartbeatReason::AutoStarted)
+        );
+        assert_eq!(
+            heartbeat_reason_for_event(&RuntimeLifecycleEvent::ScheduledTaskCreated {
+                project_id: "project-1".to_string(),
+                scheduled_task_id: "scheduled-1".to_string(),
+            }),
+            Some(HeartbeatReason::ScheduledTaskCreated)
+        );
     }
 }

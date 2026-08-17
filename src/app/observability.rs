@@ -80,12 +80,13 @@ impl RuntimeLifecycleBus {
     }
 
     pub fn emit(&self, event: RuntimeLifecycleEvent) {
-        let subscribers = self
-            .subscribers
-            .read()
-            .expect("RuntimeLifecycleBus subscriber state poisoned; this is a bug")
-            .entries
-            .clone();
+        // Observability must not unwind a canonical task transition. Recover
+        // the last subscriber snapshot even if an earlier registration panic
+        // poisoned the lock.
+        let subscribers = match self.subscribers.read() {
+            Ok(subscribers) => subscribers.entries.clone(),
+            Err(poisoned) => poisoned.into_inner().entries.clone(),
+        };
         for subscriber in subscribers {
             let event = event.clone();
             match subscriber.mode {
@@ -214,5 +215,25 @@ mod tests {
         bus.emit(sample_event());
 
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn poisoned_subscriber_lock_does_not_unwind_publisher() {
+        let bus = RuntimeLifecycleBus::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_for_handler = count.clone();
+        bus.subscribe_inline(Arc::new(move |_| {
+            count_for_handler.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let subscribers = bus.subscribers.clone();
+        let _ = panic::catch_unwind(AssertUnwindSafe(move || {
+            let _guard = subscribers.write().unwrap();
+            panic!("poison subscriber registry");
+        }));
+
+        bus.emit(sample_event());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }

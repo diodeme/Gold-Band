@@ -79,15 +79,19 @@ hMfUAuGbxO1mNYruf80z00O24GmoSga2eAxlS_bK7zQ
 | URL | `POST /api/client-report/heartbeat` |
 | Content-Type | `application/json;charset=UTF-8` |
 | 鉴权 | `X-Maling-Report-Key` |
-| 调用频率建议 | 每 1~5 分钟一次（用户活跃时） |
+| 调用方式 | Gold Band 生命周期总线事件驱动；无周期轮询 |
 
 ### 3.2 请求体字段
 
 | 字段 | 类型 | 必填 | 长度限制 | 说明 |
 |---|---|---|---|---|
-| `userId` | string | 是 | <=128 | 客户端用户唯一标识（去重统计的主键，建议使用稳定 ID，不要用易变的昵称） |
-| `clientVersion` | string | 否 | <=64 | 客户端版本号，便于按版本分析 |
-| `reportedAt` | string | 否 | ISO-8601 | 客户端上报时间；缺省服务端用当前时间填充 |
+| `heartbeatId` | UUID | 是 | 36 | 逻辑事件幂等键；有限重试复用 |
+| `userId` | string | 是 | 1~128 | Gold Band 规范化系统用户名 |
+| `reason` | enum | 是 | - | `appStarted/activity/directStarted/workflowStarted/autoStarted/scheduledTaskCreated` |
+| `clientVersion` | string | 是 | 1~64 | Gold Band 客户端版本号 |
+| `os` | enum | 是 | - | `windows/macos/linux` |
+
+请求拒绝未知字段，不包含 workspace、taskId、runId、scheduledTaskId、reportedAt 或用户内容。
 
 ### 3.3 请求示例
 
@@ -98,9 +102,11 @@ Content-Type: application/json;charset=UTF-8
 X-Maling-Report-Key: hMfUAuGbxO1mNYruf80z00O24GmoSga2eAxlS_bK7zQ
 
 {
-  "userId": "u_2024abc",
-  "clientVersion": "1.4.2",
-  "reportedAt": "2026-06-06T10:23:45"
+  "heartbeatId": "1f16eb74-4215-4c74-a2f3-2930f5df3c87",
+  "userId": "kelvinzhou",
+  "reason": "workflowStarted",
+  "clientVersion": "0.12.4",
+  "os": "windows"
 }
 ```
 
@@ -111,30 +117,23 @@ X-Maling-Report-Key: hMfUAuGbxO1mNYruf80z00O24GmoSga2eAxlS_bK7zQ
 {
   "code": 200,
   "msg": "",
-  "ok": true,
   "data": {
     "accepted": true,
-    "receivedAt": "2026-06-06T10:23:45.812"
+    "duplicate": false,
+    "receivedAt": "2026-08-17T03:23:45.812Z"
   }
 }
 ```
 
-鉴权失败：
-```json
-{
-  "code": 403,
-  "msg": "Invalid client report api key",
-  "ok": false,
-  "data": null
-}
-```
+重复 heartbeatId 返回 HTTP 200、`accepted=false`、`duplicate=true`。400/401/413 属于确定性错误；429、5xx、网络失败及无效 2xx envelope 属于暂时故障。
 
 ### 3.5 客户端实现建议
 
-1. **去重交给服务端**：同一用户一天可以心跳几十次，DAU 聚合天然去重，客户端不要为了"省请求"自行节流到一天一次。
-2. **失败可丢弃**：心跳是统计指标，丢一两个对结果无影响；不需要本地持久化重试队列。
-3. **建议在以下时机上报**：客户端启动、用户操作（点击/打字）后的 5 分钟节流窗口、应用从后台切回前台。
-4. **不要在客户端长时间空闲时持续心跳**——会污染 DAU 数据。
+1. `appStarted` 每进程一次；`activity` 成功节流 15 分钟、失败退避 1 分钟并等待下一次真实活动。
+2. 三种 Started 表示用户顶层模式 run 创建了新 canonical runId；新建和 rerun 计数，follow-up、continue、same-run retry、旧工作台、scheduled runtime 和 AUTO child run 不计。
+3. `scheduledTaskCreated` 在定义和输入快照 durable 创建后计数；编辑、启停、删除和执行不计。
+4. appStarted 和四类业务事实执行 30 秒、2 分钟的进程内有限重试并复用同一 heartbeatId；不建设 durable outbox。
+5. 六类信号经现有 `RuntimeLifecycleBus` 异步投影；网络、配置和 subscriber 失败不得改变任务 command 结果或 canonical state。
 
 ---
 

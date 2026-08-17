@@ -11,7 +11,7 @@ use gold_band::acp::commands::{
 };
 use gold_band::acp::events::current_timestamp;
 use gold_band::app::observability::RuntimeLifecycleBus;
-use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe};
+use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent};
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
     StateConfig,
@@ -224,7 +224,7 @@ pub struct DesktopState {
     lifecycle_bus: RuntimeLifecycleBus,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
-    /// 进程级心跳上报器（事件驱动 appStarted/activity）。
+    /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
     heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
 }
 
@@ -259,20 +259,32 @@ impl DesktopState {
         }
     }
 
-    /// 触发一次活动心跳（由窗口聚焦、pointer/keyboard 交互或业务命令调用）。
+    /// 发布真实用户活动事实；heartbeat 由异步 metrics subscriber 投影。
     pub fn record_heartbeat_activity(&self) -> Result<()> {
-        let config = self.context()?;
-        let settings = crate::metrics::heartbeat_settings(&config.config);
-        self.heartbeat_reporter.record_activity(&settings);
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::UserActivityObserved);
         Ok(())
     }
 
-    /// 重新评估心跳配置（启动时和设置变更后调用）。
+    /// 发布应用启动/配置重评估事实；reporter 保证每进程只交付一次 appStarted。
     pub fn reevaluate_heartbeat_config(&self) -> Result<()> {
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::ApplicationStarted);
+        Ok(())
+    }
+
+    pub(crate) fn record_heartbeat_reason(
+        &self,
+        reason: crate::metrics::heartbeat::HeartbeatReason,
+    ) -> Result<()> {
         let config = self.context()?;
         let settings = crate::metrics::heartbeat_settings(&config.config);
-        self.heartbeat_reporter.handle_config_snapshot(&settings);
+        self.heartbeat_reporter.record(&settings, reason);
         Ok(())
+    }
+
+    pub(crate) fn lifecycle_bus(&self) -> RuntimeLifecycleBus {
+        self.lifecycle_bus.clone()
     }
 
     /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。

@@ -2592,9 +2592,9 @@ fn scheduled_occurrence_id(event: &RuntimeLifecycleEvent) -> Option<String> {
             scheduled_occurrence_id,
             ..
         } => scheduled_occurrence_id.clone(),
-        RuntimeLifecycleEvent::NodeStarted { .. } | RuntimeLifecycleEvent::NodeCompleted { .. } => {
-            None
-        }
+        RuntimeLifecycleEvent::NodeStarted { .. }
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => None,
     }
 }
 
@@ -2708,7 +2708,8 @@ pub(crate) fn finish_occurrence_for_event(
         }
         RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
-        | RuntimeLifecycleEvent::NodeCompleted { .. } => return Ok(None),
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
     };
     if !database.finish_occurrence(occurrence_id, owner_id, status, links, error)? {
         return Ok(None);

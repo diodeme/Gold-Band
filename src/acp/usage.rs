@@ -104,6 +104,10 @@ enum AcpPromptUsageJournalEntry {
         turn_id: String,
         turn_seq: u64,
         timestamp: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     PromptCompleted {
         turn_id: String,
@@ -112,6 +116,10 @@ enum AcpPromptUsageJournalEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         request_id: Option<Value>,
         usage: AcpPromptTokenUsage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         recovered_from_raw: bool,
     },
@@ -130,6 +138,18 @@ struct PromptTurnStart {
     turn_id: String,
     turn_seq: u64,
     timestamp: String,
+    provider: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpPromptUsageSegment {
+    pub turn_id: String,
+    pub turn_seq: u64,
+    pub elapsed_ms: Option<u64>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub usage: AcpPromptTokenUsage,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +172,8 @@ pub fn append_prompt_started(
     turn_id: &str,
     turn_seq: u64,
     timestamp: &str,
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<()> {
     append_jsonl_durable(
         journal_path,
@@ -159,6 +181,8 @@ pub fn append_prompt_started(
             turn_id: turn_id.to_string(),
             turn_seq,
             timestamp: timestamp.to_string(),
+            provider: provider.map(str::to_string),
+            model: model.map(str::to_string),
         },
     )
 }
@@ -170,6 +194,8 @@ pub fn append_prompt_completed(
     timestamp: &str,
     request_id: Option<Value>,
     usage: &AcpPromptTokenUsage,
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<bool> {
     append_prompt_completed_inner(
         journal_path,
@@ -178,6 +204,8 @@ pub fn append_prompt_completed(
         timestamp,
         request_id,
         usage,
+        provider.map(str::to_string),
+        model.map(str::to_string),
         false,
     )
 }
@@ -207,6 +235,8 @@ pub fn repair_attempt_usage(
             turn_id: event.id.clone(),
             turn_seq: event.seq,
             timestamp: event.timestamp.clone(),
+            provider: None,
+            model: None,
         });
     }
     starts.sort_by_key(|start| start.turn_seq);
@@ -239,6 +269,8 @@ pub fn repair_attempt_usage(
                 completed_at,
                 Some(transaction.request_id.clone()),
                 usage,
+                start.provider.clone(),
+                start.model.clone(),
                 true,
             )? {
                 recovered_turns = recovered_turns.saturating_add(1);
@@ -382,6 +414,8 @@ fn append_prompt_completed_inner(
     timestamp: &str,
     request_id: Option<Value>,
     usage: &AcpPromptTokenUsage,
+    provider: Option<String>,
+    model: Option<String>,
     recovered_from_raw: bool,
 ) -> Result<bool> {
     with_jsonl_file_lock(journal_path, || {
@@ -394,6 +428,8 @@ fn append_prompt_completed_inner(
             timestamp: timestamp.to_string(),
             request_id,
             usage: usage.clone(),
+            provider,
+            model,
             recovered_from_raw,
         };
         append_journal_entry_durable_unlocked(journal_path, &entry)?;
@@ -415,16 +451,76 @@ fn prompt_starts_from_journal(path: &Utf8Path) -> Result<Vec<PromptTurnStart>> {
             turn_id,
             turn_seq,
             timestamp,
+            provider,
+            model,
         } = entry
         {
             starts.entry(turn_id.clone()).or_insert(PromptTurnStart {
                 turn_id,
                 turn_seq,
                 timestamp,
+                provider,
+                model,
             });
         }
     }
     Ok(starts.into_values().collect())
+}
+
+pub fn read_prompt_usage_segments(attempt_dir: &Utf8Path) -> Vec<AcpPromptUsageSegment> {
+    let path = attempt_dir.join("acp.prompt-usage.jsonl");
+    let Ok(entries) = read_journal(&path) else {
+        return Vec::new();
+    };
+    let model_metadata =
+        crate::acp::events::read_attempt_session_metadata(&attempt_dir.join("acp.snapshot.json"))
+            .or_else(|| {
+                crate::acp::events::read_attempt_session_metadata(
+                    &attempt_dir.join("acp.session.json"),
+                )
+            });
+    let mut starts = std::collections::HashMap::new();
+    let mut segments = Vec::new();
+    for entry in entries {
+        match entry {
+            AcpPromptUsageJournalEntry::PromptStarted {
+                turn_id, timestamp, ..
+            } => {
+                starts.insert(turn_id, timestamp);
+            }
+            AcpPromptUsageJournalEntry::PromptCompleted {
+                turn_id,
+                turn_seq,
+                provider,
+                model,
+                usage,
+                timestamp,
+                ..
+            } => {
+                let elapsed_ms = starts
+                    .get(&turn_id)
+                    .and_then(|started_at| elapsed_ms_between(started_at, &timestamp));
+                segments.push(AcpPromptUsageSegment {
+                    turn_id,
+                    turn_seq,
+                    elapsed_ms,
+                    provider,
+                    model: model_metadata
+                        .as_ref()
+                        .and_then(|metadata| {
+                            model.as_deref().and_then(|model| {
+                                crate::acp::events::metrics_model_display_name(metadata, model)
+                            })
+                        })
+                        .or(model),
+                    usage,
+                });
+            }
+            _ => {}
+        }
+    }
+    segments.sort_by_key(|segment| segment.turn_seq);
+    segments
 }
 
 fn prompt_completions_from_journal(
@@ -565,6 +661,26 @@ fn timestamp_key(timestamp: &str) -> u64 {
     timestamp.trim_end_matches('Z').parse().unwrap_or_default()
 }
 
+fn timestamp_millis(timestamp: &str) -> Option<u64> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        return u64::try_from(dt.timestamp_millis()).ok();
+    }
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, format) {
+            return u64::try_from(dt.and_utc().timestamp_millis()).ok();
+        }
+    }
+    timestamp
+        .trim_end_matches('Z')
+        .parse::<u64>()
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1000))
+}
+
+fn elapsed_ms_between(started_at: &str, completed_at: &str) -> Option<u64> {
+    timestamp_millis(completed_at)?.checked_sub(timestamp_millis(started_at)?)
+}
+
 fn rpc_id_key(request_id: &Value) -> String {
     serde_json::to_string(request_id).unwrap_or_else(|_| "null".to_string())
 }
@@ -606,14 +722,101 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_ms_between_parses_iso_and_numeric_timestamps() {
+        assert_eq!(
+            elapsed_ms_between("2026-08-06T20:14:41.000Z", "2026-08-06T20:14:51.500Z"),
+            Some(10_500)
+        );
+        assert_eq!(
+            elapsed_ms_between(
+                "2026-08-06T20:14:41.000+08:00",
+                "2026-08-06T20:14:51.500+08:00"
+            ),
+            Some(10_500)
+        );
+        assert_eq!(elapsed_ms_between("100Z", "110Z"), Some(10_000));
+        assert_eq!(elapsed_ms_between("110Z", "100Z"), None);
+    }
+
+    #[test]
+    fn read_prompt_usage_segments_resolves_metrics_model_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::write(
+            attempt_dir.join("acp.snapshot.json").as_std_path(),
+            r#"{
+                "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+                "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+                "modelOverride":"opus",
+                "configOptions":[
+                    {
+                        "id":"model",
+                        "currentValue":"opus",
+                        "options":[
+                            {"value":"opus","name":"glm-5.2"}
+                        ]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let journal = attempt_dir.join("acp.prompt-usage.jsonl");
+        append_prompt_started(
+            &journal,
+            "turn-1",
+            1,
+            "2026-08-06T20:14:41.000Z",
+            Some("claude-acp"),
+            Some("opus"),
+        )
+        .unwrap();
+        append_prompt_completed(
+            &journal,
+            "turn-1",
+            1,
+            "2026-08-06T20:14:51.000Z",
+            None,
+            &AcpPromptTokenUsage {
+                input_tokens: Some(10),
+                total_tokens: Some(10),
+                ..Default::default()
+            },
+            Some("claude-acp"),
+            Some("opus"),
+        )
+        .unwrap();
+
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].provider.as_deref(), Some("claude-acp"));
+        assert_eq!(segments[0].model.as_deref(), Some("glm-5.2"));
+    }
+
+    #[test]
     fn repairs_completed_prompt_from_raw_when_snapshot_checkpoint_was_skipped_by_crash() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
         let prompts = vec![prompt_event(1, "100Z"), prompt_event(15, "200Z")];
         write_timeline_items(&paths.timeline, &prompts).unwrap();
-        append_prompt_started(&paths.prompt_usage, &prompts[0].id, 1, "100Z").unwrap();
-        append_prompt_started(&paths.prompt_usage, &prompts[1].id, 15, "200Z").unwrap();
+        append_prompt_started(
+            &paths.prompt_usage,
+            &prompts[0].id,
+            1,
+            "100Z",
+            Some("provider-a"),
+            Some("model-a"),
+        )
+        .unwrap();
+        append_prompt_started(
+            &paths.prompt_usage,
+            &prompts[1].id,
+            15,
+            "200Z",
+            Some("provider-b"),
+            Some("model-b"),
+        )
+        .unwrap();
         append_prompt_completed(
             &paths.prompt_usage,
             &prompts[0].id,
@@ -626,6 +829,8 @@ mod tests {
                 total_tokens: Some(110),
                 ..Default::default()
             },
+            Some("provider-a"),
+            Some("model-a"),
         )
         .unwrap();
         for frame in [
@@ -668,6 +873,15 @@ mod tests {
         assert_eq!(recovered.totals.output_tokens, Some(30));
         assert_eq!(recovered.totals.cached_read_tokens, Some(30));
         assert_eq!(recovered.totals.total_tokens, Some(230));
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].provider.as_deref(), Some("provider-a"));
+        assert_eq!(segments[0].model.as_deref(), Some("model-a"));
+        assert_eq!(segments[1].provider.as_deref(), Some("provider-b"));
+        assert_eq!(segments[1].model.as_deref(), Some("model-b"));
+        assert_eq!(segments[0].elapsed_ms, Some(10_000));
+        assert_eq!(segments[1].elapsed_ms, Some(10_000));
+        assert_eq!(segments[1].usage.total_tokens, Some(120));
 
         let second_read = repair_attempt_usage(
             &paths.snapshot,

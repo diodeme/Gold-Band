@@ -10,7 +10,8 @@ use gold_band::acp::commands::{
     AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands, workspace_key,
 };
 use gold_band::acp::events::current_timestamp;
-use gold_band::app::observability::RuntimeLifecycleBus;
+use gold_band::app::ActiveMetricTurn;
+use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
 use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe};
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
@@ -224,6 +225,9 @@ pub struct DesktopState {
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
     lifecycle_bus: RuntimeLifecycleBus,
+    observability_states:
+        Arc<Mutex<std::collections::HashMap<String, ExecutionObservabilityState>>>,
+    active_metric_turns: Arc<Mutex<std::collections::HashMap<String, ActiveMetricTurn>>>,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
 }
@@ -252,6 +256,8 @@ impl DesktopState {
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
             lifecycle_bus: RuntimeLifecycleBus::new(),
+            observability_states: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            active_metric_turns: Arc::new(Mutex::new(std::collections::HashMap::new())),
             mcp_health: Mutex::new(BTreeMap::new()),
         }
     }
@@ -311,8 +317,12 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
+        let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
         Ok(App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
+            .with_observability_states(self.observability_states.clone())
+            .with_active_metric_turns(self.active_metric_turns.clone())
+            .with_metrics_collection_enabled(metrics_enabled)
             .with_provider_diagnostics_source(Arc::new(move || {
                 Ok(diagnostics
                     .lock()

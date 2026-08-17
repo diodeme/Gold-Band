@@ -1,4 +1,4 @@
-# Gold Band 文档导航
+﻿# Gold Band 文档导航
 
 Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
@@ -35,6 +35,8 @@ Gold Band 当前文档按目录式结构整理为 5 个主板块：
 
 ## 5. Runtime / Layout
 - [Runtime 概览](runtime/overview.md)
+- [WB 会话指标采集与批量上报](runtime/metrics-collection.md)
+- [会话指标上报服务端处理](runtime/metrics-server-processing.md)
 - [定时任务运行时设计](runtime/scheduled-task.md)
 - [定时任务 CRUD 与生命周期](runtime/scheduled-task-crud-design.md)
 - [定时任务运行时实现补充](runtime/scheduled-task-runtime-implementation.md)

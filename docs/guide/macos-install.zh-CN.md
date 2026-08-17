@@ -53,17 +53,3 @@ GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.1
 两条 Release workflow 会在所有平台资产上传完成后，以流式 SHA256 为 DMG、App updater archive、EXE、MSI、AppImage、DEB 和 RPM 生成同名 `.sha256`。安装脚本缺少 sidecar、摘要格式错误、文件名不匹配或实际摘要不一致时都会终止，不提供弱校验 fallback。
 
 DMG 与 `.sha256` 来自同一个 GitHub Release，因此该机制可以发现下载损坏、截断和资产错配，但不能抵御官方 GitHub 仓库或 Release 发布权限本身被攻破。拿到 Apple Developer Program 凭证后，仍应由现有 Tauri release 流程完成 Developer ID 签名和公证。
-
-## 5. 历史问题：设置 schema 导致旧版启动退出
-
-在 v0.12.0 至 v0.12.3 中，如果本机较新的开发构建已经把 `~/.gold-band/settings.json` 写为 `settingsSchemaVersion: 3`，旧二进制只支持 schema v2 时会主动退出，并输出：
-
-```text
-failed to start Gold Band desktop: settings schema version 3 is newer than supported version 2
-```
-
-该问题已在 v0.12.4 修复。优先升级到 v0.12.4 或更高版本，不要为了运行旧版而降低持久化设置的 schema 版本。
-
-## 6. 后续正式发布路径
-
-当前脚本是尚未取得 Apple Developer Program 凭证期间的临时安装路径。凭证就绪后，现有 release workflow 会把证书、Developer ID identity、Apple ID、app-specific password 与 Team ID 交给 Tauri bundler，在同一构建路径完成正式签名和公证；届时用户不应再需要 Gatekeeper 绕行脚本。

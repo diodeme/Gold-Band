@@ -1503,6 +1503,8 @@ pub struct AttachmentFileVm {
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1555,11 +1557,28 @@ pub async fn stat_attachment_files(
                             .map(|grant| grant.token)
                     })
                     .flatten();
+                let content_url = (attachment_text_previewable_mime(mime)
+                    && size <= crate::view_models_conversation::MAX_ATTACHMENT_PER_FILE)
+                    .then(|| {
+                        let revision = crate::workspace_files::revision_for_preview(path).ok()?;
+                        runtime
+                            .issue_attachment_preview(
+                                "attachment-picker".to_string(),
+                                path.to_path_buf(),
+                                revision,
+                                mime.to_string(),
+                                60 * 60,
+                            )
+                            .ok()
+                            .map(|grant| grant.token)
+                    })
+                    .flatten();
                 Some(AttachmentFileVm {
                     path: p,
                     name,
                     size,
                     preview_url,
+                    content_url,
                 })
             })
             .collect())
@@ -1801,6 +1820,10 @@ fn attachment_mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
+fn attachment_text_previewable_mime(mime: &str) -> bool {
+    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml")
+}
+
 fn materialize_attachment_files_to_dir(
     dir: &camino::Utf8Path,
     files: &[MaterializeAttachmentFileInput],
@@ -1878,6 +1901,7 @@ fn materialize_attachment_files_to_dir(
             name,
             size,
             preview_url: None,
+            content_url: None,
         });
     }
 

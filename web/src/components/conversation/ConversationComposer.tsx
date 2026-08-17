@@ -12,7 +12,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeOptionalEntryForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, setOptionalEntryPreference, shouldShowOptionalEntryToggle } from '@/lib/conversation-run-mode-config';
 import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
-import { AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
 import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
 import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
@@ -38,6 +37,7 @@ import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { cn } from '@/lib/utils';
 import {
+  createDraftAttachmentWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
   useOptionalRightWorkspace,
@@ -350,27 +350,16 @@ export function ConversationComposer({
     resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
-    textPreview,
-    setTextPreview,
-    handlePreviewAttachment,
   } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
 
   const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
-    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
-      handlePreviewAttachment(attachment);
-      return;
-    }
-    void rightWorkspace.openResource({
-      kind: 'draft-attachment',
-      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
-      title: attachment.name,
-      description: attachment.path,
-      attention: false,
       attachment,
-    });
-  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+    }));
+  }, [projectId, rightWorkspace]);
 
   const closeComposerAttachmentPreview = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -1133,10 +1122,6 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-      <AttachmentPreviewDialogs
-        textPreview={textPreview}
-        onCloseText={() => setTextPreview(null)}
-      />
     </>
   );
 }

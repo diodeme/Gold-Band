@@ -546,11 +546,11 @@ revision 必须是大于等于 1 的正整数。允许第一条事件的 revisio
 - 后到的低 revision `execution.started` 只允许补充此前为 NULL 的不可变开始快照：`started_at`、`client_version`、`role_name`、`node_id`、`round_index`、`unit_kind`、`child_run_id` 和 `collection_state_recovered`。已有非 NULL 值必须相同，否则记事实但不覆盖，并标记投影冲突。
 - 低 revision started 禁止修改：所有 ID 及归属字段、attemptIndex、state、outcome、terminalReason/Code、endedAt、Usage/modelUsages、acceptance 结果、counters、lastEventId 和 lastEventRevision。paused/resumed/intervention 低 revision 也只能保留事实，不修改任何投影字段。
 - 不自动清理永久 running，不设置 stale 阈值。
- 
+
 ### 6.8 logical execution 重算算法
- 
+
 每当 attempt 表发生 INSERT 或 terminal 字段 UPDATE 时，服务端必须按 `executionId` 重算 `ml_metric_logical_execution` 投影。以下是完整重算步骤，不能跳过任何一步。
- 
+
 ```text
 function apply_logical_execution_recompute(executionId, report_date):
     # 第 1 步：读取该 executionId 下的所有 attempt 行（target/previous 分区）
@@ -617,39 +617,39 @@ function apply_logical_execution_recompute(executionId, report_date):
     # 不可变字段（execution_kind, session_mode, parent, node, unit 等）
     # 首次写入后不修改；若发现不一致，整批 METRICS_FIELD_INVALID
 ```
- 
+
 关键约束：`final_outcome` 只在最大 attemptIndex 的 attempt 已 terminal 时才有值；否则为 NULL，logical execution 不是 terminal。后续出现更大 attemptIndex 的 terminal attempt 时重新计算并覆盖。Direct turn 只有 attemptIndex=1，因此其 logical execution 与 turn attempt 结果一致。
- 
+
 ### 6.9 端到端 trace 示例
- 
+
 以下三个示例用固定数据展示事件序列到四张表快照的完整映射。每行标注该步完成后各表的最终状态。`event` 列只写关键字段；`attempt`、`logical`、`delivery` 列写该步 INSERT/UPDATE 后的结果。
- 
+
 **示例 1：Direct turn 成功**
- 
+
 | 步 | event 关键字段 | ml_metric_attempt | ml_metric_logical_execution | ml_metric_delivery_stat |
 |---:|---|---|---|---|
 | 1 | `started` rev=1, kind=turn, exec=A, attemptId=A, attemptIndex=1 | INSERT running, started_at=T1 | INSERT running, latest=1/A, final=NULL | INSERT running, started_at=T1 |
 | 2 | `completed` rev=2, outcome=completed, usage tokens, counters | UPDATE terminal, outcome=completed, tokens, model_usages | UPDATE terminal, final=1/A, final_outcome=completed | UPDATE terminal, outcome=completed, counters 覆盖 |
 | 3 | `started` rev=3, kind=turn, exec=A, attemptId=A, attemptIndex=1 | UPDATE running（继续同一 attempt），started_at 保留 | UPDATE running, latest=1/A, final=NULL | UPDATE running |
 | 4 | `completed` rev=4, outcome=completed, usage 累计, counters 累计 | UPDATE terminal, tokens 累计, model_usages 累计 | UPDATE terminal, final=1/A, final_outcome=completed | UPDATE terminal, counters 累计覆盖 |
- 
+
 注意 Direct turn 同时命中 attempt 和 delivery 两个投影分支。attempt 保存 usage/model，delivery 保存 counters，两表独立。executionId/attemptId 等于 task UUID；同一 task 多次输入继续更新同一 attempt，usage 和 counters 按累计快照覆盖。
- 
+
 **示例 2：Workflow node 重试（attempt 1 失败，attempt 2 成功）**
- 
+
 node 的 executionId 由 `run_uuid + round + node` 稳定派生（客户端 v5），重试不变；attemptId 每次重试生成新 UUID。
- 
+
 | 步 | event 关键字段 | ml_metric_attempt | ml_metric_logical_execution | ml_metric_delivery_stat |
 |---:|---|---|---|---|
 | 1 | `started` rev=1, kind=node-attempt, exec=NODE-EXEC, attemptId=ATT-1, attemptIndex=1, parent=RUN-UUID | INSERT running | INSERT running, latest=1/ATT-1, final=NULL | node 不写 delivery |
 | 2 | `completed` rev=2, outcome=failure, reason=provider-error | UPDATE terminal, outcome=failure | UPDATE terminal, final=1/ATT-1, final_outcome=failure | node 不写 delivery |
 | 3 | `started` rev=1, kind=node-attempt, exec=NODE-EXEC, attemptId=ATT-2, attemptIndex=2, parent=RUN-UUID | INSERT running（新行） | recompute: latest=2/ATT-2, final=NULL | node 不写 delivery |
 | 4 | `completed` rev=2, outcome=success, reason=completed | UPDATE terminal, outcome=success | recompute: final=2/ATT-2, final_outcome=success, state=terminal | node 不写 delivery |
- 
+
 关键点：步骤 3 重算后 `latest_attempt_index` 变为 2，但 `final_outcome` 回退为 NULL（ATT-2 尚未 terminal），logical execution 从 terminal 回到 running。步骤 4 重算后 final 结果取 ATT-2（最大 attemptIndex 的 terminal attempt），不再受 ATT-1 failure 影响。这正是"重试恢复率"指标的数据来源。
- 
+
 **示例 3：AUTO acceptance 首次拒绝，修复后通过**
- 
+
 | 步 | event 关键字段 | ml_metric_attempt | ml_metric_logical_execution | ml_metric_delivery_stat |
 |---:|---|---|---|---|
 | 1 | `started` rev=1, kind=outer-run, exec=OUTER-UUID | outer-run 不写 attempt | outer-run 不写 logical | INSERT running |
@@ -658,13 +658,13 @@ node 的 executionId 由 `run_uuid + round + node` 稳定派生（客户端 v5�
 | 4 | `started` rev=1, kind=unit-attempt, exec=UNIT-EXEC, attemptId=ATT-2, attemptIndex=2, parent=OUTER-UUID | INSERT running | recompute: latest=2/ATT-2 | unit 不写 delivery |
 | 5 | `completed` rev=2, outcome=success + `acceptance.completed` rev=3, passed=true, attempt=2, firstPass=false | UPDATE terminal + acceptance_passed=true, attempt=2 | recompute: final=2/ATT-2, final_outcome=success | unit 不写 delivery |
 | 6 | `completed` rev=3, kind=outer-run, outcome=success, reason=completed | outer-run 不写 attempt | outer-run 不写 logical | UPDATE terminal, outcome=success |
- 
+
 关键点：`firstPass` 只在 `passed=true AND acceptanceAttempt=1` 时为 true；本例首次拒绝所以 firstPass 始终为 false。`acceptance_attempt` 在 outer 级别递增，由客户端维护，服务端只做幂等校验不重算。`uk_acceptance_parent_attempt` 唯一约束防止同一 outer-run 同一 acceptanceAttempt 重复写入不同 attempt。`failedAttemptId` 在 outer-run completed 时若 outcome=failure 则指向决定终局的 unit attempt；本例 success 所以不携带。
- 
+
 ### 6.10 单事件投影决策流程
- 
+
 以下伪代码是 §6.1 循环体中 `apply_attempt_projection` 和 `apply_delivery_projection` 的完整展开，将 §6.2—§6.7 的幂等、不可变字段、state 吸收态、terminal 覆盖和 missing-start 合并为单一决策树。实现时可直接按此结构组织代码。
- 
+
 ```text
 function apply_attempt_projection(event, existing_attempt_row):
     # 第 0 步：定位或初始化
@@ -740,7 +740,7 @@ function apply_attempt_projection(event, existing_attempt_row):
     row.last_event_id       = event.eventId
     row.last_event_revision = event.eventRevision
 ```
- 
+
 ```text
 function apply_attempt_terminal_fields(row, event):
     row.state                = 'terminal'
@@ -758,7 +758,7 @@ function apply_attempt_terminal_fields(row, event):
     row.acp_session_elapsed_ms = event.timing.acpSessionElapsedMs
     row.model_usages         = event.modelUsages
 ```
- 
+
 ```text
 function apply_delivery_projection(event, existing_delivery_row):
     if existing_delivery_row is None:
@@ -789,7 +789,7 @@ function apply_delivery_projection(event, existing_delivery_row):
     row.last_event_id       = event.eventId
     row.last_event_revision = event.eventRevision
 ```
- 
+
 ```text
 function apply_delivery_terminal_fields(row, event):
     row.state                  = 'terminal'
@@ -808,7 +808,7 @@ function apply_delivery_terminal_fields(row, event):
     if event.executionKind == 'run':
         row.round_count = event.roundCount
 ```
- 
+
 `fill_nullable_snapshot_if_null(row, event)` 只在目标字段为 NULL 时赋值，已有非 NULL 且不同则置 `projection_conflict=1`。任何情况下不修改不可变身份字段、attemptIndex、state、outcome、Usage、counters。
 
 ## 7. 指标详细统计口径

@@ -53,6 +53,34 @@ function renderWorkflowNodeInspector(
 }
 
 describe('workflow and AUTO model configuration', () => {
+  it('renders workflow controls directly when the canvas has no selected node', () => {
+    const workflow: WorkflowDsl = {
+      version: '0.1',
+      id: 'workflow-empty-selection',
+      entry: 'interview',
+      control: { max_attempts: 10, max_rounds: 3 },
+      nodes: [{
+        type: 'worker',
+        id: 'interview',
+        executionSlotId: 'slot-interview',
+        profile: 'interview',
+      }],
+      edges: [{ from: 'interview', to: '$end', on: 'success' }],
+    };
+
+    const html = renderWithTooltip(React.createElement(WorkflowEditor, {
+      value: workflow,
+      agentRegistry,
+      profiles: [{ id: 'interview', name: 'Interview' }],
+      onSave: () => undefined,
+      showSaveAction: false,
+    }));
+
+    expect(html.match(/data-slot="workflow-control-config"/g)).toHaveLength(1);
+    expect(html).toContain(i18n.t('workflowEditor.workflowControls'));
+    expect(html).not.toContain(i18n.t('workflowEditor.workflowSettings'));
+  });
+
   it('restores omitted worker Agent options after switching back to the original Agent', () => {
     const original = {
       type: 'worker' as const,

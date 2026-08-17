@@ -18,7 +18,7 @@ provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归�
 
 `output_contract` 统一表示 runtime 控制产物，不拆分业务产物与控制产物；它额外声明控制产物在本次执行中的发射模式：
 
-- `PostTurnProjection`：用于普通 workflow worker，以及 AI-DYNAMIC 中实际执行工作或验收的 worker / workflow invocation / acceptance。provider 首先完成可见业务 turn；该 turn 的 system prompt 只说明 runtime 会后置归一化，不包含 artifact 名称、schema 或输出协议。业务 turn 正常结束后，runtime 读取同一 attempt 的 durable worker ref，以 `session=continue` 发起隐藏 `RuntimeFinalize` turn，只允许 agent 根据已完成的会话内容生成 canonical artifact，不得继续执行任务或调用工具。Runtime 在该隐藏 turn 维护最近最多 3 条 Agent message：最后一条有稳定 ID 时按倒序提取第一个可解析 JSON 并交给 schema validator；全 turn 都无稳定 ID 时只校验最后一条；出现过稳定 ID、但最后一条无 ID 时以 `provider.acp-terminal-message-unidentified + Manual recovery` 直接暂停为 `RuntimeAbnormal`，不回扫、不发 repair。
+- `PostTurnProjection`：用于普通 workflow worker，以及 AI-DYNAMIC 中实际执行工作或验收的 worker / workflow invocation / acceptance。provider 首先完成可见业务 turn；该 turn 的 system prompt 只说明 runtime 会后置归一化，不包含 artifact 名称、schema 或输出协议。业务 turn 正常结束后，runtime 读取同一 attempt 的 durable worker ref，以 `session=continue` 发起隐藏 `RuntimeFinalize` turn，只允许 agent 根据已完成的会话内容生成 canonical artifact，不得继续执行任务或调用工具。Runtime 在该隐藏 turn 维护最近最多 3 条 Agent message：最后一条有稳定 ID 时按倒序提取第一个可解析 JSON 并交给 schema validator；全 turn 都无稳定 ID 时只校验最后一条；出现过稳定 ID、但最后一条无 ID 时以 `provider.acp-terminal-message-unidentified + Manual recovery` 直接暂停为 `RuntimeAbnormal`，不回扫、不发 repair。任一 RuntimeControlled 业务、finalize 或 repair turn 一旦收到结构化 terminal failure 或 `session/prompt` JSON-RPC error，必须优先于 `end_turn`、文本和 artifact 候选结算为 `Manual` 运行异常；业务 turn 不写入 `finalizing` checkpoint，finalize/repair turn 不再发送后续 repair。
 - `InlineControl`：用于职责本身就是控制分发的节点。当前 AI-DYNAMIC bootstrap dispatcher 使用此模式，在首个 turn 直接获得完整 `dynamic-node-completion` 协议并输出控制 artifact。
 
 AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是 AI-DYNAMIC”或某个 node id 的单一特判：bootstrap 必须同时满足根层级、无 group、无前序、bootstrap chain 与 worker 控制角色；其余声明 completion contract 的动态节点统一后置投影。Direct 使用 `RawAgent` envelope，不注入 output contract，也不进入上述两阶段流程。
@@ -81,7 +81,7 @@ Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回
 | --- | --- |
 | `success` | 查找 `on=success` edge；无 edge 则等价于隐式 `success -> $end`，run success |
 | `failure` | 查找 `on=failure` edge；无 edge 则等价于隐式 `failure -> $end`，run failure |
-| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则在同 attempt 的 artifact finalize 会话中隐藏追问修复，最多 3 次；修复耗尽后 run failure |
+| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则在同 attempt 的 artifact finalize 会话中隐藏追问修复，最多 3 次；修复耗尽后进入 `Paused + RuntimeAbnormal` |
 | `killed` | run 完成 killed |
 | `None` | run 暂停，保留当前节点与 attempt |
 
@@ -165,7 +165,7 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须在错误分类前、backoff 期间、runtime 重建前和再次发送 prompt 前重新读取当前 attempt 事实；只要 attempt 已停止，就不得写入新的 `runtime_auto_retry` 或再次调用 provider。停止后的 provider 输出不再进入当前 turn；晚到 provider/transport 错误只进入取消收尾诊断，不能覆盖用户停止终态，也不能重新触发自动重试。
 
-`provider.server-unavailable` 等 `RecoveryMode::Auto` 错误使用共享的 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
+只有尚未形成 provider terminal verdict 的 transport interruption、临时本地资源等 `RecoveryMode::Auto` 错误使用共享 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。明确的 `session/prompt` JSON-RPC error、`willRetry=false` 或 `threadStatus=systemError` 已经终结当前业务 turn，统一映射为 `RecoveryMode::Manual`，不得进入自动重试；否则重放业务 prompt 可能重复部分副作用。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
 
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 

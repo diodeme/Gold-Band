@@ -795,6 +795,7 @@ fn terminal_message_identity_anomaly_pauses_without_artifact_repair() {
     );
     let events = app.run_events(task_id, "run-001").unwrap().unwrap();
     assert!(events.contains("provider.acp-terminal-message-unidentified"));
+    assert!(!events.contains("runtime_auto_retry"));
     assert!(!events.contains("invalid_output_repair_requested"));
 }
 

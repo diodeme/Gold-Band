@@ -125,7 +125,7 @@
 说明：
 - 仅当 `status = paused` 时允许为非 null
 - `process-interrupted` 表示用户停止、关闭或启动恢复等主动中断，可通过 runtime continue 恢复当前 attempt
-- `runtime-abnormal` 表示可恢复异常暂停，包括本地 IO/资源、ACP transport、driver 异常、artifact 控制 turn 出现“已有稳定消息但最终消息无稳定 ID”的不可信终态，以及 auth/quota/rate-limit/provider/model/catalog/workspace 等用户处理外部条件后可继续的异常；它需要以异常视觉提醒用户，但仍可通过 runtime continue 恢复
+- `runtime-abnormal` 表示可恢复异常暂停，包括本地 IO/资源、ACP transport、driver 异常、`session/prompt` JSON-RPC error、adapter 结构化 terminal failure、artifact 控制 turn 出现“已有稳定消息但最终消息无稳定 ID”的不可信终态，以及 auth/quota/rate-limit/provider/model/catalog/workspace 等用户处理外部条件后可继续的异常；它需要以异常视觉提醒用户，但仍可通过 runtime continue 恢复。结构化 terminal failure 固定为 `recovery=manual`，不得自动重放可能已产生部分副作用的业务 prompt
 - `error-blocked` 表示 workflow/DSL/control edge、输出修复所需的 session / continue identity 缺失、runtime invariant 等当前路径不可继续的阻塞，不提供当前 session 的直接 continue 入口；有可用 continue identity 的输出 repair 耗尽属于可恢复的 `runtime-abnormal`
 - `waiting-for-user-input` 与 `permission-requested` 表示 runtime 等待用户明确决策
 

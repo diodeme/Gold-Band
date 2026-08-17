@@ -16,7 +16,7 @@ use crate::prompts::{
 };
 use crate::runtime::WorkerRefState;
 use crate::runtime_error::{
-    RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
+    RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
     normalize_provider_runtime_failure, runtime_error,
 };
 use crate::storage::{active_storage_path_config, read_json, write_json};
@@ -1546,11 +1546,16 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             "stopReason": run.stop_reason,
             "terminalFailure": failure,
         }));
-        let runtime_error = normalize_provider_runtime_failure(
+        let mut runtime_error = normalize_provider_runtime_failure(
             run.stop_reason.as_deref(),
             failure.diagnostic(),
             raw,
         );
+        // A structured terminal failure proves that the current prompt has
+        // ended abnormally. Replaying a business prompt could duplicate
+        // partial side effects, so recovery is always an explicit user action.
+        runtime_error.recovery = RecoveryMode::Manual;
+        runtime_error.retry_policy = None;
         return ProviderTerminalOutcome {
             status: ProviderRunStatus::Failure,
             runtime_error: Some(runtime_error),
@@ -2696,7 +2701,7 @@ mod tests {
     }
 
     #[test]
-    fn fatal_session_error_overrides_end_turn_success_reason() {
+    fn terminal_session_error_overrides_end_turn_without_auto_retry() {
         let run = acp_prompt_run(
             Some("end_turn"),
             Some(AcpPromptFailure {
@@ -2716,7 +2721,8 @@ mod tests {
             .runtime_error
             .expect("fatal error must be preserved");
         assert_eq!(error.code_str(), "provider.server-unavailable");
-        assert_eq!(error.recovery, RecoveryMode::Auto);
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
     }
 
     #[test]

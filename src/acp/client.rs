@@ -1112,6 +1112,103 @@ impl AcpPromptFailure {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct AcpPromptTerminalState {
+    last_provider_error: Option<AcpPromptFailure>,
+    terminal_failure: Option<AcpPromptFailure>,
+}
+
+impl AcpPromptTerminalState {
+    fn reset(&mut self) {
+        self.last_provider_error = None;
+        self.terminal_failure = None;
+    }
+
+    fn observe_session_update(&mut self, update: &Value) {
+        if let Some(error) = update.pointer("/_meta/codex/error") {
+            let failure = codex_prompt_failure(error);
+            let is_terminal = error.get("willRetry").and_then(Value::as_bool) == Some(false);
+            self.last_provider_error = Some(failure.clone());
+            if is_terminal {
+                self.terminal_failure = Some(failure);
+            }
+        }
+
+        let thread_status = update
+            .pointer("/_meta/codex/threadStatus/type")
+            .and_then(Value::as_str)
+            .map(normalize_stop_code);
+        if thread_status.as_deref() == Some("systemerror") {
+            let last_error = self.last_provider_error.clone();
+            let message = last_error
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| "ACP session entered systemError".to_string());
+            let details = last_error
+                .as_ref()
+                .and_then(|failure| failure.details.clone());
+            self.terminal_failure = Some(AcpPromptFailure {
+                code: "acp.session-system-error".to_string(),
+                message,
+                details,
+                raw: json!({
+                    "terminalUpdate": update,
+                    "lastError": last_error.map(|failure| failure.raw),
+                }),
+            });
+        }
+    }
+}
+
+fn codex_prompt_failure(error: &Value) -> AcpPromptFailure {
+    let message = error
+        .get("additionalDetails")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Codex ACP reported a prompt error")
+        .to_string();
+    let details = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && *value != message)
+        .map(str::to_string);
+    let provider_code = error.get("codexErrorInfo").and_then(|info| {
+        info.as_str().map(str::to_string).or_else(|| {
+            info.as_object()
+                .and_then(|info| info.keys().next().cloned())
+        })
+    });
+    AcpPromptFailure {
+        code: provider_code
+            .map(|code| format!("codex.{code}"))
+            .unwrap_or_else(|| "codex.prompt-error".to_string()),
+        message,
+        details,
+        raw: error.clone(),
+    }
+}
+
+fn acp_prompt_rpc_failure(error: &Value) -> anyhow::Error {
+    let diagnostic = error
+        .pointer("/data/message")
+        .and_then(Value::as_str)
+        .or_else(|| error.get("message").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("ACP session/prompt returned an error");
+    let mut info = manual_runtime_error_info(
+        RuntimeErrorDomain::Provider,
+        "provider.acp-prompt-failed",
+        diagnostic,
+        json!({
+            "rpcCode": error.get("code"),
+            "providerErrorCode": error.pointer("/data/codexErrorInfo"),
+        }),
+    );
+    info.raw = Some(error.clone());
+    runtime_error(info)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpRuntimePolicy {
     pub foreground_lease_ttl: Duration,
@@ -1504,6 +1601,7 @@ struct AcpRuntime<'a> {
     timeline_items: HashMap<String, AcpUiEvent>,
     session_id: Option<String>,
     prompt_output: AcpPromptOutputAccumulator,
+    prompt_terminal: AcpPromptTerminalState,
     session_update_phase: SessionUpdatePhase,
     provider_history_replay: ProviderHistoryReplay,
     historical_timeline_item_ids: HashSet<String>,
@@ -1920,10 +2018,12 @@ pub fn run_prompt(
         runtime.is_prompt_cancel_requested(),
         prompt_result.as_ref().err(),
     );
-    // Cancellation owns the user-visible terminal state. Text without a
-    // provider message identity is still ordinary prompt output; Runtime owns
-    // output-contract validation after the bounded terminal drain completes.
-    let terminal_failure: Option<AcpPromptFailure> = None;
+    // Cancellation owns the user-visible terminal state. Otherwise a
+    // structured provider terminal failure outranks end_turn and all text or
+    // artifact candidates observed during the prompt.
+    let terminal_failure = (!cancellation.observed && prompt_result.is_ok())
+        .then(|| runtime.prompt_terminal.terminal_failure.clone())
+        .flatten();
     let (status, stop_reason) = match prompt_result {
         Ok(stop_reason) => {
             let status = if cancellation.observed {
@@ -2710,6 +2810,7 @@ impl<'a> AcpRuntime<'a> {
             timeline_items,
             session_id: None,
             prompt_output: AcpPromptOutputAccumulator::default(),
+            prompt_terminal: AcpPromptTerminalState::default(),
             session_update_phase: SessionUpdatePhase::Live,
             provider_history_replay,
             historical_timeline_item_ids,
@@ -3823,6 +3924,7 @@ impl<'a> AcpRuntime<'a> {
         acp_session_title_refresh_enabled: bool,
     ) -> Result<Option<String>> {
         self.prompt_output = AcpPromptOutputAccumulator::default();
+        self.prompt_terminal.reset();
         let session_id = self
             .session_id
             .clone()
@@ -4092,7 +4194,7 @@ impl<'a> AcpRuntime<'a> {
                             if cancel_started_at.is_some() {
                                 break Err(anyhow!(AcpCancelled));
                             }
-                            break Err(anyhow!("ACP `session/prompt` failed: {error}"));
+                            break Err(acp_prompt_rpc_failure(error));
                         }
                         if cancel_started_at.is_some() && !is_cancel_stop_reason(&result) {
                             break Err(anyhow!(AcpCancelled));
@@ -4245,6 +4347,7 @@ impl<'a> AcpRuntime<'a> {
         if provider_thread_is_active(&update) {
             self.control.mark_provider_active();
         }
+        self.prompt_terminal.observe_session_update(&update);
         if provider_thread_is_active(&update) && self.is_prompt_cancel_requested() {
             // Some providers ignore a cancel delivered before their turn is
             // active. The cancellation latch remains set, so active is the
@@ -6350,15 +6453,15 @@ mod tests {
     use super::{
         AcpCancelDrainTimeout, AcpContextCompactionState, AcpPromptFailure,
         AcpPromptOutputAccumulator, AcpPromptRetryState, AcpPromptRouteDrainTimeout,
-        AcpPromptRouteUnavailable, AcpPromptTokenUsage, AcpRuntime, AcpRuntimePolicy,
-        AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
+        AcpPromptRouteUnavailable, AcpPromptTerminalState, AcpPromptTokenUsage, AcpRuntime,
+        AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
         PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
         RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
         SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
-        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, attached_sync_required, cancel_attempt_prompt,
-        canonical_prompt_event_identity, catalog_observation_is_newer,
+        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
+        active_timeline_streams_by_branch, append_bounded, attached_sync_required,
+        cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
         drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
         drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
@@ -6874,6 +6977,75 @@ mod tests {
     }
 
     #[test]
+    fn prompt_terminal_state_promotes_system_error_after_retry_signal() {
+        let mut terminal = AcpPromptTerminalState::default();
+        terminal.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Reconnecting... 5/5",
+                        "additionalDetails": "Provider is temporarily unavailable",
+                        "codexErrorInfo": "responseStreamDisconnected",
+                        "willRetry": true
+                    }
+                }
+            }
+        }));
+        assert!(terminal.terminal_failure.is_none());
+
+        terminal.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": { "codex": { "threadStatus": { "type": "systemError" } } }
+        }));
+
+        let failure = terminal.terminal_failure.expect("terminal failure");
+        assert_eq!(failure.code, "acp.session-system-error");
+        assert_eq!(failure.message, "Provider is temporarily unavailable");
+        assert_eq!(failure.details.as_deref(), Some("Reconnecting... 5/5"));
+    }
+
+    #[test]
+    fn prompt_terminal_state_promotes_non_retryable_error_immediately() {
+        let mut terminal = AcpPromptTerminalState::default();
+        terminal.observe_session_update(&json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {
+                "codex": {
+                    "error": {
+                        "message": "Request failed",
+                        "additionalDetails": "Provider rejected the prompt",
+                        "willRetry": false
+                    }
+                }
+            }
+        }));
+
+        let failure = terminal.terminal_failure.expect("terminal failure");
+        assert_eq!(failure.code, "codex.prompt-error");
+        assert_eq!(failure.message, "Provider rejected the prompt");
+        assert_eq!(failure.details.as_deref(), Some("Request failed"));
+    }
+
+    #[test]
+    fn prompt_rpc_error_is_manual_and_has_no_retry_policy() {
+        let error = acp_prompt_rpc_failure(&json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "message": "You've hit your usage limit.",
+                "codexErrorInfo": "usageLimitExceeded"
+            }
+        }));
+
+        let info = normalize_runtime_error(&error);
+        assert_eq!(info.code_str(), "provider.acp-prompt-failed");
+        assert_eq!(info.recovery, RecoveryMode::Manual);
+        assert!(info.retry_policy.is_none());
+        assert_eq!(info.params["providerErrorCode"], "usageLimitExceeded");
+    }
+
+    #[test]
     fn prompt_terminal_quiet_drain_observes_frame_after_rpc_response() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let sender_keepalive = sender.clone();
@@ -6907,6 +7079,39 @@ mod tests {
             observed[0].pointer("/content/text"),
             Some(&json!("502 Bad Gateway"))
         );
+    }
+
+    #[test]
+    fn prompt_terminal_quiet_drain_promotes_late_system_error() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender_keepalive = sender.clone();
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            sender
+                .send(json!({
+                    "sessionUpdate": "session_info_update",
+                    "_meta": { "codex": { "threadStatus": { "type": "systemError" } } }
+                }))
+                .unwrap();
+        });
+        let mut terminal = AcpPromptTerminalState::default();
+
+        let drained = drain_frames_until_quiet_with_timeout_error(
+            Duration::from_millis(30),
+            Duration::from_millis(200),
+            |wait_for| receiver.recv_timeout(wait_for),
+            |update| {
+                terminal.observe_session_update(&update);
+                Ok(())
+            },
+            |timeout| anyhow::anyhow!(AcpPromptRouteDrainTimeout { timeout }),
+        )
+        .unwrap();
+
+        producer.join().unwrap();
+        drop(sender_keepalive);
+        assert_eq!(drained, 1);
+        assert!(terminal.terminal_failure.is_some());
     }
 
     #[test]

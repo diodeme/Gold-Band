@@ -25,6 +25,9 @@
 - SKILL 卡片采用紧凑稳定尺寸结构：卡片使用固定高度，顶部信息区与底部 agent/action 区均固定高度；描述最多两行省略，不能因为描述行数不同导致底部 agent 列表和操作按钮上下跳动，也不能被 grid 行高拉伸出大面积空白。
 - SKILL 管理页的项目级 workspace 选择会记忆上一次有效选择。切回“项目 SKILL”或重新进入上下文管理页时，如果该 workspace 仍存在于当前 workspace 列表中，自动恢复并加载项目 SKILL；如果 workspace 已不存在，清除本地记忆并保持未选择状态。
 - SKILL 创建/编辑抽屉拥有独立表单状态，正文 Markdown 输入、名称/描述编辑和同步目标勾选只重渲染抽屉自身；`ContextManagementPage` 列表页只负责打开目标、接收保存后的列表刷新，避免每个字符触发背后的 SKILL 卡片网格、筛选栏和 tooltip 树重新 render。
+- SKILL 创建/编辑抽屉的同步目标区提供“全选 / 全不选”批量操作；批量选择只以当前可用同步 Agent 集合为边界，继续写入同一份抽屉局部 `syncTargets` 草稿，不建立旁路状态。
+- SKILL 创建/编辑抽屉的范围选择复用项目 shadcn/ui Select，项目 workspace 与 Global 继续写入同一份 `form.source` 草稿；编辑态保持禁用，不使用浏览器原生 `<select>` 形成独立视觉和弹层行为。
+- 前端选择控件统一遵守 `docs/gold-band/rules/ui-interaction.md` 的共享组件约束；全局 AST 契约测试同时阻止产品源码新增原生 `<select>` 或浏览器 `title` Tooltip，避免同类实现回退。
 - 上下文管理按领域延迟加载：首次进入“角色管理”只读取 Profile，不读取 Agent registry、SKILL 或会话任务树；只有进入“SKILL 管理”或打开 SKILL 创建抽屉时才并行读取 Agent registry 与 workspace 元数据。workspace 选择器必须调用轻量 `get_conversation_workspaces`，禁止为了取得项目名称复用包含 task/run 历史的 `get_conversation_sidebar`。
 
 

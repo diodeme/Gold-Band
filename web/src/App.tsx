@@ -80,6 +80,7 @@ import {
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
+  resolveConversationRunReentrySelection,
   type ConversationSessionFollowMode,
   type ConversationSessionFollowState,
 } from '@/lib/conversation-session-follow';
@@ -166,7 +167,7 @@ import {
   shouldCommitConversationNavigation,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
-import { ConversationRunCache } from '@/lib/conversation-run-cache';
+import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -358,6 +359,7 @@ export function App() {
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
+    runKey: null,
     mode: 'auto',
     selectedSessionKey: null,
     version: 0,
@@ -371,13 +373,29 @@ export function App() {
   const [conversationWorkflowTemplates, setConversationWorkflowTemplates] = useState<WorkflowTemplateStore | null>(null);
   const [, startTransition] = useTransition();
 
-  const updateConversationSessionFollow = useCallback((mode: ConversationSessionFollowMode, selectedSessionKey?: string | null) => {
-    conversationSessionFollowRef.current = {
+  const updateConversationSessionFollow = useCallback((
+    mode: ConversationSessionFollowMode,
+    selectedSessionKey?: string | null,
+    scopeRun?: ConversationRunVm | null,
+  ) => {
+    const run = scopeRun ?? conversationRunRef.current;
+    const nextSelectedSessionKey = selectedSessionKey !== undefined
+      ? selectedSessionKey
+      : conversationSelectedSessionKeyRef.current ?? null;
+    const nextFollowState: ConversationSessionFollowState = {
+      runKey: run ? conversationRunCacheKey(run) : conversationSessionFollowRef.current.runKey,
       mode,
-      selectedSessionKey: selectedSessionKey ?? conversationSelectedSessionKeyRef.current ?? null,
+      selectedSessionKey: nextSelectedSessionKey,
       version: conversationSessionFollowRef.current.version + 1,
     };
-  }, []);
+    conversationSessionFollowRef.current = nextFollowState;
+    if (run) {
+      conversationRunCache.store(run, {
+        followMode: mode,
+        selectedSessionKey: nextSelectedSessionKey,
+      });
+    }
+  }, [conversationRunCache]);
 
   const applyConversationRunSnapshot = useCallback((
     snapshot: ConversationRunVm,
@@ -386,13 +404,27 @@ export function App() {
   ) => {
     setConversationRun((current) => {
       const merged = mergeConversationRunSnapshot(current, snapshot, source, options);
+      const mergedRunKey = conversationRunCacheKey(merged);
+      const previousFollowState = conversationSessionFollowRef.current;
+      const scopedFollowState = previousFollowState.runKey === mergedRunKey
+        ? previousFollowState
+        : {
+            runKey: mergedRunKey,
+            mode: 'auto' as const,
+            selectedSessionKey: null,
+            version: previousFollowState.version + 1,
+          };
+      const nextSelectedSessionKey = merged.sessionTree.selectedSessionKey ?? null;
       conversationRunRef.current = merged;
-      conversationSelectedSessionKeyRef.current = merged.sessionTree.selectedSessionKey ?? null;
+      conversationSelectedSessionKeyRef.current = nextSelectedSessionKey;
       conversationSessionFollowRef.current = {
-        ...conversationSessionFollowRef.current,
-        selectedSessionKey: merged.sessionTree.selectedSessionKey ?? null,
+        ...scopedFollowState,
+        selectedSessionKey: nextSelectedSessionKey,
       };
-      conversationRunCache.store(merged);
+      conversationRunCache.store(merged, {
+        followMode: scopedFollowState.mode,
+        selectedSessionKey: nextSelectedSessionKey,
+      });
       return merged;
     });
   }, [conversationRunCache]);
@@ -597,12 +629,6 @@ export function App() {
     conversationRunRef.current = conversationRun;
     conversationSelectedSessionKeyRef.current = conversationRun?.sessionTree.selectedSessionKey ?? null;
   }, [conversationRun]);
-
-  useEffect(() => {
-    if (conversationPage.kind !== 'conversation-run') return;
-    conversationSelectedSessionKeyRef.current = null;
-    updateConversationSessionFollow('auto', null);
-  }, [conversationPage]);
 
   const handleConversationAutoFollowChange = useCallback((enabled: boolean) => {
     if (conversationPage.kind !== 'conversation-run') return;
@@ -891,27 +917,76 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return;
     const { projectId, taskId, runId, roundId } = conversationPage;
+    const targetRunKey = conversationRunCacheKey(conversationPage);
+    if (conversationSessionFollowRef.current.runKey !== targetRunKey) {
+      conversationSessionFollowRef.current = {
+        runKey: targetRunKey,
+        mode: roundId ? 'manual' : 'auto',
+        selectedSessionKey: null,
+        version: conversationSessionFollowRef.current.version + 1,
+      };
+      conversationSelectedSessionKeyRef.current = null;
+    }
+    const followStateAtRequest = conversationSessionFollowRef.current;
+    const requestedSelectedSessionKey = !roundId && followStateAtRequest.mode === 'manual'
+      ? followStateAtRequest.selectedSessionKey
+      : null;
     const requestId = conversationNavigationRequestRef.current + 1;
     conversationNavigationRequestRef.current = requestId;
     let cancelled = false;
-    getConversationRun(projectId, taskId, runId)
+    getConversationRun(projectId, taskId, runId, requestedSelectedSessionKey)
       .then(async (run) => {
-        if (!roundId) return run;
+        if (!roundId) return { run, explicitSelectedSessionKey: null };
         const leaf = findConversationLeafForPage(run.sessionTree, conversationPage);
-        if (!leaf) return run;
+        if (!leaf) return { run, explicitSelectedSessionKey: null };
         const selectedSessionKey = conversationSessionKeyFromParts(leaf);
-        return getConversationRun(projectId, taskId, runId, selectedSessionKey);
+        if (run.sessionTree.selectedSessionKey === selectedSessionKey && run.selectedSession) {
+          return { run, explicitSelectedSessionKey: selectedSessionKey };
+        }
+        return {
+          run: await getConversationRun(projectId, taskId, runId, selectedSessionKey),
+          explicitSelectedSessionKey: selectedSessionKey,
+        };
       })
-      .then((run) => {
+      .then(({ run, explicitSelectedSessionKey }) => {
         if (cancelled || !shouldCommitConversationNavigation(
           requestId,
           conversationNavigationRequestRef.current,
           conversationPageRef.current,
           run,
         )) return;
+        const latestFollowState = conversationSessionFollowRef.current.runKey === targetRunKey
+          ? conversationSessionFollowRef.current
+          : followStateAtRequest;
+        const followSelectionChanged = latestFollowState.version !== followStateAtRequest.version
+          && (
+            latestFollowState.mode !== followStateAtRequest.mode
+            || latestFollowState.selectedSessionKey !== followStateAtRequest.selectedSessionKey
+          );
+        const selectionPlan = resolveConversationRunReentrySelection({
+          followMode: latestFollowState.mode,
+          rememberedSelectedSessionKey: latestFollowState.mode === 'manual' || followSelectionChanged
+            ? latestFollowState.selectedSessionKey
+            : null,
+          explicitSelectedSessionKey: followSelectionChanged ? null : explicitSelectedSessionKey,
+          defaultSelectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+          hasSessionKey: (key) => Boolean(findConversationLeafByKey(run.sessionTree, key)),
+        });
+        conversationSessionFollowRef.current = {
+          runKey: targetRunKey,
+          mode: selectionPlan.followMode,
+          selectedSessionKey: selectionPlan.selectedSessionKey,
+          version: latestFollowState.version + (
+            latestFollowState.mode !== selectionPlan.followMode
+            || latestFollowState.selectedSessionKey !== selectionPlan.selectedSessionKey
+              ? 1
+              : 0
+          ),
+        };
+        conversationSelectedSessionKeyRef.current = selectionPlan.selectedSessionKey;
         applyConversationRunSnapshot(run, 'initial-load', {
-          selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
-          preserveSelectedSession: false,
+          selectedSessionKey: selectionPlan.selectedSessionKey,
+          preserveSelectedSession: selectionPlan.preserveSelectedSession,
         });
         void preloadConversationTurnFileChangeSets(run);
       })
@@ -1360,9 +1435,7 @@ export function App() {
           projectId: target.projectId,
           scheduledTaskId: target.scheduledTaskId,
         };
-        setPrimaryModule('task-orchestration');
-        setConversationPage(page);
-        pushRoute('task-orchestration', taskPage, page);
+        onSelectConversation(page);
         return;
       }
       const page: ConversationPage = {
@@ -1373,9 +1446,7 @@ export function App() {
         roundId: target.roundId ?? undefined,
         attemptId: target.attemptId ?? undefined,
       };
-      setPrimaryModule('task-orchestration');
-      setConversationPage(page);
-      pushRoute('task-orchestration', taskPage, page);
+      onSelectConversation(page);
       return;
     }
     if (uiMode !== 'conversation') {
@@ -1391,9 +1462,7 @@ export function App() {
     // 会话模式：定位到 run，并在 sessionTree 内匹配叶子后切换 session。
     const runPage = conversationPageForIntervention(event);
     const targetProjectId = event.projectId;
-    setPrimaryModule('task-orchestration');
-    setConversationPage(runPage);
-    pushRoute('task-orchestration', taskPage, runPage);
+    onSelectConversation(runPage);
 
     let run = conversationRunRef.current
       && conversationPageMatchesRun(runPage, conversationRunRef.current)
@@ -1419,7 +1488,7 @@ export function App() {
       outerAttemptId: leaf.outerAttemptId,
     });
     conversationSelectedSessionKeyRef.current = key;
-    updateConversationSessionFollow('manual', key);
+    updateConversationSessionFollow('manual', key, run);
     setConversationRun((current) => {
       const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
       const next = beginConversationSessionSelection(base, key);
@@ -1829,31 +1898,65 @@ export function App() {
     }
   };
 
-  const onSelectConversation = (page: ConversationPage) => {
+  function onSelectConversation(page: ConversationPage) {
     setWorkspacePickerOpen(false);
     if (conversationRunRef.current) {
-      conversationRunCache.store(conversationRunRef.current);
+      const currentRun = conversationRunRef.current;
+      const currentRunKey = conversationRunCacheKey(currentRun);
+      const currentFollowState = conversationSessionFollowRef.current.runKey === currentRunKey
+        ? conversationSessionFollowRef.current
+        : null;
+      conversationRunCache.store(currentRun, {
+        followMode: currentFollowState?.mode ?? 'auto',
+        selectedSessionKey: currentFollowState?.selectedSessionKey
+          ?? currentRun.sessionTree.selectedSessionKey
+          ?? null,
+      });
     }
     if (page.kind === 'conversation-run') {
-      const cached = conversationRunCache.restore(page);
+      const targetRunKey = conversationRunCacheKey(page);
+      const cachedEntry = conversationRunCache.restoreEntry(page);
+      const cached = cachedEntry?.run ?? null;
       const cachedLinkedLeaf = cached && page.roundId
         ? findConversationLeafForPage(cached.sessionTree, page)
         : null;
       const cachedMatchesLinkedTarget = !page.roundId || Boolean(cachedLinkedLeaf);
-      if (cached && cachedMatchesLinkedTarget) {
-        const cachedForPage = cachedLinkedLeaf
-          ? beginConversationSessionSelection(
-              cached,
-              conversationSessionKeyFromParts(cachedLinkedLeaf),
-            )
+      if (cached && cachedEntry && cachedMatchesLinkedTarget) {
+        const explicitSelectedSessionKey = cachedLinkedLeaf
+          ? conversationSessionKeyFromParts(cachedLinkedLeaf)
+          : null;
+        const rememberedSelectedSessionKey = cachedEntry.viewState.selectedSessionKey
+          && findConversationLeafByKey(cached.sessionTree, cachedEntry.viewState.selectedSessionKey)
+          ? cachedEntry.viewState.selectedSessionKey
+          : null;
+        const selectedSessionKey = explicitSelectedSessionKey
+          ?? rememberedSelectedSessionKey
+          ?? cached.sessionTree.selectedSessionKey
+          ?? null;
+        const followMode: ConversationSessionFollowMode = explicitSelectedSessionKey
+          ? 'manual'
+          : cachedEntry.viewState.followMode;
+        const cachedForPage = selectedSessionKey
+          ? beginConversationSessionSelection(cached, selectedSessionKey)
           : cached;
         conversationRunRef.current = cachedForPage;
-        conversationSelectedSessionKeyRef.current = cachedForPage.sessionTree.selectedSessionKey ?? null;
+        conversationSelectedSessionKeyRef.current = selectedSessionKey;
         conversationSessionFollowRef.current = {
-          ...conversationSessionFollowRef.current,
-          selectedSessionKey: cachedForPage.sessionTree.selectedSessionKey ?? null,
+          runKey: targetRunKey,
+          mode: followMode,
+          selectedSessionKey,
+          version: conversationSessionFollowRef.current.version + 1,
         };
+        conversationRunCache.store(cachedForPage, { followMode, selectedSessionKey });
         setConversationRun(cachedForPage);
+      } else {
+        conversationSelectedSessionKeyRef.current = null;
+        conversationSessionFollowRef.current = {
+          runKey: targetRunKey,
+          mode: page.roundId ? 'manual' : 'auto',
+          selectedSessionKey: null,
+          version: conversationSessionFollowRef.current.version + 1,
+        };
       }
     }
     setConversationPage(page);
@@ -1865,7 +1968,7 @@ export function App() {
       setPrimaryModule('task-orchestration');
     }
     pushRoute(primaryModule, taskPage, page);
-  };
+  }
 
   const content = uiMode === 'conversation'
     ? renderConversationContent()
@@ -1964,7 +2067,7 @@ export function App() {
           effectiveWorkspaceId,
         );
         if (targetPid) setDraftConversationWorkspaceId(targetPid);
-        setConversationPage({ kind: 'conversation-home' });
+        onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationSearch={() => setConversationSearchOpen(true)}
       onConversationSelectTask={(projectId, taskId) => {
@@ -2008,7 +2111,7 @@ export function App() {
       }}
       onConversationNewInWorkspace={(projectId) => {
         setDraftConversationWorkspaceId(projectId);
-        setConversationPage({ kind: 'conversation-home' });
+        onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationAddWorkspace={() => {
         addConversationWorkspace().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
@@ -2095,7 +2198,7 @@ export function App() {
         onOpenChange={setConversationSearchOpen}
         onSelectResult={(result) => {
           const page = conversationPageForSearchResult(result);
-          if (page) setConversationPage(page);
+          if (page) onSelectConversation(page);
         }}
       />
     </Shell>
@@ -2195,7 +2298,7 @@ export function App() {
                 }),
               );
               rememberConversationWorkspace(run.projectId);
-              updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
+              updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
               applyConversationRunSnapshot(run, 'create');
               resetConversationComposerDraft(composerDraftRef.current);
               setConversationPage({
@@ -2313,12 +2416,13 @@ export function App() {
           run={conversationRun}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
+          followMode={conversationSessionFollowRef.current.mode}
           onRerun={() => {
             if (!conversationRun) return;
             rerunConversationTask(conversationRun.projectId, conversationRun.taskId)
               .then((run) => {
                 rememberConversationWorkspace(run.projectId);
-                updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null);
+                updateConversationSessionFollow('auto', run.sessionTree.selectedSessionKey ?? null, run);
                 applyConversationRunSnapshot(run, 'rerun');
                 setConversationPage({
                   kind: 'conversation-run',

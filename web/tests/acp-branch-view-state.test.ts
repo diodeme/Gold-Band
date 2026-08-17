@@ -12,6 +12,7 @@ import {
   restoreAcpBranchViewState,
   restoreAcpLoadedEvents,
   restoreAcpSession,
+  shouldInitiallyFollowAcpBranch,
   storeAcpBranchViewState,
   storeAcpLoadedEvents,
   storeAcpSession,
@@ -75,6 +76,12 @@ const event = (id: string): AcpUiEventVm => ({
 beforeEach(() => resetAcpResourceCache());
 
 describe('ACP branch view state cache', () => {
+  it('starts a remounted viewport from the cached follow intent', () => {
+    expect(shouldInitiallyFollowAcpBranch(state(100))).toBe(false);
+    expect(shouldInitiallyFollowAcpBranch({ ...state(100), atBottom: true })).toBe(true);
+    expect(shouldInitiallyFollowAcpBranch(null)).toBe(true);
+  });
+
   it('stores independent scroll, cursor, and bottom-lock state per branch', () => {
     storeAcpBranchViewState('attempt:root', state(100));
     storeAcpBranchViewState('attempt:agent-a', { ...state(500), atBottom: true, hasOlder: false });

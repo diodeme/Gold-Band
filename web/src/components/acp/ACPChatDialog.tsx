@@ -613,6 +613,12 @@ export function storeAcpBranchViewState(sessionKey: string, state: AcpBranchView
   storeAcpResourcePart(sessionKey, { viewState: state });
 }
 
+export function shouldInitiallyFollowAcpBranch(
+  state?: Pick<AcpBranchViewState, 'atBottom'> | null,
+) {
+  return state?.atBottom ?? true;
+}
+
 export function restoreAcpLoadedEvents(
   sessionKey: string,
   events: AcpUiEventVm[],
@@ -3533,6 +3539,7 @@ export function ACPChatDialog(
           <ConversationViewport
             scrollClassName={ACP_SESSION_SCROLL_AREA_CLASS_NAME}
             contextRef={chatContainerContextRef}
+            initialFollowing={shouldInitiallyFollowAcpBranch(restoredBranchViewState)}
             onAtBottomChange={handleAtBottomChange}
             onViewportScroll={handleScroll}
             onViewportUserScroll={handleLiveStreamUserInteraction}

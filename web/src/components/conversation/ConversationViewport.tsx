@@ -15,6 +15,7 @@ interface ConversationViewportProps {
   onAtBottomChange?: ChatContainerRootProps['onAtBottomChange'];
   onViewportScroll?: ChatContainerRootProps['onViewportScroll'];
   onViewportUserScroll?: ChatContainerRootProps['onViewportUserScroll'];
+  initialFollowing?: boolean;
   className?: string;
   contentClassName?: string;
 }
@@ -26,6 +27,7 @@ export function ConversationViewport({
   onAtBottomChange,
   onViewportScroll,
   onViewportUserScroll,
+  initialFollowing = true,
   className,
   contentClassName,
 }: ConversationViewportProps) {
@@ -34,7 +36,7 @@ export function ConversationViewport({
       data-conversation-viewport="true"
       className={cn('h-full', className)}
       resize="instant"
-      initial="instant"
+      initial={initialFollowing ? 'instant' : false}
       contextRef={contextRef}
       onAtBottomChange={onAtBottomChange}
       onViewportScroll={onViewportScroll}

@@ -36,6 +36,7 @@ import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { cn } from '@/lib/utils';
 import {
   draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
@@ -73,6 +74,8 @@ interface ConversationWorkspaceControlProps {
   variant?: 'toolbar' | 'info';
 }
 
+const SELECTED_CONTEXT_CONTROL_CLASS_NAME = 'bg-accent text-accent-foreground hover:bg-accent/80 dark:bg-accent dark:hover:bg-accent/80';
+
 export function ConversationWorkspaceControl({
   projectId,
   workspaceName,
@@ -94,7 +97,7 @@ export function ConversationWorkspaceControl({
     ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-sm text-foreground shadow-none`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
   const triggerSurfaceClassName = variant === 'info'
-    ? 'bg-transparent hover:bg-gold-surface-high/55 dark:bg-transparent dark:hover:bg-gold-surface-high/55'
+    ? SELECTED_CONTEXT_CONTROL_CLASS_NAME
     : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
   const triggerEvents = {
     onPointerEnter: showTooltipIfOverflowing,
@@ -111,7 +114,7 @@ export function ConversationWorkspaceControl({
   };
   const value = (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
+      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-accent-foreground' : 'text-muted-foreground/80')} />
       <TooltipTrigger asChild>
         <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
           {selectedWorkspaceName}
@@ -128,6 +131,7 @@ export function ConversationWorkspaceControl({
             <SelectTrigger
               ref={selectTriggerRef}
               {...triggerEvents}
+              data-context-selected={variant === 'info' ? 'true' : undefined}
               className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
             >
               {value}
@@ -157,7 +161,8 @@ export function ConversationWorkspaceControl({
           <div
             {...triggerEvents}
             tabIndex={0}
-            className={`${controlClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none`}
+            data-context-selected={variant === 'info' ? 'true' : undefined}
+            className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
           >
             {value}
           </div>
@@ -226,10 +231,11 @@ export function ConversationWorkspaceInfoBar({
             type="button"
             variant="ghost"
             size="sm"
-            className="h-7 min-w-0 gap-2 rounded-md px-2 text-sm font-normal"
             disabled={busy || checkingLocation}
             aria-label={t('conversation.home.workLocation')}
             data-conversation-work-location-trigger="true"
+            data-context-selected="true"
+            className={cn('h-7 min-w-0 gap-2 rounded-md px-2 text-sm font-normal', SELECTED_CONTEXT_CONTROL_CLASS_NAME)}
           >
             {checkingLocation ? <Loader2 className="size-3.5 animate-spin" /> : <LocationIcon className="size-3.5" />}
             <span className="truncate">{locationLabel}</span>

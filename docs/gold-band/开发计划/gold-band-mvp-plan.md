@@ -1171,6 +1171,12 @@ attempt-001/
 - 本轮验收：settings v10 迁移与桌面端壁纸校验、共享 MRU/去重上限及跨模式选中资产保留、单侧缺失收敛共 4 项 Rust 定向测试通过；Theme Engine、壁纸偏好、主题运行时与 surface 首帧协调 4 个 Vitest 文件共 33 项通过，覆盖同 URL 跨页面复用、不同 surface 主题壁纸首次加载后复用、URL 切换原子替换、失败隔离、迟到回调和首次绘制前协调；TypeScript `--noEmit` 与 Web 生产构建通过。内置浏览器 deep link 实测浅色/深色独立选择与 60%/59% 可见度切换、共享 2 条最近记录、单侧恢复、1% 键盘步进、720px/1440px 无横向溢出，以及会话 surface 壁纸生效；本轮复核快速对话与设置页分别挂载 `conversation / settings` surface、切换无控制台错误。Composer 卡片保持实色，其内容轨道、左右 padding 与整宽 sticky footer 计算背景均为透明。
 - 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。壁纸资源表仅保留当前主题有效槽与两种明暗选中资产，surface 使用 `WeakMap` 随 DOM 生命周期自动释放，不进入 React 根状态或扩大页面重渲染范围。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper。对 2188×1272、3.51 MiB 真实资产的 release 分段测量确认，删除为生成缩略图而进行的完整图二次解码可减少约 80–100 ms 的 O(像素数) 重复工作；最终像素图与编码字节共存的峰值与旧链路回读后的共存模式同阶。本轮不新增依赖、通用缓存框架、并发队列或过渡动画，与实际规模匹配。
 
+## 2026-08-17：新会话启动态与内容加载遮罩分域
+
+- 会话运行页继续复用 runtime canonical lifecycle 展示 `preparing-workspace / starting-node` 启动态；当前 attempt 的 ACP session 尚未 ready 时不再叠加“正在加载会话”的历史内容遮罩，也不允许 partial session 继续渲染“无 session id”、空 timeline 或 composer。`initializing` 统一提前返回现有品牌 Logo 启动态，ready 后原子开放完整会话。既有 established session 未命中正文缓存时仍保留原加载遮罩，缓存、readiness fetch 和请求数量均不变。
+- Web 接口级回归覆盖新会话 launch、已建立未缓存会话、hydration 完成和 `initializing -> isolated loading surface` 四类边界，防止后续再次把启动生命周期与历史内容加载或 partial session shell 混合。
+- 过度设计与性能评审：仅从 leaf 已有 `current + sessionEstablished` 事实派生展示条件，不新增状态、状态机、缓存、轮询、请求或额外订阅；判断为 O(1)，不会扩大渲染或 I/O 范围。
+
 ## 2026-08-17：隐藏 Prompt 链接与右侧只读工作区
 
 - 根因与交互：隐藏 system/runtime context 的解析与紧凑投影设计继续保留，但消息组件内的 `Collapsible` 把长文档误建模为局部披露内容，未复用已经支持多 Tab、Markdown/源码和只读查看的右侧工作区。隐藏段改为带 Lucide 文档图标、原有语义颜色和字符数的 shadcn link Button；删除块背景、箭头、内联展开正文与 content-expansion 生命周期。
@@ -1182,10 +1188,10 @@ attempt-001/
 
 ## 2026-08-17：快速对话跨页面工作空间恢复
 
-- 根因：快速对话已有 `draftConversationWorkspaceId` 作为应用运行期事实，但从设置等非会话页面点击“快速对话”时，导航入口忽略 draft 并用 `lastActiveWorkspaceId` 覆盖，导致未发起会话的选择丢失；这是既有状态转换实现不完整，不是持久化模型缺失。
-- 实现：新增纯导航决策，固定“当前会话 workspace → quick-chat draft → 最近会话 workspace”优先级，并在快速对话入口的用户事件链中应用；工作空间选择器、会话内新建和无 draft 兜底继续复用原有入口。
-- 边界与回归：Vitest 覆盖从设置返回保留 draft、从会话发起时使用当前会话 workspace、无 draft 时回退最近会话 workspace，并固定入口接入统一决策。`lastConversationWorkspace`、会话列表最近 workspace 置顶和后端状态结构不变，单纯切换快速对话 workspace 不触发排序。
-- 本轮验收：导航与最近工作空间排序 2 个定向 Vitest 文件共 30 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 在真实页面完成“快速对话 → 设置 → 快速对话”返回验证，恢复 `/chat`、workspace 上下文不变且浏览器错误日志为空；浏览器预览仅提供单 workspace，双 workspace 差异由接口级导航测试固定。
+- 根因：快速对话已有 `draftConversationWorkspaceId` 作为应用运行期事实，设置页返回时能正常消费它；但从会话详情点击“快速对话”时，导航决策无条件优先取当前 run 的 workspace，将仍然有效的 draft 投影覆盖；这是既有状态转换优先级错误，不是持久化模型缺失。
+- 实现：纯导航决策固定“quick-chat draft → 当前会话 workspace → 最近会话 workspace”优先级，并继续在快速对话入口的用户事件链中应用；某 workspace 下显式点击“新会话”才切换 draft，无 draft 时的会话与最近工作空间兜底不变。
+- 边界与回归：Vitest 契约覆盖从设置返回保留 draft、从其他 workspace 会话详情返回仍保留 draft、无 draft 时使用当前会话 workspace、非会话页无 draft 时回退最近会话 workspace，并固定入口接入统一决策。`lastConversationWorkspace`、会话列表最近 workspace 置顶和后端状态结构不变，单纯切换快速对话 workspace 不触发排序。
+- 本轮验收：已完成导航决策、回归契约与文档静态复核；按用户要求未运行 Vitest、TypeScript、Web 生产构建或页面交互验证。
 - 性能与过度设计评审：决策为固定三项的 O(1) 分支，只在用户点击导航时执行；不新增 effect、状态、持久字段、I/O、依赖、缓存、队列或渲染订阅，现有 App 级 draft 已足以表达跨页面生命周期，无需升级为跨重启偏好。
 
 ## 2026-08-17：已发起 ACP 会话动态配置目录
@@ -1207,3 +1213,10 @@ attempt-001/
 - 回归验收：Provider 单元接口 25 项通过，覆盖纯继续、继续并发送、二次停止恢复和损坏 checkpoint；Runtime 继续组合 prompt 定向测试 1 项通过；PostTurn 发射模式与中断完成判定定向测试 4 项通过。`git diff --check` 无空白错误。
 - 本轮增量回归：中英文条件模板覆盖 PostTurn、InlineControl 与无 contract 三个分支；固定 workflow continue 接口固定 PostTurn 组合 prompt；AI-DYNAMIC emission 映射固定 bootstrap=InlineControl、worker/acceptance=PostTurn、merge=无 contract；AI-DYNAMIC 集成测试目标完成编译。
 - 性能与过度设计评审：继续复用 attempt 级单个小型 checkpoint、既有原子 JSON 写入与 canonical `OutputEmissionMode`，只增加一次 O(1) phase/模板分支；动态 leaf 在既有 graph 读取与锁区间内取得目标节点 emission policy，不增加 graph 加载、timeline 扫描、缓存、队列、锁、依赖或渲染订阅。仅在 finalize 边界插入新用户业务 turn 时多写一次 `business-turn`。新增 durable phase 用于表达“新业务 turn 尚未可靠完成”这一现有 `finalizing` 无法表达的具体不变量；提示分支不新增状态或第二套策略事实源，复杂度与恢复正确性风险匹配。
+
+## 2026-08-17：快速会话上下文选择器选中态统一
+
+- 根因：工作空间与工作位置都已有明确 canonical 选择值，但顶部信息栏只让工作位置在部分交互态显示强调，工作空间保持透明，两个同级上下文选择器的视觉投影不一致；这是既有样式契约不完整，不是状态或持久化缺失。
+- 实现：继续复用现有 shadcn `SelectTrigger`、`Button` 与主题 token，为信息栏内两个触发器共享持久 `accent / accent-foreground` 选中态；不改变定时任务胶囊变体、菜单、焦点归还、工作位置校验或偏好作用域。
+- 回归要求：现有 jsdom 组件接口测试固定两个触发器都暴露已选上下文标记并使用同一套浅色/深色主题选中 class；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下检查浅色/深色、菜单关闭、hover/focus 和窄宽度表现。
+- 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。

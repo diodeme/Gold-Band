@@ -49,8 +49,9 @@ export function resolveConversationHomeWorkspaceId(
   draftWorkspaceId: string | null,
   lastActiveWorkspaceId: string | null,
 ): string | null {
+  if (draftWorkspaceId !== null) return draftWorkspaceId;
   if (currentPage.kind === 'conversation-run') return currentPage.projectId;
-  return draftWorkspaceId ?? lastActiveWorkspaceId;
+  return lastActiveWorkspaceId;
 }
 
 export function isConversationRunNavigationLoading(

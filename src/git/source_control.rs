@@ -20,6 +20,7 @@ const COMMIT_REVIEW_SELECTION_MAX: usize = 32;
 const MACHINE_COMMAND_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const UNBORN_HEAD_SENTINEL: &str = "(initial)";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{code}")]
@@ -1252,7 +1253,7 @@ impl GitSourceControlService {
             .head
             .clone()
             .filter(|head| head != "(detached)");
-        let head_oid = status.branch.oid.clone().filter(|oid| oid != "(initial)");
+        let head_oid = status.branch.oid.clone();
         let lock = combined_lock_snapshot(&identity);
         let repository = GitRepositorySnapshot {
             project_id: project_id.to_string(),
@@ -3649,7 +3650,7 @@ fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitWorkspaceStatus> {
 
 fn parse_branch_header(line: &str, branch: &mut GitBranchStatus) -> Result<()> {
     if let Some(value) = line.strip_prefix("# branch.oid ") {
-        branch.oid = Some(value.to_string());
+        branch.oid = (value != UNBORN_HEAD_SENTINEL).then(|| value.to_string());
     } else if let Some(value) = line.strip_prefix("# branch.head ") {
         branch.head = Some(value.to_string());
     } else if let Some(value) = line.strip_prefix("# branch.upstream ") {
@@ -4413,7 +4414,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         assert!(GitCommandRunner.run(&root, &["init"]).unwrap().success);
+        std::fs::write(root.join("untracked.txt"), "not committed\n").unwrap();
         let service = GitSourceControlService::default();
+
+        let snapshot = service.snapshot("project-unborn", &root).unwrap();
+        assert!(snapshot.repository.unborn);
+        assert!(snapshot.repository.head_oid.is_none());
+        assert!(snapshot.status.branch.oid.is_none());
+        assert_eq!(snapshot.status.untracked.len(), 1);
+        assert_eq!(snapshot.status.untracked[0].path, "untracked.txt");
 
         let page = service
             .history(

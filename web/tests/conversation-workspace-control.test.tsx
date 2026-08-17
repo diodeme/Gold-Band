@@ -212,10 +212,18 @@ describe('quick conversation workspace control', () => {
 
     const infoBar = host.querySelector<HTMLElement>('[data-conversation-workspace-info="true"]');
     const workspaceTrigger = infoBar?.querySelector<HTMLElement>('[data-slot="select-trigger"]');
+    const workLocationTrigger = infoBar?.querySelector<HTMLElement>('[data-conversation-work-location-trigger="true"]');
     expect(infoBar).not.toBeNull();
     expect(workspaceTrigger).not.toBeNull();
-    expect(workspaceTrigger!.className).toContain('dark:bg-transparent');
-    expect(workspaceTrigger!.className).not.toContain('dark:bg-gold-surface-high/35');
+    expect(workLocationTrigger).not.toBeNull();
+    for (const trigger of [workspaceTrigger!, workLocationTrigger!]) {
+      expect(trigger.dataset.contextSelected).toBe('true');
+      expect(trigger.className).toContain('bg-accent');
+      expect(trigger.className).toContain('text-accent-foreground');
+      expect(trigger.className).toContain('hover:bg-accent/80');
+      expect(trigger.className).toContain('dark:bg-accent');
+      expect(trigger.className).toContain('dark:hover:bg-accent/80');
+    }
     expect(infoBar!.className).toContain('mx-12');
     expect(infoBar!.className).toContain('h-8');
     expect(infoBar!.className).toContain('items-center');
@@ -227,7 +235,6 @@ describe('quick conversation workspace control', () => {
     expect(infoBar!.className).toContain('after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
     expect(infoBar!.className).not.toContain('bg-muted/45');
     expect(infoBar!.className).not.toContain('pt-2');
-    expect(host.querySelector('[data-conversation-work-location-trigger="true"]')).not.toBeNull();
     expect(host.querySelector('[data-conversation-workspace-value="true"]')?.textContent).toBe('Gold Band');
   });
 });

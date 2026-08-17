@@ -53,17 +53,3 @@ The script only supports new Releases published with a matching `.sha256` sideca
 After all platform assets are uploaded, both Release workflows generate same-name `.sha256` files with streaming SHA256 for DMG, macOS updater archives, EXE, MSI, AppImage, DEB, and RPM artifacts. The installer stops if the sidecar is missing, malformed, names a different file, or does not match the downloaded DMG. It does not provide a weak-verification fallback.
 
 The DMG and `.sha256` file come from the same GitHub Release. This detects download corruption, truncation, and asset mismatches, but it cannot protect against compromise of the official GitHub repository or its Release publishing permissions. After Apple Developer Program credentials become available, the existing Tauri release flow should still perform Developer ID signing and notarization.
-
-## 5. Historical Issue: Older Builds Exit Because of the Settings Schema
-
-In v0.12.0 through v0.12.3, the application exits if a newer development build has already written `settingsSchemaVersion: 3` to `~/.gold-band/settings.json` while the older binary only supports schema v2. The application reports:
-
-```text
-failed to start Gold Band desktop: settings schema version 3 is newer than supported version 2
-```
-
-This issue was fixed in v0.12.4. Upgrade to v0.12.4 or later instead of downgrading the persisted settings schema to run an older build.
-
-## 6. Future Official Release Path
-
-The script is a temporary installation path while Apple Developer Program credentials are unavailable. Once credentials are ready, the existing release workflow will pass the certificate, Developer ID identity, Apple ID, app-specific password, and Team ID to the Tauri bundler so the same build path can perform official signing and notarization. Users should no longer need the Gatekeeper workaround script at that point.

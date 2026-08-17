@@ -3750,6 +3750,8 @@ impl<'a> AcpRuntime<'a> {
             &usage_transaction_id,
             operation_seq,
             &operation_timestamp,
+            Some(provider_id),
+            self.model_override.as_deref(),
         )?;
         let turn_id = prompt_id;
         let identity = AcpPromptTurnIdentity {
@@ -4053,6 +4055,8 @@ impl<'a> AcpRuntime<'a> {
                                 &current_timestamp(),
                                 Some(Value::from(request.id)),
                                 &prompt_usage,
+                                Some(provider_id),
+                                self.model_override.as_deref(),
                             )?;
                             self.usage.record_prompt_usage(prompt_usage);
                         }

@@ -6,13 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   listConversationDirectory: vi.fn(),
+  readConversationDirectoryFile: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
   listConversationDirectory: apiMocks.listConversationDirectory,
   openConversationDirectoryPathInFileManager: vi.fn(),
-  readConversationDirectoryFile: vi.fn(),
+  readConversationDirectoryFile: apiMocks.readConversationDirectoryFile,
   workspaceFilePreviewUrl: vi.fn(() => ''),
+}));
+
+vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
+  WorkspaceFileEditor: (props: {
+    editable: boolean;
+    markdownMode?: string | null;
+    onMarkdownModeChange?: (mode: 'live-preview' | 'source') => void;
+  }) => (
+    <output
+      data-testid="run-directory-file-editor"
+      data-editable={String(props.editable)}
+      data-markdown-mode={String(props.markdownMode)}
+    >
+      <button type="button" onClick={() => props.onMarkdownModeChange?.('source')}>source</button>
+    </output>
+  ),
 }));
 
 import { ConversationDirectoryWorkspacePanel } from '@/components/workspace/ConversationDirectoryWorkspacePanel';
@@ -109,6 +126,12 @@ describe('conversation directory responsive tree lifecycle', () => {
     animationFrames = new Map();
     ControlledResizeObserver.instances = [];
     apiMocks.listConversationDirectory.mockResolvedValue([artifact]);
+    apiMocks.readConversationDirectoryFile.mockResolvedValue({
+      kind: 'text',
+      name: artifact.name,
+      content: '# Artifact',
+      language: 'markdown',
+    });
 
     clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
     clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
@@ -204,6 +227,46 @@ describe('conversation directory responsive tree lifecycle', () => {
       await act(async () => { await Promise.resolve(); });
 
       expect(widths).toEqual([397]);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens Markdown run artifacts in the shared read-only preview and source viewer', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      const row = [...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      await act(async () => {
+        row?.click();
+        await Promise.resolve();
+      });
+
+      let editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
+      expect(apiMocks.readConversationDirectoryFile).toHaveBeenCalledWith({
+        ...resource.locator,
+        relativePath: artifact.relativePath,
+      });
+      expect(editor?.dataset.editable).toBe('false');
+      expect(editor?.dataset.markdownMode).toBe('live-preview');
+
+      await act(async () => {
+        editor?.querySelector<HTMLButtonElement>('button')?.click();
+      });
+      editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
+      expect(editor?.dataset.markdownMode).toBe('source');
     } finally {
       await act(async () => root.unmount());
     }

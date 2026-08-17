@@ -1163,3 +1163,11 @@ attempt-001/
 - 渲染回归修正：用户截图确认最初实现把 `rendered` 映射成了 CodeMirror `live-preview`，虽隐藏部分 Markdown 标记但仍是编辑器排版，并非真实渲染。共享 `SystemPromptPanel` 现统一承担只读文档模式映射，渲染态使用 Streamdown、源码态使用 CodeMirror，工具栏明确切换两种产品语义；DOM 回归固定默认标题/粗体真实渲染、源码原文不变、`editable=false` 及双向切换。
 - 验收：Vitest 固定隐藏段图标链接、不生成 Collapsible、点击输出稳定 part index、跨 branch/section key 隔离、精确 event revision 解析，以及工作区只发起一次单语义块读取并把目标正文交给共享只读面板；同时执行完整 Web 测试、TypeScript、生产构建，并在内置浏览器 deep link 下检查浅色/深色、hover/focus、窄工作区和长 Markdown 的 rendered/source 切换。
 - 性能与过度设计评审：未打开时不挂载 Markdown/编辑器或解析第二份正文；打开时为一次有界语义块 I/O 与一次 O(prompt length) 解析。移除隐藏正文 `<pre>`、展开 state、token 和展开宽度测量，工作区命令继续使用低频稳定 Context，Tab/宽度变化不扩大历史 Markdown 渲染范围。一个 locator 资源类型足以表达真实生命周期，不增加状态机、队列、缓存或假设性抽象，无需专项 benchmark。
+
+## 2026-08-17：快速对话跨页面工作空间恢复
+
+- 根因：快速对话已有 `draftConversationWorkspaceId` 作为应用运行期事实，但从设置等非会话页面点击“快速对话”时，导航入口忽略 draft 并用 `lastActiveWorkspaceId` 覆盖，导致未发起会话的选择丢失；这是既有状态转换实现不完整，不是持久化模型缺失。
+- 实现：新增纯导航决策，固定“当前会话 workspace → quick-chat draft → 最近会话 workspace”优先级，并在快速对话入口的用户事件链中应用；工作空间选择器、会话内新建和无 draft 兜底继续复用原有入口。
+- 边界与回归：Vitest 覆盖从设置返回保留 draft、从会话发起时使用当前会话 workspace、无 draft 时回退最近会话 workspace，并固定入口接入统一决策。`lastConversationWorkspace`、会话列表最近 workspace 置顶和后端状态结构不变，单纯切换快速对话 workspace 不触发排序。
+- 本轮验收：导航与最近工作空间排序 2 个定向 Vitest 文件共 30 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 在真实页面完成“快速对话 → 设置 → 快速对话”返回验证，恢复 `/chat`、workspace 上下文不变且浏览器错误日志为空；浏览器预览仅提供单 workspace，双 workspace 差异由接口级导航测试固定。
+- 性能与过度设计评审：决策为固定三项的 O(1) 分支，只在用户点击导航时执行；不新增 effect、状态、持久字段、I/O、依赖、缓存、队列或渲染订阅，现有 App 级 draft 已足以表达跨页面生命周期，无需升级为跨重启偏好。

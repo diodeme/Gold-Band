@@ -136,8 +136,16 @@ function clonePreferences(preferences: PreferencesVm): PreferencesVm {
         user: { image: { ...preferences.personalization.avatars.user.image }, shape: { ...preferences.personalization.avatars.user.shape } },
       },
       wallpaper: {
-        image: { ...preferences.personalization.wallpaper.image },
-        opacityPercent: preferences.personalization.wallpaper.opacityPercent,
+        byColorScheme: {
+          light: {
+            image: { ...preferences.personalization.wallpaper.byColorScheme.light.image },
+            opacityPercent: preferences.personalization.wallpaper.byColorScheme.light.opacityPercent,
+          },
+          dark: {
+            image: { ...preferences.personalization.wallpaper.byColorScheme.dark.image },
+            opacityPercent: preferences.personalization.wallpaper.byColorScheme.dark.opacityPercent,
+          },
+        },
       },
     },
     avatars: {

@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Write};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
-use gold_band::config::{PersonalizationPreference, WallpaperImagePreference};
+use gold_band::config::{PersonalizationPreference, ResolvedColorScheme, WallpaperImagePreference};
 use gold_band::storage::{read_json, write_json};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
@@ -29,6 +30,27 @@ const JPEG_QUALITY: u8 = 88;
 #[serde(rename_all = "camelCase")]
 pub struct ImportDesktopWallpaperInput {
     pub source_path: String,
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectRecentDesktopWallpaperInput {
+    pub wallpaper_id: String,
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDesktopWallpaperOpacityInput {
+    pub opacity_percent: u8,
+    pub color_scheme: ResolvedColorScheme,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreThemeDesktopWallpaperInput {
+    pub color_scheme: ResolvedColorScheme,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,7 +67,6 @@ pub struct WallpaperImageVm {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WallpaperPreferencesVm {
-    pub selected_wallpaper_id: Option<String>,
     pub recent_wallpapers: Vec<WallpaperImageVm>,
 }
 
@@ -96,6 +117,13 @@ pub struct SavedWallpaper {
     pub asset_id: String,
 }
 
+struct NormalizedWallpaper {
+    raster: DynamicImage,
+    bytes: Vec<u8>,
+    extension: &'static str,
+    mime_type: &'static str,
+}
+
 #[derive(Debug, Clone)]
 pub struct WallpaperProtocolRuntime {
     root: Utf8PathBuf,
@@ -113,34 +141,38 @@ impl WallpaperProtocolRuntime {
 
 pub fn load_resolved_wallpaper_preferences(
     root: &Utf8Path,
-    personalization: &PersonalizationPreference,
 ) -> Result<WallpaperPreferencesVm, WallpaperError> {
     let store = load_store(root)?;
-    Ok(wallpaper_preferences_vm(root, &store, personalization))
+    Ok(wallpaper_preferences_vm(root, &store))
 }
 
 pub fn reconcile_wallpaper_personalization(
     root: &Utf8Path,
     personalization: &mut PersonalizationPreference,
 ) -> Result<bool, WallpaperError> {
-    let WallpaperImagePreference::User { asset_id } = &personalization.wallpaper.image else {
-        return Ok(false);
-    };
     let store = load_store(root)?;
-    let exists = store
-        .recent_wallpapers
-        .iter()
-        .any(|record| record.id == *asset_id && record_is_valid(root, record));
-    if exists {
-        return Ok(false);
+    let mut changed = false;
+    for color_scheme in [ResolvedColorScheme::Light, ResolvedColorScheme::Dark] {
+        let wallpaper = personalization.wallpaper.for_color_scheme_mut(color_scheme);
+        let WallpaperImagePreference::User { asset_id } = &wallpaper.image else {
+            continue;
+        };
+        let exists = store
+            .recent_wallpapers
+            .iter()
+            .any(|record| record.id == *asset_id && record_is_valid(root, record));
+        if !exists {
+            wallpaper.image = WallpaperImagePreference::Theme;
+            changed = true;
+        }
     }
-    personalization.wallpaper.image = WallpaperImagePreference::Theme;
-    Ok(true)
+    Ok(changed)
 }
 
 pub fn import_wallpaper_image(
     root: &Utf8Path,
     input: ImportDesktopWallpaperInput,
+    retained_asset_ids: &HashSet<String>,
 ) -> Result<SavedWallpaper, WallpaperError> {
     let source = canonical_source_path(&input.source_path)?;
     let metadata = fs::metadata(source.as_std_path())
@@ -173,30 +205,24 @@ pub fn import_wallpaper_image(
     }
     let decoded = decode_source_image(&source, format)?;
     let preserve_alpha = decoded.color().has_alpha();
-    let (normalized, image_extension, image_mime_type, normalized_width, normalized_height) =
-        encode_normalized_image(decoded, preserve_alpha)?;
-    let thumbnail_image = image::load_from_memory_with_format(
-        &normalized,
-        if image_extension == "jpg" {
-            ImageFormat::Jpeg
-        } else {
-            ImageFormat::WebP
-        },
-    )
-    .map_err(|_| WallpaperError::new("wallpaper.image-processing-failed", serde_json::json!({})))?
-    .resize_to_fill(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, FilterType::Triangle);
+    let normalized = encode_normalized_image(decoded, preserve_alpha)?;
+    let (normalized_width, normalized_height) = normalized.raster.dimensions();
+    let thumbnail_image =
+        normalized
+            .raster
+            .resize_to_fill(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, FilterType::Triangle);
     let thumbnail = encode_webp(&thumbnail_image)?;
 
     let mut store = load_store(root)?;
     let id = Uuid::new_v4().to_string();
-    let image_file_name = format!("{id}.{image_extension}");
+    let image_file_name = format!("{id}.{}", normalized.extension);
     let thumbnail_file_name = format!("{id}.thumb.webp");
     let directory = wallpapers_dir(root);
     fs::create_dir_all(directory.as_std_path())
         .map_err(|_| WallpaperError::new("wallpaper.save-failed", serde_json::json!({})))?;
     let image_path = directory.join(&image_file_name);
     let thumbnail_path = directory.join(&thumbnail_file_name);
-    write_new_file(&image_path, &normalized)?;
+    write_new_file(&image_path, &normalized.bytes)?;
     if let Err(error) = write_new_file(&thumbnail_path, &thumbnail) {
         let _ = fs::remove_file(image_path.as_std_path());
         return Err(error);
@@ -209,18 +235,21 @@ pub fn import_wallpaper_image(
             id: id.clone(),
             image_file_name,
             thumbnail_file_name,
-            image_mime_type: image_mime_type.to_string(),
+            image_mime_type: normalized.mime_type.to_string(),
             thumbnail_mime_type: "image/webp".to_string(),
             created_at: Utc::now().to_rfc3339(),
             width: normalized_width,
             height: normalized_height,
         },
     );
-    let removed = if store.recent_wallpapers.len() > MAX_RECENT_WALLPAPERS {
-        store.recent_wallpapers.split_off(MAX_RECENT_WALLPAPERS)
-    } else {
-        Vec::new()
-    };
+    let mut removed = Vec::new();
+    while store.recent_wallpapers.len() > MAX_RECENT_WALLPAPERS {
+        let remove_index = (1..store.recent_wallpapers.len())
+            .rev()
+            .find(|index| !retained_asset_ids.contains(&store.recent_wallpapers[*index].id))
+            .unwrap_or(store.recent_wallpapers.len() - 1);
+        removed.push(store.recent_wallpapers.remove(remove_index));
+    }
     if let Err(error) = persist_store(root, &store) {
         let _ = fs::remove_file(image_path.as_std_path());
         let _ = fs::remove_file(thumbnail_path.as_std_path());
@@ -296,7 +325,7 @@ fn decode_source_image(
 fn encode_normalized_image(
     mut image: DynamicImage,
     preserve_alpha: bool,
-) -> Result<(Vec<u8>, &'static str, &'static str, u32, u32), WallpaperError> {
+) -> Result<NormalizedWallpaper, WallpaperError> {
     for _ in 0..12 {
         let encoded = if preserve_alpha {
             encode_webp(&image)?
@@ -305,17 +334,16 @@ fn encode_normalized_image(
         };
         let (width, height) = image.dimensions();
         if encoded.len() <= MAX_NORMALIZED_BYTES {
-            return Ok((
-                encoded,
-                if preserve_alpha { "webp" } else { "jpg" },
-                if preserve_alpha {
+            return Ok(NormalizedWallpaper {
+                raster: image,
+                bytes: encoded,
+                extension: if preserve_alpha { "webp" } else { "jpg" },
+                mime_type: if preserve_alpha {
                     "image/webp"
                 } else {
                     "image/jpeg"
                 },
-                width,
-                height,
-            ));
+            });
         }
         let ratio =
             ((MAX_NORMALIZED_BYTES as f64 / encoded.len() as f64).sqrt() * 0.94).clamp(0.5, 0.9);
@@ -382,11 +410,7 @@ fn persist_store(root: &Utf8Path, store: &WallpaperStore) -> Result<(), Wallpape
         .map_err(|_| WallpaperError::new("wallpaper.save-failed", serde_json::json!({})))
 }
 
-fn wallpaper_preferences_vm(
-    root: &Utf8Path,
-    store: &WallpaperStore,
-    personalization: &PersonalizationPreference,
-) -> WallpaperPreferencesVm {
+fn wallpaper_preferences_vm(root: &Utf8Path, store: &WallpaperStore) -> WallpaperPreferencesVm {
     let recent_wallpapers = store
         .recent_wallpapers
         .iter()
@@ -402,17 +426,7 @@ fn wallpaper_preferences_vm(
             height: record.height,
         })
         .collect::<Vec<_>>();
-    let selected_wallpaper_id = match &personalization.wallpaper.image {
-        WallpaperImagePreference::Theme => None,
-        WallpaperImagePreference::User { asset_id } => recent_wallpapers
-            .iter()
-            .any(|wallpaper| wallpaper.id == *asset_id)
-            .then(|| asset_id.clone()),
-    };
-    WallpaperPreferencesVm {
-        selected_wallpaper_id,
-        recent_wallpapers,
-    }
+    WallpaperPreferencesVm { recent_wallpapers }
 }
 
 fn protocol_response(root: &Utf8Path, request_path: &str) -> Response<Vec<u8>> {
@@ -546,11 +560,12 @@ mod tests {
     }
 
     #[test]
-    fn import_select_restore_projection_and_recent_limit_are_bounded() {
+    fn import_and_recent_selection_are_bounded_while_retaining_selected_assets() {
         let temp = tempdir().unwrap();
         let root = root(&temp);
-        let mut personalization = PersonalizationPreference::default();
         let mut first_id = String::new();
+        let mut evicted_id = String::new();
+        let mut retained_asset_ids = HashSet::new();
         for seed in 0..11 {
             let source = root.join(format!("source-{seed}.png"));
             write_fixture(&source, seed);
@@ -558,18 +573,20 @@ mod tests {
                 &root,
                 ImportDesktopWallpaperInput {
                     source_path: source.to_string(),
+                    color_scheme: ResolvedColorScheme::Light,
                 },
+                &retained_asset_ids,
             )
             .unwrap();
             if seed == 0 {
                 first_id = saved.asset_id.clone();
+                retained_asset_ids.insert(saved.asset_id.clone());
+            } else if seed == 1 {
+                evicted_id = saved.asset_id.clone();
             }
-            personalization.wallpaper.image = WallpaperImagePreference::User {
-                asset_id: saved.asset_id,
-            };
         }
 
-        let preferences = load_resolved_wallpaper_preferences(&root, &personalization).unwrap();
+        let preferences = load_resolved_wallpaper_preferences(&root).unwrap();
         assert_eq!(preferences.recent_wallpapers.len(), MAX_RECENT_WALLPAPERS);
         assert!(preferences.recent_wallpapers.iter().all(|wallpaper| {
             wallpaper.image_url == format!("{}.full", wallpaper.id)
@@ -578,57 +595,92 @@ mod tests {
                 && !wallpaper.thumbnail_url.contains('/')
         }));
         assert!(
-            !preferences
+            preferences
                 .recent_wallpapers
                 .iter()
                 .any(|item| item.id == first_id)
         );
-        assert!(preferences.selected_wallpaper_id.is_some());
-
+        assert!(
+            !preferences
+                .recent_wallpapers
+                .iter()
+                .any(|item| item.id == evicted_id)
+        );
         let selected_id = preferences.recent_wallpapers[4].id.clone();
         select_recent_wallpaper(&root, &selected_id).unwrap();
-        personalization.wallpaper.image = WallpaperImagePreference::User {
-            asset_id: selected_id.clone(),
-        };
-        let selected = load_resolved_wallpaper_preferences(&root, &personalization).unwrap();
+        let selected = load_resolved_wallpaper_preferences(&root).unwrap();
         assert_eq!(selected.recent_wallpapers[0].id, selected_id);
-        assert_eq!(selected.selected_wallpaper_id, Some(selected_id));
-
-        personalization.wallpaper.image = WallpaperImagePreference::Theme;
-        let restored = load_resolved_wallpaper_preferences(&root, &personalization).unwrap();
-        assert!(restored.selected_wallpaper_id.is_none());
-        assert_eq!(restored.recent_wallpapers.len(), MAX_RECENT_WALLPAPERS);
+        assert_eq!(selected.recent_wallpapers.len(), MAX_RECENT_WALLPAPERS);
     }
 
     #[test]
     fn missing_selected_asset_converges_to_theme_without_losing_other_history() {
         let temp = tempdir().unwrap();
         let root = root(&temp);
-        let source = root.join("source.png");
-        write_fixture(&source, 3);
-        let saved = import_wallpaper_image(
+        let missing_source = root.join("missing.png");
+        write_fixture(&missing_source, 3);
+        let missing = import_wallpaper_image(
             &root,
             ImportDesktopWallpaperInput {
-                source_path: source.to_string(),
+                source_path: missing_source.to_string(),
+                color_scheme: ResolvedColorScheme::Light,
             },
+            &HashSet::new(),
+        )
+        .unwrap();
+        let valid_source = root.join("valid.png");
+        write_fixture(&valid_source, 4);
+        let valid = import_wallpaper_image(
+            &root,
+            ImportDesktopWallpaperInput {
+                source_path: valid_source.to_string(),
+                color_scheme: ResolvedColorScheme::Dark,
+            },
+            &HashSet::new(),
         )
         .unwrap();
         let store = load_store(&root).unwrap();
+        let missing_record = store
+            .recent_wallpapers
+            .iter()
+            .find(|record| record.id == missing.asset_id)
+            .unwrap();
         fs::remove_file(
             wallpapers_dir(&root)
-                .join(&store.recent_wallpapers[0].image_file_name)
+                .join(&missing_record.image_file_name)
                 .as_std_path(),
         )
         .unwrap();
         let mut personalization = PersonalizationPreference::default();
-        personalization.wallpaper.image = WallpaperImagePreference::User {
-            asset_id: saved.asset_id,
+        personalization
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::User {
+            asset_id: missing.asset_id,
+        };
+        personalization
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Dark)
+            .image = WallpaperImagePreference::User {
+            asset_id: valid.asset_id.clone(),
         };
 
         assert!(reconcile_wallpaper_personalization(&root, &mut personalization).unwrap());
         assert_eq!(
-            personalization.wallpaper.image,
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Light)
+                .image,
             WallpaperImagePreference::Theme
+        );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .for_color_scheme(ResolvedColorScheme::Dark)
+                .image,
+            WallpaperImagePreference::User {
+                asset_id: valid.asset_id
+            }
         );
     }
 
@@ -642,16 +694,28 @@ mod tests {
             &root,
             ImportDesktopWallpaperInput {
                 source_path: source.to_string(),
+                color_scheme: ResolvedColorScheme::Light,
             },
+            &HashSet::new(),
         )
         .unwrap();
         let runtime = WallpaperProtocolRuntime::new(root);
 
+        let full_response = runtime.protocol_response(&format!("/{}.full", saved.asset_id));
+        assert_eq!(full_response.status(), StatusCode::OK);
+        let full_image =
+            image::load_from_memory_with_format(full_response.body(), ImageFormat::Jpeg).unwrap();
+        assert_eq!(full_image.dimensions(), (640, 360));
+
+        let thumbnail_response =
+            runtime.protocol_response(&format!("/{}.thumbnail", saved.asset_id));
+        assert_eq!(thumbnail_response.status(), StatusCode::OK);
+        let thumbnail_image =
+            image::load_from_memory_with_format(thumbnail_response.body(), ImageFormat::WebP)
+                .unwrap();
         assert_eq!(
-            runtime
-                .protocol_response(&format!("/{}.thumbnail", saved.asset_id))
-                .status(),
-            StatusCode::OK,
+            thumbnail_image.dimensions(),
+            (THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT),
         );
         assert_eq!(
             runtime.protocol_response("/../settings.json.full").status(),
@@ -675,7 +739,9 @@ mod tests {
             &root,
             ImportDesktopWallpaperInput {
                 source_path: source.to_string(),
+                color_scheme: ResolvedColorScheme::Light,
             },
+            &HashSet::new(),
         )
         .unwrap();
         let mut store = load_store(&root).unwrap();

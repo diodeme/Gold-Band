@@ -62,14 +62,16 @@ export const defaultAppearancePreference: AppearancePreference = {
   schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {},
 };
 export const defaultPersonalizationPreference: PersonalizationPreference = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   typography: {
     ui: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
     editor: { fontStack: { source: 'theme' }, fontSize: { source: 'theme' } },
   },
   wallpaper: {
-    image: { source: 'theme' },
-    opacityPercent: DEFAULT_WALLPAPER_OPACITY_PERCENT,
+    byColorScheme: {
+      light: { image: { source: 'theme' }, opacityPercent: DEFAULT_WALLPAPER_OPACITY_PERCENT },
+      dark: { image: { source: 'theme' }, opacityPercent: DEFAULT_WALLPAPER_OPACITY_PERCENT },
+    },
   },
   avatars: {
     agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
@@ -173,10 +175,25 @@ const semanticVariableNames: Record<keyof SemanticThemeTokens, string> = {
   background:'--background',foreground:'--foreground',title:'--title',card:'--card',cardForeground:'--card-foreground',popover:'--popover',popoverForeground:'--popover-foreground',primary:'--primary',primaryForeground:'--primary-foreground',secondary:'--secondary',secondaryForeground:'--secondary-foreground',muted:'--muted',mutedForeground:'--muted-foreground',accent:'--accent',accentForeground:'--accent-foreground',destructive:'--destructive',border:'--border',input:'--input',ring:'--ring',selection:'--text-selection',selectionForeground:'--text-selection-foreground',messageUser:'--message-user',messageUserForeground:'--message-user-foreground',contentHeader:'--gb-content-header',contentHeaderForeground:'--gb-content-header-foreground',conversationBackground:'--gb-conversation-background',conversationForeground:'--gb-conversation-foreground',messageAssistant:'--gb-message-assistant',messageAssistantForeground:'--gb-message-assistant-foreground',composer:'--gb-composer',composerForeground:'--gb-composer-foreground',activity:'--gb-activity',activityForeground:'--gb-activity-foreground',toolCard:'--gb-tool-card',toolCardForeground:'--gb-tool-card-foreground',permissionCard:'--gb-permission-card',permissionCardForeground:'--gb-permission-card-foreground',workspaceTab:'--gb-workspace-tab',workspaceTabForeground:'--gb-workspace-tab-foreground',resourceHeader:'--gb-resource-header',resourceHeaderForeground:'--gb-resource-header-foreground',fileTree:'--gb-file-tree',fileTreeForeground:'--gb-file-tree-foreground',editor:'--gb-editor',editorForeground:'--gb-editor-foreground',diffAdded:'--gb-diff-added',diffAddedForeground:'--gb-diff-added-foreground',diffRemoved:'--gb-diff-removed',diffRemovedForeground:'--gb-diff-removed-foreground',diffModified:'--gb-diff-modified',diffModifiedForeground:'--gb-diff-modified-foreground',sidebar:'--sidebar',sidebarForeground:'--sidebar-foreground',sidebarPrimary:'--sidebar-primary',sidebarPrimaryForeground:'--sidebar-primary-foreground',sidebarAccent:'--sidebar-accent',sidebarAccentForeground:'--sidebar-accent-foreground',sidebarBorder:'--sidebar-border',sidebarRing:'--sidebar-ring',workspace:'--gold-workspace',surfaceLow:'--gold-surface-low',surfaceHigh:'--gold-surface-high',lineSoft:'--gold-line-soft',windowOutline:'--gold-window-outline',windowEdgeShadow:'--gold-window-edge-shadow',link:'--link',running:'--gold-running',success:'--gold-success',warning:'--gold-warning',danger:'--gold-danger',permission:'--gold-permission',titlebar:'--titlebar',titlebarForeground:'--titlebar-foreground',titlebarMuted:'--titlebar-muted',titlebarBorder:'--titlebar-border',titlebarHover:'--titlebar-hover',scrollbarTrack:'--gold-scrollbar-track',scrollbarThumb:'--gold-scrollbar-thumb',scrollbarThumbHover:'--gold-scrollbar-thumb-hover',
 };
 
-let wallpaperGeneration = 0;
-const wallpaperRequests = new WeakMap<HTMLElement, HTMLImageElement>();
+type WallpaperProjectionDescriptor = Pick<
+  ResolvedThemeWallpaperDescriptor,
+  'url' | 'fit' | 'position' | 'repeat' | 'opacity' | 'overlayColor' | 'overlayOpacity'
+>;
+type WallpaperResourceStatus = 'loading' | 'ready' | 'failed';
+interface WallpaperResource {
+  image: HTMLImageElement;
+  status: WallpaperResourceStatus;
+}
+interface WallpaperSurfaceProjection {
+  desiredKey: string;
+  appliedKey: string | null;
+}
+
+const wallpaperResources = new Map<string, WallpaperResource>();
+let wallpaperSurfaceProjections = new WeakMap<HTMLElement, WallpaperSurfaceProjection>();
 let currentEffectiveAppearance: EffectiveAppearance | null = null;
-let currentUserWallpaper: { assetId: string; url: string; opacity: number } | null = null;
+let currentWallpaperPersonalization: PersonalizationPreference['wallpaper'] | null = null;
+let currentWallpaperPreferences: WallpaperPreferencesVm = { recentWallpapers: [] };
 let currentThemeIconSnapshot: { themeId: string; icons: EffectiveAppearance['icons'] } = { themeId: 'builtin.gold-band', icons: {} };
 export function getCurrentThemeIconSnapshot() { return currentThemeIconSnapshot; }
 export function applyAppearance(preference: AppearancePreference, locale?: string): EffectiveAppearance {
@@ -190,9 +207,8 @@ export function applyAppearance(preference: AppearancePreference, locale?: strin
   root.style.colorScheme = effective.colorScheme;
   for (const [key, value] of Object.entries(effective.semantic) as [keyof SemanticThemeTokens, string][]) root.style.setProperty(semanticVariableNames[key], value);
   applyRootVariables(root, effective);
-  const generation = ++wallpaperGeneration;
   currentEffectiveAppearance = effective;
-  applyVisibleWallpapers(effective, generation);
+  applyVisibleWallpapers(effective, true);
   currentThemeIconSnapshot = { themeId: effective.themeId, icons: effective.icons };
   if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
     window.dispatchEvent(new CustomEvent('gold-band-theme-icons-changed', { detail: currentThemeIconSnapshot }));
@@ -202,7 +218,7 @@ export function applyAppearance(preference: AppearancePreference, locale?: strin
 }
 
 export function refreshVisibleThemeWallpapers() {
-  if (currentEffectiveAppearance) applyVisibleWallpapers(currentEffectiveAppearance, wallpaperGeneration);
+  if (currentEffectiveAppearance) applyVisibleWallpapers(currentEffectiveAppearance);
 }
 
 function applyRootVariables(root: HTMLElement, effective: EffectiveAppearance) {
@@ -231,47 +247,112 @@ function applyRootVariables(root: HTMLElement, effective: EffectiveAppearance) {
   for (const [name, value] of Object.entries(variables)) root.style.setProperty(name, value);
 }
 
-function applyVisibleWallpapers(effective: EffectiveAppearance, generation: number) {
+function applyVisibleWallpapers(effective: EffectiveAppearance, retryFailedResources = false) {
   if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+  const userWallpaper = resolveUserWallpaper(effective.colorScheme);
+  pruneWallpaperResources(effective, retryFailedResources);
   const surfaces = document.querySelectorAll<HTMLElement>('[data-theme-wallpaper-slot]');
   for (const surface of surfaces) {
-    wallpaperRequests.delete(surface);
-    clearWallpaper(surface);
     const slot = surface.dataset.themeWallpaperSlot as ThemeWallpaperSlot;
     const themeDescriptor = effective.wallpapers[slot];
-    const descriptor = currentUserWallpaper
+    const descriptor: WallpaperProjectionDescriptor | undefined = userWallpaper
       ? {
-          url: currentUserWallpaper.url,
+          url: userWallpaper.url,
           fit: 'cover' as const,
           position: 'center' as const,
           repeat: 'no-repeat' as const,
-          opacity: currentUserWallpaper.opacity,
+          opacity: userWallpaper.opacity,
           overlayColor: themeDescriptor?.overlayColor ?? 'transparent' as const,
           overlayOpacity: themeDescriptor?.overlayOpacity ?? 0,
         }
       : themeDescriptor;
-    if (!descriptor || typeof Image !== 'function' || typeof surface.getClientRects !== 'function' || surface.getClientRects().length === 0) continue;
-    const image = new Image();
-    wallpaperRequests.set(surface, image);
-    image.decoding = 'async';
-    image.onload = () => {
-      if (generation !== wallpaperGeneration || wallpaperRequests.get(surface) !== image || !surface.isConnected) return;
-      surface.style.setProperty('--gb-wallpaper-image', `url("${descriptor.url.replaceAll('"', '\\"')}")`);
-      surface.style.setProperty('--gb-wallpaper-size', descriptor.fit === 'tile' ? 'auto' : descriptor.fit);
-      surface.style.setProperty('--gb-wallpaper-position', descriptor.position.replace('-', ' '));
-      surface.style.setProperty('--gb-wallpaper-repeat', descriptor.repeat);
-      surface.style.setProperty('--gb-wallpaper-opacity', String(descriptor.opacity));
-      surface.style.setProperty('--gb-wallpaper-overlay-color', backgroundRefVariable(descriptor.overlayColor));
-      surface.style.setProperty('--gb-wallpaper-overlay-opacity', String(descriptor.overlayOpacity));
-    };
-    image.onerror = () => {
-      if (generation !== wallpaperGeneration || wallpaperRequests.get(surface) !== image || !surface.isConnected) return;
-      wallpaperRequests.delete(surface);
+    const currentProjection = wallpaperSurfaceProjections.get(surface);
+    if (!descriptor) {
+      if (currentProjection) clearWallpaper(surface);
+      wallpaperSurfaceProjections.delete(surface);
+      continue;
+    }
+    if (typeof Image !== 'function' || typeof surface.getClientRects !== 'function' || surface.getClientRects().length === 0) continue;
+
+    const descriptorKey = wallpaperDescriptorKey(descriptor);
+    if (currentProjection?.appliedKey === descriptorKey) {
+      currentProjection.desiredKey = descriptorKey;
+      continue;
+    }
+    const projection = currentProjection ?? { desiredKey: descriptorKey, appliedKey: null };
+    projection.desiredKey = descriptorKey;
+    wallpaperSurfaceProjections.set(surface, projection);
+
+    const resource = wallpaperResource(descriptor.url);
+    if (resource.status === 'ready') {
+      applyWallpaperDescriptor(surface, descriptor);
+      projection.appliedKey = descriptorKey;
+    } else if (resource.status === 'failed' && projection.appliedKey !== null) {
       clearWallpaper(surface);
-    };
-    image.src = descriptor.url;
+      projection.appliedKey = null;
+    }
   }
 }
+
+function wallpaperDescriptorKey(descriptor: WallpaperProjectionDescriptor) {
+  return [
+    descriptor.url,
+    descriptor.fit,
+    descriptor.position,
+    descriptor.repeat,
+    String(descriptor.opacity),
+    descriptor.overlayColor,
+    String(descriptor.overlayOpacity),
+  ].join('\u0000');
+}
+
+function wallpaperResource(url: string) {
+  const existing = wallpaperResources.get(url);
+  if (existing) return existing;
+  const image = new Image();
+  const resource: WallpaperResource = { image, status: 'loading' };
+  wallpaperResources.set(url, resource);
+  image.decoding = 'async';
+  image.onload = () => {
+    if (wallpaperResources.get(url) !== resource) return;
+    resource.status = 'ready';
+    refreshVisibleThemeWallpapers();
+  };
+  image.onerror = () => {
+    if (wallpaperResources.get(url) !== resource) return;
+    resource.status = 'failed';
+    refreshVisibleThemeWallpapers();
+  };
+  image.src = url;
+  return resource;
+}
+
+function pruneWallpaperResources(effective: EffectiveAppearance, retryFailedResources: boolean) {
+  const retainedUrls = new Set<string>();
+  for (const descriptor of Object.values(effective.wallpapers)) {
+    if (descriptor) retainedUrls.add(descriptor.url);
+  }
+  for (const colorScheme of ['light', 'dark'] as const) {
+    const selected = resolveUserWallpaper(colorScheme);
+    if (selected) retainedUrls.add(selected.url);
+  }
+  for (const [url, resource] of wallpaperResources) {
+    if (!retainedUrls.has(url) || (retryFailedResources && resource.status === 'failed')) {
+      wallpaperResources.delete(url);
+    }
+  }
+}
+
+function applyWallpaperDescriptor(surface: HTMLElement, descriptor: WallpaperProjectionDescriptor) {
+  surface.style.setProperty('--gb-wallpaper-image', `url("${descriptor.url.replaceAll('"', '\\"')}")`);
+  surface.style.setProperty('--gb-wallpaper-size', descriptor.fit === 'tile' ? 'auto' : descriptor.fit);
+  surface.style.setProperty('--gb-wallpaper-position', descriptor.position.replace('-', ' '));
+  surface.style.setProperty('--gb-wallpaper-repeat', descriptor.repeat);
+  surface.style.setProperty('--gb-wallpaper-opacity', String(descriptor.opacity));
+  surface.style.setProperty('--gb-wallpaper-overlay-color', backgroundRefVariable(descriptor.overlayColor));
+  surface.style.setProperty('--gb-wallpaper-overlay-opacity', String(descriptor.overlayOpacity));
+}
+
 function clearWallpaper(surface: HTMLElement) {
   for (const name of ['--gb-wallpaper-image', '--gb-wallpaper-size', '--gb-wallpaper-position', '--gb-wallpaper-repeat', '--gb-wallpaper-opacity', '--gb-wallpaper-overlay-color', '--gb-wallpaper-overlay-opacity']) surface.style.removeProperty(name);
 }
@@ -321,24 +402,39 @@ export function applyWallpaperPersonalization(
   preference: PersonalizationPreference['wallpaper'],
   wallpapers: WallpaperPreferencesVm,
 ) {
-  const assetId = preference.image.source === 'user' ? preference.image.assetId : null;
-  const selected = assetId ? selectedWallpaper(wallpapers) : null;
-  currentUserWallpaper = selected && selected.id === assetId
+  currentWallpaperPersonalization = preference;
+  currentWallpaperPreferences = wallpapers;
+  if (!currentEffectiveAppearance) return;
+  applyVisibleWallpapers(currentEffectiveAppearance, true);
+}
+
+export function resetWallpaperProjectionForTests() {
+  wallpaperResources.clear();
+  wallpaperSurfaceProjections = new WeakMap<HTMLElement, WallpaperSurfaceProjection>();
+  currentEffectiveAppearance = null;
+  currentWallpaperPersonalization = null;
+  currentWallpaperPreferences = { recentWallpapers: [] };
+}
+
+function resolveUserWallpaper(colorScheme: ResolvedColorScheme) {
+  const preference = currentWallpaperPersonalization?.byColorScheme[colorScheme];
+  if (!preference) return null;
+  const selected = selectedWallpaper(currentWallpaperPreferences, preference.image);
+  return selected
     ? {
         assetId: selected.id,
         url: selected.imageUrl,
         opacity: normalizeWallpaperOpacityPercent(preference.opacityPercent) / 100,
       }
     : null;
-  if (!currentEffectiveAppearance) return;
-  const generation = ++wallpaperGeneration;
-  applyVisibleWallpapers(currentEffectiveAppearance, generation);
 }
 
-export function previewWallpaperOpacity(opacityPercent: number) {
-  if (!currentUserWallpaper || typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+export function previewWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number) {
+  if (currentEffectiveAppearance?.colorScheme !== colorScheme
+    || !resolveUserWallpaper(colorScheme)
+    || typeof document === 'undefined'
+    || typeof document.querySelectorAll !== 'function') return;
   const opacity = normalizeWallpaperOpacityPercent(opacityPercent) / 100;
-  currentUserWallpaper = { ...currentUserWallpaper, opacity };
   for (const surface of document.querySelectorAll<HTMLElement>('[data-theme-wallpaper-slot]')) {
     surface.style.setProperty('--gb-wallpaper-opacity', String(opacity));
   }

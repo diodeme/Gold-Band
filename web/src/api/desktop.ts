@@ -403,7 +403,7 @@ export const desktopApi: RuntimeApi = {
   clearDesktopAvatar(kind) {
     return invokeCommand<PreferencesVm>('clear_desktop_avatar', { kind }).then(withWallpaperAssetUrls);
   },
-  async importDesktopWallpaper() {
+  async importDesktopWallpaper(colorScheme) {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const sourcePath = await open({
       multiple: false,
@@ -412,17 +412,17 @@ export const desktopApi: RuntimeApi = {
     });
     if (!sourcePath || Array.isArray(sourcePath)) return null;
     return invokeCommand<PreferencesVm>('import_desktop_wallpaper', {
-      input: { sourcePath },
+      input: { sourcePath, colorScheme },
     }).then(withWallpaperAssetUrls);
   },
-  selectRecentDesktopWallpaper(wallpaperId) {
-    return invokeCommand<PreferencesVm>('select_recent_desktop_wallpaper', { wallpaperId }).then(withWallpaperAssetUrls);
+  selectRecentDesktopWallpaper(colorScheme, wallpaperId) {
+    return invokeCommand<PreferencesVm>('select_recent_desktop_wallpaper', { input: { colorScheme, wallpaperId } }).then(withWallpaperAssetUrls);
   },
-  saveDesktopWallpaperOpacity(opacityPercent) {
-    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { opacityPercent }).then(withWallpaperAssetUrls);
+  saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
+    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { input: { colorScheme, opacityPercent } }).then(withWallpaperAssetUrls);
   },
-  restoreThemeDesktopWallpaper() {
-    return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper').then(withWallpaperAssetUrls);
+  restoreThemeDesktopWallpaper(colorScheme) {
+    return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;

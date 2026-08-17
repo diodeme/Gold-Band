@@ -13,7 +13,6 @@ import {
 describe('desktop wallpaper preferences', () => {
   it('starts on the theme wallpaper and normalizes the bounded visibility scale', () => {
     expect(createDefaultWallpaperPreferences()).toEqual({
-      selectedWallpaperId: null,
       recentWallpapers: [],
     });
     expect(normalizeWallpaperOpacityPercent(0)).toBe(20);
@@ -21,26 +20,39 @@ describe('desktop wallpaper preferences', () => {
     expect(normalizeWallpaperOpacityPercent(99)).toBe(99);
   });
 
-  it('persists import, recent selection, opacity, restore, and the recent-10 limit through the browser API', async () => {
-    let preferences = await browserApi.restoreThemeDesktopWallpaper();
-    for (let index = 0; index < 11; index += 1) {
-      preferences = (await browserApi.importDesktopWallpaper())!;
+  it('persists independent light and dark selections over one bounded recent history', async () => {
+    await browserApi.restoreThemeDesktopWallpaper('light');
+    let preferences = await browserApi.restoreThemeDesktopWallpaper('dark');
+    preferences = (await browserApi.importDesktopWallpaper('light'))!;
+    const retainedDarkId = preferences.wallpapers.recentWallpapers[0].id;
+    preferences = await browserApi.selectRecentDesktopWallpaper('dark', retainedDarkId);
+    for (let index = 0; index < 10; index += 1) {
+      preferences = (await browserApi.importDesktopWallpaper('light'))!;
     }
     expect(preferences.wallpapers.recentWallpapers).toHaveLength(10);
-    expect(selectedWallpaper(preferences.wallpapers)?.id).toBe(preferences.wallpapers.recentWallpapers[0].id);
+    expect(selectedWallpaper(
+      preferences.wallpapers,
+      preferences.personalization.wallpaper.byColorScheme.light.image,
+    )?.id).toBe(preferences.wallpapers.recentWallpapers[0].id);
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'user', assetId: retainedDarkId });
+    expect(selectedWallpaper(
+      preferences.wallpapers,
+      preferences.personalization.wallpaper.byColorScheme.dark.image,
+    )?.id).toBe(retainedDarkId);
 
     const selectedId = preferences.wallpapers.recentWallpapers[5].id;
-    preferences = await browserApi.selectRecentDesktopWallpaper(selectedId);
-    expect(preferences.wallpapers.selectedWallpaperId).toBe(selectedId);
+    preferences = await browserApi.selectRecentDesktopWallpaper('dark', selectedId);
     expect(preferences.wallpapers.recentWallpapers[0].id).toBe(selectedId);
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'user', assetId: selectedId });
 
-    preferences = await browserApi.saveDesktopWallpaperOpacity(45);
-    expect(preferences.personalization.wallpaper.opacityPercent).toBe(45);
+    preferences = await browserApi.saveDesktopWallpaperOpacity('light', 45);
+    expect(preferences.personalization.wallpaper.byColorScheme.light.opacityPercent).toBe(45);
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.opacityPercent).toBe(60);
     const recentIds = preferences.wallpapers.recentWallpapers.map((wallpaper) => wallpaper.id);
 
-    preferences = await browserApi.restoreThemeDesktopWallpaper();
-    expect(preferences.personalization.wallpaper.image).toEqual({ source: 'theme' });
-    expect(preferences.wallpapers.selectedWallpaperId).toBeNull();
+    preferences = await browserApi.restoreThemeDesktopWallpaper('light');
+    expect(preferences.personalization.wallpaper.byColorScheme.light.image).toEqual({ source: 'theme' });
+    expect(preferences.personalization.wallpaper.byColorScheme.dark.image).toEqual({ source: 'user', assetId: selectedId });
     expect(preferences.wallpapers.recentWallpapers.map((wallpaper) => wallpaper.id)).toEqual(recentIds);
   });
 
@@ -76,8 +88,12 @@ describe('desktop wallpaper preferences', () => {
     expect(wallpaperSource).toContain("aria-label={t('settings.wallpaper.collapsePreview')}");
     expect(wallpaperSource).toContain('loading="lazy"');
     expect(wallpaperSource).toContain('step={WALLPAPER_OPACITY_STEP}');
+    expect(wallpaperSource).toContain('<TabsTrigger value="light"');
+    expect(wallpaperSource).toContain('<TabsTrigger value="dark"');
+    expect(wallpaperSource).toContain('personalization.byColorScheme[colorScheme]');
+    expect(wallpaperSource).toContain('onImportWallpaper(colorScheme)');
     expect(wallpaperSource).toContain('onValueChange={([value]) => {');
-    expect(wallpaperSource).toContain('previewWallpaperOpacity(normalized)');
+    expect(wallpaperSource).toContain('previewWallpaperOpacity(colorScheme, normalized)');
     expect(wallpaperSource).toContain('onValueCommit={([value]) => void commitOpacity(value)}');
     expect(conversationRunSource).toContain('useThemeWallpaperSurface();');
     expect(conversationRunSource).toContain('data-theme-wallpaper-slot="conversation"');
@@ -86,7 +102,8 @@ describe('desktop wallpaper preferences', () => {
     expect(acpChatSource).toContain('wallpaperSurface ? "bg-transparent" : "bg-background"');
     expect(acpChatSource).not.toContain('wallpaperSurface={wallpaperSurface}');
     expect(composerSource).toContain("'bg-card !shadow-none transition-colors'");
-    expect(promptQueueSource).toContain("'overflow-hidden border border-b-0 border-border bg-card'");
+    expect(promptQueueSource).toContain("'overflow-hidden bg-card'");
+    expect(promptQueueSource).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
     expect(generatedThemeCss).toContain('::before{z-index:-2;background-image:var(--gb-wallpaper-image,none)');
     expect(generatedThemeCss).toContain('::after{z-index:-1;background:color-mix(in srgb,var(--gb-wallpaper-overlay-color,transparent)');
   });

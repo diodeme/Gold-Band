@@ -233,6 +233,13 @@ pub enum WallpaperImagePreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum ResolvedColorScheme {
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum PersonalizationAvatarShape {
     Circle,
     Square,
@@ -283,9 +290,44 @@ pub const MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT: u8 = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WallpaperPersonalization {
+pub struct WallpaperSchemePersonalization {
     pub image: WallpaperImagePreference,
     pub opacity_percent: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WallpaperPersonalizationByColorScheme {
+    pub light: WallpaperSchemePersonalization,
+    pub dark: WallpaperSchemePersonalization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WallpaperPersonalization {
+    pub by_color_scheme: WallpaperPersonalizationByColorScheme,
+}
+
+impl WallpaperPersonalization {
+    pub fn for_color_scheme(
+        &self,
+        color_scheme: ResolvedColorScheme,
+    ) -> &WallpaperSchemePersonalization {
+        match color_scheme {
+            ResolvedColorScheme::Light => &self.by_color_scheme.light,
+            ResolvedColorScheme::Dark => &self.by_color_scheme.dark,
+        }
+    }
+
+    pub fn for_color_scheme_mut(
+        &mut self,
+        color_scheme: ResolvedColorScheme,
+    ) -> &mut WallpaperSchemePersonalization {
+        match color_scheme {
+            ResolvedColorScheme::Light => &mut self.by_color_scheme.light,
+            ResolvedColorScheme::Dark => &mut self.by_color_scheme.dark,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,15 +349,21 @@ impl Default for PersonalizationPreference {
             image: AvatarPreference::Theme,
             shape: AvatarShapePreference::Theme,
         };
+        let wallpaper = || WallpaperSchemePersonalization {
+            image: WallpaperImagePreference::Theme,
+            opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+        };
         Self {
-            schema_version: 3,
+            schema_version: 4,
             typography: TypographyPersonalization {
                 ui: typography(),
                 editor: typography(),
             },
             wallpaper: WallpaperPersonalization {
-                image: WallpaperImagePreference::Theme,
-                opacity_percent: DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                by_color_scheme: WallpaperPersonalizationByColorScheme {
+                    light: wallpaper(),
+                    dark: wallpaper(),
+                },
             },
             avatars: AvatarPersonalizationSet {
                 agent: avatar(),
@@ -327,13 +375,18 @@ impl Default for PersonalizationPreference {
 
 impl PersonalizationPreference {
     pub fn normalized(mut self) -> Self {
-        self.schema_version = 3;
+        self.schema_version = 4;
         self.typography.ui.font_stack = self.typography.ui.font_stack.normalized();
         self.typography.editor.font_stack = self.typography.editor.font_stack.normalized();
-        self.wallpaper.opacity_percent = self.wallpaper.opacity_percent.clamp(
-            MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-            MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-        );
+        for wallpaper in [
+            &mut self.wallpaper.by_color_scheme.light,
+            &mut self.wallpaper.by_color_scheme.dark,
+        ] {
+            wallpaper.opacity_percent = wallpaper.opacity_percent.clamp(
+                MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            );
+        }
         self
     }
 }
@@ -754,7 +807,7 @@ pub struct SettingsConfig {
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -819,6 +872,10 @@ impl SettingsConfig {
             migrate_desktop_wallpaper(settings);
             migrated = true;
         }
+        if version < 10 {
+            migrate_desktop_wallpaper_color_schemes(settings);
+            migrated = true;
+        }
         if migrated {
             settings.insert(
                 "settingsSchemaVersion".to_string(),
@@ -880,6 +937,33 @@ fn migrate_desktop_wallpaper(settings: &mut serde_json::Map<String, serde_json::
         serde_json::json!({
             "image": { "source": "theme" },
             "opacityPercent": DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        }),
+    );
+}
+
+fn migrate_desktop_wallpaper_color_schemes(
+    settings: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let Some(personalization) = settings
+        .get_mut("personalization")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    personalization.insert("schemaVersion".to_string(), serde_json::json!(4));
+    let wallpaper = personalization.remove("wallpaper").unwrap_or_else(|| {
+        serde_json::json!({
+            "image": { "source": "theme" },
+            "opacityPercent": DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        })
+    });
+    personalization.insert(
+        "wallpaper".to_string(),
+        serde_json::json!({
+            "byColorScheme": {
+                "light": wallpaper.clone(),
+                "dark": wallpaper
+            }
         }),
     );
 }
@@ -1903,7 +1987,7 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 3);
+        assert_eq!(personalization.schema_version, 4);
         assert_eq!(
             personalization.typography.ui.font_stack,
             FontStackPreference::Theme
@@ -1917,7 +2001,11 @@ mod tests {
             FontSizePreference::Custom { px: 15 }
         );
         assert_eq!(
-            personalization.wallpaper.image,
+            personalization.wallpaper.by_color_scheme.light.image,
+            WallpaperImagePreference::Theme
+        );
+        assert_eq!(
+            personalization.wallpaper.by_color_scheme.dark.image,
             WallpaperImagePreference::Theme
         );
     }
@@ -1938,15 +2026,66 @@ mod tests {
 
         assert!(migrated);
         let personalization = settings.personalization.unwrap();
-        assert_eq!(personalization.schema_version, 3);
+        assert_eq!(personalization.schema_version, 4);
         assert_eq!(
-            personalization.wallpaper.image,
+            personalization.wallpaper.by_color_scheme.light.image,
             WallpaperImagePreference::Theme
         );
         assert_eq!(
-            personalization.wallpaper.opacity_percent,
+            personalization.wallpaper.by_color_scheme.dark.image,
+            WallpaperImagePreference::Theme
+        );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .by_color_scheme
+                .light
+                .opacity_percent,
             DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
         );
+        assert_eq!(
+            personalization
+                .wallpaper
+                .by_color_scheme
+                .dark
+                .opacity_percent,
+            DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT
+        );
+    }
+
+    #[test]
+    fn settings_v10_copies_the_existing_wallpaper_into_both_color_schemes() {
+        let defaults = PersonalizationPreference::default();
+        let (settings, migrated) =
+            SettingsConfig::from_json_value_with_migration(serde_json::json!({
+                "settingsSchemaVersion": 9,
+                "personalization": {
+                    "schemaVersion": 3,
+                    "typography": serde_json::to_value(defaults.typography).unwrap(),
+                    "wallpaper": {
+                        "image": { "source": "user", "assetId": "wallpaper-a" },
+                        "opacityPercent": 47
+                    },
+                    "avatars": serde_json::to_value(defaults.avatars).unwrap()
+                }
+            }))
+            .unwrap();
+
+        assert!(migrated);
+        let personalization = settings.personalization.unwrap();
+        assert_eq!(personalization.schema_version, 4);
+        for wallpaper in [
+            personalization.wallpaper.by_color_scheme.light,
+            personalization.wallpaper.by_color_scheme.dark,
+        ] {
+            assert_eq!(
+                wallpaper.image,
+                WallpaperImagePreference::User {
+                    asset_id: "wallpaper-a".to_string()
+                }
+            );
+            assert_eq!(wallpaper.opacity_percent, 47);
+        }
     }
 
     #[test]

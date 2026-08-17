@@ -52,6 +52,7 @@ vi.mock('../src/themes/builtin-themes', async (importOriginal) => {
   fixture.wallpapers = {
     light: {
       app: lightWallpaper,
+      settings: { ...lightWallpaper, assetId: 'wallpaper-dark' },
       workspace: { ...lightWallpaper, assetId: 'icon-default' },
     },
     dark: { app: darkWallpaper },
@@ -71,6 +72,8 @@ import {
   defaultAppearancePreference,
   getCurrentThemeIconSnapshot,
   previewWallpaperOpacity,
+  refreshVisibleThemeWallpapers,
+  resetWallpaperProjectionForTests,
   resolveAppearance,
 } from '../src/theme';
 
@@ -109,15 +112,17 @@ function rootStub() {
 
 function wallpaperSurface(slot = 'app') {
   const properties = new Map<string, string>();
+  const removeProperty = vi.fn((name: string) => properties.delete(name));
   return {
     properties,
+    removeProperty,
     element: {
       dataset: { themeWallpaperSlot: slot },
       isConnected: true,
       getClientRects: () => [{}],
       style: {
         setProperty: (name: string, value: string) => properties.set(name, value),
-        removeProperty: (name: string) => properties.delete(name),
+        removeProperty,
       },
     },
   };
@@ -126,6 +131,7 @@ function wallpaperSurface(slot = 'app') {
 describe('theme runtime asset projection', () => {
   beforeEach(() => {
     FakeImage.instances = [];
+    resetWallpaperProjectionForTests();
     vi.stubGlobal('Image', FakeImage);
   });
 
@@ -177,6 +183,7 @@ describe('theme runtime asset projection', () => {
     expect(surface.properties.get('--gb-wallpaper-overlay-color')).toBe('var(--background)');
 
     applyAppearance(preference({ colorScheme: 'dark' }), 'en');
+    expect(surface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
     FakeImage.instances[1].onerror?.();
     expect(surface.properties.has('--gb-wallpaper-image')).toBe(false);
     expect(getCurrentThemeIconSnapshot().icons['navigation.search']?.url)
@@ -207,7 +214,7 @@ describe('theme runtime asset projection', () => {
     ).toBe('url("/theme-assets/builtin.gold-band/wallpaper-dark.png")');
   });
 
-  it('lets a user wallpaper override the theme image while keeping the theme scrim independent', () => {
+  it('isolates user wallpapers by color scheme while keeping the theme scrim independent', () => {
     const root = rootStub();
     const surface = wallpaperSurface();
     vi.stubGlobal('document', {
@@ -219,36 +226,144 @@ describe('theme runtime asset projection', () => {
 
     applyAppearance(preference(), 'en');
     applyWallpaperPersonalization(
-      { image: { source: 'user', assetId: 'user-wallpaper' }, opacityPercent: 60 },
       {
-        selectedWallpaperId: 'user-wallpaper',
-        recentWallpapers: [{
-          id: 'user-wallpaper',
-          imageUrl: 'gold-band-wallpaper://user-wallpaper/full',
-          thumbnailUrl: 'gold-band-wallpaper://user-wallpaper/thumbnail',
-          createdAt: '2026-08-17T00:00:00Z',
-          width: 1600,
-          height: 900,
-        }],
+        byColorScheme: {
+          light: { image: { source: 'user', assetId: 'user-wallpaper-light' }, opacityPercent: 60 },
+          dark: { image: { source: 'user', assetId: 'user-wallpaper-dark' }, opacityPercent: 75 },
+        },
+      },
+      {
+        recentWallpapers: [
+          {
+            id: 'user-wallpaper-light',
+            imageUrl: 'gold-band-wallpaper://user-wallpaper-light/full',
+            thumbnailUrl: 'gold-band-wallpaper://user-wallpaper-light/thumbnail',
+            createdAt: '2026-08-17T00:00:00Z',
+            width: 1600,
+            height: 900,
+          },
+          {
+            id: 'user-wallpaper-dark',
+            imageUrl: 'gold-band-wallpaper://user-wallpaper-dark/full',
+            thumbnailUrl: 'gold-band-wallpaper://user-wallpaper-dark/thumbnail',
+            createdAt: '2026-08-17T00:01:00Z',
+            width: 1600,
+            height: 900,
+          },
+        ],
       },
     );
     const customImage = FakeImage.instances.at(-1)!;
-    expect(customImage.src).toContain('user-wallpaper/full');
+    expect(customImage.src).toContain('user-wallpaper-light/full');
     customImage.onload?.();
 
-    expect(surface.properties.get('--gb-wallpaper-image')).toContain('user-wallpaper/full');
+    expect(surface.properties.get('--gb-wallpaper-image')).toContain('user-wallpaper-light/full');
     expect(surface.properties.get('--gb-wallpaper-size')).toBe('cover');
     expect(surface.properties.get('--gb-wallpaper-position')).toBe('center');
     expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.6');
     expect(surface.properties.get('--gb-wallpaper-overlay-color')).toBe('var(--background)');
     expect(surface.properties.get('--gb-wallpaper-overlay-opacity')).toBe('0.4');
 
-    previewWallpaperOpacity(35);
+    previewWallpaperOpacity('light', 35);
+    expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.35');
+    previewWallpaperOpacity('dark', 25);
     expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.35');
 
+    applyAppearance(preference({ colorScheme: 'dark' }), 'en');
+    const darkCustomImage = FakeImage.instances.at(-1)!;
+    expect(darkCustomImage.src).toContain('user-wallpaper-dark/full');
+    darkCustomImage.onload?.();
+    expect(surface.properties.get('--gb-wallpaper-image')).toContain('user-wallpaper-dark/full');
+    expect(surface.properties.get('--gb-wallpaper-opacity')).toBe('0.75');
+
     applyWallpaperPersonalization(
-      { image: { source: 'theme' }, opacityPercent: 60 },
-      { selectedWallpaperId: null, recentWallpapers: [] },
+      {
+        byColorScheme: {
+          light: { image: { source: 'theme' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
+      { recentWallpapers: [] },
     );
+  });
+
+  it('reuses a ready user wallpaper for a newly mounted surface without clearing or reloading it', () => {
+    const root = rootStub();
+    const conversationSurface = wallpaperSurface('conversation');
+    let surfaces = [conversationSurface.element];
+    vi.stubGlobal('document', {
+      documentElement: root.element,
+      querySelectorAll: () => surfaces,
+    });
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() });
+    vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
+
+    applyAppearance(preference(), 'en');
+    applyWallpaperPersonalization(
+      {
+        byColorScheme: {
+          light: { image: { source: 'user', assetId: 'shared-wallpaper' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
+      {
+        recentWallpapers: [{
+          id: 'shared-wallpaper',
+          imageUrl: 'gold-band-wallpaper://shared-wallpaper/full',
+          thumbnailUrl: 'gold-band-wallpaper://shared-wallpaper/thumbnail',
+          createdAt: '2026-08-17T00:00:00Z',
+          width: 1600,
+          height: 900,
+        }],
+      },
+    );
+    const sharedImage = FakeImage.instances.at(-1)!;
+    sharedImage.onload?.();
+    expect(conversationSurface.properties.get('--gb-wallpaper-image')).toContain('shared-wallpaper/full');
+
+    const loadedImageCount = FakeImage.instances.length;
+    conversationSurface.removeProperty.mockClear();
+    refreshVisibleThemeWallpapers();
+    expect(FakeImage.instances).toHaveLength(loadedImageCount);
+    expect(conversationSurface.removeProperty).not.toHaveBeenCalled();
+
+    const settingsSurface = wallpaperSurface('settings');
+    surfaces = [settingsSurface.element];
+    refreshVisibleThemeWallpapers();
+    expect(FakeImage.instances).toHaveLength(loadedImageCount);
+    expect(settingsSurface.removeProperty).not.toHaveBeenCalled();
+    expect(settingsSurface.properties.get('--gb-wallpaper-image')).toContain('shared-wallpaper/full');
+    expect(settingsSurface.properties.get('--gb-wallpaper-opacity')).toBe('0.6');
+  });
+
+  it('loads a distinct theme surface once and reuses it after the first successful projection', () => {
+    const root = rootStub();
+    const appSurface = wallpaperSurface('app');
+    let surfaces = [appSurface.element];
+    vi.stubGlobal('document', {
+      documentElement: root.element,
+      querySelectorAll: () => surfaces,
+    });
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() });
+    vi.stubGlobal('CustomEvent', class { constructor(public type: string, public init: unknown) {} });
+
+    applyAppearance(preference(), 'en');
+    FakeImage.instances[0].onload?.();
+    expect(appSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-light.png');
+
+    const firstSettingsSurface = wallpaperSurface('settings');
+    surfaces = [firstSettingsSurface.element];
+    refreshVisibleThemeWallpapers();
+    expect(FakeImage.instances).toHaveLength(2);
+    expect(FakeImage.instances[1].src).toContain('wallpaper-dark.png');
+    expect(firstSettingsSurface.properties.has('--gb-wallpaper-image')).toBe(false);
+    FakeImage.instances[1].onload?.();
+    expect(firstSettingsSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-dark.png');
+
+    const remountedSettingsSurface = wallpaperSurface('settings');
+    surfaces = [remountedSettingsSurface.element];
+    refreshVisibleThemeWallpapers();
+    expect(FakeImage.instances).toHaveLength(2);
+    expect(remountedSettingsSurface.properties.get('--gb-wallpaper-image')).toContain('wallpaper-dark.png');
   });
 });

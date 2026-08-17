@@ -24,12 +24,17 @@ describe('desktop typography preferences', () => {
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
     applyPersonalization({
-      schemaVersion: 3,
+      schemaVersion: 4,
       typography: {
         ui: { fontStack: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
         editor: { fontStack: { source: 'custom', families: ['Fira Code', 'Consolas'] }, fontSize: { source: 'custom', px: 30 } },
       },
-      wallpaper: { image: { source: 'theme' }, opacityPercent: 60 },
+      wallpaper: {
+        byColorScheme: {
+          light: { image: { source: 'theme' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
+      },
       avatars: {
         agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
         user: { image: { source: 'theme' }, shape: { source: 'theme' } },

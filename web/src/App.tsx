@@ -214,6 +214,7 @@ import type {
   AvatarKind,
   AvatarShape,
   SaveDesktopAvatarInput,
+  ResolvedColorScheme,
   WallpaperPreferencesVm,
 } from './types';
 
@@ -1673,10 +1674,10 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
-  const onImportWallpaper = useCallback(async (): Promise<WallpaperPreferencesVm | undefined> => {
+  const onImportWallpaper = useCallback(async (colorScheme: ResolvedColorScheme): Promise<WallpaperPreferencesVm | undefined> => {
     setError(null);
     try {
-      const saved = await importDesktopWallpaper();
+      const saved = await importDesktopWallpaper(colorScheme);
       if (!saved) return undefined;
       applySavedPreferences(saved);
       return saved.wallpapers;
@@ -1686,10 +1687,10 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
-  const onSelectRecentWallpaper = useCallback(async (wallpaperId: string): Promise<WallpaperPreferencesVm | undefined> => {
+  const onSelectRecentWallpaper = useCallback(async (colorScheme: ResolvedColorScheme, wallpaperId: string): Promise<WallpaperPreferencesVm | undefined> => {
     setError(null);
     try {
-      const saved = await selectRecentDesktopWallpaper(wallpaperId);
+      const saved = await selectRecentDesktopWallpaper(colorScheme, wallpaperId);
       applySavedPreferences(saved);
       return saved.wallpapers;
     } catch (err) {
@@ -1698,10 +1699,10 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
-  const onSaveWallpaperOpacity = useCallback(async (opacityPercent: number): Promise<WallpaperPreferencesVm | undefined> => {
+  const onSaveWallpaperOpacity = useCallback(async (colorScheme: ResolvedColorScheme, opacityPercent: number): Promise<WallpaperPreferencesVm | undefined> => {
     setError(null);
     try {
-      const saved = await saveDesktopWallpaperOpacity(opacityPercent);
+      const saved = await saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
       applySavedPreferences(saved);
       return saved.wallpapers;
     } catch (err) {
@@ -1710,10 +1711,10 @@ export function App() {
     }
   }, [applySavedPreferences, t]);
 
-  const onRestoreThemeWallpaper = useCallback(async (): Promise<WallpaperPreferencesVm | undefined> => {
+  const onRestoreThemeWallpaper = useCallback(async (colorScheme: ResolvedColorScheme): Promise<WallpaperPreferencesVm | undefined> => {
     setError(null);
     try {
-      const saved = await restoreThemeDesktopWallpaper();
+      const saved = await restoreThemeDesktopWallpaper(colorScheme);
       applySavedPreferences(saved);
       return saved.wallpapers;
     } catch (err) {

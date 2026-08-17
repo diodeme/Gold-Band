@@ -1307,11 +1307,8 @@ pub fn bootstrap_vm(
                 &app.config.personalization,
             )
             .unwrap_or_default(),
-            load_resolved_wallpaper_preferences(
-                &app.paths.user_gold_band_dir(),
-                &app.config.personalization,
-            )
-            .unwrap_or_default(),
+            load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir())
+                .unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),

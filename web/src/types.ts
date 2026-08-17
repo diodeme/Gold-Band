@@ -12,15 +12,18 @@ export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: n
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
 export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export interface WallpaperSchemePersonalization {
+  image: WallpaperImagePreference;
+  opacityPercent: number;
+}
 export interface PersonalizationPreference {
-  schemaVersion: 3;
+  schemaVersion: 4;
   typography: {
     ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
     editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
   };
   wallpaper: {
-    image: WallpaperImagePreference;
-    opacityPercent: number;
+    byColorScheme: Record<ResolvedColorScheme, WallpaperSchemePersonalization>;
   };
   avatars: {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
@@ -54,7 +57,6 @@ export interface WallpaperImageVm {
 }
 
 export interface WallpaperPreferencesVm {
-  selectedWallpaperId: string | null;
   recentWallpapers: WallpaperImageVm[];
 }
 

@@ -217,7 +217,7 @@ mod tests {
         ConversationRunModeEntry {
             mode,
             workflow_template_id: None,
-            include_interview: None,
+            optional_entry_preferences: Default::default(),
             direct_config: None,
             direct_preferences: Default::default(),
             auto_config: None,

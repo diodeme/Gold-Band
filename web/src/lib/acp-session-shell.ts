@@ -32,10 +32,21 @@ export interface AcpSessionShellStateInput {
   hasLiveSessionShell: boolean;
   hasEstablishedSessionShell?: boolean;
   initialSessionLoading: boolean;
+  initialSessionLoadFailed?: boolean;
   initializationInterrupted?: boolean;
   initializationFailed?: boolean;
   runtimeActive?: boolean;
   showInitializingShell?: boolean;
+}
+
+export type AcpTimelineSurfaceState = 'pending' | 'timeline' | 'empty';
+
+export interface AcpTimelineSurfaceStateInput {
+  hasTimelineItems: boolean;
+  initialSessionLoading: boolean;
+  runtimeActive: boolean;
+  initializationOwner: boolean;
+  sending: boolean;
 }
 
 export interface AcpSessionInitializationInterruptedInput {
@@ -69,19 +80,36 @@ export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicy
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
   if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
-  if (input.hasEstablishedSessionShell) return 'available';
+  if (input.initialSessionLoadFailed) return 'error';
   if (
     input.showInitializingShell &&
-    input.runtimeActive &&
-    !input.baseSessionReady &&
-    !input.hasLiveSessionShell
+    !input.hasLiveSessionShell &&
+    (input.initialSessionLoading || !input.baseSessionReady)
   ) return 'initializing';
+  if (input.initialSessionLoading) return 'loading';
+  if (input.hasEstablishedSessionShell) return 'available';
   if (input.hasBaseSession && (!input.initialSessionLoading || input.baseSessionReady)) return 'available';
   if (input.hasLiveSessionShell) return 'available';
-  if (input.initialSessionLoading) return 'loading';
   if (input.hasBaseSession) return 'available';
   if (input.runtimeActive) return 'loading';
   return 'missing';
+}
+
+export function isAcpSessionLoadingSurfaceState(state: AcpSessionShellState) {
+  return state === 'loading';
+}
+
+export function resolveAcpTimelineSurfaceState(
+  input: AcpTimelineSurfaceStateInput,
+): AcpTimelineSurfaceState {
+  if (input.hasTimelineItems) return 'timeline';
+  if (
+    input.initializationOwner ||
+    input.initialSessionLoading ||
+    input.runtimeActive ||
+    input.sending
+  ) return 'pending';
+  return 'empty';
 }
 
 export function isAcpSessionInitializationFailed(input: AcpSessionInitializationFailedInput) {

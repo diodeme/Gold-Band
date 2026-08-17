@@ -39,19 +39,16 @@ function fileResource(index: number): FileWorkspaceResource {
 afterEach(() => document.body.replaceChildren());
 
 describe('right workspace stable command interface', () => {
-  it('collapses the right workspace when its last tab is closed', () => {
+  it('keeps resource reduction independent from shell presentation state', () => {
     const resource = fileResource(0);
     const state = {
       tabs: [resource],
       activeTabKey: resource.key,
-      requestedOpen: true,
-      openRevision: 1,
     };
 
     expect(rightWorkspaceReducer(state, { type: 'close', key: resource.key })).toMatchObject({
       tabs: [],
       activeTabKey: null,
-      requestedOpen: false,
     });
   });
 

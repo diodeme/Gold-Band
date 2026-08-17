@@ -76,11 +76,12 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
       continuable: false,
       phase: 'terminal',
     },
+    control: { mode: 'non-runtime-controlled' },
     acp: {
-      status: 'completed',
-      active: false,
+      sessionAvailability: 'established',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'completed',
       stopping: false,
-      terminal: true,
     },
     displayStatus: 'completed',
     runtimeDisplay: completedDisplay,
@@ -104,7 +105,7 @@ function lifecycle(overrides: LifecycleOverrides = {}): ConversationAttemptLifec
   if (!overrides.composer) {
     if (merged.acp.stopping) {
       merged.composer = { ...merged.composer, mode: 'stopping', submitTarget: 'none', processingKind: 'stopping', canStop: true, lockInput: true };
-    } else if (merged.runtime.active || merged.acp.active) {
+    } else if (merged.runtime.active || merged.acp.liveTurnActivity !== 'idle') {
       merged.composer = {
         ...merged.composer,
         mode: 'runtime-active',
@@ -130,7 +131,6 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
     acpStatus: 'completed',
     prompt: 'hello',
     waitingForPermission: false,
-    hasPlanIntervention: false,
     sending: false,
     awaitingResponse: false,
     waitingForOptimisticPrompt: false,
@@ -146,11 +146,28 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('keeps a new-session composer locked while its first timeline item catches up', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle(),
+      acpStatus: 'completed',
+      hasTimelineItems: false,
+      hasEffectiveEvents: false,
+      initialTimelinePending: true,
+    }));
+
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.showStatus).toBe(true);
+    expect(state.processingKind).toBe('launching');
+    expect(state.placeholderKind).toBe('runtime-controlled');
+  });
+
   it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
-        acp: { status: 'running', active: true, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
         composer: {
           mode: 'runtime-active',
           submitTarget: 'queue-prompt',
@@ -181,7 +198,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     const runningSending = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
-        acp: { status: 'running', active: true, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
         composer: { mode: 'runtime-active', submitTarget: 'queue-prompt', lockInput: false },
         promptQueue: { revision: 0, items: [], maxItems: 10 },
       }),
@@ -202,12 +219,13 @@ describe('deriveAcpRuntimeComposerState', () => {
       id: `queued-${index}`,
       content: `prompt ${index}`,
       attachmentCount: 0,
+      quoteCount: 0,
       createdAt: '2026-08-07T00:00:00Z',
     }));
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
-        acp: { status: 'running', active: true, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
         composer: {
           mode: 'runtime-active',
           submitTarget: 'queue-prompt',
@@ -227,7 +245,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'provider-running' },
-        acp: { status: 'running', active: true, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
       }),
       acpStatus: 'running',
     }));
@@ -235,6 +253,40 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.submitTarget).toBe('none');
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+  });
+
+  it('keeps a superseded session locked even when stale ACP activity still appears active', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
+          stopping: false,
+        },
+        composer: {
+          mode: 'session-superseded',
+          submitTarget: 'none',
+          lockInput: true,
+          canStop: false,
+          supersededBy: {
+            roundId: 'round-001',
+            nodeId: 'review',
+            attemptId: 'attempt-003',
+            pathLabel: 'review/attempt-003',
+          },
+        },
+      }),
+      acpStatus: 'running',
+      localTurnInFlight: true,
+    }));
+
+    expect(state.mode).toBe('session-superseded');
+    expect(state.submitTarget).toBe('none');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.showStatus).toBe(false);
   });
 
   it('restores a completed-run live follow-up from backend lifecycle without optimistic state', () => {
@@ -250,7 +302,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           continuable: false,
           phase: 'provider-running',
         },
-        acp: { status: 'running', phase: 'running', active: true, stopping: false, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
       }),
       acpStatus: 'running',
       sending: false,
@@ -274,11 +326,10 @@ describe('deriveAcpRuntimeComposerState', () => {
           phase: 'provider-running',
         },
         acp: {
-          status: 'running',
-          phase: 'running',
-          active: true,
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
           stopping: false,
-          terminal: false,
         },
       }),
       acpStatus: 'completed',
@@ -309,7 +360,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: false,
           continuable: true,
         },
-        acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
+        acp: { sessionAvailability: 'closing', liveTurnActivity: 'cancel-requested', latestTurnStatus: 'none', stopping: true },
         displayStatus: 'cancelling',
         runtimeDisplay: pausedDisplay,
         continueKind: 'action',
@@ -335,7 +386,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: false,
           continuable: true,
         },
-        acp: { status: 'cancelling', active: true, stopping: true, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'cancelling',
         runtimeDisplay: pausedDisplay,
         continueKind: 'action',
@@ -363,7 +414,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: false,
           continuable: true,
         },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
         continueKind: 'action',
@@ -389,7 +440,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: false,
           continuable: true,
         },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'runtime-abnormal',
         runtimeDisplay: runtimeAbnormalDisplay,
         continueKind: 'action',
@@ -416,7 +467,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           continuable: false,
           phase: 'provider-running',
         },
-        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'failed', stopping: false },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
         composer: {
@@ -446,7 +497,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: false,
           continuable: true,
         },
-        acp: { status: 'failed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'failed', stopping: false },
         displayStatus: 'runtime-abnormal',
         runtimeDisplay: runtimeAbnormalDisplay,
         continueKind: 'action',
@@ -473,7 +524,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           active: true,
           continuable: false,
         },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
       }),
@@ -498,7 +549,7 @@ describe('deriveAcpRuntimeComposerState', () => {
             continuable: true,
             phase: 'paused',
           },
-          acp: { status: acpStatus, active: false, stopping: false, terminal: true },
+          acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: acpStatus, stopping: false },
           displayStatus: 'paused',
           runtimeDisplay: pausedDisplay,
           continueKind: 'action',
@@ -535,7 +586,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           continuable: true,
           phase: 'paused',
         },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'paused',
         runtimeDisplay: pausedDisplay,
         continueKind: 'action',
@@ -568,7 +619,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           continuable: false,
           phase: 'running',
         },
-        acp: { status: 'running', active: true, stopping: false, terminal: false },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
       }),
@@ -616,7 +667,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
-  it('keeps permission waits as a locked runtime composer state', () => {
+  it('keeps permission waits locked when the session has no prompt queue', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle(),
       waitingForPermission: true,
@@ -624,7 +675,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     }));
 
     expect(state.mode).toBe('permission-blocked');
-    expect(state.submitTarget).toBe('permission-response');
+    expect(state.submitTarget).toBe('none');
     expect(state.sessionActive).toBe(true);
     expect(state.composerLocked).toBe(true);
     expect(state.inputDisabled).toBe(true);
@@ -632,8 +683,30 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
     expect(state.showExternalState).toBe(false);
     expect(state.placeholderKind).toBe('runtime-controlled');
-    expect(state.hintKind).toBe('permission-pending');
     expect(state.showStatus).toBe(false);
+  });
+
+  it('routes a Direct message to the existing queue while permission remains pending', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
+          stopping: false,
+        },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      promptQueueEnabled: true,
+      waitingForPermission: true,
+      prompt: '排队发送',
+    }));
+
+    expect(state.mode).toBe('permission-blocked');
+    expect(state.submitTarget).toBe('queue-prompt');
+    expect(state.composerLocked).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
   });
 
   it('does not turn workflow outcome failure into runtime error', () => {
@@ -747,7 +820,7 @@ describe('deriveAcpRuntimeComposerState', () => {
           continuable: false,
           phase: 'launching-next-node',
         },
-        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
       }),
@@ -769,7 +842,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'completed', active: false, current: true, phase: 'preparing-workspace' },
-        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
         composer: {
           mode: 'runtime-active',
           submitTarget: 'none',
@@ -793,7 +866,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'completed', active: false, current: true, phase: 'preparing-workspace' },
-        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
         composer: {
           mode: 'runtime-active',
           submitTarget: 'none',
@@ -816,7 +889,7 @@ describe('deriveAcpRuntimeComposerState', () => {
       promptQueueEnabled: true,
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
-        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
         promptQueue: { revision: 0, items: [], maxItems: 10 },
       }),
       acpStatus: 'completed',
@@ -825,14 +898,13 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.processingKind).toBe('launching-next-node');
     expect(state.statusActive).toBe(false);
     expect(state.showStatus).toBe(false);
-    expect(state.hintKind).toBe('default');
   });
 
   it('keeps the node handoff visible for Workflow and AUTO runs', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: { status: 'running', active: true, current: true, phase: 'launching-next-node' },
-        acp: { status: 'completed', active: false, stopping: false, terminal: true },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
       }),
       acpStatus: 'completed',
     }));
@@ -879,6 +951,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           id: 'queued-1',
           content: 'keep visible',
           attachmentCount: 0,
+          quoteCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },
@@ -902,6 +975,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           id: 'queued-1',
           content: 'deleted',
           attachmentCount: 0,
+          quoteCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },
@@ -933,7 +1007,7 @@ describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
         continuable: false,
         phase: 'provider-running',
       },
-      acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+      acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
       displayStatus: 'running',
       runtimeDisplay: runningDisplay,
       continueKind: null,
@@ -957,7 +1031,7 @@ describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
         continuable: true,
         phase: 'paused',
       },
-      acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+      acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
       displayStatus: 'paused',
       runtimeDisplay: pausedDisplay,
       continueKind: 'action',

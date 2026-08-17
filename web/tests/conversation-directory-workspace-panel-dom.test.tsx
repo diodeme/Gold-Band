@@ -6,17 +6,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   listConversationDirectory: vi.fn(),
+  readConversationDirectoryFile: vi.fn(),
 }));
 
 vi.mock('@/api', () => ({
   listConversationDirectory: apiMocks.listConversationDirectory,
   openConversationDirectoryPathInFileManager: vi.fn(),
-  readConversationDirectoryFile: vi.fn(),
+  readConversationDirectoryFile: apiMocks.readConversationDirectoryFile,
   workspaceFilePreviewUrl: vi.fn(() => ''),
 }));
 
+vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
+  WorkspaceFileEditor: (props: {
+    editable: boolean;
+    markdownMode?: string | null;
+    onMarkdownModeChange?: (mode: 'live-preview' | 'source') => void;
+  }) => (
+    <output
+      data-testid="run-directory-file-editor"
+      data-editable={String(props.editable)}
+      data-markdown-mode={String(props.markdownMode)}
+    >
+      <button type="button" onClick={() => props.onMarkdownModeChange?.('source')}>source</button>
+    </output>
+  ),
+}));
+
 import { ConversationDirectoryWorkspacePanel } from '@/components/workspace/ConversationDirectoryWorkspacePanel';
-import { RightWorkspaceProvider, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, RightWorkspaceProvider, useRightWorkspace, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -54,7 +71,6 @@ class ControlledResizeObserver implements ResizeObserver {
 }
 
 const layout: FileWorkspaceLayoutVm = {
-  preferredWidth: 760,
   splitMinWidth: 500,
   treeDefaultWidth: 280,
   treeMinWidth: 200,
@@ -63,7 +79,14 @@ const layout: FileWorkspaceLayoutVm = {
 
 const resource: ConversationDirectoryWorkspaceResource = {
   kind: 'conversation-directory',
-  key: 'conversation-directory:project-1:task-1:run-1:round-1:node-1:attempt-1',
+  key: conversationDirectoryWorkspaceResourceKey({
+    projectId: 'project-1',
+    taskId: 'task-1',
+    runId: 'run-1',
+    roundId: 'round-1',
+    nodeId: 'node-1',
+    attemptId: 'attempt-1',
+  }),
   scopeKey: 'draft:default',
   title: '运行目录',
   attention: false,
@@ -87,6 +110,14 @@ const artifact: WorkspaceDirectoryEntryVm = {
   modifiedAtNs: '1',
 };
 
+function WorkspaceWidthProbe({ onWidth }: { onWidth: (width: number) => void }) {
+  const workspace = useRightWorkspace();
+  React.useEffect(() => {
+    onWidth(workspace.width);
+  }, [onWidth, workspace.width]);
+  return null;
+}
+
 describe('conversation directory responsive tree lifecycle', () => {
   let panelWidth = 0;
   let treeHeight = 0;
@@ -102,6 +133,12 @@ describe('conversation directory responsive tree lifecycle', () => {
     animationFrames = new Map();
     ControlledResizeObserver.instances = [];
     apiMocks.listConversationDirectory.mockResolvedValue([artifact]);
+    apiMocks.readConversationDirectoryFile.mockResolvedValue({
+      kind: 'text',
+      name: artifact.name,
+      content: '# Artifact',
+      language: 'markdown',
+    });
 
     clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
     clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
@@ -174,6 +211,162 @@ describe('conversation directory responsive tree lifecycle', () => {
       expect(splitTree?.style.height).toBe('800px');
       expect(container.textContent).toContain('artifact.md');
       expect(apiMocks.listConversationDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps the canonical right workspace width when the run directory opens', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const widths: number[] = [];
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <WorkspaceWidthProbe onWidth={(width) => widths.push(width)} />
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      expect(widths).toEqual([397]);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens Markdown run artifacts in the shared read-only preview and source viewer', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      const row = [...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      await act(async () => {
+        row?.click();
+        await Promise.resolve();
+      });
+
+      let editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
+      expect(apiMocks.readConversationDirectoryFile).toHaveBeenCalledWith({
+        ...resource.locator,
+        relativePath: artifact.relativePath,
+      });
+      expect(editor?.dataset.editable).toBe('false');
+      expect(editor?.dataset.markdownMode).toBe('live-preview');
+
+      await act(async () => {
+        editor?.querySelector<HTMLButtonElement>('button')?.click();
+      });
+      editor = container.querySelector<HTMLElement>('[data-testid="run-directory-file-editor"]');
+      expect(editor?.dataset.markdownMode).toBe('source');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps an open directory context menu mounted across unrelated parent updates', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const Harness = ({ revision }: { revision: number }) => (
+      <div data-parent-revision={revision}>
+        <RightWorkspaceProvider initialWidth={397}>
+          <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+        </RightWorkspaceProvider>
+      </div>
+    );
+
+    try {
+      await act(async () => {
+        root.render(<Harness revision={1} />);
+      });
+      await act(async () => { await Promise.resolve(); });
+
+      const rowBefore = [...container.querySelectorAll('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      expect(rowBefore).toBeDefined();
+      await act(async () => {
+        rowBefore?.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 12,
+          clientY: 12,
+        }));
+      });
+      const menuBefore = document.querySelector('[data-slot="context-menu-content"]');
+      expect(menuBefore).not.toBeNull();
+
+      await act(async () => {
+        root.render(<Harness revision={2} />);
+      });
+
+      const rowAfter = [...container.querySelectorAll('button')]
+        .find((button) => button.textContent?.includes(artifact.name));
+      expect(rowAfter).toBe(rowBefore);
+      expect(document.querySelector('[data-slot="context-menu-content"]')).toBe(menuBefore);
+      expect(apiMocks.listConversationDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('reloads for the selected attempt and ignores a late response from the previous attempt', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let resolveFirst: ((entries: WorkspaceDirectoryEntryVm[]) => void) | null = null;
+    let resolveSecond: ((entries: WorkspaceDirectoryEntryVm[]) => void) | null = null;
+    const first = new Promise<WorkspaceDirectoryEntryVm[]>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<WorkspaceDirectoryEntryVm[]>((resolve) => { resolveSecond = resolve; });
+    apiMocks.listConversationDirectory.mockReset();
+    apiMocks.listConversationDirectory
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    const nextArtifact = { ...artifact, name: 'attempt-2.md', relativePath: 'attempt-2.md', canonicalPath: 'D:\\attempt-2\\attempt-2.md' };
+    const nextResource: ConversationDirectoryWorkspaceResource = {
+      ...resource,
+      locator: { ...resource.locator, nodeId: 'node-2', attemptId: 'attempt-2' },
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={nextResource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { resolveSecond?.([nextArtifact]); await second; });
+
+      expect(container.textContent).toContain(nextArtifact.name);
+      expect(container.textContent).not.toContain(artifact.name);
+      await act(async () => { resolveFirst?.([artifact]); await first; });
+      expect(container.textContent).toContain(nextArtifact.name);
+      expect(container.textContent).not.toContain(artifact.name);
+      expect(apiMocks.listConversationDirectory).toHaveBeenNthCalledWith(1, { ...resource.locator, relativePath: '' });
+      expect(apiMocks.listConversationDirectory).toHaveBeenNthCalledWith(2, { ...nextResource.locator, relativePath: '' });
     } finally {
       await act(async () => root.unmount());
     }

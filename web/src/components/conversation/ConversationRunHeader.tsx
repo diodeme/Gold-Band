@@ -39,8 +39,8 @@ export function ConversationRunHeader({
   const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
-    <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
-      <div className="flex min-w-0 items-center gap-2">
+    <div className="shrink-0 bg-content-header px-5 py-0.5">
+      <div className="flex min-w-0 items-center gap-3">
         {run.scheduledTaskId ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -62,7 +62,8 @@ export function ConversationRunHeader({
         {!isDirect ? <Button
           variant="ghost"
           size="sm"
-          className="h-5.5 gap-1 px-1.5 text-[11px]"
+          className="h-7 gap-1.5 px-2 text-xs font-normal"
+          aria-expanded={sessionSwitcherOpen}
           onClick={onToggleSessionSwitcher}
         >
           {selectedSessionLeaf ? (
@@ -80,7 +81,7 @@ export function ConversationRunHeader({
         </Button> : null}
 
         {/* Actions */}
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-1">
           {canViewWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>

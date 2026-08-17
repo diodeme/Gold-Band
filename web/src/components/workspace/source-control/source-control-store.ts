@@ -2,10 +2,12 @@ import { useCallback, useSyncExternalStore } from 'react';
 import {
   cancelGitOperation,
   executeGitMutation,
+  getGitCapability,
   getGitCommitReachability,
   getGitCommitReview,
   getGitHistory,
   getSourceControlSnapshot,
+  initializeGitRepository,
   startGitOperation,
   startGitStateMonitor,
   stopGitStateMonitor,
@@ -16,6 +18,7 @@ import {
 import type {
   GitCommitReachabilityVm,
   GitCommitReviewVm,
+  GitCapabilityVm,
   GitHistoryPageVm,
   GitMutationRequestVm,
   GitOperationRequestVm,
@@ -27,23 +30,28 @@ import type {
 } from '@/types';
 
 export type SourceControlTab = 'changes' | 'history' | 'repository' | 'github';
+export type SourceControlRepositoryTab = 'branches' | 'tags' | 'worktrees' | 'stashes';
 export interface CommitSelectionModifiers {
   additive: boolean;
   range: boolean;
 }
 export interface SourceControlPendingAction {
-  kind: GitMutationRequestVm['kind'] | GitOperationRequestVm['kind'] | 'refresh' | 'history-more';
+  kind: GitMutationRequestVm['kind'] | GitOperationRequestVm['kind'] | 'history-more' | 'repository-initialize';
   path: string | null;
 }
+
+export type SourceControlRefreshKind = 'manual' | 'background';
 
 export interface SourceControlSessionSnapshot {
   projectId: string;
   requestedWorkspacePath: string | null;
   canonicalWorkspacePath: string | null;
-  status: 'idle' | 'loading' | 'ready' | 'error';
+  status: 'idle' | 'loading' | 'ready' | 'unavailable' | 'error';
+  capability: GitCapabilityVm | null;
   snapshot: GitSourceControlSnapshotVm | null;
   history: GitHistoryPageVm | null;
   activeTab: SourceControlTab;
+  repositoryTab: SourceControlRepositoryTab;
   historyPage: number;
   selectedCommitOids: ReadonlySet<string>;
   selectionAnchorOid: string | null;
@@ -54,12 +62,15 @@ export interface SourceControlSessionSnapshot {
   reachabilityLoading: boolean;
   error: GitOperationErrorVm | null;
   pendingAction: SourceControlPendingAction | null;
+  refreshing: SourceControlRefreshKind | null;
   activeOperation: GitOperationVm | null;
   subject: string;
   body: string;
 }
 
 interface SourceControlApi {
+  getCapability: typeof getGitCapability;
+  initializeRepository: typeof initializeGitRepository;
   getSnapshot: typeof getSourceControlSnapshot;
   getHistory: typeof getGitHistory;
   getCommitReview: typeof getGitCommitReview;
@@ -87,6 +98,9 @@ interface SessionRuntime {
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
   finishingOperationId: string | null;
+  historyCommitScrollTop: number;
+  historyReviewScrollTop: number;
+  historyReviewScrollKey: string | null;
 }
 
 interface CommitReviewCacheSlot {
@@ -95,6 +109,8 @@ interface CommitReviewCacheSlot {
 }
 
 const DEFAULT_API: SourceControlApi = {
+  getCapability: getGitCapability,
+  initializeRepository: initializeGitRepository,
   getSnapshot: getSourceControlSnapshot,
   getHistory: getGitHistory,
   getCommitReview: getGitCommitReview,
@@ -140,7 +156,33 @@ export class SourceControlStore {
   }
 
   refresh(projectId: string, workspacePath?: string | null) {
-    return this.load(projectId, workspacePath, true);
+    return this.load(projectId, workspacePath, true, true, 'manual');
+  }
+
+  async initializeRepository(projectId: string, workspacePath?: string | null) {
+    const runtime = this.runtime(projectId, workspacePath);
+    if (runtime.snapshot.pendingAction || runtime.snapshot.capability?.status !== 'repository-required') return;
+    this.update(runtime, {
+      ...runtime.snapshot,
+      pendingAction: { kind: 'repository-initialize', path: null },
+      error: null,
+    });
+    try {
+      const capability = await this.api.initializeRepository(projectId);
+      this.update(runtime, { ...runtime.snapshot, capability, pendingAction: null });
+      if (capability.status === 'ready' || capability.status === 'head-required') {
+        await this.load(projectId, workspacePath, true, true, 'manual');
+      } else {
+        this.update(runtime, { ...runtime.snapshot, status: 'unavailable' });
+      }
+    } catch (reason) {
+      this.update(runtime, {
+        ...runtime.snapshot,
+        status: 'error',
+        pendingAction: null,
+        error: structuredErrorFrom(reason, 'git.repository-initialize-failed'),
+      });
+    }
   }
 
   setActiveTab(projectId: string, workspacePath: string | null | undefined, activeTab: SourceControlTab) {
@@ -153,7 +195,38 @@ export class SourceControlStore {
     const runtime = this.runtime(projectId, workspacePath);
     const next = Math.max(0, Math.floor(historyPage));
     if (runtime.snapshot.historyPage === next) return;
+    runtime.historyCommitScrollTop = 0;
     this.update(runtime, { ...runtime.snapshot, historyPage: next });
+  }
+
+  historyScrollPositions(
+    projectId: string,
+    workspacePath: string | null | undefined,
+    reviewKey?: string | null,
+  ) {
+    const runtime = this.runtime(projectId, workspacePath, false);
+    return {
+      commitList: runtime.historyCommitScrollTop,
+      reviewList: reviewKey != null && runtime.historyReviewScrollKey === reviewKey
+        ? runtime.historyReviewScrollTop
+        : 0,
+    };
+  }
+
+  setHistoryScrollPosition(
+    projectId: string,
+    workspacePath: string | null | undefined,
+    area: 'commit-list' | 'review-list',
+    scrollTop: number,
+    reviewKey?: string | null,
+  ) {
+    const runtime = this.runtime(projectId, workspacePath, false);
+    const next = Math.max(0, scrollTop);
+    if (area === 'commit-list') runtime.historyCommitScrollTop = next;
+    else {
+      runtime.historyReviewScrollKey = reviewKey ?? null;
+      runtime.historyReviewScrollTop = next;
+    }
   }
 
   selectCommit(
@@ -202,6 +275,12 @@ export class SourceControlStore {
       historyDetailLoading: selectedCommitOids.size > 0,
     });
     void this.loadCommitReview(projectId, workspacePath, [...selectedCommitOids]);
+  }
+
+  setRepositoryTab(projectId: string, workspacePath: string | null | undefined, repositoryTab: SourceControlRepositoryTab) {
+    const runtime = this.runtime(projectId, workspacePath);
+    if (runtime.snapshot.repositoryTab === repositoryTab) return;
+    this.update(runtime, { ...runtime.snapshot, repositoryTab });
   }
 
   selectCommitForContextMenu(projectId: string, workspacePath: string | null | undefined, oid: string) {
@@ -261,6 +340,7 @@ export class SourceControlStore {
     this.update(runtime, {
       ...runtime.snapshot,
       pendingAction: pendingActionFromMutation(input),
+      activeOperation: null,
       error: null,
     });
     let mutationApplied = false;
@@ -324,6 +404,7 @@ export class SourceControlStore {
         revision: history.revision,
       });
       if (runtime.historyRequestRevision !== requestRevision) return;
+      if (advancePage) runtime.historyCommitScrollTop = 0;
       this.update(runtime, {
         ...runtime.snapshot,
         history: {
@@ -438,6 +519,7 @@ export class SourceControlStore {
     this.update(runtime, {
       ...runtime.snapshot,
       pendingAction: { kind: input.kind, path: null },
+      activeOperation: null,
       error: null,
     });
     try {
@@ -489,42 +571,68 @@ export class SourceControlStore {
     workspacePath: string | null | undefined,
     force: boolean,
     resetNavigation = force,
+    refreshKind: SourceControlRefreshKind | null = force ? 'manual' : null,
   ) {
     const runtime = this.runtime(projectId, workspacePath);
-    if (!force && runtime.snapshot.status === 'ready') return;
-    if (!force && runtime.loadPromise) return runtime.loadPromise;
-    if (runtime.snapshot.pendingAction && runtime.snapshot.pendingAction.kind !== 'refresh') return;
+    if (!force && (runtime.snapshot.status === 'ready' || runtime.snapshot.status === 'unavailable')) return;
+    if (runtime.loadPromise && refreshKind !== 'manual') return runtime.loadPromise;
+    if (runtime.snapshot.pendingAction) return;
     const requestRevision = ++runtime.repositoryRequestRevision;
     runtime.historyRequestRevision += 1;
     runtime.detailRequestRevision += 1;
+    const operationError = refreshKind === 'background'
+      && runtime.snapshot.activeOperation?.error
+      && sameStructuredError(runtime.snapshot.error, runtime.snapshot.activeOperation.error)
+        ? runtime.snapshot.error
+        : null;
     this.update(runtime, {
       ...runtime.snapshot,
       status: runtime.snapshot.snapshot ? 'ready' : 'loading',
-      pendingAction: force ? { kind: 'refresh', path: null } : runtime.snapshot.pendingAction,
-      error: null,
+      refreshing: refreshKind,
+      error: operationError,
     });
-    const request = Promise.all([
-      this.api.getSnapshot(projectId, workspacePath),
-      this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
-    ]).then(([snapshot, history]) => {
+    const request = (async () => {
+      const currentCapability = runtime.snapshot.capability;
+      const shouldProbe = !currentCapability
+        || (refreshKind === 'manual' && !runtime.snapshot.snapshot)
+        || (currentCapability.status !== 'ready' && currentCapability.status !== 'head-required');
+      const capability = shouldProbe
+        ? await this.api.getCapability(projectId)
+        : currentCapability;
+      if (runtime.repositoryRequestRevision !== requestRevision) return;
+      if (capability.status !== 'ready' && capability.status !== 'head-required') {
+        this.update(runtime, {
+          ...runtime.snapshot,
+          status: 'unavailable',
+          capability,
+          refreshing: null,
+          error: null,
+        });
+        return;
+      }
+      const [snapshot, history] = await Promise.all([
+        this.api.getSnapshot(projectId, workspacePath),
+        this.api.getHistory(projectId, workspacePath, { limit: HISTORY_PAGE_SIZE }),
+      ]);
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.registerCanonicalAlias(runtime, snapshot.repository.workspacePath);
       this.update(runtime, {
         ...(resetNavigation ? resetHistoryState(runtime.snapshot) : runtime.snapshot),
         status: 'ready',
+        capability,
         canonicalWorkspacePath: snapshot.repository.workspacePath,
         snapshot,
         history,
-        pendingAction: null,
-        error: null,
+        refreshing: null,
+        error: operationError,
       });
       void this.startMonitor(runtime);
-    }).catch((reason: unknown) => {
+    })().catch((reason: unknown) => {
       if (runtime.repositoryRequestRevision !== requestRevision) return;
       this.update(runtime, {
         ...runtime.snapshot,
         status: runtime.snapshot.snapshot ? 'ready' : 'error',
-        pendingAction: null,
+        refreshing: null,
         error: structuredErrorFrom(reason, 'git.status-failed'),
       });
     }).finally(() => {
@@ -594,6 +702,7 @@ export class SourceControlStore {
         runtime.snapshot.canonicalWorkspacePath ?? runtime.snapshot.requestedWorkspacePath,
         true,
         false,
+        'background',
       );
     }, STATE_INVALIDATION_DEBOUNCE_MS);
   }
@@ -640,6 +749,8 @@ export class SourceControlStore {
       runtime.snapshot.projectId,
       runtime.snapshot.requestedWorkspacePath,
       true,
+      true,
+      'background',
     );
     if (operationError && runtime.snapshot.activeOperation?.operationId === operation.operationId) {
       this.update(runtime, { ...runtime.snapshot, error: operationError });
@@ -665,6 +776,9 @@ export class SourceControlStore {
         monitorStartPromise: null,
         invalidationTimer: null,
         finishingOperationId: null,
+        historyCommitScrollTop: 0,
+        historyReviewScrollTop: 0,
+        historyReviewScrollKey: null,
       };
       this.sessions.set(storageKey, runtime);
       this.aliases.set(routeKey, storageKey);
@@ -694,6 +808,19 @@ export class SourceControlStore {
     }
   }
 
+  dismissOperationResult(projectId: string, workspacePath?: string | null) {
+    const runtime = this.runtime(projectId, workspacePath);
+    const operation = runtime.snapshot.activeOperation;
+    if (!operation || isOperationPending(operation)) return;
+    this.update(runtime, {
+      ...runtime.snapshot,
+      activeOperation: null,
+      error: operation.error && sameStructuredError(runtime.snapshot.error, operation.error)
+        ? null
+        : runtime.snapshot.error,
+    });
+  }
+
   private clearCommitReviews(storageKey: string) {
     const prefix = `${storageKey}\u0000`;
     for (const key of this.commitReviews.keys()) {
@@ -713,9 +840,11 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     requestedWorkspacePath: workspacePath ?? null,
     canonicalWorkspacePath: null,
     status: 'idle',
+    capability: null,
     snapshot: null,
     history: null,
     activeTab: 'changes',
+    repositoryTab: 'branches',
     historyPage: 0,
     selectedCommitOids: new Set(),
     selectionAnchorOid: null,
@@ -726,6 +855,7 @@ function idleSnapshot(projectId: string, workspacePath: string | null | undefine
     reachabilityLoading: false,
     error: null,
     pendingAction: null,
+    refreshing: null,
     activeOperation: null,
     subject: '',
     body: '',
@@ -771,9 +901,11 @@ function pathIsWithinWorkspace(path: string, workspacePath: string) {
 }
 
 function pendingActionFromMutation(input: GitMutationRequestVm): SourceControlPendingAction {
-  const path = (input.kind === 'stage-paths' || input.kind === 'unstage-paths') && input.paths.length === 1
-    ? input.paths[0]
-    : null;
+  const path = input.kind === 'worktree-remove'
+    ? input.path
+    : (input.kind === 'stage-paths' || input.kind === 'unstage-paths') && input.paths.length === 1
+      ? input.paths[0]
+      : null;
   return { kind: input.kind, path };
 }
 
@@ -788,6 +920,14 @@ function structuredErrorFrom(reason: unknown, fallback: string): GitOperationErr
     ? reason.params as Record<string, unknown>
     : {};
   return { code, params };
+}
+
+function sameStructuredError(left: GitOperationErrorVm | null, right: GitOperationErrorVm) {
+  if (!left || left.code !== right.code) return false;
+  const leftKeys = Object.keys(left.params);
+  const rightKeys = Object.keys(right.params);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => left.params[key] === right.params[key]);
 }
 
 export const sourceControlStore = new SourceControlStore();

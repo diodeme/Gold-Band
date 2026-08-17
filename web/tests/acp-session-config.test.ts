@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  acpProviderConfigCatalog,
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
 } from "@/lib/acp-session-config";
-import type { AcpSessionConfigVm } from "@/types";
+import type { AcpSessionConfigVm, AgentRegistryVm } from "@/types";
 
 function baseConfig(): AcpSessionConfigVm {
   return {
@@ -35,6 +36,137 @@ function baseConfig(): AcpSessionConfigVm {
 }
 
 describe("ACP session config view model", () => {
+  const doctorCatalog = {
+    observedAt: "200Z",
+    models: [{ id: "gpt-new", name: "GPT New" }],
+    modes: [{ id: "full", name: "Full access" }],
+    configOptions: [{
+      id: "effort",
+      category: "thought_level",
+      name: "Thought level",
+      currentValue: "doctor-default",
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+    }],
+  };
+
+  it("uses a newer successful Doctor catalog without replacing Session current values", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "gpt-new",
+      currentModelId: "gpt-old",
+      currentModelName: "GPT Old",
+      configOptionOverrides: { effort: "high" },
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "low",
+        options: [{ value: "low", name: "Low" }],
+      }],
+    }, doctorCatalog);
+
+    expect(viewModel.availableModels.map((option) => option.id)).toEqual(["gpt-new"]);
+    expect(viewModel.currentModelId).toBe("gpt-old");
+    expect(viewModel.thoughtLevel?.currentValue).toBe("low");
+    expect(viewModel.thoughtLevel?.overrideValue).toBe("high");
+  });
+
+  it("keeps a same-time or newer Session catalog authoritative", () => {
+    const session = {
+      ...baseConfig(),
+      catalogObservedAt: "200Z",
+    };
+    expect(
+      createAcpSessionConfigViewModel(session, doctorCatalog).availableModels.map((option) => option.id),
+    ).toEqual(["gpt-5", "fallback"]);
+    expect(
+      createAcpSessionConfigViewModel({ ...session, catalogObservedAt: "201Z" }, doctorCatalog)
+        .availableModels.map((option) => option.id),
+    ).toEqual(["gpt-5", "fallback"]);
+  });
+
+  it("keeps an unavailable override visible but disabled beside the latest choices", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      modelOverrideId: "gpt-old",
+      currentModelId: "gpt-old",
+      currentModelName: "GPT Old",
+    }, doctorCatalog);
+
+    expect(viewModel.availableModels).toEqual([
+      { id: "gpt-old", name: "GPT Old", description: null, available: false },
+      { id: "gpt-new", name: "GPT New", description: null },
+    ]);
+  });
+
+  it("keeps an unavailable generic override visible but disabled", () => {
+    const viewModel = createAcpSessionConfigViewModel({
+      catalogObservedAt: "199Z",
+      configOptionOverrides: { effort: "max" },
+      configOptions: [{
+        id: "effort",
+        category: "thought_level",
+        type: "select",
+        currentValue: "low",
+        options: [{ value: "low", name: "Low" }, { value: "max", name: "Max" }],
+      }],
+    }, doctorCatalog);
+
+    expect(viewModel.thoughtLevel?.options).toEqual([
+      { id: "max", name: "Max", description: null, available: false },
+      { id: "low", name: "Low", description: null },
+      { id: "high", name: "High", description: null },
+    ]);
+  });
+
+  it("does not expose a failed Doctor observation as a catalog", () => {
+    const registry = {
+      agents: [{
+        agentType: "current",
+        diagnostic: { status: "error", available: false, checkedAt: "300Z" },
+        supportedModels: [{ id: "gpt-new", name: "GPT New" }],
+      }],
+      catalog: [],
+    } as AgentRegistryVm;
+
+    expect(acpProviderConfigCatalog(registry, "current")).toBeNull();
+  });
+
+  it("does not change the current provider signature for an unrelated Doctor update", () => {
+    const registry = {
+      agents: [{
+        agentType: "current",
+        diagnostic: { status: "healthy", available: true, checkedAt: "200Z" },
+        supportedModels: [{ id: "gpt-new", name: "GPT New" }],
+      }, {
+        agentType: "other",
+        diagnostic: { status: "healthy", available: true, checkedAt: "300Z" },
+        supportedModels: [{ id: "other-new", name: "Other New" }],
+      }],
+      catalog: [],
+    } as AgentRegistryVm;
+    const session = { catalogObservedAt: "199Z" };
+    const first = createAcpSessionConfigViewModel(
+      session,
+      acpProviderConfigCatalog(registry, "current"),
+    );
+    const updatedRegistry = {
+      ...registry,
+      agents: registry.agents.map((agent) => agent.agentType === "other"
+        ? { ...agent, diagnostic: { ...agent.diagnostic!, checkedAt: "301Z" } }
+        : agent),
+    };
+    const second = createAcpSessionConfigViewModel(
+      session,
+      acpProviderConfigCatalog(updatedRegistry, "current"),
+    );
+
+    expect(second.signature).toBe(first.signature);
+  });
+
   it("keeps the same signature for stream-only session changes", () => {
     const first = createAcpSessionConfigViewModel(baseConfig());
     const second = createAcpSessionConfigViewModel({
@@ -136,7 +268,10 @@ describe("ACP session config view model", () => {
   it("prefers generic config options over conflicting legacy grouped options", () => {
     const viewModel = createAcpSessionConfigViewModel(baseConfig());
 
-    expect(viewModel.availableModels.map((option) => option.id)).toEqual(["fallback"]);
+    expect(viewModel.availableModels).toEqual([
+      { id: "gpt-5", name: "GPT-5", description: null, available: false },
+      { id: "fallback", name: "Fallback model", description: null },
+    ]);
     expect(viewModel.availablePermissionModes.map((option) => option.id)).toEqual([
       "ask",
       "full_access",

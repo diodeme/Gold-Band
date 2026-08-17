@@ -1,4 +1,4 @@
-import type { AcpSessionVm, AcpUiEventVm } from "@/types";
+import type { AcpSessionVm, AcpUiEventVm, AcpUsageVm } from "@/types";
 import {
   attemptIdFromAcpEvent,
   originalSeqFromAcpEvent,
@@ -6,6 +6,36 @@ import {
 import { isAcpTextStreamEventKind, mergeAcpLiveStreamEvent } from "@/lib/acp-live-flush";
 
 type RawObject = Record<string, unknown>;
+
+export function projectLatestAcpUsageUpdate(
+  session: AcpSessionVm | null,
+  events: AcpUiEventVm[],
+) {
+  if (!session) return null;
+  let latest: { seq: number; patch: AcpUsageVm } | null = null;
+  for (const event of events) {
+    if (event.kind !== "usageUpdate") continue;
+    const raw = rawObject(event.raw);
+    if (!raw) continue;
+    const patch: AcpUsageVm = {};
+    const used = positiveNumber(raw.used);
+    const size = positiveNumber(raw.size);
+    const cost = numberValue(rawObject(raw.cost)?.amount);
+    if (used !== null) patch.used = used;
+    if (size !== null) patch.size = size;
+    if (cost !== null) patch.costAmountUsd = cost;
+    if (Object.keys(patch).length === 0) continue;
+    if (!latest || event.seq >= latest.seq) latest = { seq: event.seq, patch };
+  }
+  if (!latest) return session;
+  return {
+    ...session,
+    usage: {
+      ...(session.usage ?? {}),
+      ...latest.patch,
+    },
+  };
+}
 
 export function mergeRawObject(previous: unknown, next: unknown) {
   const previousObject = rawObject(previous);
@@ -320,4 +350,9 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function positiveNumber(value: unknown) {
+  const number = numberValue(value);
+  return number !== null && number > 0 ? number : null;
 }

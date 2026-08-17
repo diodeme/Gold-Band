@@ -455,7 +455,7 @@ export function ElicitationCard({
           )}
         />
       ))}
-      <span className="ml-1 text-[10px] text-muted-foreground">
+      <span className="ml-1 text-ui-micro text-muted-foreground">
         {t("acp.elicitation.step", { current: currentStep + 1, total: fields.length })}
       </span>
     </div>
@@ -477,28 +477,31 @@ export function ElicitationCard({
     ) : null;
 
   return (
-    <Card className="my-2 gap-0 border-border/70 py-0">
+    <Card
+      data-theme-role="permission-card"
+      className="my-2 gap-0 bg-[var(--gb-recipe-background)] text-[var(--gb-recipe-foreground)] py-0"
+    >
       <CardContent className="space-y-2.5 px-5 py-4">
         {/* 进度指示器 */}
         {ProgressDots}
 
         {/* 当前字段标题 */}
         {showFieldTitle && (
-          <div className="text-[13px] font-medium leading-5 text-foreground">
+          <div className="text-ui-compact font-medium leading-5 text-foreground">
             {currentField.title}
           </div>
         )}
 
         {/* 表单级 message：完整保留，不能按换行拆成步骤。 */}
         {formMessage && (
-          <div className="text-[13px] leading-6 text-muted-foreground">
+          <div className="text-ui-compact leading-6 text-muted-foreground">
             <Markdown>{formMessage}</Markdown>
           </div>
         )}
 
         {/* 当前问题文本 */}
         {questionText && (
-          <div className="text-[13px] leading-6 text-muted-foreground">
+          <div className="text-ui-compact leading-6 text-muted-foreground">
             <Markdown>{questionText}</Markdown>
           </div>
         )}
@@ -511,7 +514,7 @@ export function ElicitationCard({
               return (<button key={o.value} type="button"
                   aria-pressed={sel}
                   onClick={() => { setSelectedValue(o.value); setCustomActive(false); setCustomText(""); }}
-                  className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
+                  className={cn("w-full flex items-center justify-between text-left rounded-md border px-3 py-2 text-ui-compact leading-5 transition-all",
                     sel ? ELICITATION_SELECTED_OPTION_CLASS : "hover:border-accent-foreground/35 hover:bg-accent/60",
                     ELICITATION_OPTION_INTERACTION_CLASS,
                     "active:scale-[0.995]", "disabled:opacity-50 disabled:cursor-not-allowed")}
@@ -536,7 +539,7 @@ export function ElicitationCard({
             })}
             {currentField.hasCustomVariant && !customActive && (
               <button type="button" onClick={() => { setCustomActive(true); setSelectedValue(null); }}
-                className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
+                className={cn("w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-ui-compact text-muted-foreground transition-colors",
                   "hover:border-accent-foreground/40 hover:text-foreground",
                   ELICITATION_OPTION_INTERACTION_CLASS)}
               ><Pencil className="size-4" /><span>{t("acp.elicitation.customPlaceholder", "其他答案...")}</span></button>
@@ -575,7 +578,7 @@ export function ElicitationCard({
                     )
                   }
                   className={cn(
-                    "w-full flex items-center gap-2.5 text-left rounded-md border px-3 py-2 text-[13px] leading-5 transition-all",
+                    "w-full flex items-center gap-2.5 text-left rounded-md border px-3 py-2 text-ui-compact leading-5 transition-all",
                     selected
                       ? ELICITATION_SELECTED_OPTION_CLASS
                       : "hover:border-accent-foreground/35 hover:bg-accent/60",
@@ -620,7 +623,7 @@ export function ElicitationCard({
                   setMultiValues([]);
                 }}
                 className={cn(
-                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
+                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-ui-compact text-muted-foreground transition-colors",
                   "hover:border-accent-foreground/40 hover:text-foreground",
                   ELICITATION_OPTION_INTERACTION_CLASS,
                 )}
@@ -671,7 +674,7 @@ export function ElicitationCard({
                 type="button"
                 onClick={() => setCustomActive(true)}
                 className={cn(
-                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground transition-colors",
+                  "w-full flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-ui-compact text-muted-foreground transition-colors",
                   "hover:border-accent-foreground/40 hover:text-foreground",
                   ELICITATION_OPTION_INTERACTION_CLASS,
                   "disabled:opacity-50",

@@ -26,6 +26,7 @@ import {
   conversationDirectoryWorkspaceResourceKey,
   ConversationWorkspaceStore,
   createConversationWorkspaceScope,
+  createDraftConversationWorkspaceScope,
   RightWorkspaceProvider,
   useRightWorkspace,
   type AgentTranscriptLocator,
@@ -91,7 +92,7 @@ function OpenEmptyWorkspace() {
   return null;
 }
 
-function ConversationDirectoryEntry() {
+function ConversationDirectoryEntry({ attemptId = 'attempt-1' }: { attemptId?: string }) {
   const workspace = useRightWorkspace();
   useEffect(() => {
     if (!workspace.scopeKey) return;
@@ -107,11 +108,11 @@ function ConversationDirectoryEntry() {
         runId: 'run-1',
         roundId: 'round-1',
         nodeId: 'node-1',
-        attemptId: 'attempt-1',
+        attemptId,
       },
     });
     return () => workspace.setConversationDirectoryEntry(null);
-  }, [workspace.scopeKey, workspace.setConversationDirectoryEntry]);
+  }, [attemptId, workspace.scopeKey, workspace.setConversationDirectoryEntry]);
   return null;
 }
 
@@ -143,11 +144,15 @@ function SeedWorkflowResource({ guarded = false }: { guarded?: boolean }) {
 
 function WorkspaceProbe() {
   const workspace = useRightWorkspace();
+  const runDirectory = workspace.tabs.find((tab) => tab.kind === 'conversation-directory');
   return (
     <output
       data-workspace-tab-count={workspace.tabs.length}
       data-workspace-active-tab={workspace.activeTabKey ?? ''}
       data-workspace-width={workspace.width}
+      data-workspace-open={workspace.requestedOpen}
+      data-workspace-open-revision={workspace.openRevision}
+      data-workspace-run-directory-attempt={runDirectory?.kind === 'conversation-directory' ? runDirectory.locator.attemptId : ''}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
     </output>
@@ -221,28 +226,107 @@ describe('right workspace DOM lifecycle', () => {
     store.save(first, {
       tabs: [{ ...resource('agent-a'), scopeKey: first.key }],
       activeTabKey: resource('agent-a').key,
-      requestedOpen: true,
-      openRevision: 1,
     });
     store.save(second, {
       tabs: [{ ...resource('agent-b'), scopeKey: second.key }],
       activeTabKey: resource('agent-b').key,
-      requestedOpen: true,
-      openRevision: 1,
     });
+    store.openWorkspace(first, { explicit: true });
     try {
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-a');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('true');
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={second} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-b');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
+
+      store.openWorkspace(second, { explicit: true });
+      store.closeWorkspace(first);
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
+      await act(async () => {
+        root.render(<RightWorkspaceProvider scope={second} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
+      });
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('true');
       await act(async () => {
         root.render(<RightWorkspaceProvider scope={first} store={store}><WorkspaceProbe /></RightWorkspaceProvider>);
       });
       expect(container.querySelector('output')?.textContent).toBe('agent-a');
+      expect(container.querySelector('output')?.dataset.workspaceOpen).toBe('false');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('restores shell presentation and promotes draft content into the created conversation', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+
+    function OpenDraftWorkspace() {
+      const workspace = useRightWorkspace();
+      useEffect(() => {
+        void workspace.openResource({ ...resource('draft-agent'), scopeKey: draft.key });
+        workspace.setWidth(684);
+      }, [workspace.openResource, workspace.setWidth]);
+      return null;
+    }
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={draft} store={store} initialWidth={440}>
+            <OpenDraftWorkspace />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '1',
+      });
+
+      await act(async () => root.render(<div data-run-mode="true" />));
+      expect(container.querySelector('[data-run-mode="true"]')).not.toBeNull();
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={draft} store={store} initialWidth={440}>
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '1',
+      });
+
+      store.promoteDraft(draft, conversation);
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={conversation} store={store} initialWidth={440}>
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceOpen: 'true',
+        workspaceWidth: '684',
+        workspaceTabCount: '1',
+      });
+      expect(container.querySelector('output')?.textContent).toBe('draft-agent');
     } finally {
       await act(async () => root.unmount());
     }
@@ -315,6 +399,21 @@ describe('right workspace DOM lifecycle', () => {
       expect(emptyOption).not.toBeNull();
       await act(async () => emptyOption?.click());
       expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope}>
+            <OpenEmptyWorkspace />
+            <ConversationDirectoryEntry attemptId="attempt-2" />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const probe = container.querySelector('output');
+      expect(probe?.getAttribute('data-workspace-tab-count')).toBe('1');
+      expect(probe?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+      expect(probe?.getAttribute('data-workspace-run-directory-attempt')).toBe('attempt-2');
 
       const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
       await act(async () => {

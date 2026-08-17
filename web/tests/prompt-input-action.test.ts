@@ -1,13 +1,24 @@
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { promptInputActionTitle } from '@/components/prompt-kit/prompt-input';
+import { PromptInput, PromptInputAction } from '@/components/prompt-kit/prompt-input';
 
 describe('PromptInputAction', () => {
-  it('derives native tooltip titles from simple labels', () => {
-    expect(promptInputActionTitle('Send')).toBe('Send');
-    expect(promptInputActionTitle(12)).toBe('12');
-  });
+  it('uses the shared Tooltip trigger without emitting a native title', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        PromptInput,
+        null,
+        React.createElement(
+          PromptInputAction,
+          { tooltip: 'Send' },
+          React.createElement('button', { type: 'button', 'aria-label': 'Send' }, 'Send'),
+        ),
+      ),
+    );
 
-  it('does not stringify complex tooltip nodes into noisy titles', () => {
-    expect(promptInputActionTitle({} as never)).toBeUndefined();
+    expect(html).toContain('data-slot="prompt-input-action"');
+    expect(html).toContain('data-state="closed"');
+    expect(html).not.toContain('title=');
   });
 });

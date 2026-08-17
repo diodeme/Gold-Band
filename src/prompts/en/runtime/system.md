@@ -38,6 +38,7 @@ Current node role:
 
 Current node artifact rules:
 If the user interrupts the current work and discusses something else in the same session, treat that as temporarily leaving workflow execution. Until runtime explicitly asks you to continue the workflow, you do not need to follow the artifact-output semantics in this section; respond naturally to the user's current request.
+The user's latest explicit instructions about the current task during the interruption remain effective after runtime resumes the workflow. Such instructions may change the task content, deliverable, or the execution process prescribed by the role. Resuming runtime control does not by itself mean returning to the role's pre-interruption process. Ordinary conversation unrelated to the current task does not modify the task. User instructions cannot override the artifact output contract below, Gold Band file rules, or safety and capability boundaries.
 
 {% if output_contract %}
 - Output artifact: {{ output_contract.artifact }}

@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_LAYOUT,
+  CONVERSATION_HOME_COMPOSER_LAYOUT,
+} from '@/lib/conversation-composer-layout';
 
 const composerSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)),
@@ -33,27 +36,96 @@ const workflowEditorSource = readFileSync(
   fileURLToPath(new URL('../src/components/WorkflowEditor.tsx', import.meta.url)),
   'utf8',
 );
+const runModeManagementSource = readFileSync(
+  fileURLToPath(new URL('../src/pages/RunModeManagementPage.tsx', import.meta.url)),
+  'utf8',
+);
 const acpChatSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/ACPChatDialog.tsx', import.meta.url)),
   'utf8',
 );
 
 describe('responsive desktop layout contracts', () => {
-  it('uses explicit container-query rows for the narrow composer toolbar', () => {
+  it('shows the workspace info bar only for quick starts and keeps scheduled workspace selection in the toolbar', () => {
+    expect(composerSource).toContain('data-conversation-workspace-info="true"');
+    expect(composerSource).toContain('{!scheduledMode ? (');
+    expect(composerSource).toContain('workLocation={workLocation}');
+    expect(composerSource).toContain("void selectLocation('worktree')");
+    expect(composerSource).toMatch(/\{scheduledMode \? \(\s*<ConversationWorkspaceControl/u);
+  });
+
+  it('uses a low inset info rail above the quick composer without affecting the session composer', () => {
+    const infoBarBaseClasses = CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName
+      .split(' ')
+      .filter((className) => !className.startsWith('before:') && !className.startsWith('after:'));
+
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('mx-12');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('h-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('items-center');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('rounded-t-2xl');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('[--conversation-workspace-info-surface:light-dark(var(--gold-surface-high),var(--gb-conversation-background))]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:-left-4');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:absolute');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:-right-4');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:absolute');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('bg-muted/80');
+    expect(infoBarBaseClasses).not.toContain('absolute');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName).toBe('min-w-0');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName');
+    expect(acpChatSource).toContain('"absolute left-0 top-0 z-20');
+    expect(acpChatSource).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
+    expect(acpChatSource).not.toContain('COMPOSER_ATTACHED_INFO_SURFACE_CLASS_NAME');
+    expect(composerSource).not.toContain('bg-muted/45');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('pt-2');
+    expect(composerSource).not.toContain("scheduledMode ? '' : '-mt-2'");
+    expect(composerSource).not.toContain('relative z-10 rounded-2xl border-border/60 bg-card/60');
+    expect(composerSource).not.toContain('rounded-tl-none');
+  });
+
+  it('keeps simple composer submit actions beside the workspace when space allows', () => {
     expect(composerSource).toContain('data-slot="conversation-composer-toolbar"');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName');
-    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName');
+    expect(composerSource).toContain("data-layout={isDirect ? 'configured' : 'simple'}");
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid grid-cols-1');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('grid-cols-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('@xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).not.toContain('@sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName).toContain('justify-end');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('w-fit');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('max-w-full');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).toContain('flex-initial');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName).not.toContain('flex-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@sm/conversation-composer:grid-cols-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).not.toContain('@2xl/conversation-composer:flex');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('w-full max-w-none');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('w-full');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('@lg/conversation-composer:w-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('w-fit');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('justify-self-end');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('@sm/conversation-composer:col-start-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('@lg/conversation-composer:col-start-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('h-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).toContain('w-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName).not.toContain('w-full');
+    expect(composerSource.match(/CONVERSATION_HOME_COMPOSER_LAYOUT\.submitActionsClassName/gu)).toHaveLength(2);
     expect(composerSource).not.toContain('basis-[15rem]');
     expect(composerSource).not.toContain('basis-[22rem]');
+  });
+
+  it('keeps the session composer command bar compact without shrinking the responsive home toolbar', () => {
+    expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('mt-1');
+    expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('px-1 py-1');
+    expect(ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName).toContain('h-8');
+    expect(acpChatSource.match(/triggerClassName=\{ACP_SESSION_COMPOSER_LAYOUT\.configTriggerClassName\}/gu)).toHaveLength(2);
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('mt-3');
   });
 
   it('stacks run-mode and Agent controls before their composer container is wide enough', () => {
@@ -94,15 +166,14 @@ describe('responsive desktop layout contracts', () => {
     expect(contextSource).toContain("returnToImportResult={profileImport.surface === 'editing'}");
   });
 
-  it('uses nested container widths for settings sections and theme cards', () => {
+  it('uses nested container widths for settings sections and the theme drawer', () => {
     expect(settingsSource).toContain('@container/settings-section');
     expect(settingsSource).toContain('@container/settings-content');
-    expect(settingsSource).toContain('@6xl/settings-content:grid-cols-2');
-    expect(settingsSource).toContain('@container/theme-summary');
-    expect(settingsSource).toContain('@xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]');
     expect(settingsSource).toContain('@container/theme-drawer');
     expect(settingsSource).toContain('@2xl/theme-drawer:grid-cols-2');
-    expect(settingsSource).not.toContain('@lg/theme-drawer:grid-cols-[72px_minmax(0,1fr)]');
+    expect(settingsSource).toContain('@container/theme-summary');
+    expect(settingsSource).toContain('@xl/theme-summary:grid-cols-[auto_minmax(0,1fr)_auto]');
+    expect(settingsSource).toContain('@lg/theme-summary:col-span-2');
     expect(settingsSource).not.toContain('flex min-h-32 gap-4');
     expect(settingsSource).not.toContain('md:grid-cols-2');
     expect(settingsSource).not.toContain('lg:grid-cols-[160px_minmax(0,1fr)]');
@@ -114,8 +185,23 @@ describe('responsive desktop layout contracts', () => {
     expect(runDetailSource).toContain('@container/run-detail');
     expect(runDetailSource).toContain('@4xl/run-detail:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]');
     expect(workflowEditorSource).toContain('@container/workflow-editor');
-    expect(workflowEditorSource).toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
+    expect(workflowEditorSource).toContain("data-workflow-editor-layout={isCompact ? 'compact' : 'split'}");
+    expect(workflowEditorSource).toContain('<ResizablePanelGroup orientation="horizontal"');
+    expect(workflowEditorSource).toContain("compactPane === 'canvas' ? canvasSurface : inspectorSurface");
+    expect(workflowEditorSource).not.toContain('@5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]');
     expect(workflowEditorSource).toContain('max-w-[calc(100%-1.5rem)] flex-wrap');
+    expect(workflowEditorSource).toContain('data-slot="worker-inspector"');
+    expect(workflowEditorSource).toContain('data-slot="worker-model-config"');
+    expect(workflowEditorSource).toContain('data-slot="worker-node-config"');
+    expect(workflowEditorSource).not.toContain('<Badge variant="outline">worker</Badge>');
+  });
+
+  it('fills the remaining workflow management viewport and keeps inspector scrolling internal', () => {
+    expect(runModeManagementSource).toContain("mode === 'workflow' ? 'flex flex-col gap-6 overflow-hidden' : 'space-y-6 overflow-y-auto pb-6'");
+    expect(runModeManagementSource).toContain('className="min-h-0 min-w-0 flex-1 overflow-hidden"');
+    expect(runModeManagementSource).toContain('className="h-full min-h-0"');
+    expect(workflowEditorSource).toContain('<ScrollArea className="size-full">');
+    expect(workflowEditorSource).toContain("cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)");
   });
 
   it('keeps raw frame search separate while filters wrap horizontally inside the workspace width', () => {

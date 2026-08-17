@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SourceControlStore } from '@/components/workspace/source-control/source-control-store';
 import i18n from '@/i18n';
 import type {
+  GitCapabilityVm,
   GitHistoryPageVm,
   GitCommitReviewVm,
   GitMutationResultVm,
@@ -10,6 +11,50 @@ import type {
 } from '@/types';
 
 describe('source control session store', () => {
+  it('models missing Git and non-repositories before requesting heavy repository data', async () => {
+    const api = fakeApi();
+    api.getCapability.mockResolvedValueOnce(capability('not-installed'));
+    const store = new SourceControlStore(api);
+
+    await store.ensureLoaded('project-1', 'D:/not-a-repository');
+
+    expect(store.session('project-1', 'D:/not-a-repository')).toMatchObject({
+      status: 'unavailable',
+      capability: { status: 'not-installed' },
+      error: null,
+    });
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    expect(api.getHistory).not.toHaveBeenCalled();
+  });
+
+  it('initializes a non-repository and loads its unborn Git workspace without a second error state', async () => {
+    const api = fakeApi();
+    api.getCapability
+      .mockResolvedValueOnce(capability('repository-required'))
+      .mockResolvedValueOnce(capability('head-required'));
+    api.initializeRepository.mockResolvedValueOnce(capability('head-required'));
+    const emptySnapshot = repositorySnapshot('D:/repo');
+    emptySnapshot.repository.headOid = null;
+    emptySnapshot.repository.currentBranch = null;
+    emptySnapshot.repository.unborn = true;
+    api.getSnapshot.mockResolvedValueOnce(emptySnapshot);
+    api.getHistory.mockResolvedValueOnce(historyPage('unborn-history'));
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    const request = store.initializeRepository('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').pendingAction).toEqual({ kind: 'repository-initialize', path: null });
+    await request;
+
+    expect(api.initializeRepository).toHaveBeenCalledWith('project-1');
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'ready',
+      capability: { status: 'head-required' },
+      snapshot: { repository: { unborn: true } },
+      error: null,
+    });
+  });
+
   it('localizes the aggregated changed-file count in both supported languages', () => {
     expect(i18n.t('sourceControl.changedFileCount', { count: 2, lng: 'zh-CN' })).toBe('2 个变更文件');
     expect(i18n.t('sourceControl.changedFileCount', { count: 2, lng: 'en' })).toBe('2 changed files');
@@ -20,13 +65,21 @@ describe('source control session store', () => {
     expect(i18n.t('errors.git.commit-review-patch-identity-failed', { lng: 'en' })).not.toContain('errors.git');
   });
 
+  it('labels history pagination without claiming an unknown total page count', () => {
+    expect(i18n.t('sourceControl.historyCurrentPage', { page: 3, lng: 'zh-CN' })).toBe('第 3 页');
+    expect(i18n.t('sourceControl.historyCurrentPage', { page: 3, lng: 'en' })).toBe('Page 3');
+  });
+
   it('restores repository data and view state after a Diff tab round trip without reloading', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
 
     await store.ensureLoaded('project-1', 'D:/repo');
     store.setActiveTab('project-1', 'D:/repo', 'history');
+    store.setRepositoryTab('project-1', 'D:/repo', 'stashes');
     store.setHistoryPage('project-1', 'D:/repo', 2);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'commit-list', 144);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'review-list', 288, 'review-1');
     store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], { additive: false, range: false });
 
     // Remounting SourceControlWorkspacePanel calls ensureLoaded again.
@@ -37,10 +90,30 @@ describe('source control session store', () => {
     expect(store.session('project-1', 'D:/repo')).toMatchObject({
       status: 'ready',
       activeTab: 'history',
+      repositoryTab: 'stashes',
       historyPage: 2,
       canonicalWorkspacePath: 'D:/repo',
     });
     expect(store.session('project-1', 'D:/repo').selectedCommitOids.has('commit-1')).toBe(true);
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-1')).toEqual({
+      commitList: 144,
+      reviewList: 288,
+    });
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-2').reviewList).toBe(0);
+  });
+
+  it('resets only the commit-list scroll position when changing history pages', async () => {
+    const store = new SourceControlStore(fakeApi());
+    await store.ensureLoaded('project-1', 'D:/repo');
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'commit-list', 720);
+    store.setHistoryScrollPosition('project-1', 'D:/repo', 'review-list', 240, 'review-1');
+
+    store.setHistoryPage('project-1', 'D:/repo', 1);
+
+    expect(store.historyScrollPositions('project-1', 'D:/repo', 'review-1')).toEqual({
+      commitList: 0,
+      reviewList: 240,
+    });
   });
 
   it('reloads only on explicit refresh and resets stale history navigation', async () => {
@@ -184,6 +257,29 @@ describe('source control session store', () => {
     expect(store.session('project-1', 'D:/repo').commitReview?.selectedOids).toEqual(['commit-2']);
   });
 
+  it('publishes commit selection and its loading state before review I/O completes', async () => {
+    const review = deferred<GitCommitReviewVm>();
+    const api = fakeApi();
+    api.getCommitReview.mockReturnValueOnce(review.promise);
+    const store = new SourceControlStore(api);
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    store.selectCommit('project-1', 'D:/repo', 'commit-1', ['commit-1'], {
+      additive: false,
+      range: false,
+    });
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      focusedCommitOid: 'commit-1',
+      historyDetailLoading: true,
+      commitReview: null,
+    });
+    expect(store.session('project-1', 'D:/repo').selectedCommitOids.has('commit-1')).toBe(true);
+
+    review.resolve(commitReview(['commit-1']));
+    await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').historyDetailLoading).toBe(false));
+  });
+
   it('reuses a commit review result for the same ordered selection and revision', async () => {
     const api = fakeApi();
     const store = new SourceControlStore(api);
@@ -293,6 +389,7 @@ describe('source control session store', () => {
     const store = new SourceControlStore(api);
 
     const older = store.ensureLoaded('project-1', 'D:/repo');
+    await vi.waitFor(() => expect(api.getSnapshot).toHaveBeenCalledTimes(1));
     const newer = store.refresh('project-1', 'D:/repo');
     await newer;
     firstSnapshot.resolve(repositorySnapshot('D:/repo', 'revision-old'));
@@ -342,6 +439,17 @@ describe('source control session store', () => {
     await vi.waitFor(() => expect(store.session('project-1', 'D:/repo').pendingAction).toBeNull());
     expect(events.api.getSnapshot).toHaveBeenCalledTimes(2);
     expect(events.api.getOperation).not.toHaveBeenCalled();
+    expect(store.session('project-1', 'D:/repo').activeOperation).toMatchObject({
+      operationId: 'operation-1',
+      status: 'succeeded',
+    });
+
+    store.setActiveTab('project-1', 'D:/repo', 'repository');
+    store.setActiveTab('project-1', 'D:/repo', 'changes');
+    expect(store.session('project-1', 'D:/repo').activeOperation?.status).toBe('succeeded');
+
+    store.dismissOperationResult('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').activeOperation).toBeNull();
   });
 
   it('preserves a structured Git failure reason after the terminal refresh', async () => {
@@ -378,6 +486,10 @@ describe('source control session store', () => {
       code: 'git.authentication-failed',
       params: { exitCode: 128, reason: "fatal: Authentication failed for 'https://github.com/example/repo.git/'" },
     });
+
+    store.dismissOperationResult('project-1', 'D:/repo');
+    expect(store.session('project-1', 'D:/repo').activeOperation).toBeNull();
+    expect(store.session('project-1', 'D:/repo').error).toBeNull();
   });
 
   it('debounces matching repository events and preserves navigation during snapshot invalidation', async () => {
@@ -388,6 +500,12 @@ describe('source control session store', () => {
       await store.ensureLoaded('project-1', 'D:/repo');
       store.setActiveTab('project-1', 'D:/repo', 'history');
       store.setHistoryPage('project-1', 'D:/repo', 4);
+      store.setSubject('project-1', 'D:/repo', 'draft subject');
+      store.setBody('project-1', 'D:/repo', 'draft body');
+      const snapshotRefresh = deferred<GitSourceControlSnapshotVm>();
+      const historyRefresh = deferred<GitHistoryPageVm>();
+      events.api.getSnapshot.mockReturnValueOnce(snapshotRefresh.promise);
+      events.api.getHistory.mockReturnValueOnce(historyRefresh.promise);
 
       events.emitState({
         projectId: 'project-1',
@@ -408,7 +526,15 @@ describe('source control session store', () => {
       expect(store.session('project-1', 'D:/repo')).toMatchObject({
         activeTab: 'history',
         historyPage: 4,
+        pendingAction: null,
+        refreshing: 'background',
+        subject: 'draft subject',
+        body: 'draft body',
       });
+      snapshotRefresh.resolve(repositorySnapshot('D:/repo', 'revision-2'));
+      historyRefresh.resolve(historyPage('history-2'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.session('project-1', 'D:/repo').refreshing).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -436,6 +562,8 @@ describe('source control session store', () => {
 
 function fakeApi() {
   return {
+    getCapability: vi.fn(async () => capability('ready')),
+    initializeRepository: vi.fn(async () => capability('head-required')),
     getSnapshot: vi.fn(async (_projectId: string, workspacePath?: string | null) => repositorySnapshot(workspacePath ?? 'D:/repo')),
     getHistory: vi.fn(async () => historyPage('history-1')),
     getCommitReview: vi.fn(async (_projectId: string, _workspacePath: string | null | undefined, query: { selectedOids: string[] }) => ({
@@ -449,6 +577,15 @@ function fakeApi() {
     startOperation: vi.fn(),
     getOperation: vi.fn(),
     cancelOperation: vi.fn(),
+  };
+}
+
+function capability(status: GitCapabilityVm['status']): GitCapabilityVm {
+  return {
+    status,
+    repoRoot: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo',
+    commonDir: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo/.git',
+    head: status === 'ready' ? 'a'.repeat(40) : null,
   };
 }
 

@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
 
 use crate::app::RuntimeLifecycleEvent;
+use crate::storage::write_json;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
@@ -552,39 +553,6 @@ pub fn persist_observability_snapshot_best_effort(
     }
 }
 
-/// Synchronous snapshot persistence for global state (revision + counters).
-///
-/// Unlike `persist_observability_snapshot_best_effort`, this writes directly
-/// to disk within the caller lock scope.  The revision counter and session
-/// counters must survive process interruption, so the write cannot be deferred
-/// to a background channel that may be dropped on crash.
-pub fn persist_observability_snapshot_sync(
-    path: Utf8PathBuf,
-    state: ExecutionObservabilityState,
-) {
-    let revision = state.event_revision;
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        tracing::warn!(path = %path, revision, "snapshot sync mkdir failed");
-        return;
-    }
-    let temporary = path.with_extension("json.tmp");
-    match serde_json::to_vec_pretty(&state) {
-        Ok(json) => {
-            if std::fs::write(&temporary, &json).is_ok() {
-                let _ = std::fs::rename(&temporary, &path);
-            } else {
-                tracing::warn!(path = %path, revision, "snapshot sync write failed");
-            }
-        }
-        Err(_) => {
-            tracing::warn!(path = %path, revision, "snapshot sync serialize failed");
-        }
-    }
-}
-
 const SNAPSHOT_QUEUE_CAPACITY: usize = 2048;
 
 struct SnapshotWrite {
@@ -601,18 +569,14 @@ fn snapshot_writer() -> &'static std::sync::mpsc::SyncSender<SnapshotWrite> {
             .name("observability-snapshot-writer".into())
             .spawn(move || {
                 while let Ok(write) = receiver.recv() {
-                    let Some(parent) = write.path.parent() else {
-                        continue;
-                    };
-                    if std::fs::create_dir_all(parent).is_err() {
-                        continue;
-                    }
-                    let temporary = write.path.with_extension("json.tmp");
-                    let Ok(json) = serde_json::to_vec_pretty(&write.state) else {
-                        continue;
-                    };
-                    if std::fs::write(&temporary, json).is_ok() {
-                        let _ = std::fs::rename(temporary, write.path);
+                    let revision = write.state.event_revision;
+                    if let Err(error) = write_json(&write.path, &write.state) {
+                        tracing::warn!(
+                            path = %write.path,
+                            revision,
+                            error = %error,
+                            "observability snapshot write failed"
+                        );
                     }
                 }
             });
@@ -1096,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_single_writer_preserves_latest_revision() {
+    fn snapshot_writer_atomically_overwrites_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("observability.snapshot.json"))
@@ -1106,6 +1070,14 @@ mod tests {
         let mut second = first.clone();
         second.event_revision = 2;
         persist_observability_snapshot_best_effort(path.clone(), first);
+        for _ in 0..100 {
+            if load_observability_snapshot(&path).event_revision == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(load_observability_snapshot(&path).event_revision, 1);
+
         persist_observability_snapshot_best_effort(path.clone(), second);
         for _ in 0..100 {
             if load_observability_snapshot(&path).event_revision == 2 {
@@ -1117,46 +1089,29 @@ mod tests {
     }
 
     #[test]
-    fn sync_persist_writes_revision_immediately_to_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            camino::Utf8PathBuf::from_path_buf(dir.path().join("observability.snapshot.json"))
-                .unwrap();
-        let mut state = ExecutionObservabilityState::recovered();
-        state.event_revision = 42;
-        state.counters.pause_count = 3;
-        state.counters.elicitation_count = 5;
-        persist_observability_snapshot_sync(path.clone(), state);
-        // No sleep needed — sync write is complete before return.
-        let loaded = load_observability_snapshot(&path);
-        assert_eq!(loaded.event_revision, 42);
-        assert_eq!(loaded.counters.pause_count, 3);
-        assert_eq!(loaded.counters.elicitation_count, 5);
-    }
-
-    #[test]
-    fn revision_survives_release_and_reload_from_disk() {
-        // Simulates process-interruption recovery: state is persisted to disk,
-        // then reloaded from a fresh HashMap (no in-memory cache).
+    fn revision_is_available_for_later_best_effort_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let path =
             camino::Utf8PathBuf::from_path_buf(dir.path().join("observability.snapshot.json"))
                 .unwrap();
 
-        // First "session": increment revision to 5 and record counters.
         let mut state = ExecutionObservabilityState::recovered();
         for _ in 0..5 {
             state.next_revision();
         }
         state.counters.resume_count = 2;
-        persist_observability_snapshot_sync(path.clone(), state);
+        persist_observability_snapshot_best_effort(path.clone(), state);
+        for _ in 0..100 {
+            if load_observability_snapshot(&path).event_revision == 5 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
-        // "Process restart": reload from disk — revision must be 5, not reset.
         let recovered = load_observability_snapshot(&path);
         assert_eq!(recovered.event_revision, 5);
         assert_eq!(recovered.counters.resume_count, 2);
 
-        // Next revision after recovery must be 6, not a duplicate of 1-5.
         let mut continued = recovered;
         continued.next_revision();
         assert_eq!(continued.event_revision, 6);

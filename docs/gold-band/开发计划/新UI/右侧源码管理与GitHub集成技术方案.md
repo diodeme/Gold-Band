@@ -126,6 +126,16 @@ Git Graph 和关系分析不再作为首版能力。真实仓库的多 ref DAG �
 
 ## 5. 总体架构
 
+源码管理首次加载复用已有 `GitRepositoryService.probe()`、`get_git_capability` 与 `initialize_git_repository`，建立 capability gate，而不是直接把完整 snapshot 的任意失败投影成一个 error：
+
+- `not-installed`：不请求 snapshot/history，显示 Git 安装引导和重新检测。
+- `repository-required`：显示非 Git 仓库状态，typed command 执行 `git init`；不 stage、不 commit。
+- `head-required`：允许读取源码管理 snapshot；history 对 unborn HEAD 返回稳定空页，用户从“更改”完成首次提交。
+- `worktree-required / repository-unavailable`：按稳定 capability 状态展示针对性恢复建议。
+- `ready`：snapshot/history 并行加载，真实命令失败才进入结构化错误态。
+
+capability 仅在首次进入、不可用状态的显式重试或初始化终态读取；已 ready 的后台 watcher refresh 不重复 probe。Tauri capability/init command 进入 blocking pool，避免 Git 进程等待占用 IPC event loop。
+
 ```text
 Right Workspace / Source Control
   -> RuntimeApi typed commands + events
@@ -441,6 +451,10 @@ git stash list --format=<explicit fields>
 - commit：两个 tree/commit。
 - PR：GitHub PR base/head 或 `gh pr diff` 结果转换后的统一 comparison。
 
+工作区 status 在 porcelain v2 之后并行执行 staged、unstaged 各一次批量 `git diff --numstat -z --no-ext-diff --no-textconv -M -C`，按路径合并 tracked 文件统计；Git 命令数固定为 2，不允许退化为逐文件 N+1。未跟踪文件在进入 index 前不读取正文计算行数，避免 watcher 刷新触发无界文件 I/O。只需要 branch/revision/冲突判断的内部调用使用轻量 status，不附带 numstat 查询。
+
+所有文本 comparison 在限制判断和 UTF-8 校验后统一规范换行符：CRLF 和单独 CR 均转换为 LF，统计与返回给 CodeMirror 的 before/after 共用规范化内容。CodeMirror `collapseUnchanged` 默认折叠未变化内容，仅展示差异与上下文；不能因工作树与 Git blob 的换行风格不同产生全文件 Diff 或错误 summary。
+
 文本内容最终转成统一 `FileComparisonVm`：
 
 ```ts
@@ -494,7 +508,16 @@ interface FileComparisonVm {
 - checkout 已被其他 worktree 占用的分支。
 - 对 runtime-owned worktree 使用用户创建流程覆盖。
 
-首版只查看和创建，不删除 worktree。
+Worktree 还支持 Git 原生安全删除：
+
+- 前端仅提交 typed `worktree-remove { path }`，后端先将路径规范化并与 `git worktree list` 的权威记录精确匹配。
+- 当前 command 所在 worktree 禁止删除；不存在或已经变化的目标返回稳定错误码。
+- 删除使用 repository write lock 和 `git worktree remove`，不使用 `--force`，不调用文件系统递归删除，也不顺带删除关联 branch。
+- dirty/untracked worktree 由 Git 拒绝，映射为 `git.worktree-remove-dirty` 并保留脱敏后的原始原因。
+- UI 使用行级菜单与确认 Dialog，展示完整目标路径；pending action 保存目标 path，仅目标行显示 spinner。
+- 仓库四个列表的容器、滚动区与行建立完整 `min-width: 0 / overflow-hidden` 约束链，主文案和辅助 path/ref 分配有界弹性空间，操作区固定，长 Stash/Worktree 文本不得撑宽右侧客户端。
+
+Merge/Rebase 状态机的 marker 语义不同：`MERGE_HEAD` 可判定 Merge 进行中，Rebase 进行中只以 `rebase-merge` / `rebase-apply` 目录为准；`REBASE_HEAD` 仅提供当前重放 Commit 的 OID/subject，因为 Git 成功结束后仍可能保留该文件。watcher 继续监听全部 marker 以触发刷新，但 snapshot 不得把事件触发源误当成生命周期事实。
 
 ### 8.9 Fetch/Pull/Push
 
@@ -589,10 +612,10 @@ runtime 内部分支 push 默认禁用，避免发布 `gb-dyn/*` 等内部 refs�
 失效规则：
 
 - 首次无缓存时加载，普通 Right Workspace Tab 切换、打开 Diff 和返回不失效。
-- 用户显式刷新时重新读取 snapshot/history；已有可展示数据不退回全屏 loading。
+- 已加载源码管理页面依赖 workspace/Git metadata watcher 自动刷新 snapshot/history，不显示普通本地刷新按钮；首次加载失败仍允许重试。Fetch 是显式远程同步命令，不等价于本地刷新。
 - Stage/Unstage 成功后使用 `scope=workspace` 结果只合并最新 status 与 repository revision，不刷新未变化的 refs/worktree/stash/remotes/history。
 - Commit、branch、tag、worktree 等 refs/结构变化 mutation 返回 `scope=repository`，前端在命令成功后并行读取 snapshot/history，禁止先等完整 snapshot 再串行读取 history。
-- pending action 生命周期内禁用同 workspace 的其他 Git 写操作；单文件 Stage/Unstage 在目标行按钮显示旋转状态，Commit/Fetch/Pull/Push 在主操作按钮显示旋转状态。
+- pending action 生命周期内禁用同 workspace 的其他 Git 写操作；单文件 Stage/Unstage 仅在目标行按钮显示旋转状态，其他文件行操作按钮不渲染。后台 watcher 刷新使用独立 `refreshing` 状态，不禁用 commit subject/body 或文件操作。Commit/Fetch/Pull/Push 在主操作按钮显示旋转状态。
 - 长操作结束后立即刷新 snapshot/history。
 - `GitStateMonitor` 事件使对应 repository/workspace 会话失效，不允许由每个组件自行轮询。
 - snapshot/history/detail 分别维护请求 revision；旧请求完成后不得覆盖较新刷新或操作结果。
@@ -612,13 +635,17 @@ GitHub 数据不得保存在 `SourceControlGitHubView` 的组件本地生命周�
 
 `GitHubPullRequestDetailVm` 返回 `baseRefOid/headRefOid`。点击文件时把这两个稳定 revision 写入 typed comparison locator；后端校验 40/64 位十六进制 OID 和 repo-relative path，只并行执行 base/head 两次 raw content 请求。旧的每文件 `gh pr diff --name-only` 与 `gh pr view --json baseRefOid,headRefOid,files` 消费路径删除。
 
+GitHub PR/Issue 列表和详情的宽度链从领域根容器贯穿 Tabs、TabsContent、ScrollArea 到单行，统一使用 `min-w-0 / overflow-hidden / max-w-full` 限制在右侧面板内。标题、账号、head/base 分支、label 与文件路径是可压缩省略列；导航按钮、状态和增删统计为固定列，长远端文本不得改变客户端宽度或生成横向滚动。
+
 ## 11. 提交历史与多选关系
 
 ### 11.1 历史加载
 
 - 使用 topo order。
+- 默认查询当前工作树 `HEAD` 的完整可达历史，不使用 `git log --all` 混入未合并旁支；只有显式 ref 筛选才改用目标 ref。
 - 初始加载 300 条。
 - 后续按 300 条增量加载。
+- 页码只展示当前页，不以已加载页数冒充总页数；`nextCursor` 存在时“较早”保持可用，直到实际 Root Commit 所在末页。
 - 每页携带 refs revision；refs 已变化时放弃旧 cursor 并重载。
 - 历史搜索可按 hash、subject、author 和 ref 收窄。
 - runtime checkpoint 默认压缩，可展开。
@@ -711,26 +738,44 @@ type FileComparisonSource =
 
 ### 12.5 更改区
 
+仓库标题右侧使用动态同步按钮：`behind > 0` 时显示 `↓behind ↑ahead` 并执行 Pull，否则显示 `↑ahead` 并执行 Push；同步为零时禁用，未设置 upstream 时允许首次 Push。Fetch 保持独立，用于联网更新 remote refs。Push non-fast-forward 不自动触发 Pull，只展示结构化失败，由用户显式 Fetch、Pull、Push。按钮打开原有 typed 对话框，复用 repository-scoped remote 偏好和统一 operation 状态。更改区工具栏不再重复展示同步文字按钮，仅保留右侧 `…`，承载全部暂存、全部取消暂存和保存为 stash。terminal operation 结果保留在 repository/workspace 会话中，跨 Tab 可见，直到用户关闭或下一次 operation 替换。
+
+Fetch Dialog 的 `prune` 开关默认关闭，UI 使用用户领域文案“移除远端已删除的分支记录”，并明确说明不会删除本地分支或工作区文件；接口仍使用 typed `prune: boolean`，不从文案反推行为。
+
 - 顶部显示当前分支、upstream、ahead/behind 和同步操作。
 - 分区顺序：冲突、已暂存、未暂存、未跟踪。
 - 每行显示状态、路径、rename old path、增删统计和可用操作。
+- tracked 文件增删统计由 staged/unstaged 两次批量 numstat 提供；未跟踪文件在暂存前不显示统计，暂存后由 index 统计。
 - commit composer 紧贴面板底部，包含 subject、可展开 body、commit 按钮。
 - 没有 staged change、workspace locked 或存在未解决冲突时禁止 commit。
 - stash 放在工具栏菜单，不作为文件行操作。
+- 工作区无任何变更时，空状态占满工具栏与 commit composer 之间的剩余高度并水平、垂直居中，使用 `muted-foreground` 弱化展示；有文件时才挂载变更列表滚动区。
 
 ### 12.6 历史区
 
 - 首次无历史缓存时显示真实请求 loading；普通分区往返直接恢复 `SourceControlStore` 中的历史页、选择和详情，不插入伪 loading，不重新请求。
 - 支持 ref、作者、日期、文本筛选。
-- 宽面板使用 Commit 列表/变更文件主从双栏，窄面板使用“提交/更改”单栏切换，不增加嵌套卡片。
+- 历史内容区达到 `520px` 时使用 Commit 列表/变更文件主从双栏，列表与详情最低宽度分别为 `220px / 280px`；低于阈值使用“提交/更改”单栏切换，不增加嵌套卡片。断点必须根据历史内容区容器实测宽度判断，不能依赖整个窗口断点。
 - 单击单选，Shift 范围，Ctrl/Cmd 增减，Ctrl/Cmd+Shift 合并范围；不显示 Checkbox。
 - 任意多个 Commit 只收集各自 first-parent Changes，再按旧到新合并同一文件演化链；Root 与空树比较，同一路径只返回一个首尾终态。
 - 右键提供短/完整 SHA 和当前可验证的提交归属。
-- 文件进入有界 Diff review session，同一会话只占用一个 Tab，差异导航可跨文件。
+- 更改、历史聚合、PR 文件统一进入有界 Diff review session，同一会话只占用一个 Tab；左右文件导航与上下差异导航均使用 Tooltip，差异导航可跨文件。
+- 三个领域复用同一文件行组件：绿色 A / 蓝色 M / 红色 D + 可压缩 path + `+n -n`。历史统计计算聚合链首尾终态，并按相同 before/after 端点分组执行批量 numstat；禁止逐文件读取正文或 N+1 Git 查询。PR 文件状态一次分页批量读取 REST files API，禁止逐文件请求或前端猜测。
+- 文件行纯图标操作使用 shadcn Tooltip；已暂存文件的回转图标明确为 Unstage，不与 Discard 共用语义。
 
 ### 12.7 仓库区
 
-仓库区包含分支、tags、worktrees、stash 四个子视图，使用 shadcn Tabs/DropdownMenu/Dialog/Command 等 copy-in 组件。
+仓库区包含分支、tags、worktrees、stash 四个同层级二级 Tabs，使用 shadcn Tabs/DropdownMenu/Dialog/Command 等 copy-in 组件。一次只挂载当前领域列表，`repositoryTab` 与源码管理主分区、分页、选择和 commit 草稿一起进入 repository/workspace 会话缓存；普通主 Tab 往返、打开文件或 Diff 后返回不得重置。
+
+### 12.8 Pull 冲突流程
+
+不实现可视化冲突块合并工具。`GitWorkspaceStatus.operationInProgress` 收紧为 typed `merge | rebase | cherry-pick | revert`，Rebase 同时返回当前 `oid + subject`；前端只投影 canonical Git metadata，不根据 stderr 文案猜状态。
+
+- Merge：确认后只暂存 `git diff --name-only --diff-filter=U -z` 返回的路径，再执行 `git merge --continue`；允许 `git merge --abort`。
+- Rebase：确认后只暂存当前 unmerged 路径，再执行 `git rebase --continue`；危险菜单提供 `git rebase --skip` 和 `git rebase --abort`。Skip 确认必须展示当前 Commit 短 SHA/标题并说明整个 Commit 的改动不会应用。
+- continue/add/原生命令在同一 workspace 写锁内执行，避免其他写操作插入；设置非交互 editor 环境，命令不会弹出终端编辑器。
+- watcher 增加 `MERGE_HEAD / REBASE_HEAD / rebase-merge / rebase-apply` 目标，外部 IDE 的 add/continue/skip/abort 与 Gold Band 自身操作使用同一 snapshot 收敛路径，无轮询。
+- 冲突期间普通 Commit、同步、Stage/Unstage 和仓库写操作禁用；冲突文件打开现有普通文件编辑 Tab。
 
 ## 13. PR/Issue Markdown 与 Atomic 复用
 
@@ -846,11 +891,11 @@ ready capability 按 repository/workspace session 缓存；已 ready 时窗口 f
 - changed file list。
 - URL。
 
-PR 文件 Diff 使用 typed `GitComparisonSource::GitHubPr`：
+PR 文件 Diff 使用 typed `GitComparisonSource::GitHubPr`，PR 详情先批量读取权威 files status/previous filename/stats 后构建连续审阅序列：
 
-1. PR 详情接口一次返回 changed file list 与不可变 `baseRefOid/headRefOid`；点击文件时直接写入 comparison locator，不再重复查询整 PR。
+1. PR 详情接口用 `gh api repos/{owner}/{repo}/pulls/{number}/files --paginate --slurp` 一次批量返回 typed changed file list 与不可变 `baseRefOid/headRefOid`；点击文件时直接写入 review locator，不再重复查询整 PR。
 2. `gh api --hostname <host> --method GET --header "Accept: application/vnd.github.raw+json" <contents-endpoint>` 按 base/head OID 并行读取两端文件内容。
-3. 转换为现有 `GitFileComparison`，点击 PR 文件后立即打开现有 `file-diff` resource，由新 Tab 展示 comparison loading。
+3. 转换为现有 `GitFileComparison`，点击 PR 文件后立即打开现有 `file-diff` review resource，由新 Tab 展示 comparison loading，并支持同 PR 上/下文件连续审阅。
 
 PR 列表项点击时先写入 `selected(kind, number)` locator 并显示详情 loading surface，再读取 detail cache/API；请求成功后原位收敛为详情，失败时保留返回入口与结构化错误。comparison 请求不得成为 PR 详情或文件 Tab 导航的前置条件。
 
@@ -1012,8 +1057,10 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 
 使用临时真实 Git repository，覆盖：
 
-- Git 未安装/非 repository/unborn HEAD/detached HEAD。
+- Git 未安装/非 repository/unborn HEAD/detached HEAD；unborn 真实仓库必须同时通过 snapshot 与空 history 接口，且保留未跟踪文件。
 - staged/unstaged/untracked/conflict。
+- staged/unstaged 批量 numstat，包含同一文件 index/worktree 分层统计、rename 和 binary。
+- CRLF/LF 与单独 CR 统一为 LF；8000 行文件仅换行风格不同且新增 2 行时必须为 `+2/-0`，正文不含 CR。
 - 空格、Unicode、引号、换行文件名。
 - rename/copy/type-change/submodule。
 - 初次 commit 与普通 commit hooks。
@@ -1029,6 +1076,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 ### 17.2 历史测试
 
 - 线性历史。
+- 默认 HEAD 历史排除未合并旁支，并跨多页一直到 Root Commit。
 - 双分支 merge。
 - 多层 merge。
 - octopus merge。
@@ -1069,7 +1117,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - 右键短/完整 SHA 与提交归属；同一审阅会话切换文件不增加 Tab。
 - 下一差异越过当前文件末尾后进入下一文件，上一差异反向进入前一文件末尾。
 - 源码管理 -> Diff -> 返回不得重新请求 snapshot/history，并恢复内部 Tab、分页、多选、详情和 commit 草稿。
-- 显式刷新、typed mutation 和长操作完成必须失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。
+- workspace/Git metadata watcher、typed mutation 和长操作完成必须使对应本地领域失效并刷新；不同 worktree 缓存隔离，旧请求不得覆盖新状态。GitHub 查询仍保留自身的显式刷新。
 - Stage/Unstage 不请求 snapshot/history，只合并 status-scoped 结果；refs 变化 mutation 的 snapshot/history 必须并行发起。
 - 单文件 Stage/Unstage pending 时目标按钮显示 spinner，其他 Git 写入口全部禁用，重复点击不得发起第二个接口请求。
 - GitHub capability 使用 `gh repo view <owner/repo> --json ...` positional 参数契约。
@@ -1082,7 +1130,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 - Git operation 失败后同时展示本地化原因/恢复建议和脱敏的 Git 原始失败原因。
 - 四主题、宽/窄右栏和键盘可达性。
 
-历史 Tab 契约测试固定缓存命中时立即恢复；首次加载历史与选择 Commit 聚合详情时立即显示对应局部中间态。新增 Store 接口测试覆盖标准桌面选择语义、历史/聚合缓存复用及会话清理，Rust 临时仓库测试覆盖 Root、重复 OID 去重、显式选择边界、同文件演化链终态聚合、删除/重命名端点、totals、Merge 首次进入路径以及 branch/tag contains refs；Diff 导航纯函数测试覆盖同文件 chunk、跨文件与会话边界。
+历史 Tab 契约测试固定缓存命中时立即恢复；首次加载历史与选择 Commit 聚合详情时立即显示对应局部中间态。Commit 点击必须同步发布 selected/focused/loading，再异步执行详情请求；Merge Commit 多文件 summary 使用端点分组 numstat，不读取每个文件正文。新增 Store 接口测试覆盖标准桌面选择语义、历史/聚合缓存复用及会话清理，Rust 临时仓库测试覆盖 Root、默认 HEAD 分页排除旁支、重复 OID 去重、显式选择边界、同文件演化链终态聚合、删除/重命名端点、totals、Merge 首次进入路径以及 branch/tag contains refs；Diff 导航纯函数测试覆盖同文件 chunk、跨文件与会话边界。
 
 ### 17.5 实际页面验证
 
@@ -1101,7 +1149,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 
 Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote；短 mutation 和长 operation 均保留 700ms 可见 pending 窗口，Stage 会把目标文件移动到 staged，向 `fork` Push 会从 queued 进入与桌面接口同构的 `git.authentication-failed + exitCode + reason` 终态，用于可见交互回归按钮反馈、全局写锁、错误详情、长文本换行和 remote 记忆，不改变桌面生产后端行为。
 
-2026-08-11 已在 Gold-Band 实仓测量 Git 查询基线：status 平均约 110ms、refs 约 160ms、worktrees 约 127ms、stashes 约 223ms、双 remote 查询约 389ms、history 约 330ms。旧 Stage 在 `git add` 前后串行执行 revision 校验、完整 snapshot 和 history，Windows 多进程启动累计约 1.5–3 秒；现已改为 status-scoped result，删除 Stage/Unstage 后无关 snapshot/history 查询，refs 变化 mutation 的 snapshot/history 改为并行。浏览器 mock 实际验证目标 Stage 按钮立即显示 spinner，其他 Stage/Unstage、Commit 和刷新入口禁用，完成后文件移动到“已暂存”；Commit 显示 spinner 并锁住写入口；Push queued/running 时显示“正在推送分支”并禁用仓库操作。实际 `gh 2.93.0` 已确认旧 `gh repo view --repo ...` 返回 `unknown flag: --repo`，修正后的 positional `gh repo view diodeme/Gold-Band --json nameWithOwner,defaultBranchRef` 成功返回 `main`。
+2026-08-11 已在 Gold-Band 实仓测量 Git 查询基线：status 平均约 110ms、refs 约 160ms、worktrees 约 127ms、stashes 约 223ms、双 remote 查询约 389ms、history 约 330ms。旧 Stage 在 `git add` 前后串行执行 revision 校验、完整 snapshot 和 history，Windows 多进程启动累计约 1.5–3 秒；现已改为 status-scoped result，删除 Stage/Unstage 后无关 snapshot/history 查询，refs 变化 mutation 的 snapshot/history 改为并行。DOM 回归固定目标 Stage 按钮立即显示 spinner、其他文件行操作按钮不渲染，完成后文件移动到“已暂存”；后台 watcher 刷新不锁 commit 草稿，Commit 和长 operation 仍锁住同 workspace 写入口。实际 `gh 2.93.0` 已确认旧 `gh repo view --repo ...` 返回 `unknown flag: --repo`，修正后的 positional `gh repo view diodeme/Gold-Band --json nameWithOwner,defaultBranchRef` 成功返回 `main`。
 
 2026-08-11 已使用浏览器 mock 实际验证 Push 错误与 remote 偏好：切换到 `fork` 后关闭并重开 Dialog 仍恢复选择，刷新页面并重新进入源码管理后也恢复 `fork`；确认 Push 后同时展示本地化身份验证原因、恢复建议和 Git 原始失败原因，窄右栏内长文本正常换行。验证页面、1422 端口 Vite 进程和临时日志已清理。
 
@@ -1119,9 +1167,21 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 
 本次历史终态聚合回归：Rust 覆盖重复路径聚合、创建后删除净空、重命名链、显式选择边界和删除文件 before→不存在的 comparison，共 5 项定向测试通过；`cargo check -p gold-band --lib --no-default-features` 通过。Web 源码管理相关 5 个测试文件 / 33 项测试通过，覆盖选择/迟到响应、Review 缓存复用与会话清理、GitHub capability 预热、Diff 导航、browser fixture 和中英文文件数量文案；`npm run web:build`、`cargo fmt --all` 与 `git diff --check` 通过。
 
+2026-08-12 Diff 统计与换行语义回归：真实临时仓库接口测试覆盖同一 tracked 文件 staged/unstaged 分层 numstat，以及 8000 行 CRLF blob 对 LF worktree 仅新增 2 行的 comparison，2 项均通过；后者稳定返回 `+2/-0` 且 before/after 均不含 CR。完整 UI status 只并行执行 staged/unstaged 两次批量 numstat，命令数不随文件数增长；history、revision 校验和 stash/commit 前置判断继续使用轻量 status。Web 源码管理相关 8 个测试文件 / 55 项通过，TypeScript、生产构建、Rust lib/desktop check 与 `git diff --check` 通过。本轮按用户要求未启动前端、浏览器或客户端，实际页面视觉验收由用户执行。
+
 本次跨分支聚合回归：真实 Gold-Band 历史确认 `870e077b → d12b9cd9` 的 `src-tauri/src/commands.rs` 终态为 `+173/-28`，旁支 `0cf78b22` 与 `870e077b` 的该文件 stable patch-id 相同；修复前错误跨基线比较为 `+868/-13`。Rust 7 项 `commit_review_` 测试全部通过，覆盖等价旁支去重、相同统计但内容不同的旁支保留，以及原有净空/重命名/显式选择/删除语义；Web 4 个相关测试文件共 32 项通过，生产构建与 `git diff --check` 通过。内置浏览器实际验证历史选择、聚合文件工作区、Tab 往返缓存和无 Canvas Graph，控制台无 warning/error。
 
 2026-08-12 历史缓存与分页回归：删除普通源码管理 Tab 往返时两帧延迟挂载的伪 loading，缓存命中后立即恢复原历史页、选择和详情。旧 `@tomplum/react-git-log@3.5.1` 白屏已确认为分页边界淡出线才触发 Canvas gradient，而该库把传入的 hex 颜色按 `rgb(r,g,b)` 解析导致 `NaN`；新历史列表不包含 Canvas/Graph 路径。Browser preview 新增 303 条确定性两页 fixture；实测从 300 条首页进入第 2/2 页显示剩余 3 条，再往返“仓库/历史”仍立即恢复第 2 页，无 loading、无 console error/warning。
+
+2026-08-12 当前分支历史范围与点击性能回归：默认历史从 `git log --all` 修正为当前工作树 `HEAD` 的可达祖先链；Gold-Band 实仓基线为 main 698 条、all 839 条，原截图底部实际是 `--all` 的第 298–300 项旁支混排结果。真实临时仓库接口测试固定默认查询排除未合并旁支，并持续分页到 parent 为空的 Root Commit。Commit 行修正 Context Menu trigger 事件边界，点击同步发布 selected/focused/loading；聚合文件统计按首尾端点批量执行 numstat，删除逐文件正文读取的 N+1。内置浏览器实测首项点击立即选中并进入 1 文件详情，第 1 页 300 条、第 2 页 3 条且末页禁用“较早”，控制台无 error/warning。
+
+2026-08-12 大文件 Diff 精度与初始定位回归：Gold-Band `2ab91a05..6b965885` 的 `src-tauri/src/commands.rs` 权威 Git 终态为 `+221/-40`。CodeMirror Merge 默认 `scanLimit=500` 在约 7700 行文件上提前降级，实测把真实约 98 个变化块误渲染为 `+3896/-3715` 的大片变化；提高到 10000 后恢复为 `+203/-22` 的精确 CodeMirror 字符/行块投影，20 次本地算法基线平均约 131ms，并设置 300ms timeout 防止极端输入长期占用主线程。审阅 landing 状态拆为 `top / first-change / last-change`：文件列表和左右文件切换从顶部打开，只有上下差异跨文件时定位首/末变化，消除首次打开直接跳到第 27 个差异的问题。该修改不增加任何后端 Git 命令、正文请求或缓存体积。
+
+2026-08-13 审阅 summary 与滚动状态回归：确认 Git `numstat` 与 CodeMirror diff 对移动/重复代码可能给出不同增删统计，审阅 item 现携带历史 numstat、workspace numstat 或 GitHub PR files API 的领域 summary，列表与 Diff Tab 统一消费；正文算法只渲染 chunks，权威 summary 缺失时才使用 comparison fallback。历史 Commit 列表和聚合文件列表使用 repository/workspace-scoped 独立轻量 scroll offset，相同 review 从 Diff 返回时在 viewport 重挂载并完成布局后恢复文件位置，分页在状态提交前把 Commit offset 归零；scroll handler 只写运行期数字，不发布 React state。鼠标 Commit 点击后主动释放普通 button focus，键盘 focus-visible 保留。以上修改不增加 Git/网络请求、正文解析、缓存条目或重渲染范围；布局后只执行一次常数级滚动恢复。
+
+2026-08-16 修复 unborn history 与空树端点统计：porcelain v2 的 `branch.oid (initial)` 在 Git 协议解析边界直接归一化为 `None`，snapshot 与 history 共享同一 canonical HEAD 事实，空仓库稳定返回空历史页；commit review 的 `beforeOid=None` 统一表示空树，使用当前仓库 `git hash-object -t tree --stdin` 动态获得匹配 SHA-1/SHA-256 object format 的空树 OID，再执行端点批量 numstat，不能把非 Root 的最终 Commit 错当成只与其父提交比较。真实临时仓库接口测试固定“重复保存的同路径从空树累计 +2/-0”和 unborn 空历史语义；正常历史与有 before 端点不增加命令，只有空树比较增加一次常数级 Git 调用，不读取正文、不引入文件级 N+1、缓存或新状态。
+
+2026-08-17 unborn repository 回归：Git porcelain v2 的 `branch.oid (initial)` 在 typed 解析入口统一规范化为 `None`，删除 snapshot 消费端的 sentinel 特判，使 snapshot、history 与 revision 共享同一 HEAD 语义。真实临时仓库接口测试固定 `git init` 后无首次提交时 snapshot 仍可读取未跟踪文件、repository 标记为 unborn 且 history 返回空页；不新增 Git 命令、前端状态、缓存或依赖。
 
 ## 18. 最终验收标准
 

@@ -1,0 +1,858 @@
+{
+  "schemaVersion": 2,
+  "contractVersion": 2,
+  "id": "builtin.gold-band",
+  "version": "2.0.0",
+  "source": "builtin",
+  "name": {
+    "zh-CN": "Gold Band",
+    "en": "Gold Band"
+  },
+  "author": "Gold Band",
+  "capabilities": [
+    "tokens",
+    "component-recipes",
+    "fonts",
+    "avatars"
+  ],
+  "schemes": {
+    "light": {
+      "windowSurface": "#ffffff",
+      "preview": {
+        "background": "#ffffff",
+        "surface": "#ffffff",
+        "border": "#e5e5e5",
+        "primary": "#0d0d0d",
+        "foreground": "#0d0d0d",
+        "muted": "#6e6e6e",
+        "success": "#0a7a5e",
+        "danger": "#c83237"
+      },
+      "semantic": {
+        "background": "#ffffff",
+        "foreground": "#0d0d0d",
+        "title": "#0d0d0d",
+        "card": "#ffffff",
+        "cardForeground": "#0d0d0d",
+        "popover": "#ffffff",
+        "popoverForeground": "#0d0d0d",
+        "primary": "#0d0d0d",
+        "primaryForeground": "#ffffff",
+        "secondary": "#f5f5f5",
+        "secondaryForeground": "#1a1a1a",
+        "muted": "#f5f5f5",
+        "mutedForeground": "#6e6e6e",
+        "accent": "#e8f5f0",
+        "accentForeground": "#0a7a5e",
+        "destructive": "#c83237",
+        "border": "#e5e5e5",
+        "input": "#c4c4c4",
+        "ring": "#10a37f",
+        "selection": "#d8efe8",
+        "selectionForeground": "#0d0d0d",
+        "messageUser": "#f5f5f5",
+        "messageUserForeground": "#0d0d0d",
+        "contentHeader": "#ffffff",
+        "contentHeaderForeground": "#0d0d0d",
+        "conversationBackground": "#ffffff",
+        "conversationForeground": "#0d0d0d",
+        "messageAssistant": "transparent",
+        "messageAssistantForeground": "#0d0d0d",
+        "composer": "#ffffff",
+        "composerForeground": "#0d0d0d",
+        "activity": "#fafafa",
+        "activityForeground": "#0d0d0d",
+        "toolCard": "#ffffff",
+        "toolCardForeground": "#0d0d0d",
+        "permissionCard": "#e8f5f0",
+        "permissionCardForeground": "#0a7a5e",
+        "workspaceTab": "#fafafa",
+        "workspaceTabForeground": "#0d0d0d",
+        "resourceHeader": "#ffffff",
+        "resourceHeaderForeground": "#0d0d0d",
+        "fileTree": "#fafafa",
+        "fileTreeForeground": "#0d0d0d",
+        "editor": "#ffffff",
+        "editorForeground": "#0d0d0d",
+        "diffAdded": "rgba(22,121,75,.12)",
+        "diffAddedForeground": "#12653f",
+        "diffRemoved": "rgba(201,60,72,.12)",
+        "diffRemovedForeground": "#a92d39",
+        "diffModified": "rgba(82,101,173,.12)",
+        "diffModifiedForeground": "#46558f",
+        "sidebar": "#fafafa",
+        "sidebarForeground": "#0d0d0d",
+        "sidebarPrimary": "#0d0d0d",
+        "sidebarPrimaryForeground": "#ffffff",
+        "sidebarAccent": "#ececec",
+        "sidebarAccentForeground": "#0d0d0d",
+        "sidebarBorder": "#e5e5e5",
+        "sidebarRing": "#10a37f",
+        "workspace": "#ffffff",
+        "surfaceLow": "#fafafa",
+        "surfaceHigh": "#f5f5f5",
+        "lineSoft": "rgba(13,13,13,.08)",
+        "windowOutline": "rgba(13,13,13,.28)",
+        "windowEdgeShadow": "rgba(13,13,13,.08)",
+        "link": "#0a7a5e",
+        "running": "#2563eb",
+        "success": "#0a7a5e",
+        "warning": "#a46508",
+        "danger": "#c83237",
+        "permission": "#8a651d",
+        "titlebar": "#fafafa",
+        "titlebarForeground": "#0d0d0d",
+        "titlebarMuted": "#6e6e6e",
+        "titlebarBorder": "rgba(13,13,13,.08)",
+        "titlebarHover": "#f5f5f5",
+        "scrollbarTrack": "rgba(13,13,13,.03)",
+        "scrollbarThumb": "rgba(13,13,13,.16)",
+        "scrollbarThumbHover": "rgba(13,13,13,.28)"
+      },
+      "material": {
+        "model": "solid",
+        "surfaceOpacity": 1,
+        "borderHighlight": "transparent",
+        "surfaceOverlay": "none",
+        "blur": 0,
+        "saturate": 100,
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
+        "backgroundImage": "none",
+        "textureOpacity": 0
+      },
+      "shape": {
+        "radiusControl": "0.75rem",
+        "radiusSurface": "0.75rem",
+        "radiusOverlay": "0.75rem",
+        "radiusAvatar": "999px",
+        "radiusPill": "999px",
+        "borderHairline": "1px",
+        "borderDefault": "1px",
+        "borderStrong": "2px"
+      },
+      "elevation": {
+        "none": "none",
+        "surface": "0 1px 2px rgba(0,0,0,.08)",
+        "overlay": "0 4px 16px rgba(13,13,13,.06)",
+        "floating": "0 4px 16px rgba(13,13,13,.06)",
+        "pressed": "none",
+        "pressOffset": 1
+      },
+      "motion": {
+        "mode": "smooth",
+        "durationFast": "120ms",
+        "durationNormal": "180ms",
+        "durationSlow": "240ms",
+        "easingStandard": "cubic-bezier(.16,1,.3,1)",
+        "easingEnter": "cubic-bezier(.16,1,.3,1)",
+        "easingPress": "cubic-bezier(.2,0,.2,1)"
+      },
+      "scrollbar": {
+        "width": "10px",
+        "thumbRadius": "999px",
+        "thumbInset": "3px",
+        "minLength": "24px",
+        "buttons": "none"
+      },
+      "typography": {
+        "uiStackId": "theme-ui",
+        "uiSize": 14,
+        "uiLineHeight": 1.5,
+        "editorStackId": "theme-editor",
+        "editorSize": 12,
+        "editorLineHeight": 1.55,
+        "weights": {
+          "read": 400,
+          "emphasize": 600,
+          "announce": 700
+        }
+      },
+      "avatars": {
+        "agentShape": "circle",
+        "userShape": "circle",
+        "agentAsset": null,
+        "userAsset": null
+      }
+    },
+    "dark": {
+      "windowSurface": "#0f0f0f",
+      "preview": {
+        "background": "#0f0f0f",
+        "surface": "#171717",
+        "border": "#2b2b2b",
+        "primary": "#f0f0f0",
+        "foreground": "#f0f0f0",
+        "muted": "#9b9b9b",
+        "success": "#59b68b",
+        "danger": "#df6b6b"
+      },
+      "semantic": {
+        "background": "#0f0f0f",
+        "foreground": "#f0f0f0",
+        "title": "#f5f5f5",
+        "card": "#171717",
+        "cardForeground": "#f0f0f0",
+        "popover": "#202020",
+        "popoverForeground": "#f0f0f0",
+        "primary": "#f0f0f0",
+        "primaryForeground": "#0d0d0d",
+        "secondary": "#242424",
+        "secondaryForeground": "#f0f0f0",
+        "muted": "#1a1a1a",
+        "mutedForeground": "#9b9b9b",
+        "accent": "#183c33",
+        "accentForeground": "#7de2c1",
+        "destructive": "#df6b6b",
+        "border": "#2b2b2b",
+        "input": "#3a3a3a",
+        "ring": "#10a37f",
+        "selection": "#155e4b",
+        "selectionForeground": "#ffffff",
+        "messageUser": "#242424",
+        "messageUserForeground": "#f0f0f0",
+        "contentHeader": "#141414",
+        "contentHeaderForeground": "#f0f0f0",
+        "conversationBackground": "#0f0f0f",
+        "conversationForeground": "#f0f0f0",
+        "messageAssistant": "transparent",
+        "messageAssistantForeground": "#f0f0f0",
+        "composer": "#171717",
+        "composerForeground": "#f0f0f0",
+        "activity": "#141414",
+        "activityForeground": "#f0f0f0",
+        "toolCard": "#171717",
+        "toolCardForeground": "#f0f0f0",
+        "permissionCard": "#183c33",
+        "permissionCardForeground": "#a7f3d0",
+        "workspaceTab": "#141414",
+        "workspaceTabForeground": "#f0f0f0",
+        "resourceHeader": "#141414",
+        "resourceHeaderForeground": "#f0f0f0",
+        "fileTree": "#141414",
+        "fileTreeForeground": "#f0f0f0",
+        "editor": "#0f0f0f",
+        "editorForeground": "#f0f0f0",
+        "diffAdded": "rgba(89,182,139,.18)",
+        "diffAddedForeground": "#8bd7b2",
+        "diffRemoved": "rgba(223,107,107,.18)",
+        "diffRemovedForeground": "#f09a9a",
+        "diffModified": "rgba(106,169,255,.18)",
+        "diffModifiedForeground": "#9bc4ff",
+        "sidebar": "#141414",
+        "sidebarForeground": "#f0f0f0",
+        "sidebarPrimary": "#f0f0f0",
+        "sidebarPrimaryForeground": "#0d0d0d",
+        "sidebarAccent": "#242424",
+        "sidebarAccentForeground": "#f0f0f0",
+        "sidebarBorder": "#292929",
+        "sidebarRing": "#10a37f",
+        "workspace": "#0f0f0f",
+        "surfaceLow": "#171717",
+        "surfaceHigh": "#242424",
+        "lineSoft": "rgba(255,255,255,.08)",
+        "windowOutline": "rgba(255,255,255,.3)",
+        "windowEdgeShadow": "rgba(0,0,0,.2)",
+        "link": "#7de2c1",
+        "running": "#6aa9ff",
+        "success": "#59b68b",
+        "warning": "#d98547",
+        "danger": "#df6b6b",
+        "permission": "#d9a45f",
+        "titlebar": "#141414",
+        "titlebarForeground": "#f0f0f0",
+        "titlebarMuted": "#9b9b9b",
+        "titlebarBorder": "rgba(255,255,255,.08)",
+        "titlebarHover": "rgba(255,255,255,.08)",
+        "scrollbarTrack": "rgba(232,232,232,.04)",
+        "scrollbarThumb": "rgba(232,232,232,.18)",
+        "scrollbarThumbHover": "rgba(232,232,232,.30)"
+      },
+      "material": {
+        "model": "solid",
+        "surfaceOpacity": 1,
+        "borderHighlight": "transparent",
+        "surfaceOverlay": "none",
+        "blur": 0,
+        "saturate": 100,
+        "backdropBrightness": 100,
+        "backdropContrast": 100,
+        "specularHighlight": "none",
+        "edgeShadow": "0 0 0 transparent",
+        "backgroundImage": "none",
+        "textureOpacity": 0
+      },
+      "shape": {
+        "radiusControl": "0.75rem",
+        "radiusSurface": "0.75rem",
+        "radiusOverlay": "0.75rem",
+        "radiusAvatar": "999px",
+        "radiusPill": "999px",
+        "borderHairline": "1px",
+        "borderDefault": "1px",
+        "borderStrong": "2px"
+      },
+      "elevation": {
+        "none": "none",
+        "surface": "0 1px 2px rgba(0,0,0,.08)",
+        "overlay": "0 4px 16px rgba(0,0,0,.28)",
+        "floating": "0 4px 16px rgba(0,0,0,.28)",
+        "pressed": "none",
+        "pressOffset": 1
+      },
+      "motion": {
+        "mode": "smooth",
+        "durationFast": "120ms",
+        "durationNormal": "180ms",
+        "durationSlow": "240ms",
+        "easingStandard": "cubic-bezier(.16,1,.3,1)",
+        "easingEnter": "cubic-bezier(.16,1,.3,1)",
+        "easingPress": "cubic-bezier(.2,0,.2,1)"
+      },
+      "scrollbar": {
+        "width": "10px",
+        "thumbRadius": "999px",
+        "thumbInset": "3px",
+        "minLength": "24px",
+        "buttons": "none"
+      },
+      "typography": {
+        "uiStackId": "theme-ui",
+        "uiSize": 14,
+        "uiLineHeight": 1.5,
+        "editorStackId": "theme-editor",
+        "editorSize": 12,
+        "editorLineHeight": 1.55,
+        "weights": {
+          "read": 400,
+          "emphasize": 600,
+          "announce": 700
+        }
+      },
+      "avatars": {
+        "agentShape": "circle",
+        "userShape": "circle",
+        "agentAsset": null,
+        "userAsset": null
+      }
+    }
+  },
+  "recipes": {
+    "shell": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "none"
+    },
+    "titlebar": {
+      "background": "sidebar",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "sidebar": {
+      "background": "sidebar",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "navigation-item": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "focus": {
+          "border": "ring"
+        }
+      }
+    },
+    "panel": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "card": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "composer": {
+      "background": "composer",
+      "foreground": "composer-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "overlay",
+      "material": "elevated",
+      "motion": "surface",
+      "states": {
+        "focus": {
+          "border": "ring",
+          "elevation": "overlay"
+        }
+      }
+    },
+    "message-user": {
+      "background": "message-user",
+      "foreground": "message-user-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "message-assistant": {
+      "background": "message-assistant",
+      "foreground": "message-assistant-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "message-disclosure": {
+      "background": "activity",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "runtime-control": {
+      "background": "activity",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "activity": {
+      "background": "transparent",
+      "foreground": "activity-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "tool-card": {
+      "background": "tool-card",
+      "foreground": "tool-card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "permission-card": {
+      "background": "transparent",
+      "foreground": "permission-card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "surface"
+    },
+    "dialog": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "floating",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "sheet": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "floating",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "popover": {
+      "background": "popover",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "overlay",
+      "elevation": "overlay",
+      "material": "elevated",
+      "motion": "surface"
+    },
+    "input": {
+      "background": "surface-low",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-primary": {
+      "background": "primary",
+      "foreground": "primary-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "primary",
+          "foreground": "primary-foreground",
+          "elevation": "overlay"
+        },
+        "active": {
+          "background": "primary",
+          "foreground": "primary-foreground",
+          "elevation": "pressed",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-secondary": {
+      "background": "surface-high",
+      "foreground": "card-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "active": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "elevation": "pressed",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "button-ghost": {
+      "background": "transparent",
+      "foreground": "foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "press",
+      "states": {
+        "hover": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "active": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "press": true
+        },
+        "focus": {
+          "border": "ring"
+        },
+        "disabled": {
+          "opacity": 0.5
+        }
+      }
+    },
+    "editor": {
+      "background": "editor",
+      "foreground": "editor-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "diff": {
+      "background": "editor",
+      "foreground": "editor-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "none",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    },
+    "workspace-tab": {
+      "background": "workspace-tab",
+      "foreground": "workspace-tab-foreground",
+      "border": "border",
+      "borderWidth": "hairline",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground"
+        },
+        "focus": {
+          "border": "ring"
+        }
+      }
+    },
+    "workflow-node": {
+      "background": "card",
+      "foreground": "card-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "surface",
+      "elevation": "surface",
+      "material": "flat",
+      "motion": "surface",
+      "states": {
+        "selected": {
+          "background": "accent",
+          "foreground": "accent-foreground",
+          "border": "ring",
+          "elevation": "overlay"
+        }
+      }
+    },
+    "workflow-edge": {
+      "background": "transparent",
+      "foreground": "muted-foreground",
+      "border": "border",
+      "borderWidth": "default",
+      "borderStyle": "solid",
+      "radius": "control",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color",
+      "states": {
+        "selected": {
+          "foreground": "accent-foreground",
+          "border": "ring"
+        }
+      }
+    },
+    "scrollbar": {
+      "background": "transparent",
+      "foreground": "muted-foreground",
+      "border": "transparent",
+      "borderWidth": "none",
+      "borderStyle": "solid",
+      "radius": "pill",
+      "elevation": "none",
+      "material": "flat",
+      "motion": "color"
+    }
+  },
+  "assets": {
+    "schemaVersion": 2,
+    "count": 2,
+    "totalBytes": 2663272,
+    "records": [
+      {
+        "id": "inter-latin-variable",
+        "kind": "font",
+        "mediaType": "font/woff2",
+        "bytes": 48256,
+        "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62",
+        "outputUrl": "/theme-assets/builtin.gold-band/3100e775e8616cd2-inter-latin-variable.woff2",
+        "required": true,
+        "licenseId": "inter-ofl",
+        "fontMetadata": {
+          "family": "Inter",
+          "subfamily": "Regular",
+          "postscriptName": "Inter-Regular",
+          "weightMin": 100,
+          "weightMax": 900
+        }
+      },
+      {
+        "id": "misans-variable",
+        "kind": "font",
+        "mediaType": "font/woff2",
+        "bytes": 2615016,
+        "sha256": "c905ab46ff4f0bcf17ceebc79e6149cecc4165281690c2fd825637d7ad42be27",
+        "outputUrl": "/theme-assets/builtin.gold-band/c905ab46ff4f0bcf-misans-vf.woff2",
+        "required": true,
+        "licenseId": "misans-apache",
+        "fontMetadata": {
+          "family": "MiSans VF",
+          "subfamily": "Regular",
+          "postscriptName": "MiSansVF",
+          "weightMin": 150,
+          "weightMax": 700
+        }
+      }
+    ]
+  },
+  "fonts": {
+    "faces": [
+      {
+        "id": "inter-variable",
+        "family": "Inter Variable",
+        "assetId": "inter-latin-variable",
+        "weightMin": 100,
+        "weightMax": 900,
+        "style": "normal",
+        "display": "swap",
+        "coverage": {
+          "scripts": [
+            "Latn"
+          ]
+        },
+        "runtimeFamily": "Inter Variable"
+      },
+      {
+        "id": "misans-variable",
+        "family": "Gold Band MiSans",
+        "assetId": "misans-variable",
+        "weightMin": 250,
+        "weightMax": 520,
+        "style": "normal",
+        "display": "swap",
+        "coverage": {
+          "scripts": [
+            "Hans",
+            "Latn"
+          ],
+          "locales": [
+            "zh-CN"
+          ]
+        },
+        "runtimeFamily": "Gold Band MiSans"
+      }
+    ],
+    "stacks": [
+      {
+        "id": "theme-ui",
+        "displayName": {
+          "zh-CN": "Inter Variable · MiSans",
+          "en": "Inter Variable · MiSans"
+        },
+        "defaultFaces": [
+          "inter-variable",
+          "misans-variable"
+        ],
+        "systemFallbacks": [
+          "Microsoft YaHei UI",
+          "PingFang SC",
+          "Noto Sans CJK SC",
+          "Source Han Sans SC",
+          "sans-serif"
+        ]
+      },
+      {
+        "id": "theme-editor",
+        "displayName": {
+          "zh-CN": "JetBrains Mono",
+          "en": "JetBrains Mono"
+        },
+        "defaultFaces": [],
+        "systemFallbacks": [
+          "JetBrains Mono",
+          "SFMono-Regular",
+          "Consolas",
+          "monospace"
+        ]
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-﻿use std::io::Write;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -930,7 +930,6 @@ mod tests {
         assert_eq!(value.get("attemptIndex").and_then(|v| v.as_u64()), Some(1));
     }
 
-
     #[test]
     fn dto_serializes_task_title_when_set() {
         let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
@@ -945,9 +944,11 @@ mod tests {
             uuid::Uuid::new_v4().to_string(),
         );
         // task_title defaults to None -- should be skipped in serialized JSON
-        let value_without =
-            serde_json::to_value(map_metrics_fact(fact.clone(), "2026-08-01T00:00:00Z".into()))
-                .unwrap();
+        let value_without = serde_json::to_value(map_metrics_fact(
+            fact.clone(),
+            "2026-08-01T00:00:00Z".into(),
+        ))
+        .unwrap();
         assert!(value_without.get("taskTitle").is_none());
 
         // When set, it should appear in serialized JSON

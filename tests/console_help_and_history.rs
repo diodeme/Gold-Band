@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
-use gold_band::config::ConsoleThemeName;
+use gold_band::config::{ConsoleThemeName, ProviderDiagnosticSnapshot};
 use gold_band::console::controller::{
     activate_current, cycle_focus, escape, move_down, show_help_overlay, start_command_input,
     start_selected_task, submit_input,
@@ -14,6 +14,20 @@ use gold_band::provider::{
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use tempfile::tempdir;
+
+fn with_available_claude_diagnostics(app: App) -> App {
+    app.with_provider_diagnostics_source(std::sync::Arc::new(|| {
+        Ok(std::collections::BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-08-17T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )]))
+    }))
+}
 
 #[derive(Clone, Default)]
 struct StartTaskProvider;
@@ -201,7 +215,7 @@ fn slash_task_command_opens_task_picker() {
 fn task_picker_selection_with_active_run_enters_attempt_detail() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::new(repo_root.clone());
+    let app = with_available_claude_diagnostics(App::new(repo_root.clone()));
     seed_task(
         &app,
         "task-001",
@@ -263,7 +277,7 @@ fn task_picker_selection_with_active_run_enters_attempt_detail() {
 fn task_picker_selection_enters_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::new(repo_root.clone());
+    let app = with_available_claude_diagnostics(App::new(repo_root.clone()));
     seed_task(
         &app,
         "task-001",
@@ -285,7 +299,7 @@ fn task_picker_selection_enters_workspace() {
 fn esc_from_workspace_returns_to_task_picker() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::new(repo_root.clone());
+    let app = with_available_claude_diagnostics(App::new(repo_root.clone()));
     seed_task(
         &app,
         "task-001",
@@ -381,7 +395,10 @@ fn log_command_renders_output_in_task_picker_overlay() {
 fn start_selected_task_enters_workspace() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::with_provider(repo_root.clone(), Box::new(StartTaskProvider));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root.clone(),
+        Box::new(StartTaskProvider),
+    ));
     let dev_profile = developer_profile_id(&app);
     seed_task(
         &app,
@@ -429,7 +446,7 @@ fn start_selected_task_enters_workspace() {
 fn start_selected_task_marks_background_start() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-    let app = App::new(repo_root.clone());
+    let app = with_available_claude_diagnostics(App::new(repo_root.clone()));
     seed_task(
         &app,
         "task-001",

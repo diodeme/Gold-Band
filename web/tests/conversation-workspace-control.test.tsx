@@ -232,20 +232,66 @@ describe('quick conversation workspace control', () => {
     }
     expect(workspaceTrigger!.className.split(' ')).toContain('data-[size=default]:h-7');
     expect(workLocationTrigger!.className.split(' ')).toContain('h-7');
-    expect(workLocationTrigger!.className.split(' ')).toContain('has-[>svg]:px-2');
-    expect(infoBar!.className).toContain('mx-12');
-    expect(infoBar!.className).toContain('h-8');
+    expect(workspaceTrigger!.className.split(' ')).toContain('px-1.5');
+    expect(workLocationTrigger!.className.split(' ')).toContain('has-[>svg]:px-1.5');
+    expect(infoBar!.className).toContain('mx-auto');
+    expect(infoBar!.className).toContain('w-[80%]');
+    expect(infoBar!.className).not.toContain('mx-9');
+    expect(infoBar!.className).toContain('h-7');
     expect(infoBar!.className).toContain('items-center');
-    expect(infoBar!.className).toContain('rounded-t-2xl');
+    expect(infoBar!.className).toContain('justify-start');
+    expect(infoBar!.className).toContain('gap-0');
+    expect(infoBar!.className).toContain('pl-8');
+    expect(infoBar!.className).not.toContain('justify-center');
     expect(infoBar!.className).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
     expect(infoBar!.className).not.toContain('var(--gb-conversation-background)');
-    expect(infoBar!.className).toContain('before:-left-4');
-    expect(infoBar!.className).toContain('before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
-    expect(infoBar!.className).toContain('after:-right-4');
-    expect(infoBar!.className).toContain('after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
+    expect(infoBar!.className).not.toContain('rounded-t-2xl');
+    expect(infoBar!.className).not.toContain('before:');
+    expect(infoBar!.className).not.toContain('after:');
     expect(infoBar!.className).not.toContain('bg-muted/45');
     expect(infoBar!.className).not.toContain('pt-2');
+    expect(infoBar!.querySelector('[data-conversation-workspace-info-body="true"]')).not.toBeNull();
+    expect(infoBar!.querySelector('[data-conversation-workspace-info-controls="true"]')).not.toBeNull();
+    const curves = infoBar!.querySelectorAll<SVGSVGElement>('[data-conversation-workspace-info-curve]');
+    expect(curves).toHaveLength(2);
+    expect(curves[0]?.getAttribute('viewBox')).toBe('0 0 48 28');
+    expect(curves[0]?.classList).toContain('left-0');
+    expect(curves[0]?.classList).toContain('w-12');
+    expect(curves[0]?.classList).not.toContain('-left-12');
+    expect(curves[0]?.classList).not.toContain('w-9');
+    expect(curves[0]?.querySelector('path')?.getAttribute('d')).toBe('M0 28L20.14 4Q23.497 0 29.497 0H48V28Z');
+    expect(curves[0]?.querySelector('path')?.getAttribute('transform')).toBeNull();
+    expect(curves[1]?.classList).toContain('right-0');
+    expect(curves[1]?.classList).toContain('w-12');
+    expect(curves[1]?.classList).not.toContain('-right-12');
+    expect(curves[1]?.classList).not.toContain('w-9');
+    expect(curves[1]?.querySelector('path')?.getAttribute('d')).toBe('M0 28L20.14 4Q23.497 0 29.497 0H48V28Z');
+    expect(curves[1]?.querySelector('path')?.getAttribute('transform')).toBe('translate(48 0) scale(-1 1)');
     expect(host.querySelector('[data-conversation-workspace-value="true"]')?.textContent).toBe('Gold Band');
+  });
+
+  it('reuses the same info surface without exposing worktree selection for scheduled authoring', async () => {
+    await act(async () => {
+      root.render(
+        <ConversationWorkspaceInfoBar
+          projectId="gold-band"
+          workspaceName="Fallback workspace"
+          workspaces={workspaces}
+          workLocation="worktree"
+          busy={false}
+          onWorkspaceChange={() => {}}
+          onWorkLocationChange={() => {}}
+          showWorkLocation={false}
+        />,
+      );
+    });
+
+    const infoBar = host.querySelector<HTMLElement>('[data-conversation-workspace-info="true"]');
+    expect(infoBar).not.toBeNull();
+    expect(infoBar!.className).toContain('w-[80%]');
+    expect(infoBar!.querySelector('[data-slot="select-trigger"]')).not.toBeNull();
+    expect(infoBar!.querySelector('[data-conversation-work-location-trigger="true"]')).toBeNull();
+    expect(infoBar!.querySelectorAll('[data-conversation-workspace-info-curve]')).toHaveLength(2);
   });
 
   it('does not restore pointer focus to the work-location trigger after the menu closes', async () => {

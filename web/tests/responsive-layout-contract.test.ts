@@ -46,12 +46,12 @@ const acpChatSource = readFileSync(
 );
 
 describe('responsive desktop layout contracts', () => {
-  it('shows the workspace info bar only for quick starts and keeps scheduled workspace selection in the toolbar', () => {
+  it('shares the workspace info bar with scheduled authoring while keeping worktree selection unavailable there', () => {
     expect(composerSource).toContain('data-conversation-workspace-info="true"');
-    expect(composerSource).toContain('{!scheduledMode ? (');
     expect(composerSource).toContain('workLocation={workLocation}');
     expect(composerSource).toContain("void selectLocation('worktree')");
-    expect(composerSource).toMatch(/\{scheduledMode \? \(\s*<ConversationWorkspaceControl/u);
+    expect(composerSource).toContain('showWorkLocation={!scheduledMode}');
+    expect(composerSource).not.toMatch(/\{scheduledMode \? \(\s*<ConversationWorkspaceControl/u);
   });
 
   it('uses a low inset info rail above the quick composer without affecting the session composer', () => {
@@ -59,18 +59,20 @@ describe('responsive desktop layout contracts', () => {
       .split(' ')
       .filter((className) => !className.startsWith('before:') && !className.startsWith('after:'));
 
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('mx-12');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('h-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('mx-auto');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('w-[80%]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('mx-9');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('h-7');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('items-center');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('rounded-t-2xl');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('justify-start');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('gap-0');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('pl-8');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('justify-center');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('var(--gb-conversation-background)');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:-left-4');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:absolute');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:-right-4');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:absolute');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('rounded-t-2xl');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('before:');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('after:');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('bg-muted/80');
     expect(infoBarBaseClasses).not.toContain('absolute');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName).toBe('min-w-0');
@@ -83,6 +85,18 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).not.toContain("scheduledMode ? '' : '-mt-2'");
     expect(composerSource).not.toContain('relative z-10 rounded-2xl border-border/60 bg-card/60');
     expect(composerSource).not.toContain('rounded-tl-none');
+    expect(composerSource).toContain('data-conversation-workspace-info-curve="left"');
+    expect(composerSource).toContain('data-conversation-workspace-info-curve="right"');
+    expect(composerSource).toContain('data-conversation-workspace-info-body="true"');
+    expect(composerSource).toContain('data-conversation-workspace-info-controls="true"');
+    expect(composerSource).toContain('relative z-10 flex min-w-0 items-center gap-0');
+    expect(composerSource).toContain('absolute inset-y-0 left-12 right-12');
+    expect(composerSource).toContain('absolute left-0 bottom-0 h-7 w-12');
+    expect(composerSource).toContain('absolute right-0 bottom-0 h-7 w-12');
+    expect(composerSource).not.toContain('absolute -left-9 bottom-0 h-8 w-9');
+    expect(composerSource).not.toContain('absolute -right-9 bottom-0 h-8 w-9');
+    expect(composerSource).toContain("'M0 28L20.14 4Q23.497 0 29.497 0H48V28Z'");
+    expect(composerSource).toContain('transform="translate(48 0) scale(-1 1)"');
   });
 
   it('keeps simple composer submit actions beside the workspace when space allows', () => {
@@ -94,6 +108,8 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('gap-1.5');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).not.toContain('gap-4');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-1.5');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).not.toContain('border-t');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).not.toContain('pt-');
@@ -134,14 +150,33 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).not.toContain('className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25');
   });
 
+  it('uses the run-mode Route icon for the workflow option row', () => {
+    expect(composerSource).toContain('data-conversation-workflow-selector="true"');
+    expect(composerSource).toMatch(/data-conversation-workflow-selector="true"[\s\S]*?<Route className="size-4 text-muted-foreground"/u);
+  });
+
   it('stacks run-mode and Agent controls before their composer container is wide enough', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).toContain('flex-col');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).toContain('@sm/conversation-composer:flex-row');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName).toContain('w-full');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionTabsListClassName).toContain('h-7');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName).toBe('h-7');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('flex-col');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('@sm/conversation-composer:flex-row');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('px-4 py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).toContain('px-4 py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).not.toContain('py-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName).not.toContain('py-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('min-h-10');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).toContain('px-4 py-0');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('min-h-11');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentSectionClassName).not.toContain('px-4 py-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.autoSectionClassName).toContain('space-y-1.5');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.autoSectionClassName).toContain('px-4 py-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.autoGoalClassName).toContain('min-h-9');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.workflowSectionClassName).toContain('px-4 py-1');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.autoSectionClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.autoGoalClassName');
+    expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.workflowSectionClassName');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-x-auto');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('overflow-y-hidden');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('gold-scrollbar-hidden');
@@ -151,8 +186,13 @@ describe('responsive desktop layout contracts', () => {
     expect(stylesSource).toContain('display: none;');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('py-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName).toContain('@sm/conversation-composer:flex-1');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('h-8');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsListClassName).toContain('w-max');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.agentTabsClassName');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.agentOptionClassName).toContain('h-8 min-w-8');
+    expect(composerSource).toContain('className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentOptionClassName}');
+    expect(composerSource.match(/triggerClassName=\{CONVERSATION_HOME_COMPOSER_LAYOUT\.modeControlHeightClassName\}/gu)).toHaveLength(2);
+    expect(composerSource).toContain('`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} min-w-0 flex-1 text-xs`');
     expect(composerSource).not.toContain('className="min-w-0 overflow-x-auto"');
   });
 

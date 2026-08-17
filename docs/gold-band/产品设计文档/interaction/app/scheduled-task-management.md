@@ -29,7 +29,7 @@ ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建�
 
 - 主按钮保存定时任务定义并清空 composer。
 - 定时创建按钮必须带同款 ChevronDown；菜单可切回普通发送，切换时不提交正文，并清理未确认的定时配置草稿。
-- 齿轮只打开定时配置，不重复显示 Agent、workspace、model、thought level、permission 等已有控制。
+- 齿轮只打开定时配置，不重复显示 Agent、workspace、model、thought level、permission 等已有控制。定时创建态的 workspace 选择复用普通快速对话输入框上方的 80% 宽顶部信息栏，不在底栏保留独立胶囊；该模式固定使用主工作区，暂不展示工作位置或新工作树入口。
 - 新建定时任务的配置不使用模态弹窗：点击配置入口后，在当前会话草稿作用域的右侧工作区打开唯一 `scheduled-task-config` Tab。重复打开只激活同一 Tab；完成、取消、退出定时模式或创建成功时按对应语义关闭该 Tab。配置草稿仍由 composer 生命周期统一持有，Tab 只是编辑视图。
 - 管理页“创建定时任务”不得只跳转普通会话主页；它导航到类型化的 `scheduled-task-create` 页面状态和 `/chat/scheduled-tasks/new` deep link。该页面复用会话主页 Composer，但初始即进入定时创建态并打开右侧配置 Tab；退出定时模式或创建成功后回到普通 `/chat`，直接打开普通主页不得被影响。
 - 进入 `scheduled-task-create` 后，左侧主导航必须从“定时任务”切换为选中“快速对话”，表达当前承载页面已进入会话主页 Composer；定时任务列表和详情继续选中“定时任务”。

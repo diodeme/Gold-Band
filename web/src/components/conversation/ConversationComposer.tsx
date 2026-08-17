@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
+import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -77,6 +77,8 @@ interface ConversationWorkspaceControlProps {
 }
 
 const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
+const CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX = '0 0 48 28';
+const CONVERSATION_WORKSPACE_INFO_CURVE_PATH = 'M0 28L20.14 4Q23.497 0 29.497 0H48V28Z';
 
 export function ConversationWorkspaceControl({
   projectId,
@@ -96,7 +98,7 @@ export function ConversationWorkspaceControl({
     handleTooltipOpenChange,
   } = useOverflowTooltip<HTMLSpanElement>();
   const controlClassName = variant === 'info'
-    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-2 rounded-md border border-transparent px-2 text-sm shadow-none data-[size=default]:h-7`
+    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-1.5 rounded-md border border-transparent px-1.5 text-sm shadow-none data-[size=default]:h-7`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
   const triggerSurfaceClassName = variant === 'info'
     ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
@@ -115,7 +117,7 @@ export function ConversationWorkspaceControl({
     onBlur: hideTooltip,
   };
   const value = (
-    <span className="flex min-w-0 flex-1 items-center gap-2">
+    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
       <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
       <TooltipTrigger asChild>
         <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
@@ -185,6 +187,7 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   workLocation: ConversationWorkLocation;
   busy: boolean;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
+  showWorkLocation?: boolean;
 }
 
 export function ConversationWorkspaceInfoBar({
@@ -195,6 +198,7 @@ export function ConversationWorkspaceInfoBar({
   busy,
   onWorkspaceChange,
   onWorkLocationChange,
+  showWorkLocation = true,
 }: ConversationWorkspaceInfoBarProps) {
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -222,75 +226,104 @@ export function ConversationWorkspaceInfoBar({
         data-conversation-workspace-info="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName}
       >
-        <ConversationWorkspaceControl
-          projectId={projectId}
-          workspaceName={workspaceName}
-          workspaces={workspaces}
-          onWorkspaceChange={onWorkspaceChange}
-          variant="info"
+        <div
+          aria-hidden="true"
+          data-conversation-workspace-info-body="true"
+          className="pointer-events-none absolute inset-y-0 left-12 right-12 bg-[var(--conversation-workspace-info-surface)]"
         />
-        <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            ref={locationTriggerRef}
-            type="button"
-            variant={null}
-            size="sm"
-            disabled={busy || checkingLocation}
-            aria-label={t('conversation.home.workLocation')}
-            data-conversation-work-location-trigger="true"
-            data-context-control="work-location"
-            onPointerDown={() => {
-              locationMenuUsedPointerRef.current = true;
-            }}
-            onKeyDown={() => {
-              locationMenuUsedPointerRef.current = false;
-            }}
-            className={cn('h-7 min-w-0 gap-2 rounded-md px-2 text-sm font-normal has-[>svg]:px-2', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
-          >
-            {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
-            <span className="truncate">{locationLabel}</span>
-            <ChevronDown className="size-4 text-muted-foreground opacity-50" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className="min-w-56"
-          onPointerDownCapture={() => {
-            locationMenuUsedPointerRef.current = true;
-          }}
-          onKeyDownCapture={() => {
-            locationMenuUsedPointerRef.current = false;
-          }}
-          onCloseAutoFocus={(event) => {
-            if (!locationMenuUsedPointerRef.current) return;
-            event.preventDefault();
-            locationTriggerRef.current?.blur();
-            locationMenuUsedPointerRef.current = false;
-          }}
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          viewBox={CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX}
+          preserveAspectRatio="none"
+          data-conversation-workspace-info-curve="left"
+          className="pointer-events-none absolute left-0 bottom-0 h-7 w-12 text-[var(--conversation-workspace-info-surface)]"
         >
-          <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            {t('conversation.home.workLocation')}
-          </div>
-          <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
-            <Laptop className="size-4" />
-            <span>{t('conversation.home.workLocationMain')}</span>
-            {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="flex min-w-0 flex-1 items-center gap-2">
-                  <GitFork className="size-4" />
-                  <span>{t('conversation.home.workLocationNewWorktree')}</span>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
-            </Tooltip>
-            {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-        </DropdownMenu>
+          <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" />
+        </svg>
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          viewBox={CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX}
+          preserveAspectRatio="none"
+          data-conversation-workspace-info-curve="right"
+          className="pointer-events-none absolute right-0 bottom-0 h-7 w-12 text-[var(--conversation-workspace-info-surface)]"
+        >
+          <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" transform="translate(48 0) scale(-1 1)" />
+        </svg>
+        <div data-conversation-workspace-info-controls="true" className="relative z-10 flex min-w-0 items-center gap-0">
+          <ConversationWorkspaceControl
+            projectId={projectId}
+            workspaceName={workspaceName}
+            workspaces={workspaces}
+            onWorkspaceChange={onWorkspaceChange}
+            variant="info"
+          />
+          {showWorkLocation ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={locationTriggerRef}
+                  type="button"
+                  variant={null}
+                  size="sm"
+                  disabled={busy || checkingLocation}
+                  aria-label={t('conversation.home.workLocation')}
+                  data-conversation-work-location-trigger="true"
+                  data-context-control="work-location"
+                  onPointerDown={() => {
+                    locationMenuUsedPointerRef.current = true;
+                  }}
+                  onKeyDown={() => {
+                    locationMenuUsedPointerRef.current = false;
+                  }}
+                  className={cn('h-7 min-w-0 gap-1.5 rounded-md px-1.5 text-sm font-normal has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                >
+                  {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
+                  <span className="truncate">{locationLabel}</span>
+                  <ChevronDown className="size-4 text-muted-foreground opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="min-w-56"
+                onPointerDownCapture={() => {
+                  locationMenuUsedPointerRef.current = true;
+                }}
+                onKeyDownCapture={() => {
+                  locationMenuUsedPointerRef.current = false;
+                }}
+                onCloseAutoFocus={(event) => {
+                  if (!locationMenuUsedPointerRef.current) return;
+                  event.preventDefault();
+                  locationTriggerRef.current?.blur();
+                  locationMenuUsedPointerRef.current = false;
+                }}
+              >
+                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                  {t('conversation.home.workLocation')}
+                </div>
+                <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
+                  <Laptop className="size-4" />
+                  <span>{t('conversation.home.workLocationMain')}</span>
+                  {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="flex min-w-0 flex-1 items-center gap-2">
+                        <GitFork className="size-4" />
+                        <span>{t('conversation.home.workLocationNewWorktree')}</span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
+                  </Tooltip>
+                  {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
       </div>
     </TooltipProvider>
   );
@@ -482,7 +515,7 @@ export function ConversationComposer({
           <TabsTrigger
             value={agent.agentType}
             disabled={!selectable}
-            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+            className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentOptionClassName}
           >
             <img
               src={agentIconSrc(agent.iconKey)}
@@ -767,8 +800,7 @@ export function ConversationComposer({
           </div>
         ) : null}
         {/* Main text input */}
-        <div className={scheduledMode ? 'min-w-0' : CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName}>
-        {!scheduledMode ? (
+        <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName}>
           <ConversationWorkspaceInfoBar
             projectId={projectId}
             workspaceName={workspaceName}
@@ -777,9 +809,9 @@ export function ConversationComposer({
             busy={busy || submittingAttachments}
             onWorkspaceChange={onWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
+            showWorkLocation={!scheduledMode}
           />
-        ) : null}
-        <PromptInput
+          <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
@@ -850,14 +882,6 @@ export function ConversationComposer({
               >
                 <Paperclip className="size-3.5" />
               </Button>
-              {scheduledMode ? (
-                <ConversationWorkspaceControl
-                  projectId={projectId}
-                  workspaceName={workspaceName}
-                  workspaces={workspaces}
-                  onWorkspaceChange={onWorkspaceChange}
-                />
-              ) : null}
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
@@ -1005,17 +1029,17 @@ export function ConversationComposer({
             ) : null}
           </div>
         ) : isAuto ? (
-          <div className="space-y-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+          <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.autoSectionClassName}>
             <div className="flex items-center gap-3">
               <Bot className="size-4 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                 {isDynamicAuto ? (
-                  <div className="flex h-8 min-w-0 items-center rounded-md border border-border/60 bg-background/40 px-3 text-xs text-muted-foreground">
+                  <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} flex min-w-0 items-center rounded-md border border-border/60 bg-background/40 px-3 text-xs text-muted-foreground`}>
                     <span className="truncate">{t('conversation.home.dynamicAgent')}</span>
                   </div>
                 ) : (
                   <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); setSelectedConfigOptions({}); updateAutoSession({ agentType: v, modelId: undefined, configOptions: {} }); }}>
-                    <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
+                    <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} w-[180px] min-w-0 text-xs`}>
                       <SelectValue placeholder={t('conversation.home.selectAgent')} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="start">
@@ -1040,6 +1064,7 @@ export function ConversationComposer({
                     thoughtLevel={thoughtLevel}
                     thoughtValue={thoughtLevel ? selectedConfigOptions[thoughtLevel.id] : null}
                     align="start"
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
                     onModelChange={(value) => {
                       const modelId = value ?? '';
                       setSelectedModel(modelId);
@@ -1058,6 +1083,7 @@ export function ConversationComposer({
                     value={selectedPermissionMode}
                     options={autoPermissionModes}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
                     onValueChange={(value) => {
                       const next = value ?? '';
                       setSelectedPermissionMode(next);
@@ -1072,7 +1098,7 @@ export function ConversationComposer({
               </div>
             </div>
             <textarea
-              className="w-full min-h-14 resize-y rounded-md border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/10"
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.autoGoalClassName}
               value={globalGoal}
               placeholder={t('runMode.globalGoalPlaceholder')}
               onChange={(event) => {
@@ -1083,10 +1109,10 @@ export function ConversationComposer({
             />
           </div>
         ) : (
-          <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
-            <Workflow className="size-4 text-muted-foreground" />
+          <div data-conversation-workflow-selector="true" className={CONVERSATION_HOME_COMPOSER_LAYOUT.workflowSectionClassName}>
+            <Route className="size-4 text-muted-foreground" />
             <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, optionalEntryPreferences: runMode.optionalEntryPreferences }, projectId); }}>
-              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+              <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} min-w-0 flex-1 text-xs`}>
                 <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
               </SelectTrigger>
               <SelectContent position="popper" align="start">

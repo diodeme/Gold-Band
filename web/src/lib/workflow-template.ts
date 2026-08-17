@@ -1,12 +1,10 @@
-import type { WorkflowDsl, WorkflowTemplate } from '@/types';
-import { DEFAULT_WORKFLOW_TEMPLATE_ID } from '@/lib/conversation-run-mode-config';
-
+import type { WorkflowDsl, WorkflowModelBindings, WorkflowTemplate } from '@/types';
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export function workflowTemplateDisplayName(template: WorkflowTemplate, t: Translate): string {
-  return template.id === DEFAULT_WORKFLOW_TEMPLATE_ID
-    ? t('taskList.create.defaultWorkflow')
-    : template.name;
+  if (template.id === 'default') return t('taskList.create.defaultFullWorkflow');
+  if (template.id === 'default-lightweight') return t('taskList.create.defaultLightweightWorkflow');
+  return template.name;
 }
 
 export function hasWorkflowDraftChanges(
@@ -17,12 +15,34 @@ export function hasWorkflowDraftChanges(
 }
 
 export function shouldShowDefaultWorkflowSaveAsNotice(
-  templateId: string | null | undefined,
+  template: WorkflowTemplate | null | undefined,
   workflow: WorkflowDsl | null | undefined,
   baseline: WorkflowDsl | null | undefined,
 ): boolean {
-  return templateId === DEFAULT_WORKFLOW_TEMPLATE_ID
+  return Boolean(template?.isBuiltIn)
     && hasWorkflowDraftChanges(workflow, baseline);
+}
+
+export function hasWorkflowBindingDraftChanges(
+  bindings: WorkflowModelBindings | null | undefined,
+  baseline: WorkflowModelBindings | null | undefined,
+): boolean {
+  return Boolean(bindings && baseline && JSON.stringify(bindings.bindings) !== JSON.stringify(baseline.bindings));
+}
+
+export function restoreBuiltInWorkflowDefinition(
+  baseline: WorkflowDsl,
+  bindings: WorkflowModelBindings,
+): { workflow: WorkflowDsl; modelBindings: WorkflowModelBindings } {
+  const workflow = JSON.parse(JSON.stringify(baseline)) as WorkflowDsl;
+  const slots = new Set(workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [node.executionSlotId] : []));
+  return {
+    workflow,
+    modelBindings: {
+      ...bindings,
+      bindings: bindings.bindings.filter((binding) => slots.has(binding.executionSlotId)),
+    },
+  };
 }
 
 export function createBlankWorkflowDraft(): WorkflowDsl {

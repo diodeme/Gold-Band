@@ -202,7 +202,7 @@ test('rejects an unknown material model', async () => {
 test('builds ordered font stacks and rejects duplicate families', async () => {
   const built = await withBuildFixture();
   assert.equal(built.status, 0, built.stderr || built.stdout);
-  assert.match(built.generatedCss, /--gb-theme-ui-font-family:"Inter Variable", "Microsoft YaHei UI"/u);
+  assert.match(built.generatedCss, /--gb-theme-ui-font-family:"Inter Variable", "Gold Band MiSans", "Microsoft YaHei UI"/u);
   assert.match(built.generatedCss, /font-family:"Inter Variable";[^}]*font-weight:100 900;/u);
   assert.match(built.generatedCss, /font-family:"Gold Band MiSans";[^}]*font-weight:250 520;/u);
 
@@ -216,12 +216,25 @@ test('builds ordered font stacks and rejects duplicate families', async () => {
   assert.match(`${rejected.stderr}\n${rejected.stdout}`, /unique|duplicate|families/u);
 });
 
+test('rejects language-dependent font stack branches', async () => {
+  const result = await withBuildFixture(async (directory) => {
+    const path = join(directory, 'themes', 'gold-band', 'fonts.json');
+    await updateJson(path, (fonts) => {
+      fonts.stacks[0].byLocale = { 'zh-CN': ['misans-variable'] };
+    });
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(buildOutput(result), /byLocale|additional properties/u);
+});
+
 test('emits a complete v2 runtime package with non-distributed icon and wallpaper fixtures', async () => {
   const result = await withBuildFixture(async (directory) => {
     await enableIconCapability(directory);
     await enableWallpaperCapability(directory);
   }, async (directory) => {
     const runtime = JSON.parse(await readFile(join(directory, 'themes', 'gold-band', 'dist', 'runtime-theme.json'), 'utf8'));
+    const css = await readFile(join(directory, 'themes', 'gold-band', 'dist', 'builtin-theme.css'), 'utf8');
     const records = new Map(runtime.assets.records.map((record) => [record.id, record]));
     const icon = records.get('fixture-icon');
     const wallpaper = records.get('fixture-wallpaper');
@@ -233,6 +246,8 @@ test('emits a complete v2 runtime package with non-distributed icon and wallpape
       wallpaperKind: wallpaper?.kind,
       iconExists: Boolean(icon && await readFile(join(directory, 'web', 'public', icon.outputUrl.slice(1)))),
       wallpaperExists: Boolean(wallpaper && await readFile(join(directory, 'web', 'public', wallpaper.outputUrl.slice(1)))),
+      wallpaperImageLayerSeparated: css.includes('::before{z-index:-2;background-image:var(--gb-wallpaper-image,none)'),
+      wallpaperOverlayLayerSeparated: css.includes('::after{z-index:-1;background:color-mix(in srgb,var(--gb-wallpaper-overlay-color,transparent)'),
     };
   });
 
@@ -245,6 +260,8 @@ test('emits a complete v2 runtime package with non-distributed icon and wallpape
     wallpaperKind: 'wallpaper',
     iconExists: true,
     wallpaperExists: true,
+    wallpaperImageLayerSeparated: true,
+    wallpaperOverlayLayerSeparated: true,
   });
 });
 

@@ -3,9 +3,42 @@ import type { ConversationAttemptLifecycleVm } from '@/types';
 export type ConversationSessionFollowMode = 'auto' | 'manual';
 
 export interface ConversationSessionFollowState {
+  runKey: string | null;
   mode: ConversationSessionFollowMode;
   selectedSessionKey: string | null;
   version: number;
+}
+
+export interface ConversationRunReentrySelection {
+  followMode: ConversationSessionFollowMode;
+  selectedSessionKey: string | null;
+  preserveSelectedSession: boolean;
+}
+
+export function resolveConversationRunReentrySelection(args: {
+  followMode: ConversationSessionFollowMode;
+  rememberedSelectedSessionKey?: string | null;
+  explicitSelectedSessionKey?: string | null;
+  defaultSelectedSessionKey?: string | null;
+  hasSessionKey: (key: string) => boolean;
+}): ConversationRunReentrySelection {
+  const explicitSelectedSessionKey = args.explicitSelectedSessionKey
+    && args.hasSessionKey(args.explicitSelectedSessionKey)
+    ? args.explicitSelectedSessionKey
+    : null;
+  const rememberedSelectedSessionKey = args.rememberedSelectedSessionKey
+    && args.hasSessionKey(args.rememberedSelectedSessionKey)
+    ? args.rememberedSelectedSessionKey
+    : null;
+  const followMode = explicitSelectedSessionKey ? 'manual' : args.followMode;
+  return {
+    followMode,
+    selectedSessionKey: explicitSelectedSessionKey
+      ?? rememberedSelectedSessionKey
+      ?? args.defaultSelectedSessionKey
+      ?? null,
+    preserveSelectedSession: followMode === 'manual',
+  };
 }
 
 export function resolveConversationEventSelectedSessionKey(args: {

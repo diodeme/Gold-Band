@@ -104,7 +104,8 @@ describe('Gold themed scrollbar', () => {
     expect(viewportStart).toBeGreaterThanOrEqual(0);
     expect(stickyFooter).toBeGreaterThan(viewportStart);
     expect(stickyFooter).toBeLessThan(viewportEnd);
-    expect(dialog).toContain('className="sticky bottom-0 z-20 mt-auto shrink-0 bg-background"');
+    expect(dialog).toContain('"sticky bottom-0 z-20 mt-auto shrink-0",');
+    expect(dialog).toContain('wallpaperSurface ? "bg-transparent" : "bg-background"');
     expect(dialog).toContain('className="absolute right-4 top-0 z-30 -translate-y-[calc(100%+1rem)]');
   });
 

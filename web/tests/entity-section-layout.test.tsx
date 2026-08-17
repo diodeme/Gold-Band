@@ -44,4 +44,11 @@ describe('context management entity section layout', () => {
     expect(contextSource.match(/<EntityRefreshButton/g)).toHaveLength(3);
     expect(contextSource).not.toContain("title={t('common.refresh')}");
   });
+
+  it('uses the shared shadcn Select for the SKILL scope field', () => {
+    expect(contextSource).not.toMatch(/<select(?:\s|>)/);
+    expect(contextSource).toContain('<SelectTrigger className="h-10 w-full" aria-labelledby="skill-scope-label">');
+    expect(contextSource).toContain('<SelectContent align="start">');
+    expect(contextSource).toContain("onValueChange={(source) => setForm((current) => ({ ...current, source }))}");
+  });
 });

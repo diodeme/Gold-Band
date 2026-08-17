@@ -23,10 +23,13 @@ provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归�
 
 AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是 AI-DYNAMIC”或某个 node id 的单一特判：bootstrap 必须同时满足根层级、无 group、无前序、bootstrap chain 与 worker 控制角色；其余声明 completion contract 的动态节点统一后置投影。Direct 使用 `RawAgent` envelope，不注入 output contract，也不进入上述两阶段流程。
 
-业务 turn 成功、隐藏 finalize 发出前，runtime 必须在 attempt 根目录原子写入 `artifact-emission.json`，状态为 `finalizing`。该文件与 `worker-ref.json` 共同构成恢复事实：
+业务 turn 成功、隐藏 finalize 发出前，runtime 必须在 attempt 根目录原子写入 `artifact-emission.json`。该文件与 `worker-ref.json` 共同构成恢复事实，phase 只允许 `business-turn / finalizing`：
 
 - 业务 turn 中断或失败且尚无 emission state：继续时仍恢复业务对话，不得假定任务已经完成。
-- emission state 已进入 `finalizing`：停止、进程退出、自动重试或用户继续后，只恢复隐藏 finalize，不得重新执行业务工作。
+- emission state 已进入 `finalizing` 且用户纯继续：停止、进程退出、自动重试或用户继续后，只恢复隐藏 finalize，不得重新执行已完成的业务工作。
+- emission state 已进入 `finalizing` 且用户选择“继续并发送”：新的用户输入是新的 RuntimeControlled 业务 turn。provider 必须先把 phase 原子切换为 `business-turn`，保留用户 prompt identity、正文、引用与附件并完成该业务 turn；成功后再切回 `finalizing` 并生成新的隐藏 artifact finalize。不得让旧 `finalizing` checkpoint 覆盖用户输入。
+- `PostTurnProjection` 路径的“继续并发送” hidden Runtime control 段必须明确先完整执行可见用户指令，本 turn 不适用此前的 artifact 输出约束且不输出 artifact；用户业务 turn 正常结束后，再由 Runtime 在后续独立 turn 请求 artifact。不得复用纯继续的“当前输出契约重新生效”文案制造同 turn 契约冲突。
+- `business-turn` 表示 finalize 边界之后插入的新业务 turn 尚未可靠完成。该 turn 再次被停止、进程退出或失败时继续保持 `business-turn`；后续纯继续或继续并发送都必须先恢复业务 turn，只有业务 turn terminal success 后才能重新进入 `finalizing`。
 - `finalizing` 只表示已经进入 artifact 归一化阶段，不表示被中断的回复完整。用户继续时必须丢弃中断 turn 的候选输出，重新发送完整 finalize prompt；只有新 turn terminal success 且 artifact 解析、schema 校验通过后才可完成节点。
 
 ### Turn 控制模式与停止后自由会话
@@ -35,16 +38,17 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 - `RuntimeControlled` 允许 Runtime 消费 artifact、计算 outcome、执行 finalize/repair、完成人工 check 前置处理并推进 edge。
 - `NonRuntimeControlled` 只保存 ACP timeline/session；即使 Agent 输出符合原 `output_contract` 的 JSON，也不得提取 artifact、计算 outcome、完成节点或推进 edge。
+- “继续并发送”的 hidden 控制文案必须直接消费当前节点的 `OutputEmissionMode`：`PostTurnProjection` 本 turn 不输出 artifact，后续独立归一化；`InlineControl` 在完成用户指令后按当前输出契约输出 artifact；没有 artifact contract 时只要求执行用户指令。不得根据历史消息中是否出现 finalize 文案反推交付策略。
 
-用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，用户消息固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式“继续工作流”动作可以恢复 Runtime；该动作发送隐藏 `RuntimeResume` prompt，不生成可见用户气泡。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
+用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，发送按钮与 Enter 固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式继续动作可以恢复 Runtime：没有可发送输入时显示“继续工作流”并发送隐藏 `RuntimeResume`，不生成可见用户气泡；存在可发送输入时显示“继续并发送”，由同一个 Runtime continue command 原子提交用户输入和恢复意图，不能先普通发送再 continue。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
 
 普通消息与显式继续必须使用两套独立的后端资格判断：普通消息只在目标 attempt 当前仍由 Runtime 控制时拒绝；`Paused + ProcessInterrupted` 即使同时具备显式 continue 资格，也必须允许发送 NonRuntime ACP prompt。普通消息接口不得调用或复用 `runtime_continue_required` 作为门禁，不能因为界面同时显示“继续工作流”就强迫用户先恢复 Runtime。
 
 Runtime 是否可显式继续还必须受运行模式约束。`ConversationRunMode::is_orchestrated()` 对 `Auto / Workflow` 返回 true、对 `Direct` 返回 false；AI-DYNAMIC 是节点类型，不单独参与该判断。因此只有 Workflow/AUTO 的可恢复暂停投影 `continueKind=action`。Direct 停止只取消当前 ACP 回复并保持普通 composer，后续消息继续走 NonRuntime ACP prompt，不显示也不接受“继续工作流”。即使 Direct 底层容器仍保存 `Paused + ProcessInterrupted`，该事实也不能被解释为编排恢复资格。
 
-“继续工作流”属于 composer action，固定与模型、思考强度、权限和发送按钮放在 composer 底部 command bar；附件入口与键盘提示单独占据上方辅助行。窄宽度时 command bar 可以整体换行，但继续与发送必须保持在配置项同一操作域。该动作只消费后端 lifecycle，前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
+继续动作属于 composer action，固定与模型、思考强度、权限和发送按钮放在 composer 底部 command bar；附件入口与键盘提示单独占据上方辅助行。继续按钮是否切换为“继续并发送”必须直接复用发送按钮的最终 `canSubmit`，不得单独检查 `prompt.trim()`；这样未来附件、引用等输入资格只需修改一处。视觉提示分别为“继续运行工作流”“发送消息并继续工作流”和“发送消息”，Enter 始终等价于发送按钮。窄宽度时 command bar 可以整体换行，但继续与发送必须保持在配置项同一操作域。该动作只消费后端 lifecycle，前端不得在 stop command 返回后自行合成 `continuable` 或 `continueKind`。Direct 在首个 ACP session 尚未完整建立时停止，也应保留自由会话入口；不得因为 session 建立时机不同而要求用户重跑或调用 Runtime continue。
 
-Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。中断期间用户针对当前任务给出的最新明确指引在恢复后继续有效，可以调整任务内容、交付结果或角色预设流程；无关闲聊不改变任务，且这些指引不能覆盖 artifact contract、Gold Band 文件规则、安全与能力边界。恢复 Runtime 控制只恢复结果消费和输出协议，不等价于恢复中断前的角色流程；hidden resume 只声明控制权与当前 output contract 重新生效，不重复 system 中的指令优先级规则。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
+Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主动打断当前工作并转向其他内容时，在 Runtime 明确恢复工作流前无需遵守当前 artifact 输出语义，应自然回应用户当前问题。中断期间用户针对当前任务给出的最新明确指引在恢复后继续有效，可以调整任务内容、交付结果或角色预设流程；无关闲聊不改变任务，且这些指引不能覆盖 artifact contract、Gold Band 文件规则、安全与能力边界。恢复 Runtime 控制只恢复结果消费和输出协议，不等价于恢复中断前的角色流程；Runtime control resume 段只声明控制权与当前 output contract 重新生效，不重复 system 中的指令优先级规则。AI-DYNAMIC 通过既有基础 system 组合自然继承，不重复写入专属 section。停止后的普通消息只发送用户原文，不追加一次性 suspended hidden context，不创建 accepted prompt cursor；Runtime 仍以 `NonRuntimeControlled` 独立保证不提取、不校验 artifact 且不推进节点。Direct / `RawAgent` system prompt 继续为空，从首轮开始就是 `NonRuntimeControlled`。
 
 显式继续先生成包含 source transition id 的候选，只有 accepted user prompt event 已持久化后才以 CAS 提交 `WorkflowContinued`。ACP 初始化、session setup 或 prompt 接受前失败时 cursor 保持 NonRuntime，新的 stop transition 也不能被迟到的 resume 覆盖。同一 ACP session 的普通消息和 Runtime 控制 prompt 继续共享 prompt lock，但该锁不再承担 suspended context 的一次性认领。
 
@@ -67,6 +71,8 @@ Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立�
 - 当前进程 prompt registry 只决定 Agent 是否正在 `Starting / Accepted / Running / CancelRequested`；客户端重启后 registry 为空，磁盘 session status 不能重建 live turn。
 - ACP session metadata 只决定 session 可用性与最近一轮历史结果；`completed/cancelled/failed` 不代表节点完成，也不代表 Runtime 正在跳转。
 
+Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回调把权威 execution phase 从 `StartingNode` 推进为 `RunningNode`；provider 返回 success 不能补做或绕过该转换，后续 finalize、manual check 与 edge transition 只接受已进入 `RunningNode` 的 attempt。
+
 `LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。
 
 `run-progress.json` 是带 `runtimeRevision` 的观测投影，不参与 continue 资格、composer、sidebar、错误语义或 active run 选择；详情页只展示 revision 与 `run.json.execution.revision` 相同的 progress。启动恢复继续把遗留 Running 收敛为 `Paused + ProcessInterrupted + execution=Paused`，revision 单调推进。
@@ -87,6 +93,14 @@ edge target 规则：
 
 `failure` edge 只承接业务失败：artifact 结构合法，但 success condition 明确判定不通过，或人工 check 明确判定失败。运行异常、provider 异常和 adapter/ACP 异常不属于 failure edge 输入。
 
+### 3.2 会话初始工作树准备
+
+快速对话选择 worktree 时，Direct、Workflow 和 AUTO 共用外层 run 的 `PreparingWorkspace -> StartingNode -> RunningNode` 启动序列。`PreparingWorkspace` 表示在 Agent 启动前从源仓库当前 `HEAD` 创建 run 级工作树；主工作区启动不经过该阶段。这里的外层 `run.json.execution` 阶段与 AI-DYNAMIC `dynamic-run.json` 中 fanout/merge 使用的同名阶段属于不同聚合，不新增第二套生命周期或把 dynamic graph 状态投影回外层 run。
+
+`RunState.worktree` 是工作目录的权威事实。准备完成后必须在 attempt runtime lock 下重新读取 durable run：只有 run 仍为待启动状态才能进入 `StartingNode`；若用户已停止，则保持 `Paused + ProcessInterrupted`，不创建 provider invocation，也不允许迟到的准备结果恢复 Running。已经成功创建的 worktree 保留，不通过补偿删除模拟事务。
+
+执行入口解析 cwd 时必须校验 worktree path 位于 Gold Band 受管工作树根目录，并复用 Git helper 验证目录与 branch 的一致性。Worker/ACP 的 `workspace_dir` 使用 run worktree，adapter workspace 仍使用项目原工作空间；后续 AI-DYNAMIC 以该 run workspace 作为自己的 main workspace。该解析只读取当前 run 的小型状态文件，不扫描其他 run、分支或磁盘目录。
+
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
 - `session=continue`：仅当目标 provider 支持 continue session 时可用。
@@ -99,8 +113,8 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 - 新 session 使用 `RequirementTask`。
 - 工作流内部 continue session 使用 `WorkflowResume`，发送可见的 runtime 默认继续提示，但不得发送“用户已选择继续工作流”的隐藏提示，也不得提交 `WorkflowContinued` 控制游标。
-- 只有显式“继续工作流”入口使用 `RuntimeResume + RuntimeControlIntent::Resume`，发送隐藏恢复提示，并在 prompt 被接受后提交控制权转换。
-- continue session 且用户有显式输入时使用 `UserMessage`，只发送用户输入原文，不重新注入 hidden runtime context，也不包装 `# Goal` / `# 用户提示` / `# Task`。
+- 显式继续但没有可发送输入时使用 `RuntimeResume + RuntimeControlIntent::Resume + PromptVisibility::Hidden`，发送隐藏恢复提示，并在 prompt 被接受后提交控制权转换。
+- 显式继续且存在可发送输入时使用 `UserMessage + RuntimeControlIntent::Resume + PromptVisibility::Visible`。provider prompt 固定为用户输入后追加 `show="false"` 的 Runtime control hidden 段；`PromptBundle.display_text/quotes` 单独保存 UI 投影，timeline 用户气泡只显示用户输入。该组合仍不包装 `# Goal` / `# 用户提示` / `# Task`，也不重复 stable system/runtime context。
 - runtime repair 使用 `RuntimeRepair` 覆盖普通 continue 决策。
 
 各节点类型只提供自己的 continue ref 来源；不得在普通 workflow、AI-DYNAMIC worker / acceptance / merge 中分别复制 prompt mode 判断。

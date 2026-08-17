@@ -1,11 +1,32 @@
 import { useCallback, useReducer, useRef, type Dispatch, type SetStateAction } from 'react';
-import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
+import {
+  attachmentItemsFromPaths,
+  revokeAttachmentPreviewUrls,
+  type AttachmentItem,
+} from './attachment-service';
 import type { ComposerQuote } from './composer-context';
+import type { AttachmentFileRef } from '@/api/client';
+import type { ConversationQueuedPromptDraftVm } from '@/types';
 
 export interface AcpComposerDraft {
   content: string;
   attachments: AttachmentItem[];
   quotes: ComposerQuote[];
+}
+
+export function queuedPromptToAcpComposerDraft(
+  item: ConversationQueuedPromptDraftVm,
+  fileRefs: readonly AttachmentFileRef[] = [],
+): AcpComposerDraft {
+  return {
+    content: item.content,
+    attachments: attachmentItemsFromPaths(item.attachmentPaths, fileRefs),
+    quotes: item.quotes.map(({ id, sourceMessageKey, text }) => ({
+      id,
+      sourceKey: sourceMessageKey,
+      text,
+    })),
+  };
 }
 
 export const MAX_ACP_COMPOSER_DRAFTS = 64;
@@ -56,6 +77,12 @@ export class AcpComposerDraftStore {
     return true;
   }
 
+  replaceIfUnchanged(key: string, expected: AcpComposerDraft, next: AcpComposerDraft) {
+    if ((this.entries.get(key) ?? null) !== expected) return false;
+    this.write(key, next);
+    return true;
+  }
+
   dispose() {
     for (const draft of this.entries.values()) revokeAttachmentPreviewUrls(draft.attachments);
     this.entries.clear();
@@ -93,6 +120,7 @@ export interface AcpComposerDraftController {
   setQuotes: Dispatch<SetStateAction<ComposerQuote[]>>;
   clearIfUnchanged: (expected: AcpComposerDraft) => boolean;
   restoreIfEmpty: (draft: AcpComposerDraft) => boolean;
+  replaceIfUnchanged: (expected: AcpComposerDraft, next: AcpComposerDraft) => boolean;
 }
 
 export function useAcpComposerDraft(key: string): AcpComposerDraftController {
@@ -153,6 +181,14 @@ export function useAcpComposerDraft(key: string): AcpComposerDraftController {
     return true;
   }, [key]);
 
+  const replaceIfUnchanged = useCallback((expected: AcpComposerDraft, next: AcpComposerDraft) => {
+    if (draftRef.current !== expected) return false;
+    if (!acpComposerDraftStore.replaceIfUnchanged(key, expected, next)) return false;
+    draftRef.current = next;
+    renderCurrentDraft();
+    return true;
+  }, [key]);
+
   return {
     draft: draftRef.current ?? emptyDraft(),
     setContent,
@@ -160,5 +196,6 @@ export function useAcpComposerDraft(key: string): AcpComposerDraftController {
     setQuotes,
     clearIfUnchanged,
     restoreIfEmpty,
+    replaceIfUnchanged,
   };
 }

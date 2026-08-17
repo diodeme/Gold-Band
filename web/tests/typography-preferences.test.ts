@@ -24,10 +24,16 @@ describe('desktop typography preferences', () => {
     vi.stubGlobal('document', { documentElement: { dataset: {}, style: { setProperty } } });
 
     applyPersonalization({
-      schemaVersion: 2,
+      schemaVersion: 4,
       typography: {
         ui: { fontStack: { source: 'theme' }, fontSize: { source: 'custom', px: 15.6 } },
         editor: { fontStack: { source: 'custom', families: ['Fira Code', 'Consolas'] }, fontSize: { source: 'custom', px: 30 } },
+      },
+      wallpaper: {
+        byColorScheme: {
+          light: { image: { source: 'theme' }, opacityPercent: 60 },
+          dark: { image: { source: 'theme' }, opacityPercent: 60 },
+        },
       },
       avatars: {
         agent: { image: { source: 'theme' }, shape: { source: 'theme' } },
@@ -142,10 +148,13 @@ describe('desktop typography preferences', () => {
     const markdown = fs.readFileSync(path.resolve(__dirname, '../src/components/prompt-kit/markdown.tsx'), 'utf8');
     const fileViewer = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/WorkspaceFileEditor.tsx'), 'utf8');
     const diffViewer = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/TurnFileWorkspacePanel.tsx'), 'utf8');
+    const readonlyUnifiedDiff = fs.readFileSync(path.resolve(__dirname, '../src/components/workspace/files/ReadonlyUnifiedDiff.tsx'), 'utf8');
     expect(editorTheme).toContain("fontFamily: 'var(--app-editor-font-family, ui-monospace)'");
     expect(editorTheme).toContain("fontSize: 'var(--app-editor-font-size, 12px)'");
     expect(fileViewer).toContain('<CodeMirror');
-    expect(diffViewer).toContain('unifiedMergeView({');
+    expect(diffViewer).toContain("from './ReadonlyUnifiedDiff'");
+    expect(readonlyUnifiedDiff).toContain('unifiedMergeView({');
+    expect(readonlyUnifiedDiff).toContain('workspaceEditorTheme');
     expect(markdown).toContain('font-sans text-[1em] font-normal leading-[inherit] tracking-normal');
     expect(markdown).not.toContain('var(--app-ui-code-font-size)');
     expect(markdown).not.toContain('var(--app-editor-font-size)');

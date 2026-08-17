@@ -202,11 +202,13 @@ function MarkdownCodeBlock({ className, children, node, ...props }: MarkdownCode
     >
       <Tooltip>
         <TooltipTrigger asChild>
-          <CodeBlockCopyButton
-            aria-label={t('common.copyCode')}
-            code={source}
-            title={undefined}
-          />
+          <span className="inline-flex">
+            <CodeBlockCopyButton
+              aria-label={t('common.copyCode')}
+              code={source}
+              title={undefined}
+            />
+          </span>
         </TooltipTrigger>
         <TooltipContent>{t('common.copyCode')}</TooltipContent>
       </Tooltip>

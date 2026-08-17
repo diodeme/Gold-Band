@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::avatar::{AvatarPreferencesVm, load_resolved_avatar_preferences};
+use crate::wallpaper::{WallpaperPreferencesVm, load_resolved_wallpaper_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,7 @@ pub struct PreferencesVm {
     pub use_local_claude: bool,
     pub verbose_logging: bool,
     pub avatars: AvatarPreferencesVm,
+    pub wallpapers: WallpaperPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -364,6 +366,7 @@ pub struct WorkflowVm {
     pub runs: Vec<RunGroupVm>,
     pub control: Option<WorkflowControlVm>,
     pub workflow_json: Option<String>,
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -884,6 +887,7 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
@@ -1178,6 +1182,7 @@ pub fn preferences_vm(
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
     avatars: AvatarPreferencesVm,
+    wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
         appearance,
@@ -1186,6 +1191,7 @@ pub fn preferences_vm(
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
         avatars,
+        wallpapers,
     }
 }
 
@@ -1303,6 +1309,8 @@ pub fn bootstrap_vm(
                 &app.config.personalization,
             )
             .unwrap_or_default(),
+            load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir())
+                .unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -1532,8 +1540,13 @@ pub fn task_detail_vm(app: &App, task_id: &str) -> Result<TaskDetailVm> {
 pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
     let summary = app.task_summary(task_id)?;
     let task = task_row_vm(app, &summary)?;
-    let workflow_json = read_optional_text(&app.paths.workflow_file(task_id))?;
-    let workflow = read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)).ok();
+    let authoring = app.task_authoring_workflow(task_id).ok();
+    let workflow = authoring
+        .as_ref()
+        .map(|authoring| authoring.workflow.clone());
+    let workflow_json = workflow
+        .as_ref()
+        .and_then(|workflow| serde_json::to_string_pretty(workflow).ok());
     let graph = workflow
         .as_ref()
         .map(|workflow| workflow_graph_vm(app, workflow))
@@ -1549,6 +1562,9 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
         runs,
         control,
         workflow_json,
+        model_bindings: authoring
+            .map(|authoring| authoring.model_bindings)
+            .unwrap_or_default(),
     })
 }
 
@@ -6826,6 +6842,10 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+    let catalog_observed_at = session
+        .get("configCatalogObservedAt")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
@@ -6884,6 +6904,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
         config_option_overrides,
@@ -7592,7 +7613,7 @@ fn count_round_outputs(
 
 fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<String, String> {
     read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
-        .or_else(|_| read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)))
+        .or_else(|_| app.task_workflow(task_id))
         .map(|workflow| {
             workflow
                 .nodes
@@ -7836,6 +7857,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState {
                 revision: 7,
                 phase: RuntimeExecutionPhase::Paused,
@@ -8576,11 +8598,8 @@ mod tests {
 
     #[test]
     fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-dynamic-round-graph-test-{}",
-            std::process::id()
-        ));
-        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let directory = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
         let app = App::new(repo_root);
         seed_dynamic_round_graph_fixture(&app);
 
@@ -8621,8 +8640,6 @@ mod tests {
             dynamic_exit_sequence < accept_sequence,
             "AI-DYNAMIC exit should rank before the next workflow node"
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

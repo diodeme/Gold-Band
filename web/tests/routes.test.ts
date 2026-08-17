@@ -54,4 +54,40 @@ describe('desktop entry routing', () => {
     });
     expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
   });
+
+  it('round-trips a fully qualified workflow attempt link', () => {
+    const path = '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/nodes/review/attempts/attempt-003';
+    const page = routeFromPath(path).conversationPage;
+
+    expect(page).toEqual({
+      kind: 'conversation-run',
+      projectId: 'project-a',
+      taskId: 'task-a',
+      runId: 'run-a',
+      roundId: 'round-a',
+      nodeId: 'review',
+      attemptId: 'attempt-003',
+      outerNodeId: undefined,
+      outerAttemptId: undefined,
+    });
+    expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
+  });
+
+  it('round-trips a fully qualified AUTO dynamic attempt link', () => {
+    const path = '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/nodes/ai-dynamic/attempts/attempt-002/dynamic/nodes/review/attempts/attempt-001';
+    const page = routeFromPath(path).conversationPage;
+
+    expect(page).toEqual({
+      kind: 'conversation-run',
+      projectId: 'project-a',
+      taskId: 'task-a',
+      runId: 'run-a',
+      roundId: 'round-a',
+      nodeId: 'review',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-002',
+    });
+    expect(pathFromRoute('task-orchestration', taskListPage, page)).toBe(path);
+  });
 });

@@ -483,14 +483,18 @@ impl ScheduleSpec {
             ScheduleKind::Every {
                 every, anchor_at, ..
             } => {
-                let interval = every.duration();
-                let elapsed = after.signed_duration_since(*anchor_at);
-                let periods = if elapsed < Duration::zero() {
+                let anchor_millis = i128::from(anchor_at.timestamp_millis());
+                let after_millis = i128::from(after.timestamp_millis());
+                let interval_millis = i128::from(every.duration().num_milliseconds());
+                let elapsed_millis = after_millis - anchor_millis;
+                let periods = if elapsed_millis < 0 {
                     1
                 } else {
-                    elapsed.num_seconds().div_euclid(interval.num_seconds()) + 1
+                    elapsed_millis.div_euclid(interval_millis) + 1
                 };
-                Some(*anchor_at + interval * periods as i32)
+                let next_millis =
+                    anchor_millis.checked_add(interval_millis.checked_mul(periods)?)?;
+                DateTime::from_timestamp_millis(i64::try_from(next_millis).ok()?)
             }
             ScheduleKind::Repeat {
                 preset,
@@ -655,6 +659,27 @@ mod tests {
             schedule.next_occurrence_after(anchor + Duration::minutes(50)),
             Some(anchor + Duration::hours(1))
         );
+    }
+
+    #[test]
+    fn every_sequence_advances_after_a_persisted_millisecond_deadline() {
+        let anchor = chrono::DateTime::parse_from_rfc3339("2026-08-12T07:16:49.249706300Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let persisted_deadline = chrono::DateTime::parse_from_rfc3339("2026-08-12T08:22:49.249Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let schedule = ScheduleSpec::every(3, "minutes", anchor).unwrap();
+
+        let next = schedule.next_occurrence_after(persisted_deadline).unwrap();
+
+        assert_eq!(
+            next,
+            chrono::DateTime::parse_from_rfc3339("2026-08-12T08:25:49.249Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        assert!(next.timestamp_millis() > persisted_deadline.timestamp_millis());
     }
 
     #[test]

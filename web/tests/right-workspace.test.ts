@@ -5,12 +5,15 @@ import {
   agentTranscriptResourceKey,
   CONVERSATION_WORKSPACE_LRU_LIMIT,
   ConversationWorkspaceStore,
+  conversationDirectoryWorkspaceResourceKey,
   conversationRunWorkspaceResourceKey,
+  createHiddenPromptSectionWorkspaceResource,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
+  hiddenPromptSectionWorkspaceResourceKey,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
@@ -48,6 +51,89 @@ describe('right workspace resource model', () => {
     expect(acpAttemptWorkspaceResourceKey('raw-frames', locator('agent-a'))).toBe(
       'raw-frames:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a',
     );
+    expect(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).toBe(
+      'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+    );
+    expect(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-b'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).not.toBe(hiddenPromptSectionWorkspaceResourceKey({
+      ...locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    }));
+
+    expect(createHiddenPromptSectionWorkspaceResource({
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      title: 'Hidden runtime context',
+      locator: locator('agent-a'),
+      eventId: 'prompt-1',
+      eventSeq: 42,
+      partIndex: 2,
+    })).toEqual({
+      kind: 'hidden-prompt-section',
+      key: 'hidden-prompt-section:project-1:task-1:run-1:round-1:node-1:attempt-1:::agent-a:prompt-1:42:2',
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      title: 'Hidden runtime context',
+      description: null,
+      attention: false,
+      locator: {
+        ...locator('agent-a'),
+        eventId: 'prompt-1',
+        eventSeq: 42,
+        partIndex: 2,
+      },
+    });
+  });
+
+  it('keeps one run-directory tab bound to the selected attempt without activating unrelated resources', () => {
+    const scopeKey = 'conversation:project-1:task-1:run-1';
+    const locator = {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+    };
+    const firstDirectory: RightWorkspaceResource = {
+      kind: 'conversation-directory',
+      key: conversationDirectoryWorkspaceResourceKey(locator),
+      scopeKey,
+      title: 'Run directory',
+      attention: false,
+      locator,
+    };
+    const workspace: RightWorkspaceResource = {
+      kind: 'file-browser',
+      key: fileBrowserWorkspaceResourceKey('project-1'),
+      scopeKey,
+      projectId: 'project-1',
+      title: 'Workspace',
+      attention: false,
+    };
+    const nextDirectory: RightWorkspaceResource = {
+      ...firstDirectory,
+      locator: { ...locator, nodeId: 'node-2', attemptId: 'attempt-2' },
+    };
+
+    expect(conversationDirectoryWorkspaceResourceKey(nextDirectory.locator)).toBe(firstDirectory.key);
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: firstDirectory });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: workspace });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: nextDirectory });
+
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeTabKey).toBe(workspace.key);
+    expect(state.tabs.find((tab) => tab.kind === 'conversation-directory')).toEqual(nextDirectory);
+    expect(state.tabs.find((tab) => tab.kind === 'file-browser')).toBe(workspace);
   });
 
   it('opens, activates, and deduplicates resources by stable key', () => {
@@ -62,8 +148,6 @@ describe('right workspace resource model', () => {
     expect(state.tabs).toHaveLength(2);
     expect(state.activeTabKey).toBe(agent('agent-a').key);
     expect(state.tabs[0]).toMatchObject({ title: 'Agent A updated', attention: true });
-    expect(state.requestedOpen).toBe(true);
-    expect(state.openRevision).toBe(3);
   });
 
   it('models scheduled authoring as one stable tab per draft scope', () => {
@@ -81,7 +165,7 @@ describe('right workspace resource model', () => {
 
     expect(key).toBe('scheduled-task-config:draft:project-1');
     expect(state.tabs).toEqual([{ ...resource, title: 'Updated settings' }]);
-    expect(state).toMatchObject({ activeTabKey: key, requestedOpen: true });
+    expect(state).toMatchObject({ activeTabKey: key });
   });
 
   it('keys draft attachment previews by draft scope and stable attachment identity', () => {
@@ -104,26 +188,26 @@ describe('right workspace resource model', () => {
 
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-c').key });
     state = rightWorkspaceReducer(state, { type: 'close', key: agent('agent-a').key });
-    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: false });
+    expect(state).toMatchObject({ tabs: [], activeTabKey: null });
   });
 
-  it('opens and closes an empty workspace independently from its resources', () => {
-    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open-workspace' });
-    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: true, openRevision: 1 });
-    state = rightWorkspaceReducer(state, { type: 'close-workspace' });
-    expect(state).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: false });
-  });
+  it('stores open intent per scope while sharing the width preference', () => {
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: false, openRevision: 0 });
 
-  it('hides the workspace without discarding tabs and reopens the existing tab', () => {
-    const resource = agent('agent-a');
-    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
-    state = rightWorkspaceReducer(state, { type: 'close-workspace' });
-    expect(state.tabs).toEqual([resource]);
-    expect(state.requestedOpen).toBe(false);
+    store.openWorkspace(draft, { explicit: true });
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: true, openRevision: 1 });
+    expect(store.peekShellState(conversation)).toMatchObject({ requestedOpen: false, openRevision: 0 });
+    expect(store.hydrateWidth(720)).toBe(false);
+    expect(store.setWidth(760)).toBe(true);
+    expect(store.hydrateWidth(800)).toBe(false);
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: true, width: 760 });
+    expect(store.peekShellState(conversation)).toMatchObject({ requestedOpen: false, width: 760 });
 
-    state = rightWorkspaceReducer(state, { type: 'activate', key: resource.key });
-    expect(state.tabs).toEqual([resource]);
-    expect(state.requestedOpen).toBe(true);
+    store.closeWorkspace(draft);
+    expect(store.peekShellState(draft)).toMatchObject({ requestedOpen: false, width: 760 });
   });
 
   it('normalizes project files into one locator-only file browser tab', () => {
@@ -181,19 +265,26 @@ describe('right workspace resource model', () => {
     expect(pullRequest).toContain('github-pr:github.com:acme/widgets:42:1111111111111111111111111111111111111111:2222222222222222222222222222222222222222::src/main.rs');
   });
 
-  it('isolates lightweight workspace state by conversation scope', () => {
+  it('isolates resource and open state by conversation scope', () => {
     const store = new ConversationWorkspaceStore();
     const first = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
     const second = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
-    store.save(first, { ...createInitialRightWorkspaceState(), requestedOpen: true });
+    store.save(first, createInitialRightWorkspaceState());
     store.save(second, {
       ...createInitialRightWorkspaceState(),
       tabs: [{ ...agent('agent-b'), scopeKey: second.key }],
       activeTabKey: agent('agent-b').key,
     });
+    store.openWorkspace(second, { explicit: true });
 
-    expect(store.restore(first)).toMatchObject({ requestedOpen: true, tabs: [] });
-    expect(store.restore(second)).toMatchObject({ requestedOpen: false, activeTabKey: agent('agent-b').key });
+    expect(store.restore(first)).toMatchObject({ tabs: [] });
+    expect(store.restore(second)).toMatchObject({ activeTabKey: agent('agent-b').key });
+    expect(store.peekShellState(first).requestedOpen).toBe(false);
+    expect(store.peekShellState(second).requestedOpen).toBe(true);
+
+    store.closeWorkspace(second);
+    expect(store.peekShellState(first).requestedOpen).toBe(false);
+    expect(store.peekShellState(second).requestedOpen).toBe(false);
   });
 
   it('evicts the least recently used conversation workspace after 24 stateful scopes', () => {
@@ -202,29 +293,91 @@ describe('right workspace resource model', () => {
       createConversationWorkspaceScope({ projectId: 'project-1', taskId: `task-${index}`, runId: 'run-1' })
     ));
     for (const scope of scopes.slice(0, CONVERSATION_WORKSPACE_LRU_LIMIT)) {
-      store.save(scope, { ...createInitialRightWorkspaceState(), requestedOpen: true });
+      store.save(scope, createInitialRightWorkspaceState());
     }
     store.restore(scopes[0]);
-    store.save(scopes.at(-1)!, { ...createInitialRightWorkspaceState(), requestedOpen: true });
+    store.save(scopes.at(-1)!, createInitialRightWorkspaceState());
 
     expect(store.has(scopes[0])).toBe(true);
     expect(store.has(scopes[1])).toBe(false);
     expect(store.restore(scopes[1])).toEqual(createInitialRightWorkspaceState());
   });
 
-  it('promotes only the draft open state into a newly created conversation', () => {
+  it('promotes draft tabs and their content locators when a conversation is created', () => {
     const store = new ConversationWorkspaceStore();
     const draft = createDraftConversationWorkspaceScope('project-1');
     const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const attachment = {
+      id: 'attachment-1',
+      name: 'preview.png',
+      size: 128,
+      mime: 'image/png',
+      previewUrl: 'blob:preview',
+      source: 'paste' as const,
+    };
+    const draftAttachment: RightWorkspaceResource = {
+      kind: 'draft-attachment',
+      key: draftAttachmentWorkspaceResourceKey(draft.key, attachment.id),
+      scopeKey: draft.key,
+      projectId: draft.projectId,
+      title: attachment.name,
+      attention: false,
+      attachment,
+    };
     store.save(draft, {
       ...createInitialRightWorkspaceState(),
-      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }],
-      activeTabKey: agent('draft-agent').key,
-      requestedOpen: true,
+      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }, draftAttachment],
+      activeTabKey: draftAttachment.key,
     });
+    store.openWorkspace(draft, { explicit: true });
     store.promoteDraft(draft, conversation);
 
     expect(store.has(draft)).toBe(false);
-    expect(store.restore(conversation)).toMatchObject({ tabs: [], activeTabKey: null, requestedOpen: true });
+    expect(store.restore(conversation)).toMatchObject({
+      tabs: [
+        { key: agent('draft-agent').key, scopeKey: conversation.key },
+        {
+          key: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+          scopeKey: conversation.key,
+          attachment,
+        },
+      ],
+      activeTabKey: draftAttachmentWorkspaceResourceKey(conversation.key, attachment.id),
+    });
+    expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+  });
+
+  it('keeps draft promotion isolated to the same project and idempotent after success', () => {
+    const store = new ConversationWorkspaceStore();
+    const draft = createDraftConversationWorkspaceScope('project-1');
+    const conversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const siblingConversation = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-2', runId: 'run-1' });
+    const otherProjectConversation = createConversationWorkspaceScope({ projectId: 'project-2', taskId: 'task-1', runId: 'run-1' });
+    store.save(draft, {
+      tabs: [{ ...agent('draft-agent'), scopeKey: draft.key }],
+      activeTabKey: agent('draft-agent').key,
+    });
+    store.save(siblingConversation, {
+      tabs: [{ ...agent('sibling-agent'), scopeKey: siblingConversation.key }],
+      activeTabKey: agent('sibling-agent').key,
+    });
+    store.openWorkspace(draft, { explicit: true });
+
+    store.promoteDraft(draft, otherProjectConversation);
+    expect(store.has(draft)).toBe(true);
+    expect(store.has(otherProjectConversation)).toBe(false);
+
+    store.promoteDraft(draft, conversation);
+    store.promoteDraft(draft, conversation);
+    expect(store.restore(conversation)).toMatchObject({
+      tabs: [{ key: agent('draft-agent').key, scopeKey: conversation.key }],
+      activeTabKey: agent('draft-agent').key,
+    });
+    expect(store.restore(siblingConversation)).toMatchObject({
+      tabs: [{ key: agent('sibling-agent').key, scopeKey: siblingConversation.key }],
+      activeTabKey: agent('sibling-agent').key,
+    });
+    expect(store.peekShellState(conversation).requestedOpen).toBe(true);
+    expect(store.peekShellState(siblingConversation).requestedOpen).toBe(false);
   });
 });

@@ -150,7 +150,7 @@ metrics 配置、endpoint 和 API Key 就绪后立即发送，不等待 workspac
 
 窗口回前台、pointerdown、keydown，以及 Direct/Workflow/AUTO 的启动、重跑、继续等业务命令统一触发 activity。鼠标移动、滚动、动画、repaint 和纯后台执行不触发。
 
-appStarted 或 activity 成功后 15 分钟内不发送 activity；activity 失败后退避 1 分钟，必须等待下一次真实操作，不定时补发。已有 appStarted/activity 请求 in-flight 时合并 activity，不排队、不写 durable outbox；但 appStarted 是必须保留的进程启动事实，若 activity 先占用共享发送槽，客户端先登记 appStarted 请求，并在 activity 完成释放槽位后立即续发。四类业务事实的结果不改变这些时间戳。
+appStarted 或 activity 成功后 15 分钟内不发送 activity；activity 失败后退避 1 分钟，必须等待下一次真实操作，不定时补发。已有 appStarted/activity 请求 in-flight 时合并 activity，不排队、不写 durable outbox；但 appStarted 是必须保留的进程启动事实，若 activity 先占用共享发送槽，客户端先登记 appStarted 请求，并在 activity 完成释放槽位后立即续发。共享槽统一通过 acquire/release 转换管理，每次 acquire 生成绑定配置 generation 与请求 generation 的 lease；完成回调只能释放自己持有的 lease。appStarted 延迟重试唤醒后也必须先 acquire，槽位被 activity 占用时保持待发送事实，等待其所有者释放后续发，禁止并发绕过共享槽。四类业务事实的结果不改变这些时间戳。
 
 #### directStarted / workflowStarted / autoStarted
 

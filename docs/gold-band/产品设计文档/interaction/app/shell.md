@@ -91,15 +91,15 @@ Agent 管理
 - 会话详情页的“查看工作流 / 编辑工作流 / 修复工作流”统一打开右侧资源，不再打开独立 Sheet；ACP 标题栏的“系统提示 / 原始帧”也统一打开右侧资源，不再替换主会话画布。嵌套 Agent 使用自身 attempt/branch locator 打开对应资源，切换资源不得卸载或重置原 Agent Tab 的缓存内容。
 - 原始帧工具栏按右侧资源容器宽度布局：搜索框固定独占第一行；事件类型、方向、排序位于下一行横向排列并允许自然换行。禁止使用一个大断点在“整组竖排 / 整组横排”之间切换，避免宽面板仍出现三个 Select 纵向堆叠。
 - 会话标题栏中的“系统提示 / 原始帧”是打开或聚焦右侧资源的动作入口，不承担资源选中态；当前激活状态只由右侧 Tab 表达。只有不存在会话工作区、按钮确实在当前页面切换 Raw 画布的旧页面，才允许“原始帧”按钮显示选中态。
-- 工作流编辑草稿独立于 Tab 描述符按资源 key 做有限运行期缓存。收起右栏、切换 Tab 或暂时切走会话不能丢草稿；主动关闭存在未保存修改的编辑 Tab 必须确认。保存继续复用 canonical `saveTaskWorkflow` 协议，并刷新当前会话 run snapshot。
+- 工作流编辑草稿独立于 Tab 描述符按资源 key 做有限运行期缓存。收起右栏、切换 Tab 或暂时切走会话不能丢草稿；主动关闭存在未保存定义或模型绑定修改的编辑 Tab 必须确认。编辑资源只在激活时按完整 workspace locator 读取 Task authoring 聚合，运行图继续读取当前 run snapshot；保存复用 canonical `saveTaskWorkflow` 协议，以返回的最新 `WorkflowVm` 更新草稿基线，并刷新当前会话 run snapshot。
 - 资源以稳定 `resourceKey` 去重；关闭当前 Tab 后激活相邻 Tab，关闭最后一个 Tab 后同步收起右侧工作区并清空激活态；需要继续使用空白入口时，可通过顶栏右栏开关重新打开。不把资源集合是否为空当成自动恢复展开的理由。Tab 条允许原生横向滚动；只有 `scrollWidth` 实际超过 `clientWidth` 时才显示紧凑的完整 Tab 菜单，未溢出时不长期占用标题栏空间。Tab 条与会话正文、设置页和资源树共用 `gold-themed-scrollbar` 的平台能力分支，不得为了独立压缩高度而切换到另一套浏览器滚动条渲染路径。Tab 采用有间距的轻量标签布局：激活项使用圆角弱底色和正常前景色，关闭按钮常显但降低透明度；未激活项透明，仅在 hover 时出现弱底色和关闭按钮。不使用整格矩形填充、竖分隔线或底部选中横线。
 - 只挂载激活 Tab 的内容 DOM。非激活资源仅保留轻量定位、状态、attention、有限分页窗口与滚动恢复状态，不长期隐藏挂载多个消息视口。
 - Agent 分支的可展示条件由分支领域数据决定：非根 `branchId` 已返回 canonical `branchExecution` 时即为有效会话，不得继续等待只属于根会话的 system prompt、配置选项或 Gold Band user prompt。`interrupted` 等历史分支也必须在首次有效查询后停止初始化重试。
 - 已打开 Agent 的完整但有限语义窗口进入最多 12 个 branch key 的内存 LRU；切换 Tab 时先同步恢复会话、事件窗口和滚动锚点，再在后台刷新 canonical 数据。缓存未命中才展示加载壳，刷新不得把已经可审计的内容退回“加载中”。
 - 右侧 Dock 与紧凑宽度 Sheet 共用同一 Tab state 和内容组件。窗口自动收窄只隐藏 Dock，不自动用 Sheet 覆盖中间内容；用户在紧凑模式显式点击资源链接时才打开 Sheet。
-- 用户手动关闭工作区只改变 `requestedOpen`，不删除 Tab；自动恢复不得覆盖手动关闭意图。
-- `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope；Tab、激活态和 `requestedOpen` 只能在当前 scope 内读写，资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。
-- 会话工作区轻量状态进入 24 项运行期 LRU，只在用户进入 scope、打开或操作工作区时更新访问顺序，后台流式事件不 touch。第 25 个有状态 scope 淘汰最久未访问项；被淘汰会话再次进入时右栏默认收起、Tab 为空，但顶栏入口仍可重新打开。快速对话创建新会话时只迁移 draft 的展开意图，不迁移可能带会话归属的资源 Tab。
+- 用户手动关闭工作区只改变会话 Shell 级 `requestedOpen`，不删除 Tab；自动折叠、进入没有右栏能力的运行模式/管理页面以及资源 scope 切换都只改变有效呈现，不得覆盖手动开关意图。
+- `requestedOpen` 与 `tabs` 独立建模：共享顶栏右栏开关可以在 `tabs=[]` 时展开空白入口页。`requestedOpen`、打开动作 revision 与当前运行期宽度投影归属会话 Shell，由快速对话和具体会话详情共享；快速对话使用 `draft:<projectId>` scope，具体会话使用 `conversation:<projectId>:<taskId>:<runId>` scope，只有 Tab 与激活态在当前 scope 内读写。资源描述符必须携带相同 `scopeKey`，不允许旧会话资源写入新会话。
+- 会话资源轻量状态进入 24 项运行期 LRU，只在用户进入 scope、打开或操作资源时更新访问顺序，后台流式事件不 touch。第 25 个有状态 scope 淘汰最久未访问项；被淘汰会话再次进入时 Tab 与激活态为空，但右栏是否展开仍服从 Shell 级用户意图。快速对话创建新会话时删除 draft 资源，不迁移可能带会话归属的 Tab；Shell 级展开意图无需迁移。
 - ACP Session VM、有限事件窗口和滚动/分页锚点按同一 resource key 进入统一 12 项重资源 LRU；淘汰必须原子释放三类数据，禁止三套独立顺序造成部分大对象继续驻留。live branch snapshot 继续使用自身 64 项轻量上限，并保护仍有订阅者的条目。
 - Tab 与激活态只保存在当前应用进程内，重启后清空；右侧工作区像素宽度不属于会话内容，继续写入用户级 conversation preference 并跨重启全局恢复，切换会话不得造成宽度跳变。
 - 会话模式的 `WorkspaceShell` 必须在中间主工作区、右侧 Dock 和紧凑 Sheet 的共同稳定边界提供一次 shadcn `TooltipProvider`。资源面板可以直接复用主会话中含 Tooltip 的标题、工具和操作组件；不得要求每种右侧资源自行补 Provider，否则 Agent 内容异步加载后会使整个工作区渲染树异常退出。
@@ -132,7 +132,8 @@ Agent 管理
 
 ### 6.1 保持稳定区域
 - 左侧一级功能区不随页面下钻变化。
-- 中间主工作区随页面层级变化；右侧会话工作区只在快速对话与会话详情中恢复对应 scope。进入 Agent 管理、上下文管理、运行模式管理或设置时隐藏顶栏入口并卸载 Dock，但不主动清除仍在 LRU 内的会话状态。
+- 中间主工作区随页面层级变化；右侧会话工作区只在快速对话与会话详情中恢复对应 scope。进入 Agent 管理、上下文管理、运行模式管理或设置时隐藏顶栏入口并卸载 Dock，但不改写会话 Shell 的打开意图、运行期宽度，也不主动清除仍在 LRU 内的资源状态。
+- 在中心最小宽度不同的一级功能页与会话页之间往返时，左栏用户宽度、右栏用户宽度和当前页面布局 profile 共同生成唯一 canonical 三栏布局。若 `react-resizable-panels` 在约束更新首帧把目标布局夹到旧页面的中心最小宽度，Shell 只在实际 applied layout 与 canonical 目标相差超过 1px 时于下一帧有界重放一次；不得把该瞬时投影写回用户偏好，也不得通过持续 Observer、轮询或第二套宽度状态修补。
 - 用户始终知道自己处于哪个一级模块。
 
 ### 6.2 避免终端心智
@@ -151,6 +152,7 @@ Agent 管理
 
 ### 6.3 适配桌面窗口
 功能区应支持：
+- 主窗口首次创建和 macOS Dock 重建统一读取 Tauri 权威窗口配置；默认逻辑尺寸为 1280×720，并由宿主按当前显示器工作区居中。默认位置不使用固定物理坐标，也不持久化临时启动位置，避免系统缩放或显示器变化后窗口落到可见区域之外。
 - 面板宽度调整
 - 列表滚动
 - 详情页滚动
@@ -169,10 +171,11 @@ Agent 管理
 - 顶栏窗口控制按钮组左侧可承载「帮助」入口（DropdownMenu）。是否展示由渠道配置的 `feedbackEnabled` 能力布尔值决定，经 `AppInfoVm` 贯穿应用壳；当前 `wb=true`、默认渠道为 false。前端不根据渠道名称猜能力，后端 command 也必须再次校验。当前菜单仅含「用户反馈」，详见 interaction/app/feedback.md。
 - 桌面窗口最小尺寸由 `configs/app-config.toml` 的 `workspaceLayout` 页面 profile 统一管理，前端在页面切换时通过 Tauri Window API 更新原生最小尺寸；`tauri.conf.json` 与 `html/body/#root` 不得再维护固定 `min-width/min-height`。WebView 必须始终服从真实 viewport 尺寸并继续触发响应式布局，禁止在达到 CSS 最小宽度后保持旧布局、由原生窗口直接裁切右侧内容。
 - 桌面壳内的二级布局必须基于实际内容容器宽度决定分栏，而不是直接复用整窗 `md/lg/xl` breakpoint。侧边栏、section 标题列、抽屉和详情 inspector 都会减少真实可用宽度；嵌套区域优先使用 Tailwind container query，固定画布/表格则必须提供明确的换行、堆叠或横向滚动降级策略。
-- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。中间硬下限与右侧 288–1440px 范围直接声明为 Resizable Panel 约束，文件资源首次打开时推荐 760px；组件库在同一 flex layout 中联合求解，不得把整窗每像素宽度重新写入 React state 后动态生成右栏 `maxSize`。
-- 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。窗口和面板的像素尺寸必须在系统拖拽期间连续跟随，不做 debounce 或“释放后才改变”的延迟布局。折叠阈值使用当前持久化左栏宽度和 48px 迟滞，手动折叠和自动折叠分别建模；ResizeObserver 只在 animation frame 更新 ref 中的 `previousWidth`，仅当 `{left,right}` 离散呈现状态改变时提交 React state。左右宽度统一在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成分隔线拖动后换算为像素并写入会话 UI preference；异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
+- 三段式工作区使用 shadcn `Resizable` copy-in（`react-resizable-panels`）统一管理面板，不维护手写全局 mousemove 拖拽。页面通过 `configs/app-config.toml` 的集中式 profile 分别声明中间区域硬下限 `centerMinWidth`、无右栏时的左栏自动收起舒适宽度 `centerAutoCollapseWidth` 和当前页面原生窗口下限 `windowMinWidth`。会话为 360/420/480px，上下文卡片为 520/520/520px、工作流画布为 640/640/640px、设置为 480/480/480px。中间硬下限与右侧 288–1440px 范围直接声明为 Resizable Panel 约束；组件库在同一 flex layout 中联合求解，不得把整窗每像素宽度重新写入 React state 或动态生成右栏 `maxSize`。
+- 横向缩小时先把右侧压到最小宽度，再自动隐藏左栏，再隐藏右侧；放大时先恢复右侧、再恢复左侧。窗口和面板的像素尺寸必须在系统拖拽期间连续跟随，不做 debounce 或“释放后才改变”的延迟布局。折叠阈值使用当前持久化左栏宽度和 48px 迟滞，手动折叠和自动折叠分别建模；ResizeObserver 只在 animation frame 更新 ref 中的 `previousWidth`，仅当 `{left,right,rightOwnsWindowResize}` 离散呈现状态改变时提交 React state。左右宽度统一在 `ResizablePanelGroup.onLayoutChanged` 确认用户完成分隔线拖动后换算为像素并写入会话 UI preference；`meta.isUserInteraction` 是用户完成动作的权威事实，具体分隔条归属优先使用面板库公开 WAI-ARIA Separator 的焦点身份，焦点不可用时才比较“上一次完成布局 → 本次完成布局”的外侧 Panel 主变化量。中区触底后相邻外侧 Panel 可以同时变化，不得因此丢弃用户偏好；折叠到 0 只改变呈现，不写入像素偏好。异步 sidebar VM 到达后必须 hydrate Provider 初始宽度，不能让首次渲染的 440px fallback 覆盖已持久化值。
 - 左侧导航可由用户拖到 176px 的紧凑可读宽度；导航项与工作空间标题保持单行、超长名称在内容区截断，操作图标和点击区域不缩小，继续可通过独立按钮完全折叠。
-- 右侧工作区在普通窗口缩放时维持用户已保存的首选宽度上限；用户按下右侧分隔条时必须在同一输入事件内将上限扩展至配置的 1440px，保证首次拖拽即可扩宽，不能等待异步渲染提交后才放开。
+- 普通窗口缩放的 resize owner 只能由 canonical 输入决定，不能读取右栏当前实际宽度形成反馈环。左栏始终保持像素宽度；右栏可见且当前总宽不足以同时容纳“左栏偏好 + 中区下限 + 右栏偏好”时，中区保持像素下限、右栏使用相对行为吸收窗口增减，直到重新达到右栏偏好；容纳完整偏好后切回“右栏像素、中区相对”。owner 只在上述阈值跨越时改变，不随每个像素提交 React state。页面 profile、左右栏有效显隐或偏好变化后，必须在面板库完成本轮约束注册后调用官方 Group `setLayout()`，以一个 canonical 目标同时收敛三栏；禁止在目标求解前分别向左右 Panel 发送 `collapse/expand/resize`，否则相邻 pivot 会在旧页面约束下牺牲另一侧。若 `setLayout()` 返回的 applied layout 仍把目标可见外栏保留为 0，说明 Panel 折叠身份尚未释放；同一离散事务允许对该 Panel 调用官方 `expand()`，并对原目标有界重试一次，不得循环或把重试结果写成新偏好。右侧分隔条始终可在配置的 288–1440px 范围内直接调整，完成后才写入偏好。
+- 真实客户端布局问题使用会话 Shell 内的有界诊断时间线排查。诊断默认关闭，沿用现有 DevTools 本地开关约定：执行 `localStorage.setItem('goldBand.debug.workspaceLayout', '1'); location.reload();` 后启用，排查结束执行 `localStorage.removeItem('goldBand.debug.workspaceLayout'); location.reload();` 关闭。关闭时不注册 Group 连续 layout 回调、诊断快捷键，不读取 Panel size 或调度诊断帧；启用时最多保留最近 2,000 条结构化记录，覆盖页面、viewport、布局 profile、用户开关意图、自动折叠输入/输出、Panel 实际像素宽度、Panel 同步动作、Group 连续 layout、完成事件及其前一布局、焦点 separator、用户 resize 归属、首次 applied layout、显式展开项与最终 applied layout。记录只驻留内存，不包含会话正文、资源标题或文件路径，不逐条写控制台或磁盘；用户复现后按 `Ctrl+Alt+Shift+L` 一次导出 JSON 到剪贴板，同时输出单条可复制控制台摘要。诊断读取实际 Panel size 只允许发生在页面/展示离散提交和同步动作中，ResizeObserver 与 Group 连续变化热路径只能记录已有数值，不得额外强制布局或触发 React state。
 - Tauri 原生最小宽度随当前页面 profile 动态切换：会话与设置为 480px、上下文卡片为 520px、工作流画布为 640px。窗口约束同步必须按数值去重，相同宽高不得重复调用宿主 mutation；窗口最大化期间只记录最新待应用约束，不调用 `setMinSize/setSize`，避免 Windows TAO 在重检尺寸边界时退出最大化。用户恢复普通窗口后再应用最新约束，若恢复尺寸低于新页面下限才扩到下限。进入更窄页面只放宽约束，不主动缩小用户窗口；`shellMinWidth/shellMinHeight` 保护应用 chrome 的绝对下限；初始隐藏窗口必须完成当前页面约束和主题背景同步后再显示，页面快速切换与恢复后的 pending 应用必须进入同一串行生命周期，最终页面配置最后生效。
 - 紧凑 Sheet 复用 shadcn/Radix 的焦点陷阱与键盘可访问性，但打开后的初始焦点落在对话区容器，不落到唯一的关闭按钮。关闭按钮只使用 `focus-visible` 绘制键盘焦点环，不得使用 `data-state=open` 背景或普通 `focus` 环把鼠标打开后的自动焦点误呈现为选中态；键盘 Tab 进入关闭按钮时仍必须有可见焦点。
 - Windows 无边框窗口使用 WebView2 composition 路径承载连续边缘 resize：Tauri Window 在 Windows 平台启用透明控制器，但 `html/body/#root` 与应用壳始终绘制不透明主题 surface，不向用户呈现实际透明效果。宿主 Window 背景随主题同步，WebView 层保持 composition 模式，禁止为了遮盖黑带重新设为不透明控制器。
@@ -208,7 +211,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - Tauri commands `choose_workspace` / `select_recent_workspace` 负责切换 workspace，并将最近列表写入用户级配置；`remove_recent_workspace` 只移除最近列表项并返回刷新后的 bootstrap。
 - `choose_workspace` 与会话侧 `add_conversation_workspace` 必须统一复用非阻塞目录选择封装，避免同类原生弹窗行为分叉。
 - 桌面端必须为 `choose_workspace` / `select_recent_workspace` 记录结构化系统日志，至少覆盖“打开目录选择器”“用户取消”“目录返回”“切换完成”四个阶段，便于排查 macOS 原生目录选择器卡死或切换后状态未刷新问题。
-- Tauri window 默认尺寸为 1280x800；`src-tauri/tauri.conf.json` 只管理默认尺寸与 chrome 属性，页面最小尺寸唯一来自 `configs/app-config.toml` 的 `workspaceLayout`。渠道构建 overlay 只能完整继承基础 window config 并覆盖渠道属性，不能独立硬编码宽高或最小尺寸。
+- Tauri window 默认逻辑尺寸为 1280×720，并使用宿主原生 `center` 定位；`src-tauri/tauri.conf.json` 只管理默认尺寸、初始位置与 chrome 属性，页面最小尺寸唯一来自 `configs/app-config.toml` 的 `workspaceLayout`。渠道构建 overlay 只能完整继承基础 window config 并覆盖渠道属性，不能独立硬编码宽高、位置或最小尺寸。
 - 应用壳不提供命令输入、slash command、terminal input 或 chat input。
 - 2026-05-03 起应用壳使用 Tailwind CSS v4 + shadcn/ui Button、Tooltip、Separator 等现成组件重构；侧边栏 IA、workspace 切换入口和右侧页面栈行为不变。
 - 2026-06-08 起新旧 UI 共用 `web/src/components/AppTitleBar.tsx` 共享顶栏；Tauri 基础配置关闭 WebView file-drop，避免与 composer 附件拖拽上传争抢文件 drop。
@@ -238,8 +241,13 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-04：会话文件入口统一资源化。用户消息附件、Agent artifact、prompt turn 历史原文与 diff 都打开右侧工作区 Tab；旧 composer 上方资产聚合栏和会话内预览 modal 已删除。右侧 Dock/Sheet 继续共享同一资源状态，新增历史资源一律只读，不改变 live workspace 文件的编辑与自动保存语义。
 - 2026-08-04：Conversation 主页面与 session switch payload 删除仅服务旧聚合栏的 `artifacts/attachments` 数组；Round/节点排障入口及按名读取接口保留。会话首屏只携带 change set summary 指针，文件清单和正文分别在卡片/Tab 打开时懒加载。
 - 2026-08-09：桌面生命周期收归 Rust `DesktopLifecycleCoordinator`。macOS 红色关闭只销毁主窗口，Dock 重开可显示或按配置重建；Windows/Linux 关闭、Cmd+Q、菜单退出和 updater 退出统一执行“前端保存握手 → 后端有界清理 → 单次退出”。ACP、MCP、Agent doctor 与登录 Shell 探测统一由 `command-group` 受管进程组拥有，正常退出不再散落调用 `taskkill`、单进程 `kill()` 或手写 Unix PID kill。
-- 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。下载页、安装器和应用内不增加未公证提示，产物名不增加 unsigned 后缀。
-- 2026-08-15：左右栏宽度恢复统一以全局 `sidebar.width` / `rightWorkspace.width` 为唯一持久化事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；异步 preference hydrate 到达且对应分隔条尚未被用户操作时，通过 Panel imperative `resize(width)` 应用有界像素宽度。用户操作后由本地偏好投影立即接管，并仅在对应分隔条的完成事件持久化一次。工作空间、运行目录及其他右侧资源只能按当前实际宽度响应，禁止请求推荐宽度或改写外层右栏偏好。
+- 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。产品下载页和应用内不增加未公证分支，产物名不增加 unsigned 后缀。
+- 2026-08-17：Apple Developer Program 凭证未就绪期间，仓库提供外部 macOS 安装脚本；它不是第二套产品 bundle。两条 release workflow 为各平台发布资产生成同名 `.sha256`，脚本只接受有 sidecar 的新 DMG，并依次验证摘要、磁盘映像、固定 bundle identity 与 codesign；在 `/Applications` 同卷暂存并支持旧 App 恢复，校验通过后才移除 quarantine。历史 Release 不增加兼容 fallback。
+- 2026-08-15：左右栏宽度恢复统一以全局 `sidebar.width` / `rightWorkspace.width` 为唯一持久化事实源。`react-resizable-panels` 的 `defaultSize` 只负责 Panel 首次注册；异步 preference hydrate 到达且对应分隔条尚未被用户操作时，通过 Group canonical layout 事务应用有界像素宽度。用户操作后由本地偏好投影立即接管，并仅在对应分隔条的完成事件持久化一次。工作空间、运行目录及其他右侧资源只能按当前实际宽度响应，禁止请求推荐宽度或改写外层右栏偏好。
+- 2026-08-16：真实客户端日志确认两个独立实现缺口：固定两侧像素行为会把受窗口约束后的临时右栏宽度当成后续基线，重新拉宽后不再追赶 `rightWorkspace.width`；从 640px 中区下限页面返回 360px 会话页时，独立右 Panel 展开又会在旧约束过渡期把左栏折叠。最终改为 canonical 阈值驱动的离散 resize owner，并用官方 Group `setLayout()` 在约束提交后原子收敛三栏。`requestedOpen`、打开 revision 与运行期宽度投影继续归属会话 Shell Store，使快速对话与会话详情共享右栏开关和宽度记忆；页面能力和资源 scope 只决定有效呈现与 Tab 集合，不冒充用户关闭动作。
+- 2026-08-16：由于浏览器宽度模拟未复现 Windows Tauri 客户端反馈，增加三栏布局有界内存诊断。诊断统一记录 canonical 意图、自动折叠决策、Panel 物理状态与面板库 layout 时间线，并提供 `Ctrl+Alt+Shift+L` 剪贴板导出；仅在刷新前设置 `goldBand.debug.workspaceLayout=1` 时启用，默认关闭且不注册诊断热路径；不再根据截图继续增加未经真实序列验证的布局补丁。
+- 2026-08-16：客户端诊断确认用户把右栏从受约束的 733px 拖至 288px 后，`onLayoutChanged` 已报告 `isUserInteraction=true`，但 Separator pointer intent 未透传，导致 `rightWorkspace.width` 仍停在 772px；返回会话页时原子布局按旧偏好恢复为 733px。宽度写回改为比较相邻两次完成布局中左右外侧 Panel 的差量来识别用户操作目标，移除 pointer/keyboard intent 旁路状态，并统一使用 Panel Group 的可分配宽度换算布局百分比，避免把包含 separator 的 Shell 宽度混入同一坐标系；诊断同时记录前一布局和最终归属。
+- 2026-08-16：后续客户端日志证明“只有一个外侧 Panel 变化”的假设仍不成立：左 separator 从 176px 拖到 303px 时，中区先到 360px 下限，右栏继而从 674px 被挤到 615px，导致两侧差量同时变化且左偏好未写回；返回会话页时 `setLayout()` 的 canonical 目标为左176/中428/右674，但 applied layout 因左 Panel 保留 collapsed identity 变成左0/中640/右638。用户 resize 归属改用公开 Separator 焦点身份并以主变化量兜底；Group 同步根据 applied layout 识别目标可见但仍为 0 的 Panel，显式展开后对原目标有界重试一次。
 - 2026-08-11：中间工作区顶边、左边与右侧工作区 separator 统一使用不透明语义色 `workspace-divider`。该 token 由当前主题的 `sidebar-border` 与 `gold-workspace` 预混合，禁止在不同底色上分别叠加半透明 `sidebar-border/70`，避免高 DPI 下横竖边线交点出现色阶断层。Dock 展示时，中间 Panel 与右侧 Panel 必须各自绘制同为 1 CSS px 的顶边，使边界连续横跨两个区域，separator 从顶边下方形成 T 形交点；separator 的 1px 布局宽度、4px 命中区和 hover 状态保持不变。
 - 2026-08-14：应用壳主题材质从手写 Glass 专用选择器迁到 Theme SDK 编译的包级 recipe CSS。Shell、标题栏、侧栏、工作区、Composer 与共享控件仍只暴露稳定 `data-theme-role`；新增合规主题包通过 DTCG token、封闭 recipe 和构建 Catalog 接入，不修改壳层 DOM、导航状态或 React 生命周期。
 - 2026-08-16：主题 recipe 由各主题明确声明 role 视觉，并统一作为 CSS `components` 层默认值；组件显式变体可以覆盖背景、前景、边框色、focus ring、阴影、动效和几何，不允许高优先级 recipe 抹掉 `border-0`、单边分隔、圆形、pill、joined-control 圆角或定向阴影。Gold Band 与技术中性主题中的 Shell、共享顶栏、侧栏、右侧工作区、编辑器根面和源码管理根面不拥有完整 perimeter，统一声明 `borderWidth:none + radius:none`；后续主题仍可选择其他 role 形状。工作区顶边、主区圆角、侧栏/右栏 separator 与 Sheet 靠内容侧边线继续由布局 owner 单独绘制。共享顶栏本身不显示下边框，也不得形成四边圆角卡片。

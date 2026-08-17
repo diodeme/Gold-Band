@@ -20,6 +20,16 @@ fn rust_catalog_deserializes_every_generated_declarative_theme() {
         assert!(!theme.name.en.is_empty());
         assert!(!theme.schemes.light.semantic.foreground.is_empty());
         assert!(!theme.schemes.dark.semantic.foreground.is_empty());
+        let ui_stack = theme
+            .fonts
+            .as_ref()
+            .and_then(|fonts| fonts.stacks.iter().find(|stack| stack.id == "theme-ui"))
+            .expect("every built-in theme should declare its UI font stack");
+        assert_eq!(
+            ui_stack.default_faces,
+            ["inter-variable", "misans-variable"],
+            "theme font order must not depend on interface language"
+        );
     }
 }
 

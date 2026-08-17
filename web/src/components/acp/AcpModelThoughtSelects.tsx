@@ -78,10 +78,14 @@ export function formatAcpCompositeSelection(
 }
 
 type Props = {
-  models: AcpModeVm[];
+  models: Array<AcpModeVm & { available?: boolean }>;
   modelValue?: string | null;
-  thoughtLevel?: AcpSelectConfigOptionVm | null;
+  modelValueLabel?: string | null;
+  thoughtLevel?: (Omit<AcpSelectConfigOptionVm, "options"> & {
+    options: Array<AcpSelectConfigOptionVm["options"][number] & { available?: boolean }>;
+  }) | null;
   thoughtValue?: string | null;
+  thoughtValueLabel?: string | null;
   onModelChange: (value: string | null) => void;
   onThoughtChange?: (optionId: string, value: string | null) => void;
   showUnspecifiedModel?: boolean;
@@ -95,8 +99,10 @@ type Props = {
 export function AcpModelThoughtSelects({
   models,
   modelValue,
+  modelValueLabel,
   thoughtLevel,
   thoughtValue,
+  thoughtValueLabel,
   onModelChange,
   onThoughtChange,
   showUnspecifiedModel = true,
@@ -143,6 +149,7 @@ export function AcpModelThoughtSelects({
       <AcpSingleConfigMenu
         label={t('acp.currentModel')}
         value={modelValue}
+        valueLabel={modelValueLabel}
         options={models}
         unspecifiedLabel={t('conversation.home.unspecifiedModel')}
         onValueChange={onModelChange}
@@ -156,8 +163,8 @@ export function AcpModelThoughtSelects({
   }
 
   const compositeLabel = formatAcpCompositeSelection(
-    selectedModel?.name,
-    selectedThought?.name,
+    selectedModel?.name ?? modelValueLabel,
+    selectedThought?.name ?? thoughtValueLabel,
     t('conversation.home.unspecifiedModel'),
   );
 
@@ -208,7 +215,7 @@ export function AcpModelThoughtSelects({
         >
           <DropdownMenuSubTrigger className="py-2">
             <span className="w-20 shrink-0 text-muted-foreground">{t('acp.currentModel')}</span>
-            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedModel?.name ?? ''}</span>
+            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedModel?.name ?? modelValueLabel ?? ''}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent
             sideOffset={6}
@@ -224,7 +231,7 @@ export function AcpModelThoughtSelects({
                 </DropdownMenuRadioItem>
               ) : null}
               {models.map((model) => (
-                <DropdownMenuRadioItem key={model.id} value={model.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
+                <DropdownMenuRadioItem key={model.id} value={model.id} disabled={model.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{model.name}</span>
                     {model.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{model.description}</span> : null}
@@ -241,7 +248,7 @@ export function AcpModelThoughtSelects({
         >
           <DropdownMenuSubTrigger className="py-2">
             <span className="w-20 shrink-0 text-muted-foreground">{t('acp.thoughtLevel')}</span>
-            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedThought?.name ?? ''}</span>
+            <span className="min-w-0 flex-1 truncate text-right text-foreground">{selectedThought?.name ?? thoughtValueLabel ?? ''}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent
             sideOffset={6}
@@ -260,7 +267,7 @@ export function AcpModelThoughtSelects({
                 </DropdownMenuRadioItem>
               ) : null}
               {thoughtLevel!.options.map((option) => (
-                <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start py-2" onSelect={handleConfigOptionSelect}>
+                <DropdownMenuRadioItem key={option.value} value={option.value} disabled={option.available === false} className="items-start py-2" onSelect={handleConfigOptionSelect}>
                   <span className="block min-w-0">
                     <span className="block truncate font-medium">{option.name}</span>
                     {option.description ? <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">{option.description}</span> : null}

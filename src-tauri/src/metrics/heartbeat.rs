@@ -107,6 +107,12 @@ enum AppStartedState {
     RejectedUntilConfigChanges,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestLease {
+    config_generation: u64,
+    request_generation: u64,
+}
+
 #[derive(Debug)]
 struct HeartbeatState {
     app_started: AppStartedState,
@@ -116,7 +122,8 @@ struct HeartbeatState {
     current_settings: Option<HeartbeatSettings>,
     last_success_at: Option<Instant>,
     last_failed_attempt_at: Option<Instant>,
-    request_in_flight: bool,
+    request_in_flight: Option<RequestLease>,
+    next_request_generation: u64,
     app_started_retry_scheduled: bool,
 }
 
@@ -130,7 +137,8 @@ impl Default for HeartbeatState {
             current_settings: None,
             last_success_at: None,
             last_failed_attempt_at: None,
-            request_in_flight: false,
+            request_in_flight: None,
+            next_request_generation: 0,
             app_started_retry_scheduled: false,
         }
     }
@@ -248,14 +256,20 @@ impl HeartbeatReporter {
             }
         };
 
-        state.app_started = AppStartedState::Pending { attempts: 0 };
-        // appStarted is a delivery fact, so it must survive an activity request
-        // that won the shared slot. Activity completion resumes this pending send.
-        if state.request_in_flight {
+        if matches!(
+            state.app_started,
+            AppStartedState::RejectedUntilConfigChanges
+        ) {
             return;
         }
-        state.request_in_flight = true;
-        let generation = state.config_generation;
+        if !matches!(state.app_started, AppStartedState::Pending { .. }) {
+            state.app_started = AppStartedState::Pending { attempts: 0 };
+        }
+        // appStarted is a delivery fact, so it must survive an activity request
+        // that won the shared slot. Activity completion resumes this pending send.
+        let Some(lease) = try_acquire_request(&mut state) else {
+            return;
+        };
         drop(state);
 
         let reporter = self.clone();
@@ -263,7 +277,7 @@ impl HeartbeatReporter {
         let api_key = settings.api_key.clone().unwrap();
         tauri::async_runtime::spawn(async move {
             reporter
-                .send_app_started(&endpoint, &api_key, &request, generation)
+                .send_app_started(&endpoint, &api_key, &request, lease)
                 .await;
         });
     }
@@ -277,11 +291,6 @@ impl HeartbeatReporter {
         refresh_config_state(&mut state, settings);
 
         if !settings.is_ready() {
-            return;
-        }
-
-        if state.request_in_flight {
-            metrics_log("[heartbeat] activity skipped: in_flight");
             return;
         }
 
@@ -315,8 +324,10 @@ impl HeartbeatReporter {
             os: self.os,
         };
 
-        state.request_in_flight = true;
-        let generation = state.config_generation;
+        let Some(lease) = try_acquire_request(&mut state) else {
+            metrics_log("[heartbeat] activity skipped: in_flight");
+            return;
+        };
         drop(state);
 
         let reporter = self.clone();
@@ -324,7 +335,7 @@ impl HeartbeatReporter {
         let api_key = settings.api_key.clone().unwrap();
         tauri::async_runtime::spawn(async move {
             reporter
-                .send_activity(&endpoint, &api_key, &request, generation)
+                .send_activity(&endpoint, &api_key, &request, lease)
                 .await;
         });
     }
@@ -382,10 +393,10 @@ impl HeartbeatReporter {
         endpoint: &str,
         api_key: &str,
         request: &HeartbeatRequest,
-        generation: u64,
+        lease: RequestLease,
     ) {
         let outcome = self.send_once(endpoint, api_key, request).await;
-        self.apply_app_started_outcome(request, generation, outcome);
+        self.apply_app_started_outcome(request, lease, outcome);
     }
 
     /// Apply the outcome of an appStarted send, scheduling retries as needed.
@@ -393,14 +404,13 @@ impl HeartbeatReporter {
     fn apply_app_started_outcome(
         self: &Arc<Self>,
         request: &HeartbeatRequest,
-        generation: u64,
+        lease: RequestLease,
         outcome: SendOutcome,
     ) {
         let mut state = self.state.lock().unwrap();
-        if state.config_generation != generation {
+        if !release_request(&mut state, lease) {
             return;
         }
-        state.request_in_flight = false;
 
         match outcome {
             SendOutcome::Accepted | SendOutcome::Duplicate => {
@@ -427,6 +437,7 @@ impl HeartbeatReporter {
 
                     let reporter = self.clone();
                     let request = request.clone();
+                    let generation = lease.config_generation;
                     tauri::async_runtime::spawn(async move {
                         tokio::time::sleep(delay).await;
                         reporter.send_app_started_retry(&request, generation).await;
@@ -447,7 +458,7 @@ impl HeartbeatReporter {
 
     /// Retry send after a delay. Guards against double-send if config changed.
     async fn send_app_started_retry(self: Arc<Self>, request: &HeartbeatRequest, generation: u64) {
-        let (endpoint, api_key) = {
+        let (endpoint, api_key, lease) = {
             let mut state = self.state.lock().unwrap();
             if state.config_generation != generation
                 || !matches!(state.app_started, AppStartedState::Pending { .. })
@@ -458,14 +469,16 @@ impl HeartbeatReporter {
             let Some(settings) = state.current_settings.clone() else {
                 return;
             };
-            state.request_in_flight = true;
             state.app_started_retry_scheduled = false;
-            (settings.endpoint.unwrap(), settings.api_key.unwrap())
+            let Some(lease) = try_acquire_request(&mut state) else {
+                return;
+            };
+            (settings.endpoint.unwrap(), settings.api_key.unwrap(), lease)
         };
 
         // Send and apply outcome. No guard held across await.
         let outcome = self.send_once(&endpoint, &api_key, request).await;
-        self.apply_app_started_outcome(request, generation, outcome);
+        self.apply_app_started_outcome(request, lease, outcome);
     }
 
     // ── Async send: activity ─────────────────────────────────────────────────
@@ -475,16 +488,15 @@ impl HeartbeatReporter {
         endpoint: &str,
         api_key: &str,
         request: &HeartbeatRequest,
-        generation: u64,
+        lease: RequestLease,
     ) {
         let outcome = self.send_once(endpoint, api_key, request).await;
 
         let pending_app_started_settings = {
             let mut state = self.state.lock().unwrap();
-            if state.config_generation != generation {
+            if !release_request(&mut state, lease) {
                 return;
             }
-            state.request_in_flight = false;
 
             match outcome {
                 SendOutcome::Accepted | SendOutcome::Duplicate => {
@@ -496,7 +508,8 @@ impl HeartbeatReporter {
                 }
             }
 
-            matches!(state.app_started, AppStartedState::Pending { attempts: 0 })
+            (matches!(state.app_started, AppStartedState::Pending { .. })
+                && !state.app_started_retry_scheduled)
                 .then(|| state.current_settings.clone())
                 .flatten()
         };
@@ -640,7 +653,7 @@ impl HeartbeatReporter {
 
     #[cfg(test)]
     pub fn is_request_in_flight(&self) -> bool {
-        self.state.lock().unwrap().request_in_flight
+        self.state.lock().unwrap().request_in_flight.is_some()
     }
 }
 
@@ -655,6 +668,27 @@ fn config_fingerprint(settings: &HeartbeatSettings) -> String {
     )
 }
 
+fn try_acquire_request(state: &mut HeartbeatState) -> Option<RequestLease> {
+    if state.request_in_flight.is_some() {
+        return None;
+    }
+    state.next_request_generation = state.next_request_generation.wrapping_add(1);
+    let lease = RequestLease {
+        config_generation: state.config_generation,
+        request_generation: state.next_request_generation,
+    };
+    state.request_in_flight = Some(lease);
+    Some(lease)
+}
+
+fn release_request(state: &mut HeartbeatState, lease: RequestLease) -> bool {
+    if state.request_in_flight != Some(lease) {
+        return false;
+    }
+    state.request_in_flight = None;
+    true
+}
+
 fn refresh_config_state(state: &mut HeartbeatState, settings: &HeartbeatSettings) -> bool {
     let fingerprint = config_fingerprint(settings);
     let config_changed = state.config_fingerprint.as_deref() != Some(&fingerprint);
@@ -663,7 +697,7 @@ fn refresh_config_state(state: &mut HeartbeatState, settings: &HeartbeatSettings
         state.app_started_retry_scheduled = false;
         // In-flight HTTP cannot be force-cancelled, but generation-tagged
         // outcomes are ignored and the logical slot can be reused.
-        state.request_in_flight = false;
+        state.request_in_flight = None;
         if matches!(
             state.app_started,
             AppStartedState::RejectedUntilConfigChanges
@@ -898,7 +932,7 @@ mod tests {
         reporter.handle_config_snapshot(&ready_settings());
         let state = reporter.state.lock().unwrap();
         assert!(matches!(state.app_started, AppStartedState::Pending { .. }));
-        assert!(state.request_in_flight);
+        assert!(state.request_in_flight.is_some());
     }
 
     #[test]
@@ -917,7 +951,7 @@ mod tests {
         ));
         let state = reporter.state.lock().unwrap();
         assert!(matches!(state.app_started, AppStartedState::NotReady));
-        assert!(!state.request_in_flight);
+        assert!(state.request_in_flight.is_none());
     }
 
     #[test]
@@ -930,7 +964,7 @@ mod tests {
         reporter.handle_config_snapshot(&ready_settings());
         let state = reporter.state.lock().unwrap();
         assert!(matches!(state.app_started, AppStartedState::NotReady));
-        assert!(!state.request_in_flight);
+        assert!(state.request_in_flight.is_none());
     }
 
     #[test]
@@ -979,10 +1013,76 @@ mod tests {
         {
             let mut state = reporter.state.lock().unwrap();
             refresh_config_state(&mut state, &ready_settings());
-            state.request_in_flight = true;
+            try_acquire_request(&mut state).unwrap();
         }
         reporter.record_activity(&ready_settings());
         assert!(reporter.is_request_in_flight());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_started_retry_waits_for_the_activity_lease_then_resumes() {
+        let reporter = fixed_test_reporter();
+        let accepted = r#"{"code":200,"msg":"","data":{"accepted":true,"duplicate":false}}"#;
+        let (endpoint, server) =
+            mock_http_responses(vec![("200 OK", accepted), ("200 OK", accepted)]);
+        let settings = build_heartbeat_settings(true, Some(&endpoint), Some("test-key"));
+        let app_started_request = request(HeartbeatReason::AppStarted);
+        let (generation, activity_lease) = {
+            let mut state = reporter.state.lock().unwrap();
+            refresh_config_state(&mut state, &settings);
+            state.app_started = AppStartedState::Pending { attempts: 1 };
+            state.app_started_request = Some(app_started_request.clone());
+            state.app_started_retry_scheduled = true;
+            let lease = try_acquire_request(&mut state).unwrap();
+            (state.config_generation, lease)
+        };
+
+        reporter
+            .clone()
+            .send_app_started_retry(&app_started_request, generation)
+            .await;
+
+        {
+            let state = reporter.state.lock().unwrap();
+            assert_eq!(state.request_in_flight, Some(activity_lease));
+            assert!(!state.app_started_retry_scheduled);
+            assert!(matches!(
+                state.app_started,
+                AppStartedState::Pending { attempts: 1 }
+            ));
+        }
+
+        reporter
+            .clone()
+            .send_activity(
+                &endpoint,
+                "test-key",
+                &request(HeartbeatReason::Activity),
+                activity_lease,
+            )
+            .await;
+
+        let requests = tokio::task::spawn_blocking(move || server.join().unwrap())
+            .await
+            .unwrap();
+        let reasons = requests
+            .iter()
+            .map(|raw_request| {
+                let body = raw_request.split("\r\n\r\n").nth(1).unwrap();
+                serde_json::from_str::<serde_json::Value>(body).unwrap()["reason"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reasons, vec!["activity", "appStarted"]);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !reporter.is_delivered() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -992,11 +1092,10 @@ mod tests {
         let (endpoint, server) =
             mock_http_responses(vec![("200 OK", accepted), ("200 OK", accepted)]);
         let settings = build_heartbeat_settings(true, Some(&endpoint), Some("test-key"));
-        let generation = {
+        let activity_lease = {
             let mut state = reporter.state.lock().unwrap();
             refresh_config_state(&mut state, &settings);
-            state.request_in_flight = true;
-            state.config_generation
+            try_acquire_request(&mut state).unwrap()
         };
 
         reporter.handle_config_snapshot(&settings);
@@ -1013,7 +1112,7 @@ mod tests {
                     .map(|request| request.reason),
                 Some(HeartbeatReason::AppStarted)
             );
-            assert!(state.request_in_flight);
+            assert_eq!(state.request_in_flight, Some(activity_lease));
         }
 
         reporter
@@ -1022,7 +1121,7 @@ mod tests {
                 &endpoint,
                 "test-key",
                 &request(HeartbeatReason::Activity),
-                generation,
+                activity_lease,
             )
             .await;
 
@@ -1128,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_outcome_cannot_complete_new_request() {
+    fn stale_request_completion_cannot_release_the_current_request_generation() {
         let reporter = HeartbeatReporter::with_providers(
             "0.1.0".to_string(),
             Box::new(super::super::identity::FixedUserIdProvider {
@@ -1137,18 +1236,21 @@ mod tests {
             Box::new(SystemClock),
         );
         let request = request(HeartbeatReason::AppStarted);
-        {
+        let (stale_lease, current_lease) = {
             let mut state = reporter.state.lock().unwrap();
             state.config_generation = 2;
-            state.request_in_flight = true;
             state.app_started_request = Some(request.clone());
             state.app_started = AppStartedState::Pending { attempts: 0 };
-        }
+            let stale_lease = try_acquire_request(&mut state).unwrap();
+            assert!(release_request(&mut state, stale_lease));
+            let current_lease = try_acquire_request(&mut state).unwrap();
+            (stale_lease, current_lease)
+        };
 
-        reporter.apply_app_started_outcome(&request, 1, SendOutcome::Accepted);
+        reporter.apply_app_started_outcome(&request, stale_lease, SendOutcome::Accepted);
 
         let state = reporter.state.lock().unwrap();
-        assert!(state.request_in_flight);
+        assert_eq!(state.request_in_flight, Some(current_lease));
         assert!(matches!(state.app_started, AppStartedState::Pending { .. }));
         assert!(state.last_success_at.is_none());
     }
@@ -1206,13 +1308,13 @@ mod tests {
         let settings = build_heartbeat_settings(true, Some(&endpoint), Some("test-key"));
         let last_success_at = Instant::now();
         let last_failed_attempt_at = last_success_at - Duration::from_secs(1);
-        let generation = {
+        let occupied_lease = {
             let mut state = reporter.state.lock().unwrap();
             refresh_config_state(&mut state, &settings);
-            state.request_in_flight = true;
             state.last_success_at = Some(last_success_at);
             state.last_failed_attempt_at = Some(last_failed_attempt_at);
-            state.config_generation
+            let lease = try_acquire_request(&mut state).unwrap();
+            (state.config_generation, lease)
         };
         let request = request(HeartbeatReason::DirectStarted);
         let heartbeat_id = request.heartbeat_id.to_string();
@@ -1223,7 +1325,7 @@ mod tests {
                 endpoint,
                 "test-key".to_string(),
                 request,
-                generation,
+                occupied_lease.0,
                 &[Duration::ZERO],
             )
             .await;
@@ -1237,7 +1339,7 @@ mod tests {
             assert_eq!(json["reason"], "directStarted");
         }
         let state = reporter.state.lock().unwrap();
-        assert!(state.request_in_flight);
+        assert_eq!(state.request_in_flight, Some(occupied_lease.1));
         assert_eq!(state.last_success_at, Some(last_success_at));
         assert_eq!(state.last_failed_attempt_at, Some(last_failed_attempt_at));
     }

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import type { ThemeIconSlot } from '@/theme-contract';
 import { getCurrentThemeIconSnapshot, refreshVisibleThemeWallpapers, type ResolvedThemeIconDescriptor } from '@/theme';
@@ -26,9 +26,8 @@ export function ThemeAssetsProvider({ children }: { children: ReactNode }) {
 }
 
 export function useThemeWallpaperSurface() {
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(refreshVisibleThemeWallpapers);
-    return () => window.cancelAnimationFrame(frame);
+  useLayoutEffect(() => {
+    refreshVisibleThemeWallpapers();
   }, []);
 }
 

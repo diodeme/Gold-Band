@@ -32,6 +32,34 @@ fn commit_file(root: &Utf8Path, path: &str, content: &[u8]) {
 }
 
 #[test]
+fn initialized_unborn_repository_returns_snapshot_and_empty_history() {
+    let (_temp, root) = initialized_repository();
+    std::fs::write(root.join("untracked.txt"), b"not committed\n").unwrap();
+    let service = GitSourceControlService::default();
+
+    let snapshot = service.snapshot("project-unborn", &root).unwrap();
+    assert!(snapshot.repository.unborn);
+    assert!(snapshot.repository.head_oid.is_none());
+    assert!(snapshot.status.branch.oid.is_none());
+    assert_eq!(snapshot.status.untracked.len(), 1);
+    assert_eq!(snapshot.status.untracked[0].path, "untracked.txt");
+
+    let history = service
+        .history(
+            &root,
+            &GitHistoryQuery {
+                cursor: None,
+                limit: Some(300),
+                revision: None,
+                ref_name: None,
+            },
+        )
+        .unwrap();
+    assert!(history.commits.is_empty());
+    assert!(history.next_cursor.is_none());
+}
+
+#[test]
 fn workspace_status_exposes_staged_and_unstaged_numstat() {
     let (_temp, root) = initialized_repository();
     commit_file(&root, "tracked.txt", b"first\nsecond\nthird\n");

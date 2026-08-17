@@ -32,8 +32,8 @@ use crate::domain::{PauseReason, RunStatus, SessionMode, VERSION};
 use crate::dsl::{
     AiDynamicAgentStrategy, END_NODE, EdgeDsl, EdgeOutcome, JsonConditionDsl, NEW_ROUND_NODE,
     NodeDsl, OutputContractDsl, OutputKind, ValidatedWorkflow, WorkerNode, WorkflowControl,
-    WorkflowDsl, WorkflowValidationError, validate_workflow, validate_workflow_snapshot,
-    workflow_contains_ai_dynamic,
+    WorkflowDsl, WorkflowValidationError, validate_authoring_workflow, validate_workflow,
+    validate_workflow_snapshot, workflow_contains_ai_dynamic,
 };
 use crate::dynamic::{
     DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
@@ -43,9 +43,9 @@ use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
-    DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter, ProviderCapabilities,
-    ProviderInfo, UserPromptRenderMode, provider_from_agent, render_prompt_bundle,
-    supported_models_from_capabilities, supported_modes_from_capabilities,
+    ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
+    ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
+    render_prompt_bundle, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
@@ -56,10 +56,15 @@ use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
     write_json,
 };
+use crate::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
+    migrate_authoring_workflow, reconcile_authoring_workflow_for_save, validate_and_inject,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
@@ -67,17 +72,24 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
+pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
     build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
-    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
+    prepare_run as orchestrator_prepare_run,
+    prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
+    reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
+    run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
+    run_continue_with_prompt_input as orchestrator_run_continue_with_prompt_input,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
     run_start_background as orchestrator_run_start_background,
     submit_manual_check as orchestrator_submit_manual_check,
     submit_manual_check_background as orchestrator_submit_manual_check_background,
+    validate_manual_check_submission as orchestrator_validate_manual_check_submission,
 };
 
 #[derive(Debug, Clone)]
@@ -187,6 +199,41 @@ pub(crate) fn task_input_attachment_paths(app: &App, task_id: &str) -> Vec<Strin
 }
 
 pub const DEFAULT_WORKFLOW_TEMPLATE_ID: &str = "default";
+pub const DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID: &str = "default-lightweight";
+const DEFAULT_WORKFLOW_MAX_ATTEMPTS: u32 = 10;
+const DEFAULT_WORKFLOW_MAX_ROUNDS: u32 = 3;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalEntryStage {
+    pub node_id: String,
+    pub label_key: String,
+    pub default_enabled: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkflowTemplateCommandError {
+    #[error("workflow-template.readonly-built-in")]
+    ReadonlyBuiltIn,
+    #[error("workflow.optional-entry.invalid")]
+    InvalidOptionalEntry { reason: &'static str },
+}
+
+impl WorkflowTemplateCommandError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ReadonlyBuiltIn => "workflow-template.readonly-built-in",
+            Self::InvalidOptionalEntry { .. } => "workflow.optional-entry.invalid",
+        }
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::ReadonlyBuiltIn => serde_json::json!({}),
+            Self::InvalidOptionalEntry { reason } => serde_json::json!({ "reason": reason }),
+        }
+    }
+}
 
 fn default_workflow_template(
     profiles: &DefaultProfileIds,
@@ -195,8 +242,36 @@ fn default_workflow_template(
     let now = now_rfc3339_like();
     WorkflowTemplate {
         id: DEFAULT_WORKFLOW_TEMPLATE_ID.to_string(),
-        name: "默认工作流".to_string(),
+        name: "默认完整工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "interview".to_string(),
+            label_key: "conversation.home.includeInterview".to_string(),
+            default_enabled: true,
+        }),
         workflow: default_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn default_lightweight_workflow_template(
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowTemplate {
+    let now = now_rfc3339_like();
+    WorkflowTemplate {
+        id: DEFAULT_LIGHTWEIGHT_WORKFLOW_TEMPLATE_ID.to_string(),
+        name: "默认轻量工作流".to_string(),
+        is_built_in: true,
+        optional_entry_stage: Some(OptionalEntryStage {
+            node_id: "grill".to_string(),
+            label_key: "conversation.home.includeGrill".to_string(),
+            default_enabled: true,
+        }),
+        workflow: default_lightweight_workflow_dsl("claude-acp", profiles, language),
+        model_bindings: WorkflowModelBindings::default(),
         created_at: now.clone(),
         updated_at: now,
     }
@@ -210,6 +285,10 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::ZhCn, "test") => "执行验证并形成明确结论。",
         (DesktopLanguage::ZhCn, "accept") => "对照需求进行验收并形成明确结论。",
         (DesktopLanguage::ZhCn, "cleanup") => "清理资源、整理交付说明并清理 Git 工作区。",
+        (DesktopLanguage::ZhCn, "grill") => {
+            "持续拷问需求直至达成共同理解，并产出 grill-consensus.md。"
+        }
+        (DesktopLanguage::ZhCn, "dev-test") => "在当前工作区完成需求实现、自动化测试和必要回归。",
         (DesktopLanguage::En, "plan") => {
             "Analyze the imported requirement and produce an implementation plan."
         }
@@ -224,6 +303,12 @@ fn default_workflow_goal(language: DesktopLanguage, key: &str) -> &'static str {
         (DesktopLanguage::En, "cleanup") => {
             "Clean up resources, finalize handoff notes, and clean up the Git workspace."
         }
+        (DesktopLanguage::En, "grill") => {
+            "Challenge the requirement until shared understanding is reached and produce grill-consensus.md."
+        }
+        (DesktopLanguage::En, "dev-test") => {
+            "Implement the requirement and run automated verification in the current workspace."
+        }
         _ => "Execute this workflow node.",
     }
 }
@@ -234,7 +319,7 @@ fn default_workflow_dsl(
     language: DesktopLanguage,
 ) -> WorkflowDsl {
     fn worker(
-        provider: &str,
+        _provider: &str,
         profiles: &DefaultProfileIds,
         id: &str,
         role_key: &str,
@@ -245,7 +330,8 @@ fn default_workflow_dsl(
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
             id: id.to_string(),
-            provider: Some(provider.to_string()),
+            execution_slot_id: None,
+            provider: None,
             model: None,
             profile: Some(
                 profiles
@@ -265,7 +351,7 @@ fn default_workflow_dsl(
             success_condition: validation.then(|| JsonConditionDsl::Expression {
                 expression: "$.result == true".to_string(),
             }),
-            permission_mode: Some("bypassPermissions".to_string()),
+            permission_mode: None,
             config_options: Default::default(),
             manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
@@ -277,8 +363,8 @@ fn default_workflow_dsl(
         id: "task-workflow".to_string(),
         entry: "interview".to_string(),
         control: WorkflowControl {
-            max_attempts: None,
-            max_rounds: None,
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
         },
         nodes: vec![
             worker(
@@ -420,6 +506,117 @@ fn default_workflow_dsl(
     }
 }
 
+fn default_lightweight_workflow_dsl(
+    provider: &str,
+    profiles: &DefaultProfileIds,
+    language: DesktopLanguage,
+) -> WorkflowDsl {
+    fn worker(
+        _provider: &str,
+        profiles: &DefaultProfileIds,
+        id: &str,
+        role_key: &str,
+        goal: &str,
+        validation: bool,
+    ) -> NodeDsl {
+        let artifact = validation.then(|| format!("{id}-result"));
+        NodeDsl::Worker(WorkerNode {
+            id: id.to_string(),
+            execution_slot_id: None,
+            provider: None,
+            model: None,
+            profile: Some(
+                profiles
+                    .get(role_key)
+                    .expect("default role id exists")
+                    .to_string(),
+            ),
+            goal: Some(goal.to_string()),
+            output: artifact.clone().map(|artifact| OutputContractDsl {
+                kind: OutputKind::Json,
+                artifact,
+                schema: Some(serde_json::json!({
+                    "reason": "String",
+                    "result": "boolean",
+                })),
+            }),
+            success_condition: validation.then(|| JsonConditionDsl::Expression {
+                expression: "$.result == true".to_string(),
+            }),
+            permission_mode: None,
+            config_options: Default::default(),
+            manual_check: None,
+            prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
+        })
+    }
+
+    WorkflowDsl {
+        version: "0.1".to_string(),
+        id: "task-workflow-lightweight".to_string(),
+        entry: "grill".to_string(),
+        control: WorkflowControl {
+            max_attempts: Some(DEFAULT_WORKFLOW_MAX_ATTEMPTS),
+            max_rounds: Some(DEFAULT_WORKFLOW_MAX_ROUNDS),
+        },
+        nodes: vec![
+            worker(
+                provider,
+                profiles,
+                "grill",
+                "grill",
+                default_workflow_goal(language, "grill"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "dev-test",
+                "dev-test",
+                default_workflow_goal(language, "dev-test"),
+                false,
+            ),
+            worker(
+                provider,
+                profiles,
+                "accept",
+                "accept",
+                default_workflow_goal(language, "accept"),
+                true,
+            ),
+        ],
+        edges: vec![
+            EdgeDsl {
+                from: "grill".to_string(),
+                to: "dev-test".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "dev-test".to_string(),
+                to: "accept".to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: END_NODE.to_string(),
+                on: EdgeOutcome::Success,
+                session: None,
+                new_round_entry: None,
+            },
+            EdgeDsl {
+                from: "accept".to_string(),
+                to: NEW_ROUND_NODE.to_string(),
+                on: EdgeOutcome::Failure,
+                session: None,
+                new_round_entry: Some("dev-test".to_string()),
+            },
+        ],
+    }
+}
+
 fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> String {
     let slug = name
         .trim()
@@ -451,6 +648,113 @@ fn unique_workflow_template_id(store: &WorkflowTemplateStore, name: &str) -> Str
         candidate = format!("{base}-{index}");
     }
     candidate
+}
+
+fn upsert_built_in_workflow_template(
+    templates: &mut Vec<WorkflowTemplate>,
+    built_in: WorkflowTemplate,
+    index: usize,
+) -> Result<()> {
+    if let Some(current_index) = templates
+        .iter()
+        .position(|template| template.id == built_in.id)
+    {
+        let mut next = built_in;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: templates[current_index].workflow.clone(),
+            model_bindings: templates[current_index].model_bindings.clone(),
+        };
+        next.model_bindings = persisted.model_bindings.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut next.workflow,
+            &mut next.model_bindings,
+            Some(&persisted),
+            Some(&next.id),
+        )?;
+        templates[current_index] = next;
+        if current_index != index {
+            let template = templates.remove(current_index);
+            templates.insert(index.min(templates.len()), template);
+        }
+    } else {
+        let mut built_in = built_in;
+        reconcile_authoring_workflow_for_save(
+            &mut built_in.workflow,
+            &mut built_in.model_bindings,
+            None,
+            Some(&built_in.id),
+        )?;
+        templates.insert(index.min(templates.len()), built_in);
+    }
+    Ok(())
+}
+
+pub fn apply_optional_entry_preference(
+    template: &WorkflowTemplate,
+    include_optional_entry: Option<bool>,
+    workflow: &mut WorkflowDsl,
+) -> Result<Option<bool>> {
+    let Some(stage) = template.optional_entry_stage.as_ref() else {
+        return Ok(None);
+    };
+    if !template.is_built_in {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "requires-built-in-template",
+        }
+        .into());
+    }
+    if workflow.entry != stage.node_id {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "must-be-workflow-entry",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == stage.node_id) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "entry-node-missing",
+        }
+        .into());
+    }
+    let mut successors = workflow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == stage.node_id && edge.on == EdgeOutcome::Success)
+        .map(|edge| edge.to.as_str());
+    let next_entry =
+        successors
+            .next()
+            .ok_or(WorkflowTemplateCommandError::InvalidOptionalEntry {
+                reason: "missing-success-successor",
+            })?;
+    if successors.next().is_some() {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "multiple-success-successors",
+        }
+        .into());
+    }
+    if next_entry == END_NODE || next_entry == NEW_ROUND_NODE {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-must-be-real-node",
+        }
+        .into());
+    }
+    if !workflow.nodes.iter().any(|node| node.id() == next_entry) {
+        return Err(WorkflowTemplateCommandError::InvalidOptionalEntry {
+            reason: "successor-node-missing",
+        }
+        .into());
+    }
+
+    let include = include_optional_entry.unwrap_or(stage.default_enabled);
+    if !include {
+        let next_entry = next_entry.to_string();
+        workflow.nodes.retain(|node| node.id() != stage.node_id);
+        workflow
+            .edges
+            .retain(|edge| edge.from != stage.node_id && edge.to != stage.node_id);
+        workflow.entry = next_entry;
+    }
+    Ok(Some(include))
 }
 
 fn next_auto_template_id(store: &AutoTemplateStore) -> String {
@@ -492,7 +796,13 @@ pub struct WorkflowTemplateStore {
 pub struct WorkflowTemplate {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub is_built_in: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_entry_stage: Option<OptionalEntryStage>,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: WorkflowModelBindings,
     #[serde(alias = "created_at")]
     pub created_at: String,
     #[serde(alias = "updated_at")]
@@ -611,6 +921,30 @@ impl AcpTurnBatchProgress {
 }
 
 #[derive(Debug, Clone)]
+pub struct ActiveMetricTurn {
+    pub execution_id: String,
+    pub attempt_id: String,
+    pub attempt_index: u32,
+    pub usage_baseline_turn_seq: u64,
+}
+
+impl ActiveMetricTurn {
+    pub fn new(
+        execution_id: String,
+        attempt_id: String,
+        attempt_index: u32,
+        usage_baseline_turn_seq: u64,
+    ) -> Self {
+        Self {
+            execution_id,
+            attempt_id,
+            attempt_index,
+            usage_baseline_turn_seq,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     /// The desktop process has reached the point where lifecycle subscribers
     /// are registered and may evaluate startup reporting configuration.
@@ -631,6 +965,7 @@ pub enum RuntimeLifecycleEvent {
         project_id: String,
         scheduled_task_id: String,
     },
+    MetricsFact(observability::MetricsLifecycleFact),
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
@@ -641,6 +976,7 @@ pub enum RuntimeLifecycleEvent {
         run_uuid: Option<String>,
         round_id: String,
         round_uuid: Option<String>,
+        round_index: Option<u32>,
         node_id: String,
         node_uuid: Option<String>,
         attempt_id: String,
@@ -649,12 +985,15 @@ pub enum RuntimeLifecycleEvent {
         seq: Option<u32>,
         node_name: Option<String>,
         agent_type: Option<String>,
+        resolved_model: Option<String>,
         started_at: String,
         /// Path to the current node's attempt directory. `None` because the
         /// node just started — attempt dir hasn't been populated yet.
         attempt_dir: Option<String>,
         /// The immediately preceding node in this run (None for first node).
         predecessor: Option<crate::runtime::LastExecutedNode>,
+        metrics_unit_kind: Option<crate::dynamic::DynamicNodeKind>,
+        child_run_id: Option<String>,
     },
     /// A node has completed execution (the AI provider returned). The
     /// orchestrator has already persisted runtime state.
@@ -666,6 +1005,7 @@ pub enum RuntimeLifecycleEvent {
         run_uuid: Option<String>,
         round_id: String,
         round_uuid: Option<String>,
+        round_index: Option<u32>,
         node_id: String,
         node_uuid: Option<String>,
         attempt_id: String,
@@ -674,6 +1014,7 @@ pub enum RuntimeLifecycleEvent {
         seq: Option<u32>,
         node_name: String,
         agent_type: Option<String>,
+        resolved_model: Option<String>,
         started_at: String,
         finished_at: Option<String>,
         outcome: String, // "SUCCESS" | "FAILED"
@@ -683,6 +1024,8 @@ pub enum RuntimeLifecycleEvent {
         /// dynamic workers so that only the outer AiDynamic node produces
         /// the single begin/end sentinel pair for the whole workflow.
         suppress_sentinel: bool,
+        metrics_unit_kind: Option<crate::dynamic::DynamicNodeKind>,
+        child_run_id: Option<String>,
     },
     RunPaused {
         event_id: String,
@@ -753,6 +1096,22 @@ pub enum RuntimeLifecycleEvent {
     },
 }
 
+fn lifecycle_event_kind(event: &RuntimeLifecycleEvent) -> &'static str {
+    match event {
+        RuntimeLifecycleEvent::ApplicationStarted => "application-started",
+        RuntimeLifecycleEvent::UserActivityObserved => "user-activity-observed",
+        RuntimeLifecycleEvent::ConversationRunStarted { .. } => "conversation-run-started",
+        RuntimeLifecycleEvent::ScheduledTaskCreated { .. } => "scheduled-task-created",
+        RuntimeLifecycleEvent::MetricsFact(_) => "metrics-fact",
+        RuntimeLifecycleEvent::NodeStarted { .. } => "node-started",
+        RuntimeLifecycleEvent::NodeCompleted { .. } => "node-completed",
+        RuntimeLifecycleEvent::RunPaused { .. } => "run-paused",
+        RuntimeLifecycleEvent::InterventionRequested { .. } => "intervention-requested",
+        RuntimeLifecycleEvent::RunCompleted { .. } => "run-completed",
+        RuntimeLifecycleEvent::AcpTurnFinished { .. } => "acp-turn-finished",
+    }
+}
+
 impl RuntimeLifecycleEvent {
     fn set_scheduled_occurrence_id(&mut self, occurrence_id: Option<String>) {
         match self {
@@ -779,7 +1138,8 @@ impl RuntimeLifecycleEvent {
             | Self::ConversationRunStarted { .. }
             | Self::ScheduledTaskCreated { .. }
             | Self::NodeStarted { .. }
-            | Self::NodeCompleted { .. } => {}
+            | Self::NodeCompleted { .. }
+            | Self::MetricsFact(_) => {}
         }
     }
 }
@@ -801,8 +1161,26 @@ pub struct App {
         Arc<dyn Fn(AcpLiveEventContext, AcpPromptLifecycleEvent) -> Result<()> + Send + Sync>,
     >,
     pub lifecycle_bus: observability::RuntimeLifecycleBus,
+    observability_states:
+        Arc<std::sync::Mutex<HashMap<String, observability::ExecutionObservabilityState>>>,
+    metrics_collection_enabled: bool,
+    active_metric_turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptRuntimePauseResult {
+    Converged,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AttemptRuntimePausePolicy<'a> {
+    CurrentAttempt,
+    ActiveExecution(&'a str),
+    ActiveAttemptWithoutExecution,
+    PausedManualCheck,
 }
 
 fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
@@ -926,13 +1304,14 @@ fn validate_ai_dynamic_allowed_workflows(
                 }
                 .into());
             }
-            let validated = validate_workflow(template.workflow.clone()).map_err(|error| {
-                WorkflowValidationError::AiDynamicInvalidWorkflow {
-                    node_id: dynamic.id.clone(),
-                    workflow_name: template.name.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            let validated =
+                validate_authoring_workflow(template.workflow.clone()).map_err(|error| {
+                    WorkflowValidationError::AiDynamicInvalidWorkflow {
+                        node_id: dynamic.id.clone(),
+                        workflow_name: template.name.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
             if !dynamic.control.allow_nested_dynamic && workflow_contains_ai_dynamic(&validated.raw)
             {
                 return Err(WorkflowValidationError::AiDynamicInvalidWorkflow {
@@ -1004,58 +1383,6 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
                 .collect(),
         },
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelConfigNormalization {
-    pub node_id: String,
-    pub scope: String,
-    pub provider: Option<String>,
-    pub previous_model: String,
-}
-
-fn provider_model_is_stale(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    provider: &str,
-    model: &str,
-) -> bool {
-    let supported_models = diagnostics
-        .get(provider)
-        .filter(|diagnostic| diagnostic.available)
-        .map(|diagnostic| supported_models_from_capabilities(diagnostic.capabilities.as_ref()))
-        .unwrap_or_default();
-    !supported_models.is_empty()
-        && !supported_models
-            .iter()
-            .any(|option| option.id == model || option.name.as_deref() == Some(model))
-}
-
-fn clear_stale_model(
-    diagnostics: &BTreeMap<String, ProviderDiagnosticSnapshot>,
-    node_id: &str,
-    scope: &str,
-    provider: &str,
-    model: &mut Option<String>,
-    normalizations: &mut Vec<ModelConfigNormalization>,
-) {
-    let Some(configured) = model
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-    if !provider_model_is_stale(diagnostics, provider, configured) {
-        return;
-    }
-    normalizations.push(ModelConfigNormalization {
-        node_id: node_id.to_string(),
-        scope: scope.to_string(),
-        provider: Some(provider.to_string()),
-        previous_model: configured.to_string(),
-    });
-    *model = None;
 }
 
 impl App {
@@ -1137,6 +1464,9 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            observability_states: self.observability_states.clone(),
+            metrics_collection_enabled: self.metrics_collection_enabled,
+            active_metric_turns: self.active_metric_turns.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
         }
@@ -1184,6 +1514,9 @@ impl App {
             acp_session_update: self.acp_session_update.clone(),
             prompt_turn_lifecycle: self.prompt_turn_lifecycle.clone(),
             lifecycle_bus: self.lifecycle_bus.clone(),
+            observability_states: self.observability_states.clone(),
+            metrics_collection_enabled: self.metrics_collection_enabled,
+            active_metric_turns: self.active_metric_turns.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
         }
@@ -1219,6 +1552,22 @@ impl App {
 
     pub fn with_lifecycle_bus(mut self, lifecycle_bus: observability::RuntimeLifecycleBus) -> Self {
         self.lifecycle_bus = lifecycle_bus;
+        self
+    }
+
+    pub fn with_observability_states(
+        mut self,
+        states: Arc<std::sync::Mutex<HashMap<String, observability::ExecutionObservabilityState>>>,
+    ) -> Self {
+        self.observability_states = states;
+        self
+    }
+
+    pub fn with_active_metric_turns(
+        mut self,
+        turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
+    ) -> Self {
+        self.active_metric_turns = turns;
         self
     }
 
@@ -1330,6 +1679,787 @@ impl App {
             event.set_scheduled_occurrence_id(Some(occurrence_id));
         }
         self.lifecycle_bus.emit(event);
+    }
+
+    pub fn create_metrics_fact_producer(&self) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<RuntimeLifecycleEvent>(2048);
+        let app = self.clone_for_background();
+        let _ = std::thread::Builder::new()
+            .name("metrics-fact-producer".into())
+            .spawn(move || {
+                while let Ok(event) = receiver.recv() {
+                    app.emit_derived_node_metrics_fact(&event);
+                }
+            });
+        Arc::new(move |event| {
+            if let Err(error) = sender.try_send(event) {
+                match error {
+                    std::sync::mpsc::TrySendError::Full(event) => tracing::warn!(
+                        queue = "metrics-fact-producer",
+                        capacity = 2048,
+                        event_kind = lifecycle_event_kind(&event),
+                        "metrics lifecycle fact input queue is full; event dropped"
+                    ),
+                    std::sync::mpsc::TrySendError::Disconnected(event) => tracing::warn!(
+                        queue = "metrics-fact-producer",
+                        event_kind = lifecycle_event_kind(&event),
+                        "metrics lifecycle fact worker is disconnected; event dropped"
+                    ),
+                }
+            }
+        })
+    }
+
+    pub fn with_metrics_collection_enabled(mut self, enabled: bool) -> Self {
+        self.metrics_collection_enabled = enabled;
+        self
+    }
+
+    pub fn metrics_collection_enabled(&self) -> bool {
+        self.metrics_collection_enabled
+    }
+
+    pub fn begin_metrics_turn(&self, attempt_key: String, turn: ActiveMetricTurn) {
+        if self.metrics_collection_enabled {
+            self.active_metric_turns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(attempt_key, turn);
+        }
+    }
+
+    pub fn active_metrics_turn(&self, attempt_key: &str) -> Option<ActiveMetricTurn> {
+        self.active_metric_turns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(attempt_key)
+            .cloned()
+    }
+
+    pub fn end_metrics_turn(&self, attempt_key: &str) {
+        self.active_metric_turns
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(attempt_key);
+    }
+
+    pub fn direct_usage_baseline(attempt_dir: Option<&camino::Utf8Path>) -> u64 {
+        let Some(attempt_dir) = attempt_dir else {
+            return 0;
+        };
+        crate::acp::usage::read_prompt_usage_segments(attempt_dir)
+            .last()
+            .map(|segment| segment.turn_seq)
+            .unwrap_or(0)
+    }
+
+    pub fn direct_metrics_is_follow_up(
+        &self,
+        attempt_key: &str,
+        attempt_dir: Option<&camino::Utf8Path>,
+        attempt_path: &camino::Utf8Path,
+    ) -> bool {
+        if self.active_metrics_turn(attempt_key).is_some() {
+            return true;
+        }
+        let has_usage_history = attempt_dir
+            .map(|dir| Self::direct_usage_baseline(Some(dir)))
+            .unwrap_or(0)
+            > 0;
+        has_usage_history
+            || observability::load_observability_snapshot(attempt_path).event_revision > 0
+    }
+
+    pub fn direct_usage_segments_after(
+        attempt_dir: Option<&camino::Utf8Path>,
+        baseline_turn_seq: u64,
+    ) -> Vec<crate::acp::usage::AcpPromptUsageSegment> {
+        let Some(attempt_dir) = attempt_dir else {
+            return Vec::new();
+        };
+        crate::acp::usage::read_prompt_usage_segments(attempt_dir)
+            .into_iter()
+            .filter(|segment| segment.turn_seq > baseline_turn_seq)
+            .collect()
+    }
+
+    pub fn direct_model_usages_from_segments(
+        segments: &[crate::acp::usage::AcpPromptUsageSegment],
+        fallback_provider: Option<&str>,
+        fallback_model: Option<&str>,
+    ) -> Vec<observability::ModelUsage> {
+        segments
+            .iter()
+            .filter_map(|segment| {
+                let provider = segment.provider.as_deref().or(fallback_provider)?;
+                let model = segment.model.as_deref().or(fallback_model)?;
+                Some(observability::ModelUsage {
+                    provider: provider.to_string(),
+                    model: model.to_string(),
+                    usage: observability::TokenUsage {
+                        input_tokens: segment.usage.input_tokens,
+                        output_tokens: segment.usage.output_tokens,
+                        cache_read_tokens: segment.usage.cached_read_tokens,
+                        total_tokens: segment.usage.effective_total_tokens(),
+                    },
+                    acp_session_elapsed_ms: segment.elapsed_ms,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns true when the run's current node is an AI-DYNAMIC node (AUTO mode).
+    fn is_auto_run(&self, task_id: &str, run_id: &str) -> bool {
+        let Ok(run) = self.run_status(task_id, run_id) else {
+            return false;
+        };
+        run.current_round
+            .as_deref()
+            .zip(run.current_node.as_deref())
+            .zip(run.current_attempt.as_deref())
+            .and_then(|((round_id, node_id), attempt_id)| {
+                read_json::<NodeState>(
+                    &self
+                        .paths
+                        .node_file(task_id, run_id, round_id, node_id, attempt_id),
+                )
+                .ok()
+            })
+            .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic)
+    }
+    fn emit_derived_node_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
+        use observability::{
+            ExecutionKind, ExecutionOutcome, LifecycleEventType, LifecycleTiming,
+            MetricsLifecycleFact, MetricsSessionMode, ModelUsage, TerminalReason, TokenUsage,
+            UnitKind,
+        };
+        let (
+            event_type,
+            task_id,
+            run_id,
+            task_uuid,
+            run_uuid,
+            node_uuid,
+            logical_node_id,
+            attempt_id,
+            node_name,
+            provider,
+            model,
+            started_at,
+            ended_at,
+            attempt_dir,
+            outcome,
+            round_index,
+            child_run_id,
+            dynamic_kind,
+            repo_root,
+        ) = match event {
+            RuntimeLifecycleEvent::NodeStarted {
+                task_id,
+                run_id,
+                task_uuid,
+                run_uuid,
+                node_uuid,
+                node_id,
+                attempt_id,
+                node_name,
+                agent_type,
+                resolved_model,
+                started_at,
+                round_index,
+                child_run_id,
+                metrics_unit_kind,
+                repo_root,
+                ..
+            } => (
+                LifecycleEventType::ExecutionStarted,
+                task_id.clone(),
+                run_id.clone(),
+                task_uuid.clone(),
+                run_uuid.clone(),
+                node_uuid.clone(),
+                node_id.clone(),
+                attempt_id.clone(),
+                node_name.clone(),
+                agent_type.clone(),
+                resolved_model.clone(),
+                started_at.clone(),
+                None,
+                None,
+                None,
+                *round_index,
+                child_run_id.clone(),
+                *metrics_unit_kind,
+                repo_root.clone(),
+            ),
+            RuntimeLifecycleEvent::NodeCompleted {
+                task_id,
+                run_id,
+                task_uuid,
+                run_uuid,
+                node_uuid,
+                node_id,
+                attempt_id,
+                node_name,
+                agent_type,
+                resolved_model,
+                started_at,
+                finished_at,
+                attempt_dir,
+                outcome,
+                round_index,
+                child_run_id,
+                metrics_unit_kind,
+                repo_root,
+                ..
+            } => (
+                LifecycleEventType::ExecutionCompleted,
+                task_id.clone(),
+                run_id.clone(),
+                task_uuid.clone(),
+                run_uuid.clone(),
+                node_uuid.clone(),
+                node_id.clone(),
+                attempt_id.clone(),
+                Some(node_name.clone()),
+                agent_type.clone(),
+                resolved_model.clone(),
+                started_at.clone(),
+                finished_at.clone(),
+                Some(attempt_dir.clone()),
+                Some(outcome.clone()),
+                *round_index,
+                child_run_id.clone(),
+                *metrics_unit_kind,
+                repo_root.clone(),
+            ),
+            _ => return,
+        };
+        let mut scoped_app = self.clone_for_background();
+        scoped_app.paths = GoldBandPaths::new(Utf8PathBuf::from(repo_root));
+        let (Some(task_uuid), Some(run_uuid), Some(node_uuid)) = (task_uuid, run_uuid, node_uuid)
+        else {
+            return;
+        };
+        if dynamic_kind.is_none()
+            && direct_conversation_agent_label(&scoped_app, &task_id).is_some()
+        {
+            // Direct: one stable task UUID for task/execution/attempt.
+            let execution_id = task_uuid.clone();
+            let turn_key = format!("direct:{task_uuid}");
+            let attempt_path = scoped_app
+                .paths
+                .run_dir(&task_id, &run_id)
+                .join("observability")
+                .join(&execution_id)
+                .join(&execution_id)
+                .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+            let is_follow_up = if event_type == LifecycleEventType::ExecutionStarted {
+                scoped_app.direct_metrics_is_follow_up(&turn_key, None, &attempt_path)
+            } else {
+                false
+            };
+            let active_turn = if event_type == LifecycleEventType::ExecutionStarted {
+                match scoped_app.active_metrics_turn(&turn_key) {
+                    Some(turn) => turn,
+                    None => {
+                        let usage_baseline = App::direct_usage_baseline(
+                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
+                        );
+                        let turn = ActiveMetricTurn::new(
+                            execution_id.clone(),
+                            execution_id.clone(),
+                            1,
+                            usage_baseline,
+                        );
+                        scoped_app.begin_metrics_turn(turn_key.clone(), turn.clone());
+                        turn
+                    }
+                }
+            } else {
+                let Some(turn) = scoped_app.active_metrics_turn(&turn_key) else {
+                    return;
+                };
+                turn
+            };
+            let mut fallback_model = model.clone();
+            if let Some(session_path) = attempt_dir
+                .as_ref()
+                .map(|dir| Utf8PathBuf::from(dir).join("acp.session.json"))
+            {
+                fallback_model = crate::acp::events::read_attempt_session_model_name(&session_path)
+                    .or_else(|| fallback_model);
+            }
+            let attempt_state = scoped_app.update_observability_state(
+                &active_turn.attempt_id,
+                attempt_path,
+                |state| {
+                    if event_type == LifecycleEventType::ExecutionStarted {
+                        state.record_started_at(started_at.clone());
+                        if is_follow_up {
+                            state.record_follow_up();
+                        }
+                    }
+                    if event_type == LifecycleEventType::ExecutionCompleted {
+                        let segments = App::direct_usage_segments_after(
+                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
+                            active_turn.usage_baseline_turn_seq,
+                        );
+                        let usages = App::direct_model_usages_from_segments(
+                            &segments,
+                            provider.as_deref(),
+                            fallback_model.as_deref(),
+                        );
+                        for usage in usages {
+                            state.record_model_usage(usage);
+                        }
+                        let usage_snapshot = attempt_dir.as_ref().map(|dir| {
+                            crate::acp::events::read_attempt_metrics(
+                                &Utf8PathBuf::from(dir).join("acp.session.json"),
+                            )
+                        });
+                        if segments.is_empty()
+                            && let (Some(usage), Some(p), Some(m)) =
+                                (usage_snapshot, provider.as_ref(), fallback_model.as_ref())
+                        {
+                            state.record_cumulative_model_usage(
+                                p.clone(),
+                                m.clone(),
+                                TokenUsage {
+                                    input_tokens: usage.input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    cache_read_tokens: usage.cache_read_tokens,
+                                    total_tokens: usage.total_tokens,
+                                },
+                                usage.elapsed_ms,
+                            );
+                        }
+                    }
+                    state.next_revision();
+                },
+            );
+            let direct_revision = attempt_state.event_revision;
+            let mut resolved_provider = provider.clone();
+            let mut resolved_model = fallback_model.clone();
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                if let Some(first_usage) = attempt_state.model_usages().into_iter().next() {
+                    if resolved_provider.is_none() {
+                        resolved_provider = Some(first_usage.provider.clone());
+                    }
+                    if resolved_model.is_none() {
+                        resolved_model = Some(first_usage.model.clone());
+                    }
+                }
+            }
+            let mut turn_fact = MetricsLifecycleFact::new(
+                event_type,
+                direct_revision,
+                ended_at.clone().unwrap_or_else(|| started_at.clone()),
+                std::env::var("USERNAME")
+                    .or_else(|_| std::env::var("USER"))
+                    .unwrap_or_else(|_| "unknown".into()),
+                scoped_app.paths.repo_root.to_string(),
+                MetricsSessionMode::Direct,
+                task_uuid.clone(),
+                ExecutionKind::Turn,
+                active_turn.execution_id.clone(),
+            );
+            turn_fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
+            turn_fact.attempt_id = Some(active_turn.attempt_id.clone());
+            turn_fact.attempt_index = Some(active_turn.attempt_index);
+            turn_fact.provider = resolved_provider;
+            turn_fact.model = resolved_model;
+            turn_fact.collection_state_recovered = attempt_state.collection_state_recovered;
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                if let Some(outcome_str) = &outcome {
+                    if outcome_str.eq_ignore_ascii_case("success") {
+                        turn_fact.outcome = Some(ExecutionOutcome::Completed);
+                        turn_fact.terminal_reason = Some(TerminalReason::Completed);
+                    } else if outcome_str.eq_ignore_ascii_case("killed") {
+                        turn_fact.outcome = Some(ExecutionOutcome::Cancelled);
+                        turn_fact.terminal_reason = Some(TerminalReason::ProcessKilled);
+                    } else {
+                        turn_fact.outcome = Some(ExecutionOutcome::Failed);
+                        turn_fact.terminal_reason = Some(TerminalReason::ProviderError);
+                    }
+                }
+                let usages = attempt_state.model_usages();
+                let sum_tokens = |get: fn(&TokenUsage) -> Option<u64>| {
+                    usages
+                        .iter()
+                        .filter_map(|u| get(&u.usage))
+                        .fold(None, |acc, v| Some(acc.unwrap_or(0u64).saturating_add(v)))
+                };
+                if !usages.is_empty() {
+                    turn_fact.usage = Some(TokenUsage {
+                        input_tokens: sum_tokens(|u| u.input_tokens),
+                        output_tokens: sum_tokens(|u| u.output_tokens),
+                        cache_read_tokens: sum_tokens(|u| u.cache_read_tokens),
+                        total_tokens: sum_tokens(|u| u.total_tokens),
+                    });
+                    turn_fact.model_usages = Some(usages);
+                }
+                turn_fact.timing = Some(LifecycleTiming {
+                    started_at: attempt_state
+                        .started_at
+                        .clone()
+                        .unwrap_or_else(|| started_at.clone()),
+                    ended_at: ended_at.clone(),
+                    acp_session_elapsed_ms: attempt_dir.as_ref().and_then(|dir| {
+                        crate::acp::events::read_attempt_metrics(
+                            &Utf8PathBuf::from(dir).join("acp.session.json"),
+                        )
+                        .elapsed_ms
+                    }),
+                });
+                turn_fact.counters = Some(attempt_state.counters.clone());
+            }
+            scoped_app
+                .lifecycle_bus
+                .emit(RuntimeLifecycleEvent::MetricsFact(turn_fact));
+            if event_type == LifecycleEventType::ExecutionCompleted {
+                scoped_app.release_observability_state(&active_turn.execution_id);
+                scoped_app.end_metrics_turn(&turn_key);
+            }
+            return;
+        }
+        // Skip AUTO wrapper nodes (not dynamic units) — they are implementation detail.
+        if dynamic_kind.is_none() && scoped_app.is_auto_run(&task_id, &run_id) {
+            return;
+        }
+        // executionId = taskId for all modes (Direct/AUTO/Workflow share the same identity).
+        let execution_id = task_uuid.clone();
+        // nodeId is the stable logical node identity; attemptId is unique per execution.
+        let (node_metrics_id, metrics_attempt_id) = if dynamic_kind.is_some() {
+            // AUTO unit: nodeId = DynamicNodeState.uuid, attemptId derived from nodeUuid.
+            let Some(metrics_attempt_id) =
+                observability::derive_attempt_id(&node_uuid, &attempt_id)
+            else {
+                return;
+            };
+            (node_uuid.clone(), metrics_attempt_id)
+        } else {
+            // Workflow node: nodeId = derived logical node (stable across retries),
+            // attemptId = NodeState.uuid (new per concrete attempt).
+            let Some(round_index) = round_index else {
+                return;
+            };
+            let logical = observability::derive_execution_id(
+                &run_uuid,
+                &format!("round:{round_index}:node:{logical_node_id}"),
+            )
+            .unwrap_or_else(|| node_uuid.clone());
+            (logical, node_uuid.clone())
+        };
+
+        let Some(attempt_index) = observability::attempt_index_from_local_id(&attempt_id) else {
+            return;
+        };
+        let snapshot_path = scoped_app
+            .paths
+            .run_dir(&task_id, &run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(&metrics_attempt_id)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let usage_snapshot = attempt_dir
+            .as_ref()
+            .map(|dir| {
+                crate::acp::events::read_attempt_metrics(
+                    &Utf8PathBuf::from(dir).join("acp.session.json"),
+                )
+            })
+            .filter(|usage| {
+                dynamic_kind != Some(crate::dynamic::DynamicNodeKind::WorkflowInvocation)
+                    || usage.input_tokens.is_some()
+                    || usage.output_tokens.is_some()
+                    || usage.cache_read_tokens.is_some()
+                    || usage.total_tokens.is_some()
+                    || usage.elapsed_ms.is_some()
+            });
+        let usage_segments = attempt_dir
+            .as_ref()
+            .map(|dir| crate::acp::usage::read_prompt_usage_segments(Utf8Path::new(dir)))
+            .unwrap_or_default();
+        let metrics_model = attempt_dir
+            .as_ref()
+            .and_then(|dir| {
+                crate::acp::events::read_attempt_session_model_name(
+                    &Utf8PathBuf::from(dir).join("acp.session.json"),
+                )
+            })
+            .or_else(|| model.clone());
+        let state = scoped_app.update_observability_state(
+            &metrics_attempt_id,
+            snapshot_path.clone(),
+            |state| {
+                let mut recorded_segment = false;
+                for segment in &usage_segments {
+                    let (Some(segment_provider), Some(segment_model)) =
+                        (segment.provider.as_ref(), segment.model.as_ref())
+                    else {
+                        continue;
+                    };
+                    state.record_model_usage(ModelUsage {
+                        provider: segment_provider.clone(),
+                        model: segment_model.clone(),
+                        usage: TokenUsage {
+                            input_tokens: segment.usage.input_tokens,
+                            output_tokens: segment.usage.output_tokens,
+                            cache_read_tokens: segment.usage.cached_read_tokens,
+                            total_tokens: segment.usage.effective_total_tokens(),
+                        },
+                        acp_session_elapsed_ms: segment.elapsed_ms,
+                    });
+                    recorded_segment = true;
+                }
+                // Legacy attempts do not have provider/model captured per prompt.
+                // Preserve their cumulative totals without inventing segments.
+                if !recorded_segment
+                    && let (Some(usage), Some(provider), Some(model)) =
+                        (&usage_snapshot, provider.as_ref(), metrics_model.as_ref())
+                {
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            },
+        );
+
+        // Global revision: all events for the same task share a single
+        // monotonically-increasing revision counter via the task_uuid
+        // observability state. Per-node state retains model_usages
+        // and per-node counters; only revision comes from the global state.
+        let outer_snapshot_path = scoped_app
+            .paths
+            .run_dir(&task_id, &run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let outer_state = scoped_app.update_observability_state(
+            &task_uuid,
+            outer_snapshot_path.clone(),
+            |state| {
+                state.next_revision();
+            },
+        );
+        let revision = outer_state.event_revision;
+        let mut fact = MetricsLifecycleFact::new(
+            event_type,
+            revision,
+            ended_at.clone().unwrap_or_else(|| started_at.clone()),
+            std::env::var("USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_else(|_| "unknown".into()),
+            scoped_app.paths.repo_root.to_string(),
+            if dynamic_kind.is_some() {
+                MetricsSessionMode::Auto
+            } else {
+                MetricsSessionMode::Workflow
+            },
+            task_uuid.clone(),
+            if dynamic_kind.is_some() {
+                ExecutionKind::UnitAttempt
+            } else {
+                ExecutionKind::NodeAttempt
+            },
+            execution_id.clone(),
+        );
+        fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
+        fact.node_id = Some(node_metrics_id.clone());
+        fact.attempt_id = Some(metrics_attempt_id.clone());
+        fact.attempt_index = Some(attempt_index);
+        fact.role_name = node_name;
+        fact.round_index = round_index;
+        fact.provider = provider;
+        fact.model = if event_type == LifecycleEventType::ExecutionStarted {
+            None
+        } else {
+            metrics_model.clone()
+        };
+        fact.collection_state_recovered = state.collection_state_recovered;
+        fact.unit_kind = dynamic_kind.map(|kind| match kind {
+            crate::dynamic::DynamicNodeKind::Worker => UnitKind::Worker,
+            crate::dynamic::DynamicNodeKind::WorkflowInvocation => UnitKind::WorkflowInvocation,
+            crate::dynamic::DynamicNodeKind::Merge => UnitKind::Merge,
+            crate::dynamic::DynamicNodeKind::Acceptance => UnitKind::Acceptance,
+        });
+        fact.child_run_id = child_run_id.and_then(|child_run_id| {
+            read_json::<RunState>(&scoped_app.paths.run_file(&task_id, &child_run_id))
+                .ok()
+                .and_then(|run| run.uuid)
+        });
+        if let Some(outcome) = outcome {
+            let success = outcome.eq_ignore_ascii_case("success");
+            let killed = outcome.eq_ignore_ascii_case("killed");
+            let invalid = outcome.eq_ignore_ascii_case("invalid");
+            fact.outcome = Some(if success {
+                ExecutionOutcome::Success
+            } else if killed {
+                ExecutionOutcome::Killed
+            } else {
+                ExecutionOutcome::Failure
+            });
+            fact.terminal_reason = Some(if success {
+                TerminalReason::Completed
+            } else if killed {
+                TerminalReason::ProcessKilled
+            } else if invalid {
+                TerminalReason::ValidationError
+            } else if dynamic_kind == Some(crate::dynamic::DynamicNodeKind::Acceptance) {
+                TerminalReason::AcceptanceRejected
+            } else {
+                TerminalReason::ExecutionFailed
+            });
+            let usages = state.model_usages();
+            let sum = |get: fn(&TokenUsage) -> Option<u64>| {
+                usages
+                    .iter()
+                    .filter_map(|usage| get(&usage.usage))
+                    .fold(None, |total, value| {
+                        Some(total.unwrap_or(0u64).saturating_add(value))
+                    })
+            };
+            if !usages.is_empty() {
+                fact.usage = Some(TokenUsage {
+                    input_tokens: sum(|u| u.input_tokens),
+                    output_tokens: sum(|u| u.output_tokens),
+                    cache_read_tokens: sum(|u| u.cache_read_tokens),
+                    total_tokens: sum(|u| u.total_tokens),
+                });
+                fact.model_usages = Some(usages);
+            }
+            fact.timing = Some(LifecycleTiming {
+                started_at: started_at.clone(),
+                ended_at: ended_at.clone(),
+                acp_session_elapsed_ms: usage_snapshot.and_then(|usage| usage.elapsed_ms),
+            });
+        }
+        let acceptance_passed = (dynamic_kind == Some(crate::dynamic::DynamicNodeKind::Acceptance)
+            && event_type == LifecycleEventType::ExecutionCompleted)
+            .then(|| fact.outcome == Some(ExecutionOutcome::Success));
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::MetricsFact(fact));
+        if let Some(passed) = acceptance_passed {
+            let outer_state =
+                scoped_app.update_observability_state(&task_uuid, outer_snapshot_path, |state| {
+                    state.next_revision();
+                    state.next_acceptance_attempt();
+                });
+            let acceptance_revision = outer_state.event_revision;
+            let acceptance_attempt = outer_state.next_acceptance_attempt_value();
+            let mut acceptance = MetricsLifecycleFact::new(
+                LifecycleEventType::AcceptanceCompleted,
+                acceptance_revision,
+                ended_at.unwrap_or_else(|| started_at.clone()),
+                std::env::var("USERNAME")
+                    .or_else(|_| std::env::var("USER"))
+                    .unwrap_or_else(|_| "unknown".into()),
+                scoped_app.paths.repo_root.to_string(),
+                MetricsSessionMode::Auto,
+                task_uuid,
+                ExecutionKind::UnitAttempt,
+                execution_id.clone(),
+            );
+            acceptance.attempt_id = Some(metrics_attempt_id.clone());
+            acceptance.attempt_index = Some(attempt_index);
+            acceptance.node_id = Some(node_metrics_id.clone());
+            acceptance.unit_kind = Some(UnitKind::Acceptance);
+            acceptance.passed = Some(passed);
+            acceptance.acceptance_attempt = Some(acceptance_attempt);
+            acceptance.first_pass = Some(passed && acceptance_attempt == 1);
+            acceptance.collection_state_recovered = outer_state.collection_state_recovered;
+            acceptance.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
+            self.lifecycle_bus
+                .emit(RuntimeLifecycleEvent::MetricsFact(acceptance));
+        }
+        if event_type == LifecycleEventType::ExecutionCompleted {
+            scoped_app.release_observability_state(&metrics_attempt_id);
+        }
+    }
+
+    pub fn update_observability_state(
+        &self,
+        execution_id: &str,
+        snapshot_path: Utf8PathBuf,
+        update: impl FnOnce(&mut observability::ExecutionObservabilityState),
+    ) -> observability::ExecutionObservabilityState {
+        let mut states = self
+            .observability_states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = states.entry(execution_id.to_string()).or_default();
+        update(state);
+        let snapshot = state.clone();
+        observability::persist_observability_snapshot_best_effort(snapshot_path, snapshot.clone());
+        snapshot
+    }
+
+    pub fn release_observability_state(&self, execution_id: &str) {
+        self.observability_states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(execution_id);
+    }
+
+    pub fn record_metrics_resume_cause(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        cause: observability::ResumeCause,
+    ) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let Ok(run) = self.run_status(task_id, run_id) else {
+            return;
+        };
+        let Some(task_uuid) = run.task_uuid.clone() else {
+            return;
+        };
+        let path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        self.update_observability_state(&task_uuid, path, |state| {
+            state.set_pending_resume_cause(cause);
+        });
+    }
+
+    pub fn clear_metrics_resume_cause(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        expected: observability::ResumeCause,
+    ) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let Ok(run) = self.run_status(task_id, run_id) else {
+            return;
+        };
+        let Some(task_uuid) = run.task_uuid.clone() else {
+            return;
+        };
+        let path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        self.update_observability_state(&task_uuid, path, |state| {
+            state.clear_pending_resume_cause(expected);
+        });
     }
 
     pub fn load_settings(&self) -> Result<SettingsConfig> {
@@ -1696,13 +2826,20 @@ impl App {
         name: String,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.save_workflow_template_with_bindings(name, workflow, WorkflowModelBindings::default())
+    }
+
+    pub fn save_workflow_template_with_bindings(
+        &self,
+        name: String,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let name = name.trim();
         if name.is_empty() {
             bail!("workflow template name cannot be empty");
         }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
         for attempt in 0..3 {
             workflow.id = next_workflow_id();
             let conflicts = store
@@ -1716,8 +2853,8 @@ impl App {
                 bail!("failed to generate a unique workflow id after 3 attempts");
             }
         }
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        reconcile_authoring_workflow_for_save(&mut workflow, &mut model_bindings, None, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(&store, &validated.raw, name, None)?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
@@ -1727,7 +2864,10 @@ impl App {
         store.templates.push(WorkflowTemplate {
             id: id.clone(),
             name: name.to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
             workflow: validated.raw,
+            model_bindings,
             created_at: now.clone(),
             updated_at: now,
         });
@@ -1741,18 +2881,48 @@ impl App {
         template_id: &str,
         workflow: WorkflowDsl,
     ) -> Result<WorkflowTemplateStore> {
+        self.update_workflow_template_with_bindings(
+            template_id,
+            workflow,
+            WorkflowModelBindings::default(),
+        )
+    }
+
+    pub fn update_workflow_template_with_bindings(
+        &self,
+        template_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
         let template_id = template_id.trim();
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be updated");
-        }
         let mut store = self.load_workflow_template_store()?;
-        let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
+        let persisted_template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: persisted_template.workflow.clone(),
+            model_bindings: persisted_template.model_bindings.clone(),
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            None,
+        )?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         validate_unique_workflow_template_id(
             &store,
@@ -1766,8 +2936,46 @@ impl App {
             .templates
             .iter_mut()
             .find(|template| template.id == template_id)
-            .with_context(|| format!("workflow template `{template_id}` not found"))?;
+            .expect("persisted workflow template was resolved before validation");
         template.workflow = validated.raw;
+        template.model_bindings = model_bindings;
+        template.updated_at = now_rfc3339_like();
+        store.last_used_template_id = Some(template_id.to_string());
+        self.save_workflow_template_store(&store)?;
+        Ok(store)
+    }
+
+    pub fn update_built_in_workflow_template_bindings(
+        &self,
+        template_id: &str,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<WorkflowTemplateStore> {
+        let mut store = self.load_workflow_template_store()?;
+        let template_index = store
+            .templates
+            .iter()
+            .position(|template| template.id == template_id && template.is_built_in)
+            .ok_or(WorkflowTemplateCommandError::ReadonlyBuiltIn)?;
+        let persisted = TaskAuthoringWorkflow {
+            workflow: store.templates[template_index].workflow.clone(),
+            model_bindings: store.templates[template_index].model_bindings.clone(),
+        };
+        let mut workflow = persisted.workflow.clone();
+        reconcile_authoring_workflow_for_save(
+            &mut workflow,
+            &mut model_bindings,
+            Some(&persisted),
+            Some(template_id),
+        )?;
+        validate_and_inject(
+            &workflow,
+            &model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?;
+        let template = &mut store.templates[template_index];
+        template.workflow = workflow;
+        template.model_bindings = model_bindings;
         template.updated_at = now_rfc3339_like();
         store.last_used_template_id = Some(template_id.to_string());
         self.save_workflow_template_store(&store)?;
@@ -1779,11 +2987,15 @@ impl App {
         if template_id.is_empty() {
             bail!("workflow template id cannot be empty");
         }
-        if template_id == "default" {
-            bail!("default workflow template cannot be deleted");
-        }
-
         let mut store = self.load_workflow_template_store()?;
+        if store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .is_some_and(|template| template.is_built_in)
+        {
+            return Err(WorkflowTemplateCommandError::ReadonlyBuiltIn.into());
+        }
         let original_len = store.templates.len();
         store
             .templates
@@ -1918,6 +3130,8 @@ impl App {
         let default_profiles = ensure_default_user_profiles(&self.paths)?;
         let default_template =
             default_workflow_template(&default_profiles, self.config.desktop_language);
+        let lightweight_template =
+            default_lightweight_workflow_template(&default_profiles, self.config.desktop_language);
         let path = self.paths.workflow_templates_file();
         if !path.exists() {
             let legacy_path = self.paths.legacy_project_workflow_templates_file();
@@ -1930,18 +3144,19 @@ impl App {
         }
         if path.exists() {
             let mut store: WorkflowTemplateStore = read_json(&path)?;
-            if store.templates.is_empty() {
-                store.templates.push(default_template);
-            } else if let Some(template) = store
-                .templates
-                .iter_mut()
-                .find(|template| template.id == "default")
-            {
-                *template = default_template;
-            } else {
-                store.templates.insert(0, default_template);
+            for template in &mut store.templates {
+                migrate_authoring_workflow(
+                    &mut template.workflow,
+                    &mut template.model_bindings,
+                    template.is_built_in.then_some(template.id.as_str()),
+                )?;
             }
-            self.normalize_workflow_template_store_models(&mut store);
+            upsert_built_in_workflow_template(&mut store.templates, lightweight_template, 0)?;
+            upsert_built_in_workflow_template(&mut store.templates, default_template, 0)?;
+            if let Some(workflow) = store.last_created_workflow.as_mut() {
+                let mut ignored = WorkflowModelBindings::default();
+                migrate_authoring_workflow(workflow, &mut ignored, None)?;
+            }
             self.save_workflow_template_store(&store)?;
             return Ok(store);
         }
@@ -1949,31 +3164,69 @@ impl App {
             version: VERSION.to_string(),
             last_used_template_id: Some("default".to_string()),
             last_created_workflow: None,
-            templates: vec![default_template],
+            templates: vec![default_template, lightweight_template],
         };
-        self.normalize_workflow_template_store_models(&mut store);
+        for template in &mut store.templates {
+            migrate_authoring_workflow(
+                &mut template.workflow,
+                &mut template.model_bindings,
+                template.is_built_in.then_some(template.id.as_str()),
+            )?;
+        }
         self.save_workflow_template_store(&store)?;
         Ok(store)
-    }
-
-    fn normalize_workflow_template_store_models(&self, store: &mut WorkflowTemplateStore) {
-        let now = now_rfc3339_like();
-        for template in &mut store.templates {
-            if !self
-                .normalize_workflow_models(&mut template.workflow)
-                .is_empty()
-            {
-                template.updated_at = now.clone();
-            }
-        }
-        if let Some(workflow) = store.last_created_workflow.as_mut() {
-            self.normalize_workflow_models(workflow);
-        }
     }
 
     fn save_workflow_template_store(&self, store: &WorkflowTemplateStore) -> Result<()> {
         fs::create_dir_all(self.paths.user_context_dir().as_std_path())?;
         write_json(&self.paths.workflow_templates_file(), store)
+    }
+
+    pub fn task_authoring_workflow(&self, task_id: &str) -> Result<TaskAuthoringWorkflow> {
+        let path = self.paths.workflow_file(task_id);
+        let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+        let (mut current, legacy) = compat.into_current();
+        let migrated =
+            migrate_authoring_workflow(&mut current.workflow, &mut current.model_bindings, None)?;
+        if legacy || migrated {
+            write_json(&path, &current)?;
+        }
+        Ok(current)
+    }
+
+    pub fn task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        Ok(self.task_authoring_workflow(task_id)?.workflow)
+    }
+
+    pub fn executable_task_workflow(&self, task_id: &str) -> Result<WorkflowDsl> {
+        let authoring = self.task_authoring_workflow(task_id)?;
+        Ok(validate_and_inject(
+            &authoring.workflow,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        )?)
+    }
+
+    fn save_task_authoring_workflow(
+        &self,
+        task_id: &str,
+        mut authoring: TaskAuthoringWorkflow,
+    ) -> Result<()> {
+        let path = self.paths.workflow_file(task_id);
+        let persisted = if path.exists() {
+            let compat: TaskAuthoringWorkflowCompat = read_json(&path)?;
+            Some(compat.into_current().0)
+        } else {
+            None
+        };
+        reconcile_authoring_workflow_for_save(
+            &mut authoring.workflow,
+            &mut authoring.model_bindings,
+            persisted.as_ref(),
+            None,
+        )?;
+        write_json(&path, &authoring)
     }
 
     fn load_auto_template_store(&self) -> Result<AutoTemplateStore> {
@@ -1996,10 +3249,9 @@ impl App {
 
     fn record_created_task_workflow(
         &self,
-        mut workflow: WorkflowDsl,
+        workflow: WorkflowDsl,
         template_id: Option<String>,
     ) -> Result<()> {
-        self.normalize_workflow_models(&mut workflow);
         let mut store = self.load_workflow_template_store()?;
         store.last_created_workflow = Some(workflow);
         if let Some(template_id) = template_id.filter(|value| !value.trim().is_empty()) {
@@ -2103,6 +3355,9 @@ impl App {
             acp_session_update: None,
             prompt_turn_lifecycle: None,
             lifecycle_bus: observability::RuntimeLifecycleBus::new(),
+            observability_states: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            metrics_collection_enabled: false,
+            active_metric_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
         }
@@ -2143,9 +3398,22 @@ impl App {
         }
 
         let mut workflow = input.workflow.clone();
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.create_task_from_requirement_with_bindings(input, workflow, model_bindings)
+    }
+
+    pub fn create_task_from_requirement_with_bindings(
+        &self,
+        input: CreateTaskInput,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        if input.requirement_content.trim().is_empty() {
+            bail!("requirement content cannot be empty");
+        }
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         let selected_template = input
@@ -2183,7 +3451,13 @@ impl App {
             self.paths.requirement_file(&task_id).as_std_path(),
             input.requirement_content,
         )?;
-        write_json(&self.paths.workflow_file(&task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            &task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw.clone(),
+                model_bindings,
+            },
+        )?;
         self.record_created_task_workflow(validated.raw, input.workflow_template_id)?;
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
@@ -2209,16 +3483,32 @@ impl App {
     }
 
     pub fn save_task_workflow(&self, task_id: &str, workflow: WorkflowDsl) -> Result<TaskSummary> {
-        self.task_show(task_id)?;
         let mut workflow = workflow;
-        self.normalize_workflow_models(&mut workflow);
-        let validated = validate_workflow(workflow)?;
-        self.validate_workflow_agents(&validated)?;
+        let mut model_bindings = WorkflowModelBindings::default();
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        self.save_task_workflow_with_bindings(task_id, workflow, model_bindings)
+    }
+
+    pub fn save_task_workflow_with_bindings(
+        &self,
+        task_id: &str,
+        mut workflow: WorkflowDsl,
+        mut model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.task_show(task_id)?;
+        migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+        let validated = validate_authoring_workflow(workflow)?;
         resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language)?;
         let store = self.load_workflow_template_store()?;
         validate_ai_dynamic_allowed_workflows(&validated.raw, &store)?;
         fs::create_dir_all(self.paths.task_dir(task_id).join("authoring").as_std_path())?;
-        write_json(&self.paths.workflow_file(task_id), &validated.raw)?;
+        self.save_task_authoring_workflow(
+            task_id,
+            TaskAuthoringWorkflow {
+                workflow: validated.raw,
+                model_bindings,
+            },
+        )?;
         self.task_summary(task_id)
     }
 
@@ -2914,7 +4204,13 @@ impl App {
         reason: PauseReason,
     ) -> Result<()> {
         self.pause_attempt_runtime_state_with_policy(
-            task_id, run_id, round_id, node_id, attempt_id, reason, false, None,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::CurrentAttempt,
         )
         .map(|_| ())
     }
@@ -2929,7 +4225,7 @@ impl App {
         attempt_id: &str,
         execution_id: &str,
         reason: PauseReason,
-    ) -> Result<bool> {
+    ) -> Result<AttemptRuntimePauseResult> {
         self.pause_attempt_runtime_state_with_policy(
             task_id,
             run_id,
@@ -2937,8 +4233,49 @@ impl App {
             node_id,
             attempt_id,
             reason,
-            true,
-            Some(execution_id),
+            AttemptRuntimePausePolicy::ActiveExecution(execution_id),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_active_without_execution(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pause_attempt_runtime_state_if_paused_manual_check(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+        reason: PauseReason,
+    ) -> Result<AttemptRuntimePauseResult> {
+        self.pause_attempt_runtime_state_with_policy(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            reason,
+            AttemptRuntimePausePolicy::PausedManualCheck,
         )
     }
 
@@ -2951,9 +4288,8 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         reason: PauseReason,
-        require_active_attempt: bool,
-        expected_execution_id: Option<&str>,
-    ) -> Result<bool> {
+        policy: AttemptRuntimePausePolicy<'_>,
+    ) -> Result<AttemptRuntimePauseResult> {
         let state_lock =
             attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
         let _guard = state_lock
@@ -2968,26 +4304,51 @@ impl App {
         } else {
             None
         };
-        if let Some(expected_execution_id) = expected_execution_id
+        let run_path = self.paths.run_file(task_id, run_id);
+        let mut run = if run_path.exists() {
+            Some(read_json::<RunState>(&run_path)?)
+        } else {
+            None
+        };
+        let locator_matches = run.as_ref().is_some_and(|run| {
+            run.current_round.as_deref() == Some(round_id)
+                && run.current_node.as_deref() == Some(node_id)
+                && run.current_attempt.as_deref() == Some(attempt_id)
+        });
+        let active_attempt = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Running);
+        let paused_manual_check = locator_matches
+            && run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::Paused)
             && node
                 .as_ref()
-                .and_then(|node| node.runtime_execution_id.as_deref())
-                != Some(expected_execution_id)
-        {
-            return Ok(false);
-        }
-        let run_path = self.paths.run_file(task_id, run_id);
-        let mut active_attempt = false;
-        if run_path.exists() {
-            let mut run: RunState = read_json(&run_path)?;
-            active_attempt = run.status == RunStatus::Running
-                && run.current_round.as_deref() == Some(round_id)
-                && run.current_node.as_deref() == Some(node_id)
-                && run.current_attempt.as_deref() == Some(attempt_id);
-            if require_active_attempt && !active_attempt {
-                return Ok(false);
+                .is_some_and(|node| node.status == RunStatus::Paused && node.manual_check_pending);
+        let policy_matches = match policy {
+            AttemptRuntimePausePolicy::CurrentAttempt => true,
+            AttemptRuntimePausePolicy::ActiveExecution(expected_execution_id) => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .and_then(|node| node.runtime_execution_id.as_deref())
+                        == Some(expected_execution_id)
             }
-            if active_attempt {
+            AttemptRuntimePausePolicy::ActiveAttemptWithoutExecution => {
+                active_attempt
+                    && node
+                        .as_ref()
+                        .is_some_and(|node| node.runtime_execution_id.is_none())
+            }
+            AttemptRuntimePausePolicy::PausedManualCheck => paused_manual_check,
+        };
+        if !policy_matches {
+            return Ok(AttemptRuntimePauseResult::Superseded);
+        }
+
+        if let Some(run) = run.as_mut() {
+            if active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck) {
                 run.status = RunStatus::Paused;
                 run.outcome = None;
                 run.pause_reason = Some(reason);
@@ -2996,8 +4357,6 @@ impl App {
                 validate_run_state(&run)?;
                 write_json(&run_path, &run)?;
             }
-        } else if require_active_attempt {
-            return Ok(false);
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
@@ -3021,7 +4380,7 @@ impl App {
             }
         }
 
-        Ok(active_attempt)
+        Ok(AttemptRuntimePauseResult::Converged)
     }
 
     pub fn pause_dynamic_attempt_runtime_state(
@@ -3270,6 +4629,7 @@ impl App {
             continue_ref,
             Some(prompt),
             prompt_id,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
             Vec::new(),
@@ -3329,6 +4689,16 @@ impl App {
         )
     }
 
+    pub fn run_continue_with_prompt_input(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        prompt_id: Option<String>,
+        input: Option<ConversationPromptInput>,
+    ) -> Result<RunState> {
+        orchestrator_run_continue_with_prompt_input(self, task_id, run_id, prompt_id, input)
+    }
+
     pub fn run_continue_with_model_override(
         &self,
         task_id: &str,
@@ -3382,7 +4752,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             None,
             None,
@@ -3402,7 +4772,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            prompt.map(ConversationPromptInput::from),
             Vec::new(),
             model_override,
             None,
@@ -3414,7 +4784,7 @@ impl App {
         task_id: &str,
         run_id: &str,
         prompt_id: Option<String>,
-        prompt: Option<String>,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3424,7 +4794,7 @@ impl App {
             task_id,
             run_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,
@@ -3463,7 +4833,7 @@ impl App {
         dynamic_node_id: &str,
         dynamic_attempt_id: &str,
         prompt_id: Option<String>,
-        prompt: String,
+        input: Option<ConversationPromptInput>,
         attachment_paths: Vec<String>,
         model_override: Option<String>,
         permission_mode_override: Option<String>,
@@ -3478,7 +4848,7 @@ impl App {
             dynamic_node_id,
             dynamic_attempt_id,
             prompt_id,
-            prompt,
+            input,
             attachment_paths,
             model_override,
             permission_mode_override,
@@ -3499,6 +4869,32 @@ impl App {
         )
     }
 
+    pub fn validate_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        orchestrator_validate_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
+    pub fn reserve_manual_check_submission(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<ManualCheckSubmissionLease> {
+        orchestrator_reserve_manual_check_submission(
+            self, task_id, run_id, round_id, node_id, attempt_id,
+        )
+    }
+
     pub fn submit_manual_check_background(
         &self,
         task_id: &str,
@@ -3507,9 +4903,10 @@ impl App {
         node_id: &str,
         attempt_id: &str,
         outcome: NodeOutcome,
+        lease: ManualCheckSubmissionLease,
     ) -> Result<RunState> {
         orchestrator_submit_manual_check_background(
-            self, task_id, run_id, round_id, node_id, attempt_id, outcome,
+            self, task_id, run_id, round_id, node_id, attempt_id, outcome, lease,
         )
     }
 
@@ -3539,6 +4936,22 @@ impl App {
         workflow_override: Option<&Utf8Path>,
     ) -> Result<PreparedRun> {
         orchestrator_prepare_run(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run_in_worktree(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run_with_authoring(
+        &self,
+        task_id: &str,
+        authoring: &TaskAuthoringWorkflow,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_with_authoring(self, task_id, authoring)
     }
 
     pub fn launch_prepared_run_background(
@@ -3576,77 +4989,6 @@ impl App {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn normalize_workflow_models(
-        &self,
-        workflow: &mut WorkflowDsl,
-    ) -> Vec<ModelConfigNormalization> {
-        let diagnostics = self.provider_diagnostics();
-        let mut normalizations = Vec::new();
-        for node in &mut workflow.nodes {
-            match node {
-                NodeDsl::Worker(worker) => {
-                    if let Some(provider) = worker.provider.as_deref() {
-                        clear_stale_model(
-                            &diagnostics,
-                            &worker.id,
-                            "worker",
-                            provider,
-                            &mut worker.model,
-                            &mut normalizations,
-                        );
-                    }
-                }
-                NodeDsl::AiDynamic(dynamic) => match &mut dynamic.agent_strategy {
-                    AiDynamicAgentStrategy::Fixed {
-                        provider, model, ..
-                    } => clear_stale_model(
-                        &diagnostics,
-                        &dynamic.id,
-                        "fixed",
-                        provider,
-                        model,
-                        &mut normalizations,
-                    ),
-                    AiDynamicAgentStrategy::Dynamic {
-                        bootstrap_provider,
-                        bootstrap_model,
-                        acceptance_model,
-                        available_agents,
-                        ..
-                    } => {
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "bootstrap",
-                            bootstrap_provider,
-                            bootstrap_model,
-                            &mut normalizations,
-                        );
-                        for agent in available_agents.iter_mut() {
-                            clear_stale_model(
-                                &diagnostics,
-                                &dynamic.id,
-                                "available-agent",
-                                &agent.provider,
-                                &mut agent.model,
-                                &mut normalizations,
-                            );
-                        }
-                        clear_stale_model(
-                            &diagnostics,
-                            &dynamic.id,
-                            "acceptance",
-                            bootstrap_provider,
-                            acceptance_model,
-                            &mut normalizations,
-                        );
-                    }
-                },
-            }
-        }
-        normalizations
     }
 
     pub fn validate_workflow_agents(&self, workflow: &ValidatedWorkflow) -> Result<()> {
@@ -3723,7 +5065,7 @@ impl App {
 
             let workflow_path = self.paths.workflow_file(task_id);
             if workflow_path.exists() {
-                let workflow = read_json::<WorkflowDsl>(&workflow_path)?;
+                let workflow = self.task_workflow(task_id)?;
                 if workflow_uses_profile(&workflow, profile_id) {
                     counts.task_count += 1;
                 }
@@ -3869,15 +5211,13 @@ impl App {
             return Ok((Some("missing authoring/workflow.json".to_string()), None));
         }
 
-        let mut workflow: WorkflowDsl = match read_json(&path) {
-            Ok(workflow) => workflow,
+        let authoring = match self.task_authoring_workflow(task_id) {
+            Ok(authoring) => authoring,
             Err(err) => return Ok((Some(err.to_string()), None)),
         };
-        if !self.normalize_workflow_models(&mut workflow).is_empty() {
-            write_json(&path, &workflow)?;
-        }
+        let workflow = authoring.workflow;
 
-        let validated = match validate_workflow(workflow.clone()) {
+        let validated = match validate_authoring_workflow(workflow.clone()) {
             Ok(validated) => validated,
             Err(err) => {
                 let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
@@ -3885,8 +5225,18 @@ impl App {
             }
         };
 
-        if let Err(err) = self.validate_workflow_agents(&validated) {
-            return Ok((Some(err.to_string()), None));
+        let executable = match validate_and_inject(
+            &validated.raw,
+            &authoring.model_bindings,
+            &self.config.agents,
+            &self.provider_diagnostics(),
+        ) {
+            Ok(executable) => executable,
+            Err(err) => return Ok((Some(err.to_string()), None)),
+        };
+        if let Err(err) = validate_workflow(executable) {
+            let validation_error = err.downcast_ref::<WorkflowValidationError>().cloned();
+            return Ok((Some(err.to_string()), validation_error));
         }
 
         match resolve_workflow_profiles(&self.paths, &validated.raw, self.config.desktop_language) {
@@ -3923,9 +5273,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AutoTemplateStore, CreateTaskInput,
-        OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate, WorkflowTemplateStore,
-        next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
+        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
+        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -3950,6 +5300,9 @@ mod tests {
     use crate::observability::touch_log_file_best_effort;
     use crate::runtime::{NodeState, RoundState, RunState, RuntimeExecutionPhase, TaskState};
     use crate::storage::{StoragePathConfig, read_json, sqlite::SearchIndex, write_json};
+    use crate::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindingError, WorkflowModelBindings,
+    };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -3986,6 +5339,7 @@ mod tests {
             pause_reason: reason,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {
@@ -4064,7 +5418,7 @@ mod tests {
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-a"));
 
-        assert!(
+        assert_eq!(
             app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
@@ -4074,7 +5428,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Converged
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
@@ -4090,8 +5445,8 @@ mod tests {
         )
         .unwrap();
         write_fixed_attempt_fixture(&app, RunStatus::Running, None, Some("execution-b"));
-        assert!(
-            !app.pause_attempt_runtime_state_if_active_execution(
+        assert_eq!(
+            app.pause_attempt_runtime_state_if_active_execution(
                 "task-001",
                 "run-001",
                 "round-001",
@@ -4100,7 +5455,8 @@ mod tests {
                 "execution-a",
                 PauseReason::RuntimeAbnormal,
             )
-            .unwrap()
+            .unwrap(),
+            AttemptRuntimePauseResult::Superseded
         );
         let run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         let node: NodeState = read_json(&app.paths.node_file(
@@ -4345,6 +5701,7 @@ mod tests {
             entry: "dev".to_string(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 profile: None,
                 permission_mode: permission_mode.map(str::to_string),
@@ -4416,7 +5773,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let app = test_app(repo_root);
+        let app = test_app_with_provider_capabilities(repo_root, serde_json::json!({}));
         let mut workflow = worker_workflow(None, None);
         let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
             panic!("expected worker workflow")
@@ -4441,6 +5798,73 @@ mod tests {
 
         assert!(!app.paths.run_dir(&created.task.id, &run_id).exists());
         assert!(app.paths.task_file(&created.task.id).exists());
+    }
+
+    #[test]
+    fn prepared_run_authoring_override_is_run_scoped() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = test_app_with_provider_capabilities(
+            repo_root,
+            serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "category": "model",
+                    "options": [{ "value": "sonnet", "name": "Sonnet" }]
+                }]
+            }),
+        );
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let created = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Scheduled override".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "use the scheduled model".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap();
+        let authoring_path = app.paths.workflow_file(&created.task.id);
+        let original_authoring = std::fs::read(authoring_path.as_std_path()).unwrap();
+        let mut scheduled_authoring = app.task_authoring_workflow(&created.task.id).unwrap();
+        scheduled_authoring.model_bindings.bindings[0].model_id = Some("sonnet".to_string());
+        scheduled_authoring.model_bindings.binding_revision += 1;
+
+        let scheduled = app
+            .prepare_run_with_authoring(&created.task.id, &scheduled_authoring)
+            .unwrap();
+        let scheduled_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &scheduled.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(scheduled_worker) = &scheduled_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(scheduled_worker.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            std::fs::read(authoring_path.as_std_path()).unwrap(),
+            original_authoring
+        );
+        drop(scheduled);
+
+        let manual = app.prepare_run(&created.task.id, None).unwrap();
+        let manual_snapshot: WorkflowDsl = read_json(
+            &app.paths
+                .workflow_snapshot_file(&created.task.id, &manual.run().id),
+        )
+        .unwrap();
+        let NodeDsl::Worker(manual_worker) = &manual_snapshot.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        assert_eq!(manual_worker.model, None);
     }
 
     #[test]
@@ -4494,6 +5918,7 @@ mod tests {
             pause_reason: Some(reason),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         }
     }
@@ -4640,11 +6065,11 @@ mod tests {
     }
 
     #[test]
-    fn ai_dynamic_stale_models_are_cleared_in_runtime_snapshot() {
+    fn ai_dynamic_stale_models_are_preserved_for_explicit_validation() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app_with_provider_capabilities(
+        let _app = test_app_with_provider_capabilities(
             repo_root,
             serde_json::json!({
                 "configOptions": [
@@ -4692,13 +6117,7 @@ mod tests {
             }],
             control: WorkflowControl::default(),
         };
-        let mut normalized_workflow = workflow;
-        let normalizations = app.normalize_workflow_models(&mut normalized_workflow);
-        assert_eq!(normalizations.len(), 1);
-        assert_eq!(normalizations[0].scope, "available-agent");
-        assert_eq!(normalizations[0].previous_model, "future-model");
-
-        let NodeDsl::AiDynamic(dynamic) = &normalized_workflow.nodes[0] else {
+        let NodeDsl::AiDynamic(dynamic) = &workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4707,12 +6126,12 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        assert!(validate_workflow(normalized_workflow).is_ok());
+        assert_eq!(available_agents[0].model.as_deref(), Some("future-model"));
+        assert!(validate_workflow(workflow).is_ok());
     }
 
     #[test]
-    fn workflow_template_and_task_authoring_persist_stale_models_as_unspecified() {
+    fn workflow_template_and_task_authoring_preserve_stale_model_ids() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -4794,7 +6213,10 @@ mod tests {
             templates: vec![WorkflowTemplate {
                 id: "custom".to_string(),
                 name: "Custom".to_string(),
+                is_built_in: false,
+                optional_entry_stage: None,
                 workflow: stale_workflow.clone(),
+                model_bindings: WorkflowModelBindings::default(),
                 created_at: "2026-07-28T00:00:00Z".to_string(),
                 updated_at: "2026-07-28T00:00:00Z".to_string(),
             }],
@@ -4820,14 +6242,14 @@ mod tests {
             else {
                 unreachable!();
             };
-            assert_eq!(available_agents[0].model, None);
+            assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
             let NodeDsl::AiDynamic(fixed) = &workflow.nodes[1] else {
                 unreachable!();
             };
             let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
                 unreachable!();
             };
-            assert_eq!(*model, None);
+            assert_eq!(model.as_deref(), Some("gpt-5.4"));
         }
 
         let task = app
@@ -4840,9 +6262,9 @@ mod tests {
                 workflow_template_id: None,
             })
             .unwrap();
-        let persisted_authoring: WorkflowDsl =
+        let persisted_authoring: TaskAuthoringWorkflow =
             read_json(&app.paths.workflow_file(&task.task.id)).unwrap();
-        let NodeDsl::AiDynamic(route) = &persisted_authoring.nodes[0] else {
+        let NodeDsl::AiDynamic(route) = &persisted_authoring.workflow.nodes[0] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Dynamic {
@@ -4851,14 +6273,71 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(available_agents[0].model, None);
-        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.nodes[1] else {
+        assert_eq!(available_agents[0].model.as_deref(), Some("gpt-5.4"));
+        let NodeDsl::AiDynamic(fixed) = &persisted_authoring.workflow.nodes[1] else {
             unreachable!();
         };
         let AiDynamicAgentStrategy::Fixed { model, .. } = &fixed.agent_strategy else {
             unreachable!();
         };
-        assert_eq!(*model, None);
+        assert_eq!(model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn save_task_workflow_rejects_duplicate_model_binding_slots() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap());
+        write_json(
+            &app.paths.task_file("task-001"),
+            &TaskState::new("task-001"),
+        )
+        .unwrap();
+        let workflow = WorkflowDsl {
+            version: VERSION.to_string(),
+            id: "workflow-duplicate-bindings".to_string(),
+            entry: "dev".to_string(),
+            control: WorkflowControl::default(),
+            nodes: vec![NodeDsl::Worker(WorkerNode {
+                id: "dev".to_string(),
+                execution_slot_id: Some("slot-dev".to_string()),
+                provider: None,
+                model: None,
+                profile: None,
+                goal: None,
+                output: None,
+                success_condition: None,
+                permission_mode: None,
+                config_options: BTreeMap::new(),
+                manual_check: None,
+                prompt_envelope: Default::default(),
+            })],
+            edges: Vec::new(),
+        };
+        let duplicate = WorkerModelBinding {
+            execution_slot_id: "slot-dev".to_string(),
+            agent_id: "agent-a".to_string(),
+            model_id: None,
+            permission_mode_id: None,
+            config_options: BTreeMap::new(),
+        };
+        let bindings = WorkflowModelBindings {
+            definition_revision: String::new(),
+            binding_revision: 0,
+            bindings: vec![duplicate.clone(), duplicate],
+        };
+
+        let error = app
+            .save_task_workflow_with_bindings("task-001", workflow, bindings)
+            .unwrap_err();
+        let binding_error = error.downcast_ref::<WorkflowModelBindingError>().unwrap();
+
+        assert_eq!(
+            binding_error,
+            &WorkflowModelBindingError::BindingDuplicate {
+                execution_slot_id: "slot-dev".to_string(),
+            }
+        );
+        assert!(!app.paths.workflow_file("task-001").exists());
     }
 
     #[test]
@@ -4957,6 +6436,355 @@ mod tests {
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
         app.emit_lifecycle_event(sample_run_paused_event());
+    }
+
+    #[test]
+    fn metrics_fact_producer_is_explicitly_gated() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let node_started = |repo_root: String| RuntimeLifecycleEvent::NodeStarted {
+            task_id: "task-001".into(),
+            task_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            run_id: "run-001".into(),
+            run_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            round_id: "round-001".into(),
+            round_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            round_index: Some(1),
+            node_id: "node-001".into(),
+            node_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            attempt_id: "attempt-002".into(),
+            repo_root,
+            seq: Some(1),
+            node_name: Some("worker".into()),
+            agent_type: Some("provider".into()),
+            resolved_model: Some("model".into()),
+            started_at: "2026-08-01T00:00:00Z".into(),
+            attempt_dir: None,
+            predecessor: None,
+            metrics_unit_kind: None,
+            child_run_id: None,
+        };
+        let disabled_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let disabled_callback = disabled_seen.clone();
+        let disabled =
+            test_app(repo_root.clone()).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+                if matches!(event, RuntimeLifecycleEvent::MetricsFact(_)) {
+                    disabled_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }));
+        disabled.emit_lifecycle_event(node_started(disabled.paths.repo_root.to_string()));
+        assert_eq!(disabled_seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_callback = seen.clone();
+        let app = test_app(repo_root).with_metrics_collection_enabled(true);
+        app.lifecycle_bus
+            .subscribe_inline(app.create_metrics_fact_producer());
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if matches!(event, RuntimeLifecycleEvent::MetricsFact(_)) {
+                seen_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+        app.emit_lifecycle_event(node_started(app.paths.repo_root.to_string()));
+        for _ in 0..50 {
+            if seen.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn metrics_fact_producer_uses_event_workspace_paths() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let producer_root =
+            Utf8PathBuf::from_path_buf(temp.path().join("producer-workspace")).unwrap();
+        let event_root = Utf8PathBuf::from_path_buf(temp.path().join("event-workspace")).unwrap();
+        std::fs::create_dir_all(producer_root.as_std_path()).unwrap();
+        std::fs::create_dir_all(event_root.as_std_path()).unwrap();
+        let app = test_app(producer_root.clone()).with_metrics_collection_enabled(true);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_callback = seen.clone();
+        app.lifecycle_bus
+            .subscribe_inline(app.create_metrics_fact_producer());
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_callback.lock().unwrap().push(fact);
+            }
+        }));
+        let node_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeStarted {
+            task_id: "task-001".into(),
+            task_uuid: Some(task_uuid.clone()),
+            run_id: "run-001".into(),
+            run_uuid: Some(run_uuid),
+            round_id: "round-001".into(),
+            round_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            round_index: Some(1),
+            node_id: "node-001".into(),
+            node_uuid: Some(node_uuid.clone()),
+            attempt_id: "attempt-002".into(),
+            repo_root: event_root.to_string(),
+            seq: Some(1),
+            node_name: Some("worker".into()),
+            agent_type: Some("provider".into()),
+            resolved_model: Some("model".into()),
+            started_at: "2026-08-01T00:00:00Z".into(),
+            attempt_dir: None,
+            predecessor: None,
+            metrics_unit_kind: None,
+            child_run_id: None,
+        });
+        for _ in 0..50 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].workspace, event_root.to_string());
+        assert_eq!(facts[0].attempt_index, Some(2));
+        drop(facts);
+        let event_snapshot = crate::storage::GoldBandPaths::new(event_root)
+            .run_dir("task-001", "run-001")
+            .join("observability")
+            .join(&task_uuid)
+            .join(&node_uuid)
+            .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        for _ in 0..50 {
+            if event_snapshot.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(event_snapshot.exists());
+        assert!(
+            !producer_root
+                .join("tasks/task-001/runs/run-001/observability")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn metrics_fact_producer_preserves_per_prompt_model_usage_segments() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let attempt_dir = repo_root.join("attempt");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let journal = attempt_dir.join("acp.prompt-usage.jsonl");
+        for (seq, provider, model, tokens) in [
+            (1, "provider-a", "model-a", 10),
+            (2, "provider-b", "model-b", 20),
+            (3, "provider-a", "model-a", 30),
+        ] {
+            let turn = format!("turn-{seq}");
+            crate::acp::usage::append_prompt_started(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:00Z",
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+            crate::acp::usage::append_prompt_completed(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:01Z",
+                None,
+                &crate::acp::usage::AcpPromptTokenUsage {
+                    input_tokens: Some(tokens),
+                    total_tokens: Some(tokens),
+                    ..Default::default()
+                },
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_callback = seen.clone();
+        let app = test_app(repo_root.clone()).with_metrics_collection_enabled(true);
+        app.lifecycle_bus
+            .subscribe_inline(app.create_metrics_fact_producer());
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event
+                && fact.event_type
+                    == crate::app::observability::LifecycleEventType::ExecutionCompleted
+            {
+                seen_callback.lock().unwrap().push(fact);
+            }
+        }));
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeCompleted {
+            task_id: "task-001".into(),
+            task_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            run_id: "run-001".into(),
+            run_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            round_id: "round-001".into(),
+            round_uuid: Some(uuid::Uuid::new_v4().to_string()),
+            round_index: Some(1),
+            node_id: "node-001".into(),
+            node_uuid: Some(execution_id.clone()),
+            attempt_id: "attempt-001".into(),
+            repo_root: repo_root.to_string(),
+            seq: Some(1),
+            node_name: "worker".into(),
+            agent_type: Some("provider-a".into()),
+            resolved_model: Some("model-a".into()),
+            started_at: "2026-08-01T00:00:00Z".into(),
+            finished_at: Some("2026-08-01T00:00:01Z".into()),
+            outcome: "SUCCESS".into(),
+            attempt_dir: attempt_dir.to_string(),
+            suppress_sentinel: false,
+            metrics_unit_kind: None,
+            child_run_id: None,
+        });
+        for _ in 0..50 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let usages = facts[0].model_usages.as_ref().unwrap();
+        assert_eq!(facts[0].attempt_id.as_deref(), Some(execution_id.as_str()));
+        assert_eq!(facts[0].attempt_index, Some(1));
+        assert_ne!(facts[0].execution_id, execution_id);
+        assert_eq!(usages.len(), 2);
+        assert_eq!(usages[0].model, "model-a");
+        assert_eq!(usages[0].usage.total_tokens, Some(40));
+        assert_eq!(usages[1].model, "model-b");
+        assert_eq!(usages[1].usage.total_tokens, Some(20));
+        assert_eq!(facts[0].usage.as_ref().unwrap().total_tokens, Some(60));
+    }
+
+    #[test]
+    fn direct_usage_segments_are_filtered_by_baseline() {
+        let temp = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let journal = attempt_dir.join("acp.prompt-usage.jsonl");
+        for (seq, provider, model, tokens) in [
+            (1, "provider-a", "model-a", 10),
+            (2, "provider-b", "model-b", 20),
+        ] {
+            let turn = format!("turn-{seq}");
+            crate::acp::usage::append_prompt_started(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:00Z",
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+            crate::acp::usage::append_prompt_completed(
+                &journal,
+                &turn,
+                seq,
+                "2026-08-01T00:00:01Z",
+                None,
+                &crate::acp::usage::AcpPromptTokenUsage {
+                    input_tokens: Some(tokens),
+                    total_tokens: Some(tokens),
+                    ..Default::default()
+                },
+                Some(provider),
+                Some(model),
+            )
+            .unwrap();
+        }
+        assert_eq!(App::direct_usage_baseline(Some(attempt_dir.as_path())), 2);
+        let after = App::direct_usage_segments_after(Some(attempt_dir.as_path()), 1);
+        assert_eq!(after.len(), 1);
+        let usages = App::direct_model_usages_from_segments(&after, None, None);
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].model, "model-b");
+        assert_eq!(usages[0].usage.total_tokens, Some(20));
+    }
+
+    #[test]
+    fn direct_metrics_is_follow_up_detects_history_after_turn_ends() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root).with_metrics_collection_enabled(true);
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let attempt_key = format!("direct:{task_uuid}");
+        let attempt_path = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability")
+            .join(&task_uuid)
+            .join(&task_uuid)
+            .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
+
+        assert!(!app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
+        app.begin_metrics_turn(
+            attempt_key.clone(),
+            super::ActiveMetricTurn::new(task_uuid.clone(), task_uuid.clone(), 1, 0),
+        );
+        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
+        app.end_metrics_turn(&attempt_key);
+
+        let mut state = super::observability::ExecutionObservabilityState::default();
+        state.next_revision();
+        super::observability::persist_observability_snapshot_best_effort(
+            attempt_path.clone(),
+            state,
+        );
+        for _ in 0..100 {
+            if super::observability::load_observability_snapshot(&attempt_path).event_revision > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
+    }
+
+    #[test]
+    fn observability_update_starts_from_memory_without_reading_snapshot() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        let snapshot_path = Utf8PathBuf::from_path_buf(
+            temp.path()
+                .join("observability")
+                .join("observability.snapshot.json"),
+        )
+        .unwrap();
+        let mut persisted = super::observability::ExecutionObservabilityState::recovered();
+        persisted.event_revision = 41;
+        write_json(&snapshot_path, &persisted).unwrap();
+
+        let first = app.update_observability_state(
+            "execution-with-existing-snapshot",
+            snapshot_path.clone(),
+            |state| {
+                state.next_revision();
+            },
+        );
+        let second = app.update_observability_state(
+            "execution-with-existing-snapshot",
+            snapshot_path,
+            |state| {
+                state.next_revision();
+            },
+        );
+
+        assert_eq!(first.event_revision, 1);
+        assert_eq!(first.collection_state_recovered, None);
+        assert_eq!(second.event_revision, 2);
     }
 
     #[test]
@@ -5133,6 +6961,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
                 execution: Default::default(),
             },
         )
@@ -5602,6 +7431,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
                 execution: Default::default(),
             },
         )

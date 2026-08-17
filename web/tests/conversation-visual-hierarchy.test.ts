@@ -27,15 +27,16 @@ describe('conversation visual hierarchy contract', () => {
     expect(dialog).toContain('<div className="px-5 pt-1 pb-2">');
     expect(dialog).toContain('[filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]');
     expect(dialog).not.toContain('focus-within:[filter:');
-    expect(dialog).toContain('absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full');
-    expect(dialog).toContain('rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
-    expect(dialog).toContain("before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']");
-    expect(dialog).toContain("after:-right-2.5 after:bottom-px after:size-2.5 after:rounded-bl-md after:border-b after:border-l after:border-border after:content-['']");
+    expect(dialog).toContain('absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full');
+    expect(dialog).toContain('rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
+    expect(dialog).toContain("before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']");
+    expect(dialog).not.toContain('after:border-b after:border-l after:border-border');
     expect(dialog).toContain('composerInfoTabTarget === "todo"');
     expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "queue"}');
     expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "composer"}');
     expect(composer).toContain("integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none'");
     expect(composer).toContain('bg-card !shadow-none transition-colors');
+    expect(composer).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
     expect(composer).not.toContain('focus-within:border-primary/40');
     expect(composer).not.toContain('focus-within:ring-2 focus-within:ring-primary/10');
     expect(quickComposer).not.toContain('focus-within:border-primary/40');
@@ -62,7 +63,9 @@ describe('conversation visual hierarchy contract', () => {
   it('places workspace headings above task titles and keeps time metadata subordinate', () => {
     const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
 
-    expect(sidebar).toContain('mb-4');
+    expect(sidebar).toContain('data-conversation-workspace-group={ws.projectId}');
+    expect(sidebar).toContain('className="mb-2"');
+    expect(sidebar).not.toContain('className="mb-4"');
     expect(sidebar).toContain('text-sm font-semibold leading-5 text-sidebar-foreground/80');
     expect(sidebar).toContain('truncate text-sm');
     expect(sidebar.match(/className="space-y-0\.5"/gu) ?? []).toHaveLength(2);

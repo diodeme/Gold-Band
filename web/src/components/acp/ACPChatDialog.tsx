@@ -19,7 +19,9 @@ import {
   CircleAlert,
   CircleStop,
   Clock,
+  Code2,
   Copy,
+  Eye,
   FileText,
   Image as ImageIcon,
   ListTodo,
@@ -83,6 +85,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
+  createHiddenPromptSectionWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
   type AcpAttemptWorkspaceLocator,
@@ -95,6 +98,7 @@ import {
   loadSystemPromptViewMode,
   saveSystemPromptViewMode,
   SYSTEM_PROMPT_VIEW_MODES,
+  type SystemPromptViewMode,
 } from "@/lib/system-prompt-view-pref";
 import { goldThemedScrollbarClassName } from "@/lib/themed-scrollbar";
 import { BoundedLruCache } from "@/lib/bounded-lru-cache";
@@ -110,6 +114,7 @@ import {
 import {
   createAcpSessionConfigViewModel,
   findAcpConfigOption,
+  type AcpProviderConfigCatalog,
   type AcpSessionConfigViewModel,
 } from "@/lib/acp-session-config";
 import {
@@ -126,7 +131,11 @@ import {
   useWindowDragGuard,
   type AttachmentItem,
 } from "@/lib/attachment-service";
-import { useAcpComposerDraft, type AcpComposerDraft } from "@/lib/acp-composer-draft";
+import {
+  queuedPromptToAcpComposerDraft,
+  useAcpComposerDraft,
+  type AcpComposerDraft,
+} from "@/lib/acp-composer-draft";
 import {
   addComposerQuote,
   createUserPromptSubmission,
@@ -145,7 +154,10 @@ import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
 import { AcpAvatar, AcpAvatarWithTime } from "@/components/acp/AcpAvatarWithTime";
 import { AcpUsagePanel, hasAcpUsagePanelContent } from "@/components/acp/AcpUsagePanel";
-import { HiddenPromptMessageContent } from "@/components/acp/HiddenPromptMessageContent";
+import {
+  HiddenPromptMessageContent,
+  type HiddenPromptSectionOpenRequest,
+} from "@/components/acp/HiddenPromptMessageContent";
 import { AcpProcessingSpinner } from "@/components/acp/AcpProcessingSpinner";
 import { WorkspaceFileEditor } from "@/components/workspace/files/WorkspaceFileEditor";
 import {
@@ -185,9 +197,11 @@ import {
 } from "@/lib/acp-runtime-composer-state";
 import {
   hasAcpSessionMetadata,
+  isAcpSessionLoadingSurfaceState,
   isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
   missingAcpSessionRetryDelay,
+  resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
@@ -202,8 +216,10 @@ import {
   respondElicitation,
   continueConversationRuntime,
   recoverConversationRuntime,
+  reorderConversationQueuedPrompts,
+  restoreConversationQueuedPrompt,
+  statAttachmentFiles,
   submitConversationPrompt,
-  updateConversationQueuedPrompt,
   useConversationQueuedPrompt,
   setAcpSessionModel,
   setAcpSessionConfigOption,
@@ -272,6 +288,10 @@ export type AcpRuntimeComposerContext = {
   pauseMessage?: string | null;
   runtimeError?: string | null;
   onRepair?: () => void;
+  supersededSessionNavigation?: {
+    href: string;
+    onNavigate: () => void;
+  };
 };
 
 export interface AcpDirectSessionHeaderProps {
@@ -281,8 +301,17 @@ export interface AcpDirectSessionHeaderProps {
 
 export type AcpInitialSessionQueryState = "loading" | "success" | "error";
 
+function isAcpSessionConfigValueUnavailableError(error: unknown) {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && (error as { code?: unknown }).code === "acp.session-config-value-unavailable",
+  );
+}
+
 interface ACPChatDialogProps {
   session?: AcpSessionVm | null;
+  providerCatalog?: AcpProviderConfigCatalog | null;
   sessionEstablished?: boolean;
   sessionReferenceId?: string | null;
   projectId: string;
@@ -316,6 +345,8 @@ interface ACPChatDialogProps {
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
+  wallpaperSurface?: boolean;
+  worktreePath?: string | null;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -594,6 +625,12 @@ export function storeAcpBranchViewState(sessionKey: string, state: AcpBranchView
   storeAcpResourcePart(sessionKey, { viewState: state });
 }
 
+export function shouldInitiallyFollowAcpBranch(
+  state?: Pick<AcpBranchViewState, 'atBottom'> | null,
+) {
+  return state?.atBottom ?? true;
+}
+
 export function restoreAcpLoadedEvents(
   sessionKey: string,
   events: AcpUiEventVm[],
@@ -727,6 +764,7 @@ export function reconcileAcpEventPageForUpdate(
 export function ACPChatDialog(
   {
     session,
+    providerCatalog,
     sessionEstablished = false,
     sessionReferenceId,
     projectId,
@@ -760,6 +798,8 @@ export function ACPChatDialog(
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
+    wallpaperSurface = false,
+    worktreePath,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -939,9 +979,11 @@ export function ACPChatDialog(
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
   const [queueMutationPending, setQueueMutationPending] = useState(false);
+  const [queueRestorePending, setQueueRestorePending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
   const sessionRefreshSeqRef = useRef(0);
   const configGenerationRef = useRef(0);
+  const configMutationGenerationRef = useRef(0);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const paginationAnchorRef = useRef<{ key: string; top: number } | null>(null);
   const pendingLiveEventsRef = useRef(new AcpLatestWinsEventBuffer<AcpUiEventVm>());
@@ -1197,11 +1239,13 @@ export function ACPChatDialog(
   const initializingSessionShell = useMemo(
     () =>
       showInitializingSessionShell &&
-      runtimeActiveFromContext &&
       !baseSession &&
       !liveSessionShell &&
       !establishedSessionShell
-        ? createLiveAcpSessionShell(loadedEvents, "running")
+        ? createLiveAcpSessionShell(
+            loadedEvents,
+            runtimeActiveFromContext ? "running" : "completed",
+          )
         : null,
     [
       baseSession,
@@ -1258,8 +1302,8 @@ export function ACPChatDialog(
     [agentCommands.commands, prompt],
   );
   const sessionConfigViewModel = useMemo(
-    () => createAcpSessionConfigViewModel(effective?.config),
-    [effective?.config],
+    () => createAcpSessionConfigViewModel(effective?.config, providerCatalog),
+    [effective?.config, providerCatalog],
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
@@ -1307,6 +1351,13 @@ export function ACPChatDialog(
   );
   const todoEntries = timelineProjection.todoEntries;
   const timeline = useStableAcpTimeline(timelineProjection.timeline);
+  const timelineSurfaceState = resolveAcpTimelineSurfaceState({
+    hasTimelineItems: timeline.length > 0,
+    initialSessionLoading: initialSessionQueryState === "loading",
+    runtimeActive: runtimeActiveFromContext,
+    initializationOwner: Boolean(showInitializingSessionShell),
+    sending,
+  });
   const acpSessionActive = isSessionActiveStatus(effective?.status);
   const sessionActive = acpSessionActive || runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle" || promptCommandPending;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
@@ -1445,6 +1496,7 @@ export function ACPChatDialog(
     hasResponseAfterTurn: hasTurnResponse,
     hasTimelineItems: timeline.length > 0,
     hasEffectiveEvents: effectiveEvents.length > 0,
+    initialTimelinePending: timelineSurfaceState === 'pending',
     timelineProcessingKind: processingKindFromTimeline(composerLatestEvent, false),
   });
   const stopInProgress = composerState.stopInProgress;
@@ -1458,13 +1510,28 @@ export function ACPChatDialog(
   const showComposerStatus = composerState.showStatus;
   const composerStatusLabel = processingLabel(t, composerProcessingKind);
   const composerPlaceholder = composerPlaceholderText(composerState, t);
-  const canSubmitPrompt = composerState.canSubmit;
+  const supersededBy = localLifecycle?.composer.supersededBy;
+  const supersededSession = composerState.mode === 'session-superseded'
+    && supersededBy
+    && runtimeComposerContext?.supersededSessionNavigation
+    ? {
+        label: `${supersededBy.nodeId} / ${supersededBy.attemptId}`,
+        ...runtimeComposerContext.supersededSessionNavigation,
+      }
+    : null;
+  const canSubmitPrompt = composerState.canSubmit
+    && !queueSubmitPending
+    && !queueRestorePending;
   const promptQueue = localRuntimeLifecycle?.promptQueue
     ?? runtimeComposerContext?.lifecycle?.promptQueue
     ?? null;
   const promptQueueVisible = Boolean(promptQueue?.items.length);
+  const composerDraftOccupied = prompt.length > 0
+    || pendingAttachments.length > 0
+    || quotes.length > 0;
   const showComposerInfoPanel = showComposerStatus
     || composerSessionSeconds != null
+    || Boolean(worktreePath)
     || hasAcpUsagePanelContent(effective?.usage);
   const composerInfoTabTarget = !showComposerInfoPanel
     ? null
@@ -1611,6 +1678,27 @@ export function ACPChatDialog(
     });
   }, [componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeSessionUpdate, sessionIdentity]);
 
+  const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
+    if (!isAcpSessionConfigValueUnavailableError(error)) return;
+    try {
+      const updated = await getAcpSession(
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+        latestSessionRef.current,
+        outerNodeId,
+        outerAttemptId,
+      );
+      if (updated) applySessionUpdate(updated, "config-unavailable-refresh");
+    } catch {
+      // Preserve the original structured command error if the recovery read also fails.
+    }
+  }, [applySessionUpdate, attemptId, branchId, effectiveEventPageSize, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
+
   const emitLifecycleSnapshot = useCallback((lifecycle: ConversationAttemptLifecycleVm | null | undefined, sessionSnapshot?: AcpSessionVm | null) => {
     if (!lifecycle) return;
     onLifecycleSnapshot?.({
@@ -1639,7 +1727,10 @@ export function ACPChatDialog(
 
   const patchSessionConfig = useCallback((patch: Partial<NonNullable<AcpSessionVm["config"]>>) => {
     const base = latestSessionRef.current;
-    if (!base) return;
+    if (!base) return null;
+    const previousConfig = base.config ? { ...base.config } : null;
+    const generation = configMutationGenerationRef.current + 1;
+    configMutationGenerationRef.current = generation;
     const updated: AcpSessionVm = {
       ...base,
       config: {
@@ -1648,6 +1739,23 @@ export function ACPChatDialog(
       },
     };
     configGenerationRef.current += 1;
+    latestSessionRef.current = updated;
+    setCurrentSession(updated);
+    return { generation, patch, previousConfig };
+  }, []);
+
+  const rollbackSessionConfig = useCallback((mutation: NonNullable<ReturnType<typeof patchSessionConfig>>) => {
+    if (configMutationGenerationRef.current !== mutation.generation) return;
+    const base = latestSessionRef.current;
+    if (!base) return;
+    const config = { ...(base.config ?? {}) };
+    const mutableConfig = config as Record<string, unknown>;
+    for (const key of Object.keys(mutation.patch)) {
+      const previousValue = (mutation.previousConfig as Record<string, unknown> | null)?.[key];
+      if (previousValue === undefined) delete mutableConfig[key];
+      else mutableConfig[key] = previousValue;
+    }
+    const updated = { ...base, config };
     latestSessionRef.current = updated;
     setCurrentSession(updated);
   }, []);
@@ -1660,7 +1768,7 @@ export function ACPChatDialog(
       "model",
       modelId,
     ) : null;
-    patchSessionConfig({
+    const mutation = patchSessionConfig({
       modelOverrideId: modelId,
       ...(modelId ? { currentModelId: modelId, currentModelName: selected?.name ?? modelId } : {}),
     });
@@ -1683,6 +1791,8 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session model:", error);
       });
   }, [
@@ -1692,9 +1802,11 @@ export function ACPChatDialog(
     outerAttemptId,
     outerNodeId,
     patchSessionConfig,
+    rollbackSessionConfig,
     roundId,
     runId,
     taskId,
+    t,
   ]);
 
   const handleAcpSessionPermissionModeChange = useCallback((permissionModeId: string | null) => {
@@ -1705,7 +1817,7 @@ export function ACPChatDialog(
       "mode",
       permissionModeId,
     ) : null;
-    patchSessionConfig({
+    const mutation = patchSessionConfig({
       permissionModeOverrideId: permissionModeId,
       ...(permissionModeId ? { currentModeId: permissionModeId, currentModeName: selected?.name ?? permissionModeId } : {}),
     });
@@ -1728,6 +1840,8 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session permission mode:", error);
       });
   }, [
@@ -1737,9 +1851,11 @@ export function ACPChatDialog(
     outerAttemptId,
     outerNodeId,
     patchSessionConfig,
+    rollbackSessionConfig,
     roundId,
     runId,
     taskId,
+    t,
   ]);
 
   const handleAcpSessionConfigOptionChange = useCallback((optionId: string, optionValue: string | null) => {
@@ -1747,7 +1863,7 @@ export function ACPChatDialog(
     const next = { ...current };
     if (optionValue) next[optionId] = optionValue;
     else delete next[optionId];
-    patchSessionConfig({ configOptionOverrides: next });
+    const mutation = patchSessionConfig({ configOptionOverrides: next });
     setAcpSessionConfigOption(
       projectId,
       taskId,
@@ -1768,9 +1884,11 @@ export function ACPChatDialog(
       })
       .catch((error) => {
         configGenerationRef.current = Math.max(0, configGenerationRef.current - 1);
+        if (mutation) rollbackSessionConfig(mutation);
+        setSendError(displayAppError(t, error));
         console.error("Failed to set ACP session config option:", error);
       });
-  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, roundId, runId, taskId]);
+  }, [applySessionUpdate, attemptId, nodeId, outerAttemptId, outerNodeId, patchSessionConfig, projectId, rollbackSessionConfig, roundId, runId, taskId, t]);
 
   const applyEventUpdates = useCallback((updates: AcpUiEventVm[]) => {
     const normalizedEvents = updates
@@ -2191,6 +2309,7 @@ export function ACPChatDialog(
                 ...incoming.config,
                 modelOverrideId: cfg.modelOverrideId,
                 permissionModeOverrideId: cfg.permissionModeOverrideId,
+                configOptionOverrides: cfg.configOptionOverrides,
                 currentModelId: cfg.currentModelId,
                 currentModelName: cfg.currentModelName,
                 currentModeId: cfg.currentModeId,
@@ -2707,9 +2826,11 @@ export function ACPChatDialog(
   const submitPrompt = async (
     submission: ConversationPromptInput,
     draftSnapshot?: AcpComposerDraft,
+    target: "conversation" | "runtime-continue" = "conversation",
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes } = submission;
-    const enqueueing = composerState.submitTarget === "queue-prompt";
+    const enqueueing = target === "conversation"
+      && composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
       if (queueSubmitPending || cancelling || stopInProgress) return;
       setQueueSubmitPending(true);
@@ -2759,9 +2880,9 @@ export function ACPChatDialog(
         }
         setQueueSubmitPending(false);
       }
-      return;
+      return submissionAccepted;
     }
-    if (sending || activeAwaitingResponse || sessionActive || cancelling) return;
+    if (sending || activeAwaitingResponse || sessionActive || cancelling) return false;
     setSending(true);
     setPromptCommandPending(true);
     setSendError(null);
@@ -2770,7 +2891,7 @@ export function ACPChatDialog(
       attPaths = await resolveAttachmentPaths();
     } catch {
       setSending(false);
-      return;
+      return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
     const optimisticEvent = optimisticUserEvent(
@@ -2786,7 +2907,7 @@ export function ACPChatDialog(
     if (draftSnapshot && !detachedDraft) {
       setSending(false);
       setPromptCommandPending(false);
-      return;
+      return false;
     }
     if (detachedDraft) setComposerContextError(null);
     if (localLifecycle?.promptQueue) {
@@ -2804,20 +2925,34 @@ export function ACPChatDialog(
     updateOptimisticEvents((current) => [...current, optimisticEvent]);
     let submissionAccepted = false;
     try {
-      const result = await submitConversationPrompt(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        submission,
-        promptId,
-        effective ?? null,
-        outerNodeId,
-        outerAttemptId,
-        attPaths.length > 0 ? attPaths : undefined,
-      );
+      const result = target === "runtime-continue"
+        ? await continueConversationRuntime(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            outerNodeId,
+            outerAttemptId,
+            submission,
+            promptId,
+            attPaths.length > 0 ? attPaths : undefined,
+          )
+        : await submitConversationPrompt(
+            projectId,
+            taskId,
+            runId,
+            roundId,
+            nodeId,
+            attemptId,
+            submission,
+            promptId,
+            effective ?? null,
+            outerNodeId,
+            outerAttemptId,
+            attPaths.length > 0 ? attPaths : undefined,
+          );
       const updated = result.session ?? null;
       if (updated) applySessionUpdate(updated);
       if (result.lifecycle) {
@@ -2826,7 +2961,17 @@ export function ACPChatDialog(
         );
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
-      if (result.kind === "rejected") {
+      if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(optimisticEvent.timestamp);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "processing" }
+              : event,
+          ),
+        );
+      } else if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
         setActiveTurnPrompt(null);
@@ -2892,9 +3037,15 @@ export function ACPChatDialog(
         updateOptimisticEvents((current) =>
           current.filter((event) => event.id !== optimisticEvent.id),
         );
-        return;
+        return true;
       }
-      setSendError(displayAppError(t, error));
+      await refreshSessionAfterConfigUnavailable(error);
+      const message = displayAppError(t, error);
+      if (target === "runtime-continue") {
+        setRuntimeContinueError(message);
+      } else {
+        setSendError(message);
+      }
       setAwaitingResponse(false);
       setActiveTurnPrompt(null);
       setActiveTurnPromptId(null);
@@ -2917,6 +3068,7 @@ export function ACPChatDialog(
       setSending(false);
       setPromptCommandPending(false);
     }
+    return submissionAccepted;
   };
 
   const applyQueueLifecycle = (lifecycle?: ConversationAttemptLifecycleVm | null) => {
@@ -2927,14 +3079,49 @@ export function ACPChatDialog(
     emitLifecycleSnapshot(lifecycle, effective ?? null);
   };
 
-  const editQueuedPrompt = async (itemId: string, content: string) => {
-    if (queueMutationPending) return;
+  const restoreQueuedPrompt = async (itemId: string) => {
+    if (queueMutationPending || queueSubmitPending || composerDraftOccupied) return;
+    setQueueMutationPending(true);
+    setQueueRestorePending(true);
+    setSendError(null);
+    try {
+      const result = await restoreConversationQueuedPrompt(
+        projectId, taskId, runId, roundId, nodeId, attemptId,
+        itemId, outerNodeId, outerAttemptId,
+      );
+      applyQueueLifecycle(result.lifecycle);
+      const restoredDraft = queuedPromptToAcpComposerDraft(result.draft);
+      if (!composerDraft.restoreIfEmpty(restoredDraft)) {
+        setSendError(t('acp.promptQueue.restoreDraftConflict'));
+        return;
+      }
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+      if (result.draft.attachmentPaths.length > 0) {
+        void statAttachmentFiles(result.draft.attachmentPaths).then((fileRefs) => {
+          const enrichedDraft = queuedPromptToAcpComposerDraft(result.draft, fileRefs);
+          if (!composerDraft.replaceIfUnchanged(restoredDraft, enrichedDraft)) {
+            revokeAttachmentPreviewUrls(enrichedDraft.attachments);
+          }
+        }).catch(() => {
+          // The canonical paths remain in the draft; missing preview metadata must not discard them.
+        });
+      }
+    } catch (error) {
+      setSendError(displayAppError(t, error));
+    } finally {
+      setQueueMutationPending(false);
+      setQueueRestorePending(false);
+    }
+  };
+
+  const reorderQueuedPrompts = async (orderedItemIds: string[], expectedRevision: number) => {
+    if (queueMutationPending || queueSubmitPending) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
-      const result = await updateConversationQueuedPrompt(
+      const result = await reorderConversationQueuedPrompts(
         projectId, taskId, runId, roundId, nodeId, attemptId,
-        itemId, content, outerNodeId, outerAttemptId,
+        expectedRevision, orderedItemIds, outerNodeId, outerAttemptId,
       );
       applyQueueLifecycle(result.lifecycle);
     } catch (error) {
@@ -2946,7 +3133,7 @@ export function ACPChatDialog(
   };
 
   const deleteQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending) return;
+    if (queueMutationPending || queueSubmitPending) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
@@ -2963,7 +3150,7 @@ export function ACPChatDialog(
   };
 
   const useQueuedPrompt = async (itemId: string) => {
-    if (queueMutationPending || sessionActive) return;
+    if (queueMutationPending || queueSubmitPending || sessionActive) return;
     setQueueMutationPending(true);
     setSendError(null);
     try {
@@ -2981,10 +3168,9 @@ export function ACPChatDialog(
   };
 
   const send = async () => {
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
+    if (!canSubmitPrompt) return;
     const draftSnapshot = composerDraft.draft;
-    const submission = createUserPromptSubmission(trimmed, quotes);
+    const submission = createUserPromptSubmission(prompt, quotes);
     if (composerState.submitTarget !== "none") {
       await submitPrompt(submission, draftSnapshot);
     }
@@ -3118,6 +3304,23 @@ export function ACPChatDialog(
     setRuntimeContinueError(null);
     setRuntimeContinueSubmitting(true);
     try {
+      if (
+        localLifecycle?.continueKind === 'continue-current-attempt'
+        && canSubmitPrompt
+      ) {
+        const accepted = await submitPrompt(
+          createUserPromptSubmission(prompt, quotes),
+          composerDraft.draft,
+          "runtime-continue",
+        );
+        if (!accepted) {
+          setRuntimeContinueSubmitting(false);
+          return;
+        }
+        setRuntimeStopAccepted(false);
+        onSessionStopped?.();
+        return;
+      }
       const recoveryRevision = localLifecycle?.runtime.revision;
       let result;
       if (localLifecycle?.continueKind === 'recover-completed-attempt') {
@@ -3152,6 +3355,7 @@ export function ACPChatDialog(
       setRuntimeStopAccepted(false);
       onSessionStopped?.();
     } catch (error) {
+      await refreshSessionAfterConfigUnavailable(error);
       setRuntimeContinueError(displayAppError(t, error));
       setRuntimeContinueSubmitting(false);
     }
@@ -3218,6 +3422,7 @@ export function ACPChatDialog(
     elicitationId: string,
     content?: Record<string, unknown>,
   ) => {
+    setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
       next.set(elicitationId, content ?? {});
@@ -3237,16 +3442,18 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-    } catch {
+    } catch (error) {
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
         return next;
       });
+      setSendError(displayAppError(t, error));
     }
   };
 
   const declineElicitation = async (elicitationId: string) => {
+    setSendError(null);
     setAnsweredElicitations((current) => {
       const next = new Map(current);
       next.set(elicitationId, { __declined: true });
@@ -3266,12 +3473,13 @@ export function ACPChatDialog(
         outerNodeId,
         outerAttemptId,
       );
-    } catch {
+    } catch (error) {
       setAnsweredElicitations((current) => {
         const next = new Map(current);
         next.delete(elicitationId);
         return next;
       });
+      setSendError(displayAppError(t, error));
     }
   };
 
@@ -3381,19 +3589,24 @@ export function ACPChatDialog(
   });
 
   if (sessionShellState === 'error') {
-    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} />;
+    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
   }
 
   if (sessionShellState === 'interrupted') {
-    return <AcpInterruptedState label={t("acp.sessionInterrupted")} />;
+    return <AcpInterruptedState label={t("acp.sessionInterrupted")} transparent={wallpaperSurface} />;
   }
 
-  if (sessionShellState === 'loading') {
-    return <AcpLoadingState label={t("common.loading")} />;
+  if (isAcpSessionLoadingSurfaceState(sessionShellState)) {
+    return (
+      <AcpLoadingState
+        label={t("common.loading")}
+        transparent={wallpaperSurface}
+      />
+    );
   }
 
   if (!effective) {
-    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} />;
+    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
   }
 
   // A failed provider attempt can be followed by an automatic retry. Until
@@ -3410,7 +3623,14 @@ export function ACPChatDialog(
   return (
     <TurnFileCardPreviewLimitContext.Provider value={turnFileCardPreviewLimit}>
     <AcpBranchLocatorContext.Provider value={attemptWorkspaceLocator}>
-    <div ref={conversationRootRef} className="flex h-full min-h-0 min-w-0 flex-col bg-background" data-conversation-branch-id={branchId}>
+    <div
+      ref={conversationRootRef}
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col",
+        wallpaperSurface ? "bg-transparent" : "bg-background",
+      )}
+      data-conversation-branch-id={branchId}
+    >
       <ACPSessionHeader
         session={effective}
         rawActive={resolveRawFramesActionActive(Boolean(rightWorkspace?.scopeKey), canvasMode === "raw")}
@@ -3454,6 +3674,7 @@ export function ACPChatDialog(
           <ConversationViewport
             scrollClassName={ACP_SESSION_SCROLL_AREA_CLASS_NAME}
             contextRef={chatContainerContextRef}
+            initialFollowing={shouldInitiallyFollowAcpBranch(restoredBranchViewState)}
             onAtBottomChange={handleAtBottomChange}
             onViewportScroll={handleScroll}
             onViewportUserScroll={handleLiveStreamUserInteraction}
@@ -3465,13 +3686,11 @@ export function ACPChatDialog(
               ) : (
                 <div className="h-3" />
               )}
-              {timeline.length === 0 &&
-              !isSessionActiveStatus(effective.status) &&
-              !sending ? (
+              {timelineSurfaceState === 'empty' ? (
                 <div className="p-5">
                   <EmptyAcpState />
                 </div>
-              ) : timeline.length === 0 ? (
+              ) : timelineSurfaceState === 'pending' ? (
                 <div className="p-5">
                   <AcpPendingTimelineState label={composerStatusLabel} />
                 </div>
@@ -3549,7 +3768,10 @@ export function ACPChatDialog(
                 ) : null}
               </InterventionLayer>
               <div
-                className="sticky bottom-0 z-20 mt-auto shrink-0 bg-background"
+                className={cn(
+                  "sticky bottom-0 z-20 mt-auto shrink-0",
+                  wallpaperSurface ? "bg-transparent" : "bg-background",
+                )}
                 data-acp-conversation-footer="sticky"
               >
                 {hasNewerEvents ? (
@@ -3575,7 +3797,11 @@ export function ACPChatDialog(
                 usage={effective?.usage}
                 processingLabel={showComposerStatus ? composerStatusLabel : null}
                 sessionSeconds={composerSessionSeconds}
-                className="absolute left-0 top-px z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border border-b-0 border-border bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-px before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-[''] after:pointer-events-none after:absolute after:-right-2.5 after:bottom-px after:size-2.5 after:rounded-bl-md after:border-b after:border-l after:border-border after:content-['']"
+                worktreePath={worktreePath}
+                className={cn(
+                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']",
+                  ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+                )}
               />
             {!readOnly && showManualCheckActions ? (
               <AcpManualCheckPanel
@@ -3596,10 +3822,12 @@ export function ACPChatDialog(
               <ConversationPromptQueue
                 queue={promptQueue}
                 sessionActive={sessionActive || stopInProgress}
-                mutationPending={queueMutationPending}
+                mutationPending={queueMutationPending || queueSubmitPending}
+                composerOccupied={composerDraftOccupied}
                 attachedAbove={todoEntries.length > 0}
                 integratedInfoTab={composerInfoTabTarget === "queue"}
-                onEdit={editQueuedPrompt}
+                onRestore={restoreQueuedPrompt}
+                onReorder={reorderQueuedPrompts}
                 onUse={useQueuedPrompt}
                 onDelete={deleteQueuedPrompt}
               />
@@ -3641,7 +3869,7 @@ export function ACPChatDialog(
                   description: committedSlashCommand.command.description,
                 } : null}
                 placeholder={composerPlaceholder}
-                inputDisabled={composerInputDisabled}
+                inputDisabled={composerInputDisabled || queueRestorePending}
                 onTextareaKeyDown={slashCommands.onKeyDown}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
@@ -3653,7 +3881,7 @@ export function ACPChatDialog(
                 canStop={canStopSession}
                 stopInProgress={stopInProgress}
                 onStop={stopSession}
-                canSubmit={canSubmitPrompt && !queueSubmitPending}
+                canSubmit={canSubmitPrompt}
                 sendButtonBusy={composerState.submitTarget === "queue-prompt" ? queueSubmitPending : sendButtonBusy}
                 showRuntimeContinue={showRuntimeContinueAction}
                 runtimeContinueKind={localLifecycle?.continueKind ?? null}
@@ -3671,6 +3899,7 @@ export function ACPChatDialog(
                 attachedPanelVisible={promptQueueVisible || todoEntries.length > 0}
                 integratedInfoTab={composerInfoTabTarget === "composer"}
                 queueSubmit={composerState.submitTarget === "queue-prompt"}
+                supersededSession={supersededSession}
               />
             )}
             </div>
@@ -3683,29 +3912,32 @@ export function ACPChatDialog(
         textPreview={textPreview}
         onCloseText={() => setTextPreview(null)}
       />
-      {!readOnly ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
+      {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
     </TurnFileCardPreviewLimitContext.Provider>
   );
 }
 
-function AcpErrorState({ reason }: { reason: string }) {
+function AcpErrorState({ reason, transparent = false }: { reason: string; transparent?: boolean }) {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className={cn("flex h-full min-h-0 flex-col", transparent ? "bg-transparent" : "bg-background")}>
       <AcpErrorBanner reason={reason} />
       <div className="flex-1" />
     </div>
   );
 }
 
-function AcpLoadingState({ label }: { label: string }) {
-  return <BrandLoadingState label={label} />;
+function AcpLoadingState({ label, transparent = false }: { label: string; transparent?: boolean }) {
+  return <BrandLoadingState label={label} className={transparent ? "bg-transparent" : undefined} />;
 }
 
-function AcpInterruptedState({ label }: { label: string }) {
+function AcpInterruptedState({ label, transparent = false }: { label: string; transparent?: boolean }) {
   return (
-    <div className="flex h-full min-h-0 items-center justify-center bg-background px-6 text-center text-sm font-medium text-muted-foreground">
+    <div className={cn(
+      "flex h-full min-h-0 items-center justify-center px-6 text-center text-sm font-medium text-muted-foreground",
+      transparent ? "bg-transparent" : "bg-background",
+    )}>
       {label}
     </div>
   );
@@ -3812,11 +4044,12 @@ function AcpExternalComposerState({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-2xl border px-5 py-4 shadow-none",
+        "flex min-w-0 items-center gap-3 rounded-2xl px-5 py-4 shadow-none",
+        ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
         integratedInfoTab && "rounded-tl-none",
         isError
-          ? "border-destructive/20 bg-destructive/5"
-          : "border-amber-500/20 bg-amber-500/5",
+          ? "bg-destructive/5"
+          : "bg-amber-500/5",
       )}
     >
       <span
@@ -3865,7 +4098,8 @@ function AcpManualCheckPanel({
   const { t } = useTranslation();
   return (
     <div className={cn(
-      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl border border-primary/20 bg-card px-4 py-2.5 shadow-none",
+      "mb-3 flex min-w-0 items-center gap-3 rounded-2xl bg-card px-4 py-2.5 shadow-none",
+      ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
       integratedInfoTab && "rounded-tl-none",
     )}>
       <div className="min-w-0 flex-1">
@@ -3937,8 +4171,9 @@ export function AcpTodoPanel({
         "w-full",
         variant === "composer"
           ? cn(
-              "overflow-hidden border border-border bg-card",
-              attachedBelow ? "rounded-t-2xl border-b-0" : "rounded-2xl",
+              "overflow-hidden bg-card",
+              ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+              attachedBelow ? "rounded-t-2xl" : "rounded-2xl",
               integratedInfoTab && "rounded-tl-none",
             )
           : "overflow-hidden rounded-lg border border-border/35 bg-transparent",
@@ -3968,7 +4203,10 @@ export function AcpTodoPanel({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-        <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
+        <div className={cn(
+          "px-3 pb-1.5",
+          variant === "nested" && "divide-y divide-border/25 border-t border-border/35",
+        )}>
           {entries.map((entry, index) => (
             <div data-acp-todo-row="true" className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-xs" key={index}>
               <TodoStatusMark status={entry.status} />
@@ -4063,6 +4301,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
   const { t } = useTranslation();
   const {
     modelOverrideId,
+    modelOverrideName,
     canSelectUnspecifiedModel,
     permissionModeOverrideId,
     permissionModeOverrideName,
@@ -4099,6 +4338,7 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
         triggerClassName={ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName}
         models={availableModels}
         modelValue={modelOverrideId}
+        modelValueLabel={modelOverrideName}
         thoughtLevel={thoughtLevel ? {
           id: thoughtLevel.id,
           category: thoughtLevel.category,
@@ -4109,9 +4349,11 @@ const AcpSessionConfigBar = memo(function AcpSessionConfigBar({
             value: option.id,
             name: option.name,
             description: option.description,
+            available: option.available,
           })),
         } : null}
         thoughtValue={thoughtLevel?.overrideValue}
+        thoughtValueLabel={thoughtLevel?.overrideValueName}
         showUnspecifiedModel={canSelectUnspecifiedModel}
         showUnspecifiedThought={thoughtLevel?.canSelectUnspecified ?? true}
         onModelChange={(value) => onModelChange?.(value)}
@@ -4305,11 +4547,7 @@ export function ACPSessionHeader({
                 {sessionIdTooltip.phase === "idle" ? session.sessionId : t("acp.sessionIdCopied")}
               </TooltipContent>
             </Tooltip>
-          ) : (
-            <span className="truncate text-ui-micro leading-5 text-muted-foreground/82">
-              {t("acp.noSessionId")}
-            </span>
-          )}
+          ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {showSystemPromptAction ? (
@@ -4451,9 +4689,15 @@ const SystemPromptDialog = memo(function SystemPromptDialog({
 export const SystemPromptPanel = memo(function SystemPromptPanel({
   prompt,
   options,
+  documentKey,
+  resourceKind = "system-prompt",
+  emptyMessage,
 }: {
   prompt?: string | null;
   options?: Array<{ attemptId: string; prompt?: string | null }>;
+  documentKey?: string;
+  resourceKind?: string;
+  emptyMessage?: string;
 }) {
   const { t } = useTranslation();
   const availableOptions = useMemo(
@@ -4466,15 +4710,12 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
   useEffect(() => setSelectedAttemptId(latestAttemptId), [latestAttemptId]);
   const selectedPrompt = availableOptions.find((option) => option.attemptId === selectedAttemptId)?.prompt;
   const content = (selectedPrompt ?? prompt)?.trim() || "";
-  const onMarkdownModeChange = (mode: "source" | "live-preview") => {
-    const nextMode = mode === "live-preview"
-      ? SYSTEM_PROMPT_VIEW_MODES.rendered
-      : SYSTEM_PROMPT_VIEW_MODES.raw;
+  const onViewModeChange = (nextMode: SystemPromptViewMode) => {
     setViewMode(nextMode);
     saveSystemPromptViewMode(nextMode);
   };
   return (
-    <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource="system-prompt">
+    <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.scrollContainerClassName} data-right-workspace-resource={resourceKind}>
       <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.bodyClassName}>
         <div className={ACP_SYSTEM_PROMPT_DIALOG_LAYOUT.attemptSelectorClassName}>
           {availableOptions.length > 1 ? (
@@ -4489,29 +4730,111 @@ export const SystemPromptPanel = memo(function SystemPromptPanel({
           ) : null}
         </div>
         {content ? (
-          <WorkspaceFileEditor
-            documentKey={`system-prompt:${selectedAttemptId ?? "current"}`}
-            value={content}
-            editable={false}
-            language="markdown"
-            highlight
-            contentRevision={0}
-            target={null}
-            targetRevision={0}
-            onChange={() => undefined}
-            onSave={() => undefined}
-            initialStateJson={null}
-            onPersistState={() => undefined}
-            markdownMode={viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered ? "live-preview" : "source"}
-            onMarkdownModeChange={onMarkdownModeChange}
+          <ReadonlyMarkdownDocument
+            documentKey={documentKey ?? `system-prompt:${selectedAttemptId ?? "current"}`}
+            content={content}
+            viewMode={viewMode}
+            onViewModeChange={onViewModeChange}
           />
         ) : (
-          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{t("acp.systemPromptEmpty")}</div></div>
+          <div className="flex h-full items-center justify-center p-5"><div className="rounded-xl border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">{emptyMessage ?? t("acp.systemPromptEmpty")}</div></div>
         )}
       </div>
     </div>
   );
 });
+
+function ReadonlyMarkdownDocument({
+  documentKey,
+  content,
+  viewMode,
+  onViewModeChange,
+}: {
+  documentKey: string;
+  content: string;
+  viewMode: SystemPromptViewMode;
+  onViewModeChange: (mode: SystemPromptViewMode) => void;
+}) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rendered = viewMode === SYSTEM_PROMPT_VIEW_MODES.rendered;
+  useEffect(() => () => {
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  }, []);
+  const copySource = async () => {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1_500);
+  };
+  const toggleLabel = rendered
+    ? t("workspace.filesPanel.viewMarkdownSource")
+    : t("acp.renderMarkdown");
+  return (
+    <div
+      className="relative h-full min-h-0 min-w-0"
+      data-readonly-markdown-mode={viewMode}
+    >
+      <div
+        className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-md border border-border/50 bg-background/88 p-0.5 shadow-sm backdrop-blur"
+        data-readonly-markdown-toolbar="true"
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={() => void copySource()}
+              aria-label={t(copied ? "acp.markdownSourceCopied" : "acp.copyMarkdownSource")}
+            >
+              {copied ? <Check className="size-3 text-emerald-600" /> : <Copy className="size-3" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t(copied ? "acp.markdownSourceCopied" : "acp.copyMarkdownSource")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={() => onViewModeChange(rendered
+                ? SYSTEM_PROMPT_VIEW_MODES.raw
+                : SYSTEM_PROMPT_VIEW_MODES.rendered)}
+              aria-label={toggleLabel}
+            >
+              {rendered ? <Code2 className="size-3" /> : <Eye className="size-3" />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{toggleLabel}</TooltipContent>
+        </Tooltip>
+      </div>
+      {rendered ? (
+        <div className={goldThemedScrollbarClassName("h-full overflow-y-auto px-6 py-5 pr-12")}>
+          <Markdown className="mx-auto w-full max-w-4xl" streaming={false}>{content}</Markdown>
+        </div>
+      ) : (
+        <WorkspaceFileEditor
+          documentKey={documentKey}
+          value={content}
+          editable={false}
+          language="markdown"
+          highlight
+          contentRevision={0}
+          target={null}
+          targetRevision={0}
+          onChange={() => undefined}
+          onSave={() => undefined}
+          initialStateJson={null}
+          onPersistState={() => undefined}
+          markdownMode={null}
+        />
+      )}
+    </div>
+  );
+}
 
 export function ACPMessageList({
   timeline,
@@ -5210,6 +5533,17 @@ const MessageBubble = memo(function MessageBubble({
     : (event.content ?? "");
   const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
   const quotableAgentMessage = !isUser && !streamingDraft && !failed && messageText.trim().length > 0;
+  const openHiddenPromptSection = useCallback((request: HiddenPromptSectionOpenRequest) => {
+    if (!branchLocator || !workspace?.scopeKey || event.optimistic) return;
+    void workspace.openResource(createHiddenPromptSectionWorkspaceResource({
+      scopeKey: workspace.scopeKey,
+      title: request.label,
+      locator: branchLocator,
+      eventId: event.id,
+      eventSeq: event.endedSeq ?? event.seq,
+      partIndex: request.sourceIndex,
+    }));
+  }, [branchLocator, event.endedSeq, event.id, event.optimistic, event.seq, workspace]);
   const openArtifact = useCallback((name: string) => {
     if (!branchLocator || !workspace?.scopeKey) return;
     void workspace.openResource({
@@ -5259,7 +5593,12 @@ const MessageBubble = memo(function MessageBubble({
             )}
           >
             {isUser ? (
-              <HiddenPromptMessageContent content={event.content ?? ""} />
+              <HiddenPromptMessageContent
+                content={event.content ?? ""}
+                onOpenSection={branchLocator && workspace?.scopeKey && !event.optimistic
+                  ? openHiddenPromptSection
+                  : undefined}
+              />
             ) : (
               <Markdown streaming={streamingDraft}>{messageText}</Markdown>
             )}

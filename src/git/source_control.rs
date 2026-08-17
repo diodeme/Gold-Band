@@ -20,6 +20,7 @@ const COMMIT_REVIEW_SELECTION_MAX: usize = 32;
 const MACHINE_COMMAND_CAPTURE_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
 const OPERATION_POLL_INTERVAL: Duration = Duration::from_millis(40);
+const UNBORN_HEAD_SENTINEL: &str = "(initial)";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{code}")]
@@ -1252,7 +1253,7 @@ impl GitSourceControlService {
             .head
             .clone()
             .filter(|head| head != "(detached)");
-        let head_oid = status.branch.oid.clone().filter(|oid| oid != "(initial)");
+        let head_oid = status.branch.oid.clone();
         let lock = combined_lock_snapshot(&identity);
         let repository = GitRepositorySnapshot {
             project_id: project_id.to_string(),
@@ -1928,39 +1929,36 @@ impl GitSourceControlService {
         after_oid: &str,
         paths: &[String],
     ) -> Result<HashMap<String, CommitFileStats>> {
-        let output = if let Some(before_oid) = before_oid {
-            let mut args = vec![
-                "diff".to_string(),
-                "--numstat".to_string(),
-                "-z".to_string(),
-                "-M".to_string(),
-                "-C".to_string(),
-                before_oid.to_string(),
-                after_oid.to_string(),
-                "--".to_string(),
-            ];
-            args.extend(paths.iter().cloned());
-            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.runner
-                .require(cwd, &args, "git.commit-diff-query-failed")?
+        let empty_tree_oid;
+        let before_oid = if let Some(before_oid) = before_oid {
+            before_oid
         } else {
-            let mut args = vec![
-                "diff-tree".to_string(),
-                "--root".to_string(),
-                "--no-commit-id".to_string(),
-                "-r".to_string(),
-                "--numstat".to_string(),
-                "-z".to_string(),
-                "-M".to_string(),
-                "-C".to_string(),
-                after_oid.to_string(),
-                "--".to_string(),
-            ];
-            args.extend(paths.iter().cloned());
-            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-            self.runner
-                .require(cwd, &args, "git.commit-diff-query-failed")?
+            empty_tree_oid = self
+                .runner
+                .require_with_input(
+                    cwd,
+                    &["hash-object", "-t", "tree", "--stdin"],
+                    &[],
+                    "git.commit-diff-query-failed",
+                )?
+                .stdout_text();
+            empty_tree_oid.as_str()
         };
+        let mut args = vec![
+            "diff".to_string(),
+            "--numstat".to_string(),
+            "-z".to_string(),
+            "-M".to_string(),
+            "-C".to_string(),
+            before_oid.to_string(),
+            after_oid.to_string(),
+            "--".to_string(),
+        ];
+        args.extend(paths.iter().cloned());
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = self
+            .runner
+            .require(cwd, &args, "git.commit-diff-query-failed")?;
         parse_commit_numstat(&output.stdout)
     }
 
@@ -3649,7 +3647,7 @@ fn parse_porcelain_v2(bytes: &[u8]) -> Result<GitWorkspaceStatus> {
 
 fn parse_branch_header(line: &str, branch: &mut GitBranchStatus) -> Result<()> {
     if let Some(value) = line.strip_prefix("# branch.oid ") {
-        branch.oid = Some(value.to_string());
+        branch.oid = (value != UNBORN_HEAD_SENTINEL).then(|| value.to_string());
     } else if let Some(value) = line.strip_prefix("# branch.head ") {
         branch.head = Some(value.to_string());
     } else if let Some(value) = line.strip_prefix("# branch.upstream ") {
@@ -4377,6 +4375,7 @@ mod tests {
         let bytes = b"# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n1 M. N... 100644 100644 100644 abc def file with spaces.txt\0\
 2 R. N... 100644 100644 100644 abc def R100 renamed.txt\0old\nname.txt\0? new file.txt\0";
         let status = parse_porcelain_v2(bytes).unwrap();
+        assert_eq!(status.branch.oid.as_deref(), Some("abc"));
         assert_eq!(status.branch.head.as_deref(), Some("main"));
         assert_eq!(status.branch.ahead, 2);
         assert_eq!(status.branch.behind, 1);
@@ -4384,6 +4383,14 @@ mod tests {
         assert_eq!(status.staged[0].path, "file with spaces.txt");
         assert_eq!(status.staged[1].old_path.as_deref(), Some("old\nname.txt"));
         assert_eq!(status.untracked[0].path, "new file.txt");
+    }
+
+    #[test]
+    fn porcelain_v2_normalizes_initial_oid_to_unborn() {
+        let status = parse_porcelain_v2(b"# branch.oid (initial)\n# branch.head main\0").unwrap();
+
+        assert_eq!(status.branch.oid, None);
+        assert_eq!(status.branch.head.as_deref(), Some("main"));
     }
 
     #[test]
@@ -4413,7 +4420,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         assert!(GitCommandRunner.run(&root, &["init"]).unwrap().success);
+        std::fs::write(root.join("untracked.txt"), "not committed\n").unwrap();
         let service = GitSourceControlService::default();
+
+        let snapshot = service.snapshot("project-unborn", &root).unwrap();
+        assert!(snapshot.repository.unborn);
+        assert!(snapshot.repository.head_oid.is_none());
+        assert!(snapshot.status.branch.oid.is_none());
+        assert_eq!(snapshot.status.untracked.len(), 1);
+        assert_eq!(snapshot.status.untracked[0].path, "untracked.txt");
 
         let page = service
             .history(

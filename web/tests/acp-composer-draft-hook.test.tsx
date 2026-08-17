@@ -37,6 +37,15 @@ function DraftProbe({ draftKey }: { draftKey: string }) {
       >
         restore
       </button>
+      <button
+        type="button"
+        onClick={() => controller.replaceIfUnchanged(draft, {
+          ...draft,
+          attachments: [{ id: 'enriched', name: 'enriched.png', size: 12, mime: 'image/png', source: 'dialog' }],
+        })}
+      >
+        enrich
+      </button>
     </div>
   );
 }
@@ -75,6 +84,9 @@ describe('useAcpComposerDraft session switching contract', () => {
     });
     expect(host.querySelector('[data-testid="attachment-count"]')?.textContent).toBe('1');
     expect(host.querySelector('[data-testid="quote-count"]')?.textContent).toBe('1');
+
+    await act(async () => (host.querySelectorAll('button')[4] as HTMLButtonElement).click());
+    expect(host.querySelector('[data-testid="attachment-count"]')?.textContent).toBe('1');
 
     await renderSession(secondKey);
     expect((host.querySelector('input') as HTMLInputElement).value).toBe('');

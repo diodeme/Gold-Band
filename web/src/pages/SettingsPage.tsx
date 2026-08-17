@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, LocalClaudeStatusVm, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -15,6 +15,7 @@ import {
   resolveAppearance,
   normalizeFontFamilies,
   moveFontFamily,
+  themeFontStackDisplayName,
   toggleFontFamily,
   themePackageSummaries,
   type DesktopFontOption,
@@ -31,7 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { ArrowDown, ArrowUp, Check, ChevronsUpDown, ChevronDown, CircleHelp, Loader2, Pencil, RotateCcw, Save, X } from 'lucide-react';
-import { checkLocalClaude, getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
+import { getMetricsSettings, getSystemFonts, saveMetricsSettings } from '../api';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
@@ -40,15 +41,16 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
 import { ScheduledRuntimeSettings } from '@/components/scheduled-tasks/ScheduledRuntimeSettings';
 import { AvatarSettings } from '@/components/settings/AvatarSettings';
+import { WallpaperSettings } from '@/components/settings/WallpaperSettings';
 
 type TypographySection = 'ui' | 'editor';
 
 const typographyDisclosureSessionKey = 'gold-band:settings:typography-disclosure:v1';
 
-function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection, locale?: string) {
+function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection) {
   const preference = personalization.typography[kind].fontSize;
   if (preference.source === 'custom') return preference.px;
-  return resolveAppearance(appearance, locale).typography[kind].size;
+  return resolveAppearance(appearance).typography[kind].size;
 }
 
 function withTypographySize(
@@ -91,6 +93,10 @@ interface SettingsPageProps {
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
   onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
+  onImportWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
+  onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -100,15 +106,15 @@ interface SettingsPageProps {
   onViewAdvanced: () => Promise<void> | void;
 }
 
-export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
+export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSettings = null, onSaveMetricsSettings, updateStatus, availableUpdate = null, showAdvancedUpdateDot, showUpdatesSectionDot, downloadProgress, clientVersion, busy, initialTab, onSave, onSaveAvatar, onSelectRecentAvatar, onSaveAvatarShape, onClearAvatar, onImportWallpaper, onSelectRecentWallpaper, onSaveWallpaperOpacity, onRestoreThemeWallpaper, onSaveUpdaterSettings, onCheckUpdate, onInstallUpdate, onViewSettings, onViewAdvanced }: SettingsPageProps) {
   useThemeWallpaperSurface();
   const { t } = useTranslation();
   const [appearance, setAppearance] = useState(preferences.appearance);
   const [personalization, setPersonalization] = useState(preferences.personalization);
   const [language, setLanguage] = useState(preferences.language);
-  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language));
-  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language));
-  const [useLocalClaude, setUseLocalClaude] = useState(preferences.useLocalClaude);
+  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
+  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
+  const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
   const [themeSheetOpen, setThemeSheetOpen] = useState(false);
@@ -120,9 +126,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setAppearance(preferences.appearance), [preferences.appearance]);
   useEffect(() => setPersonalization(preferences.personalization), [preferences.personalization]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
-  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
-  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
-  useEffect(() => setUseLocalClaude(preferences.useLocalClaude), [preferences.useLocalClaude]);
+  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
@@ -169,15 +174,9 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     }).catch(() => {});
   }, [metricsSettings]);
 
-  const [localClaudeStatus, setLocalClaudeStatus] = useState<LocalClaudeStatusVm | null>(null);
-
   useEffect(() => {
     getSystemFonts().then(setSystemFonts).catch(() => setSystemFonts([]));
   }, []);
-
-  useEffect(() => {
-    checkLocalClaude().then(setLocalClaudeStatus).catch(() => setLocalClaudeStatus(null));
-  }, [useLocalClaude]);
 
   useEffect(() => {
     void onViewSettings();
@@ -190,7 +189,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const saveAppearance = (next: AppearancePreference) => {
     setAppearance(next);
-    applyAppearance(next, language);
+    applyAppearance(next);
     applyPersonalization(personalization);
     onSave(next, personalization, language, useLocalClaude, verboseLogging);
   };
@@ -202,8 +201,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    applyAppearance(appearance, value);
-    applyPersonalization(personalization);
     onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
   };
 
@@ -217,8 +214,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const chooseTypographySize = (kind: 'ui' | 'editor', value: number) => {
     const next = withTypographySize(personalization, kind, { source: 'custom', px: value });
     setPersonalization(next);
-    setUiFontSize(effectiveTypographySize(appearance, next, 'ui', language));
-    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor', language));
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
     onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
@@ -231,8 +228,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const resetTypographySize = (kind: 'ui' | 'editor') => {
     const next = withTypographySize(personalization, kind, { source: 'theme' });
     setPersonalization(next);
-    setUiFontSize(effectiveTypographySize(appearance, next, 'ui', language));
-    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor', language));
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
     onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
@@ -265,8 +262,22 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     });
   };
 
-  const effectiveAppearance = resolveAppearance(appearance, language);
+  const effectiveAppearance = resolveAppearance(appearance);
+  const themeWallpapersByColorScheme = useMemo(() => ({
+    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers.settings,
+    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers.settings,
+  }), [appearance]);
   const currentTheme = getThemePackage(appearance.themeId);
+  const defaultUiFontDisplayName = themeFontStackDisplayName(
+    effectiveAppearance.themeId,
+    effectiveAppearance.scheme.typography.uiStackId,
+    language,
+  );
+  const defaultEditorFontDisplayName = themeFontStackDisplayName(
+    effectiveAppearance.themeId,
+    effectiveAppearance.scheme.typography.editorStackId,
+    language,
+  );
   const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
     ?? themePackageSummaries[0];
   const defaultFontOption = desktopFontOptions[0];
@@ -399,7 +410,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultFontOption}
-                    defaultDisplayName={effectiveAppearance.typography.ui.displayName}
+                    defaultDisplayName={defaultUiFontDisplayName}
                     installedFontOptions={installedFontOptions}
                     selectedFonts={selectedUiFonts}
                     sample="Gold-Band / 优化 resume 会话 / 0123"
@@ -424,7 +435,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultEditorFontOption}
-                    defaultDisplayName={effectiveAppearance.typography.editor.displayName}
+                    defaultDisplayName={defaultEditorFontDisplayName}
                     installedFontOptions={installedFontOptions}
                     selectedFonts={selectedEditorFonts}
                     sample={'const workflow = "AI";'}
@@ -433,6 +444,20 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                 </TypographyDisclosure>
               </div>
+            </SettingsSection>
+
+            <SettingsSection title={t('settings.wallpaper.title')} divided>
+              <WallpaperSettings
+                preferences={preferences.wallpapers}
+                personalization={personalization.wallpaper}
+                activeColorScheme={effectiveAppearance.colorScheme}
+                themeWallpapersByColorScheme={themeWallpapersByColorScheme}
+                busy={busy}
+                onImportWallpaper={onImportWallpaper}
+                onSelectRecentWallpaper={onSelectRecentWallpaper}
+                onSaveWallpaperOpacity={onSaveWallpaperOpacity}
+                onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+              />
             </SettingsSection>
 
             <SettingsSection title={t('settings.avatar.title')} divided>
@@ -452,34 +477,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
         <TabsContent value="advanced" className="m-0">
           <AppCard className="gap-0 overflow-hidden py-0">
             <SettingsSection title={t('settings.advanced')}>
-              <div className="flex items-center gap-3 py-2">
-                <span className="text-sm font-medium text-muted-foreground">{t('settings.useLocalClaude.label')}</span>
-                <SettingInfoTooltip content={t('settings.useLocalClaude.tooltip')} />
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={useLocalClaude}
-                  className={cn(
-                    'relative h-6 w-11 shrink-0 overflow-hidden rounded-full border p-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                    useLocalClaude ? 'border-primary bg-primary' : 'border-border/70 bg-muted-foreground/20',
-                  )}
-                  onClick={() => {
-                    const next = !useLocalClaude;
-                    setUseLocalClaude(next);
-                    onSave(appearance, personalization, language, next, verboseLogging);
-                  }}
-                >
-                  <span
-                    className={cn(
-                      'block size-5 rounded-full bg-background shadow-sm transition-transform',
-                      useLocalClaude && 'translate-x-5',
-                    )}
-                  />
-                </button>
-                {localClaudeStatus && useLocalClaude && !localClaudeStatus.found ? (
-                  <span className="text-xs text-muted-foreground">{t('settings.useLocalClaude.notFound')}</span>
-                ) : null}
-              </div>
               <div className="flex items-center gap-3 py-2">
                 <div className="text-sm font-medium text-muted-foreground">{t('settings.verboseLogging.label')}</div>
                 <SettingInfoTooltip content={t('settings.verboseLogging.description')} />
@@ -714,7 +711,7 @@ function withTypographyFontStack(
   const normalized = normalizeFontFamilies(families);
   return {
     ...personalization,
-    schemaVersion: 2,
+    schemaVersion: 4,
     typography: {
       ...personalization.typography,
       [kind]: {

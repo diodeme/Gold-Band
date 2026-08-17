@@ -10,7 +10,8 @@ use gold_band::acp::commands::{
     AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands, workspace_key,
 };
 use gold_band::acp::events::current_timestamp;
-use gold_band::app::observability::RuntimeLifecycleBus;
+use gold_band::app::ActiveMetricTurn;
+use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
 use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent};
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
@@ -22,10 +23,12 @@ use gold_band::storage::{
     GoldBandPaths, active_storage_path_config, load_settings_file, read_json, write_json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::migrate_conversation_workspace_state;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, initial_update_status};
+use crate::wallpaper::reconcile_wallpaper_personalization;
 
 #[derive(Debug, Clone)]
 pub struct DesktopContext {
@@ -222,6 +225,9 @@ pub struct DesktopState {
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
     lifecycle_bus: RuntimeLifecycleBus,
+    observability_states:
+        Arc<Mutex<std::collections::HashMap<String, ExecutionObservabilityState>>>,
+    active_metric_turns: Arc<Mutex<std::collections::HashMap<String, ActiveMetricTurn>>>,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
     /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
@@ -252,6 +258,8 @@ impl DesktopState {
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
             lifecycle_bus: RuntimeLifecycleBus::new(),
+            observability_states: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            active_metric_turns: Arc::new(Mutex::new(std::collections::HashMap::new())),
             mcp_health: Mutex::new(BTreeMap::new()),
             heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
                 env!("CARGO_PKG_VERSION").to_string(),
@@ -342,8 +350,12 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
+        let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
         Ok(App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
+            .with_observability_states(self.observability_states.clone())
+            .with_active_metric_turns(self.active_metric_turns.clone())
+            .with_metrics_collection_enabled(metrics_enabled)
             .with_provider_diagnostics_source(Arc::new(move || {
                 Ok(diagnostics
                     .lock()
@@ -1194,14 +1206,27 @@ fn nearest_parent_containing(start: &Utf8Path, marker: &str) -> Option<Utf8PathB
 
 fn load_configs(paths: &GoldBandPaths) -> Result<(SettingsConfig, StateConfig)> {
     let mut settings = load_settings_file(&paths.user_settings_file())?;
+    let mut settings_changed = false;
+    let mut avatar_migrated = false;
     if let Some(personalization) = settings.personalization.as_mut() {
-        let migrated = legacy_avatar_personalization(&paths.user_gold_band_dir(), personalization)
-            .map_err(|error| anyhow::anyhow!(error.code))?;
-        if migrated {
-            write_json(&paths.user_settings_file(), &settings)?;
-            complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
+        avatar_migrated =
+            legacy_avatar_personalization(&paths.user_gold_band_dir(), personalization)
                 .map_err(|error| anyhow::anyhow!(error.code))?;
+        settings_changed |= avatar_migrated;
+        match reconcile_wallpaper_personalization(&paths.user_gold_band_dir(), personalization) {
+            Ok(changed) => settings_changed |= changed,
+            Err(error) => warn!(
+                error_code = error.code,
+                "wallpaper personalization reconciliation skipped"
+            ),
         }
+    }
+    if settings_changed {
+        write_json(&paths.user_settings_file(), &settings)?;
+    }
+    if avatar_migrated {
+        complete_legacy_avatar_personalization(&paths.user_gold_band_dir())
+            .map_err(|error| anyhow::anyhow!(error.code))?;
     }
     let state: StateConfig = read_json(&paths.user_state_file()).unwrap_or_default();
     Ok((settings, state))
@@ -1278,6 +1303,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {

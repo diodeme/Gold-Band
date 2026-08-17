@@ -255,8 +255,8 @@ RuntimeLifecycleBus
 1. `submit_conversation_prompt` 只接受 NonRuntime 普通消息；attempt 仍为 RuntimeControlled 时返回 `runtime.conversation-not-available`，不做隐式恢复。
 2. `continue_conversation_runtime` 根据 run paused/resumable 与精确 `AttemptLocator` 校验恢复资格；顶层调用 `run_continue_background`，AI-DYNAMIC inner 调用 `run_continue_dynamic_inner_background`。
 3. `runtime-continue-started` 表示后端已接受显式继续；返回体立即合成 `runtime-active / provider-running` lifecycle，不能回传旧 paused/action 快照。
-4. 普通消息继续透传本轮 `attachment_paths`；隐藏 RuntimeResume 不携带可见用户文本或 optimistic 用户气泡。
-5. 新 UI 会话页与旧 Round 详情都把文本提交与继续按钮拆开：前者调用 `submit_conversation_prompt`，后者调用 `continue_conversation_runtime`。
+4. 普通消息继续透传本轮 `attachment_paths`；纯继续的隐藏 RuntimeResume 不携带可见用户文本或 optimistic 用户气泡。存在可发送输入时，“继续并发送”把结构化 `input + promptId + attachmentPaths` 交给同一个 continue command，provider prompt 追加 `show=false` 的 Runtime control hidden 段，UI 只投影用户输入。
+5. 新 UI 会话页与旧 Round 详情都把普通发送与继续动作拆开：发送按钮和 Enter 调用 `submit_conversation_prompt`；继续动作调用 `continue_conversation_runtime`。继续按钮是否切换为“继续并发送”直接复用发送按钮的最终 `canSubmit`，不能维护第二套有效输入判断。
 6. 停止后的普通消息只发送用户原文；用户打断后可暂不遵守 artifact、恢复后继续采用中断期间最新任务指引的语义预先放入中英文基础 runtime system prompt，AI-DYNAMIC 通过既有 system 组合继承，不再执行一次性 suspended context 认领。显式 continue 只恢复 Runtime 结果消费和 output contract，不自动恢复中断前的角色流程；`WorkflowContinued` 在 accepted event 后以 source transition id 做 CAS，不在 provider 接受前提前切换 Runtime mode。固定 workflow 额外使用 per-run starting lease，重复点击不会创建第二个后台启动线程。
 7. Direct / `RawAgent` 首轮即为 `NonRuntimeControlled`。legacy attempt 缺 cursor 时只允许扫描 timeline 一次，无结果写入 `runtimeControlTimelineScanComplete` negative cache；cursor stop/commit 使用固定路径哈希短锁，不持有跨 session 长锁等待 Agent。
 8. 对 `codex-acp` 等不支持原生 `systemPrompt` 的 provider，首轮新 session 可把 stable system prompt 作为 hidden user block 内联发送并持久化；同一 ACP session 的后续 continue/追问必须复用历史上下文，不再重复内联 stable system prompt，timeline 中的 user prompt 记录也必须与实际发送内容一致。

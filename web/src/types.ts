@@ -11,11 +11,19 @@ export type FontStackPreference = { source: 'theme' } | { source: 'custom'; fami
 export type FontSizePreference = { source: 'theme' } | { source: 'custom'; px: number };
 export type AvatarPreference = { source: 'theme' } | { source: 'user'; assetId: string };
 export type AvatarShapePreference = { source: 'theme' } | { source: 'custom'; value: AvatarShape };
+export type WallpaperImagePreference = { source: 'theme' } | { source: 'user'; assetId: string };
+export interface WallpaperSchemePersonalization {
+  image: WallpaperImagePreference;
+  opacityPercent: number;
+}
 export interface PersonalizationPreference {
-  schemaVersion: 2;
+  schemaVersion: 4;
   typography: {
     ui: { fontStack: FontStackPreference; fontSize: FontSizePreference };
     editor: { fontStack: FontStackPreference; fontSize: FontSizePreference };
+  };
+  wallpaper: {
+    byColorScheme: Record<ResolvedColorScheme, WallpaperSchemePersonalization>;
   };
   avatars: {
     agent: { image: AvatarPreference; shape: AvatarShapePreference };
@@ -36,6 +44,20 @@ export interface PreferencesVm {
   useLocalClaude: boolean;
   verboseLogging: boolean;
   avatars: AvatarPreferencesVm;
+  wallpapers: WallpaperPreferencesVm;
+}
+
+export interface WallpaperImageVm {
+  id: string;
+  imageUrl: string;
+  thumbnailUrl: string;
+  createdAt: string;
+  width: number;
+  height: number;
+}
+
+export interface WallpaperPreferencesVm {
+  recentWallpapers: WallpaperImageVm[];
 }
 
 export interface AvatarImageVm {
@@ -931,6 +953,7 @@ export interface WorkflowVm {
   runs: RunGroupVm[];
   control?: WorkflowControlVm | null;
   workflowJson?: string | null;
+  modelBindings: WorkflowModelBindings;
 }
 
 export interface WorkflowDsl {
@@ -952,6 +975,7 @@ export type WorkflowNodeDsl = WorkflowWorkerNodeDsl | WorkflowAiDynamicNodeDsl;
 export interface WorkflowWorkerNodeDsl {
   type: 'worker';
   id: string;
+  executionSlotId?: string | null;
   provider?: string | null;
   model?: string | null;
   profile?: string | null;
@@ -1040,6 +1064,7 @@ export interface CreateTaskInput {
   requirementFileName?: string | null;
   requirementContent: string;
   workflow: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   workflowTemplateId?: string | null;
 }
 
@@ -1053,9 +1078,38 @@ export interface WorkflowTemplateStore {
 export interface WorkflowTemplate {
   id: string;
   name: string;
+  isBuiltIn: boolean;
+  optionalEntryStage?: {
+    nodeId: string;
+    labelKey: string;
+    defaultEnabled: boolean;
+  } | null;
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AgentBindingUsageVm {
+  workflowTemplateCount: number;
+  taskCount: number;
+  scheduledTaskCount: number;
+  unknownTaskCount: number;
+  unknownScheduledTaskCount: number;
+}
+
+export interface WorkflowModelBindings {
+  definitionRevision: string;
+  bindingRevision: number;
+  bindings: WorkerModelBinding[];
+}
+
+export interface WorkerModelBinding {
+  executionSlotId: string;
+  agentId: string;
+  modelId?: string | null;
+  permissionModeId?: string | null;
+  configOptions?: Record<string, string>;
 }
 
 export interface AutoTemplateStore {
@@ -1440,6 +1494,7 @@ export interface AcpEventPageVm {
 }
 
 export interface AcpSessionConfigVm {
+  catalogObservedAt?: string | null;
   modelOverrideId?: string | null;
   permissionModeOverrideId?: string | null;
   configOptionOverrides?: Record<string, string>;
@@ -1818,7 +1873,17 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 export type ConversationPage =
   | { kind: 'conversation-home' }
   | { kind: 'scheduled-task-create' }
-  | { kind: 'conversation-run'; projectId: string; taskId: string; runId: string; roundId?: string; attemptId?: string }
+  | {
+      kind: 'conversation-run';
+      projectId: string;
+      taskId: string;
+      runId: string;
+      roundId?: string;
+      nodeId?: string;
+      attemptId?: string;
+      outerNodeId?: string;
+      outerAttemptId?: string;
+    }
   | { kind: 'run-mode-management' }
   | { kind: 'agents' }
   | { kind: 'contexts' }
@@ -1858,6 +1923,11 @@ export interface ScheduledOccurrenceVm {
   attemptId?: string | null;
   startedAt?: string | null;
   finishedAt?: string | null;
+}
+
+export interface ScheduledOccurrencePageVm {
+  items: ScheduledOccurrenceVm[];
+  nextCursor?: string | null;
 }
 
 export interface ScheduledTaskDiagnosticsVm {
@@ -1919,7 +1989,7 @@ export interface ScheduledTaskEditVm {
   attachmentNames: string[];
   runMode: 'direct' | 'workflow' | 'auto' | string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   schedule: ScheduledScheduleSpec;
@@ -1936,7 +2006,7 @@ export interface UpdateScheduledTaskInput {
   content: string;
   runMode: string;
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[] | null;
@@ -2071,6 +2141,16 @@ export interface ConversationComposerVm {
   statusKey?: string | null;
   canStop: boolean;
   lockInput: boolean;
+  supersededBy?: ConversationSessionTargetVm | null;
+}
+
+export interface ConversationSessionTargetVm {
+  roundId: string;
+  nodeId: string;
+  attemptId: string;
+  outerNodeId?: string | null;
+  outerAttemptId?: string | null;
+  pathLabel: string;
 }
 
 export interface AppExitRequestVm {
@@ -2192,6 +2272,19 @@ export interface ConversationRunVm {
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
   scheduledTaskId?: string | null;
+  worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ConversationQueuedPromptDraftVm {
+  content: string;
+  quotes: UserPromptQuote[];
+  attachmentPaths: string[];
+}
+
+export interface ConversationRunWorktreeVm {
+  path: string;
+  branch: string;
+  forkCommit: string;
 }
 
 export interface ConversationSessionSwitchVm {
@@ -2217,7 +2310,7 @@ export interface ConversationActiveSessionVm {
 export interface ConversationRunModeVm {
   mode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  optionalEntryPreferences?: Record<string, boolean>;
   directConfig?: ConversationDirectConfigVm | null;
   directPreferences?: Record<string, ConversationDirectConfigVm>;
   autoConfig?: ConversationAutoConfigVm | null;
@@ -2262,11 +2355,14 @@ export interface ConversationCreateInput {
   content: string;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
-  includeInterview?: boolean | null;
+  includeOptionalEntry?: boolean | null;
   directConfig?: ConversationDirectConfigVm | null;
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
+  workLocation?: ConversationWorkLocation;
 }
+
+export type ConversationWorkLocation = 'main' | 'worktree';
 
 export interface ConversationValidationResultVm {
   valid: boolean;
@@ -2277,6 +2373,12 @@ export interface ConversationMissingItemVm {
   code: string;
   label: string;
   recoveryPath: string;
+  params: Record<string, unknown>;
+}
+
+export interface WorkflowRepairTarget {
+  workflowTemplateId: string;
+  nodeId: string;
 }
 
 export interface ConversationSearchResultVm {

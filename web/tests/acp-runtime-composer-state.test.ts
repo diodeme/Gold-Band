@@ -146,6 +146,23 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('keeps a new-session composer locked while its first timeline item catches up', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle(),
+      acpStatus: 'completed',
+      hasTimelineItems: false,
+      hasEffectiveEvents: false,
+      initialTimelinePending: true,
+    }));
+
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.showStatus).toBe(true);
+    expect(state.processingKind).toBe('launching');
+    expect(state.placeholderKind).toBe('runtime-controlled');
+  });
+
   it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -202,6 +219,7 @@ describe('deriveAcpRuntimeComposerState', () => {
       id: `queued-${index}`,
       content: `prompt ${index}`,
       attachmentCount: 0,
+      quoteCount: 0,
       createdAt: '2026-08-07T00:00:00Z',
     }));
     const state = deriveAcpRuntimeComposerState(baseInput({
@@ -235,6 +253,40 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.submitTarget).toBe('none');
     expect(state.inputDisabled).toBe(true);
     expect(state.canSubmit).toBe(false);
+  });
+
+  it('keeps a superseded session locked even when stale ACP activity still appears active', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'running',
+          latestTurnStatus: 'none',
+          stopping: false,
+        },
+        composer: {
+          mode: 'session-superseded',
+          submitTarget: 'none',
+          lockInput: true,
+          canStop: false,
+          supersededBy: {
+            roundId: 'round-001',
+            nodeId: 'review',
+            attemptId: 'attempt-003',
+            pathLabel: 'review/attempt-003',
+          },
+        },
+      }),
+      acpStatus: 'running',
+      localTurnInFlight: true,
+    }));
+
+    expect(state.mode).toBe('session-superseded');
+    expect(state.submitTarget).toBe('none');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.canSubmit).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.showStatus).toBe(false);
   });
 
   it('restores a completed-run live follow-up from backend lifecycle without optimistic state', () => {
@@ -899,6 +951,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           id: 'queued-1',
           content: 'keep visible',
           attachmentCount: 0,
+          quoteCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },
@@ -922,6 +975,7 @@ describe('mergeConversationAttemptLifecycle', () => {
           id: 'queued-1',
           content: 'deleted',
           attachmentCount: 0,
+          quoteCount: 0,
           createdAt: '2026-08-07T00:00:00Z',
         }],
       },

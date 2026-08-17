@@ -1,4 +1,6 @@
-use gold_band::dsl::{WorkflowDsl, validate_workflow, validate_workflow_snapshot};
+use gold_band::dsl::{
+    WorkflowDsl, validate_authoring_workflow, validate_workflow, validate_workflow_snapshot,
+};
 
 fn parse_workflow(json: &str) -> WorkflowDsl {
     serde_json::from_str(json).expect("workflow should deserialize")
@@ -52,6 +54,65 @@ fn validates_basic_workflow() {
     let validated = validate_workflow(workflow).expect("workflow should validate");
     assert_eq!(validated.raw.entry, "dev");
     assert!(validated.get_node("accept").is_some());
+}
+
+#[test]
+fn authoring_workflow_accepts_worker_without_execution_provider() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "authoring-worker",
+            "entry": "grill",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                {
+                    "id": "grill",
+                    "type": "worker",
+                    "executionSlotId": "default-lightweight:grill",
+                    "profile": "pf-builtin-grill"
+                }
+            ],
+            "edges": [
+                { "from": "grill", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    validate_authoring_workflow(workflow.clone())
+        .expect("authoring workflow should not own provider configuration");
+    let error = validate_workflow(workflow)
+        .expect_err("executable workflow must still require an injected provider");
+    assert!(error.to_string().contains("provider cannot be blank"));
+}
+
+#[test]
+fn authoring_workflow_still_rejects_structural_errors() {
+    let missing_end = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "missing-end",
+            "entry": "grill",
+            "control": { "max_attempts": 1 },
+            "nodes": [{ "id": "grill", "type": "worker" }],
+            "edges": []
+        }"#,
+    );
+    assert!(validate_authoring_workflow(missing_end).is_err());
+
+    let unreachable = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "unreachable",
+            "entry": "grill",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "grill", "type": "worker" },
+                { "id": "orphan", "type": "worker" }
+            ],
+            "edges": [{ "from": "grill", "to": "$end", "on": "success" }]
+        }"#,
+    );
+    assert!(validate_authoring_workflow(unreachable).is_err());
 }
 
 #[test]

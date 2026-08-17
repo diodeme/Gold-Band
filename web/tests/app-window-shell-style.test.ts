@@ -48,8 +48,8 @@ describe('App window shell style', () => {
     expect(styles).toContain('--color-workspace-divider: var(--workspace-divider)');
     expect(styles).toContain('--workspace-divider: color-mix(in srgb, var(--sidebar-border) 70%, var(--gold-workspace))');
     expect(shell).toContain('ResizablePanelGroup');
-    expect(shell).toContain('data-testid="workspace-left-resize-handle"');
-    expect(shell).toContain('data-testid="workspace-right-resize-handle"');
+    expect(shell).toContain('id="workspace-left-resize-handle"');
+    expect(shell).toContain('id="workspace-right-resize-handle"');
     expect(shell).toContain('border-t border-workspace-divider bg-gold-workspace');
     expect(shell).toContain('bg-workspace-divider hover:bg-primary/30');
     expect(shell).toContain("'relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace'");
@@ -80,24 +80,39 @@ describe('App window shell style', () => {
     expect(styles).not.toMatch(/--workspace-main-surface-shadow:[^;]*var\(--gb-material-shadow\)/u);
   });
 
-  it('lets the panel group grow and shrink the right workspace without imperative resize feedback', () => {
+  it('reconciles the three panels atomically and gives compressed width recovery one owner', () => {
     const shell = readFileSync(path.resolve(__dirname, '../src/components/workspace/WorkspaceShell.tsx'), 'utf8');
 
-    expect(shell.match(/panel\.resize\(/gu)).toHaveLength(1);
-    expect(shell).toContain('panel.resize(sidebarWidth)');
-    expect(shell).not.toContain('rightPanelRef.current?.resize(');
-    expect(shell).not.toContain('panel.getSize(');
-    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
-    expect(shell).toContain("groupResizeBehavior={rightPanelOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");
-    expect(shell).toContain('maxSize={rightPanelMaxWidth}');
-    expect(shell).toContain('onResize={trackRightPanelSize}');
-    expect(shell).toContain('onPointerDown={beginRightPanelResize}');
-    expect(shell).toContain('flushSync(() => setRightPanelResizeActive(true))');
-    expect(shell).toContain('onPointerUp={endRightPanelResize}');
+    expect(shell).not.toContain('panel.resize(');
+    expect(shell).toContain('group.setLayout(target)');
+    expect(shell).toContain('resolveWorkspaceCanonicalLayout({');
+    expect(shell).toContain('groupRef={panelGroupRef}');
+    expect(shell).toContain('elementRef={panelGroupElementRef}');
+    expect(shell.match(/panel\.getSize\(\)/gu)).toHaveLength(1);
+    expect(shell).toContain('function panelDiagnosticSize');
+    expect(shell).toContain('const workspaceLayoutDiagnosticsEnabled = isWorkspaceLayoutDiagnosticsEnabled()');
+    expect(shell).toContain('onLayoutChange={workspaceLayoutDiagnosticsEnabled ? trackWorkspaceLayout : undefined}');
+    expect(shell).toContain('if (!workspaceLayoutDiagnosticsEnabled) return;');
+    expect(shell).toContain('panelRef={workspaceLayoutDiagnosticsEnabled ? centerPanelRef : undefined}');
     expect(shell).toContain('panelRef={leftPanelRef}');
     expect(shell).toContain('panelRef={rightPanelRef}');
+    expect(shell).not.toContain("recordWorkspaceLayoutDiagnostic('auto-collapse-evaluated', () => ({\n      panels:");
+    expect(shell).toContain('id="workspace-center"');
+    expect(shell).toContain("groupResizeBehavior={autoCollapse.rightOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}");
+    expect(shell).toContain("groupResizeBehavior={autoCollapse.rightOwnsWindowResize ? 'preserve-relative-size' : 'preserve-pixel-size'}");
+    expect(shell.match(/groupResizeBehavior="preserve-pixel-size"/gu)).toHaveLength(1);
+    expect(shell).toContain('maxSize={appConfig.workspaceLayout.rightWorkspace.maxWidth}');
+    expect(shell).not.toContain('onResize={trackRightPanelSize}');
+    expect(shell).toContain('resolveWorkspaceUserResizeTarget({');
+    expect(shell).toContain('focusedTarget: focusedResizeTarget');
+    expect(shell).toContain('workspaceCanonicalLayoutMissingPanel(target, applied, panelId)');
+    expect(shell).toContain('panel.expand()');
+    expect(shell).toContain('id="workspace-left-resize-handle"');
+    expect(shell).toContain('id="workspace-right-resize-handle"');
+    expect(shell).toContain('const previousLayout = lastCommittedLayoutRef.current');
+    expect(shell).not.toContain('rightResizeIntentRef');
+    expect(shell).not.toContain('leftResizeIntentRef');
+    expect(shell).not.toContain('rightPanelAtPreferredWidth');
     expect(shell).toContain('collapsedSize={0}');
-    expect(shell).toContain('if (panel.isCollapsed()) panel.expand()');
-    expect(shell).toContain('panel.collapse()');
   });
 });

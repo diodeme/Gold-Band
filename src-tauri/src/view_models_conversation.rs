@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -16,20 +16,28 @@ use crate::view_models::{
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
 use gold_band::acp::prompt_queue::{MAX_QUEUED_PROMPTS, QueuedPromptState, load_prompt_queue};
-use gold_band::app::{App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, is_run_continuable};
+use gold_band::app::{
+    App, CreateTaskInput, DEFAULT_WORKFLOW_TEMPLATE_ID, apply_optional_entry_preference,
+    is_run_continuable,
+};
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
 use gold_band::domain::NodeType;
 use gold_band::domain::RunStatus;
-use gold_band::domain::TurnControlMode;
+use gold_band::domain::{SessionMode, TurnControlMode};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
-use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
+use gold_band::runtime::{
+    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, WorkerRefState,
+};
 use gold_band::storage::{read_json, write_json};
+use gold_band::workflow_model_binding::{
+    TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +75,13 @@ pub struct ScheduledOccurrenceVm {
     pub attempt_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledOccurrencePageVm {
+    pub items: Vec<ScheduledOccurrenceVm>,
+    pub next_cursor: Option<String>,
 }
 
 impl ScheduledOccurrenceVm {
@@ -141,7 +156,7 @@ pub struct CreateScheduledTaskInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
@@ -221,7 +236,7 @@ pub struct ScheduledTaskEditVm {
     pub attachment_names: Vec<String>,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub schedule: gold_band::scheduler::ScheduleSpec,
@@ -240,7 +255,7 @@ pub struct UpdateScheduledTaskInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
@@ -250,13 +265,17 @@ pub struct UpdateScheduledTaskInputVm {
 }
 
 impl ScheduledTaskVm {
-    pub fn from_definition(definition: &gold_band::scheduler::ScheduledTaskDefinition) -> Self {
-        Self::from_definition_in_workspace(definition, &definition.project_id)
+    pub fn from_definition(
+        definition: &gold_band::scheduler::ScheduledTaskDefinition,
+        next_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        Self::from_definition_in_workspace(definition, &definition.project_id, next_run_at)
     }
 
     pub fn from_definition_in_workspace(
         definition: &gold_band::scheduler::ScheduledTaskDefinition,
         workspace_name: &str,
+        next_run_at: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Self {
         Self {
             id: definition.id.clone(),
@@ -273,15 +292,7 @@ impl ScheduledTaskVm {
                 .and_then(|value| value.as_str().map(ToOwned::to_owned))
                 .unwrap_or_default(),
             schedule: definition.schedule.clone(),
-            next_at: definition
-                .enabled
-                .then(|| {
-                    definition
-                        .schedule
-                        .next_occurrence_after(chrono::Utc::now())
-                })
-                .flatten()
-                .map(|value| value.to_rfc3339()),
+            next_at: next_run_at.map(|value| value.to_rfc3339()),
             status: scheduled_task_status(definition),
             last_trigger_at: definition.last_trigger_at.map(|value| value.to_rfc3339()),
             last_trigger_status: definition.last_trigger_status.clone(),
@@ -308,9 +319,9 @@ impl ScheduledTaskEditVm {
             .get("workflowTemplateId")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
-        let include_interview = definition
+        let include_optional_entry = definition
             .execution_config
-            .get("includeInterview")
+            .get("includeOptionalEntry")
             .and_then(serde_json::Value::as_bool);
         let direct_config = definition
             .execution_config
@@ -329,7 +340,7 @@ impl ScheduledTaskEditVm {
             attachment_names: definition.attachment_names.clone(),
             run_mode,
             workflow_template_id,
-            include_interview,
+            include_optional_entry,
             direct_config,
             auto_config,
             schedule: definition.schedule.clone(),
@@ -355,12 +366,13 @@ pub fn scheduled_task_vms_from_sources(
         )?;
         tasks.extend(
             database
-                .list_job_definitions_for_project(&source.workspace.project_id)?
+                .list_job_records_for_project(&source.workspace.project_id)?
                 .iter()
-                .map(|definition| {
+                .map(|record| {
                     ScheduledTaskVm::from_definition_in_workspace(
-                        definition,
+                        &record.definition,
                         &source.workspace.name,
+                        record.next_run_at,
                     )
                 }),
         );
@@ -508,6 +520,15 @@ pub struct ConversationRunVm {
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
     pub scheduled_task_id: Option<String>,
+    pub worktree: Option<ConversationRunWorktreeVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRunWorktreeVm {
+    pub path: String,
+    pub branch: String,
+    pub fork_commit: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -638,6 +659,19 @@ pub struct ConversationComposerVm {
     pub status_key: Option<String>,
     pub can_stop: bool,
     pub lock_input: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<ConversationSessionTargetVm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSessionTargetVm {
+    pub round_id: String,
+    pub node_id: String,
+    pub attempt_id: String,
+    pub outer_node_id: Option<String>,
+    pub outer_attempt_id: Option<String>,
+    pub path_label: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -663,7 +697,7 @@ pub struct ConversationActiveSessionVm {
 pub struct ConversationRunModeVm {
     pub mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub optional_entry_preferences: HashMap<String, bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub direct_preferences: HashMap<String, ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
@@ -741,6 +775,14 @@ pub struct ConversationDynamicControlVm {
     pub allow_nested_dynamic: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationWorkLocationVm {
+    #[default]
+    Main,
+    Worktree,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationCreateInputVm {
@@ -748,14 +790,18 @@ pub struct ConversationCreateInputVm {
     pub content: String,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    pub include_optional_entry: Option<bool>,
     pub direct_config: Option<ConversationDirectConfigVm>,
     pub auto_config: Option<ConversationAutoConfigVm>,
     pub attachment_paths: Option<Vec<String>>,
     #[serde(default)]
+    pub work_location: ConversationWorkLocationVm,
+    #[serde(default)]
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
     pub scheduled_content_fingerprint: Option<String>,
+    #[serde(default)]
+    pub workflow_authoring: Option<TaskAuthoringWorkflow>,
 }
 
 pub fn scheduled_content_snapshot(
@@ -802,18 +848,19 @@ pub fn scheduled_content_snapshot(
                 .workflow_template_id
                 .as_deref()
                 .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
-            let mut workflow = store
+            let template = store
                 .templates
                 .iter()
                 .find(|template| template.id == template_id)
-                .map(|template| template.workflow.clone())
                 .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
-            apply_workflow_interview_preference(
-                template_id,
-                input.include_interview,
-                &mut workflow,
-            )?;
-            snapshot.workflow_authoring = Some(serde_json::to_value(workflow)?);
+            let mut workflow = template.workflow.clone();
+            apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
+            let mut model_bindings = template.model_bindings.clone();
+            migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
+            snapshot.workflow_authoring = Some(serde_json::to_value(TaskAuthoringWorkflow {
+                workflow,
+                model_bindings,
+            })?);
         }
         ScheduledMode::Auto => {
             let config = input
@@ -833,11 +880,11 @@ pub fn scheduled_content_snapshot(
                 .iter()
                 .map(|workflow| workflow.workflow_id.clone());
             snapshot.auto_authoring = Some(AutoAuthoringIdentity::new(
+                config.agent_type.clone(),
                 config
                     .agent_strategy
                     .clone()
                     .unwrap_or_else(|| "fixed".to_string()),
-                config.agent_type.clone(),
                 config.bootstrap_agent_type.clone(),
                 available_agent_types,
                 config.global_goal.clone(),
@@ -862,6 +909,7 @@ pub struct ConversationMissingItemVm {
     pub code: String,
     pub label: String,
     pub recovery_path: String,
+    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -888,13 +936,15 @@ pub(crate) struct ConversationMetadata {
     pub(crate) source: String,
     pub(crate) run_mode: String,
     pub(crate) workflow_template_id: Option<String>,
-    pub(crate) include_interview: Option<bool>,
+    pub(crate) include_optional_entry: Option<bool>,
     pub(crate) direct_config: Option<ConversationDirectConfigVm>,
     pub(crate) agent_identity: Option<ConversationAgentIdentityVm>,
     pub(crate) title_auto_generated: bool,
     pub(crate) initial_attachment_names: Option<Vec<String>>,
     pub(crate) created_at: String,
     pub(crate) last_activity_at: Option<String>,
+    #[serde(default)]
+    pub(crate) work_location: ConversationWorkLocationVm,
     #[serde(default)]
     pub(crate) scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -1889,6 +1939,7 @@ fn composer_for_lifecycle(
         status_key: status_key.map(str::to_string),
         can_stop: runtime_active || acp_active || acp_stopping,
         lock_input: mode != "normal",
+        superseded_by: None,
     }
 }
 
@@ -2363,6 +2414,295 @@ fn conversation_leaf_key(leaf: &ConversationSessionLeafVm) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ConversationSessionLocator {
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+}
+
+impl ConversationSessionLocator {
+    fn target_vm(&self) -> ConversationSessionTargetVm {
+        ConversationSessionTargetVm {
+            round_id: self.round_id.clone(),
+            node_id: self.node_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            outer_node_id: self.outer_node_id.clone(),
+            outer_attempt_id: self.outer_attempt_id.clone(),
+            path_label: format!("{}/{}", self.node_id, self.attempt_id),
+        }
+    }
+}
+
+fn worker_ref_can_continue(path: &Utf8Path) -> bool {
+    read_json::<WorkerRefState>(path)
+        .ok()
+        .and_then(|worker_ref| worker_ref.continue_ref)
+        .is_some()
+}
+
+fn workflow_edge_continues_session(
+    workflow: &WorkflowDsl,
+    from_node_id: Option<&str>,
+    to_node_id: &str,
+    edge_outcome: Option<&str>,
+) -> bool {
+    let (Some(from_node_id), Some(edge_outcome)) = (from_node_id, edge_outcome) else {
+        return false;
+    };
+    workflow.edges.iter().any(|edge| {
+        edge.from == from_node_id
+            && edge.to == to_node_id
+            && enum_label(&edge.on) == edge_outcome
+            && edge.session == Some(SessionMode::Continue)
+    })
+}
+
+fn resolve_terminal_session_successor(
+    source: &ConversationSessionLocator,
+    direct: &HashMap<ConversationSessionLocator, ConversationSessionLocator>,
+) -> Option<ConversationSessionLocator> {
+    let mut seen = HashSet::from([source.clone()]);
+    let mut current = direct.get(source)?.clone();
+    while seen.insert(current.clone()) {
+        let Some(next) = direct.get(&current) else {
+            return Some(current);
+        };
+        current = next.clone();
+    }
+    None
+}
+
+fn conversation_session_successors_from_state(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    rounds: &[RoundState],
+    workflow: Option<&WorkflowDsl>,
+) -> anyhow::Result<HashMap<ConversationSessionLocator, ConversationSessionTargetVm>> {
+    let mut direct = HashMap::<ConversationSessionLocator, ConversationSessionLocator>::new();
+
+    if let Some(workflow) = workflow {
+        for round in rounds {
+            let mut trace = round.trace.clone();
+            trace.sort_by_key(|step| step.sequence);
+            let mut latest_by_node = HashMap::<String, ConversationSessionLocator>::new();
+            for step in trace {
+                let target = ConversationSessionLocator {
+                    round_id: round.id.clone(),
+                    node_id: step.node_id.clone(),
+                    attempt_id: step.attempt_id.clone(),
+                    outer_node_id: None,
+                    outer_attempt_id: None,
+                };
+                if workflow_edge_continues_session(
+                    workflow,
+                    step.from_node_id.as_deref(),
+                    &step.node_id,
+                    step.edge_outcome.as_deref(),
+                ) && let Some(source) = latest_by_node.get(&step.node_id)
+                {
+                    let worker_ref_path = app.paths.worker_ref_file(
+                        task_id,
+                        run_id,
+                        &source.round_id,
+                        &source.node_id,
+                        &source.attempt_id,
+                    );
+                    if source != &target && worker_ref_can_continue(&worker_ref_path) {
+                        direct.insert(source.clone(), target.clone());
+                    }
+                }
+                latest_by_node.insert(step.node_id, target);
+            }
+        }
+    }
+
+    for round in rounds {
+        for node in app.node_list(task_id, run_id, &round.id)? {
+            if node.node_type != NodeType::AiDynamic {
+                continue;
+            }
+            for outer_attempt in app.attempt_list(task_id, run_id, &round.id, &node.node_id)? {
+                let dynamic_path = app.paths.dynamic_graph_file(
+                    task_id,
+                    run_id,
+                    &round.id,
+                    &node.node_id,
+                    &outer_attempt.attempt_id,
+                );
+                if !dynamic_path.exists() {
+                    continue;
+                }
+                let graph = load_dynamic_graph(&dynamic_path, &app.paths.repo_root)?;
+                for dynamic_node in &graph.nodes {
+                    if dynamic_node.session_mode != SessionMode::Continue {
+                        continue;
+                    }
+                    let Some(source_node_id) = dynamic_node.continue_from_node_id.as_ref() else {
+                        continue;
+                    };
+                    let attempt_id = default_dynamic_attempt_id();
+                    let source = ConversationSessionLocator {
+                        round_id: round.id.clone(),
+                        node_id: source_node_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        outer_node_id: Some(node.node_id.clone()),
+                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                    };
+                    let target = ConversationSessionLocator {
+                        round_id: round.id.clone(),
+                        node_id: dynamic_node.id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        outer_node_id: Some(node.node_id.clone()),
+                        outer_attempt_id: Some(outer_attempt.attempt_id.clone()),
+                    };
+                    let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &outer_attempt.attempt_id,
+                        source_node_id,
+                        &attempt_id,
+                    );
+                    let target_attempt_dir = app.paths.dynamic_node_attempt_dir(
+                        task_id,
+                        run_id,
+                        &round.id,
+                        &node.node_id,
+                        &outer_attempt.attempt_id,
+                        &dynamic_node.id,
+                        &attempt_id,
+                    );
+                    if source != target
+                        && target_attempt_dir.exists()
+                        && worker_ref_can_continue(&source_attempt_dir.join("worker-ref.json"))
+                    {
+                        direct.insert(source, target);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(direct
+        .keys()
+        .filter_map(|source| {
+            resolve_terminal_session_successor(source, &direct)
+                .map(|target| (source.clone(), target.target_vm()))
+        })
+        .collect())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn conversation_session_successor(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    node_id: &str,
+    attempt_id: &str,
+    outer_node_id: Option<&str>,
+    outer_attempt_id: Option<&str>,
+) -> anyhow::Result<Option<ConversationSessionTargetVm>> {
+    if !conversation_is_orchestrated(app, task_id) {
+        return Ok(None);
+    }
+    let round = read_json::<RoundState>(&app.paths.round_file(task_id, run_id, round_id))?;
+    let workflow =
+        read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id)).ok();
+    let successors = conversation_session_successors_from_state(
+        app,
+        task_id,
+        run_id,
+        &[round],
+        workflow.as_ref(),
+    )?;
+    Ok(successors
+        .get(&ConversationSessionLocator {
+            round_id: round_id.to_string(),
+            node_id: node_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            outer_node_id: outer_node_id.map(str::to_string),
+            outer_attempt_id: outer_attempt_id.map(str::to_string),
+        })
+        .cloned())
+}
+
+fn mark_composer_session_superseded(
+    composer: &mut ConversationComposerVm,
+    target: ConversationSessionTargetVm,
+) {
+    composer.mode = "session-superseded".to_string();
+    composer.submit_target = "none".to_string();
+    composer.status_key = None;
+    composer.can_stop = false;
+    composer.lock_input = true;
+    composer.superseded_by = Some(target);
+}
+
+fn apply_session_successors_to_tree(
+    rounds: &mut [ConversationRoundNodeVm],
+    successors: &HashMap<ConversationSessionLocator, ConversationSessionTargetVm>,
+) {
+    for round in rounds {
+        for node in &mut round.nodes {
+            for leaf in &mut node.attempts {
+                let locator = ConversationSessionLocator {
+                    round_id: leaf.round_id.clone(),
+                    node_id: leaf.node_id.clone(),
+                    attempt_id: leaf.attempt_id.clone(),
+                    outer_node_id: leaf.outer_node_id.clone(),
+                    outer_attempt_id: leaf.outer_attempt_id.clone(),
+                };
+                if let Some(target) = successors.get(&locator) {
+                    mark_composer_session_superseded(&mut leaf.lifecycle.composer, target.clone());
+                }
+            }
+            if let Some(outer_nodes) = &mut node.outer_nodes {
+                for outer_node in outer_nodes {
+                    for leaf in &mut outer_node.attempts {
+                        let locator = ConversationSessionLocator {
+                            round_id: leaf.round_id.clone(),
+                            node_id: leaf.node_id.clone(),
+                            attempt_id: leaf.attempt_id.clone(),
+                            outer_node_id: leaf.outer_node_id.clone(),
+                            outer_attempt_id: leaf.outer_attempt_id.clone(),
+                        };
+                        if let Some(target) = successors.get(&locator) {
+                            mark_composer_session_superseded(
+                                &mut leaf.lifecycle.composer,
+                                target.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_session_successors_to_active_sessions(
+    sessions: &mut [ConversationActiveSessionVm],
+    successors: &HashMap<ConversationSessionLocator, ConversationSessionTargetVm>,
+) {
+    for session in sessions {
+        let locator = ConversationSessionLocator {
+            round_id: session.round_id.clone(),
+            node_id: session.node_id.clone(),
+            attempt_id: session.attempt_id.clone(),
+            outer_node_id: session.outer_node_id.clone(),
+            outer_attempt_id: session.outer_attempt_id.clone(),
+        };
+        if let Some(target) = successors.get(&locator) {
+            mark_composer_session_superseded(&mut session.lifecycle.composer, target.clone());
+        }
+    }
+}
+
 pub fn conversation_run_vm(
     app: &App,
     project_id: &str,
@@ -2416,6 +2756,17 @@ pub fn conversation_run_vm(
         .unwrap_or_default();
 
     let rounds = app.round_list(task_id, run_id)?;
+    let session_successors = if is_orchestrated {
+        conversation_session_successors_from_state(
+            app,
+            task_id,
+            run_id,
+            &rounds,
+            workflow_snapshot.as_ref(),
+        )?
+    } else {
+        HashMap::new()
+    };
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
@@ -2876,6 +3227,9 @@ pub fn conversation_run_vm(
         });
     }
 
+    apply_session_successors_to_tree(&mut tree_rounds, &session_successors);
+    apply_session_successors_to_active_sessions(&mut active_sessions, &session_successors);
+
     // Determine which session leaf to load.
     let selected_leaf: Option<ConversationSessionLeafVm> = if let Some(key) = selected_session_key {
         // Find the leaf matching the key by searching the tree.
@@ -3027,6 +3381,7 @@ pub fn conversation_run_vm(
         scheduled_task_id: conversation_metadata
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
+        worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
     })
 }
 
@@ -3095,6 +3450,26 @@ fn missing_item(code: &str, label: &str, recovery_path: &str) -> ConversationMis
         code: code.to_string(),
         label: label.to_string(),
         recovery_path: recovery_path.to_string(),
+        params: serde_json::json!({}),
+    }
+}
+
+fn workflow_binding_missing_item(
+    error: &gold_band::workflow_model_binding::WorkflowModelBindingError,
+    workflow_template_id: &str,
+) -> ConversationMissingItemVm {
+    let mut params = error.params();
+    if let Some(object) = params.as_object_mut() {
+        object.insert(
+            "workflowTemplateId".to_string(),
+            serde_json::Value::String(workflow_template_id.to_string()),
+        );
+    }
+    ConversationMissingItemVm {
+        code: error.code().to_string(),
+        label: error.code().to_string(),
+        recovery_path: "/chat/run-modes".to_string(),
+        params,
     }
 }
 
@@ -3137,6 +3512,9 @@ pub fn validate_conversation_create_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
+    if input.work_location == ConversationWorkLocationVm::Worktree {
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
     if input.content.trim().is_empty() {
@@ -3217,11 +3595,45 @@ pub fn validate_conversation_create_vm(
                 "/chat/run-modes",
             ));
         } else if let Some(ref tid) = input.workflow_template_id {
-            let store = app.workflow_templates().ok();
-            let found = store
-                .as_ref()
-                .and_then(|s| s.templates.iter().find(|t| t.id == *tid));
-            if found.is_none() {
+            let authoring = if let Some(authoring) = input.workflow_authoring.as_ref() {
+                Some(authoring.clone())
+            } else {
+                app.workflow_templates().ok().and_then(|store| {
+                    store
+                        .templates
+                        .iter()
+                        .find(|template| template.id == *tid)
+                        .and_then(|template| {
+                            let mut workflow = template.workflow.clone();
+                            apply_optional_entry_preference(
+                                template,
+                                input.include_optional_entry,
+                                &mut workflow,
+                            )
+                            .ok()?;
+                            Some(TaskAuthoringWorkflow {
+                                workflow,
+                                model_bindings: template.model_bindings.clone(),
+                            })
+                        })
+                })
+            };
+            if let Some(mut authoring) = authoring {
+                if let Err(error) = migrate_authoring_workflow(
+                    &mut authoring.workflow,
+                    &mut authoring.model_bindings,
+                    None,
+                ) {
+                    missing.push(workflow_binding_missing_item(&error, tid));
+                } else if let Err(error) = validate_and_inject(
+                    &authoring.workflow,
+                    &authoring.model_bindings,
+                    &app.config.agents,
+                    &app.provider_diagnostics(),
+                ) {
+                    missing.push(workflow_binding_missing_item(&error, tid));
+                }
+            } else {
                 missing.push(missing_item(
                     "workflow.not-found",
                     "Selected workflow template not found",
@@ -3417,6 +3829,7 @@ fn build_direct_workflow(config: &ConversationDirectConfigVm) -> WorkflowDsl {
         control: Default::default(),
         nodes: vec![NodeDsl::Worker(WorkerNode {
             id: "direct-agent".to_string(),
+            execution_slot_id: None,
             provider: Some(config.agent_type.clone()),
             model: config.model_id.clone(),
             profile: None,
@@ -3485,51 +3898,73 @@ pub fn prepare_conversation_task_vm(
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
     // Build workflow
-    let (workflow, effective_include_interview) =
-        if input.run_mode == ConversationRunMode::Direct.as_str() {
-            let config = input
-                .direct_config
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
-            (build_direct_workflow(config), None)
-        } else if input.run_mode == ConversationRunMode::Auto.as_str() {
-            (build_auto_workflow(input.auto_config.as_ref()), None)
-        } else {
-            // Load from template
-            let store = app.workflow_templates()?;
-            let template_id = input
-                .workflow_template_id
-                .as_deref()
-                .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
-            let mut workflow = store
-                .templates
-                .iter()
-                .find(|t| t.id == template_id)
-                .map(|t| t.workflow.clone())
-                .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
-            let include_interview = apply_workflow_interview_preference(
-                template_id,
-                input.include_interview,
-                &mut workflow,
-            )?;
-            (workflow, include_interview)
-        };
+    let (mut workflow, mut model_bindings, effective_include_optional_entry) = if input.run_mode
+        == ConversationRunMode::Direct.as_str()
+    {
+        let config = input
+            .direct_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("direct config is required"))?;
+        (
+            build_direct_workflow(config),
+            WorkflowModelBindings::default(),
+            None,
+        )
+    } else if input.run_mode == ConversationRunMode::Auto.as_str() {
+        (
+            build_auto_workflow(input.auto_config.as_ref()),
+            gold_band::workflow_model_binding::WorkflowModelBindings::default(),
+            None,
+        )
+    } else if let Some(authoring) = input.workflow_authoring.as_ref() {
+        (
+            authoring.workflow.clone(),
+            authoring.model_bindings.clone(),
+            input.include_optional_entry,
+        )
+    } else {
+        // Load from template
+        let store = app.workflow_templates()?;
+        let template_id = input
+            .workflow_template_id
+            .as_deref()
+            .unwrap_or(DEFAULT_WORKFLOW_TEMPLATE_ID);
+        let template = store
+            .templates
+            .iter()
+            .find(|t| t.id == template_id)
+            .ok_or_else(|| anyhow::anyhow!("workflow template not found: {template_id}"))?;
+        let mut workflow = template.workflow.clone();
+        let include_optional_entry =
+            apply_optional_entry_preference(template, input.include_optional_entry, &mut workflow)?;
+        (
+            workflow,
+            template.model_bindings.clone(),
+            include_optional_entry,
+        )
+    };
+    migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;
 
     // Git is an authoritative prerequisite for Auto and every workflow that
     // directly contains AI-DYNAMIC. Check before creating either the task or run.
     if gold_band::dsl::workflow_contains_ai_dynamic(&workflow) {
         gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
+    if input.work_location == ConversationWorkLocationVm::Worktree {
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
+    }
 
     // Create task
-    let summary = app.create_task_from_requirement(CreateTaskInput {
+    let task_input = CreateTaskInput {
         title: Some(title.clone()),
         description: None,
         requirement_file_name: None,
         requirement_content: input.content.clone(),
-        workflow,
+        workflow: workflow.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
-    })?;
+    };
+    let summary =
+        app.create_task_from_requirement_with_bindings(task_input, workflow, model_bindings)?;
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
@@ -3551,11 +3986,11 @@ pub fn prepare_conversation_task_vm(
         .as_ref()
         .and_then(|config| direct_agent_identity(app, &config.agent_type));
     let meta = ConversationMetadata {
-        version: "2".to_string(),
+        version: "3".to_string(),
         source: "conversation-ui".to_string(),
         run_mode: input.run_mode.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
-        include_interview: effective_include_interview,
+        include_optional_entry: effective_include_optional_entry,
         direct_config: input.direct_config.clone(),
         agent_identity,
         title_auto_generated: true,
@@ -3579,6 +4014,7 @@ pub fn prepare_conversation_task_vm(
         ),
         created_at: created_at.clone(),
         last_activity_at: Some(created_at),
+        work_location: input.work_location,
         scheduled_task_id: input.scheduled_task_id.clone(),
         scheduled_content_fingerprint: input.scheduled_content_fingerprint.clone(),
     };
@@ -3611,11 +4047,18 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationRunVm> {
-    let (task_id, task_uuid, title) = create_conversation_task_vm(app, input)?;
+    let prepared_task = prepare_conversation_task_vm(app, input)?;
+    let task_id = prepared_task.task_id().to_string();
+    let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
+    let title = prepared_task.title().to_string();
 
-    // Start the workflow in the background so the conversation surface can
-    // display the session as soon as the first ACP events arrive.
-    let run = app.run_start_background(&task_id, None)?;
+    let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
+        app.prepare_run_in_worktree(&task_id, None)?
+    } else {
+        app.prepare_run(&task_id, None)?
+    };
+    let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
+    prepared_task.accept();
     if let Some(run_mode) = conversation_run_mode_from_label(&input.run_mode) {
         emit_conversation_run_started(app, &input.project_id, &task_id, &run.id, run_mode);
     }
@@ -3658,59 +4101,9 @@ pub fn create_conversation_run_vm(
             pause_reason: None,
             runtime_error_message: None,
             scheduled_task_id: input.scheduled_task_id.clone(),
+            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
     })
-}
-
-fn remove_default_workflow_interview_stage(workflow: &mut WorkflowDsl) -> anyhow::Result<()> {
-    const INTERVIEW_NODE_ID: &str = "interview";
-
-    if workflow.entry != INTERVIEW_NODE_ID {
-        anyhow::bail!("default workflow interview stage must be the entry node");
-    }
-    if !workflow
-        .nodes
-        .iter()
-        .any(|node| node.id() == INTERVIEW_NODE_ID)
-    {
-        anyhow::bail!("default workflow interview stage is missing");
-    }
-
-    let mut successors = workflow
-        .edges
-        .iter()
-        .filter(|edge| edge.from == INTERVIEW_NODE_ID && edge.on == EdgeOutcome::Success)
-        .map(|edge| edge.to.as_str());
-    let next_entry = successors
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("default workflow interview stage has no success edge"))?;
-    if successors.next().is_some() {
-        anyhow::bail!("default workflow interview stage has multiple success edges");
-    }
-    let next_entry = next_entry.to_string();
-
-    workflow.nodes.retain(|node| node.id() != INTERVIEW_NODE_ID);
-    workflow
-        .edges
-        .retain(|edge| edge.from != INTERVIEW_NODE_ID && edge.to != INTERVIEW_NODE_ID);
-    workflow.entry = next_entry;
-    Ok(())
-}
-
-fn apply_workflow_interview_preference(
-    template_id: &str,
-    include_interview: Option<bool>,
-    workflow: &mut WorkflowDsl,
-) -> anyhow::Result<Option<bool>> {
-    if template_id != DEFAULT_WORKFLOW_TEMPLATE_ID {
-        return Ok(None);
-    }
-
-    let include_interview = include_interview.unwrap_or(true);
-    if !include_interview {
-        remove_default_workflow_interview_stage(workflow)?;
-    }
-    Ok(Some(include_interview))
 }
 
 pub fn rerun_conversation_task_vm(
@@ -3733,8 +4126,15 @@ pub fn rerun_conversation_task_vm(
             }
         }
     }
-    // Start new run in the background; live ACP events drive the UI refresh.
-    let run = app.run_start_background(task_id, None)?;
+    let work_location = read_conversation_metadata(app, task_id)
+        .map(|metadata| metadata.work_location)
+        .unwrap_or_default();
+    let prepared_run = if work_location == ConversationWorkLocationVm::Worktree {
+        app.prepare_run_in_worktree(task_id, None)?
+    } else {
+        app.prepare_run(task_id, None)?
+    };
+    let run = app.launch_prepared_run_background(task_id, prepared_run.accept())?;
     if let Some(run_mode) = run_mode {
         emit_conversation_run_started(app, project_id, task_id, &run.id, run_mode);
     }
@@ -3782,6 +4182,7 @@ pub fn rerun_conversation_task_vm(
             pause_reason: None,
             runtime_error_message: None,
             scheduled_task_id: None,
+            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
     })
 }
@@ -3801,6 +4202,16 @@ fn emit_conversation_run_started(
             run_mode,
         },
     );
+}
+
+fn conversation_run_worktree_vm(
+    worktree: Option<&gold_band::runtime::RunWorktreeState>,
+) -> Option<ConversationRunWorktreeVm> {
+    worktree.map(|worktree| ConversationRunWorktreeVm {
+        path: worktree.path.to_string(),
+        branch: worktree.branch.clone(),
+        fork_commit: worktree.fork_commit.clone(),
+    })
 }
 
 pub fn switch_conversation_session_vm(
@@ -3847,26 +4258,48 @@ mod tests {
 
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
-        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationTaskActivityVm,
-        ConversationWorkspaceSource, ConversationWorkspaceVm, PromptActivity,
-        apply_workflow_interview_preference, attempt_control_mode, build_auto_workflow,
+        ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
+        ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
+        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, build_auto_workflow,
         build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
-        conversation_run_vm, conversation_sidebar_vm_from_sources,
-        conversation_status_from_session, conversation_task_activity, conversation_workspace_vms,
-        create_conversation_run_vm, create_conversation_task_vm,
-        derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
-        find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
-        scheduled_task_vms_from_sources, switch_conversation_session_vm,
+        conversation_run_vm, conversation_session_successors_from_state,
+        conversation_sidebar_vm_from_sources, conversation_status_from_session,
+        conversation_task_activity, conversation_workspace_vms, create_conversation_run_vm,
+        create_conversation_task_vm, derive_conversation_attempt_lifecycle,
+        derive_conversation_attempt_lifecycle_with_facets, find_leaf_by_key, lifecycle_is_active,
+        rerun_conversation_task_vm, scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        switch_conversation_session_vm, validate_conversation_create_vm,
+        workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
-    use gold_band::app::{App, CreateTaskInput, RuntimeLifecycleEvent};
-    use gold_band::config::ConversationRunMode;
+    use gold_band::app::{
+        App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
+    };
+    use gold_band::config::{ConversationRunMode, ProviderDiagnosticSnapshot};
     use gold_band::domain::TurnControlMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
-    use gold_band::runtime::{RuntimeExecutionPhase, RuntimeExecutionState};
+    use gold_band::runtime::{RoundState, RuntimeExecutionPhase, RuntimeExecutionState};
+    use gold_band::workflow_model_binding::WorkflowModelBindings;
     use serde_json::json;
+
+    #[test]
+    fn workflow_binding_missing_item_preserves_repair_locator_params() {
+        let item = workflow_binding_missing_item(
+            &gold_band::workflow_model_binding::WorkflowModelBindingError::AgentRequired {
+                execution_slot_id: "slot-dev".to_string(),
+                node_id: "dev".to_string(),
+            },
+            "default",
+        );
+
+        assert_eq!(item.code, "workflow-model-binding.agent-required");
+        assert_eq!(item.recovery_path, "/chat/run-modes");
+        assert_eq!(item.params["workflowTemplateId"], "default");
+        assert_eq!(item.params["executionSlotId"], "slot-dev");
+        assert_eq!(item.params["nodeId"], "dev");
+    }
 
     fn workflow_with_interview() -> gold_band::dsl::WorkflowDsl {
         serde_json::from_value(json!({
@@ -3887,26 +4320,74 @@ mod tests {
     }
 
     #[test]
-    fn interview_preference_only_changes_the_builtin_default_workflow() {
+    fn optional_entry_preference_only_changes_a_template_that_declares_the_capability() {
         let mut custom = workflow_with_interview();
-        let result =
-            apply_workflow_interview_preference("custom", Some(false), &mut custom).unwrap();
+        let custom_template = WorkflowTemplate {
+            id: "custom".to_string(),
+            name: "Custom".to_string(),
+            is_built_in: false,
+            optional_entry_stage: None,
+            workflow: custom.clone(),
+            model_bindings: WorkflowModelBindings::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result = gold_band::app::apply_optional_entry_preference(
+            &custom_template,
+            Some(false),
+            &mut custom,
+        )
+        .unwrap();
         assert_eq!(result, None);
         assert_eq!(custom.entry, "interview");
         assert!(custom.nodes.iter().any(|node| node.id() == "interview"));
 
         let mut default = workflow_with_interview();
-        let result =
-            apply_workflow_interview_preference("default", Some(false), &mut default).unwrap();
+        let default_template = WorkflowTemplate {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            is_built_in: true,
+            optional_entry_stage: Some(OptionalEntryStage {
+                node_id: "interview".to_string(),
+                label_key: "conversation.home.includeInterview".to_string(),
+                default_enabled: true,
+            }),
+            workflow: default.clone(),
+            model_bindings: WorkflowModelBindings::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result = gold_band::app::apply_optional_entry_preference(
+            &default_template,
+            Some(false),
+            &mut default,
+        )
+        .unwrap();
         assert_eq!(result, Some(false));
         assert_eq!(default.entry, "plan");
         assert!(!default.nodes.iter().any(|node| node.id() == "interview"));
     }
 
     #[test]
-    fn default_workflow_interview_is_enabled_when_the_preference_is_missing() {
+    fn optional_entry_uses_the_template_default_when_the_preference_is_missing() {
         let mut workflow = workflow_with_interview();
-        let result = apply_workflow_interview_preference("default", None, &mut workflow).unwrap();
+        let template = WorkflowTemplate {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            is_built_in: true,
+            optional_entry_stage: Some(OptionalEntryStage {
+                node_id: "interview".to_string(),
+                label_key: "conversation.home.includeInterview".to_string(),
+                default_enabled: true,
+            }),
+            workflow: workflow.clone(),
+            model_bindings: WorkflowModelBindings::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let result =
+            gold_band::app::apply_optional_entry_preference(&template, None, &mut workflow)
+                .unwrap();
         assert_eq!(result, Some(true));
         assert_eq!(workflow.entry, "interview");
     }
@@ -3921,6 +4402,197 @@ mod tests {
             "在.claude下输出两个python类"
         );
         assert_eq!(conversation_auto_title("", 20), "New Task");
+    }
+
+    #[test]
+    fn workflow_continue_successors_resolve_the_whole_chain_to_the_latest_attempt() {
+        let app = App::new(temp_repo_root());
+        let task_id = "task-session-owner";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let workflow: gold_band::dsl::WorkflowDsl = serde_json::from_value(json!({
+            "version": "0.1",
+            "id": "session-owner",
+            "entry": "review",
+            "control": {},
+            "nodes": [
+                { "type": "worker", "id": "review", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "review", "to": "review", "on": "failure", "session": "continue" }
+            ]
+        }))
+        .unwrap();
+        let round: RoundState = serde_json::from_value(json!({
+            "version": gold_band::domain::VERSION,
+            "id": round_id,
+            "run_id": run_id,
+            "index": 1,
+            "status": "completed",
+            "outcome": "success",
+            "trigger": "initial",
+            "started_at": "2026-08-16T00:00:00Z",
+            "trace": [
+                { "sequence": 1, "node_id": "review", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-08-16T00:00:00Z" },
+                { "sequence": 2, "node_id": "review", "attempt_id": "attempt-002", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:01Z" },
+                { "sequence": 3, "node_id": "review", "attempt_id": "attempt-003", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:02Z" }
+            ]
+        }))
+        .unwrap();
+        for (attempt_id, session_id) in [
+            ("attempt-001", "session-001"),
+            ("attempt-002", "session-001"),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .worker_ref_file(task_id, run_id, round_id, "review", attempt_id),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "provider": "claude-acp",
+                    "mode": "continue",
+                    "supports_open_session": true,
+                    "supports_continue_session": true,
+                    "continue_ref": { "acpSessionId": session_id },
+                    "open_command": null
+                }),
+            )
+            .unwrap();
+        }
+
+        let successors = conversation_session_successors_from_state(
+            &app,
+            task_id,
+            run_id,
+            std::slice::from_ref(&round),
+            Some(&workflow),
+        )
+        .unwrap();
+        let first = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "review".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            })
+            .unwrap();
+        let second = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "review".to_string(),
+                attempt_id: "attempt-002".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            })
+            .unwrap();
+
+        assert_eq!(first.attempt_id, "attempt-003");
+        assert_eq!(second.attempt_id, "attempt-003");
+        assert!(
+            !successors
+                .keys()
+                .any(|locator| locator.attempt_id == "attempt-003")
+        );
+
+        let mut new_session_workflow = workflow;
+        new_session_workflow.edges[0].session = Some(gold_band::domain::SessionMode::New);
+        let new_session_successors = conversation_session_successors_from_state(
+            &app,
+            task_id,
+            run_id,
+            &[round],
+            Some(&new_session_workflow),
+        )
+        .unwrap();
+        assert!(new_session_successors.is_empty());
+    }
+
+    #[test]
+    fn auto_dynamic_continue_successor_uses_the_explicit_continue_source() {
+        let app = App::new(temp_repo_root());
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "completed",
+            Vec::new(),
+            true,
+        );
+        let task_id = "task-dyn";
+        let run_id = "run-dyn";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let graph_path = app.paths.dynamic_graph_file(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        let mut target = graph["nodes"][0].clone();
+        target["id"] = json!("good-night");
+        target["title"] = json!("Good night");
+        target["task"] = json!("Say good night");
+        target["chainId"] = json!("good-night");
+        target["sessionMode"] = json!("continue");
+        target["continueFromNodeId"] = json!("good-morning");
+        graph["nodes"].as_array_mut().unwrap().push(target);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+        let source_attempt_dir = app.paths.dynamic_node_attempt_dir(
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            "good-morning",
+            "attempt-001",
+        );
+        gold_band::storage::write_json(
+            &source_attempt_dir.join("worker-ref.json"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "provider": "claude-acp",
+                "mode": "new",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": { "acpSessionId": "session-good-morning" },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .dynamic_node_attempt_dir(
+                    task_id,
+                    run_id,
+                    round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                    "good-night",
+                    "attempt-001",
+                )
+                .as_std_path(),
+        )
+        .unwrap();
+
+        let rounds = app.round_list(task_id, run_id).unwrap();
+        let successors =
+            conversation_session_successors_from_state(&app, task_id, run_id, &rounds, None)
+                .unwrap();
+        let target = successors
+            .get(&ConversationSessionLocator {
+                round_id: round_id.to_string(),
+                node_id: "good-morning".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(target.node_id, "good-night");
+        assert_eq!(target.outer_node_id.as_deref(), Some(outer_node_id));
     }
 
     #[test]
@@ -5042,6 +5714,60 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_auto_snapshot_preserves_agent_and_strategy_identity() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run this automatically".to_string(),
+            run_mode: ConversationRunMode::Auto.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: Some(ConversationAutoConfigVm {
+                agent_strategy: Some("dynamic".to_string()),
+                agent_type: "agent-primary".to_string(),
+                bootstrap_agent_type: Some("agent-bootstrap".to_string()),
+                bootstrap_model_id: None,
+                bootstrap_config_options: Default::default(),
+                acceptance_model_id: None,
+                acceptance_config_options: Default::default(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+                available_agents: Some(vec![ConversationDynamicAgentRefVm {
+                    provider: "agent-worker".to_string(),
+                    model: None,
+                    permission_mode: None,
+                    config_options: Default::default(),
+                }]),
+                routing_prompt: None,
+                allowed_workflows: None,
+                allowed_profiles: None,
+                global_goal: None,
+                control: None,
+                active_template_id: None,
+                active_template_name: None,
+            }),
+            attachment_paths: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let snapshot = scheduled_content_snapshot(&app, &input).unwrap();
+        let auto = snapshot.auto_authoring.unwrap();
+
+        assert_eq!(auto.agent_type, "agent-primary");
+        assert_eq!(auto.agent_strategy, "dynamic");
+        assert_eq!(
+            auto.bootstrap_agent_type.as_deref(),
+            Some("agent-bootstrap")
+        );
+        assert_eq!(auto.available_agent_types, vec!["agent-worker"]);
+    }
+
+    #[test]
     fn build_direct_workflow_uses_one_raw_agent_worker() {
         let workflow = build_direct_workflow(&ConversationDirectConfigVm {
             agent_type: "codex-acp".to_string(),
@@ -5089,7 +5815,17 @@ mod tests {
 
     #[test]
     fn conversation_new_run_and_rerun_publish_canonical_started_facts() {
-        let app = App::new(temp_repo_root());
+        let app = App::new(temp_repo_root()).with_provider_diagnostics_source(Arc::new(|| {
+            Ok(std::collections::BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-18T00:00:00Z".to_string(),
+                    capabilities: None,
+                },
+            )]))
+        }));
         let events = Arc::new(Mutex::new(Vec::new()));
         let events_for_subscriber = events.clone();
         app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
@@ -5111,7 +5847,7 @@ mod tests {
             content: "start a direct conversation".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: Some(ConversationDirectConfigVm {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
@@ -5120,8 +5856,10 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: None,
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         let created = create_conversation_run_vm(&app, &input).unwrap();
@@ -5141,6 +5879,29 @@ mod tests {
     }
 
     #[test]
+    fn worktree_validation_preserves_the_non_git_preflight_error_code() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "run in an isolated worktree".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: None,
+            auto_config: None,
+            attachment_paths: None,
+            work_location: ConversationWorkLocationVm::Worktree,
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let error = validate_conversation_create_vm(&app, &input).unwrap_err();
+
+        assert_eq!(error.to_string(), "run.git-repository-required");
+    }
+
+    #[test]
     fn scheduled_task_materialization_creates_task_without_starting_run() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
@@ -5148,7 +5909,7 @@ mod tests {
             content: "run this later".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: Some(ConversationDirectConfigVm {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
@@ -5157,8 +5918,10 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: None,
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
@@ -5174,7 +5937,7 @@ mod tests {
             content: "task must roll back".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: Some(ConversationDirectConfigVm {
                 agent_type: "claude-acp".to_string(),
                 model_id: None,
@@ -5183,8 +5946,10 @@ mod tests {
             }),
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         assert!(create_conversation_task_vm(&app, &input).is_err());
@@ -5860,7 +6625,7 @@ mod tests {
                 "source": "conversation-ui",
                 "runMode": run_mode,
                 "workflowTemplateId": null,
-                "includeInterview": null,
+                "includeOptionalEntry": null,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,
@@ -6416,12 +7181,34 @@ mod tests {
         )
         .unwrap();
         let value =
-            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition)).unwrap();
+            serde_json::to_value(super::ScheduledTaskVm::from_definition(&definition, None))
+                .unwrap();
         assert_eq!(value["schedule"]["kind"], "Repeat");
         assert_eq!(value["schedule"]["timezone"], "Asia/Shanghai");
         assert!(value.get("scheduleLabel").is_none());
         assert!(value.get("timezoneLabel").is_none());
         assert!(value.get("lastTriggerLabel").is_none());
+    }
+
+    #[test]
+    fn scheduled_task_vm_next_at_uses_persisted_next_run_at_not_realtime_recompute() {
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "scheduled-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::every(3, "minutes", chrono::Utc::now()).unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        // 模拟数据库持久化的 next_run_at（与 now 实时重算的结果不同）。
+        let persisted = chrono::Utc::now() + chrono::Duration::days(7);
+
+        let vm = super::ScheduledTaskVm::from_definition(&definition, Some(persisted));
+        assert_eq!(vm.next_at.as_deref(), Some(persisted.to_rfc3339().as_str()));
+
+        // 不传 next_run_at（None）时 next_at 为 None，而不是回退到 now 实时算。
+        let vm_none = super::ScheduledTaskVm::from_definition(&definition, None);
+        assert!(vm_none.next_at.is_none());
     }
 
     #[test]

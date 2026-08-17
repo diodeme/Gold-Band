@@ -829,23 +829,9 @@
             "en": "Inter Variable · MiSans"
           },
           "defaultFaces": [
-            "inter-variable"
+            "inter-variable",
+            "misans-variable"
           ],
-          "byScript": {
-            "Hans": [
-              "inter-variable",
-              "misans-variable"
-            ],
-            "Latn": [
-              "inter-variable"
-            ]
-          },
-          "byLocale": {
-            "zh-CN": [
-              "inter-variable",
-              "misans-variable"
-            ]
-          },
           "systemFallbacks": [
             "Microsoft YaHei UI",
             "PingFang SC",
@@ -1701,23 +1687,9 @@
             "en": "Inter Variable · MiSans"
           },
           "defaultFaces": [
-            "inter-variable"
+            "inter-variable",
+            "misans-variable"
           ],
-          "byScript": {
-            "Hans": [
-              "inter-variable",
-              "misans-variable"
-            ],
-            "Latn": [
-              "inter-variable"
-            ]
-          },
-          "byLocale": {
-            "zh-CN": [
-              "inter-variable",
-              "misans-variable"
-            ]
-          },
           "systemFallbacks": [
             "Microsoft YaHei UI",
             "PingFang SC",

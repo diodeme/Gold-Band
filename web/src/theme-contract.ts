@@ -78,7 +78,6 @@ const fontFaceSchema = z.object({
 }).strict().refine((face) => face.weightMin <= face.weightMax, { message: 'font weight range must be ordered' });
 const fontStackSchema = z.object({
   id: z.string(), displayName: localizedTextSchema, defaultFaces: z.array(z.string()),
-  byScript: z.record(z.string(), z.array(z.string())).optional(), byLocale: z.record(z.string(), z.array(z.string())).optional(),
   systemFallbacks: z.array(z.string()).min(1).max(MAX_FONT_STACK_FAMILIES),
 }).strict();
 const fontsRuntimeSchema = z.object({ faces: z.array(fontFaceSchema), stacks: z.array(fontStackSchema).min(2) }).strict();

@@ -50,7 +50,7 @@ describe("AcpUsagePanel", () => {
     );
 
     expect(html).toContain('data-acp-session-info="true"');
-    expect(html).toContain('data-theme-role="composer"');
+    expect(html).not.toContain('data-theme-role="composer"');
     expect(html).toContain("acp.timingSession");
     expect(html).toContain("2m 21s");
     expect(html).toContain("tabular-nums");
@@ -74,6 +74,25 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain('data-acp-processing-spinner="true"');
     expect(html.indexOf("Agent 调起中")).toBeLessThan(html.indexOf("acp.timingSession"));
     expect(html.indexOf("acp.timingSession")).toBeLessThan(html.indexOf("acp.usagePanel.contextWindow"));
+  });
+
+  it("keeps the compact run worktree label at the far right and exposes its full path in a tooltip", () => {
+    const html = renderToStaticMarkup(
+      createElement(AcpUsagePanel, {
+        usage: { used: 32_000, size: 1_000_000 },
+        sessionSeconds: 9,
+        worktreePath: "C:/Users/test/AppData/Local/gold-band/projects/p1/worktrees/abc123",
+      }),
+    );
+
+    const worktree = html.match(/<span class="([^"]+)" tabindex="0" data-acp-worktree="true">/);
+    expect(html).toContain('data-acp-worktree="true"');
+    expect(html).toContain("conversation.runtime.worktree");
+    expect(html).toContain("C:/Users/test/AppData/Local/gold-band/projects/p1/worktrees/abc123");
+    expect(html.indexOf("acp.usagePanel.contextWindow")).toBeLessThan(html.indexOf('data-acp-worktree="true"'));
+    expect(worktree?.[1].split(' ')).toContain('ml-auto');
+    expect(worktree?.[1].split(' ')).toContain('gap-1');
+    expect(worktree?.[1].split(' ')).not.toContain('gap-1.5');
   });
 
   it("shows context occupancy followed by one row per reported token counter", () => {

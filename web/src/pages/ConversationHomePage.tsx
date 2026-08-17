@@ -3,7 +3,7 @@ import { ConversationGreeting } from '@/components/conversation/ConversationGree
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { cn } from '@/lib/utils';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -15,13 +15,16 @@ interface ConversationHomePageProps {
   profiles: ProfileVm[];
   busy: boolean;
   initialScheduledMode?: boolean;
+  workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
+  onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
+  onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
 }
 
@@ -35,13 +38,16 @@ export function ConversationHomePage({
   profiles,
   busy,
   initialScheduledMode = false,
+  workLocation,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
   onCreateScheduledTask,
   onOpenAgentManagement,
   onOpenRunModeSettings,
+  onWorkflowRepairTargetChange,
   onWorkspaceChange,
+  onWorkLocationChange,
   onScheduledModeExit,
 }: ConversationHomePageProps) {
   useThemeWallpaperSurface();
@@ -64,13 +70,16 @@ export function ConversationHomePage({
           profiles={profiles}
           busy={busy}
           initialScheduledMode={initialScheduledMode}
+          workLocation={workLocation}
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
           onCreateScheduledTask={onCreateScheduledTask}
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
+          onWorkflowRepairTargetChange={onWorkflowRepairTargetChange}
           onWorkspaceChange={onWorkspaceChange}
+          onWorkLocationChange={onWorkLocationChange}
           onScheduledModeExit={onScheduledModeExit}
         />
       </div>

@@ -6,7 +6,10 @@ const openerMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/api/shared', () => ({
-  invokeCommand: vi.fn(() => Promise.resolve({ profiles: [] })),
+  invokeCommand: vi.fn(() => Promise.resolve({
+    profiles: [],
+    preferences: { wallpapers: { recentWallpapers: [] } },
+  })),
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
 vi.mock('@tauri-apps/plugin-opener', () => openerMocks);
@@ -49,10 +52,25 @@ describe('desktopApi', () => {
   });
 
   it('forwards recent workspace removal to the Tauri command path', async () => {
+    vi.mocked(invokeCommand).mockResolvedValueOnce({
+      preferences: {
+        wallpapers: { recentWallpapers: [] },
+      },
+    });
+
     await desktopApi.removeRecentWorkspace('D:/Projects/code/ai/Gold-Band');
 
     expect(invokeCommand).toHaveBeenCalledWith('remove_recent_workspace', {
       workspace: 'D:/Projects/code/ai/Gold-Band',
+    });
+  });
+
+  it('loads task authoring from the requested conversation workspace', async () => {
+    await desktopApi.getWorkflow('task-1', 'project-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('get_workflow', {
+      projectId: 'project-1',
+      taskId: 'task-1',
     });
   });
 
@@ -79,6 +97,41 @@ describe('desktopApi', () => {
     });
   });
 
+  it('forwards the visible input and attachments with one runtime continue command', async () => {
+    const input = {
+      displayText: '请继续并补充测试',
+      quotes: [{ id: 'quote-1', sourceMessageKey: 'answer-1', text: '原始回答' }],
+    };
+
+    await desktopApi.continueConversationRuntime(
+      'project-1',
+      'task-1',
+      'run-1',
+      'round-1',
+      'node-1',
+      'attempt-1',
+      'outer-node-1',
+      'outer-attempt-1',
+      input,
+      'prompt-1',
+      ['C:/attachments/example.png'],
+    );
+
+    expect(invokeCommand).toHaveBeenCalledWith('continue_conversation_runtime', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      outerNodeId: 'outer-node-1',
+      outerAttemptId: 'outer-attempt-1',
+      input,
+      promptId: 'prompt-1',
+      attachmentPaths: ['C:/attachments/example.png'],
+    });
+  });
+
   it('routes ordinary run stop to the Tauri pause command', async () => {
     await desktopApi.pauseRun('task-1', 'run-1', 'project-1');
 
@@ -102,6 +155,28 @@ describe('desktopApi', () => {
     await desktopApi.getConversationWorkspaces();
 
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
+
+  it('forwards scheduled occurrence diagnostics commands', async () => {
+    await desktopApi.listScheduledTaskOccurrences('project-1', 'scheduled-1', 'cursor-1', 'failed');
+    expect(invokeCommand).toHaveBeenCalledWith('list_scheduled_task_occurrences', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+      cursor: 'cursor-1',
+      status: 'failed',
+    });
+
+    await desktopApi.getScheduledTaskDiagnostics('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('get_scheduled_task_diagnostics', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
+
+    await desktopApi.runScheduledTaskNow('project-1', 'scheduled-1');
+    expect(invokeCommand).toHaveBeenCalledWith('run_scheduled_task_now', {
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+    });
   });
 
   it('queries a captured turn change set with the complete branch locator', async () => {

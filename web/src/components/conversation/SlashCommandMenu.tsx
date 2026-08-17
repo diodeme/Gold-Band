@@ -94,7 +94,7 @@ export function SlashCommandMenu({
               id={`${menuId}-item-${index}`}
               value={command.name}
               className={cn(
-                'grid h-9 grid-cols-[minmax(7rem,12rem)_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-0 text-[13px] transition-[background-color,box-shadow] before:absolute before:inset-y-2 before:left-1 before:w-0.5 before:rounded-full before:bg-primary/60 before:opacity-0 data-[selected=true]:bg-primary/[0.07] data-[selected=true]:text-foreground data-[selected=true]:ring-1 data-[selected=true]:ring-inset data-[selected=true]:ring-primary/15 data-[selected=true]:before:opacity-100 dark:before:bg-foreground/65 dark:data-[selected=true]:bg-foreground/[0.10] dark:data-[selected=true]:ring-foreground/15',
+                'grid h-9 grid-cols-[minmax(7rem,12rem)_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-0 text-ui-compact transition-[background-color,box-shadow] before:absolute before:inset-y-2 before:left-1 before:w-0.5 before:rounded-full before:bg-primary/60 before:opacity-0 data-[selected=true]:bg-primary/[0.07] data-[selected=true]:text-foreground data-[selected=true]:ring-1 data-[selected=true]:ring-inset data-[selected=true]:ring-primary/15 data-[selected=true]:before:opacity-100 dark:before:bg-foreground/65 dark:data-[selected=true]:bg-foreground/[0.10] dark:data-[selected=true]:ring-foreground/15',
                 index === activeIndex && 'bg-primary/[0.07] text-foreground ring-1 ring-inset ring-primary/15 before:opacity-100 dark:bg-foreground/[0.10] dark:ring-foreground/15',
               )}
               onMouseDown={(event) => event.preventDefault()}
@@ -107,7 +107,7 @@ export function SlashCommandMenu({
                 {command.description}
               </span>
               {command.inputHint ? (
-                <span className="max-w-44 shrink-0 truncate rounded-full border border-border/50 bg-muted/55 px-2 py-0.5 text-[10px] leading-4 text-muted-foreground">
+                <span className="max-w-44 shrink-0 truncate rounded-full border border-border/50 bg-muted/55 px-2 py-0.5 text-ui-micro leading-4 text-muted-foreground">
                   {command.inputHint}
                 </span>
               ) : <span />}

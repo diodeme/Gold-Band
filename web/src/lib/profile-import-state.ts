@@ -1,7 +1,7 @@
 import type { ImportProfilesResult } from '../types';
 
 export interface ProfileImportState {
-  settingsOpen: boolean;
+  surface: 'closed' | 'settings' | 'result' | 'editing';
   dynamicTemplate: boolean;
   importing: boolean;
   result: ImportProfilesResult | null;
@@ -19,10 +19,12 @@ export type ProfileImportAction =
   | { type: 'close-result' }
   | { type: 'begin-edit' }
   | { type: 'edit-succeeded' }
-  | { type: 'edit-failed'; error: string };
+  | { type: 'edit-failed'; error: string }
+  | { type: 'profile-updated'; importedId: string; name: string }
+  | { type: 'resume-result' };
 
 export const initialProfileImportState: ProfileImportState = {
-  settingsOpen: false,
+  surface: 'closed',
   dynamicTemplate: false,
   importing: false,
   result: null,
@@ -35,19 +37,19 @@ export function profileImportReducer(
 ): ProfileImportState {
   switch (action.type) {
     case 'open-settings':
-      return { ...state, settingsOpen: true, result: null, error: null };
+      return { ...state, surface: 'settings', result: null, error: null };
     case 'close-settings':
-      return { ...state, settingsOpen: false, error: null };
+      return { ...state, surface: 'closed', error: null };
     case 'set-dynamic-template':
       return { ...state, dynamicTemplate: action.enabled };
     case 'begin-import':
-      return { ...state, importing: true, error: null };
+      return { ...state, surface: 'settings', importing: true, error: null };
     case 'cancel-import':
-      return { ...state, importing: false };
+      return { ...state, surface: 'settings', importing: false };
     case 'import-succeeded':
       return {
         ...state,
-        settingsOpen: false,
+        surface: 'result',
         importing: false,
         result: action.result,
         error: null,
@@ -55,17 +57,32 @@ export function profileImportReducer(
     case 'import-failed':
       return {
         ...state,
-        settingsOpen: true,
+        surface: 'settings',
         importing: false,
         error: action.error,
       };
     case 'close-result':
-      return { ...state, result: null, error: null };
+      return { ...state, surface: 'closed', result: null, error: null };
     case 'begin-edit':
-      return { ...state, error: null };
+      return { ...state, surface: state.result ? 'result' : 'closed', error: null };
     case 'edit-succeeded':
-      return { ...state, result: null, error: null };
+      return { ...state, surface: state.result ? 'editing' : 'closed', error: null };
     case 'edit-failed':
-      return { ...state, error: action.error };
+      return { ...state, surface: state.result ? 'result' : 'closed', error: action.error };
+    case 'profile-updated':
+      if (!state.result) return state;
+      return {
+        ...state,
+        result: {
+          ...state.result,
+          imported: state.result.imported.map((record) => (
+            record.importedId === action.importedId
+              ? { ...record, name: action.name }
+              : record
+          )),
+        },
+      };
+    case 'resume-result':
+      return { ...state, surface: state.result ? 'result' : 'closed', error: null };
   }
 }

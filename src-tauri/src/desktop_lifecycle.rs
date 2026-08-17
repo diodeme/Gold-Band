@@ -352,6 +352,13 @@ pub fn handle_run_event(app_handle: &AppHandle, event: RunEvent) {
                 warn!(?error, "failed to reopen main window from macOS Dock");
             }
         }
+        RunEvent::Resumed => {
+            if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
+                let _ = coordinator.send(crate::scheduled_runtime::SchedulerCommand::Reconcile {
+                    reason: gold_band::scheduler::coordinator::ReconcileReason::SystemResume,
+                });
+            }
+        }
         _ => {}
     }
 }

@@ -68,7 +68,7 @@ export function AcpAvatarWithTime({ tone, timestamp, className }: AcpAvatarWithT
   return (
     <div className={cn('flex shrink-0 flex-col items-center gap-1', className)}>
       <AcpAvatar tone={tone} />
-      <span className="text-[10px] text-muted-foreground/60 leading-none dark:text-muted-foreground/50">
+      <span className="text-ui-micro text-muted-foreground/60 leading-none dark:text-muted-foreground/50">
         {formatMessageTime(timestamp)}
       </span>
     </div>

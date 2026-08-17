@@ -40,11 +40,17 @@ describe('PermissionRequestCard', () => {
     const html = renderPermissionCard();
 
     expect(html).toContain('acp-permission-request-card');
+    expect(html).toContain('data-theme-role="permission-card"');
     expect(html).toContain('max-w-2xl');
-    expect(html).toContain('bg-card/65');
-    expect(html).toContain('bg-accent/65');
-    expect(html).toContain('bg-background/45');
+    expect(html).toContain('bg-transparent');
+    expect(html).toContain('border-l border-border/60');
+    expect(html).not.toContain('bg-accent/65');
+    expect(html).not.toContain('bg-background/45');
+    expect(html).not.toContain('bg-card/65');
+    expect(html).not.toContain('shadow-[0_16px_40px');
     expect(html).not.toContain('bg-primary text-primary-foreground');
+    expect(html).toContain('text-accent-foreground hover:border-accent-foreground/35 hover:bg-accent/60');
+    expect(html).toContain('focus-visible:border-accent-foreground/35 focus-visible:bg-accent/60');
   });
 
   it('exposes the full option label from the truncated button trigger', () => {

@@ -27,6 +27,7 @@ function Input({ className, type, variant = "default", ...props }: InputProps) {
     <input
       type={type}
       data-slot="input"
+      data-theme-role="input"
       data-input-variant={variant}
       className={cn(inputVariants({ variant, className }))}
       {...props}

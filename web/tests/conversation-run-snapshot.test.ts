@@ -187,11 +187,12 @@ describe('runtime-abnormal snapshots', () => {
       attemptId: 'attempt-001',
       lifecycle: {
         runtime: { status: 'paused', outcome: null, pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'paused',
         runtimeDisplay: runtimeAbnormalDisplay,
-        continueKind: 'input',
-        composer: { mode: 'interrupted-input', submitTarget: 'runtime-continue', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
+        continueKind: 'action',
+        composer: { mode: 'normal', submitTarget: 'acp-prompt', processingKind: 'processing', statusKey: null, canStop: false, lockInput: false },
       },
     });
 
@@ -254,7 +255,8 @@ describe('applyConversationSelectedSessionSnapshot', () => {
       attemptId: 'attempt-001',
       lifecycle: {
         runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        control: { mode: 'runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
         continueKind: null,

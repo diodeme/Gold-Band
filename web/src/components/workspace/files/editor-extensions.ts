@@ -5,16 +5,16 @@ import { tags } from '@lezer/highlight';
 
 export const workspaceEditorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
-  '.cm-scroller': { fontFamily: 'var(--font-mono, ui-monospace)', fontSize: '12px', lineHeight: '1.6' },
+  '.cm-scroller': { fontFamily: 'var(--app-editor-font-family, ui-monospace)', fontSize: 'var(--app-editor-font-size, 12px)', lineHeight: '1.6' },
   '.cm-content': { padding: '12px 0' },
   '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted-foreground)', borderRight: '1px solid color-mix(in srgb, var(--border) 55%, transparent)' },
   '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'color-mix(in srgb, var(--muted) 35%, transparent)' },
   '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--text-selection)' },
   '.cm-deletedChunk, .cm-deletedLine': { backgroundColor: 'color-mix(in srgb, var(--destructive) 10%, transparent)' },
   '.cm-insertedLine': { backgroundColor: 'color-mix(in srgb, var(--gold-success) 10%, transparent)' },
-  '.cm-deletedText': { backgroundColor: 'color-mix(in srgb, var(--destructive) 25%, transparent)' },
+  '.cm-deletedText': { backgroundColor: 'color-mix(in srgb, var(--destructive) 12%, transparent)' },
   '&.cm-merge-b .cm-changedText': {
-    backgroundColor: 'color-mix(in srgb, var(--gold-success) 22%, transparent)',
+    backgroundColor: 'color-mix(in srgb, var(--gold-success) 12%, transparent)',
     backgroundImage: 'none',
   },
   '.cm-deletedLineGutter': { color: 'var(--destructive)' },
@@ -33,7 +33,7 @@ export const workspaceHighlightStyle = HighlightStyle.define([
   { tag: [tags.invalid, tags.deleted], color: 'var(--gold-danger)' },
   { tag: [tags.heading, tags.strong], color: 'var(--foreground)', fontWeight: '600' },
   { tag: tags.emphasis, fontStyle: 'italic' },
-  { tag: [tags.link, tags.url], color: 'var(--gold-running)', textDecoration: 'underline' },
+  { tag: [tags.link, tags.url], color: 'var(--link)', textDecoration: 'underline' },
 ]);
 
 export const workspaceSyntaxHighlighting = syntaxHighlighting(workspaceHighlightStyle);

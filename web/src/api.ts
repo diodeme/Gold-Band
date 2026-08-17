@@ -1,5 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
+import type { ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -42,6 +43,10 @@ export function updateAgent(agentType: string, input: Parameters<ReturnType<type
 
 export function deleteAgent(agentType: string) {
   return getRuntimeApi().deleteAgent(agentType);
+}
+
+export function getAgentBindingUsage(agentType: string) {
+  return getRuntimeApi().getAgentBindingUsage(agentType);
 }
 
 export function doctorAgent(agentType: string) {
@@ -92,28 +97,28 @@ export function getTaskDetail(taskId: string) {
   return getRuntimeApi().getTaskDetail(taskId);
 }
 
-export function getWorkflow(taskId: string) {
-  return getRuntimeApi().getWorkflow(taskId);
+export function getWorkflow(taskId: string, projectId?: string | null) {
+  return getRuntimeApi().getWorkflow(taskId, projectId);
 }
 
 export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createTask']>[0]) {
   return getRuntimeApi().createTask(input);
 }
 
-export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2]) {
-  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow);
+export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[3]) {
+  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow, modelBindings);
 }
 
 export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
-export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1]) {
-  return getRuntimeApi().saveWorkflowTemplate(name, workflow);
+export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
+  return getRuntimeApi().saveWorkflowTemplate(name, workflow, modelBindings);
 }
 
-export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1]) {
-  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow);
+export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[2]) {
+  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow, modelBindings);
 }
 
 export function deleteWorkflowTemplate(templateId: string) {
@@ -152,8 +157,16 @@ export function startRun(taskId: string) {
   return getRuntimeApi().startRun(taskId);
 }
 
-export function continueRun(projectId: string | null | undefined, taskId: string, runId: string, promptId?: string | null, prompt?: string | null) {
-  return getRuntimeApi().continueRun(projectId, taskId, runId, promptId, prompt);
+export function continueRun(projectId: string | null | undefined, taskId: string, runId: string) {
+  return getRuntimeApi().continueRun(projectId, taskId, runId);
+}
+
+export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('./types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths);
+}
+
+export function recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number) {
+  return getRuntimeApi().recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision);
 }
 
 export function pauseRun(taskId: string, runId: string, projectId?: string | null) {
@@ -188,6 +201,106 @@ export function initializeGitRepository(projectId?: string | null) {
   return getRuntimeApi().initializeGitRepository(projectId);
 }
 
+export function getSourceControlSnapshot(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
+}
+
+export function getGitHistory(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitHistory']>[2]) {
+  return getRuntimeApi().getGitHistory(projectId, workspacePath, query);
+}
+
+export function getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string) {
+  return getRuntimeApi().getGitCommitDetail(projectId, workspacePath, oid);
+}
+
+export function getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReview']>[2]) {
+  return getRuntimeApi().getGitCommitReview(projectId, workspacePath, query);
+}
+
+export function getGitCommitReachability(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitCommitReachability']>[2]) {
+  return getRuntimeApi().getGitCommitReachability(projectId, workspacePath, query);
+}
+
+export function executeGitMutation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['executeGitMutation']>[2]) {
+  return getRuntimeApi().executeGitMutation(projectId, workspacePath, input);
+}
+
+export function getGitComparison(projectId: string, source: Parameters<ReturnType<typeof getRuntimeApi>['getGitComparison']>[1]) {
+  return getRuntimeApi().getGitComparison(projectId, source);
+}
+
+export function startGitOperation(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitOperation']>[2]) {
+  return getRuntimeApi().startGitOperation(projectId, workspacePath, input);
+}
+
+export function getGitOperation(operationId: string) {
+  return getRuntimeApi().getGitOperation(operationId);
+}
+
+export function cancelGitOperation(operationId: string) {
+  return getRuntimeApi().cancelGitOperation(operationId);
+}
+
+export function startGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
+  return getRuntimeApi().startGitStateMonitor(projectId, workspacePath);
+}
+
+export function stopGitStateMonitor(projectId: string, workspacePath: string | null | undefined) {
+  return getRuntimeApi().stopGitStateMonitor(projectId, workspacePath);
+}
+
+export function subscribeGitOperationUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeGitOperationUpdates']>>[0]) {
+  return getRuntimeApi().subscribeGitOperationUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeGitStateChanges(listener: Parameters<NonNullable<RuntimeApi['subscribeGitStateChanges']>>[0]) {
+  return getRuntimeApi().subscribeGitStateChanges?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function getGitHubCapability(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getGitHubCapability(projectId, workspacePath);
+}
+
+export function startGitHubLogin(projectId: string, workspacePath: string | null | undefined, host: string) {
+  return getRuntimeApi().startGitHubLogin(projectId, workspacePath, host);
+}
+
+export function getGitHubOperation(operationId: string) {
+  return getRuntimeApi().getGitHubOperation(operationId);
+}
+
+export function cancelGitHubOperation(operationId: string) {
+  return getRuntimeApi().cancelGitHubOperation(operationId);
+}
+
+export function subscribeGitHubOperationUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeGitHubOperationUpdates']>>[0]) {
+  return getRuntimeApi().subscribeGitHubOperationUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function preflightGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['preflightGitHubPullRequest']>[2]) {
+  return getRuntimeApi().preflightGitHubPullRequest(projectId, workspacePath, input);
+}
+
+export function startGitHubPullRequestCreate(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['startGitHubPullRequestCreate']>[2]) {
+  return getRuntimeApi().startGitHubPullRequestCreate(projectId, workspacePath, input);
+}
+
+export function listGitHubPullRequests(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: Parameters<ReturnType<typeof getRuntimeApi>['listGitHubPullRequests']>[4]) {
+  return getRuntimeApi().listGitHubPullRequests(projectId, workspacePath, host, repository, query);
+}
+
+export function getGitHubPullRequest(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number) {
+  return getRuntimeApi().getGitHubPullRequest(projectId, workspacePath, host, repository, number);
+}
+
+export function listGitHubIssues(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, query: Parameters<ReturnType<typeof getRuntimeApi>['listGitHubIssues']>[4]) {
+  return getRuntimeApi().listGitHubIssues(projectId, workspacePath, host, repository, query);
+}
+
+export function getGitHubIssue(projectId: string, workspacePath: string | null | undefined, host: string, repository: string, number: number) {
+  return getRuntimeApi().getGitHubIssue(projectId, workspacePath, host, repository, number);
+}
+
 export function getAcpActivityDetail(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query: Parameters<ReturnType<typeof getRuntimeApi>['getAcpActivityDetail']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().getAcpActivityDetail(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId);
 }
@@ -212,6 +325,30 @@ export function subscribeConversationRunStateUpdates(listener: Parameters<NonNul
   return getRuntimeApi().subscribeConversationRunStateUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeScheduledTaskUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledTaskUpdates']>>[0]) {
+  return getRuntimeApi().subscribeScheduledTaskUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeScheduledOccurrenceUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledOccurrenceUpdates']>>[0]) {
+  return getRuntimeApi().subscribeScheduledOccurrenceUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function subscribeScheduledNotifications(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledNotifications']>>[0]) {
+  return getRuntimeApi().subscribeScheduledNotifications?.(listener) ?? Promise.resolve(() => {});
+}
+
+export function sendScheduledNativeNotification(input: Parameters<RuntimeApi['sendScheduledNativeNotification']>[0]) {
+  return getRuntimeApi().sendScheduledNativeNotification(input);
+}
+
+export function getScheduledRuntimeSettings() {
+  return getRuntimeApi().getScheduledRuntimeSettings();
+}
+
+export function saveScheduledRuntimeSettings(input: Parameters<RuntimeApi['saveScheduledRuntimeSettings']>[0]) {
+  return getRuntimeApi().saveScheduledRuntimeSettings(input);
+}
+
 // 干预通知：OS Toast「查看详情」点击后由后端转发导航事件，前端订阅做 deep-link。
 export function subscribeInterventionNavigate(listener: Parameters<NonNullable<RuntimeApi['subscribeInterventionNavigate']>>[0]) {
   return getRuntimeApi().subscribeInterventionNavigate?.(listener) ?? Promise.resolve(() => {});
@@ -221,12 +358,16 @@ export function subscribeAppExitRequested(listener: Parameters<NonNullable<Runti
   return getRuntimeApi().subscribeAppExitRequested?.(listener) ?? Promise.resolve(() => {});
 }
 
-export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
-  return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
+export function submitConversationPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, input: import('./types').ConversationPromptInput, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['submitConversationPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
-export function updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId);
+export function reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId);
+}
+
+export function restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -285,8 +426,8 @@ export function showWorkerRef(taskId: string, runId: string, roundId: string, no
   return getRuntimeApi().showWorkerRef(taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
-export function saveDesktopPreferences(theme: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], font: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
-  return getRuntimeApi().saveDesktopPreferences(theme, language, font, useLocalClaude, verboseLogging);
+export function saveDesktopPreferences(appearance: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[0], personalization: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[1], language: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[2], useLocalClaude: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[3], verboseLogging: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopPreferences']>[4]) {
+  return getRuntimeApi().saveDesktopPreferences(appearance, personalization, language, useLocalClaude, verboseLogging);
 }
 
 export function saveDesktopAvatar(input: Parameters<ReturnType<typeof getRuntimeApi>['saveDesktopAvatar']>[0]) {
@@ -303,6 +444,22 @@ export function saveDesktopAvatarShape(kind: Parameters<ReturnType<typeof getRun
 
 export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['clearDesktopAvatar']>[0]) {
   return getRuntimeApi().clearDesktopAvatar(kind);
+}
+
+export function importDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().importDesktopWallpaper(colorScheme);
+}
+
+export function selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string) {
+  return getRuntimeApi().selectRecentDesktopWallpaper(colorScheme, wallpaperId);
+}
+
+export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number) {
+  return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
+}
+
+export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -359,6 +516,42 @@ export function setAcpSessionConfigOption(projectId: string | null | undefined, 
 
 export function getConversationWorkspaces() {
   return getRuntimeApi().getConversationWorkspaces();
+}
+
+export function listScheduledTasks(projectId?: string | null) {
+  return getRuntimeApi().listScheduledTasks(projectId);
+}
+
+export function setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean) {
+  return getRuntimeApi().setScheduledTaskEnabled(projectId, scheduledTaskId, enabled);
+}
+
+export function createScheduledTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createScheduledTask']>[0]) {
+  return getRuntimeApi().createScheduledTask(input);
+}
+
+export function getScheduledTask(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().getScheduledTask(projectId, scheduledTaskId);
+}
+
+export function updateScheduledTask(input: Parameters<ReturnType<typeof getRuntimeApi>['updateScheduledTask']>[0]) {
+  return getRuntimeApi().updateScheduledTask(input);
+}
+
+export function deleteScheduledTask(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
+}
+
+export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
+  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
+}
+
+export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().getScheduledTaskDiagnostics(projectId, scheduledTaskId);
+}
+
+export function runScheduledTaskNow(projectId: string, scheduledTaskId: string) {
+  return getRuntimeApi().runScheduledTaskNow(projectId, scheduledTaskId);
 }
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
@@ -515,6 +708,10 @@ export function openFileWithSystemApp(path: string) {
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function statAttachmentFiles(paths: string[]) {
+  return getRuntimeApi().statAttachmentFiles(paths);
 }
 
 export function materializeConversationAttachments(files: Parameters<ReturnType<typeof getRuntimeApi>['materializeConversationAttachments']>[0]) {

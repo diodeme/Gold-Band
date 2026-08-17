@@ -1,4 +1,3 @@
-import { useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -9,8 +8,8 @@ import {
   ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS,
   ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS,
   DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
-  keepAcpConfigMenuOpenOnSelect,
   acpComposerConfigTriggerVariants,
+  useAcpComposerConfigOverflowTooltip,
 } from '@/components/acp/AcpComposerConfigTrigger';
 import {
   DropdownMenu,
@@ -19,6 +18,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export const UNSPECIFIED_ACP_CONFIG_VALUE = '__gold_band_unspecified__';
 
@@ -26,6 +26,7 @@ export type AcpSingleConfigMenuOption = {
   id: string;
   name: string;
   description?: string | null;
+  available?: boolean;
 };
 
 type Props = {
@@ -59,33 +60,47 @@ export function AcpSingleConfigMenu({
   align = DEFAULT_ACP_COMPOSER_CONFIG_ALIGN,
   triggerClassName,
 }: Props) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const keepMenuOpenRef = useRef(false);
   const selectedOption = options.find((option) => option.id === value);
   const selectedLabel = valueLabel ?? selectedOption?.name ?? unspecifiedLabel;
-  const handleConfigOptionSelect = (event: Event) => {
-    keepAcpConfigMenuOpenOnSelect(event);
-    keepMenuOpenRef.current = true;
-    setTimeout(() => {
-      keepMenuOpenRef.current = false;
-    }, 0);
-  };
-  const handleMenuOpenChange = (open: boolean) => {
-    if (!open && keepMenuOpenRef.current) {
-      keepMenuOpenRef.current = false;
-      setMenuOpen(true);
-      return;
-    }
-    setMenuOpen(open);
-  };
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useAcpComposerConfigOverflowTooltip();
 
   return (
-    <DropdownMenu open={menuOpen} modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL} onOpenChange={handleMenuOpenChange}>
-      <DropdownMenuTrigger className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
-        <span className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}>{selectedLabel}</span>
-        <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
-      </DropdownMenuTrigger>
+    <DropdownMenu modal={ACP_COMPOSER_CONFIG_DROPDOWN_MODAL}>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        <DropdownMenuTrigger
+          className={cn(acpComposerConfigTriggerVariants({ compact }), triggerClassName)}
+          onPointerEnter={showTooltipIfOverflowing}
+          onPointerLeave={hideTooltip}
+          onPointerDown={hideTooltip}
+          onFocus={showTooltipIfOverflowing}
+          onBlur={hideTooltip}
+        >
+          <span className={ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS}>{label}</span>
+          <TooltipTrigger asChild>
+            <span
+              ref={valueRef}
+              className={ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS}
+              data-acp-config-value="true"
+            >
+              {selectedLabel}
+            </span>
+          </TooltipTrigger>
+          <ChevronDown className={ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS} />
+        </DropdownMenuTrigger>
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {selectedLabel}
+        </TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         side={contentSide}
         sideOffset={8}
@@ -97,16 +112,21 @@ export function AcpSingleConfigMenu({
           onValueChange={(nextValue) => onValueChange(resolveAcpSingleConfigMenuValue(nextValue))}
         >
           {showUnspecified ? (
-            <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE} onSelect={handleConfigOptionSelect}>
+            <DropdownMenuRadioItem value={UNSPECIFIED_ACP_CONFIG_VALUE}>
               {unspecifiedLabel}
             </DropdownMenuRadioItem>
           ) : null}
           {options.map((option) => (
-            <DropdownMenuRadioItem key={option.id} value={option.id} className="items-start py-2" onSelect={handleConfigOptionSelect}>
+            <DropdownMenuRadioItem
+              key={option.id}
+              value={option.id}
+              disabled={option.available === false}
+              className="items-start py-2"
+            >
               <span className="block min-w-0">
                 <span className="block truncate font-medium">{option.name}</span>
                 {option.description ? (
-                  <span className="mt-0.5 block whitespace-normal break-words text-[11px] leading-4 text-muted-foreground">
+                  <span className="mt-0.5 block whitespace-normal break-words text-ui-caption leading-4 text-muted-foreground">
                     {option.description}
                   </span>
                 ) : null}

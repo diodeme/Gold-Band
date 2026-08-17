@@ -2,6 +2,63 @@ import { describe, expect, it } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('keeps queued authoring payload out of lifecycle summaries and restores one item on demand', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-053');
+    const item = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[0];
+    expect(item).toMatchObject({
+      id: 'browser-queued-1',
+      attachmentCount: 1,
+      quoteCount: 0,
+    });
+    expect(item).not.toHaveProperty('attachmentPaths');
+    expect(item).not.toHaveProperty('quotes');
+
+    const restored = await browserApi.restoreConversationQueuedPrompt(
+      'default',
+      'mock-task',
+      'run-053',
+      'round-001',
+      'dev',
+      'attempt-001',
+      'browser-queued-1',
+    );
+    expect(restored.draft).toEqual({
+      content: '完成当前修改后，补充对应的回归测试。',
+      quotes: [],
+      attachmentPaths: ['C:/browser/mock.png'],
+    });
+  });
+
+  it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
+    const session = await browserApi.getAcpSession(
+      'default',
+      'mock-task',
+      'run-052',
+      'round-001',
+      'dev',
+      'attempt-001',
+    );
+
+    expect(session?.events[0]?.content).toContain('Gold Band stable system prompt');
+    expect(session?.events[0]?.content).toContain('Gold Band runtime context');
+    expect(session?.systemPromptAppend).toContain('**system prompt**');
+  });
+
+  it('provides deterministic multi-page Git history for browser interaction regression', async () => {
+    const first = await browserApi.getGitHistory('project-1', 'D:/repo', { limit: 300 });
+    expect(first.commits).toHaveLength(300);
+    expect(first.nextCursor).toBe('browser-history:300');
+
+    const second = await browserApi.getGitHistory('project-1', 'D:/repo', {
+      cursor: first.nextCursor,
+      limit: 300,
+      revision: first.revision,
+    });
+    expect(second.commits).toHaveLength(3);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.commits, ...second.commits].map((commit) => commit.oid)).size).toBe(303);
+  });
+
   it('keeps the current preview workspace in the recent list', async () => {
     const bootstrap = await browserApi.getAppBootstrap();
 
@@ -85,5 +142,25 @@ describe('browserApi', () => {
 
     expect(resolved.locator.relativePath).toBe('README.md');
     expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
+  });
+
+  it('returns the shared comparison contract for GitHub pull request files', async () => {
+    const comparison = await browserApi.getGitComparison('default', {
+      kind: 'github-pr',
+      workspacePath: '/preview/gold-band',
+      host: 'github.com',
+      repository: 'gold-band/desktop',
+      prNumber: 42,
+      baseOid: '1111111111111111111111111111111111111111',
+      headOid: '2222222222222222222222222222222222222222',
+      path: 'src/source-control.ts',
+    });
+
+    expect(comparison).toMatchObject({
+      path: 'src/source-control.ts',
+      stats: { addedLines: 4, deletedLines: 1 },
+      limitationCode: null,
+    });
+    expect(comparison.after?.content).toContain('gitHubPullRequests');
   });
 });

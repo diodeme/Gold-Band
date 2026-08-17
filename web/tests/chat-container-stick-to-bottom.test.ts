@@ -4,10 +4,12 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  alignChatContainerViewportToBottomBeforePaint,
   ChatContainerContent,
   ChatContainerRoot,
   type ChatContainerContext,
 } from '@/components/prompt-kit/chat-container';
+import { ConversationViewport } from '@/components/conversation/ConversationViewport';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,6 +69,85 @@ afterEach(() => {
 });
 
 describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
+  it('aligns the initial followed viewport before the first paint', () => {
+    const viewport = {
+      clientHeight: 320,
+      scrollHeight: 1_120,
+      scrollTop: 0,
+    };
+
+    alignChatContainerViewportToBottomBeforePaint(viewport);
+
+    expect(viewport.scrollTop).toBe(800);
+  });
+
+  it('mounts a remembered manual conversation viewport without rejoining bottom follow', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const atBottomChanges: boolean[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ConversationViewport,
+            {
+              scrollClassName: 'overflow-y-auto',
+              contextRef,
+              initialFollowing: false,
+              onAtBottomChange: (atBottom: boolean) => atBottomChanges.push(atBottom),
+            },
+            'remembered history',
+          ),
+        );
+      });
+
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('reports only explicit wheel, keyboard, or scrollbar-pointer input as user scrolling', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const userScrolls: number[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ChatContainerRoot,
+            { contextRef, onViewportUserScroll: () => userScrolls.push(1) },
+            React.createElement(ChatContainerContent, null, 'streaming content'),
+          ),
+        );
+      });
+      const viewport = contextRef.current?.scrollRef.current as HTMLDivElement;
+
+      await act(async () => {
+        viewport.dispatchEvent(new Event('scroll'));
+      });
+      expect(userScrolls).toHaveLength(0);
+
+      await act(async () => {
+        viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 }));
+        viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp' }));
+        viewport.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      });
+      expect(userScrolls).toHaveLength(3);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('restores bottom following when a layout scroll races ahead of content resize observation', async () => {
     vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (

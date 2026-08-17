@@ -1,8 +1,12 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, FileRevisionVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
-import type { RuntimeApi } from './client';
+import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
+import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
+import { normalizeFontCatalogFamilies } from '@/lib/font-families';
+import { boundedRecentWallpapers } from '@/lib/wallpaper';
 
 const browserFontCandidates = [
   'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
@@ -12,6 +16,134 @@ type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
+const browserScheduledTasks: ScheduledTaskVm[] = [];
+const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
+const browserScheduledTaskListeners = new Set<(event: ScheduledTaskUpdatedEventVm) => void>();
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
+const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
+const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
+let browserScheduledTaskSequence = 0;
+let browserScheduledRuntimeSettings = {
+  keepAwakeEnabled: false,
+  keepAwakeEffective: false,
+  completionNotificationsEnabled: true,
+  enabledJobCount: 0,
+  occurrenceRetentionDays: 30,
+  powerErrorCode: null,
+};
+
+function resolveBrowserOptionalEntry(
+  runMode: string,
+  workflowTemplateId: string | null | undefined,
+  includeOptionalEntry: boolean | null | undefined,
+) {
+  if (runMode !== 'workflow') return includeOptionalEntry;
+  if (includeOptionalEntry != null) return includeOptionalEntry;
+  return mockWorkflowTemplates.templates.find((template) => template.id === workflowTemplateId)
+    ?.optionalEntryStage?.defaultEnabled;
+}
+
+function emitBrowserScheduledTaskUpdated(task: ScheduledTaskVm) {
+  const event: ScheduledTaskUpdatedEventVm = {
+    projectId: task.projectId,
+    scheduledTaskId: task.id,
+    status: task.status,
+  };
+  browserScheduledTaskListeners.forEach((listener) => listener(event));
+}
+
+function emitBrowserScheduledOccurrenceUpdated(occurrence: ScheduledOccurrenceVm, projectId: string) {
+  const event: ScheduledOccurrenceUpdatedEventVm = {
+    projectId,
+    scheduledTaskId: occurrence.scheduledTaskId,
+    occurrenceId: occurrence.id,
+    status: occurrence.status,
+    errorCode: occurrence.errorCode ?? null,
+    taskId: occurrence.taskId ?? null,
+    runId: occurrence.runId ?? null,
+  };
+  browserScheduledOccurrenceListeners.forEach((listener) => listener(event));
+}
+const browserGitOperations = new Map<string, GitOperationVm>();
+const browserGitOperationListeners = new Set<(operation: GitOperationVm) => void>();
+const browserGitStateListeners = new Set<(event: GitStateChangedEventVm) => void>();
+const browserGitFailurePreviewRemote = 'fork';
+const browserGitMutationPreviewDelayMs = 700;
+const browserGitHubReadPreviewDelayMs = 700;
+const browserGitStagePreviewPath = 'web/src/components/workspace/SourceControlWorkspacePanel.tsx';
+let browserGitStagePreviewApplied = false;
+const browserGitHubOperations = new Map<string, GitHubOperationVm>();
+const browserGitHubOperationListeners = new Set<(operation: GitHubOperationVm) => void>();
+
+const browserGitCommits: GitCommitVm[] = [
+  {
+    oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+    parentOids: ['8dc4ac2a3fc32f88e2348c0ea6682907c38acc89'],
+    subject: 'feat(git): add source control foundation',
+    body: 'Add the typed source control service and right workspace UI.',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-10T12:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-10T12:00:00Z' },
+    refs: [{ fullName: 'refs/heads/feature/source-control', shortName: 'feature/source-control', kind: 'local-branch' }],
+    sourceRef: 'refs/heads/feature/source-control',
+    runtimeCheckpoint: false,
+  },
+  {
+    oid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89',
+    parentOids: ['73cc8bb94b23de03f11b90918c80f44db3299502'],
+    subject: 'refactor: prepare workspace resources',
+    body: '',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-09T10:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-09T10:00:00Z' },
+    refs: [{ fullName: 'refs/heads/main', shortName: 'main', kind: 'local-branch' }],
+    sourceRef: 'refs/heads/main',
+    runtimeCheckpoint: false,
+  },
+  {
+    oid: '73cc8bb94b23de03f11b90918c80f44db3299502',
+    parentOids: [],
+    subject: 'chore: initialize repository',
+    body: '',
+    author: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-08T08:00:00Z' },
+    committer: { name: 'Gold Band', email: 'dev@example.com', timestamp: '2026-08-08T08:00:00Z' },
+    refs: [],
+    sourceRef: 'refs/heads/main',
+    runtimeCheckpoint: false,
+  },
+];
+const browserGitOlderCommitCount = 300;
+const browserGitHistoryCommits: GitCommitVm[] = [
+  ...browserGitCommits,
+  ...Array.from({ length: browserGitOlderCommitCount }, (_, index) => {
+    const oid = browserGitPreviewOid(index);
+    const parentOid = index + 1 < browserGitOlderCommitCount
+      ? browserGitPreviewOid(index + 1)
+      : null;
+    const timestamp = new Date(Date.UTC(2026, 7, 7) - index * 60_000).toISOString();
+    return {
+      oid,
+      parentOids: parentOid ? [parentOid] : [],
+      subject: `preview: historical commit ${index + 1}`,
+      body: '',
+      author: { name: 'Gold Band', email: 'dev@example.com', timestamp },
+      committer: { name: 'Gold Band', email: 'dev@example.com', timestamp },
+      refs: [],
+      sourceRef: 'refs/heads/main',
+      runtimeCheckpoint: false,
+    };
+  }),
+];
+
+function browserGitPreviewOid(index: number) {
+  return (index + 1_000).toString(16).padStart(40, '0');
+}
+
+function browserGitCommit(oid: string) {
+  return browserGitHistoryCommits.find((candidate) => candidate.oid === oid) ?? browserGitCommits[0];
+}
 
 function browserAgentIdentity(agentType: string) {
   const agent = mockAgentRegistry.agents.find((candidate) => candidate.agentType === agentType);
@@ -43,14 +175,61 @@ function browserCompletedConversationRun(): ConversationRunVm {
     cwd: 'D:/Projects/code/ai/Gold-Band',
     status: 'completed',
     stopReason: 'end_turn',
+    systemPromptAppend: [
+      '# Browser system prompt',
+      '',
+      'This **system prompt** verifies the rendered/source workspace modes.',
+      '',
+      '- Attempt: `attempt-001`',
+      '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+    ].join('\n'),
+    usage: {
+      used: 25_400,
+      size: 258_400,
+      inputTokens: 18_760,
+      outputTokens: 2_140,
+      cachedReadTokens: 4_200,
+      cachedWriteTokens: 300,
+      totalTokens: 25_400,
+    },
     events: [
       {
         id: 'browser-user-prompt-052',
         seq: 1,
         timestamp: '2026-08-04 10:00',
         kind: 'userTextDelta',
-        content: '请更新工作区配置并补充说明。',
-        raw: { promptId: 'browser-prompt-052' },
+        content: [
+          '<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">',
+          '# Stable system prompt',
+          '',
+          'You are the Gold Band browser preview agent.',
+          '</hidden>',
+          '<hidden data-gold-band-hidden="true" title="Gold Band runtime context">',
+          '# Runtime context',
+          '',
+          '- Attempt: `attempt-001`',
+          '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+          '</hidden>',
+          '> 这是用户自己输入的 Markdown 引用。',
+          '',
+          '请更新工作区配置并补充说明。',
+        ].join('\n'),
+        raw: {
+          promptId: 'browser-prompt-052',
+          quotes: Array.from({ length: 8 }, (_, index) => ({
+            id: `browser-quote-052-${index + 1}`,
+            sourceMessageKey: `textDelta-browser-agent-message-${index + 1}`,
+            text: index === 0
+              ? `请优先检查工作区配置中的权限边界。\n${'这是一段用于验证长引用内部换行与滚动边界的内容。'.repeat(16)}`
+              : `第 ${index + 1} 条引用：补充核对配置项、权限范围和对应说明。`,
+          })),
+          attachments: [{
+            name: 'browser-zoom-fixture.png',
+            path: 'task-inputs/browser-zoom-fixture.png',
+            type: 'image/png',
+            size: 68,
+          }],
+        },
       },
       {
         id: 'browser-tool-call-052',
@@ -63,8 +242,22 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: { toolCallId: 'browser-tool-052', title: '更新工作区文件', status: 'completed' },
       },
       {
-        id: 'browser-file-change-set-052',
+        id: 'browser-context-compaction-052',
         seq: 3,
+        timestamp: '2026-08-04 10:01',
+        startedAt: '2026-08-04 10:01:00',
+        endedAt: '2026-08-04 10:01:02',
+        kind: 'contextCompaction',
+        status: 'completed',
+        raw: {
+          contextCompaction: {
+            usageBefore: { used: 128_000, size: 258_400 },
+          },
+        },
+      },
+      {
+        id: 'browser-file-change-set-052',
+        seq: 4,
         timestamp: '2026-08-04 10:01',
         kind: 'fileChangeSet',
         status: 'finalized',
@@ -75,7 +268,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
       {
         id: 'browser-agent-message-052',
-        seq: 4,
+        seq: 5,
         timestamp: '2026-08-04 10:01',
         kind: 'textDelta',
         content: '配置与说明已更新。',
@@ -84,10 +277,10 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
     ],
     eventPage: {
-      loadedCount: 4,
-      total: 4,
+      loadedCount: 5,
+      total: 5,
       oldestSeq: 1,
-      newestSeq: 4,
+      newestSeq: 5,
       hasOlder: false,
       hasNewer: false,
       oldestCursor: null,
@@ -148,10 +341,9 @@ function browserCompletedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'completed',
-        active: false,
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
         stopping: false,
-        terminal: true,
       },
       displayStatus: 'success',
       composer: {
@@ -163,9 +355,51 @@ function browserCompletedConversationRun(): ConversationRunVm {
         lockInput: false,
       },
     };
+
   }
   return run;
 }
+
+const browserQueuedPromptDrafts = [
+  {
+    id: 'browser-queued-1',
+    content: '完成当前修改后，补充对应的回归测试。',
+    quotes: [],
+    attachmentPaths: ['C:/browser/mock.png'],
+    createdAt: '2026-08-07T08:00:00Z',
+  },
+  {
+    id: 'browser-queued-2',
+    content: '检查深色主题下的输入区层级。',
+    quotes: [
+      { id: 'browser-quote-1', sourceMessageKey: 'browser-message-1', text: '第一段引用' },
+      { id: 'browser-quote-2', sourceMessageKey: 'browser-message-2', text: '第二段引用' },
+    ],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:01Z',
+  },
+  {
+    id: 'browser-queued-3',
+    content: '把关键设计决策同步到产品文档。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:02Z',
+  },
+  {
+    id: 'browser-queued-4',
+    content: '验证停止后队列仍然可编辑和删除。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:03Z',
+  },
+  {
+    id: 'browser-queued-5',
+    content: '最后整理本轮变更摘要。',
+    quotes: [],
+    attachmentPaths: [],
+    createdAt: '2026-08-07T08:00:04Z',
+  },
+];
 
 function browserQueuedConversationRun(): ConversationRunVm {
   const run = browserCompletedConversationRun();
@@ -198,11 +432,9 @@ function browserQueuedConversationRun(): ConversationRunVm {
       },
       acp: {
         ...attempt.lifecycle.acp,
-        status: 'running',
-        phase: 'running',
-        active: true,
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
         stopping: false,
-        terminal: false,
       },
       displayStatus: 'running',
       composer: {
@@ -216,17 +448,12 @@ function browserQueuedConversationRun(): ConversationRunVm {
       promptQueue: {
         revision: 5,
         maxItems: 10,
-        items: Array.from({ length: 5 }, (_, index) => ({
-          id: `browser-queued-${index + 1}`,
-          content: [
-            '完成当前修改后，补充对应的回归测试。',
-            '检查深色主题下的输入区层级。',
-            '把关键设计决策同步到产品文档。',
-            '验证停止后队列仍然可编辑和删除。',
-            '最后整理本轮变更摘要。',
-          ][index],
-          attachmentCount: index === 0 ? 1 : 0,
-          createdAt: `2026-08-07T08:00:0${index}Z`,
+        items: browserQueuedPromptDrafts.map((item) => ({
+          id: item.id,
+          content: item.content,
+          attachmentCount: item.attachmentPaths.length,
+          quoteCount: item.quotes.length,
+          createdAt: item.createdAt,
         })),
       },
     };
@@ -354,11 +581,367 @@ function browserSvgDataUrl(content: string) {
 }
 
 export const browserApi: RuntimeApi = {
+  async subscribeScheduledNotifications() {
+    return () => {};
+  },
+  async sendScheduledNativeNotification() {},
+  async getScheduledRuntimeSettings() {
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async saveScheduledRuntimeSettings(input) {
+    if (input.occurrenceRetentionDays < 1 || input.occurrenceRetentionDays > 3650) {
+      throw { code: 'SCHEDULED_VALIDATION_FAILED', params: { field: 'occurrenceRetentionDays', minimum: 1, maximum: 3650, actual: input.occurrenceRetentionDays } };
+    }
+    browserScheduledRuntimeSettings = {
+      ...browserScheduledRuntimeSettings,
+      ...input,
+      keepAwakeEffective: false,
+    };
+    return structuredClone(browserScheduledRuntimeSettings);
+  },
+  async subscribeScheduledTaskUpdates(listener) {
+    browserScheduledTaskListeners.add(listener);
+    return () => browserScheduledTaskListeners.delete(listener);
+  },
+  async subscribeScheduledOccurrenceUpdates(listener) {
+    browserScheduledOccurrenceListeners.add(listener);
+    return () => browserScheduledOccurrenceListeners.delete(listener);
+  },
   getGitCapability() {
     return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
   },
   initializeGitRepository() {
     return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+  },
+  getSourceControlSnapshot(projectId, workspacePath) {
+    const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
+    return Promise.resolve({
+      repository: {
+        projectId,
+        repoRoot: '/preview/gold-band',
+        commonDir: '/preview/gold-band/.git',
+        workspacePath: resolvedWorkspacePath,
+        headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+        currentBranch: 'feature/source-control',
+        detached: false,
+        unborn: false,
+        upstream: { name: 'origin/feature/source-control', ahead: 1, behind: 0 },
+        remotes: [
+          { name: 'origin', fetchUrls: ['https://github.com/example/gold-band.git'], pushUrls: ['https://github.com/example/gold-band.git'] },
+          { name: browserGitFailurePreviewRemote, fetchUrls: ['https://github.com/example/gold-band-fork.git'], pushUrls: ['https://github.com/example/gold-band-fork.git'] },
+        ],
+        lock: { locked: false, owner: null, operation: null },
+        revision: 'browser-preview-revision',
+      },
+      status: {
+        snapshotRevision: 'browser-preview-revision',
+        branch: { oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', head: 'feature/source-control', upstream: 'origin/feature/source-control', ahead: 1, behind: 0 },
+        conflicts: [],
+        staged: [
+          { path: 'src/git/source_control.rs', oldPath: null, kind: 'added', indexStatus: 'A', worktreeStatus: null, binary: false, submodule: false, addedLines: 420, deletedLines: 0 },
+          ...(browserGitStagePreviewApplied ? [{ path: browserGitStagePreviewPath, oldPath: null, kind: 'modified' as const, indexStatus: 'M', worktreeStatus: null, binary: false, submodule: false, addedLines: 34, deletedLines: 8 }] : []),
+        ],
+        unstaged: browserGitStagePreviewApplied ? [] : [{ path: browserGitStagePreviewPath, oldPath: null, kind: 'modified', indexStatus: null, worktreeStatus: 'M', binary: false, submodule: false, addedLines: 34, deletedLines: 8 }],
+        untracked: [{ path: 'docs/source-control-notes.md', oldPath: null, kind: 'untracked', indexStatus: null, worktreeStatus: '?', binary: false, submodule: false, addedLines: null, deletedLines: null }],
+        operationInProgress: null,
+      },
+      refs: [
+        { fullName: 'refs/heads/feature/source-control', shortName: 'feature/source-control', kind: 'local-branch', targetOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', peeledOid: null, upstream: 'origin/feature/source-control', ahead: 1, behind: 0, checkedOutWorktreePaths: [resolvedWorkspacePath] },
+        { fullName: 'refs/heads/main', shortName: 'main', kind: 'local-branch', targetOid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89', peeledOid: null, upstream: 'origin/main', ahead: 0, behind: 0, checkedOutWorktreePaths: [] },
+      ],
+      worktrees: [{ path: resolvedWorkspacePath, headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', branch: 'refs/heads/feature/source-control', main: workspacePath == null, detached: false, locked: false, lockReason: null, prunable: false, ownership: 'user', runtimeStatus: null }],
+      stashes: [],
+    });
+  },
+  getGitHistory(_projectId, _workspacePath, query) {
+    const cursorMatch = query.cursor?.match(/^browser-history:(\d+)$/);
+    const offset = cursorMatch ? Number(cursorMatch[1]) : 0;
+    const limit = query.limit ?? 300;
+    const nextOffset = Math.min(offset + limit, browserGitHistoryCommits.length);
+    return Promise.resolve({
+      commits: structuredClone(browserGitHistoryCommits.slice(offset, nextOffset)),
+      nextCursor: nextOffset < browserGitHistoryCommits.length
+        ? `browser-history:${nextOffset}`
+        : null,
+      revision: 'browser-preview-revision',
+    });
+  },
+  getGitCommitDetail(_projectId, _workspacePath, oid) {
+    const commit = browserGitCommit(oid);
+    return Promise.resolve({
+      commit: structuredClone(commit),
+      files: [{
+        path: commit.oid === browserGitCommits[0].oid ? 'src/git/source_control.rs' : 'README.md',
+        oldPath: null,
+        kind: 'modified',
+        binary: false,
+        addedLines: commit.oid === browserGitCommits[0].oid ? 420 : 12,
+        deletedLines: commit.oid === browserGitCommits[0].oid ? 8 : 2,
+      }],
+    });
+  },
+  getGitCommitReview(_projectId, _workspacePath, query) {
+    const entries = query.selectedOids.map((oid) => {
+      const commit = browserGitCommit(oid);
+      return {
+        beforeOid: commit.parentOids[0] ?? null,
+        beforePath: commit.oid === browserGitCommits[0].oid ? 'src/git/source_control.rs' : 'README.md',
+        afterOid: commit.oid,
+        path: commit.oid === browserGitCommits[0].oid ? 'src/git/source_control.rs' : 'README.md',
+      };
+    });
+    const files = Array.from(new Map(entries.map((entry) => [entry.path, {
+      ...entry,
+      oldPath: null,
+      kind: 'modified' as const,
+      binary: false,
+      addedLines: 24,
+      deletedLines: 6,
+    }])).values());
+    return Promise.resolve({
+      selectedOids: [...query.selectedOids],
+      revision: 'browser-preview-revision',
+      files,
+      totals: {
+        commitCount: query.selectedOids.length,
+        fileCount: files.length,
+      },
+    });
+  },
+  getGitCommitReachability(_projectId, _workspacePath, query) {
+    const commit = browserGitCommits.find((candidate) => candidate.oid === query.oid) ?? browserGitCommits[0];
+    return Promise.resolve({
+      oid: commit.oid,
+      containingRefs: structuredClone(commit.refs),
+      targetRef: query.targetRef,
+      targetOid: browserGitCommits[0].oid,
+      targetPath: commit.oid === browserGitCommits[0].oid ? 'tip' as const : 'direct' as const,
+      firstMergeOid: null,
+      parentOids: [...commit.parentOids],
+    });
+  },
+  async executeGitMutation(projectId, workspacePath, input) {
+    await new Promise((resolve) => setTimeout(resolve, browserGitMutationPreviewDelayMs));
+    if (input.kind === 'stage-paths' && input.paths.includes(browserGitStagePreviewPath)) {
+      browserGitStagePreviewApplied = true;
+    }
+    if (input.kind === 'unstage-paths' && input.paths.includes(browserGitStagePreviewPath)) {
+      browserGitStagePreviewApplied = false;
+    }
+    if (['stage-paths', 'stage-all', 'unstage-paths', 'unstage-all'].includes(input.kind)) {
+      const snapshot = await browserApi.getSourceControlSnapshot(projectId, workspacePath);
+      return {
+        scope: 'workspace',
+        status: snapshot.status,
+        repositoryRevision: snapshot.repository.revision,
+      };
+    }
+    return { scope: 'repository' };
+  },
+  async getGitComparison(_projectId, source) {
+    const staged = source.kind === 'workspace' && source.area === 'staged';
+    const pullRequest = source.kind === 'github-pr';
+    if (pullRequest) await new Promise((resolve) => setTimeout(resolve, browserGitHubReadPreviewDelayMs));
+    return {
+      path: source.path,
+      stats: { addedLines: staged ? 3 : pullRequest ? 4 : 2, deletedLines: staged ? 0 : 1 },
+      before: { content: 'export const sourceControl = false;\n' },
+      after: { content: pullRequest
+        ? 'export const sourceControl = true;\nexport const gitHubPullRequests = true;\n'
+        : 'export const sourceControl = true;\nexport const gitHub = true;\n' },
+      limitationCode: null,
+    };
+  },
+  startGitOperation(_projectId, workspacePath, input) {
+    const failurePreview = input.kind === 'push' && input.remote === browserGitFailurePreviewRemote;
+    const operationId = `browser-git-${Date.now().toString(36)}`;
+    const queued: GitOperationVm = {
+      operationId,
+      kind: input.kind,
+      repositoryCommonDir: '/preview/gold-band/.git',
+      workspacePath,
+      status: 'queued',
+      cancelable: true,
+      startedAt: null,
+      completedAt: null,
+      error: null,
+    };
+    const terminal: GitOperationVm = {
+      operationId,
+      kind: input.kind,
+      repositoryCommonDir: '/preview/gold-band/.git',
+      workspacePath,
+      status: failurePreview ? 'failed' : 'succeeded',
+      cancelable: false,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: failurePreview ? {
+        code: 'git.authentication-failed',
+        params: {
+          exitCode: 128,
+          reason: "fatal: Authentication failed for 'https://github.com/example/gold-band-fork.git/'\nVerify the account used by the credential helper has write access to this repository.",
+        },
+      } : null,
+    };
+    browserGitOperations.set(operationId, queued);
+    setTimeout(() => {
+      const current = browserGitOperations.get(operationId);
+      if (!current || current.status === 'cancelled') return;
+      browserGitOperations.set(operationId, terminal);
+      for (const listener of browserGitOperationListeners) listener(terminal);
+    }, browserGitMutationPreviewDelayMs);
+    return Promise.resolve(queued);
+  },
+  getGitOperation(operationId) {
+    const operation = browserGitOperations.get(operationId);
+    return operation
+      ? Promise.resolve(operation)
+      : Promise.reject({ code: 'git.operation-not-found', params: { operationId } });
+  },
+  cancelGitOperation(operationId) {
+    const operation = browserGitOperations.get(operationId);
+    if (!operation) return Promise.reject({ code: 'git.operation-not-found', params: { operationId } });
+    const cancelled = { ...operation, status: 'cancelled' as const, cancelable: false, completedAt: new Date().toISOString() };
+    browserGitOperations.set(operationId, cancelled);
+    queueMicrotask(() => {
+      for (const listener of browserGitOperationListeners) listener(cancelled);
+    });
+    return Promise.resolve(cancelled);
+  },
+  startGitStateMonitor(_projectId, _workspacePath) {
+    return Promise.resolve();
+  },
+  stopGitStateMonitor(_projectId, _workspacePath) {
+    return Promise.resolve();
+  },
+  subscribeGitOperationUpdates(listener) {
+    browserGitOperationListeners.add(listener);
+    return Promise.resolve(() => browserGitOperationListeners.delete(listener));
+  },
+  subscribeGitStateChanges(listener) {
+    browserGitStateListeners.add(listener);
+    return Promise.resolve(() => browserGitStateListeners.delete(listener));
+  },
+  async getGitHubCapability() {
+    await new Promise((resolve) => setTimeout(resolve, browserGitHubReadPreviewDelayMs));
+    return { status: 'ready' as const, version: 'gh version 2.79.0', host: 'github.com', account: 'gold-band-preview', repository: 'example/gold-band', remote: 'origin', defaultBranch: 'main' };
+  },
+  startGitHubLogin(_projectId, _workspacePath, host) {
+    const operation: GitHubOperationVm = { operationId: `browser-gh-login-${Date.now().toString(36)}`, kind: 'login', host, status: 'succeeded', cancelable: false, startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), error: null, resultUrl: null };
+    browserGitHubOperations.set(operation.operationId, operation);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(operation);
+    });
+    return Promise.resolve(operation);
+  },
+  getGitHubOperation(operationId) {
+    const operation = browserGitHubOperations.get(operationId);
+    return operation ? Promise.resolve(operation) : Promise.reject({ code: 'github.operation-not-found', params: { operationId } });
+  },
+  cancelGitHubOperation(operationId) {
+    const operation = browserGitHubOperations.get(operationId);
+    if (!operation) return Promise.reject({ code: 'github.operation-not-found', params: { operationId } });
+    const cancelled = { ...operation, status: 'cancelled' as const, cancelable: false, completedAt: new Date().toISOString() };
+    browserGitHubOperations.set(operationId, cancelled);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(cancelled);
+    });
+    return Promise.resolve(cancelled);
+  },
+  subscribeGitHubOperationUpdates(listener) {
+    browserGitHubOperationListeners.add(listener);
+    return Promise.resolve(() => browserGitHubOperationListeners.delete(listener));
+  },
+  preflightGitHubPullRequest(_projectId, _workspacePath, input) {
+    return Promise.resolve({ remote: 'origin', head: input.head, base: input.base, aheadBy: 3, headPublished: true, existingPullRequest: null });
+  },
+  startGitHubPullRequestCreate(_projectId, _workspacePath, input) {
+    const operation: GitHubOperationVm = {
+      operationId: `browser-gh-pr-${Date.now().toString(36)}`,
+      kind: 'pr-create',
+      host: input.host,
+      status: 'succeeded',
+      cancelable: false,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: null,
+      resultUrl: 'https://github.com/example/gold-band/pull/43',
+    };
+    browserGitHubOperations.set(operation.operationId, operation);
+    queueMicrotask(() => {
+      for (const listener of browserGitHubOperationListeners) listener(operation);
+    });
+    return Promise.resolve(operation);
+  },
+  async listGitHubPullRequests() {
+    await new Promise((resolve) => setTimeout(resolve, browserGitHubReadPreviewDelayMs));
+    return [{
+      number: 42,
+      title: 'feat: add source control workspace',
+      state: 'OPEN',
+      draft: false,
+      author: { login: 'gold-band-preview', name: 'Gold Band' },
+      headRefName: 'feature/source-control',
+      baseRefName: 'main',
+      updatedAt: '2026-08-10T12:00:00Z',
+      url: 'https://github.com/example/gold-band/pull/42',
+      reviewDecision: 'REVIEW_REQUIRED',
+      labels: [{ name: 'feature', color: '1d76db' }],
+      statusChecks: [{ kind: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    }];
+  },
+  async getGitHubPullRequest(_projectId, _workspacePath, _host, _repository, number) {
+    await new Promise((resolve) => setTimeout(resolve, browserGitHubReadPreviewDelayMs));
+    return {
+      number,
+      title: 'feat: add source control workspace',
+      state: 'OPEN',
+      draft: false,
+      author: { login: 'gold-band-preview', name: 'Gold Band' },
+      headRefName: 'feature/source-control',
+      baseRefName: 'main',
+      baseRefOid: '1111111111111111111111111111111111111111',
+      headRefOid: '2222222222222222222222222222222222222222',
+      updatedAt: '2026-08-10T12:00:00Z',
+      url: `https://github.com/example/gold-band/pull/${number}`,
+      reviewDecision: 'REVIEW_REQUIRED',
+      labels: [{ name: 'feature', color: '1d76db' }],
+      statusChecks: [{ kind: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+      body: '## Summary\n\nAdds the source control workspace and typed Git operations.',
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      additions: 320,
+      deletions: 18,
+      changedFiles: 7,
+      files: [{ path: 'src/git/source_control.rs', oldPath: null, kind: 'modified', additions: 240, deletions: 8 }],
+      latestReviews: [],
+    };
+  },
+  listGitHubIssues() {
+    return Promise.resolve([{
+      number: 17,
+      title: 'Support repository status refresh events',
+      state: 'OPEN',
+      author: { login: 'contributor', name: null },
+      assignees: [],
+      labels: [{ name: 'enhancement', color: 'a2eeef' }],
+      updatedAt: '2026-08-09T09:30:00Z',
+      url: 'https://github.com/example/gold-band/issues/17',
+    }]);
+  },
+  getGitHubIssue(_projectId, _workspacePath, _host, _repository, number) {
+    return Promise.resolve({
+      number,
+      title: 'Support repository status refresh events',
+      state: 'OPEN',
+      author: { login: 'contributor', name: null },
+      assignees: [],
+      labels: [{ name: 'enhancement', color: 'a2eeef' }],
+      updatedAt: '2026-08-09T09:30:00Z',
+      url: `https://github.com/example/gold-band/issues/${number}`,
+      body: 'Refresh source control state when Git metadata changes.',
+      milestone: null,
+    });
   },
   completeMainWindowClose() {
     return Promise.resolve();
@@ -380,7 +963,7 @@ export const browserApi: RuntimeApi = {
     if (queriedFonts.length > 0) return queriedFonts;
     const detectedFonts = detectBrowserFonts(browserFontCandidates);
     if (detectedFonts.length > 0) return detectedFonts;
-    return normalizeFontFamilies(browserFontCandidates);
+    return normalizeFontCatalogFamilies(browserFontCandidates);
   },
   getAgentRegistry() {
     return Promise.resolve(mockAgentRegistry);
@@ -422,6 +1005,15 @@ export const browserApi: RuntimeApi = {
   },
   deleteAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
+  },
+  getAgentBindingUsage(_agentType: string) {
+    return Promise.resolve({
+      workflowTemplateCount: 0,
+      taskCount: 0,
+      scheduledTaskCount: 0,
+      unknownTaskCount: 0,
+      unknownScheduledTaskCount: 0,
+    });
   },
   doctorAgent(_agentType: string) {
     return Promise.resolve(mockAgentRegistry);
@@ -486,7 +1078,7 @@ export const browserApi: RuntimeApi = {
   getTaskDetail(taskId: string) {
     return Promise.resolve({ ...mockTaskDetail, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockTaskDetail.task });
   },
-  getWorkflow(taskId: string) {
+  getWorkflow(taskId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task });
   },
   createTask(input: CreateTaskInput) {
@@ -501,15 +1093,15 @@ export const browserApi: RuntimeApi = {
       workflowValid: true,
       workflowError: null,
     };
-    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2) });
+    return Promise.resolve({ ...mockWorkflow, task, workflowJson: JSON.stringify(input.workflow, null, 2), modelBindings: input.modelBindings ?? emptyWorkflowModelBindings() });
   },
-  saveTaskWorkflow(_projectId, taskId, workflow) {
-    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2) });
+  saveTaskWorkflow(_projectId, taskId, workflow, modelBindings = emptyWorkflowModelBindings()) {
+    return Promise.resolve({ ...mockWorkflow, task: mockTaskList.tasks.find((item) => item.id === taskId) ?? mockWorkflow.task, workflowJson: JSON.stringify(workflow, null, 2), modelBindings });
   },
   getWorkflowTemplates() {
     return Promise.resolve(browserPreviewState.getWorkflowTemplates());
   },
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
     let nextWorkflow = workflow;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -522,7 +1114,9 @@ export const browserApi: RuntimeApi = {
     const template = {
       id: name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `workflow-${current.templates.length + 1}`,
       name,
+      isBuiltIn: false,
       workflow: nextWorkflow,
+      modelBindings,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -532,16 +1126,26 @@ export const browserApi: RuntimeApi = {
       templates: [...current.templates, template],
     }));
   },
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.resolve(browserPreviewState.setWorkflowTemplates({
+        ...current,
+        lastUsedTemplateId: templateId,
+        templates: current.templates.map((template) => template.id === templateId ? { ...template, modelBindings, updatedAt: new Date().toISOString() } : template),
+      }));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: templateId,
-      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, updatedAt: new Date().toISOString() } : template),
+      templates: current.templates.map((template) => template.id === templateId ? { ...template, workflow, modelBindings, updatedAt: new Date().toISOString() } : template),
     }));
   },
   deleteWorkflowTemplate(templateId: string) {
     const current = browserPreviewState.getWorkflowTemplates();
+    if (current.templates.find((template) => template.id === templateId)?.isBuiltIn) {
+      return Promise.reject(browserCommandError('workflow-template.readonly-built-in'));
+    }
     return Promise.resolve(browserPreviewState.setWorkflowTemplates({
       ...current,
       lastUsedTemplateId: current.lastUsedTemplateId === templateId ? 'default' : current.lastUsedTemplateId,
@@ -589,8 +1193,14 @@ export const browserApi: RuntimeApi = {
   startRun(taskId: string) {
     return Promise.resolve({ ...mockRunDetail.run, taskId });
   },
-  continueRun(_projectId, taskId, runId, _promptId, _prompt) {
+  continueRun(_projectId, taskId, runId) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
+  },
+  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId, _input, _promptId, _attachmentPaths) {
+    return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
+  },
+  recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision) {
+    return Promise.reject(new Error('Browser preview does not execute workflow recovery.'));
   },
   pauseRun(taskId: string, runId: string, _projectId?: string | null) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId, status: 'paused', pauseReason: 'process-interrupted', resumable: true });
@@ -614,7 +1224,15 @@ export const browserApi: RuntimeApi = {
   getLogPage(query: LogQueryInput) {
     return Promise.resolve(mockLogPage(query));
   },
-  getAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _query, fallback, _outerNodeId, _outerAttemptId) {
+  getAcpSession(_projectId, _taskId, runId, _roundId, _nodeId, _attemptId, query, fallback, _outerNodeId, _outerAttemptId) {
+    if (runId === 'run-052' || runId === 'run-053') {
+      const session = (runId === 'run-053'
+        ? browserQueuedConversationRun()
+        : browserCompletedConversationRun()).selectedSession;
+      if (session && (!query?.branchId || session.branchId === query.branchId)) {
+        return Promise.resolve(session);
+      }
+    }
     return Promise.resolve(fallback ?? null);
   },
   getAcpActivityDetail() {
@@ -694,11 +1312,23 @@ export const browserApi: RuntimeApi = {
   subscribeAppExitRequested() {
     return Promise.resolve(() => {});
   },
-  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
+  submitConversationPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _input, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'acp-session', session: fallback ?? null, run: null });
   },
-  updateConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _content, _outerNodeId, _outerAttemptId) {
+  reorderConversationQueuedPrompts(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision, _orderedItemIds, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
+  },
+  restoreConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, itemId, _outerNodeId, _outerAttemptId) {
+    const item = browserQueuedPromptDrafts.find((candidate) => candidate.id === itemId);
+    if (!item) return Promise.reject(new Error('queued prompt not found'));
+    return Promise.resolve({
+      draft: {
+        content: item.content,
+        quotes: item.quotes.map((quote) => ({ ...quote })),
+        attachmentPaths: [...item.attachmentPaths],
+      },
+      lifecycle: null,
+    });
   },
   deleteConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ lifecycle: null });
@@ -766,9 +1396,9 @@ export const browserApi: RuntimeApi = {
   showWorkerRef(_taskId: string, _runId: string, _roundId: string, _nodeId: string, attemptId: string, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve({ ...mockContent, title: attemptId, kind: 'worker-ref' });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
     const current = browserPreviewState.getPreferences();
-    const preferences = browserPreviewState.setPreferences({ ...current, theme, language, font, useLocalClaude, verboseLogging });
+    const preferences = browserPreviewState.setPreferences({ ...current, appearance, personalization, language, useLocalClaude, verboseLogging });
     return Promise.resolve(preferences);
   },
   saveDesktopAvatar(input) {
@@ -789,8 +1419,17 @@ export const browserApi: RuntimeApi = {
         recentAvatars,
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [input.kind]: {
+          image: { source: 'user' as const, assetId: id },
+          shape: { source: 'custom' as const, value: input.shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   selectRecentDesktopAvatar(kind, avatarId) {
     const current = browserPreviewState.getPreferences();
@@ -805,17 +1444,33 @@ export const browserApi: RuntimeApi = {
         recentAvatars: [selected, ...profile.recentAvatars.filter((avatar) => avatar.id !== avatarId)],
       },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'user' as const, assetId: avatarId } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   saveDesktopAvatarShape(kind, shape) {
     const current = browserPreviewState.getPreferences();
+    const effectiveShape = shape ?? 'circle';
     const avatars = {
       ...current.avatars,
-      [kind]: { ...current.avatars[kind], shape },
+      [kind]: { ...current.avatars[kind], shape: effectiveShape },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: {
+          ...current.personalization.avatars[kind],
+          shape: shape === null ? { source: 'theme' as const } : { source: 'custom' as const, value: shape },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
   clearDesktopAvatar(kind) {
     const current = browserPreviewState.getPreferences();
@@ -823,8 +1478,107 @@ export const browserApi: RuntimeApi = {
       ...current.avatars,
       [kind]: { ...current.avatars[kind], selectedAvatarId: null },
     };
-    browserPreviewState.setPreferences({ ...current, avatars });
-    return Promise.resolve(avatars);
+    const personalization = {
+      ...current.personalization,
+      avatars: {
+        ...current.personalization.avatars,
+        [kind]: { ...current.personalization.avatars[kind], image: { source: 'theme' as const } },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
+  },
+  importDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `wallpaper-${Date.now()}`;
+    const imageUrl = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900"%3E%3Cdefs%3E%3ClinearGradient id="g" x2="1" y2="1"%3E%3Cstop stop-color="%23111927"/%3E%3Cstop offset=".5" stop-color="%230f766e"/%3E%3Cstop offset="1" stop-color="%23d4a72c"/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width="1600" height="900" fill="url(%23g)"/%3E%3C/svg%3E';
+    const wallpaper = {
+      id,
+      imageUrl,
+      thumbnailUrl: imageUrl,
+      createdAt: localTimestamp(),
+      width: 1600,
+      height: 900,
+    };
+    const retainedAssetIds = Object.values(current.personalization.wallpaper.byColorScheme)
+      .flatMap((preference) => preference.image.source === 'user' ? [preference.image.assetId] : []);
+    const wallpapers = {
+      recentWallpapers: boundedRecentWallpapers(
+        [wallpaper, ...current.wallpapers.recentWallpapers],
+        retainedAssetIds,
+      ),
+    };
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'user' as const, assetId: id },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  selectRecentDesktopWallpaper(colorScheme, wallpaperId) {
+    const current = browserPreviewState.getPreferences();
+    const selected = current.wallpapers.recentWallpapers.find((wallpaper) => wallpaper.id === wallpaperId);
+    if (!selected) return Promise.reject({ code: 'wallpaper.recent-not-found', params: { wallpaperId } });
+    const wallpapers = {
+      recentWallpapers: [selected, ...current.wallpapers.recentWallpapers.filter((wallpaper) => wallpaper.id !== wallpaperId)],
+    };
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'user' as const, assetId: wallpaperId },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+  },
+  saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            opacityPercent,
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  restoreThemeDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'theme' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();
@@ -890,6 +1644,168 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(sidebar);
   },
+  listScheduledTasks(projectId) {
+    return Promise.resolve(browserScheduledTasks
+      .filter((task) => !projectId || task.projectId === projectId)
+      .map((task) => ({ ...task })));
+  },
+  setScheduledTaskEnabled(_projectId, scheduledTaskId, enabled) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId);
+    if (task) {
+      task.enabled = enabled;
+      task.status = enabled ? 'enabled' : 'paused';
+      task.updatedAt = new Date().toISOString();
+      emitBrowserScheduledTaskUpdated(task);
+      return Promise.resolve({ ...task });
+    }
+    return browserCommandError('scheduled-task.not-found');
+  },
+  createScheduledTask(input) {
+    const now = new Date().toISOString();
+    const id = `scheduled-${Date.now()}-${++browserScheduledTaskSequence}`;
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
+    const task: ScheduledTaskVm = { id, projectId: input.projectId, workspaceName: input.projectId === 'default' ? 'Default Workspace' : input.projectId, title: input.content.split(/\r?\n/)[0].slice(0, 48), enabled: true, mode: input.runMode, sessionPolicy: input.sessionPolicy ?? 'new', schedule: structuredClone(schedule), nextAt: null, status: 'enabled', lastTriggerAt: null, lastTriggerStatus: null, createdAt: now, updatedAt: now };
+    const definition: ScheduledTaskEditVm = {
+      scheduledTaskId: id,
+      projectId: input.projectId,
+      content: input.content,
+      attachmentNames: [],
+      runMode: input.runMode,
+      workflowTemplateId: input.workflowTemplateId,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
+      directConfig: input.directConfig,
+      autoConfig: input.autoConfig,
+      schedule,
+      overlapPolicy: input.overlapPolicy,
+      sessionPolicy: input.sessionPolicy ?? 'new',
+      directAgentType: input.directConfig?.agentType ?? null,
+      expectedUpdatedAt: now,
+    };
+    browserScheduledTaskDefinitions.set(id, definition);
+    browserScheduledOccurrences.set(id, []);
+    browserScheduledTasks.push(task);
+    emitBrowserScheduledTaskUpdated(task);
+    return Promise.resolve({ ...task });
+  },
+  getScheduledTask(_projectId, scheduledTaskId) {
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    return definition ? Promise.resolve(structuredClone(definition)) : browserCommandError('scheduled-task.not-found');
+  },
+  updateScheduledTask(input: UpdateScheduledTaskInput) {
+    const definition = browserScheduledTaskDefinitions.get(input.scheduledTaskId);
+    if (!definition) return browserCommandError('scheduled-task.not-found');
+    if (definition.expectedUpdatedAt !== input.expectedUpdatedAt) return browserCommandError('scheduled-task.conflict');
+    const now = new Date().toISOString();
+    const schedule = scheduledScheduleSpecFromInput(input.schedule);
+    const next: ScheduledTaskEditVm = {
+      ...definition,
+      ...input,
+      includeOptionalEntry: resolveBrowserOptionalEntry(
+        input.runMode,
+        input.workflowTemplateId,
+        input.includeOptionalEntry,
+      ),
+      schedule,
+      expectedUpdatedAt: now,
+      directAgentType: input.directConfig?.agentType ?? definition.directAgentType ?? null,
+    };
+    browserScheduledTaskDefinitions.set(input.scheduledTaskId, next);
+    const task = browserScheduledTasks.find((item) => item.id === input.scheduledTaskId);
+    if (task) {
+      Object.assign(task, {
+        title: input.content.split(/\r?\n/)[0].slice(0, 48),
+        mode: input.runMode,
+        sessionPolicy: input.sessionPolicy,
+        schedule: structuredClone(schedule),
+        updatedAt: now,
+      });
+      emitBrowserScheduledTaskUpdated(task);
+    }
+    return Promise.resolve(structuredClone(next));
+  },
+  deleteScheduledTask(_projectId, scheduledTaskId) {
+    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId);
+    if (index < 0) return browserCommandError('scheduled-task.not-found');
+    const [task] = browserScheduledTasks.splice(index, 1);
+    browserScheduledTaskDefinitions.delete(scheduledTaskId);
+    browserScheduledOccurrences.delete(scheduledTaskId);
+    emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
+    return Promise.resolve();
+  },
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    const all = (browserScheduledOccurrences.get(scheduledTaskId) ?? [])
+      .filter((occurrence) => !status || occurrence.status === status);
+    const start = cursor ? all.findIndex((occurrence) => occurrence.id === cursor) + 1 : 0;
+    if (cursor && start === 0) return browserCommandError('scheduled-task.validation-failed');
+    const items = all.slice(start, start + 20).map((occurrence) => structuredClone(occurrence));
+    const hasMore = start + items.length < all.length;
+    return Promise.resolve({ items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null });
+  },
+  getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    const occurrences = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    const last = occurrences[0] ?? null;
+    return Promise.resolve({
+      scheduledTaskId,
+      projectId,
+      nextAt: task.nextAt ?? null,
+      lastStatus: last?.status ?? task.lastTriggerStatus ?? null,
+      lastError: last?.errorCode ?? null,
+      runCount: occurrences.filter((occurrence) => Boolean(occurrence.runId)).length,
+      retryCount: occurrences.reduce((count, occurrence) => count + Math.max(0, occurrence.attempt - 1), 0),
+      occurrences: occurrences.slice(0, 200).map((occurrence) => structuredClone(occurrence)),
+    });
+  },
+  runScheduledTaskNow(projectId, scheduledTaskId) {
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
+    if (!task) return browserCommandError('scheduled-task.not-found');
+    const now = new Date().toISOString();
+    const occurrenceId = `occurrence-${Date.now()}-${++browserScheduledTaskSequence}`;
+    const taskId = `browser-task-${scheduledTaskId}`;
+    const runId = `browser-run-${Date.now()}-${browserScheduledTaskSequence}`;
+    const running: ScheduledOccurrenceVm = {
+      id: occurrenceId,
+      scheduledTaskId,
+      scheduledAt: now,
+      triggerKind: 'manual',
+      status: 'running',
+      attempt: 1,
+      errorCode: null,
+      errorParams: null,
+      taskId,
+      runId,
+      roundId: null,
+      attemptId: null,
+      startedAt: now,
+      finishedAt: null,
+    };
+    const history = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    browserScheduledOccurrences.set(scheduledTaskId, [running, ...history]);
+    emitBrowserScheduledOccurrenceUpdated(running, task.projectId);
+    const finished: ScheduledOccurrenceVm = { ...running, status: 'succeeded', finishedAt: new Date().toISOString() };
+    browserScheduledOccurrences.set(scheduledTaskId, [finished, ...history]);
+    Object.assign(task, {
+      lastTriggerAt: finished.finishedAt,
+      lastTriggerStatus: finished.status,
+      updatedAt: finished.finishedAt ?? now,
+    });
+    emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);
+    emitBrowserScheduledTaskUpdated(task);
+    return Promise.resolve({
+      occurrence: structuredClone(finished),
+      taskId,
+      runId,
+      roundId: null,
+      attemptId: null,
+    } satisfies RunScheduledTaskResultVm);
+  },
   getConversationWorkspaces() {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);
   },
@@ -916,6 +1832,7 @@ export const browserApi: RuntimeApi = {
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
       runtimeErrorMessage: null,
+      worktree: null,
     };
     return Promise.resolve(run);
   },
@@ -949,6 +1866,13 @@ export const browserApi: RuntimeApi = {
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
       runtimeErrorMessage: null,
+      worktree: input.workLocation === 'worktree'
+        ? {
+          path: `/preview/gold-band/worktrees/${Date.now()}`,
+          branch: `gold-band/conversation/${Date.now()}`,
+          forkCommit: 'preview-head',
+        }
+        : null,
     };
     browserConversationRuns.set(run.runId, run);
     return Promise.resolve(run);
@@ -974,10 +1898,12 @@ export const browserApi: RuntimeApi = {
   searchConversationTasks(_query, _limit) {
     return Promise.resolve([]);
   },
-  getConversationRunMode(_projectId) {
-    return Promise.resolve({ mode: 'auto' });
+  getConversationRunMode(projectId) {
+    const mode = browserConversationRunModes.get(projectId);
+    return Promise.resolve(mode ? structuredClone(mode) : { mode: 'auto' });
   },
-  saveConversationRunMode() {
+  saveConversationRunMode(projectId, mode) {
+    browserConversationRunModes.set(projectId, structuredClone(mode));
     return Promise.resolve();
   },
   chooseConversationWorkspace() {
@@ -1188,6 +2114,14 @@ export const browserApi: RuntimeApi = {
   pickAttachmentFiles() {
     return Promise.resolve([]);
   },
+  statAttachmentFiles(paths) {
+    return Promise.resolve(paths.map((path) => ({
+      path,
+      name: path.split(/[\\/]/).at(-1) ?? path,
+      size: 0,
+      previewUrl: null,
+    })));
+  },
   materializeConversationAttachments(files) {
     return Promise.resolve(files.map((file, index) => ({
       path: `browser-memory://attachments/${Date.now()}-${index}-${encodeURIComponent(file.name)}`,
@@ -1254,7 +2188,7 @@ function detectBrowserFonts(candidates: readonly string[]) {
       return [family, context.measureText(sample).width] as const;
     }),
   );
-  return normalizeFontFamilies(
+  return normalizeFontCatalogFamilies(
     candidates.filter((family) => {
       const quoted = quoteFontFamily(family);
       if (document.fonts.check(`16px ${quoted}`)) {
@@ -1275,22 +2209,16 @@ async function queryBrowserLocalFonts() {
   }
   try {
     const fonts = await fontWindow.queryLocalFonts();
-    return normalizeFontFamilies(fonts.map((font) => font.family));
+    return normalizeFontCatalogFamilies(fonts.map((font) => font.family));
   } catch {
     return [];
   }
-}
-
-function normalizeFontFamilies(families: readonly string[]) {
-  const collator = new Intl.Collator(['zh-CN', 'en'], { sensitivity: 'base', numeric: true });
-  return Array.from(new Set(families.map((family) => family.trim()).filter(Boolean))).sort((left, right) => collator.compare(left, right));
 }
 
 function quoteFontFamily(family: string) {
   return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-void mockWorkflowTemplates;
 void toRoundSelectionInput;
 void mockBootstrap;
 void mockContent;

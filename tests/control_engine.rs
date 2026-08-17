@@ -25,6 +25,8 @@ fn sample_run() -> RunState {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        worktree: None,
+        execution: Default::default(),
     }
 }
 
@@ -56,6 +58,7 @@ fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
         started_at: "0Z".to_string(),
         finished_at: Some("1Z".to_string()),
         manual_check_pending: false,
+        runtime_execution_id: None,
         resolved_config: Default::default(),
         uuid: None,
     }

@@ -15,6 +15,10 @@ const hiddenPromptSource = readFileSync(
   fileURLToPath(new URL('../src/components/acp/HiddenPromptMessageContent.tsx', import.meta.url)),
   'utf8',
 );
+const activitySpinnerSource = readFileSync(
+  fileURLToPath(new URL('../src/components/acp/AcpProcessingSpinner.tsx', import.meta.url)),
+  'utf8',
+);
 const runHeaderSource = readFileSync(
   fileURLToPath(new URL('../src/components/conversation/ConversationRunHeader.tsx', import.meta.url)),
   'utf8',
@@ -26,22 +30,46 @@ const stylesSource = readFileSync(
 
 describe('ACP message theme contract', () => {
   it('uses the shared user-message semantic surface without primary tint, border, or elevation', () => {
-    expect(messageSource).toContain('variant === "user" && "bg-message-user text-message-user-foreground"');
+    expect(messageSource).toContain('data-theme-role={variant === "user" ? "message-user" : variant === "assistant" ? "message-assistant" : "activity"}');
     expect(chatSource).toContain('variant={isUser ? "user" : "assistant"}');
-    expect(chatSource).toContain('w-fit max-w-full rounded-br-md shadow-none');
+    expect(chatSource).toContain('w-fit max-w-full rounded-br-md py-3 shadow-none');
     expect(chatSource).not.toContain('var(--primary)_16%');
     expect(chatSource).not.toContain('var(--primary)_26%');
   });
 
-  it('keeps hidden runtime context inside the same tonal surface instead of nesting a white card', () => {
-    expect(hiddenPromptSource).toContain('bg-foreground/[0.025]');
-    expect(hiddenPromptSource).toContain('border-foreground/10');
-    expect(hiddenPromptSource).not.toContain('bg-background/35');
-    expect(hiddenPromptSource).not.toContain('bg-background/45');
+  it('renders hidden prompt navigation as a semantic link and keeps runtime control themed', () => {
+    expect(hiddenPromptSource).toContain('variant="link"');
+    expect(hiddenPromptSource).toContain('data-hidden-prompt-link="true"');
+    expect(hiddenPromptSource).toContain('text-foreground/80');
+    expect(hiddenPromptSource).toContain('has-[>svg]:px-0');
+    expect(hiddenPromptSource).toContain('<FileText');
+    expect(hiddenPromptSource).not.toContain('<Collapsible');
+    expect(chatSource).toContain('data-theme-role="runtime-control"');
+    expect(hiddenPromptSource).not.toContain('bg-foreground/[0.025]');
+    expect(chatSource).not.toContain('border-primary/20 bg-primary/5');
+    expect(chatSource).not.toContain('hover:bg-primary/10');
+  });
+
+  it('routes thought, activity, and intervention surfaces through existing theme roles', () => {
+    expect(chatSource).toContain('data-theme-role="activity"');
+    expect(chatSource).toContain('data-theme-role={compact ? undefined : "activity"}');
+    expect(chatSource).toContain('data-theme-role="permission-card"');
+    expect(chatSource).not.toContain('bg-card/65 px-4 py-3.5 shadow-');
+  });
+
+  it('keeps activity summaries and assistant copy actions compact', () => {
+    expect(chatSource).toContain('min-h-7 w-full min-w-0 justify-start gap-1.5 rounded-none bg-transparent px-1 py-0.5');
+    expect(chatSource).toContain('text-muted-foreground hover:bg-transparent hover:text-foreground');
+    expect(chatSource).toContain('data-[state=open]:bg-transparent data-[state=open]:text-foreground');
+    expect(chatSource).not.toContain('hover:bg-transparent hover:text-accent-foreground');
+    expect(chatSource).toContain('data-agent-message-actions="true"');
+    expect(chatSource).toContain('className="h-5 px-1 leading-none opacity-100');
+    expect(chatSource).toContain('className="size-5 text-muted-foreground');
   });
 
   it('sizes the user bubble from every currently visible prompt section', () => {
     expect(hiddenPromptSource).toContain('inline-grid min-w-0 max-w-full gap-2');
+    expect(hiddenPromptSource).toContain('projectHiddenPromptDisplayParts(parts)');
     expect(chatSource).toContain('[container-type:inline-size]');
     expect(chatSource).toContain('data-acp-message-row={isUser ? "user" : "assistant"}');
     expect(stylesSource).toContain(
@@ -55,22 +83,27 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).toContain('style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}');
     expect(hiddenPromptSource).not.toContain('max-w-4xl');
     expect(hiddenPromptSource).not.toContain('max-w-6xl');
-    expect(hiddenPromptSource).toContain('className="grid min-w-0 max-w-full"');
     expect(hiddenPromptSource).toContain(
-      'group grid min-w-0 grid-cols-[minmax(0,1fr)_auto]',
+      'h-auto min-w-0 max-w-full justify-start gap-1.5 p-0',
     );
-    expect(hiddenPromptSource).toContain(
-      '<CollapsibleContent className="min-w-0 max-w-full">',
-    );
-    expect(hiddenPromptSource).toContain('max-h-72 w-max min-w-0 max-w-full');
+    expect(hiddenPromptSource).toContain('expandedHiddenLineInlineSizes: []');
+    expect(hiddenPromptSource).not.toContain('CollapsibleContent');
+    expect(hiddenPromptSource).not.toContain('max-h-72');
     expect(hiddenPromptSource).not.toContain('[contain:inline-size]');
     expect(hiddenPromptSource).not.toContain('w-full min-w-0');
     expect(hiddenPromptSource).not.toContain('open ? "w-full" : "w-fit"');
   });
 
+  it('uses the compositor-friendly CSS ring for live activity and composer processing', () => {
+    expect(chatSource).toContain('<AcpProcessingSpinner className="size-3.5" />');
+    expect(activitySpinnerSource).toContain('border-t-gold-running');
+    expect(activitySpinnerSource).toContain('motion-safe:animate-spin');
+    expect(activitySpinnerSource).not.toContain('Loader2');
+  });
+
   it('keeps assistant prose and main content headers on the page surface', () => {
-    expect(messageSource).toContain('variant === "assistant" && "bg-transparent text-foreground"');
-    expect(chatSource).toContain(': "rounded-bl-md shadow-none"');
+    expect(messageSource).toContain('? "message-assistant" : "activity"');
+    expect(chatSource).toContain(': "rounded-bl-md pb-0 pt-2 shadow-none"');
     expect(chatSource).toContain('bg-content-header px-5');
     expect(runHeaderSource).toContain('bg-content-header px-5');
     expect(chatSource).not.toContain('bg-gold-surface-high/60 px-5');

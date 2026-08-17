@@ -2,6 +2,10 @@ import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import { getRuntimeApi } from '@/api/client';
 import type { AcpUiEventVm } from '@/types';
 import { useCallback, useSyncExternalStore } from 'react';
+import {
+  recordAcpStreamingDiagnostic,
+  summarizeAcpStreamingEvent,
+} from '@/lib/acp-streaming-diagnostics';
 
 type Listener = (event: AcpSessionUpdatedEventVm) => void;
 
@@ -59,6 +63,10 @@ async function ensureStarted() {
       return;
     }
     await subscribe((event) => {
+      recordAcpStreamingDiagnostic(
+        'router-received',
+        () => summarizeAcpStreamingEvent(event),
+      );
       applyConversationEventToBranchSnapshots(event);
       for (const listener of listeners) listener(event);
     });

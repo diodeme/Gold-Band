@@ -7,29 +7,89 @@ import { cn } from '@/lib/utils';
 
 type PageProps = ComponentProps<'section'> & { flush?: boolean };
 
+export type PageContentVariant = 'default' | 'after-navigation';
+
+type PageContentProps = ComponentProps<'div'> & {
+  variant?: PageContentVariant;
+};
+
+export type PageHeaderVariant = 'default' | 'integrated';
+
+interface PageHeaderProps {
+  breadcrumbs?: ReactNode;
+  eyebrow?: ReactNode;
+  icon?: ReactNode;
+  title: ReactNode;
+  badges?: ReactNode;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+  metrics?: ReactNode;
+  navigation?: ReactNode;
+  navigationLabel?: string;
+  variant?: PageHeaderVariant;
+  className?: string;
+}
+
+export const pageHeaderStyles = {
+  default: {
+    root: 'space-y-5 border-b bg-background/60 px-5 py-4 backdrop-blur xl:px-6',
+    navigationRoot: '',
+    headingRow: 'flex-col gap-4 lg:flex-row lg:items-start lg:justify-between',
+    identity: 'space-y-3',
+    title: 'text-3xl',
+    actions: 'lg:pt-1',
+  },
+  integrated: {
+    root: 'space-y-2 px-6 pb-3 pt-8',
+    navigationRoot: 'pb-1',
+    headingRow: 'flex-col gap-3 sm:flex-row sm:items-start sm:justify-between',
+    identity: 'space-y-1.5',
+    title: 'text-lg',
+    actions: '',
+  },
+} as const satisfies Record<PageHeaderVariant, Record<string, string>>;
+
+export const pageContentStyles = {
+  default: 'min-h-0 flex-1 px-6 pb-6 pt-4',
+  'after-navigation': 'min-h-0 flex-1 px-6 pb-6 pt-2',
+} as const satisfies Record<PageContentVariant, string>;
+
 export function Page({ children, className, flush = false, ...props }: PageProps) {
   return <section className={cn('min-h-0 flex-1 overflow-hidden', flush ? 'p-0' : 'overflow-y-auto p-8', className)} {...props}>{children}</section>;
+}
+
+export function PageContent({ children, className, variant = 'default', ...props }: PageContentProps) {
+  return <div data-variant={variant} className={cn(pageContentStyles[variant], className)} {...props}>{children}</div>;
 }
 
 export function PageScroll({ children, className }: { children: ReactNode; className?: string }) {
   return <ScrollArea className={cn('h-full', className)}>{children}</ScrollArea>;
 }
 
-export function PageHeader({ breadcrumbs, eyebrow, title, badges, subtitle, actions, metrics, className }: { breadcrumbs?: ReactNode; eyebrow?: ReactNode; title: ReactNode; badges?: ReactNode; subtitle?: ReactNode; actions?: ReactNode; metrics?: ReactNode; className?: string }) {
+export function PageHeader({ breadcrumbs, eyebrow, icon, title, badges, subtitle, actions, metrics, navigation, navigationLabel, variant = 'default', className }: PageHeaderProps) {
+  const styles = pageHeaderStyles[variant];
   return (
-    <header className={cn('shrink-0 space-y-5 border-b bg-background/60 px-5 py-4 backdrop-blur xl:px-6', className)}>
+    <header data-variant={variant} className={cn('shrink-0', styles.root, navigation && styles.navigationRoot, className)}>
       {breadcrumbs ? <div className="flex min-h-6 min-w-0 items-center">{breadcrumbs}</div> : null}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0 space-y-3">
-          {eyebrow ? <p className="truncate text-xs font-semibold uppercase tracking-[0.22em] text-primary">{eyebrow}</p> : null}
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            <h1 className="min-w-0 truncate text-3xl font-semibold tracking-tight text-foreground">{title}</h1>
-            {badges ? <div className="flex shrink-0 flex-wrap items-center gap-2">{badges}</div> : null}
+      <div className={cn('flex', styles.headingRow)}>
+        <div data-slot="page-header-identity" className="flex min-w-0 items-center gap-3">
+          {icon ? (
+            <span data-slot="page-header-icon" aria-hidden="true" className="shrink-0 text-foreground [&_svg]:size-5">
+              {icon}
+            </span>
+          ) : null}
+          <div className={cn('min-w-0', styles.identity)}>
+            {eyebrow ? <p className="truncate text-xs font-semibold uppercase tracking-[0.22em] text-primary">{eyebrow}</p> : null}
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <h1 className={cn('min-w-0 truncate font-semibold tracking-tight text-foreground', styles.title)}>{title}</h1>
+              {badges ? <div className="flex shrink-0 flex-wrap items-center gap-2">{badges}</div> : null}
+            </div>
+            {subtitle ? <div className="max-w-4xl text-sm leading-6 text-muted-foreground">{subtitle}</div> : null}
           </div>
-          {subtitle ? <div className="max-w-4xl text-sm leading-6 text-muted-foreground">{subtitle}</div> : null}
         </div>
-        {actions ? <Actions className="lg:pt-1">{actions}</Actions> : null}
+        {actions ? <Actions className={styles.actions}>{actions}</Actions> : null}
       </div>
+      {navigation ? <nav className="min-w-0" aria-label={navigationLabel}>{navigation}</nav> : null}
       {metrics ? <div className="min-w-0">{metrics}</div> : null}
     </header>
   );

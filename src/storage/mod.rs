@@ -216,6 +216,14 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("gold-band.db")
     }
 
+    pub fn scheduler_db_path(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks.db")
+    }
+
+    pub fn legacy_scheduler_db_path(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("scheduled-tasks.db")
+    }
+
     // ── SKILL paths ──
 
     pub fn global_skills_dir() -> Utf8PathBuf {
@@ -238,6 +246,32 @@ impl GoldBandPaths {
 
     pub fn tasks_dir(&self) -> Utf8PathBuf {
         self.runtime_root.join("tasks")
+    }
+
+    pub fn conversation_worktrees_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("worktrees")
+    }
+
+    pub fn scheduled_tasks_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("scheduled-tasks")
+    }
+
+    pub fn scheduled_task_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_tasks_dir().join(scheduled_task_id)
+    }
+
+    pub fn scheduled_task_file(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id)
+            .join("scheduled-task.json")
+    }
+
+    pub fn scheduled_triggers_dir(&self, scheduled_task_id: &str) -> Utf8PathBuf {
+        self.scheduled_task_dir(scheduled_task_id).join("triggers")
+    }
+
+    pub fn scheduled_trigger_file(&self, scheduled_task_id: &str, trigger_id: &str) -> Utf8PathBuf {
+        self.scheduled_triggers_dir(scheduled_task_id)
+            .join(format!("{trigger_id}.json"))
     }
 
     pub fn task_dir(&self, task_id: &str) -> Utf8PathBuf {
@@ -1441,6 +1475,36 @@ mod tests {
                 .to_string()
                 .replace('\\', "/")
                 .ends_with("/.gold-band-test-root/logs/runtime.log")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_separate_from_search_database_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_ne!(paths.scheduler_db_path(), paths.sqlite_db_path());
+        assert!(
+            paths
+                .scheduler_db_path()
+                .to_string()
+                .replace('\\', "/")
+                .ends_with("/scheduled-tasks.db")
+        );
+    }
+
+    #[test]
+    fn scheduler_db_path_is_scoped_to_project_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new(repo_root);
+
+        assert_eq!(
+            paths.scheduler_db_path(),
+            paths.runtime_root.join("scheduled-tasks.db")
         );
     }
 }

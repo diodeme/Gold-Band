@@ -4,6 +4,9 @@ import type { ConversationSessionLeafVm, ConversationSessionTreeVm } from '../..
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
+import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
+
+const SESSION_TREE_ROW_HOVER_CLASS = 'hover:bg-sidebar-accent/55 hover:text-sidebar-accent-foreground';
 
 interface ConversationSessionSwitcherProps {
   tree: ConversationSessionTreeVm;
@@ -17,7 +20,7 @@ export function ConversationSessionSwitcher({
   onSelectSession,
 }: ConversationSessionSwitcherProps) {
   return (
-    <div className="w-64 rounded-xl border border-border/60 bg-card/60 p-2 shadow-sm">
+    <div data-theme-role="popover" className="w-64 p-2">
       {tree.rounds.length === 0 ? (
         <div className="px-3 py-4 text-center text-xs text-muted-foreground">No sessions</div>
       ) : (
@@ -43,7 +46,7 @@ function RoundNode({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium">
+        <Button variant="ghost" className={cn('h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium', SESSION_TREE_ROW_HOVER_CLASS)}>
           <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
           {round.label}
         </Button>
@@ -76,7 +79,7 @@ function TreeNode({
     <div>
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
-          <Button variant="ghost" className="h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs">
+          <Button variant="ghost" className={cn('h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs', SESSION_TREE_ROW_HOVER_CLASS)}>
             <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
             <span className="truncate">{node.label}</span>
           </Button>
@@ -115,15 +118,17 @@ function SessionLeaf({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const isRunning = leaf.runtimeDisplay.tone === 'running';
-  const statusDotClass = runtimeDotClass(leaf.runtimeDisplay.tone);
+  const statusDotClass = runtimeStatusDotClass(leaf.runtimeDisplay.tone);
 
   return (
     <button
       type="button"
+      aria-current={selected ? 'true' : undefined}
+      data-selected={selected}
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent',
-        selected && 'bg-sidebar-accent text-sidebar-accent-foreground',
+        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs',
+        SESSION_TREE_ROW_HOVER_CLASS,
+        selected && 'bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent',
       )}
       onClick={onSelect}
     >
@@ -134,9 +139,6 @@ function SessionLeaf({
           selected && 'border-sidebar-accent/80',
         )}
       >
-        {isRunning ? (
-          <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
-        ) : null}
         <span
           className={cn(
             'relative inline-block size-2 rounded-full',
@@ -147,13 +149,4 @@ function SessionLeaf({
       <span className="truncate">{leaf.pathLabel}</span>
     </button>
   );
-}
-
-function runtimeDotClass(tone?: string | null) {
-  if (tone === 'success') return 'bg-emerald-500';
-  if (tone === 'danger') return 'bg-red-500';
-  if (tone === 'running') return 'bg-primary';
-  if (tone === 'warning') return 'bg-yellow-500';
-  if (tone === 'neutral') return 'bg-muted-foreground';
-  return 'bg-muted-foreground';
 }

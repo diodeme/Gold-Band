@@ -7,6 +7,7 @@ import { isTauriRuntime } from '../api/shared';
 import { resolveWindowControlsPolicy } from '../lib/window-controls';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { FeedbackDialog } from './feedback/FeedbackDialog';
 import { cn } from '@/lib/utils';
 
@@ -19,6 +20,13 @@ interface AppTitleBarProps {
   rightWorkspaceOpen?: boolean;
   onToggleRightWorkspace?: () => void;
 }
+
+export const APP_TITLE_BAR_LAYOUT = {
+  rootClassName: 'app-titlebar-drag-region flex h-9 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground',
+  brandMarkClassName: 'grid h-6 w-9 shrink-0 place-items-center rounded-[7px] border border-titlebar-border bg-background/55 p-0.5',
+  brandTitleClassName: 'text-base font-[700] tracking-[0.01em] text-titlebar-foreground',
+  helpActionClassName: 'flex h-7 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground',
+} as const;
 
 export function AppTitleBar({
   appName,
@@ -88,34 +96,39 @@ export function AppTitleBar({
     <>
     <header
       data-tauri-drag-region
-      className="app-titlebar-drag-region flex h-11 shrink-0 select-none items-center bg-titlebar text-titlebar-foreground"
+      className={APP_TITLE_BAR_LAYOUT.rootClassName}
+      data-theme-role="titlebar"
     >
       <div className="flex items-center px-2.5">
         {hasLeadingInset ? <div aria-hidden="true" className={cn('shrink-0', policy.leadingInsetClassName)} /> : null}
         <div data-tauri-drag-region data-titlebar-brand="true" className="flex h-full items-center gap-2 pr-3">
-          <span data-tauri-drag-region className="grid h-7 w-10 shrink-0 place-items-center rounded-lg border border-titlebar-border bg-background/55 p-1">
+          <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandMarkClassName}>
             <img src="/logo.svg" alt="" className="h-full w-full object-contain pointer-events-none" />
           </span>
-          <span data-tauri-drag-region className="text-sm font-semibold tracking-[0.01em] text-titlebar-foreground">
+          <span data-tauri-drag-region className={APP_TITLE_BAR_LAYOUT.brandTitleClassName}>
             {appName}
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={cn(
-            'app-titlebar-no-drag size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
-            !sidebarCollapsed && 'bg-titlebar-hover/70 text-titlebar-foreground',
-          )}
-          onClick={onToggleSidebar}
-          aria-label={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
-          title={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
-          data-titlebar-no-drag="true"
-          data-titlebar-sidebar-toggle="left"
-          data-state={sidebarCollapsed ? 'closed' : 'open'}
-        >
-          <PanelLeft className="size-3.5" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                'app-titlebar-no-drag size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
+                !sidebarCollapsed && 'bg-titlebar-hover/70 text-titlebar-foreground',
+              )}
+              onClick={onToggleSidebar}
+              aria-label={sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}
+              data-titlebar-no-drag="true"
+              data-titlebar-sidebar-toggle="left"
+              data-state={sidebarCollapsed ? 'closed' : 'open'}
+            >
+              <PanelLeft className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{sidebarCollapsed ? t('common.showSidebar') : t('common.collapseSidebar')}</TooltipContent>
+        </Tooltip>
       </div>
 
       <div
@@ -134,16 +147,20 @@ export function AppTitleBar({
         >
           {feedbackEnabled ? (
             <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="flex h-8 items-center rounded-md px-2.5 text-sm font-medium text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
-                  aria-label={t('common.help')}
-                  title={t('common.help')}
-                >
-                  {t('common.help')}
-                </button>
-              </DropdownMenuTrigger>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className={APP_TITLE_BAR_LAYOUT.helpActionClassName}
+                      aria-label={t('common.help')}
+                    >
+                      {t('common.help')}
+                    </button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>{t('common.help')}</TooltipContent>
+              </Tooltip>
               <DropdownMenuContent align="end" className="min-w-40">
                 <DropdownMenuItem
                   onSelect={() => {
@@ -159,21 +176,25 @@ export function AppTitleBar({
             </DropdownMenu>
           ) : null}
           {onToggleRightWorkspace ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={cn(
-                'size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
-                rightWorkspaceOpen && 'bg-titlebar-hover/70 text-titlebar-foreground',
-              )}
-              onClick={onToggleRightWorkspace}
-              aria-label={rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}
-              title={rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}
-              data-titlebar-sidebar-toggle="right"
-              data-state={rightWorkspaceOpen ? 'open' : 'closed'}
-            >
-              <PanelRight className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    'size-7 rounded-[6px] text-titlebar-muted hover:bg-titlebar-hover hover:text-titlebar-foreground',
+                    rightWorkspaceOpen && 'bg-titlebar-hover/70 text-titlebar-foreground',
+                  )}
+                  onClick={onToggleRightWorkspace}
+                  aria-label={rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}
+                  data-titlebar-sidebar-toggle="right"
+                  data-state={rightWorkspaceOpen ? 'open' : 'closed'}
+                >
+                  <PanelRight className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{rightWorkspaceOpen ? t('workspace.closeWorkspace') : t('workspace.openWorkspace')}</TooltipContent>
+            </Tooltip>
           ) : null}
         </div>
       ) : null}
@@ -182,33 +203,45 @@ export function AppTitleBar({
           className="app-titlebar-no-drag flex h-full w-max flex-none items-stretch pl-2"
           data-titlebar-no-drag="true"
         >
-          <button
-            type="button"
-            className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
-            onClick={handleMinimize}
-            aria-label={t('common.minimizeWindow')}
-            title={t('common.minimizeWindow')}
-          >
-            <Minus className="size-4" />
-          </button>
-          <button
-            type="button"
-            className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
-            onClick={handleToggleMaximize}
-            aria-label={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
-            title={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
-          >
-            {isMaximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
-          </button>
-          <button
-            type="button"
-            className="flex h-full w-12 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
-            onClick={handleClose}
-            aria-label={t('common.closeWindow')}
-            title={t('common.closeWindow')}
-          >
-            <X className="size-4" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+                onClick={handleMinimize}
+                aria-label={t('common.minimizeWindow')}
+              >
+                <Minus className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{t('common.minimizeWindow')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex h-full w-11 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-titlebar-hover hover:text-titlebar-foreground"
+                onClick={handleToggleMaximize}
+                aria-label={isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}
+              >
+                {isMaximized ? <Copy className="size-3.5" /> : <Square className="size-3.5" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{isMaximized ? t('common.restoreWindow') : t('common.maximizeWindow')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="flex h-full w-12 flex-none items-center justify-center text-titlebar-muted transition-colors hover:bg-destructive hover:text-white"
+                onClick={handleClose}
+                aria-label={t('common.closeWindow')}
+              >
+                <X className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{t('common.closeWindow')}</TooltipContent>
+          </Tooltip>
         </div>
       ) : null}
     </header>

@@ -1,4 +1,5 @@
 import { cva } from 'class-variance-authority';
+import { isOverflowing, useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 
 export const DEFAULT_ACP_COMPOSER_CONFIG_ALIGN = 'start' as const;
 export const ACP_COMPOSER_CONFIG_DROPDOWN_MODAL = false;
@@ -26,3 +27,12 @@ export const acpComposerConfigTriggerVariants = cva(
 export const ACP_COMPOSER_CONFIG_TRIGGER_LABEL_CLASS = 'shrink-0 text-muted-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_VALUE_CLASS = 'min-w-0 flex-1 truncate text-left text-foreground';
 export const ACP_COMPOSER_CONFIG_TRIGGER_ICON_CLASS = 'size-3.5 shrink-0 text-muted-foreground';
+
+export function isAcpComposerConfigValueOverflowing(element: HTMLElement | null) {
+  return isOverflowing(element);
+}
+
+/** Keep overflow measurement local to the hovered/focused composer control. */
+export function useAcpComposerConfigOverflowTooltip() {
+  return useOverflowTooltip<HTMLSpanElement>();
+}

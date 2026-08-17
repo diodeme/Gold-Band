@@ -2,9 +2,9 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AcpSessionVm, AcpUsageVm, AcpUiEventVm, AppConfigVm, AssetItemVm, ContentVm, GraphNodeVm, LogEntryVm, LogPageVm, LogQueryInput, NodeDetailVm, RoundDetailVm, RoundSelection } from '../types';
 import { displayAppError, displayStatus } from '../i18n';
-import { getLogPage, showArtifact, showAttachment, submitConversationPrompt } from '../api';
+import { continueConversationRuntime, getLogPage, showArtifact, showAttachment } from '../api';
 import { resolveNodeTokenUsage, formatDisplayToken } from '../lib/token-usage';
-import { ACPChatDialog, createAcpPromptId, optimisticUserEvent, updateAcpOptimisticEvents } from '../components/acp/ACPChatDialog';
+import { ACPChatDialog } from '../components/acp/ACPChatDialog';
 import { DetailViewerContent } from '../components/DetailViewer';
 import { GraphView } from '../components/GraphView';
 import { RequirementDetailSheet, RequirementTeaser, fullRequirementText } from '../components/RequirementDisclosure';
@@ -100,39 +100,19 @@ export function RoundDetailPage({ vm, breadcrumbs, selection, refreshing, busy, 
   const handleContinueRun = async () => {
     const target = activeAttemptLocator(vm);
     if (!target) return;
-    const promptId = createAcpPromptId();
-    const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, target.roundId, target.nodeId, target.attemptId);
-    const optimisticEvent = optimisticUserEvent(t('acp.continuePrompt'), promptId);
-    const appendOptimisticEvent = (events: AcpUiEventVm[]) => [...events.filter((event) => promptIdFromAcpEvent(event) !== promptId), optimisticEvent];
-    updateAcpOptimisticEvents(optimisticKey, appendOptimisticEvent);
-    setOptimisticAcpEventsByKey((current) => ({
-      ...current,
-      [optimisticKey]: appendOptimisticEvent(current[optimisticKey] ?? []),
-    }));
     try {
-      const result = await submitConversationPrompt(
+      const result = await continueConversationRuntime(
         workspaceProjectId ?? 'default',
         vm.run.taskId,
         vm.run.id,
         target.roundId,
         target.nodeId,
         target.attemptId,
-        '',
-        promptId,
-        null,
         target.outerNodeId,
         target.outerAttemptId,
       );
       if (result.kind === 'runtime-continue-started') onRefresh();
-    } catch {
-      const markPromptFailed = (events: AcpUiEventVm[]) => events.map((event) => promptIdFromAcpEvent(event) === promptId ? { ...event, status: 'failed' } : event);
-      updateAcpOptimisticEvents(optimisticKey, markPromptFailed);
-      setOptimisticAcpEventsByKey((current) => {
-        const events = markPromptFailed(current[optimisticKey] ?? []);
-        if (events.length === 0) return current;
-        return { ...current, [optimisticKey]: events };
-      });
-    }
+    } catch { /* page refresh remains the lifecycle source of truth */ }
   };
 
   return (
@@ -384,9 +364,9 @@ function DynamicDetailSection({ detail }: { detail: NodeDetailVm }) {
       </div>
       <div className="rounded-xl border border-border/70 bg-muted/10 p-3">
         <div className="mb-3 grid gap-2 sm:grid-cols-3">
-          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Status</div><div className="mt-1 text-sm font-medium">{displayStatus(t, dynamic.summary.status)}</div></div>
-          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Groups</div><div className="mt-1 text-sm font-medium">{dynamic.summary.groupCount}</div></div>
-          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Proposals</div><div className="mt-1 text-sm font-medium">{dynamic.summary.proposalCount}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-ui-micro font-semibold uppercase tracking-[0.16em] text-muted-foreground">Status</div><div className="mt-1 text-sm font-medium">{displayStatus(t, dynamic.summary.status)}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-ui-micro font-semibold uppercase tracking-[0.16em] text-muted-foreground">Groups</div><div className="mt-1 text-sm font-medium">{dynamic.summary.groupCount}</div></div>
+          <div className="rounded-xl bg-background/70 px-3 py-2"><div className="text-ui-micro font-semibold uppercase tracking-[0.16em] text-muted-foreground">Proposals</div><div className="mt-1 text-sm font-medium">{dynamic.summary.proposalCount}</div></div>
         </div>
         <div className="h-[320px] overflow-hidden rounded-xl border border-border/70 bg-background/80 p-2">
           <GraphView graph={dynamic.graph} variant="actual" />
@@ -449,7 +429,7 @@ function InfoGrid({ items }: { items: Array<[ReactNode, ReactNode]> }) {
     <div className="grid gap-2 sm:grid-cols-3">
       {items.map(([label, value], index) => (
         <div className="rounded-xl border border-border/70 bg-muted/10 px-3 py-3" key={index}>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div className="text-ui-micro font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
           <OverflowTooltip className="mt-1.5 min-w-0" content={String(value)}>
             <div className="min-w-0 truncate text-sm font-medium text-foreground">{value}</div>
           </OverflowTooltip>
@@ -469,7 +449,7 @@ function AssetList({ title, items, emptyLabel, onOpenAsset }: { title: string; i
       <div className="space-y-2">
         {items.map((item) => (
           <Button variant="outline" className="h-11 w-full justify-start gap-3 rounded-xl border-border/70 bg-background/60 px-3 text-left shadow-none hover:bg-muted/25" key={`${item.kind}-${item.name}`} onClick={() => onOpenAsset(item)}>
-            <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-[11px]">{item.kind}</Badge>
+            <Badge variant="secondary" className="shrink-0 rounded-full px-2.5 text-ui-caption">{item.kind}</Badge>
             <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.title}</span>
           </Button>
         ))}
@@ -503,12 +483,6 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
       </SheetContent>
     </Sheet>
   );
-}
-
-function promptIdFromAcpEvent(event: AcpUiEventVm) {
-  if (!event.raw || typeof event.raw !== 'object' || Array.isArray(event.raw)) return null;
-  const promptId = (event.raw as { promptId?: unknown }).promptId;
-  return typeof promptId === 'string' ? promptId : null;
 }
 
 function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
@@ -567,6 +541,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
           runtimeComposerContext={{
+            isOrchestrated: true,
             runtimeStatus,
             workflowValid: true,
           }}
@@ -799,7 +774,7 @@ function LogPageList({ query, exportable = false, compact = false }: { query: Lo
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className={cn('divide-y divide-border/70', compact ? 'px-4 py-2' : 'px-3 py-2')}>
-          <div className={cn('grid gap-3 px-2 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
+          <div className={cn('grid gap-3 px-2 py-2 text-ui-caption font-semibold uppercase tracking-[0.14em] text-muted-foreground', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
             <span>{t('roundDetail.logTime')}</span>
             <span>{t('roundDetail.logType')}</span>
             {!compact ? <span>{t('roundDetail.logNode')}</span> : null}
@@ -826,7 +801,7 @@ function LogRow({ item, compact }: { item: LogEntryVm; compact?: boolean }) {
   return (
     <div className={cn('grid gap-3 px-2 py-2.5 text-sm', compact ? 'grid-cols-[112px_96px_minmax(0,1fr)]' : 'grid-cols-[128px_110px_128px_96px_minmax(0,1fr)]')}>
       <OverflowTooltip className="min-w-0" content={formatLocalDateTime(item.timestamp)}><span className="block truncate text-muted-foreground">{formatLocalDateTime(item.timestamp)}</span></OverflowTooltip>
-      <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-[11px]">{item.entryType}</Badge></span>
+      <span className="truncate"><Badge variant="secondary" className="rounded-full px-2.5 text-ui-caption">{item.entryType}</Badge></span>
       {!compact ? <OverflowTooltip className="min-w-0" content={item.nodeId ?? '-'}><span className="block truncate text-muted-foreground">{item.nodeId ?? '-'}</span></OverflowTooltip> : null}
       {!compact ? <OverflowTooltip className="min-w-0" content={item.stage ?? '-'}><span className="block truncate text-muted-foreground">{item.stage ?? '-'}</span></OverflowTooltip> : null}
       <OverflowTooltip className="min-w-0" content={item.summary}><span className="block min-w-0 truncate">{item.summary}</span></OverflowTooltip>

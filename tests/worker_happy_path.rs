@@ -1,11 +1,14 @@
+mod support;
+
 use camino::Utf8PathBuf;
-use gold_band::app::App;
 use gold_band::domain::SessionMode;
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
     ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, WorkerInvocation,
 };
 use tempfile::tempdir;
+
+use support::app_with_available_claude_provider;
 
 #[derive(Clone, Default)]
 struct FakeProvider;
@@ -74,7 +77,7 @@ fn run_start_executes_worker_node() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-001";
 
-    let app = App::with_provider(repo_root.clone(), Box::new(FakeProvider));
+    let app = app_with_available_claude_provider(repo_root.clone(), Box::new(FakeProvider));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app

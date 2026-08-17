@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
-import { Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronsUpDown, CircleHelp, Edit, Eye, FolderOpen, Library, Loader2, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,11 +16,11 @@ import type {
   AppErrorVm, ImportedProfileRecord, ImportProfilesResult, ProfileFieldFallback, ProfileInput, ProfileListVm, ProfileScope, ProfileVm,
   McpServerVm, SkillListVm, SkillMetaVm, SkillContentVm, AgentRegistryVm, ToolInfo,
 } from '../types';
-import { AppCard } from '@/components/AppCard';
 import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
-import { EmptyState, Page, PageHeader } from '@/components/PageScaffold';
+import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
+import { SkillSyncTargetSelector } from '@/components/SkillSyncTargetSelector';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -62,6 +62,19 @@ const pageSizes = [6, 12, 24];
 interface ContextManagementPageProps {
   agentRegistry: AgentRegistryVm | null;
   onAgentRegistryChange: (registry: AgentRegistryVm) => void;
+}
+
+function EntityRefreshButton({ label, loading, onRefresh }: { label: string; loading: boolean; onRefresh: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button variant="outline" size="icon" className="size-8" disabled={loading} onClick={onRefresh} aria-label={label}>
+          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: ContextManagementPageProps) {
@@ -383,21 +396,34 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
     setDeleteConfirmationError(null);
   };
 
+  const closeProfileSheet = () => {
+    setSheetMode(null);
+    setSelectedProfile(null);
+    if (profileImport.surface === 'editing') {
+      dispatchProfileImport({ type: 'resume-result' });
+    }
+  };
+
   const saveProfile = async (input: ProfileInput) => {
     if (sheetMode === 'edit' && selectedProfile && !selectedProfile.isBuiltIn) {
-      await updateProfile(selectedProfile.id, input);
+      const savedProfile = await updateProfile(selectedProfile.id, input);
+      if (profileImport.surface === 'editing') {
+        dispatchProfileImport({
+          type: 'profile-updated',
+          importedId: savedProfile.id,
+          name: savedProfile.name,
+        });
+      }
     } else {
       await createProfile(input);
     }
-    setSheetMode(null);
-    setSelectedProfile(null);
+    closeProfileSheet();
     await refresh();
   };
 
   const saveProfileAsNew = async (input: ProfileInput) => {
     await createProfile(input);
-    setSheetMode(null);
-    setSelectedProfile(null);
+    closeProfileSheet();
     await refresh();
   };
 
@@ -462,30 +488,34 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
 
   return (
     <Page flush className="flex flex-col">
-      <PageHeader title={<span className="text-title">{t('contextManagement.title')}</span>} />
-      <div className="border-b px-5 xl:px-6">
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
-          <TabsList className="rounded-none border-b-0">
-            <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
-            <TabsTrigger value="mcp">{t('contextManagement.tabs.mcp', 'MCP 管理')}</TabsTrigger>
-            <TabsTrigger value="skills">{t('contextManagement.tabs.skills', 'SKILL 管理')}</TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+      <PageHeader
+        variant="integrated"
+        icon={<Library />}
+        title={<span className="text-title">{t('contextManagement.title')}</span>}
+        navigationLabel={t('contextManagement.title')}
+        navigation={(
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ContextTab)}>
+            <TabsList variant="line" className="rounded-none">
+              <TabsTrigger value="profiles">{t('contextManagement.profileManagement')}</TabsTrigger>
+              <TabsTrigger value="mcp">{t('contextManagement.tabs.mcp', 'MCP 管理')}</TabsTrigger>
+              <TabsTrigger value="skills">{t('contextManagement.tabs.skills', 'SKILL 管理')}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        )}
+      />
       {/* ── Profiles Tab ── */}
       {activeTab === 'profiles' && (
-      <div className="min-h-0 flex-1 p-5 xl:p-6">
+      <PageContent variant="after-navigation">
         <EntitySection
           tab={profileListTab}
           onTabChange={(value) => setProfileListTab(value)}
-          customLabel={t('contextManagement.customSectionTitle')}
-          builtInLabel={t('contextManagement.builtInSectionTitle')}
+          tabs={[
+            { value: 'custom', label: t('contextManagement.customSectionTitle') },
+            { value: 'built-in', label: t('contextManagement.builtInSectionTitle') },
+          ]}
           actions={
             <>
-              <Button variant="outline" disabled={loading} onClick={() => void refresh()}>
-                <RefreshCw className={cn(loading && 'animate-spin')} />
-                {t('common.refresh')}
-              </Button>
+              <EntityRefreshButton label={t('common.refresh')} loading={loading} onRefresh={() => void refresh()} />
               <Button variant="outline" disabled={loading || profileImport.importing} onClick={() => dispatchProfileImport({ type: 'open-settings' })}>
                 <FolderOpen />{t('contextManagement.importProfile')}
               </Button>
@@ -556,15 +586,15 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           {vm && profileListTab === 'built-in' && builtInProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
           {vm && profileListTab === 'custom' && customProfiles.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.emptyProfiles')}</EmptyState></div> : null}
         </EntitySection>
-      </div>
+      </PageContent>
       )}
       <ProfileSheet
         mode={sheetMode}
         profile={selectedProfile}
+        returnToImportResult={profileImport.surface === 'editing'}
         onOpenChange={(open) => {
           if (!open) {
-            setSheetMode(null);
-            setSelectedProfile(null);
+            closeProfileSheet();
           }
         }}
         onSave={saveProfile}
@@ -608,68 +638,84 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ── Profile Import Dialogs ── */}
-      <Dialog
-        open={profileImport.settingsOpen}
+      {/* ── Profile Import Sheet Workflow ── */}
+      <Sheet
+        modal={false}
+        open={profileImport.surface === 'settings' || profileImport.surface === 'result'}
         onOpenChange={(open) => {
-          if (!profileImport.importing) {
-            dispatchProfileImport({ type: open ? 'open-settings' : 'close-settings' });
-          }
+          if (open || profileImport.importing) return;
+          dispatchProfileImport({ type: profileImport.surface === 'result' ? 'close-result' : 'close-settings' });
         }}
       >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{t('contextManagement.importProfile')}</DialogTitle>
-            <DialogDescription>{t('contextManagement.importSettingsDescription')}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-1">
-            <div className="flex items-start justify-between gap-4 rounded-lg border px-3 py-3">
-              <div className="space-y-1">
-                <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
-                <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
-              </div>
-              <Switch
-                checked={profileImport.dynamicTemplate}
-                onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
-              />
-            </div>
-            {profileImport.error ? (
-              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
-            <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
-              {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-              {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <ImportResultDialog
-        result={profileImport.result}
-        error={profileImport.error}
-        onClose={() => dispatchProfileImport({ type: 'close-result' })}
-        onEdit={(id) => void editImportedProfile(id)}
-      />
+        <SheetContent
+          data-slot={profileImport.surface === 'result' ? 'profile-import-result-sheet' : 'profile-import-settings-sheet'}
+          className="gap-0 overflow-hidden p-0"
+          resizeStorageKey="context-management/profile-import"
+          defaultSize={640}
+          minSize={420}
+          maxSize={880}
+          closeLabel={t('common.close')}
+        >
+          {profileImport.surface === 'result' && profileImport.result ? (
+            <ImportResultContent
+              result={profileImport.result}
+              error={profileImport.error}
+              onClose={() => dispatchProfileImport({ type: 'close-result' })}
+              onEdit={(id) => void editImportedProfile(id)}
+            />
+          ) : (
+            <>
+              <SheetHeader className="border-b px-5 py-4 text-left">
+                <SheetTitle>{t('contextManagement.importProfile')}</SheetTitle>
+                <SheetDescription>{t('contextManagement.importSettingsDescription')}</SheetDescription>
+              </SheetHeader>
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="space-y-4 p-5">
+                  <div className="flex items-start justify-between gap-4 rounded-lg border px-3 py-3">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium">{t('contextManagement.dynamicTemplate')}</div>
+                      <p className="text-xs text-muted-foreground">{t('contextManagement.importDynamicTemplateDescription')}</p>
+                    </div>
+                    <Switch
+                      checked={profileImport.dynamicTemplate}
+                      onCheckedChange={(enabled) => dispatchProfileImport({ type: 'set-dynamic-template', enabled })}
+                    />
+                  </div>
+                  {profileImport.error ? (
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{profileImport.error}</div>
+                  ) : null}
+                </div>
+              </ScrollArea>
+              <SheetFooter className="border-t px-5 py-4 sm:flex-row sm:justify-end">
+                <Button variant="outline" disabled={profileImport.importing} onClick={() => dispatchProfileImport({ type: 'close-settings' })}>{t('common.close')}</Button>
+                <Button disabled={profileImport.importing} onClick={() => void handlePickImportFolder()}>
+                  {profileImport.importing ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+                  {profileImport.importing ? t('common.loading') : t('contextManagement.importPickFolder')}
+                </Button>
+              </SheetFooter>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* ── MCP Tab Content ── */}
       {activeTab === 'mcp' && (
-        <div className="min-h-0 flex-1 p-5 xl:p-6">
+        <PageContent variant="after-navigation">
           <EntitySection
             tab={mcpListTab}
             onTabChange={setMcpListTab}
-            customLabel={t('contextManagement.mcp.customSectionTitle', '自定义 MCP')}
-            builtInLabel={t('contextManagement.mcp.builtInSectionTitle', '内置 MCP')}
+            tabs={[
+              { value: 'custom', label: t('contextManagement.mcp.customSectionTitle', '自定义 MCP') },
+              { value: 'built-in', label: t('contextManagement.mcp.builtInSectionTitle', '内置 MCP') },
+            ]}
             actions={
               <>
-                <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5 text-ui-caption text-muted-foreground">
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-green-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'healthy').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
                 </span>
-                <Button variant="outline" size="sm" disabled={mcpLoading} onClick={() => void refreshMcp()}><RefreshCw className={cn('size-4', mcpLoading && 'animate-spin')} /></Button>
+                <EntityRefreshButton label={t('common.refresh')} loading={mcpLoading} onRefresh={() => void refreshMcp()} />
                 <Button size="sm" onClick={() => { setMcpEditTarget(null); setMcpJsonContent(MCP_STDIO_TEMPLATE); setMcpTransportTab('stdio'); setMcpSheetOpen(true); }}><Plus className="size-4" />{t('contextManagement.mcp.addServer', '添加')}</Button>
               </>
             }
@@ -768,23 +814,20 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             {!mcpLoading && currentSectionMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.mcp.emptyServers', '暂无 MCP 服务器')}</EmptyState></div> : null}
             {!mcpLoading && currentSectionMcpServers.length > 0 && filteredMcpServers.length === 0 ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
           </EntitySection>
-        </div>
+        </PageContent>
       )}
 
       {/* ── SKILL Tab Content ── */}
       {activeTab === 'skills' && (
-        <div className="min-h-0 flex-1 p-5 xl:p-6">
-          <AppCard className="flex h-full min-h-0 flex-col gap-0 py-0">
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Tabs value={skillTab} onValueChange={(v) => { const nextTab = v as 'global' | 'project'; setSkillTab(nextTab); setSkillQuery(''); setSkillAgentFilter('all'); if (nextTab === 'global') setProjectSkills([]); }}>
-                <TabsList variant="line">
-                  <TabsTrigger value="global">{t('contextManagement.skills.globalTab', '全局')}</TabsTrigger>
-                  <TabsTrigger value="project">{t('contextManagement.skills.projectTab', '项目')}</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              {skillTab === 'project' && workspaces.length > 0 && (
+        <PageContent variant="after-navigation">
+          <EntitySection
+            tab={skillTab}
+            onTabChange={(nextTab) => { setSkillTab(nextTab); setSkillQuery(''); setSkillAgentFilter('all'); if (nextTab === 'global') setProjectSkills([]); }}
+            tabs={[
+              { value: 'global', label: t('contextManagement.skills.globalTab', '全局') },
+              { value: 'project', label: t('contextManagement.skills.projectTab', '项目') },
+            ]}
+            tabAccessory={skillTab === 'project' && workspaces.length > 0 ? (
                 <Select value={selectedWorkspace} onValueChange={(v) => { setSelectedWorkspace(v); rememberSkillProjectWorkspace(v); setSkillQuery(''); }}>
                   <SelectTrigger className="h-8 w-44 text-xs">
                     <SelectValue placeholder={t('contextManagement.skills.selectProject', '选择项目...')} />
@@ -795,16 +838,20 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {(skillTab === 'global' || selectedWorkspace) && (
+            ) : null}
+            actions={(
+              <>
+                <EntityRefreshButton label={t('common.refresh')} loading={skillLoading} onRefresh={() => void refreshSkills()} />
+                <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
+              </>
+            )}
+            toolbar={(skillTab === 'global' || selectedWorkspace) ? (
+              <>
                 <div className="relative min-w-[160px]">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input className="h-8 pl-8 text-xs" placeholder={t('contextManagement.skills.searchPlaceholder', '搜索 SKILL...')} value={skillQuery} onChange={(e) => setSkillQuery(e.target.value)} />
                 </div>
-              )}
-              {(skillTab === 'global' || selectedWorkspace) && configuredAgents.length > 0 && (
+                {configuredAgents.length > 0 ? (
                 <Select value={skillAgentFilter} onValueChange={setSkillAgentFilter}>
                   <SelectTrigger className="h-8 w-40 text-xs">
                     <SelectValue placeholder={t('contextManagement.skills.agentFilterPlaceholder', '按 Agent 筛选')} />
@@ -816,19 +863,17 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-              <Button variant="outline" size="sm" disabled={skillLoading} onClick={() => void refreshSkills()}><RefreshCw className={cn('size-4', skillLoading && 'animate-spin')} /></Button>
-              <Button size="sm" onClick={() => { setSkillEditTarget(null); setSkillSheetContent(null); setSkillEditWsPath(null); setSkillSheetMode('create'); }}><Plus className="size-4" />{t('contextManagement.skills.createSkill', '创建')}</Button>
-            </div>
-          </div>
-          {skillError ? <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{skillError}</div> : null}
-          <ScrollArea className="min-h-0 flex-1">
-            {skillLoading && !skillList ? <EmptyState>{t('common.loading')}</EmptyState> : null}
-            {skillTab === 'project' && !selectedWorkspace ? <EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState> : null}
-            {skillTab === 'global' && skillList && skillList.global.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState> : null}
-            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState> : null}
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                ) : null}
+              </>
+            ) : undefined}
+            error={skillError}
+          >
+            {skillLoading && !skillList ? <div className="p-5"><EmptyState>{t('common.loading')}</EmptyState></div> : null}
+            {skillTab === 'project' && !selectedWorkspace ? <div className="p-5"><EmptyState>{t('contextManagement.skills.selectProjectEmpty', '选择项目以查看项目级 SKILL')}</EmptyState></div> : null}
+            {skillTab === 'global' && skillList && skillList.global.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
+            {skillTab === 'project' && selectedWorkspace && !skillLoading && projectSkills.length === 0 ? <div className="p-5"><EmptyState>{t('contextManagement.skills.emptySkills', '暂无 SKILL')}</EmptyState></div> : null}
+            {skillList && filteredSkills && filteredSkills.length === 0 && (skillQuery || skillAgentFilter !== 'all') ? <div className="p-5"><EmptyState>{t('common.noResults', '无匹配结果')}</EmptyState></div> : null}
+            <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
               {filteredSkills && filteredSkills.map((skill) => {
                 const sourceAgents = skillSourceAgents(skill, configuredAgents);
                 const syncAgents = selectableSyncAgents(skill, configuredAgents);
@@ -840,16 +885,16 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
+                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
                     <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
                       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-ui-caption text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
                         <SkillAgentOverflow
                           sourceAgents={sourceAgents}
                           syncAgents={syncAgents}
@@ -895,10 +940,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                 );
               })}
             </div>
-            </ScrollArea>
-          </CardContent>
-        </AppCard>
-        </div>
+          </EntitySection>
+        </PageContent>
       )}
 
       <AlertDialog open={Boolean(skillDeleteTarget)} onOpenChange={(open) => { if (!open && !skillDeleting) setSkillDeleteTarget(null); }}>
@@ -995,7 +1038,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
               <span className="truncate">{toolsSheetServer?.name ?? ''}</span>
-              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
+              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
             </SheetTitle>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
@@ -1024,8 +1067,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                       </div>
                       {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
-                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
+                          <summary className="cursor-pointer text-ui-caption text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
+                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-ui-caption leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
                         </details>
                       )}
                     </div>
@@ -1197,32 +1240,36 @@ function SkillSheet({
             </div>
           ) : (
             <>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
-                <select
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              <div className="space-y-1">
+                <span id="skill-scope-label" className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
+                <Select
                   value={mode === 'edit' && editWorkspacePath ? `project:${editWorkspacePath}` : form.source}
-                  onChange={(event) => setForm((current) => ({ ...current, source: event.target.value }))}
+                  onValueChange={(source) => setForm((current) => ({ ...current, source }))}
                   disabled={mode === 'edit'}
                 >
-                  {mode === 'edit' && editWorkspacePath ? (
-                    <option value={`project:${editWorkspacePath}`}>
-                      {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
-                    </option>
-                  ) : (
-                    <>
-                      {workspaces.map((workspace) => (
-                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</option>
-                      ))}
-                      <option value="global">{t('contextManagement.skills.globalBadge', 'Global')}</option>
-                      {workspaces.length === 0 && <option value="project">{t('contextManagement.skills.projectBadge', 'Project')}</option>}
-                    </>
-                  )}
-                </select>
+                  <SelectTrigger className="h-10 w-full" aria-labelledby="skill-scope-label">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {mode === 'edit' && editWorkspacePath ? (
+                      <SelectItem value={`project:${editWorkspacePath}`}>
+                        {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
+                      </SelectItem>
+                    ) : (
+                      <>
+                        {workspaces.map((workspace) => (
+                          <SelectItem key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</SelectItem>
+                        ))}
+                        <SelectItem value="global">{t('contextManagement.skills.globalBadge', 'Global')}</SelectItem>
+                        {workspaces.length === 0 && <SelectItem value="project">{t('contextManagement.skills.projectBadge', 'Project')}</SelectItem>}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   {currentSkillStorageHint}
                 </p>
-              </label>
+              </div>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.name', '名称')}</span>
                 <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -1231,24 +1278,7 @@ function SkillSheet({
                 <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
                 <Textarea className="min-h-24 text-sm leading-relaxed" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
               </label>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.skills.syncTargets', '同步到')}</span>
-                {availableSyncAgents.length > 0 ? (
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {availableSyncAgents.map((agent) => (
-                      <label key={agent.agentType} className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={syncTargets.includes(agent.agentType)} onChange={(event) => {
-                          setSyncTargets((current) => event.target.checked ? [...current, agent.agentType] : current.filter((target) => target !== agent.agentType));
-                        }} />
-                        <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-4')} />
-                        <span className="text-sm">{agent.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">{t('contextManagement.skills.noConfiguredAgents', 'No configured agent available for sync.')}</p>
-                )}
-              </label>
+              <SkillSyncTargetSelector agents={availableSyncAgents} value={syncTargets} onValueChange={setSyncTargets} />
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
                 <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />
@@ -1330,7 +1360,7 @@ function CustomProfileCard({ profile, onView, onEdit, onDelete }: { profile: Pro
   );
 }
 
-function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void>; onSaveAsNew: (input: ProfileInput) => Promise<void> }) {
+function ProfileSheet({ mode, profile, returnToImportResult, onOpenChange, onSave, onSaveAsNew }: { mode: ProfileSheetMode | null; profile: ProfileVm | null; returnToImportResult: boolean; onOpenChange: (open: boolean) => void; onSave: (input: ProfileInput) => Promise<void>; onSaveAsNew: (input: ProfileInput) => Promise<void> }) {
   const { t } = useTranslation();
   const editing = mode === 'create' || mode === 'edit';
   const isBuiltIn = Boolean(profile?.isBuiltIn);
@@ -1394,6 +1424,18 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
       <Sheet modal={false} open={mode !== null} onOpenChange={onOpenChange}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="context-management/profile-sheet" defaultSize={720} minSize={520} maxSize={960}>
           <SheetHeader className="border-b px-5 py-4 text-left">
+            {returnToImportResult ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mb-1 w-fit -ml-2 text-muted-foreground"
+                onClick={() => onOpenChange(false)}
+              >
+                <ArrowLeft />
+                {t('common.back')}
+              </Button>
+            ) : null}
             <SheetTitle>{mode === 'create' ? t('contextManagement.createProfile') : mode === 'edit' ? t('contextManagement.editProfile') : profile?.name}</SheetTitle>
             {editing ? (
               <SheetDescription className={cn(!isBuiltIn && 'sr-only')}>
@@ -1535,51 +1577,56 @@ function ProfileSheet({ mode, profile, onOpenChange, onSave, onSaveAsNew }: { mo
   );
 }
 
-function ImportResultDialog({ result, error, onClose, onEdit }: {
-  result: ImportProfilesResult | null;
+function ImportResultContent({ result, error, onClose, onEdit }: {
+  result: ImportProfilesResult;
   error: string | null;
   onClose: () => void;
   onEdit: (id: string) => void;
 }) {
   const { t } = useTranslation();
-  if (!result) return null;
   return (
-    <Dialog open={true} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{t('contextManagement.importResultTitle')}</DialogTitle>
-          <DialogDescription>
-            {t('contextManagement.importResultSummary', {
-              total: result.totalScanned,
-              success: result.imported.length,
-              failed: result.failed.length,
-            })}
-          </DialogDescription>
-        </DialogHeader>
-        {result.truncated ? (
-          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
-            {t('contextManagement.importTruncated')}
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
-        <ScrollArea className="max-h-80">
-          <div className="space-y-3 pr-3">
+    <>
+      <SheetHeader className="shrink-0 border-b px-5 py-4 text-left">
+        <SheetTitle>{t('contextManagement.importResultTitle')}</SheetTitle>
+        <SheetDescription>
+          {t('contextManagement.importResultSummary', {
+            total: result.totalScanned,
+            success: result.imported.length,
+            failed: result.failed.length,
+          })}
+        </SheetDescription>
+      </SheetHeader>
+      {result.truncated || error ? (
+        <div className="shrink-0 space-y-2 px-6 pb-4">
+          {result.truncated ? (
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-500">
+              {t('contextManagement.importTruncated')}
+            </div>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <ScrollArea data-slot="profile-import-result-list" className="min-h-0 w-full flex-1 overflow-hidden">
+        <div className="min-w-0 space-y-3 px-6 pb-4 pr-7">
             {result.imported.length ? (
               <div className="space-y-1.5">
                 <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultImported')}</div>
                 {result.imported.map((record) => (
-                  <div key={record.sourcePath} className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{record.name}</div>
-                      <div className="truncate text-xs text-muted-foreground">{record.sourcePath}</div>
+                  <div
+                    key={record.sourcePath}
+                    className="grid min-w-0 max-w-full gap-2 rounded-md border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+                  >
+                    <div className="min-w-0 overflow-hidden">
+                      <div className="break-words text-sm font-medium">{record.name}</div>
+                      <div className="break-all text-xs text-muted-foreground">{record.sourcePath}</div>
                       {record.fallbacks.length ? (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {record.fallbacks.map((fb) => (
-                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">
                               {t(`contextManagement.importFallback.${fb}`)}
                             </Badge>
                           ))}
@@ -1587,7 +1634,7 @@ function ImportResultDialog({ result, error, onClose, onEdit }: {
                       ) : null}
                     </div>
                     {record.importedId ? (
-                      <Button variant="ghost" size="sm" className="shrink-0" onClick={() => onEdit(record.importedId!)}>
+                      <Button variant="ghost" size="sm" className="shrink-0 justify-self-start sm:justify-self-end" onClick={() => onEdit(record.importedId!)}>
                         {t('contextManagement.editProfile')}
                       </Button>
                     ) : null}
@@ -1599,22 +1646,21 @@ function ImportResultDialog({ result, error, onClose, onEdit }: {
               <div className="space-y-1.5">
                 <div className="text-xs font-medium text-muted-foreground">{t('contextManagement.importResultFailed')}</div>
                 {result.failed.map((record) => (
-                  <div key={record.sourcePath} className="rounded-md border px-3 py-2">
-                    <div className="truncate text-sm font-medium">{record.name || record.sourcePath}</div>
-                    <div className="truncate text-xs text-destructive">
+                  <div key={record.sourcePath} className="min-w-0 max-w-full rounded-md border px-3 py-2">
+                    <div className="break-all text-sm font-medium">{record.name || record.sourcePath}</div>
+                    <div className="break-words text-xs text-destructive">
                       {record.error ? t(`errors.profile.import.${record.error.code}`) : ''}
                     </div>
                   </div>
                 ))}
               </div>
             ) : null}
-          </div>
-        </ScrollArea>
-        <DialogFooter>
-          <Button onClick={onClose}>{t('common.close')}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </ScrollArea>
+      <SheetFooter className="shrink-0 border-t px-5 py-4 sm:flex-row sm:justify-end">
+        <Button onClick={onClose}>{t('common.close')}</Button>
+      </SheetFooter>
+    </>
   );
 }
 

@@ -1,9 +1,10 @@
-import { Eye, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 import { EditableConversationTitle } from '@/components/conversation/EditableConversationTitle';
 
 interface ConversationRunHeaderProps {
@@ -35,12 +36,21 @@ export function ConversationRunHeader({
   const isRunning = run.runStatus === 'running';
   const isDirect = run.runMode === 'direct';
   const selectedSessionDisplay = selectedSessionLeaf?.runtimeDisplay;
-  const selectedSessionRunning = selectedSessionDisplay?.tone === 'running';
-  const selectedSessionDotClass = runtimeDotClass(selectedSessionDisplay?.tone);
+  const selectedSessionDotClass = runtimeStatusDotClass(selectedSessionDisplay?.tone);
 
   return (
-    <div className="shrink-0 bg-content-header px-5 pb-0.5 pt-0.5">
-      <div className="flex min-w-0 items-center gap-2">
+    <div className="shrink-0 bg-content-header px-5 py-0.5">
+      <div className="flex min-w-0 items-center gap-3">
+        {run.scheduledTaskId ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex shrink-0 items-center text-foreground" aria-label={t('scheduled.conversationMarker')}>
+                <AlarmClock className="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{t('scheduled.conversationMarker')}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <EditableConversationTitle
           title={run.title}
           metadata={!isDirect ? run.runId : null}
@@ -52,7 +62,8 @@ export function ConversationRunHeader({
         {!isDirect ? <Button
           variant="ghost"
           size="sm"
-          className="h-5.5 gap-1 px-1.5 text-[11px]"
+          className="h-7 gap-1.5 px-2 text-xs font-normal"
+          aria-expanded={sessionSwitcherOpen}
           onClick={onToggleSessionSwitcher}
         >
           {selectedSessionLeaf ? (
@@ -60,9 +71,6 @@ export function ConversationRunHeader({
               aria-hidden="true"
               className="relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80"
             >
-              {selectedSessionRunning ? (
-                <span className="absolute inset-0 rounded-full bg-primary/18 animate-ping" />
-              ) : null}
               <span className={cn('relative inline-block size-2 rounded-full', selectedSessionDotClass)} />
             </span>
           ) : null}
@@ -73,7 +81,7 @@ export function ConversationRunHeader({
         </Button> : null}
 
         {/* Actions */}
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 items-center gap-1">
           {canViewWorkflow ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -111,13 +119,4 @@ export function ConversationRunHeader({
       </div>
     </div>
   );
-}
-
-function runtimeDotClass(tone?: string | null) {
-  if (tone === 'success') return 'bg-emerald-500';
-  if (tone === 'danger') return 'bg-red-500';
-  if (tone === 'running') return 'bg-primary';
-  if (tone === 'warning') return 'bg-yellow-500';
-  if (tone === 'neutral') return 'bg-muted-foreground';
-  return '';
 }

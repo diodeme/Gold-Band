@@ -180,4 +180,18 @@ describe('conversation sidebar navigation wiring', () => {
     expect(taskSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
     expect(runSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
   });
+
+  it('keeps one shell-level run-state listener and refreshes only the selected run detail', () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const subscriptions = source.match(/void subscribeConversationRunStateUpdates\(\(event\) =>/g) ?? [];
+    const globalSubscription = source.match(/void subscribeConversationRunStateUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
+    const selectedRunRefresh = source.match(/const refreshConversationRun = \(\) => \{[\s\S]*?const queueConversationRunRefresh/)?.[0] ?? '';
+
+    expect(subscriptions).toHaveLength(1);
+    expect(globalSubscription).toContain('applyConversationSidebarRunStateUpdate(current, event)');
+    expect(globalSubscription).toContain('conversationRunStateRefreshRef.current?.(event)');
+    expect(globalSubscription).not.toContain('getConversationSidebar(');
+    expect(selectedRunRefresh).toContain('getConversationRun(');
+    expect(selectedRunRefresh).not.toContain('getConversationSidebar(');
+  });
 });

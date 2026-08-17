@@ -33,7 +33,7 @@ vi.mock('@/components/workspace/files/WorkspaceFileEditor', () => ({
 }));
 
 import { ConversationDirectoryWorkspacePanel } from '@/components/workspace/ConversationDirectoryWorkspacePanel';
-import { RightWorkspaceProvider, useRightWorkspace, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
+import { conversationDirectoryWorkspaceResourceKey, RightWorkspaceProvider, useRightWorkspace, type ConversationDirectoryWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import type { FileWorkspaceLayoutVm, WorkspaceDirectoryEntryVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -79,7 +79,14 @@ const layout: FileWorkspaceLayoutVm = {
 
 const resource: ConversationDirectoryWorkspaceResource = {
   kind: 'conversation-directory',
-  key: 'conversation-directory:project-1:task-1:run-1:round-1:node-1:attempt-1',
+  key: conversationDirectoryWorkspaceResourceKey({
+    projectId: 'project-1',
+    taskId: 'task-1',
+    runId: 'run-1',
+    roundId: 'round-1',
+    nodeId: 'node-1',
+    attemptId: 'attempt-1',
+  }),
   scopeKey: 'draft:default',
   title: '运行目录',
   attention: false,
@@ -313,6 +320,53 @@ describe('conversation directory responsive tree lifecycle', () => {
       expect(rowAfter).toBe(rowBefore);
       expect(document.querySelector('[data-slot="context-menu-content"]')).toBe(menuBefore);
       expect(apiMocks.listConversationDirectory).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('reloads for the selected attempt and ignores a late response from the previous attempt', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    let resolveFirst: ((entries: WorkspaceDirectoryEntryVm[]) => void) | null = null;
+    let resolveSecond: ((entries: WorkspaceDirectoryEntryVm[]) => void) | null = null;
+    const first = new Promise<WorkspaceDirectoryEntryVm[]>((resolve) => { resolveFirst = resolve; });
+    const second = new Promise<WorkspaceDirectoryEntryVm[]>((resolve) => { resolveSecond = resolve; });
+    apiMocks.listConversationDirectory.mockReset();
+    apiMocks.listConversationDirectory
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    const nextArtifact = { ...artifact, name: 'attempt-2.md', relativePath: 'attempt-2.md', canonicalPath: 'D:\\attempt-2\\attempt-2.md' };
+    const nextResource: ConversationDirectoryWorkspaceResource = {
+      ...resource,
+      locator: { ...resource.locator, nodeId: 'node-2', attemptId: 'attempt-2' },
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={resource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider initialWidth={397}>
+            <ConversationDirectoryWorkspacePanel resource={nextResource} layout={layout} />
+          </RightWorkspaceProvider>,
+        );
+      });
+      await act(async () => { resolveSecond?.([nextArtifact]); await second; });
+
+      expect(container.textContent).toContain(nextArtifact.name);
+      expect(container.textContent).not.toContain(artifact.name);
+      await act(async () => { resolveFirst?.([artifact]); await first; });
+      expect(container.textContent).toContain(nextArtifact.name);
+      expect(container.textContent).not.toContain(artifact.name);
+      expect(apiMocks.listConversationDirectory).toHaveBeenNthCalledWith(1, { ...resource.locator, relativePath: '' });
+      expect(apiMocks.listConversationDirectory).toHaveBeenNthCalledWith(2, { ...nextResource.locator, relativePath: '' });
     } finally {
       await act(async () => root.unmount());
     }

@@ -92,7 +92,7 @@ function OpenEmptyWorkspace() {
   return null;
 }
 
-function ConversationDirectoryEntry() {
+function ConversationDirectoryEntry({ attemptId = 'attempt-1' }: { attemptId?: string }) {
   const workspace = useRightWorkspace();
   useEffect(() => {
     if (!workspace.scopeKey) return;
@@ -108,11 +108,11 @@ function ConversationDirectoryEntry() {
         runId: 'run-1',
         roundId: 'round-1',
         nodeId: 'node-1',
-        attemptId: 'attempt-1',
+        attemptId,
       },
     });
     return () => workspace.setConversationDirectoryEntry(null);
-  }, [workspace.scopeKey, workspace.setConversationDirectoryEntry]);
+  }, [attemptId, workspace.scopeKey, workspace.setConversationDirectoryEntry]);
   return null;
 }
 
@@ -144,6 +144,7 @@ function SeedWorkflowResource({ guarded = false }: { guarded?: boolean }) {
 
 function WorkspaceProbe() {
   const workspace = useRightWorkspace();
+  const runDirectory = workspace.tabs.find((tab) => tab.kind === 'conversation-directory');
   return (
     <output
       data-workspace-tab-count={workspace.tabs.length}
@@ -151,6 +152,7 @@ function WorkspaceProbe() {
       data-workspace-width={workspace.width}
       data-workspace-open={workspace.requestedOpen}
       data-workspace-open-revision={workspace.openRevision}
+      data-workspace-run-directory-attempt={runDirectory?.kind === 'conversation-directory' ? runDirectory.locator.attemptId : ''}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
     </output>
@@ -397,6 +399,21 @@ describe('right workspace DOM lifecycle', () => {
       expect(emptyOption).not.toBeNull();
       await act(async () => emptyOption?.click());
       expect(container.querySelector('output')?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope}>
+            <OpenEmptyWorkspace />
+            <ConversationDirectoryEntry attemptId="attempt-2" />
+            <RightWorkspaceDock />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const probe = container.querySelector('output');
+      expect(probe?.getAttribute('data-workspace-tab-count')).toBe('1');
+      expect(probe?.getAttribute('data-workspace-active-tab')).toBe(expectedKey);
+      expect(probe?.getAttribute('data-workspace-run-directory-attempt')).toBe('attempt-2');
 
       const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
       await act(async () => {

@@ -9,7 +9,7 @@ import { listConversationDirectory, openConversationDirectoryPathInFileManager, 
 import { fileTreeIconStateClassName, fileTreeRowStateClassName } from '@/lib/file-tree-row-state';
 import type { WorkspaceDirectoryEntryVm, WorkspaceFileSnapshotVm } from '@/types';
 import type { FileWorkspaceLayoutVm } from '@/types';
-import type { ConversationDirectoryWorkspaceResource } from './right-workspace-context';
+import { conversationDirectoryWorkspaceDataKey, type ConversationDirectoryWorkspaceResource } from './right-workspace-context';
 import { WorkspaceFileEditor } from './files/WorkspaceFileEditor';
 import { FileWorkspaceSplitLayout } from './files/FileWorkspacePanel';
 import { WorkspaceDirectoryContextMenu } from './files/WorkspaceDirectoryContextMenu';
@@ -140,14 +140,37 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
   const [snapshot, setSnapshot] = useState<WorkspaceFileSnapshotVm | null>(null);
   const [actionFailure, setActionFailure] = useState<'copy' | 'file-manager' | null>(null);
   const actionFailureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileReadGenerationRef = useRef(0);
+  const dataKey = conversationDirectoryWorkspaceDataKey(resource.locator);
   const showActionFailure = useCallback((failure: 'copy' | 'file-manager') => {
     if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current);
     setActionFailure(failure);
     actionFailureTimerRef.current = setTimeout(() => setActionFailure(null), 1_500);
   }, []);
-  const input = useCallback((relativePath = '') => ({ ...resource.locator, relativePath }), [resource.locator]);
+  const input = useCallback((relativePath = '') => ({ ...resource.locator, relativePath }), [
+    resource.locator.attemptId,
+    resource.locator.nodeId,
+    resource.locator.outerAttemptId,
+    resource.locator.outerNodeId,
+    resource.locator.projectId,
+    resource.locator.roundId,
+    resource.locator.runId,
+    resource.locator.taskId,
+  ]);
   useEffect(() => () => { if (actionFailureTimerRef.current) clearTimeout(actionFailureTimerRef.current); }, []);
-  useEffect(() => { void listConversationDirectory(input()).then((entries) => setRoots(toNodes(entries))).finally(() => setLoading(false)); }, [resource.key]);
+  useEffect(() => {
+    let cancelled = false;
+    fileReadGenerationRef.current += 1;
+    setRoots([]);
+    setLoading(true);
+    setSelected(null);
+    setSnapshot(null);
+    void listConversationDirectory(input())
+      .then((entries) => { if (!cancelled) setRoots(toNodes(entries)); })
+      .catch(() => { if (!cancelled) setRoots([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [dataKey, input]);
   const load = useCallback(async (node: Node) => {
     if (node.kind !== 'directory' || node.loading || node.children !== null) return;
     setRoots((current) => update(current, node.id, (value) => ({ ...value, loading: true })));
@@ -157,7 +180,14 @@ export function ConversationDirectoryWorkspacePanel({ resource, layout }: { reso
     } catch { setRoots((current) => update(current, node.id, (value) => ({ ...value, loading: false }))); }
   }, [input]);
   const openInManager = useCallback((relativePath: string) => void openConversationDirectoryPathInFileManager(input(relativePath)).catch(() => showActionFailure('file-manager')), [input, showActionFailure]);
-  const openFile = useCallback((entry: WorkspaceDirectoryEntryVm) => { setSelected(entry); setSnapshot(null); void readConversationDirectoryFile(input(entry.relativePath)).then(setSnapshot); }, [input]);
+  const openFile = useCallback((entry: WorkspaceDirectoryEntryVm) => {
+    const generation = ++fileReadGenerationRef.current;
+    setSelected(entry);
+    setSnapshot(null);
+    void readConversationDirectoryFile(input(entry.relativePath)).then((nextSnapshot) => {
+      if (fileReadGenerationRef.current === generation) setSnapshot(nextSnapshot);
+    });
+  }, [input]);
   const onCopyFailed = useCallback(() => showActionFailure('copy'), [showActionFailure]);
   const content = !selected ? <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t('workspace.filesPanel.chooseFromTree')}</div>
     : !snapshot ? <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />{t('workspace.filesPanel.loadingFile')}</div>

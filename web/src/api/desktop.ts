@@ -657,6 +657,7 @@ export const desktopApi: RuntimeApi = {
     return files.map((file) => ({
       ...file,
       previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+      contentUrl: file.contentUrl ? convertFileSrc(file.contentUrl, 'gold-band-preview') : null,
     }));
   },
   async statAttachmentFiles(paths) {
@@ -664,6 +665,7 @@ export const desktopApi: RuntimeApi = {
     return files.map((file) => ({
       ...file,
       previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+      contentUrl: file.contentUrl ? convertFileSrc(file.contentUrl, 'gold-band-preview') : null,
     }));
   },
   materializeConversationAttachments(files) {

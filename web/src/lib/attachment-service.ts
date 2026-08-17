@@ -16,6 +16,8 @@ export interface AttachmentItem {
   path?: string;
   /** Object URL for browser-mode image preview. Call URL.revokeObjectURL when done. */
   previewUrl?: string;
+  /** Revision-bound URL for lazy, read-only text loading on desktop. */
+  contentUrl?: string;
   /** Raw File object for browser-mode content reading. */
   file?: File;
   source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file';
@@ -104,6 +106,7 @@ export function attachmentItemsFromPaths(
       mime: guessMimeFromExtension(name),
       path,
       previewUrl: file?.previewUrl ?? undefined,
+      contentUrl: file?.contentUrl ?? undefined,
       source: 'dialog' as const,
     };
   });
@@ -127,6 +130,14 @@ function fileToItem(file: File, source: AttachmentItem['source']): AttachmentIte
     file,
     source,
   };
+}
+
+export async function readAttachmentText(item: AttachmentItem): Promise<string> {
+  if (item.file) return item.file.text();
+  if (!item.contentUrl) throw new Error('attachment.content-unavailable');
+  const response = await fetch(item.contentUrl, { cache: 'no-store' });
+  if (!response.ok) throw new Error('attachment.content-unavailable');
+  return response.text();
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -282,6 +293,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
           mime: guessMimeFromExtension(f.name),
           path: f.path,
           previewUrl: f.previewUrl ?? undefined,
+          contentUrl: f.contentUrl ?? undefined,
           source: 'dialog' as const,
         }));
         validateAndAdd(items);

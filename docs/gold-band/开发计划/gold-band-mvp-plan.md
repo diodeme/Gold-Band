@@ -1222,6 +1222,15 @@ attempt-001/
 - 回归要求：现有 jsdom 组件接口测试固定两个触发器静态透明、交互态 accent、Select size variant 与 Button 高度/内边距，并固定指针关闭工作位置菜单后触发器不重新获得焦点；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下用 computed style 检查静态、hover、菜单展开/外部关闭、浅色/深色和窄宽度表现。
 - 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。
 
+## 2026-08-17：会话附件统一在右侧工作区预览
+
+- 根因与契约：右侧工作区与 `draft-attachment` / `conversation-asset` 资源模型已经成立，但 composer 点击入口按 `image/* + previewUrl` 特判，文本回退旧 Dialog；消息附件则已走工作区，形成同一附件领域的消费路径分裂。本次删除类型分流，快速对话、ACP composer 和消息气泡都只提交工作区资源 locator，不增加第二套预览状态或兼容入口。
+- 内容读取：桌面选择器为已选择且不超过附件单文件上限的文本文件签发精确路径、revision 绑定、短期有效的只读内容 URL；草稿 Tab 激活后才读取正文。浏览器 `File` 直接在 Tab 内按需读取。图片继续使用既有 revision-bound 预览 URL，消息附件继续使用 canonical `task-inputs` / `user-inputs` 读取接口；任一路径都不在附件列表或 composer 状态中保存正文。
+- 组件复用：抽取共享只读文本工作区查看器，普通文本沿用 CodeMirror 只读源码视图；`.md/.markdown` 直接复用 `ReadonlyMarkdownWorkspaceViewer`，默认实时渲染并可切换只读源码。草稿附件面板与消息附件面板共用该组件，图片继续复用 `WorkspaceImageCanvas`，不引入新的编辑器、Markdown renderer 或基础 UI 控件。
+- 图片缩略图：消息气泡下的图片缩略图删除底部文件名覆盖条，避免与既有 Tooltip 重复展示并遮挡图片；hover/focus 继续通过 shadcn Tooltip 显示“文件名 + 大小”，按钮保留完整 `aria-label`。普通文件 chip 与 composer 附件样式不变。
+- 回归与验收：接口测试固定所有 composer 附件映射为稳定 `draft-attachment` 资源；组件测试覆盖桌面文本按需读取、图片不触发文本读取、Markdown 路由到共享双模式查看器，以及消息气泡文本附件进入同一查看器；Rust 测试固定临时内容 URL 的 MIME、正文与 revision-bound 协议。执行 Web 定向测试、完整 Web 测试、类型检查、生产构建与相关 Rust 测试，并用内置浏览器 deep link 验证两个 composer 入口和已发送消息入口。
+- 性能与过度设计评审：正文读取发生在用户打开活动 Tab 后，单次只读取一个受附件大小上限约束的文件；不新增全量扫描、N+1、轮询、持久字段、缓存、队列或宽 Context 订阅。共享查看器是两个既有面板的最小复用边界，现有 workspace identity 和 Markdown 模式已经能表达全部不变量，无需新增 aggregate、状态机或专项 benchmark。
+
 ## 2026-08-17：快速对话工作空间信息栏明暗层级一致
 
 - 根因与实现：工作空间信息栏原先在浅色主题使用 `surface-high`，深色主题却使用与页面相同的 `conversation-background`，导致深色下主体、顶部圆角和两侧连接肩一起融入背景。信息栏现统一消费主题的 `surface-high` 语义材质，主体与连接肩继续共享一个 CSS 变量，不增加 `dark:` 特判或硬编码颜色。

@@ -62,6 +62,8 @@ describe('ACP message attachment layout', () => {
       expect(rows[0]?.querySelector('button')?.className).toContain('size-[72px]');
       expect(rows[1]?.querySelector('button')?.className).toContain('w-fit');
       expect(rows[1]?.querySelector('button')?.className).toContain('rounded-full');
+      expect(rows[0]?.querySelector('button')?.getAttribute('aria-label')).toBe('image.png');
+      expect(rows[0]?.textContent).not.toContain('image.png');
       expect(rows[0]?.textContent).not.toContain('acp.raw.jsonl');
       expect(rows[1]?.textContent).toContain('acp.raw.jsonl');
     } finally {

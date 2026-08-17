@@ -85,6 +85,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
+  createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
@@ -144,7 +145,6 @@ import {
 } from "@/lib/composer-context";
 import type { ConversationPromptInput } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
-import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
@@ -961,9 +961,6 @@ export function ACPChatDialog(
     resolveAttachmentPaths,
     dropZoneHandlers,
     extractPasteFiles,
-    textPreview,
-    setTextPreview,
-    handlePreviewAttachment,
   } = useAttachmentPicker({
     attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
   });
@@ -1418,21 +1415,13 @@ export function ACPChatDialog(
   );
 
   const handleOpenComposerAttachment = useCallback((attachment: AttachmentItem) => {
-    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
-      handlePreviewAttachment(attachment);
-      return;
-    }
-    void rightWorkspace.openResource({
-      kind: 'draft-attachment',
-      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
-      title: attachment.name,
-      description: attachment.path,
-      attention: false,
       attachment,
-    });
-  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+    }));
+  }, [projectId, rightWorkspace]);
 
   const closeComposerAttachmentPreview = useCallback((attachment: AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -3910,10 +3899,6 @@ export function ACPChatDialog(
           </ConversationViewport>
         )}
       </div>
-      <AttachmentPreviewDialogs
-        textPreview={textPreview}
-        onCloseText={() => setTextPreview(null)}
-      />
       {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
@@ -5911,7 +5896,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="group relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={attachment.name}
             onClick={() => onClick?.(attachment)}
           >
@@ -5928,9 +5913,6 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
                 <ImageIcon className="size-5 text-blue-400" />
               </span>
             )}
-            <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-ui-micro font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-              {attachment.name}
-            </span>
           </button>
         </TooltipTrigger>
         <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>

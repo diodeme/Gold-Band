@@ -799,3 +799,20 @@ export function createHiddenPromptSectionWorkspaceResource(input: {
 export function draftAttachmentWorkspaceResourceKey(scopeKey: string, attachmentId: string) {
   return ['draft-attachment', scopeKey, attachmentId].join(':');
 }
+
+export function createDraftAttachmentWorkspaceResource(input: {
+  scopeKey: string;
+  projectId: string;
+  attachment: AttachmentItem;
+}): DraftAttachmentWorkspaceResource {
+  return {
+    kind: 'draft-attachment',
+    key: draftAttachmentWorkspaceResourceKey(input.scopeKey, input.attachment.id),
+    scopeKey: input.scopeKey,
+    projectId: input.projectId,
+    title: input.attachment.name,
+    description: input.attachment.path ?? null,
+    attention: false,
+    attachment: input.attachment,
+  };
+}

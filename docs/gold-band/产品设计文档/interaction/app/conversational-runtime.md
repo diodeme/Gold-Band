@@ -196,7 +196,7 @@
 
 - **入口**：纸夹按钮、拖拽、粘贴（统一走 same-session 附件模型）；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
 - **预览与布局**：附件从 composer 外部独立区域迁入统一上下文功能区。图片只显示固定方形缩略图，不显示文件名；hover/focus Tooltip 展示文件名和大小，点击沿用右侧工作区图片预览。文本/普通文件显示图标与截断文件名并沿用文本预览。单项删除按钮在 hover/focus 可见，触摸设备保持可见。
-- **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，点击进入独立全屏原图预览，不进入附件详情弹窗；文本/代码附件继续显示为紧凑文件 chip 并走附件详情。base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。消息流附件预览必须按 timeline `raw.attachments[].path` 区分来源：`task-inputs/<name>` 属于新会话首轮 task 输入附件，继续读取 task 级 `authoring/inputs`；`user-inputs/<name>` 属于继续/追问本轮新附件，按当前 session locator 读取该 attempt 下的相对文件。两类附件不得混用读取入口，否则首轮需求附件或完成后追问附件会在 UI 中丢失内容。
+- **消息展示**：用户消息下方的图片附件显示为固定尺寸小缩略图，缩略图内部不覆盖文件名；文件名与大小只在 hover/focus 的 shadcn Tooltip 中展示，并通过 `aria-label` 保留无障碍名称。文本/代码附件显示为紧凑文件 chip；两者点击后都打开当前会话作用域的右侧工作区资源，不进入图片或文本 Dialog。普通文本使用共享只读源码查看器，`.md/.markdown` 默认渲染并可切换到只读源码；base64/data URL 只作为内部图片数据承载，不直接作为可见文本展示。消息流附件预览必须按 timeline `raw.attachments[].path` 区分来源：`task-inputs/<name>` 属于新会话首轮 task 输入附件，继续读取 task 级 `authoring/inputs`；`user-inputs/<name>` 属于继续/追问本轮新附件，按当前 session locator 读取该 attempt 下的相对文件。两类附件不得混用读取入口，否则首轮需求附件或完成后追问附件会在 UI 中丢失内容。
 - **消息附件布局**：同一条消息中的图片与普通文件必须按媒体类型分为两个独立附件行，图片行在上、文件行在下，禁止混排；同类多项只在各自行内换行。图片保持固定缩略图尺寸，普通文件使用内容宽度的紧凑 pill，不能被消息容器拉伸成大卡片。
 - **传输**：新会话初始输入附件只进入 task 级 `authoring/inputs/`，并且只在 `SessionMode::New` 的首次 ACP session 初始化时作为 provider `task-inputs` content block 发送；同一个 ACP session 内的 `continue` / resume 不自动重发 task-level input attachments，避免历史输入在每轮用户消息下重复出现。发送前若附件来自粘贴、拖拽或浏览器 File 对象，前端先通过桌面命令 materialize 到 Gold Band 临时输入附件区，拿到本地路径后再进入对应输入链路。本轮 composer 显式选择的附件属于 resume prompt attachments，只随本轮 same-session prompt 发送。输入附件作为 ACP content block 发送给 agent，不混入 agent 输出产物目录。
 - **格式契约**：后端使用同一份附件格式注册表派生可选择扩展名、内容类别（image/text）与 MIME；前端查询到“支持”的扩展名必须都能被 provider resolver 转换为 ACP content block，并同步生成 timeline `raw.attachments` 元数据，不允许维护彼此独立的白名单、MIME 映射和文本类型判断。`.jsonl` 按 `application/json` 文本资源处理。
@@ -617,9 +617,10 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
-## Composer 附件与图片工作区
+## Composer 附件与资源工作区
 
-- 快速对话与会话详情追问的未发送图片使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片 Dialog。图片被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 的僵尸资源。
+- 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。
+- 草稿附件正文只在活动 Tab 内按需加载。桌面路径附件通过 revision-bound 短期只读 URL 读取，浏览器或粘贴生成附件直接读取当前 `File`；Tab locator 与 composer 草稿均不得缓存正文或触发附件列表全量预读。消息气泡附件继续通过其 canonical `task-inputs` / `user-inputs` locator 读取，但与草稿附件共用同一只读文本/Markdown 展示组件。
 - Composer 上下文功能区必须与其下方正文使用同一水平内容 inset：快速对话的附件缩略图、命令标签与普通文字共用无额外缩进的左边缘；会话详情追问的附件/引用标签与 prompt-kit textarea 共用 `px-3` 左边缘。共享上下文组件不得内置一套固定水平 padding，否则不同 composer 外层 padding 会产生错位。
 - 系统文件选择器得到的本地图片不得把真实文件路径交给 WebView；桌面后端在 blocking pool 中读取元数据并签发短期 preview grant，前端只消费协议 URL。粘贴、拖放和浏览器文件选择继续使用受草稿生命周期管理的 Object URL。
 - 已发送消息图片、artifact 图片与未发送图片统一使用右侧图片看板。图片面板的内容承载层与看板必须形成连续的 `min-height: 0` 纵向 flex 链，让手势 viewport 占满标题栏以下的全部可用高度；图片在该真实视口内水平、垂直居中，背景只使用明暗主题语义纯色，不使用透明棋盘格。普通滚轮与触摸板双指滚动不得缩放或平移；只有 `Ctrl + 滚轮`、浏览器映射为 Ctrl-wheel 的原生触摸板 pinch、触摸屏 pinch 和工具栏按钮改变缩放，放大后可用鼠标拖拽平移；“适应窗口”回到由视口约束计算的完整图片尺寸，不等同于最小缩放。

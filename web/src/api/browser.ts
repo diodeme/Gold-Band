@@ -2120,6 +2120,7 @@ export const browserApi: RuntimeApi = {
       name: path.split(/[\\/]/).at(-1) ?? path,
       size: 0,
       previewUrl: null,
+      contentUrl: null,
     })));
   },
   materializeConversationAttachments(files) {

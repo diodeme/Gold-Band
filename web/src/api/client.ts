@@ -184,6 +184,7 @@ export interface AttachmentFileRef {
   name: string;
   size: number;
   previewUrl?: string | null;
+  contentUrl?: string | null;
 }
 
 export interface MaterializeAttachmentFileInput {

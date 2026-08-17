@@ -1,5 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
+import type { ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -441,20 +442,20 @@ export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntime
   return getRuntimeApi().clearDesktopAvatar(kind);
 }
 
-export function importDesktopWallpaper() {
-  return getRuntimeApi().importDesktopWallpaper();
+export function importDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().importDesktopWallpaper(colorScheme);
 }
 
-export function selectRecentDesktopWallpaper(wallpaperId: string) {
-  return getRuntimeApi().selectRecentDesktopWallpaper(wallpaperId);
+export function selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string) {
+  return getRuntimeApi().selectRecentDesktopWallpaper(colorScheme, wallpaperId);
 }
 
-export function saveDesktopWallpaperOpacity(opacityPercent: number) {
-  return getRuntimeApi().saveDesktopWallpaperOpacity(opacityPercent);
+export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number) {
+  return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
 }
 
-export function restoreThemeDesktopWallpaper() {
-  return getRuntimeApi().restoreThemeDesktopWallpaper();
+export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {

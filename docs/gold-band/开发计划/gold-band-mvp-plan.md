@@ -1148,12 +1148,13 @@ attempt-001/
 ## 2026-08-17：用户壁纸导入、最近使用与会话表面覆盖
 
 - 根因与边界：Theme Contract v2 已有 `app / conversation / workspace / settings` 四类 wallpaper surface，但只表达主题包资产，不能表达用户级覆盖；会话运行页和 ACP 根容器又以实色背景遮住了 surface。实现升级既有 personalization，而不把用户资产写入主题包，也不在页面局部拼接 background image。
-- 数据契约：personalization schema v3 新增 `wallpaper.image = theme | user { assetId }` 与 `opacityPercent`；settings schema v9 将 v2 一次性迁移为主题来源。壁纸仓库 v1 只维护最多 10 条 MRU 资产记录，当前选择仍以 personalization 为唯一权威，恢复主题不删除历史。
-- 资源链路：导入支持 PNG/JPEG/WebP，限制 32 MiB、4096×4096 与 1600 万像素；blocking pool 规范化完整图至约 4 MiB 并生成 320×180 WebP 缩略图。自定义协议只接受单段 `{uuid}.full / {uuid}.thumbnail` token，并校验 UUID、索引、固定文件名和 MIME，修复 Windows `convertFileSrc` 对内嵌斜杠编码后协议解析失败的问题。
-- 交互实现：设置项位于字体与头像之间，复用 shadcn Popover、Slider、Button 与 Dialog。主预览限制为 256×144 的小卡片，点击放大后再次点击缩小；最近列表两列且只懒加载缩略图。自定义壁纸固定 `cover / center / no-repeat`，覆盖主题图片，恢复后主题无壁纸则回到普通底色。
-- 可见度与会话：范围 20%–100%、默认 60%、步长 1%。拖动只更新局部 state 与 CSS variable，commit 才持久化。Theme SDK 将图片层与 scrim 分离到 `::before / ::after`；会话主页和运行页共同消费 `conversation` surface，ACP timeline 与包住 Composer 的整宽 sticky footer 使用透明承载；prompt-kit Composer、任务列表、prompt queue 和 manual-check 面板保持不透明 card，只让控件左右空白区透出壁纸。
-- 接口与回归：Rust 测试覆盖 v9 迁移、导入/最近 10 条/恢复、缺失资产收敛、单段协议 token、路径穿越与损坏索引拒绝；Web 测试覆盖最近选择、1% 规范化、Windows URL、设置顺序、小卡片/Dialog、Slider commit 和会话 surface 投影；Theme SDK 测试固定图片/scrim 分层。
-- 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素和既有图片预加载；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper，与实际数据规模匹配，无需额外 benchmark。
+- 数据契约：personalization schema v4 使用 `wallpaper.byColorScheme.light / dark = { image, opacityPercent }`；settings schema v10 将 v3 单壁纸同值复制到两种模式后删除旧结构。壁纸仓库 v1 只维护全局共享的最多 10 条 MRU 资产记录，VM 不再投影冗余 selected ID，两种模式的当前选择均以 personalization 为唯一权威；MRU 裁剪保护两种模式仍在引用的资产并淘汰最旧未引用项，恢复主题不删除历史。
+- 资源链路：导入支持 PNG/JPEG/WebP，限制 32 MiB、4096×4096 与 1600 万像素；blocking pool 规范化完整图至约 4 MiB，以通过容量约束的最终像素图作为单一事实源，分别编码完整图和 320×180 WebP 缩略图，不再为缩略图回读解码完整图。前端 Theme Runtime 按 URL 统一管理有界的壁纸资源状态，surface 只持有 descriptor key 投影；重复刷新直接 no-op，已 ready 资源在新 surface 首帧前同步复用，真实 URL 变更则成功后原子替换。自定义协议只接受单段 `{uuid}.full / {uuid}.thumbnail` token，并校验 UUID、索引、固定文件名和 MIME，修复 Windows `convertFileSrc` 对内嵌斜杠编码后协议解析失败的问题。
+- 交互实现：设置项位于字体与头像之间，复用 shadcn Tabs、Popover、Slider、Button 与 Dialog。Tabs 首次定位当前 resolved 模式，浅色/深色的导入、选择最近、恢复和可见度分别写入对应配置。主预览限制为 256×144 的小卡片，最近列表全局共享且只懒加载缩略图。
+- 可见度与会话：浅色/深色各自保存 20%–100%、默认 60%、步长 1% 的可见度。拖动只更新局部 state 与当前 active scheme 的 CSS variable，commit 才持久化。运行时在主题或系统明暗变化后从 resolved scheme 重新推导用户壁纸；会话 surface 与 Composer 透明承载边界保持不变。
+- 接口与回归：Rust 测试覆盖 v9 迁移、导入/最近 10 条/恢复、缺失资产收敛、单段协议 token、完整图与缩略图的可解码及尺寸契约、路径穿越与损坏索引拒绝；Web 测试覆盖最近选择、1% 规范化、Windows URL、设置顺序、小卡片/Dialog、Slider commit 和会话 surface 投影；Theme SDK 测试固定图片/scrim 分层。
+- 本轮验收：settings v10 迁移与桌面端壁纸校验、共享 MRU/去重上限及跨模式选中资产保留、单侧缺失收敛共 4 项 Rust 定向测试通过；Theme Engine、壁纸偏好、主题运行时与 surface 首帧协调 4 个 Vitest 文件共 33 项通过，覆盖同 URL 跨页面复用、不同 surface 主题壁纸首次加载后复用、URL 切换原子替换、失败隔离、迟到回调和首次绘制前协调；TypeScript `--noEmit` 与 Web 生产构建通过。内置浏览器 deep link 实测浅色/深色独立选择与 60%/59% 可见度切换、共享 2 条最近记录、单侧恢复、1% 键盘步进、720px/1440px 无横向溢出，以及会话 surface 壁纸生效；本轮复核快速对话与设置页分别挂载 `conversation / settings` surface、切换无控制台错误。Composer 卡片保持实色，其内容轨道、左右 padding 与整宽 sticky footer 计算背景均为透明。
+- 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。壁纸资源表仅保留当前主题有效槽与两种明暗选中资产，surface 使用 `WeakMap` 随 DOM 生命周期自动释放，不进入 React 根状态或扩大页面重渲染范围。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper。对 2188×1272、3.51 MiB 真实资产的 release 分段测量确认，删除为生成缩略图而进行的完整图二次解码可减少约 80–100 ms 的 O(像素数) 重复工作；最终像素图与编码字节共存的峰值与旧链路回读后的共存模式同阶。本轮不新增依赖、通用缓存框架、并发队列或过渡动画，与实际规模匹配。
 
 ## 2026-08-17：隐藏 Prompt 链接与右侧只读工作区
 

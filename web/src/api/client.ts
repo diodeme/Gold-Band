@@ -36,6 +36,7 @@ import type {
   SkillContentVm,
   SkillListVm,
   PreferencesVm,
+  ResolvedColorScheme,
   AvatarKind,
   AvatarShape,
   SaveDesktopAvatarInput,
@@ -305,10 +306,10 @@ export interface RuntimeApi {
   selectRecentDesktopAvatar(kind: AvatarKind, avatarId: string): Promise<PreferencesVm>;
   saveDesktopAvatarShape(kind: AvatarKind, shape: AvatarShape | null): Promise<PreferencesVm>;
   clearDesktopAvatar(kind: AvatarKind): Promise<PreferencesVm>;
-  importDesktopWallpaper(): Promise<PreferencesVm | null>;
-  selectRecentDesktopWallpaper(wallpaperId: string): Promise<PreferencesVm>;
-  saveDesktopWallpaperOpacity(opacityPercent: number): Promise<PreferencesVm>;
-  restoreThemeDesktopWallpaper(): Promise<PreferencesVm>;
+  importDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm | null>;
+  selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string): Promise<PreferencesVm>;
+  saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number): Promise<PreferencesVm>;
+  restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme): Promise<PreferencesVm>;
   saveUpdaterSettings(overrideUrl: string | null): Promise<UpdaterSettingsVm>;
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   MAX_WALLPAPER_OPACITY_PERCENT,
   MIN_WALLPAPER_OPACITY_PERCENT,
@@ -14,23 +15,27 @@ import {
 } from '@/lib/wallpaper';
 import { cn } from '@/lib/utils';
 import { previewWallpaperOpacity, type ResolvedThemeWallpaperDescriptor } from '@/theme';
-import type { PersonalizationPreference, WallpaperPreferencesVm } from '@/types';
+import type { PersonalizationPreference, ResolvedColorScheme, WallpaperPreferencesVm, WallpaperSchemePersonalization } from '@/types';
+
+const WALLPAPER_COLOR_SCHEMES = ['light', 'dark'] as const satisfies readonly ResolvedColorScheme[];
 
 interface WallpaperSettingsProps {
   preferences: WallpaperPreferencesVm;
   personalization: PersonalizationPreference['wallpaper'];
-  themeWallpaper?: ResolvedThemeWallpaperDescriptor;
+  activeColorScheme: ResolvedColorScheme;
+  themeWallpapersByColorScheme: Partial<Record<ResolvedColorScheme, ResolvedThemeWallpaperDescriptor>>;
   busy: boolean;
-  onImportWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
-  onSelectRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
-  onSaveWallpaperOpacity: (opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
-  onRestoreThemeWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
+  onImportWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
+  onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
 }
 
 export function WallpaperSettings({
   preferences,
   personalization,
-  themeWallpaper,
+  activeColorScheme,
+  themeWallpapersByColorScheme,
   busy,
   onImportWallpaper,
   onSelectRecentWallpaper,
@@ -38,19 +43,9 @@ export function WallpaperSettings({
   onRestoreThemeWallpaper,
 }: WallpaperSettingsProps) {
   const { t } = useTranslation();
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [editingColorScheme, setEditingColorScheme] = useState<ResolvedColorScheme>(activeColorScheme);
   const [updating, setUpdating] = useState(false);
-  const [opacityPercent, setOpacityPercent] = useState(() => normalizeWallpaperOpacityPercent(personalization.opacityPercent));
   const updatingRef = useRef(false);
-  const customWallpaper = personalization.image.source === 'user' ? selectedWallpaper(preferences) : null;
-  const previewUrl = customWallpaper?.imageUrl ?? themeWallpaper?.url ?? null;
-  const previewOpacity = customWallpaper ? opacityPercent / 100 : themeWallpaper?.opacity ?? 1;
-  const disabled = busy || updating;
-
-  useEffect(() => {
-    setOpacityPercent(normalizeWallpaperOpacityPercent(personalization.opacityPercent));
-  }, [personalization.opacityPercent]);
 
   const runUpdate = async (action: () => Promise<WallpaperPreferencesVm | undefined>) => {
     if (updatingRef.current) return undefined;
@@ -64,27 +59,97 @@ export function WallpaperSettings({
     }
   };
 
+  return (
+    <Tabs
+      value={editingColorScheme}
+      onValueChange={(value) => setEditingColorScheme(value as ResolvedColorScheme)}
+      className="gap-4"
+    >
+      <TabsList className="grid w-full max-w-64 grid-cols-2">
+        <TabsTrigger value="light" disabled={updating}>{t('settings.schemeLight')}</TabsTrigger>
+        <TabsTrigger value="dark" disabled={updating}>{t('settings.schemeDark')}</TabsTrigger>
+      </TabsList>
+      {WALLPAPER_COLOR_SCHEMES.map((colorScheme) => (
+        <TabsContent key={colorScheme} value={colorScheme} className="m-0">
+          <WallpaperSchemeSettings
+            colorScheme={colorScheme}
+            preferences={preferences}
+            personalization={personalization.byColorScheme[colorScheme]}
+            themeWallpaper={themeWallpapersByColorScheme[colorScheme]}
+            disabled={busy || updating}
+            updating={updating}
+            runUpdate={runUpdate}
+            onImportWallpaper={onImportWallpaper}
+            onSelectRecentWallpaper={onSelectRecentWallpaper}
+            onSaveWallpaperOpacity={onSaveWallpaperOpacity}
+            onRestoreThemeWallpaper={onRestoreThemeWallpaper}
+          />
+        </TabsContent>
+      ))}
+    </Tabs>
+  );
+}
+
+interface WallpaperSchemeSettingsProps {
+  colorScheme: ResolvedColorScheme;
+  preferences: WallpaperPreferencesVm;
+  personalization: WallpaperSchemePersonalization;
+  themeWallpaper?: ResolvedThemeWallpaperDescriptor;
+  disabled: boolean;
+  updating: boolean;
+  runUpdate: (action: () => Promise<WallpaperPreferencesVm | undefined>) => Promise<WallpaperPreferencesVm | undefined>;
+  onImportWallpaper: WallpaperSettingsProps['onImportWallpaper'];
+  onSelectRecentWallpaper: WallpaperSettingsProps['onSelectRecentWallpaper'];
+  onSaveWallpaperOpacity: WallpaperSettingsProps['onSaveWallpaperOpacity'];
+  onRestoreThemeWallpaper: WallpaperSettingsProps['onRestoreThemeWallpaper'];
+}
+
+function WallpaperSchemeSettings({
+  colorScheme,
+  preferences,
+  personalization,
+  themeWallpaper,
+  disabled,
+  updating,
+  runUpdate,
+  onImportWallpaper,
+  onSelectRecentWallpaper,
+  onSaveWallpaperOpacity,
+  onRestoreThemeWallpaper,
+}: WallpaperSchemeSettingsProps) {
+  const { t } = useTranslation();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [opacityPercent, setOpacityPercent] = useState(() => normalizeWallpaperOpacityPercent(personalization.opacityPercent));
+  const customWallpaper = selectedWallpaper(preferences, personalization.image);
+  const previewUrl = customWallpaper?.imageUrl ?? themeWallpaper?.url ?? null;
+  const previewOpacity = customWallpaper ? opacityPercent / 100 : themeWallpaper?.opacity ?? 1;
+
+  useEffect(() => {
+    setOpacityPercent(normalizeWallpaperOpacityPercent(personalization.opacityPercent));
+  }, [personalization.opacityPercent]);
+
   const importWallpaper = async () => {
-    const saved = await runUpdate(onImportWallpaper);
+    const saved = await runUpdate(() => onImportWallpaper(colorScheme));
     if (saved) setPickerOpen(false);
   };
 
   const selectRecent = async (wallpaperId: string) => {
-    const saved = await runUpdate(() => onSelectRecentWallpaper(wallpaperId));
+    const saved = await runUpdate(() => onSelectRecentWallpaper(colorScheme, wallpaperId));
     if (saved) setPickerOpen(false);
   };
 
   const restoreTheme = async () => {
-    await runUpdate(onRestoreThemeWallpaper);
+    await runUpdate(() => onRestoreThemeWallpaper(colorScheme));
   };
 
   const commitOpacity = async (value: number) => {
     const normalized = normalizeWallpaperOpacityPercent(value);
-    const saved = await runUpdate(() => onSaveWallpaperOpacity(normalized));
+    const saved = await runUpdate(() => onSaveWallpaperOpacity(colorScheme, normalized));
     if (!saved) {
       const persisted = normalizeWallpaperOpacityPercent(personalization.opacityPercent);
       setOpacityPercent(persisted);
-      previewWallpaperOpacity(persisted);
+      previewWallpaperOpacity(colorScheme, persisted);
     }
   };
 
@@ -182,7 +247,8 @@ export function WallpaperSettings({
                 {preferences.recentWallpapers.length > 0 ? (
                   <div className="grid grid-cols-2 gap-2">
                     {preferences.recentWallpapers.map((wallpaper) => {
-                      const selected = wallpaper.id === preferences.selectedWallpaperId;
+                      const selected = personalization.image.source === 'user'
+                        && wallpaper.id === personalization.image.assetId;
                       return (
                         <button
                           key={wallpaper.id}
@@ -237,11 +303,11 @@ export function WallpaperSettings({
 
         {customWallpaper ? (
           <div className="grid min-w-0 grid-cols-[auto_minmax(120px,1fr)_3ch] items-center gap-3">
-            <label htmlFor="wallpaper-opacity" className="text-sm text-foreground">
+            <label htmlFor={`wallpaper-opacity-${colorScheme}`} className="text-sm text-foreground">
               {t('settings.wallpaper.visibility')}
             </label>
             <Slider
-              id="wallpaper-opacity"
+              id={`wallpaper-opacity-${colorScheme}`}
               value={[opacityPercent]}
               min={MIN_WALLPAPER_OPACITY_PERCENT}
               max={MAX_WALLPAPER_OPACITY_PERCENT}
@@ -251,7 +317,7 @@ export function WallpaperSettings({
               onValueChange={([value]) => {
                 const normalized = normalizeWallpaperOpacityPercent(value);
                 setOpacityPercent(normalized);
-                previewWallpaperOpacity(normalized);
+                previewWallpaperOpacity(colorScheme, normalized);
               }}
               onValueCommit={([value]) => void commitOpacity(value)}
             />

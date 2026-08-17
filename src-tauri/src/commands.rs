@@ -50,7 +50,7 @@ use gold_band::config::{
     ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
     FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
     MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
-    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
+    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference, ResolvedColorScheme,
     WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
@@ -96,8 +96,10 @@ use crate::view_models_conversation::{
     conversation_task_activity_from_prompt,
 };
 use crate::wallpaper::{
-    ImportDesktopWallpaperInput, import_wallpaper_image, load_resolved_wallpaper_preferences,
-    reconcile_wallpaper_personalization, select_recent_wallpaper,
+    ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput, import_wallpaper_image,
+    load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
+    select_recent_wallpaper,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
@@ -5057,15 +5059,14 @@ pub fn save_desktop_preferences(
         log_level,
         load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
             .map_err(avatar_command_error)?,
-        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir(), &personalization)
-            .unwrap_or_default(),
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
     ))
 }
 
 fn normalize_personalization_preference(
     mut preference: PersonalizationPreference,
 ) -> CommandResult<PersonalizationPreference> {
-    if preference.schema_version != 3 {
+    if preference.schema_version != 4 {
         return Err(CommandErrorVm::new(
             "personalization.contract-version-unsupported",
             serde_json::json!({ "schemaVersion": preference.schema_version }),
@@ -5115,23 +5116,28 @@ fn normalize_personalization_preference(
             ));
         }
     }
-    if matches!(&preference.wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
-    {
-        return Err(CommandErrorVm::new(
-            "personalization.wallpaper-invalid",
-            serde_json::json!({}),
-        ));
-    }
-    if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
-        .contains(&preference.wallpaper.opacity_percent)
-    {
-        return Err(CommandErrorVm::new(
-            "personalization.wallpaper-opacity-invalid",
-            serde_json::json!({
-                "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-                "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
-            }),
-        ));
+    for wallpaper in [
+        &preference.wallpaper.by_color_scheme.light,
+        &preference.wallpaper.by_color_scheme.dark,
+    ] {
+        if matches!(&wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
+            .contains(&wallpaper.opacity_percent)
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-opacity-invalid",
+                serde_json::json!({
+                    "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                    "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                }),
+            ));
+        }
     }
     Ok(preference)
 }
@@ -5217,21 +5223,43 @@ pub async fn import_desktop_wallpaper(
     state: State<'_, DesktopState>,
     input: ImportDesktopWallpaperInput,
 ) -> CommandResult<PreferencesVm> {
-    let root = state
-        .context()
-        .map_err(command_error)?
-        .app()
-        .paths
-        .user_gold_band_dir();
+    let color_scheme = input.color_scheme;
+    let initial_context = state.context().map_err(command_error)?;
+    let root = initial_context.app().paths.user_gold_band_dir();
+    let retained_asset_ids = [
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .light
+            .image,
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .dark
+            .image,
+    ]
+    .into_iter()
+    .filter_map(|image| match image {
+        WallpaperImagePreference::User { asset_id } => Some(asset_id.clone()),
+        WallpaperImagePreference::Theme => None,
+    })
+    .collect::<HashSet<_>>();
     let saved = spawn_blocking_command(move || {
-        import_wallpaper_image(&root, input).map_err(wallpaper_command_error)
+        import_wallpaper_image(&root, input, &retained_asset_ids).map_err(wallpaper_command_error)
     })
     .await?;
     // Image processing runs off-thread; merge into the latest preference
     // snapshot so an unrelated settings change cannot be overwritten.
     let context = state.context().map_err(command_error)?;
     let mut personalization = context.config.personalization.clone();
-    personalization.wallpaper.image = WallpaperImagePreference::User {
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(color_scheme)
+        .image = WallpaperImagePreference::User {
         asset_id: saved.asset_id,
     };
     persist_desktop_personalization(&state, &context, personalization)
@@ -5240,7 +5268,7 @@ pub async fn import_desktop_wallpaper(
 #[tauri::command]
 pub async fn select_recent_desktop_wallpaper(
     state: State<'_, DesktopState>,
-    wallpaper_id: String,
+    input: SelectRecentDesktopWallpaperInput,
 ) -> CommandResult<PreferencesVm> {
     let root = state
         .context()
@@ -5248,15 +5276,18 @@ pub async fn select_recent_desktop_wallpaper(
         .app()
         .paths
         .user_gold_band_dir();
-    let selected_id = wallpaper_id.clone();
+    let selected_id = input.wallpaper_id.clone();
     spawn_blocking_command(move || {
         select_recent_wallpaper(&root, &selected_id).map_err(wallpaper_command_error)
     })
     .await?;
     let context = state.context().map_err(command_error)?;
     let mut personalization = context.config.personalization.clone();
-    personalization.wallpaper.image = WallpaperImagePreference::User {
-        asset_id: wallpaper_id,
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::User {
+        asset_id: input.wallpaper_id,
     };
     persist_desktop_personalization(&state, &context, personalization)
 }
@@ -5264,10 +5295,10 @@ pub async fn select_recent_desktop_wallpaper(
 #[tauri::command]
 pub fn save_desktop_wallpaper_opacity(
     state: State<'_, DesktopState>,
-    opacity_percent: u8,
+    input: SaveDesktopWallpaperOpacityInput,
 ) -> CommandResult<PreferencesVm> {
     if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
-        .contains(&opacity_percent)
+        .contains(&input.opacity_percent)
     {
         return Err(CommandErrorVm::new(
             "personalization.wallpaper-opacity-invalid",
@@ -5279,17 +5310,24 @@ pub fn save_desktop_wallpaper_opacity(
     }
     let context = state.context().map_err(command_error)?;
     let mut personalization = context.config.personalization.clone();
-    personalization.wallpaper.opacity_percent = opacity_percent;
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .opacity_percent = input.opacity_percent;
     persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn restore_theme_desktop_wallpaper(
     state: State<'_, DesktopState>,
+    input: RestoreThemeDesktopWallpaperInput,
 ) -> CommandResult<PreferencesVm> {
     let context = state.context().map_err(command_error)?;
     let mut personalization = context.config.personalization.clone();
-    personalization.wallpaper.image = WallpaperImagePreference::Theme;
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::Theme;
     persist_desktop_personalization(&state, &context, personalization)
 }
 
@@ -5336,8 +5374,7 @@ fn persist_desktop_personalization(
         load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
             .map_err(avatar_command_error)?;
     let wallpapers =
-        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir(), &personalization)
-            .unwrap_or_default();
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default();
     Ok(preferences_vm(
         context.config.appearance.clone(),
         personalization,
@@ -7213,7 +7250,10 @@ mod tests {
     #[test]
     fn personalization_wallpaper_validation_rejects_invalid_identity_and_opacity() {
         let mut invalid_identity = PersonalizationPreference::default();
-        invalid_identity.wallpaper.image = WallpaperImagePreference::User {
+        invalid_identity
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::User {
             asset_id: "  ".to_string(),
         };
         assert_eq!(
@@ -7225,7 +7265,10 @@ mod tests {
 
         for opacity_percent in [0, 19, 101] {
             let mut invalid_opacity = PersonalizationPreference::default();
-            invalid_opacity.wallpaper.opacity_percent = opacity_percent;
+            invalid_opacity
+                .wallpaper
+                .for_color_scheme_mut(ResolvedColorScheme::Dark)
+                .opacity_percent = opacity_percent;
             assert_eq!(
                 normalize_personalization_preference(invalid_opacity)
                     .unwrap_err()

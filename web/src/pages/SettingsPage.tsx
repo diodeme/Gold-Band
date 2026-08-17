@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
+import type { AppearancePreference, AppInfoVm, AvatarKind, AvatarPreferencesVm, AvatarShape, ColorSchemePreference, DesktopLanguage, MetricsSettingsVm, PersonalizationPreference, PreferencesVm, ResolvedColorScheme, SaveDesktopAvatarInput, UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, VisualQuality, WallpaperPreferencesVm } from '../types';
 import {
   appearanceWithQuality,
   appearanceWithTheme,
@@ -92,10 +92,10 @@ interface SettingsPageProps {
   onSelectRecentAvatar: (kind: AvatarKind, avatarId: string) => Promise<AvatarPreferencesVm | undefined>;
   onSaveAvatarShape: (kind: AvatarKind, shape: AvatarShape | null) => Promise<AvatarPreferencesVm | undefined>;
   onClearAvatar: (kind: AvatarKind) => Promise<AvatarPreferencesVm | undefined>;
-  onImportWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
-  onSelectRecentWallpaper: (wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
-  onSaveWallpaperOpacity: (opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
-  onRestoreThemeWallpaper: () => Promise<WallpaperPreferencesVm | undefined>;
+  onImportWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
+  onSelectRecentWallpaper: (colorScheme: ResolvedColorScheme, wallpaperId: string) => Promise<WallpaperPreferencesVm | undefined>;
+  onSaveWallpaperOpacity: (colorScheme: ResolvedColorScheme, opacityPercent: number) => Promise<WallpaperPreferencesVm | undefined>;
+  onRestoreThemeWallpaper: (colorScheme: ResolvedColorScheme) => Promise<WallpaperPreferencesVm | undefined>;
   metricsSettings?: MetricsSettingsVm | null;
   onSaveMetricsSettings?: (enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) => Promise<MetricsSettingsVm | undefined>;
   onSaveUpdaterSettings: (overrideUrl: string | null) => Promise<UpdaterSettingsVm | undefined>;
@@ -264,6 +264,10 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   };
 
   const effectiveAppearance = resolveAppearance(appearance, language);
+  const themeWallpapersByColorScheme = useMemo(() => ({
+    light: resolveAppearance({ ...appearance, colorScheme: 'light' }, language).wallpapers.settings,
+    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }, language).wallpapers.settings,
+  }), [appearance, language]);
   const currentTheme = getThemePackage(appearance.themeId);
   const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
     ?? themePackageSummaries[0];
@@ -437,7 +441,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
               <WallpaperSettings
                 preferences={preferences.wallpapers}
                 personalization={personalization.wallpaper}
-                themeWallpaper={effectiveAppearance.wallpapers.settings}
+                activeColorScheme={effectiveAppearance.colorScheme}
+                themeWallpapersByColorScheme={themeWallpapersByColorScheme}
                 busy={busy}
                 onImportWallpaper={onImportWallpaper}
                 onSelectRecentWallpaper={onSelectRecentWallpaper}
@@ -697,7 +702,7 @@ function withTypographyFontStack(
   const normalized = normalizeFontFamilies(families);
   return {
     ...personalization,
-    schemaVersion: 3,
+    schemaVersion: 4,
     typography: {
       ...personalization.typography,
       [kind]: {

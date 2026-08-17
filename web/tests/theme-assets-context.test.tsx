@@ -146,26 +146,15 @@ describe('ThemeAssetsContext', () => {
     expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Search');
   });
 
-  it('schedules one bounded wallpaper refresh for a newly visible surface and cancels it on unmount', async () => {
-    const cancelAnimationFrame = vi.fn();
-    let scheduled: FrameRequestCallback | undefined;
-    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
-      scheduled = callback;
-      return 42;
-    }));
-    vi.stubGlobal('cancelAnimationFrame', cancelAnimationFrame);
-
+  it('reconciles a newly mounted wallpaper surface before its first paint', async () => {
     function Surface() {
       useThemeWallpaperSurface();
       return <div data-theme-wallpaper-slot="settings" />;
     }
 
     await act(async () => root.render(<Surface />));
-    expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
-    scheduled?.(0);
     expect(themeMocks.refreshVisibleThemeWallpapers).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
-    expect(cancelAnimationFrame).toHaveBeenCalledWith(42);
     root = createRoot(container);
   });
 });

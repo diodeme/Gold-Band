@@ -6,6 +6,7 @@ import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
 import { scheduledScheduleSpecFromInput } from '@/lib/scheduled-task-authoring';
 import { normalizeFontCatalogFamilies } from '@/lib/font-families';
+import { boundedRecentWallpapers } from '@/lib/wallpaper';
 
 const browserFontCandidates = [
   'MiSans', 'Maple Mono NF CN', 'Microsoft YaHei UI', 'Microsoft YaHei', 'DengXian', 'DengXian Light', 'SimHei', 'SimSun', 'NSimSun', 'KaiTi', 'FangSong', 'YouYuan', 'LiSu', 'STXihei', 'STSong', 'STKaiti', 'STFangsong', 'PingFang SC', 'PingFang TC', 'PingFang HK', 'Hiragino Sans GB', 'Songti SC', 'Kaiti SC', 'Heiti SC', 'Heiti TC', 'Noto Sans CJK SC', 'Noto Sans CJK TC', 'Noto Sans SC', 'Noto Serif SC', 'Source Han Sans SC', 'Source Han Serif SC', 'Sarasa Gothic SC', 'LXGW WenKai', 'MiSans', 'HarmonyOS Sans SC', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Segoe UI', 'Segoe UI Variable', 'Yu Gothic UI', 'Meiryo', 'Malgun Gothic', 'SF Pro Text', 'SF Pro Display', 'Inter', 'Roboto', 'Arial', 'Helvetica Neue', 'Helvetica', 'Ubuntu', 'Cantarell', 'DejaVu Sans', 'Liberation Sans',
@@ -1449,7 +1450,7 @@ export const browserApi: RuntimeApi = {
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, avatars }));
   },
-  importDesktopWallpaper() {
+  importDesktopWallpaper(colorScheme) {
     const current = browserPreviewState.getPreferences();
     const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
@@ -1463,55 +1464,84 @@ export const browserApi: RuntimeApi = {
       width: 1600,
       height: 900,
     };
+    const retainedAssetIds = Object.values(current.personalization.wallpaper.byColorScheme)
+      .flatMap((preference) => preference.image.source === 'user' ? [preference.image.assetId] : []);
     const wallpapers = {
-      selectedWallpaperId: id,
-      recentWallpapers: [wallpaper, ...current.wallpapers.recentWallpapers].slice(0, 10),
+      recentWallpapers: boundedRecentWallpapers(
+        [wallpaper, ...current.wallpapers.recentWallpapers],
+        retainedAssetIds,
+      ),
     };
     const personalization = {
       ...current.personalization,
       wallpaper: {
         ...current.personalization.wallpaper,
-        image: { source: 'user' as const, assetId: id },
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'user' as const, assetId: id },
+          },
+        },
       },
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
   },
-  selectRecentDesktopWallpaper(wallpaperId) {
+  selectRecentDesktopWallpaper(colorScheme, wallpaperId) {
     const current = browserPreviewState.getPreferences();
     const selected = current.wallpapers.recentWallpapers.find((wallpaper) => wallpaper.id === wallpaperId);
     if (!selected) return Promise.reject({ code: 'wallpaper.recent-not-found', params: { wallpaperId } });
     const wallpapers = {
-      selectedWallpaperId: wallpaperId,
       recentWallpapers: [selected, ...current.wallpapers.recentWallpapers.filter((wallpaper) => wallpaper.id !== wallpaperId)],
     };
     const personalization = {
       ...current.personalization,
       wallpaper: {
         ...current.personalization.wallpaper,
-        image: { source: 'user' as const, assetId: wallpaperId },
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'user' as const, assetId: wallpaperId },
+          },
+        },
       },
     };
     return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
   },
-  saveDesktopWallpaperOpacity(opacityPercent) {
-    const current = browserPreviewState.getPreferences();
-    const personalization = {
-      ...current.personalization,
-      wallpaper: { ...current.personalization.wallpaper, opacityPercent },
-    };
-    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
-  },
-  restoreThemeDesktopWallpaper() {
+  saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
     const current = browserPreviewState.getPreferences();
     const personalization = {
       ...current.personalization,
       wallpaper: {
         ...current.personalization.wallpaper,
-        image: { source: 'theme' as const },
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            opacityPercent,
+          },
+        },
       },
     };
-    const wallpapers = { ...current.wallpapers, selectedWallpaperId: null };
-    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization, wallpapers }));
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
+  },
+  restoreThemeDesktopWallpaper(colorScheme) {
+    const current = browserPreviewState.getPreferences();
+    const personalization = {
+      ...current.personalization,
+      wallpaper: {
+        ...current.personalization.wallpaper,
+        byColorScheme: {
+          ...current.personalization.wallpaper.byColorScheme,
+          [colorScheme]: {
+            ...current.personalization.wallpaper.byColorScheme[colorScheme],
+            image: { source: 'theme' as const },
+          },
+        },
+      },
+    };
+    return Promise.resolve(browserPreviewState.setPreferences({ ...current, personalization }));
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const current = browserPreviewState.getUpdaterSettings();

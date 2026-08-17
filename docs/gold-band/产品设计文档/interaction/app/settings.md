@@ -122,24 +122,26 @@
 
 ### 6.1 数据与领域边界
 
-- 壁纸选择属于用户级个性化偏好。`PersonalizationPreference` 使用 `schemaVersion = 3`，以 `wallpaper.image = { source: theme } | { source: user, assetId }` 表达权威图片来源，以 `wallpaper.opacityPercent` 保存用户壁纸可见度；settings schema v9 一次性把旧个性化配置迁移为主题壁纸，不双读旧结构。
-- 壁纸资产仓库只保存最近使用记录，不保存第二份 selected 状态。当前选择只由 personalization 中的稳定 `assetId` 决定；仓库按最近使用顺序最多保留 10 张，恢复主题壁纸不删除历史。
-- 导入支持 PNG、JPEG、WebP；源文件不超过 32 MiB，宽高均不超过 4096px，总像素不超过 1600 万。完整图规范化为 JPEG/WebP 且不超过约 4 MiB，并生成 320×180 WebP 缩略图。
+- 壁纸选择属于用户级个性化偏好。`PersonalizationPreference` 使用 `schemaVersion = 4`，以 `wallpaper.byColorScheme.light / dark = { image, opacityPercent }` 分别表达浅色与深色的权威壁纸来源和可见度。settings schema v10 将 v3 的单壁纸一次性复制到两种模式，不双读旧结构，避免升级后视觉突变。
+- 壁纸资产仓库只保存全局共享的最近使用记录，不保存第二份 selected 状态；`WallpaperPreferencesVm` 也只投影资产列表。浅色、深色当前选择分别由 personalization 中的稳定 `assetId` 决定；仓库按最近使用顺序最多保留 10 张，达到上限时优先保留浅色、深色仍在引用的资产并淘汰最旧的未引用资产，恢复任一模式的主题壁纸不删除历史。
+- 导入支持 PNG、JPEG、WebP；源文件不超过 32 MiB，宽高均不超过 4096px，总像素不超过 1600 万。完整图规范化为 JPEG/WebP 且不超过约 4 MiB，并生成 320×180 WebP 缩略图。通过容量约束后的最终规范化像素图是资产派生的唯一事实源，完整图与缩略图分别由它编码，不从已编码的完整图回读再派生缩略图。
+- 壁纸图片资源的 `loading / ready / failed` 生命周期属于 Theme Runtime，不属于单个页面 surface。运行时按 URL 全局去重，并只保留当前主题有效槽与浅色/深色当前选中用户壁纸引用的有界集合；页面 surface 只管理 descriptor 投影、裁剪、透明度和遮罩。
 - 完整图解码、缩放与编码在 blocking pool 中执行，不阻塞 Tauri 事件线程。仓库索引使用原子 JSON 写入；新资产和缩略图完整写入后才发布索引，索引失败则回收本次文件。
 - 自定义协议只接受单段 `{uuid}.full` / `{uuid}.thumbnail` token。协议必须同时校验 UUID、索引记录、固定文件名和 MIME 映射后才能读取，不能接受文件路径、编码斜杠或路径穿越。
 
 ### 6.2 行为
 
-- 用户壁纸覆盖当前主题包的壁纸，并在切换主题、明暗模式和客户端尺寸后继续生效；恢复操作只把来源切回 `theme`，当前主题没有壁纸时显示普通主题底色。
+- 用户壁纸跨主题生效，但按 resolved `light / dark` 隔离：切换主题时继续使用当前明暗模式的用户壁纸，切换明暗模式时切换到对应配置；`system` 始终以系统当前实际模式解析。恢复操作只把指定模式的来源切回 `theme`，该主题模式没有壁纸时显示普通主题底色。
 - 用户壁纸固定使用 CSS `cover / center / no-repeat`，由浏览器随 surface 尺寸自适应，不新增 ResizeObserver、窗口尺寸 React state 或重新生成图片。
+- surface 挂载时在首次绘制前执行幂等协调：descriptor 未变时不触碰已投影样式；URL 已 ready 时同步应用；URL 真正变化时保留当前投影到新资源成功后原子替换；失败只清理目标 surface。不得在页面切换刷新中先全局删除壁纸 CSS 变量再等待异步 `onload`。
 - `app / conversation / workspace / settings` 四类既有 wallpaper surface 统一消费同一用户壁纸投影。会话运行页必须标记 `conversation` surface；聊天 timeline 与包住 Composer 的整宽 sticky footer 使用透明承载层，prompt-kit Composer 及附着的任务/队列面板继续使用不透明主题卡片保持输入可读性；只允许控件本身的实色边界，不允许全宽 footer 在控件左右继续盖住 wallpaper surface。
 - 壁纸图片层和主题 scrim 分别由 `::before` 与 `::after` 承载。可见度只调整图片层，主题遮罩不随 Slider 一起变淡。
 - 可见度范围为 20%–100%，默认 60%，步长 1%。拖动过程只更新当前 React 局部值和 wallpaper CSS variable，松手后才调用保存接口；拖动不会逐帧写磁盘或刷新全局偏好。
-- 当前资产缺失或记录无效时，启动协调将选择收敛到主题壁纸；单条损坏记录从 VM 中隔离，不能拖垮其他最近记录。
+- 某一明暗模式的当前资产缺失或记录无效时，启动协调只将该模式收敛到主题壁纸，不覆盖另一模式；单条损坏记录从 VM 中隔离，不能拖垮其他最近记录。
 
 ### 6.3 UI 形式
 
-- 壁纸设置位于字体与头像之间。主预览固定为 256×144 上限的 16:9 小卡片，不随宽内容区无限放大；有图片时显示来源标签，当前主题无图片时显示紧凑空状态。
+- 壁纸设置位于字体与头像之间。区域顶部使用共享 shadcn Tabs 切换“浅色 / 深色”，首次打开默认定位当前 resolved mode，各 Tab 的导入、最近选择、恢复与可见度只写入自身模式。主预览固定为 256×144 上限的 16:9 小卡片，不随宽内容区无限放大；有图片时显示来源标签，当前主题无图片时显示紧凑空状态。
 - 点击预览卡使用共享 shadcn/ui Dialog 放大并完整 `contain` 展示；点击放大图片、遮罩或关闭动作均回到小卡片，键盘焦点与 Escape 关闭由 Dialog 管理。
 - “选择壁纸”使用共享 Popover：最近使用以两列 16:9 缩略图展示并懒加载，底部提供导入入口；当前使用项有明确选中态。恢复主题壁纸为相邻的次级动作。
 - 可见度 Slider 仅在用户壁纸生效时展示，数值实时显示整数百分比。
@@ -168,7 +170,7 @@
 ## 8. Tauri 2.x MVP 对应实现
 
 - 外观权威字段改为 `appearance`：`schemaVersion = 2`、稳定 `themeId`、`colorScheme = system | light | dark`、按主题隔离的 `visualQualityByTheme`。旧 `desktopTheme` 在 settings schema v5 一次性迁移后删除，不双写。
-- 个性化权威字段为 `personalization`：`schemaVersion = 3`，显式保存两套有序字体栈、字号、壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段并将两套字体恢复为主题栈；settings schema v9 增加显式主题壁纸来源，不保留双读。主题来源持续跟随当前主题，用户资产历史独立保留。
+- 个性化权威字段为 `personalization`：`schemaVersion = 4`，显式保存两套有序字体栈、字号、按明暗模式隔离的壁纸来源/可见度以及 Agent / 个人头像图片与形状的 `source`。settings schema v8 破坏式删除 v1 单字体字段；settings schema v9 增加单壁纸；settings schema v10 将它一次性升级为 light/dark 两份配置，不保留双读。主题来源持续跟随当前主题，用户资产历史全局共享。
 - 内置 `builtin.gold-band`、`builtin.tech-neutral` 分别位于独立 `themes/*` 声明式包目录，共用 DTCG token、manifest/recipe/preset、Style Dictionary alias 解析、JSON Schema/Ajv 与 Zod/Rust 双端契约；构建产出的 Catalog、CSS recipe 和 asset manifest 是 Web 与 Tauri 的共同输入，业务组件不得读取具体主题 ID。
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
@@ -196,7 +198,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 语言字段保存为 `desktopLanguage`，支持 `zh-cn`、`en`。
 - 旧 `desktopFont / desktopEditorFont / desktopUiFontSize / desktopEditorFontSize` 仅由 schema v7 migration 读取，迁移成功后删除；运行时和保存接口只消费 `personalization`。
 - personalization v1 的 `typography.*.font` 仅由 settings schema v8 migration 删除；运行时只消费 v2 `typography.*.fontStack`，明确替换后不提供兼容字段或 fallback 读取。
-- personalization v2 仅由 settings schema v9 migration 升级为 v3 并加入显式 `wallpaper`；运行时只消费 v3。壁纸资产仓库不复制 personalization 的选择状态，所有壁纸写命令返回最新 `PreferencesVm` 供前端收敛。
+- personalization v2 由 settings schema v9 migration 升级为带单壁纸的 v3，v3 再由 settings schema v10 一次性升级为按 `light / dark` 隔离的 v4；运行时只消费 v4。壁纸资产仓库与 VM 不复制 personalization 的选择状态，所有壁纸写命令显式接收目标 resolved color scheme，并返回最新 `PreferencesVm` 供前端收敛。
 - `save_desktop_preferences` 以单次设置文件 load/save 原子提交 `appearance`、`personalization`、语言和日志偏好；现阶段前端固定提交 `useLocalClaude = false`，后端 `RuntimeConfig` 加载入口也固定投影为 `false`，不接受历史持久化值覆盖。设置页不向用户暴露本地 Claude 开关，旧用户升级后同样立即使用 ACP npm 包内版本。前端串行提交并按 latest-wins 更新 canonical 偏好，禁止清空 task/workflow/round 触发无关重载。
 - 主题使用主题包卡片 + 明暗模式下拉；`system` 只在当前主题包内解析浅色/深色，声明视觉质量能力的主题额外显示质量档选择。选择后立即调用 `save_desktop_preferences` 保存并预览。
 - 首次启动默认 `themeId = builtin.gold-band`、`colorScheme = system`，系统明暗只改变该主题包的方案。

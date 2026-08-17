@@ -248,6 +248,10 @@ impl GoldBandPaths {
         self.runtime_root.join("tasks")
     }
 
+    pub fn conversation_worktrees_dir(&self) -> Utf8PathBuf {
+        self.runtime_root.join("worktrees")
+    }
+
     pub fn scheduled_tasks_dir(&self) -> Utf8PathBuf {
         self.runtime_root.join("scheduled-tasks")
     }

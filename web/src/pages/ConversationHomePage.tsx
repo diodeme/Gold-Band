@@ -3,7 +3,7 @@ import { ConversationGreeting } from '@/components/conversation/ConversationGree
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { cn } from '@/lib/utils';
 import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
-import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
+import type { AgentRegistryVm, ConversationCreateInput, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore, ScheduledScheduleInput } from '../types';
 
 interface ConversationHomePageProps {
   projectId: string;
@@ -15,6 +15,7 @@ interface ConversationHomePageProps {
   profiles: ProfileVm[];
   busy: boolean;
   initialScheduledMode?: boolean;
+  workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
@@ -22,6 +23,7 @@ interface ConversationHomePageProps {
   onOpenAgentManagement: () => void;
   onOpenRunModeSettings: () => void;
   onWorkspaceChange: (projectId: string) => void;
+  onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
 }
 
@@ -35,6 +37,7 @@ export function ConversationHomePage({
   profiles,
   busy,
   initialScheduledMode = false,
+  workLocation,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
@@ -42,6 +45,7 @@ export function ConversationHomePage({
   onOpenAgentManagement,
   onOpenRunModeSettings,
   onWorkspaceChange,
+  onWorkLocationChange,
   onScheduledModeExit,
 }: ConversationHomePageProps) {
   useThemeWallpaperSurface();
@@ -64,6 +68,7 @@ export function ConversationHomePage({
           profiles={profiles}
           busy={busy}
           initialScheduledMode={initialScheduledMode}
+          workLocation={workLocation}
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
@@ -71,6 +76,7 @@ export function ConversationHomePage({
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkspaceChange={onWorkspaceChange}
+          onWorkLocationChange={onWorkLocationChange}
           onScheduledModeExit={onScheduledModeExit}
         />
       </div>

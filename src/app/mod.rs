@@ -71,7 +71,9 @@ use self::orchestrator::{
     build_dynamic_prompt_bundle, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
-    prepare_run as orchestrator_prepare_run, run_continue as orchestrator_run_continue,
+    prepare_run as orchestrator_prepare_run,
+    prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    run_continue as orchestrator_run_continue,
     run_continue_background as orchestrator_run_continue_background,
     run_recover_completed_background as orchestrator_run_recover_completed_background,
     run_retry as orchestrator_run_retry, run_start as orchestrator_run_start,
@@ -3517,6 +3519,14 @@ impl App {
         orchestrator_prepare_run(self, task_id, workflow_override)
     }
 
+    pub fn prepare_run_in_worktree(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
+    }
+
     pub fn launch_prepared_run_background(
         &self,
         task_id: &str,
@@ -3962,6 +3972,7 @@ mod tests {
             pause_reason: reason,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {
@@ -4470,6 +4481,7 @@ mod tests {
             pause_reason: Some(reason),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         }
     }
@@ -5109,6 +5121,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
                 execution: Default::default(),
             },
         )
@@ -5578,6 +5591,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
                 execution: Default::default(),
             },
         )

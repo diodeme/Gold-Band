@@ -41,10 +41,9 @@ use crate::dynamic::{
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
 };
-use crate::git::{
-    GitCommandOutput, GitCommandRunner, GitCoordinationService, GitRepositoryService,
-    GitSourceControlService, GitWorkspaceManager,
-};
+use crate::git::{GitRepositoryService, GitWorkspaceManager};
+#[cfg(test)]
+use crate::git::{GitCommandOutput, GitCommandRunner};
 use crate::observability::{
     ExecutionContext, ProgressStage, append_run_event_best_effort, progress, run_event_data,
     write_progress_hint, write_run_progress_best_effort,
@@ -68,9 +67,9 @@ use crate::provider::{
     supported_models_from_capabilities, supported_modes_from_capabilities,
 };
 use crate::runtime::{
-    NodeState, RoundState, RoundTraceStep, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase,
-    RuntimeExecutionState, TaskState, WorkerRefState, validate_round_state, validate_run_state,
-    validate_worker_ref_state,
+    NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
+    RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState, validate_round_state,
+    validate_run_state, validate_worker_ref_state,
 };
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
@@ -679,15 +678,28 @@ pub(crate) fn launch_prepared_run_background(
                 node,
             } = prepared.data;
             let fallback_node = node.clone();
-            if let Err(err) = drive_from_node(
+            let drive_result = prepare_run_worktree_background(
                 &app,
                 &task_id,
-                &validated,
-                &resolved_profiles,
                 &mut run,
-                &mut round,
-                node,
-            ) {
+                &round,
+                &node,
+            )
+            .and_then(|ready| {
+                if !ready {
+                    return Ok(());
+                }
+                drive_from_node(
+                    &app,
+                    &task_id,
+                    &validated,
+                    &resolved_profiles,
+                    &mut run,
+                    &mut round,
+                    node,
+                )
+            });
+            if let Err(err) = drive_result {
                 terminalize_background_drive_error(
                     &app,
                     &task_id,
@@ -715,6 +727,23 @@ pub(crate) fn prepare_run(
     task_id: &str,
     workflow_override: Option<&Utf8Path>,
 ) -> Result<PreparedRun> {
+    prepare_run_for_workspace(app, task_id, workflow_override, false)
+}
+
+pub(crate) fn prepare_run_in_worktree(
+    app: &App,
+    task_id: &str,
+    workflow_override: Option<&Utf8Path>,
+) -> Result<PreparedRun> {
+    prepare_run_for_workspace(app, task_id, workflow_override, true)
+}
+
+fn prepare_run_for_workspace(
+    app: &App,
+    task_id: &str,
+    workflow_override: Option<&Utf8Path>,
+    create_worktree: bool,
+) -> Result<PreparedRun> {
     let workflow_path = workflow_override
         .map(|path| path.to_owned())
         .unwrap_or_else(|| app.paths.workflow_file(task_id));
@@ -724,7 +753,12 @@ pub(crate) fn prepare_run(
         write_json(&workflow_path, &workflow)?;
     }
     let validated = validate_workflow_snapshot(workflow)?;
-    if workflow_contains_ai_dynamic(&validated.raw) {
+    let worktree_capability = if create_worktree {
+        Some(GitRepositoryService::default().require_worktree(&app.paths.repo_root)?)
+    } else {
+        None
+    };
+    if worktree_capability.is_none() && workflow_contains_ai_dynamic(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     app.validate_workflow_agents(&validated)?;
@@ -744,6 +778,19 @@ pub(crate) fn prepare_run(
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
+    let worktree = if let Some(capability) = worktree_capability {
+        let fork_commit = capability
+            .head
+            .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
+        Some(conversation_run_worktree_state(
+            app,
+            task_id,
+            &run_id,
+            fork_commit,
+        ))
+    } else {
+        None
+    };
 
     let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))
         .ok()
@@ -772,8 +819,13 @@ pub(crate) fn prepare_run(
         pause_reason: None,
         uuid: Some(generate_uuid()),
         last_executed_node: None,
+        worktree,
         execution: RuntimeExecutionState::new(
-            RuntimeExecutionPhase::StartingNode,
+            if create_worktree {
+                RuntimeExecutionPhase::PreparingWorkspace
+            } else {
+                RuntimeExecutionPhase::StartingNode
+            },
             Some(execution_locator),
             now.clone(),
         ),
@@ -889,6 +941,98 @@ pub(crate) fn prepare_run(
         node,
     });
     Ok(prepared)
+}
+
+fn conversation_run_worktree_state(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    fork_commit: String,
+) -> RunWorktreeState {
+    let mut hasher = DefaultHasher::new();
+    app.paths.normalized_repo_root.hash(&mut hasher);
+    task_id.hash(&mut hasher);
+    run_id.hash(&mut hasher);
+    let short_id = format!("{:016x}", hasher.finish());
+    RunWorktreeState {
+        path: app.paths.conversation_worktrees_dir().join(&short_id),
+        branch: format!("gold-band/conversation/{short_id}"),
+        fork_commit,
+    }
+}
+
+fn prepare_run_worktree_background(
+    app: &App,
+    task_id: &str,
+    run: &mut RunState,
+    round: &RoundState,
+    node: &NodeState,
+) -> Result<bool> {
+    let Some(worktree) = run.worktree.clone() else {
+        return Ok(true);
+    };
+    GitWorkspaceManager::default().ensure_worktree(
+        &app.paths.repo_root,
+        &worktree.path,
+        &worktree.branch,
+        &worktree.fork_commit,
+    )?;
+
+    let state_lock = super::attempt_runtime_state_lock(
+        app,
+        task_id,
+        &run.id,
+        &round.id,
+        &node.node_id,
+        &node.attempt_id,
+    );
+    let _guard = state_lock
+        .lock()
+        .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+    let mut durable_run: RunState = read_json(&app.paths.run_file(task_id, &run.id))?;
+    let durable_node: NodeState = read_json(
+        &app.paths
+            .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
+    )?;
+    if durable_run.status != RunStatus::Running
+        || durable_run.current_round.as_deref() != Some(round.id.as_str())
+        || durable_run.current_node.as_deref() != Some(node.node_id.as_str())
+        || durable_run.current_attempt.as_deref() != Some(node.attempt_id.as_str())
+        || durable_node.runtime_execution_id != node.runtime_execution_id
+    {
+        return Ok(false);
+    }
+    durable_run.updated_at = now_rfc3339_like();
+    durable_run.transition_current_execution(
+        RuntimeExecutionPhase::StartingNode,
+        durable_run.updated_at.clone(),
+    )?;
+    validate_run_state(&durable_run)?;
+    write_json(&app.paths.run_file(task_id, &run.id), &durable_run)?;
+    *run = durable_run;
+    Ok(true)
+}
+
+pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Result<Utf8PathBuf> {
+    let run = app.run_status(task_id, run_id)?;
+    let Some(worktree) = run.worktree else {
+        return Ok(app.paths.repo_root.clone());
+    };
+    let expected_root = app.paths.conversation_worktrees_dir();
+    let canonical_root = Utf8PathBuf::from_path_buf(std::fs::canonicalize(
+        expected_root.as_std_path(),
+    )?)
+    .map_err(|path| anyhow!("managed conversation worktree root is not UTF-8: {}", path.display()))?;
+    let canonical_worktree = Utf8PathBuf::from_path_buf(std::fs::canonicalize(
+        worktree.path.as_std_path(),
+    )?)
+    .map_err(|path| anyhow!("run worktree path is not UTF-8: {}", path.display()))?;
+    ensure!(
+        canonical_worktree.starts_with(&canonical_root),
+        "run worktree is outside the managed conversation worktree root"
+    );
+    GitWorkspaceManager::default().validate_worktree(&worktree.path, &worktree.branch)?;
+    Ok(worktree.path)
 }
 
 #[derive(Debug, Clone)]
@@ -4779,17 +4923,16 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
     let snapshots = freeze_allowed_workflow_snapshots(ctx.app, ctx.dynamic)?;
     let now = now_rfc3339_like();
     let dynamic_run_id = "dynamic-run-001".to_string();
-    let capability = GitRepositoryService::default().require_worktree(&ctx.app.paths.repo_root)?;
+    let run_workspace = run_workspace_dir(ctx.app, ctx.task_id, ctx.run_id)?;
+    let capability = GitRepositoryService::default().require_worktree(&run_workspace)?;
     let main_workspace = WorkspaceState {
         version: VERSION.to_string(),
         id: "workspace-main".to_string(),
         dynamic_run_id: dynamic_run_id.clone(),
         kind: WorkspaceKind::Main,
         ownership: WorkspaceOwnership::User,
-        repo_root: capability
-            .repo_root
-            .unwrap_or_else(|| ctx.app.paths.repo_root.clone()),
-        path: ctx.app.paths.repo_root.clone(),
+        repo_root: ctx.app.paths.repo_root.clone(),
+        path: run_workspace,
         branch: None,
         parent_workspace_id: None,
         created_by_group_id: None,
@@ -10491,6 +10634,7 @@ fn dynamic_worktree_dir(ctx: &DynamicExecutionContext<'_>, workspace_id: &str) -
     dynamic_worktree_base_dir(ctx).join(dynamic_worktree_short_id(ctx, workspace_id))
 }
 
+#[cfg(test)]
 fn git_output(cwd: &Utf8Path, args: &[&str]) -> Result<GitCommandOutput> {
     GitCommandRunner::default().run(cwd, args)
 }
@@ -10591,31 +10735,12 @@ fn fork_dynamic_workspace(
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| anyhow!("dynamic worktree git lock poisoned"))?;
-    if path.exists() {
-        GitWorkspaceManager::default().validate_worktree(&path, &branch)?;
-    } else if let Err(error) = GitWorkspaceManager::default().create_worktree(
+    if let Err(error) = GitWorkspaceManager::default().ensure_worktree(
         &parent.repo_root,
         &path,
         &branch,
         &fork_commit,
     ) {
-        if let Ok(identity) =
-            GitSourceControlService::default().repository_identity(&parent.repo_root)
-        {
-            let _ = GitCoordinationService.with_runtime_write(
-                &identity.common_dir,
-                None,
-                "runtime-worktree-create-cleanup",
-                || {
-                    let _ = git_output(
-                        &parent.repo_root,
-                        &["worktree", "remove", "--force", path.as_str()],
-                    );
-                    let _ = git_output(&parent.repo_root, &["branch", "-D", &branch]);
-                    Ok(())
-                },
-            );
-        }
         return Err(error)
             .with_context(|| format!("failed to fork dynamic workspace `{workspace_id}`"));
     }
@@ -11937,6 +12062,7 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: crate::runtime::RuntimeExecutionState::new(
                 RuntimeExecutionPhase::Paused,
                 Some(crate::runtime::RuntimeAttemptLocator {
@@ -12066,6 +12192,92 @@ mod tests {
         git(&repo_root, &["add", "README.md"]);
         git(&repo_root, &["commit", "-m", "init"]);
         (temp, repo_root)
+    }
+
+    fn create_direct_test_task(app: &App) -> String {
+        let workflow: WorkflowDsl = serde_json::from_value(serde_json::json!({
+            "version": VERSION,
+            "id": "conversation-worktree-test",
+            "entry": "dev",
+            "nodes": [{
+                "id": "dev",
+                "type": "worker",
+                "provider": "claude-acp",
+                "prompt_envelope": "raw-agent"
+            }],
+            "edges": [{ "from": "dev", "to": "$end", "on": "success" }]
+        }))
+        .unwrap();
+        app.create_task_from_requirement(super::super::CreateTaskInput {
+            title: Some("Conversation worktree".to_string()),
+            description: None,
+            requirement_file_name: None,
+            requirement_content: "test worktree".to_string(),
+            workflow,
+            workflow_template_id: None,
+        })
+        .unwrap()
+        .task
+        .id
+    }
+
+    #[test]
+    fn conversation_worktree_run_records_head_and_stays_stopped_after_preparation() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::new(repo_root.clone());
+        let task_id = create_direct_test_task(&app);
+        let expected_head = GitRepositoryService::default().head(&repo_root).unwrap();
+        let prepared = prepare_run_in_worktree(&app, &task_id, None).unwrap();
+        let prepared_run = prepared.run();
+        let worktree = prepared_run.worktree.as_ref().unwrap();
+        assert_eq!(prepared_run.execution.phase, RuntimeExecutionPhase::PreparingWorkspace);
+        assert_eq!(worktree.fork_commit, expected_head);
+        assert!(worktree.path.starts_with(app.paths.conversation_worktrees_dir()));
+
+        let accepted = prepared.accept();
+        let PreparedRunData {
+            validated,
+            mut run,
+            round,
+            node,
+            ..
+        } = accepted.data;
+        app.run_pause(&task_id, &run.id, PauseReason::ProcessInterrupted)
+            .unwrap();
+
+        assert!(!prepare_run_worktree_background(&app, &task_id, &mut run, &round, &node).unwrap());
+        let durable = app.run_status(&task_id, &run.id).unwrap();
+        assert_eq!(durable.status, RunStatus::Paused);
+        assert_eq!(durable.execution.phase, RuntimeExecutionPhase::Paused);
+        let durable_worktree = durable.worktree.as_ref().unwrap();
+        assert!(durable_worktree.path.is_dir());
+
+        let invocation = crate::app::node_executor::build_worker_invocation(
+            &app,
+            &task_id,
+            &run.id,
+            &round,
+            &node.attempt_id,
+            &validated,
+            &node.node_id,
+            SessionMode::New,
+            None,
+            None,
+            None,
+            PromptVisibility::Visible,
+            UserPromptRenderMode::RequirementTask,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(invocation.adapter_workspace_dir, repo_root);
+        assert_eq!(invocation.workspace_dir, durable_worktree.path);
+
+        let mut tampered = durable.clone();
+        tampered.worktree.as_mut().unwrap().path = repo_root;
+        write_json(&app.paths.run_file(&task_id, &run.id), &tampered).unwrap();
+        assert!(run_workspace_dir(&app, &task_id, &run.id).is_err());
     }
 
     #[test]
@@ -12258,6 +12470,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let mut round = RoundState {
@@ -12368,6 +12581,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {
@@ -12534,6 +12748,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {
@@ -12612,6 +12827,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {
@@ -12705,6 +12921,7 @@ mod tests {
             pause_reason,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: Default::default(),
         };
         let round = RoundState {

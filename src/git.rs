@@ -234,6 +234,41 @@ pub struct GitWorkspaceManager {
 }
 
 impl GitWorkspaceManager {
+    /// Creates a runtime-owned worktree, or validates the durable identity
+    /// when a previous attempt already completed the Git operation.
+    pub fn ensure_worktree(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        branch: &str,
+        fork_commit: &str,
+    ) -> Result<()> {
+        if path.exists() {
+            return self.validate_worktree(path, branch);
+        }
+        if let Err(error) = self.create_worktree(repository_root, path, branch, fork_commit) {
+            if let Ok(identity) =
+                GitSourceControlService::default().repository_identity(repository_root)
+            {
+                let _ = GitCoordinationService.with_runtime_write(
+                    &identity.common_dir,
+                    None,
+                    "runtime-worktree-create-cleanup",
+                    || {
+                        let _ = self.runner.run(
+                            repository_root,
+                            &["worktree", "remove", "--force", path.as_str()],
+                        );
+                        let _ = self.runner.run(repository_root, &["branch", "-D", branch]);
+                        Ok(())
+                    },
+                );
+            }
+            return Err(error);
+        }
+        self.validate_worktree(path, branch)
+    }
+
     pub fn checkpoint(
         &self,
         workspace: &Utf8Path,
@@ -537,6 +572,26 @@ mod tests {
             .unwrap();
         assert!(message.stdout.contains("Gold-Band-Internal: checkpoint"));
         assert!(message.stdout.contains("Gold-Band-Group: group-1"));
+    }
+
+    #[test]
+    fn ensure_worktree_creates_from_the_requested_head_and_is_idempotent() {
+        let (_dir, root) = initialized_repository();
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let worktree = root.join("runtime-worktrees").join("conversation");
+
+        manager
+            .ensure_worktree(&root, &worktree, "gb-test-conversation", &head)
+            .unwrap();
+        assert_eq!(GitRepositoryService::default().head(&worktree).unwrap(), head);
+
+        manager
+            .ensure_worktree(&root, &worktree, "gb-test-conversation", &head)
+            .unwrap();
+        manager
+            .validate_worktree(&worktree, "gb-test-conversation")
+            .unwrap();
     }
 
     #[test]

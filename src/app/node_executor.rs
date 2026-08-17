@@ -604,6 +604,8 @@ pub(crate) fn build_worker_invocation(
         "worker invocation built"
     );
 
+    let workspace_dir = super::orchestrator::run_workspace_dir(app, task_id, run_id)?;
+
     Ok(WorkerInvocation {
         invocation_kind,
         turn_control_mode: if prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent {
@@ -620,7 +622,7 @@ pub(crate) fn build_worker_invocation(
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
         adapter_workspace_dir: app.paths.repo_root.clone(),
-        workspace_dir: app.paths.repo_root.clone(),
+        workspace_dir,
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
         runtime_context,
@@ -1477,6 +1479,30 @@ mod tests {
         }
     }
 
+    fn write_attachment_test_run(app: &App) {
+        let run = crate::runtime::RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("dev".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        crate::storage::write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+    }
+
     fn trace_step(sequence: u32, node_id: &str, from_node_id: Option<&str>) -> RoundTraceStep {
         RoundTraceStep {
             sequence,
@@ -1552,6 +1578,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let task_id = "task-001";
         let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
@@ -1596,6 +1623,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let task_id = "task-001";
         let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
@@ -1638,6 +1666,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let mut workflow = attachment_test_workflow();
         let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
             panic!("expected worker node");

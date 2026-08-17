@@ -87,6 +87,14 @@ edge target 规则：
 
 `failure` edge 只承接业务失败：artifact 结构合法，但 success condition 明确判定不通过，或人工 check 明确判定失败。运行异常、provider 异常和 adapter/ACP 异常不属于 failure edge 输入。
 
+### 3.2 会话初始工作树准备
+
+快速对话选择 worktree 时，Direct、Workflow 和 AUTO 共用外层 run 的 `PreparingWorkspace -> StartingNode -> RunningNode` 启动序列。`PreparingWorkspace` 表示在 Agent 启动前从源仓库当前 `HEAD` 创建 run 级工作树；主工作区启动不经过该阶段。这里的外层 `run.json.execution` 阶段与 AI-DYNAMIC `dynamic-run.json` 中 fanout/merge 使用的同名阶段属于不同聚合，不新增第二套生命周期或把 dynamic graph 状态投影回外层 run。
+
+`RunState.worktree` 是工作目录的权威事实。准备完成后必须在 attempt runtime lock 下重新读取 durable run：只有 run 仍为待启动状态才能进入 `StartingNode`；若用户已停止，则保持 `Paused + ProcessInterrupted`，不创建 provider invocation，也不允许迟到的准备结果恢复 Running。已经成功创建的 worktree 保留，不通过补偿删除模拟事务。
+
+执行入口解析 cwd 时必须校验 worktree path 位于 Gold Band 受管工作树根目录，并复用 Git helper 验证目录与 branch 的一致性。Worker/ACP 的 `workspace_dir` 使用 run worktree，adapter workspace 仍使用项目原工作空间；后续 AI-DYNAMIC 以该 run workspace 作为自己的 main workspace。该解析只读取当前 run 的小型状态文件，不扫描其他 run、分支或磁盘目录。
+
 ## 4. session 继承
 - `session=new`：目标 worker 新开会话。
 - `session=continue`：仅当目标 provider 支持 continue session 时可用。

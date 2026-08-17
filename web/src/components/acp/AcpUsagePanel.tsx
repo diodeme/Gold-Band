@@ -4,6 +4,7 @@ import type { AcpUsageVm } from '@/types';
 import { cn } from '@/lib/utils';
 import { formatTokenCount } from '@/lib/format-token';
 import { AcpProcessingSpinner } from '@/components/acp/AcpProcessingSpinner';
+import { GitFork } from 'lucide-react';
 import {
   Tooltip,
   TooltipContent,
@@ -16,6 +17,7 @@ export interface AcpUsagePanelProps {
   usage: AcpUsageVm | null | undefined;
   processingLabel?: string | null;
   sessionSeconds?: number | null;
+  worktreePath?: string | null;
   className?: string;
 }
 
@@ -44,6 +46,7 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   usage,
   processingLabel,
   sessionSeconds,
+  worktreePath,
   className,
 }: AcpUsagePanelProps) {
   const { t } = useTranslation();
@@ -57,9 +60,10 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   const tokenRows = usage == null ? [] : tokenUsageRows(usage);
   const showProcessing = Boolean(processingLabel);
   const showTiming = sessionSeconds != null;
+  const showWorktree = Boolean(worktreePath?.trim());
   const showContext = hasAcpUsagePanelContent(usage);
 
-  if (!showProcessing && !showTiming && !showContext) return null;
+  if (!showProcessing && !showTiming && !showWorktree && !showContext) return null;
 
   const gaugeStyle: ContextGaugeStyle = {
     '--context-usage-percent': `${percentage ?? 0}%`,
@@ -86,6 +90,24 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
           <span className="text-muted-foreground/80">{t('acp.timingSession')}</span>
           <span className="tabular-nums text-foreground/80">{formatElapsed(sessionSeconds)}</span>
         </span>
+      ) : null}
+
+      {showWorktree ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="flex min-w-0 shrink items-center gap-1.5 rounded-sm text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              tabIndex={0}
+              data-acp-worktree="true"
+            >
+              <GitFork className="size-3.5 shrink-0" />
+              <span className="truncate">{t('conversation.runtime.worktree')}</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+            {worktreePath}
+          </TooltipContent>
+        </Tooltip>
       ) : null}
 
       {showContext ? (
@@ -178,6 +200,7 @@ function areUsagePanelPropsEqual(previous: AcpUsagePanelProps, next: AcpUsagePan
   return previous.className === next.className
     && previous.processingLabel === next.processingLabel
     && previous.sessionSeconds === next.sessionSeconds
+    && previous.worktreePath === next.worktreePath
     && usageFieldsEqual(previous.usage, next.usage);
 }
 

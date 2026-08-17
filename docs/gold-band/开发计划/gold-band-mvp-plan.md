@@ -1235,3 +1235,11 @@ attempt-001/
 - 输入高度：删除 prompt-kit 中唯一的 `userResizable` 分支、指针监听和用户最小高度状态；快速对话与会话详情统一为内容自动增长到 320px 上限，之后仅 textarea 内部滚动，不展示浏览器原生 resize 角标。定时任务配置等独立表单 textarea 的手工调整能力不受影响。
 - 回归要求：接口测试固定两类 composer 的配置控件尺寸、快速对话无顶部分割线和 28px 附件入口，并固定会话详情 textarea 为 `resize-none`；autosize 测试继续覆盖未达上限隐藏滚动条、达到上限封顶和内部滚动。浅色、深色及窄宽度页面验证不得出现布局退化。
 - 性能与过度设计评审：删除一次 pointerdown 后的全局 pointerup / pointercancel 监听和局部最小高度状态；正常输入仍保持每次受控值提交一次布局测量，不增加 state、effect、请求、缓存、订阅或渲染分支。两类 composer 的业务结构不同，因此不强行合并组件；只共享已有布局层的尺寸常量，复杂度低于原实现且无新增性能风险。
+
+## 2026-08-18：Direct 排队转直接发送的边界收敛
+
+- 根因：Direct composer 提交时根据当时 lifecycle 走 `queue-prompt`，但上一 turn 可能在命令到达后端前已结束。后端按最新权威状态直接发送并返回 `acp-session` 是合法结果，前端却只接受 `queued`，因而在消息已执行且已回答后误报发送失败、恢复已提交草稿，存在重复发送风险。
+- 实现：保留后端现有队列与直接发送决策；前端排队提交分支将 `queued / acp-session` 统一判定为已接受。`acp-session` 回执继续走既有 session/lifecycle 合并，成功后释放附件且不恢复草稿；未知或拒绝结果仍保持失败保护。
+- 回归要求：Web 接口映射单测固定 `queued` 和 `acp-session` 两种合法结果，并保持 `rejected` 及其他命令结果进入失败路径；执行定向 Web 测试、类型检查、生产构建和内置浏览器 deep link 交互验收。
+- 验收结果：定向 Web 测试 43 项通过，生产类型检查与 Vite 构建通过。内置浏览器 deep link 到 `run-053` Direct 队列夹具，固定“UI 显示加入队列、browser API 返回 acp-session”的真实边界；正常宽度、760px、恢复 1440px 和长文本提交均清空草稿且不显示发送失败，页面无横向溢出。完整 Web 回归 1460 项中 1459 项通过；唯一失败是既有 `TurnFileChangesCard` 源码 `mb-3` 与旧测试仍断言 `mb-2` 的无关基线差异，本次不修改该布局契约。
+- 性能与过度设计评审：只增加常量级返回类型判定并复用现有 session 合并入口，不新增状态机、持久字段、依赖、请求、缓存、队列、扫描、宽订阅或渲染边界；复用现有 canonical lifecycle 与结果联合类型即可表达全部不变量，无需新 aggregate 或专项 benchmark。

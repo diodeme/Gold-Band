@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveAcpRuntimeComposerState,
+  isAcceptedQueuePromptSubmitKind,
   mergeConversationAttemptLifecycle,
   shouldKeepLocalRuntimeLifecycleOverride,
   shouldSettleRuntimeContinueSubmission,
@@ -991,6 +992,18 @@ describe('shouldSettleRuntimeContinueSubmission', () => {
     expect(shouldSettleRuntimeContinueSubmission(true, true)).toBe(false);
     expect(shouldSettleRuntimeContinueSubmission(true, false)).toBe(true);
     expect(shouldSettleRuntimeContinueSubmission(false, false)).toBe(false);
+  });
+});
+
+describe('isAcceptedQueuePromptSubmitKind', () => {
+  it('accepts both a durable enqueue and an idle-boundary direct ACP send', () => {
+    expect(isAcceptedQueuePromptSubmitKind('queued')).toBe(true);
+    expect(isAcceptedQueuePromptSubmitKind('acp-session')).toBe(true);
+  });
+
+  it('keeps unrelated or rejected command outcomes on the failure path', () => {
+    expect(isAcceptedQueuePromptSubmitKind('rejected')).toBe(false);
+    expect(isAcceptedQueuePromptSubmitKind('runtime-continue-started')).toBe(false);
   });
 });
 

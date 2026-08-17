@@ -239,6 +239,10 @@ export function shouldSettleRuntimeContinueSubmission(
   return submitting && !showRuntimeContinueAction;
 }
 
+export function isAcceptedQueuePromptSubmitKind(kind: string) {
+  return kind === 'queued' || kind === 'acp-session';
+}
+
 function shouldRouteDirectSubmissionToQueue(input: {
   input: AcpRuntimeComposerStateInput;
   mode: AcpComposerMode;

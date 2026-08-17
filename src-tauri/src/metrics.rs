@@ -823,7 +823,12 @@ mod tests {
     fn iso_timestamp_helpers_emit_local_time_without_offset() {
         let converted = to_iso8601("1786018481Z");
         assert!(!converted.contains('+') && !converted.ends_with('Z'));
-        assert_eq!(converted, "2026-08-06T20:14:41.000");
+        let expected = chrono::DateTime::from_timestamp(1_786_018_481, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string();
+        assert_eq!(converted, expected);
         let now = iso_now();
         assert!(!now.contains('+') && !now.ends_with('Z'));
     }

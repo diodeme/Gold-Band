@@ -132,6 +132,8 @@ Workflow/AUTO 的 `execution.paused`、`execution.resumed`、`intervention.reque
 | `executionId` | string | 等于 `taskId`（不再单独上报 taskId）；同一 task 所有事件保持一致 |
 | `taskTitle` | string | 任务标题，即工作空间下展示的名称；所有事件携带同一值 |
 
+这里的“本地时间”以客户端操作系统当前时区为准，不硬编码 UTC+8；跨平台协议测试必须按运行环境的本地时区计算预期值。传输格式继续按既有服务端契约省略时区偏移量。
+
 `userId/workspace` 必须在事件产生时从执行上下文快照，不能在延迟发送时读取当前 workspace，否则切换项目会串数据。
 共享生命周期总线中的 node/unit 事实必须携带事件所属 workspace 的 `repoRoot`。指标 producer 只能使用该事件路径创建作用域化 `GoldBandPaths`，读取 Usage、解析 child run、写 observability snapshot 和生成 `workspace` 字段；禁止使用 producer 注册时捕获的启动工作区路径。
 

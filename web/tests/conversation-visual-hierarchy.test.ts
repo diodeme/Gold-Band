@@ -62,7 +62,9 @@ describe('conversation visual hierarchy contract', () => {
   it('places workspace headings above task titles and keeps time metadata subordinate', () => {
     const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
 
-    expect(sidebar).toContain('mb-4');
+    expect(sidebar).toContain('data-conversation-workspace-group={ws.projectId}');
+    expect(sidebar).toContain('className="mb-2"');
+    expect(sidebar).not.toContain('className="mb-4"');
     expect(sidebar).toContain('text-sm font-semibold leading-5 text-sidebar-foreground/80');
     expect(sidebar).toContain('truncate text-sm');
     expect(sidebar.match(/className="space-y-0\.5"/gu) ?? []).toHaveLength(2);

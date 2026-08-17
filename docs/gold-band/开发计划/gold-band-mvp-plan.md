@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-17：会话侧栏工作空间分组间距收紧
+
+- 根因：工作空间列表结构、sticky 标题和展开生命周期设计正确，但每个分组外层仍统一使用 16px 底部间距，折叠工作空间较多时产生了超过分组层级所需的连续空白。这是共享排版 token 偏松，不是单个工作空间或截图尺寸的特例。
+- 实现：继续复用现有 React、Tailwind 与 shadcn `ScrollArea`，将所有工作空间分组的统一底部间距从 16px 收敛到 8px；不改变标题行高、会话行高、展开内容、sticky 接替或“添加工作空间”入口。
+- 验收：DOM 组件测试通过稳定的 workspace group 标记固定所有分组消费紧凑间距 token，视觉层级契约同时禁止回退到旧间距；2 个定向 Vitest 文件共 7 项测试通过，TypeScript 与 Web 生产构建通过。内置浏览器 deep link 在 1280px、720px、重新拉宽到 1440px 三种宽度下确认折叠/展开分组的计算间距均为 8px，无横向溢出或控制台告警；多工作空间一致性由包含 2 个 workspace 的 DOM 契约固定。
+- 性能与过度设计评审：只替换一个共享 Tailwind spacing utility，并增加测试标记；不新增状态、effect、DOM 测量、依赖、缓存、请求或渲染分支。工作空间列表仍是既有单次 O(n) React 映射，DOM 数量与重渲染范围不变，无需 benchmark。
+
 ## 2026-08-16：产品悬浮提示统一迁移
 
 - 根因：项目已经确立 shadcn/Radix Tooltip 与全局 Provider，但多个页面仍直接使用浏览器 `title`，React Flow 画布控制和 Streamdown 代码/图片控制还会由依赖内部间接生成 `title`。这是共享交互契约覆盖不完整，不是工作流或文件列表的局部样式问题。

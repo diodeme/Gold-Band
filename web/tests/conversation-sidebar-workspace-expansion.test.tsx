@@ -55,6 +55,32 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('keeps workspace groups on the compact sidebar spacing token', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={sidebarVm()}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+          />,
+        );
+      });
+
+      const workspaceGroups = container.querySelectorAll<HTMLElement>('[data-conversation-workspace-group]');
+      expect(workspaceGroups).toHaveLength(2);
+      expect([...workspaceGroups].every((group) => group.classList.contains('mb-2'))).toBe(true);
+      expect([...workspaceGroups].some((group) => group.classList.contains('mb-4'))).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('preserves a manual collapse across draft-target changes and fresh sidebar snapshots', async () => {
     const container = document.createElement('div');
     document.body.append(container);

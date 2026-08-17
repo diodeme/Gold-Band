@@ -2,7 +2,7 @@ import type { AcpUiEventVm } from "@/types";
 
 export type ParsedPromptPart =
   | { type: "visible"; text: string }
-  | { type: "hidden"; title?: string; text: string };
+  | { type: "hidden"; title?: string; text: string; show: boolean };
 
 export interface HiddenPromptEventSectionLocator {
   eventId: string;
@@ -56,6 +56,7 @@ export function parseGoldBandHiddenSections(content: string): ParsedPromptPart[]
       type: "hidden",
       title: hiddenTitleFromTag(openingTag),
       text: content.slice(openEnd + 1, closeStart).replace(/<\\\/hidden>/g, HIDDEN_CLOSE),
+      show: hiddenShowFromTag(openingTag),
     });
     cursor = closeEnd;
   }
@@ -90,4 +91,8 @@ function hiddenTitleFromTag(tag: string): string | undefined {
   const match = tag.match(/\btitle\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
   const title = match?.[1] ?? match?.[2];
   return title?.trim() || undefined;
+}
+
+function hiddenShowFromTag(tag: string) {
+  return !/\bshow\s*=\s*(?:"false"|'false'|false)(?=\s|>)/i.test(tag);
 }

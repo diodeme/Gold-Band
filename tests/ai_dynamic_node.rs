@@ -1173,7 +1173,7 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
         "group-core-merge",
         "attempt-001",
         Some("merge-resume-001".to_string()),
-        "继续".to_string(),
+        Some("继续".to_string().into()),
         Vec::new(),
         None,
         None,
@@ -1197,15 +1197,21 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
         merge_continue.user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
-    assert_eq!(merge_continue.resume_prompt.as_deref(), Some("继续"));
+    let resume_prompt = merge_continue.resume_prompt.as_deref().unwrap_or_default();
+    assert!(resume_prompt.starts_with("继续\n"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
+    assert!(resume_prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+    assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
     assert_eq!(
         merge_continue.resume_prompt_id.as_deref(),
         Some("merge-resume-001")
     );
 
     let prompt = render_prompt_bundle(merge_continue).unwrap();
-    assert_eq!(prompt.user_prompt, "继续");
-    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert!(prompt.user_prompt.starts_with("继续\n"));
+    assert!(prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert_eq!(prompt.display_text.as_deref(), Some("继续"));
     assert!(!prompt.user_prompt.contains("# 目标"));
     assert!(!prompt.user_prompt.contains("# Goal"));
     assert!(!prompt.user_prompt.contains("# 用户提示"));

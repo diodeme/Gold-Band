@@ -79,6 +79,41 @@ describe('desktopApi', () => {
     });
   });
 
+  it('forwards the visible input and attachments with one runtime continue command', async () => {
+    const input = {
+      displayText: '请继续并补充测试',
+      quotes: [{ id: 'quote-1', sourceMessageKey: 'answer-1', text: '原始回答' }],
+    };
+
+    await desktopApi.continueConversationRuntime(
+      'project-1',
+      'task-1',
+      'run-1',
+      'round-1',
+      'node-1',
+      'attempt-1',
+      'outer-node-1',
+      'outer-attempt-1',
+      input,
+      'prompt-1',
+      ['C:/attachments/example.png'],
+    );
+
+    expect(invokeCommand).toHaveBeenCalledWith('continue_conversation_runtime', {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      outerNodeId: 'outer-node-1',
+      outerAttemptId: 'outer-attempt-1',
+      input,
+      promptId: 'prompt-1',
+      attachmentPaths: ['C:/attachments/example.png'],
+    });
+  });
+
   it('routes ordinary run stop to the Tauri pause command', async () => {
     await desktopApi.pauseRun('task-1', 'run-1', 'project-1');
 

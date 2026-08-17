@@ -105,6 +105,34 @@ describe('AcpConversationComposer', () => {
     expect(sendButton?.className).toContain(ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName);
   });
 
+  it('uses the shared send eligibility for continue labels and action hints', async () => {
+    await renderComposer({
+      canSubmit: false,
+      queueSubmit: false,
+      showRuntimeContinue: true,
+      runtimeContinueKind: 'continue-current-attempt',
+    });
+
+    let continueButton = host.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+    let sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(continueButton?.textContent).toContain('继续工作流');
+    expect(continueButton?.getAttribute('aria-label')).toBe('继续运行工作流');
+    expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
+
+    await renderComposer({
+      prompt: '请继续',
+      canSubmit: true,
+      queueSubmit: false,
+      showRuntimeContinue: true,
+      runtimeContinueKind: 'continue-current-attempt',
+    });
+    continueButton = host.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+    sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(continueButton?.textContent).toContain('继续并发送');
+    expect(continueButton?.getAttribute('aria-label')).toBe('发送消息并继续工作流');
+    expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
+  });
+
   it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {
     await renderComposer({ configBar: <span data-test-config="true">config</span> });
 

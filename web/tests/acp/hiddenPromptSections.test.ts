@@ -11,7 +11,7 @@ describe('Gold Band hidden prompt sections', () => {
 
     expect(parts).toEqual([
       { type: 'visible', text: 'visible\n' },
-      { type: 'hidden', title: 'Gold Band runtime context', text: 'secret' },
+      { type: 'hidden', title: 'Gold Band runtime context', text: 'secret', show: true },
       { type: 'visible', text: '\nnext' },
     ]);
   });
@@ -36,9 +36,9 @@ describe('Gold Band hidden prompt sections', () => {
     const parts = parseGoldBandHiddenSections('<hidden data-gold-band-hidden="true" title="A">one</hidden>middle<hidden data-gold-band-hidden="true" title="B">two</hidden>');
 
     expect(parts).toEqual([
-      { type: 'hidden', title: 'A', text: 'one' },
+      { type: 'hidden', title: 'A', text: 'one', show: true },
       { type: 'visible', text: 'middle' },
-      { type: 'hidden', title: 'B', text: 'two' },
+      { type: 'hidden', title: 'B', text: 'two', show: true },
     ]);
   });
 
@@ -46,7 +46,7 @@ describe('Gold Band hidden prompt sections', () => {
     const parts = parseGoldBandHiddenSections('<hidden data-gold-band-hidden="true">literal <\\/hidden></hidden>');
 
     expect(parts).toEqual([
-      { type: 'hidden', title: undefined, text: 'literal </hidden>' },
+      { type: 'hidden', title: undefined, text: 'literal </hidden>', show: true },
     ]);
   });
 
@@ -68,6 +68,24 @@ describe('Gold Band hidden prompt sections', () => {
 
     expect(display.map(({ part }) => part.type)).toEqual(['hidden', 'hidden', 'visible']);
     expect(display[2]?.part).toEqual({ type: 'visible', text: '# Requirement\nhi' });
+  });
+
+  it('parses show=false for audit access but omits that section from the message projection', () => {
+    const parts = parseGoldBandHiddenSections([
+      '用户消息',
+      '<hidden data-gold-band-hidden="true" show="false" title="Gold Band runtime control">resume</hidden>',
+    ].join('\n'));
+
+    expect(parts[1]).toEqual({
+      type: 'hidden',
+      title: 'Gold Band runtime control',
+      text: 'resume',
+      show: false,
+    });
+    expect(projectHiddenPromptDisplayParts(parts)).toEqual([{
+      part: { type: 'visible', text: '用户消息\n' },
+      sourceIndex: 2,
+    }]);
   });
 
   it('resolves a hidden section only from the exact canonical event revision and part index', () => {
@@ -92,6 +110,7 @@ describe('Gold Band hidden prompt sections', () => {
       type: 'hidden',
       title: 'Gold Band runtime context',
       text: 'runtime',
+      show: true,
     });
     expect(resolveGoldBandHiddenSection(events, {
       eventId: 'prompt-1',

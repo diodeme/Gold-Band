@@ -43,6 +43,10 @@ pub const RUNTIME_CONTROL_RESUME_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/runtime_control_resume.md");
 pub const RUNTIME_CONTROL_RESUME_EN: &str =
     include_str!("prompts/en/runtime/runtime_control_resume.md");
+pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_ZH_CN: &str =
+    include_str!("prompts/zh-CN/runtime/runtime_control_resume_with_message.md");
+pub const RUNTIME_CONTROL_RESUME_WITH_MESSAGE_EN: &str =
+    include_str!("prompts/en/runtime/runtime_control_resume_with_message.md");
 pub const RUNTIME_WORKFLOW_RESUME_ZH_CN: &str =
     include_str!("prompts/zh-CN/runtime/workflow_resume.md");
 pub const RUNTIME_WORKFLOW_RESUME_EN: &str = include_str!("prompts/en/runtime/workflow_resume.md");

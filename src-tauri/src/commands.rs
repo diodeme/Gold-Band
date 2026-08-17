@@ -2447,6 +2447,9 @@ pub async fn continue_conversation_runtime(
     attempt_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    prompt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
@@ -2458,6 +2461,9 @@ pub async fn continue_conversation_runtime(
         outer_node_id,
         outer_attempt_id,
     );
+    if let Some(input) = input.as_ref() {
+        validate_conversation_prompt_input(input)?;
+    }
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
         let run = app
@@ -2485,6 +2491,7 @@ pub async fn continue_conversation_runtime(
         let attempt_dir = locator.attempt_dir(&app);
         let model_override = current_acp_session_model_override(&attempt_dir);
         let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
+        let attachment_paths = attachment_paths.unwrap_or_default();
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
         {
@@ -2496,9 +2503,9 @@ pub async fn continue_conversation_runtime(
                 outer_attempt_id,
                 &locator.node_id,
                 &locator.attempt_id,
-                None,
-                String::new(),
-                Vec::new(),
+                prompt_id,
+                input,
+                attachment_paths,
                 model_override,
                 permission_mode_override,
             )
@@ -2506,9 +2513,9 @@ pub async fn continue_conversation_runtime(
             app.run_continue_background_with_config_overrides(
                 &locator.task_id,
                 &locator.run_id,
-                None,
-                None,
-                Vec::new(),
+                prompt_id,
+                input,
+                attachment_paths,
                 model_override,
                 permission_mode_override,
             )

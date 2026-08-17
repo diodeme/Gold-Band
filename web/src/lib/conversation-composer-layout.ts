@@ -24,6 +24,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 } as const;
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
+  stackSurfaceClassName: 'border-0',
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
   leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
   trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',

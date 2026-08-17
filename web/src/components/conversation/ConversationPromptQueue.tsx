@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
@@ -122,7 +123,8 @@ export function ConversationPromptQueue({
       open={open}
       onOpenChange={setOpen}
       className={cn(
-        'overflow-hidden border border-b-0 border-border bg-card',
+        'overflow-hidden bg-card',
+        ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
         attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
         integratedInfoTab && !attachedAbove && 'rounded-tl-none',
       )}
@@ -155,7 +157,7 @@ export function ConversationPromptQueue({
             items={visibleItems.map((item) => item.id)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
+            <div className="px-3 pb-1.5" data-queue-items="true">
               {visibleItems.map((item) => (
                 <QueueItem
                   key={item.id}
@@ -173,7 +175,7 @@ export function ConversationPromptQueue({
           </SortableContext>
         </DndContext>
         {hasMore ? (
-          <div className="border-t border-border/25 px-3 py-1">
+          <div className="px-3 py-1" data-queue-show-more-row="true">
             <Button
               type="button"
               variant="ghost"

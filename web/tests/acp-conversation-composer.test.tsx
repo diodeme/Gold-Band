@@ -163,6 +163,8 @@ describe('AcpConversationComposer', () => {
 
     const contextArea = host.querySelector('[data-composer-context-area="true"]');
     const promptInput = host.querySelector('[data-slot="prompt-input"]');
+    expect(promptInput?.classList.contains('border-0')).toBe(true);
+    expect(promptInput?.classList.contains('border')).toBe(false);
     const textarea = host.querySelector('textarea');
     expect(contextArea).toBeTruthy();
     expect(promptInput).toBeTruthy();

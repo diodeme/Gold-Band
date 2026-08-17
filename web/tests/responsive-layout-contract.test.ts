@@ -74,7 +74,8 @@ describe('responsive desktop layout contracts', () => {
     expect(infoBarBaseClasses).not.toContain('absolute');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName).toBe('min-w-0');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName');
-    expect(acpChatSource).toContain('className="absolute left-0 top-px z-20');
+    expect(acpChatSource).toContain('"absolute left-0 top-0 z-20');
+    expect(acpChatSource).toContain('ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName');
     expect(acpChatSource).not.toContain('COMPOSER_ATTACHED_INFO_SURFACE_CLASS_NAME');
     expect(composerSource).not.toContain('bg-muted/45');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('pt-2');

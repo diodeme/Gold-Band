@@ -1,4 +1,9 @@
-import type { AcpSessionConfigVm } from "@/types";
+import type {
+  AcpModeVm,
+  AcpSelectConfigOptionVm,
+  AcpSessionConfigVm,
+  AgentRegistryVm,
+} from "@/types";
 
 export type AcpSessionConfigCategory = string;
 
@@ -6,6 +11,7 @@ export type AcpSessionConfigOption = {
   id: string;
   name: string;
   description?: string | null;
+  available?: boolean;
 };
 
 export type AcpSessionConfigGroup = {
@@ -15,8 +21,16 @@ export type AcpSessionConfigGroup = {
   description: string | null;
   currentValue: string | null;
   overrideValue: string | null;
+  overrideValueName: string | null;
   canSelectUnspecified: boolean;
   options: AcpSessionConfigOption[];
+};
+
+export type AcpProviderConfigCatalog = {
+  observedAt: string;
+  models: AcpModeVm[];
+  modes: AcpModeVm[];
+  configOptions: AcpSelectConfigOptionVm[];
 };
 
 export type AcpSessionConfigViewModel = {
@@ -39,42 +53,57 @@ export type AcpSessionConfigViewModel = {
 
 export function createAcpSessionConfigViewModel(
   config: AcpSessionConfigVm | null | undefined,
+  providerCatalog: AcpProviderConfigCatalog | null | undefined = null,
 ): AcpSessionConfigViewModel {
+  const projectedCatalog = projectAcpSessionConfigCatalog(config, providerCatalog);
   const currentModelId = config?.currentModelId ?? null;
   const currentModelName = config?.currentModelName ?? null;
   const currentModeId = config?.currentModeId ?? null;
   const currentModeName = config?.currentModeName ?? null;
   const availableModels = normalizeAcpSessionConfigOptions(
-    config?.models,
-    config?.configOptions,
+    projectedCatalog.models,
+    projectedCatalog.configOptions,
     "model",
   );
   const availablePermissionModes = normalizeAcpSessionConfigOptions(
-    config?.modes,
-    config?.configOptions,
+    projectedCatalog.modes,
+    projectedCatalog.configOptions,
     "mode",
   );
   const modelOverrideId = config?.modelOverrideId ?? null;
   const modelOverrideName = modelOverrideId
     ? availableModels.find((option) => option.id === modelOverrideId)?.name
       ?? (currentModelId === modelOverrideId ? currentModelName : null)
+      ?? findAcpConfigOption(config?.models, config?.configOptions, "model", modelOverrideId).name
       ?? modelOverrideId
     : null;
   const permissionModeOverrideId = config?.permissionModeOverrideId ?? null;
   const thoughtLevel = normalizeAcpSelectConfigGroups(
-    config?.configOptions,
+    projectedCatalog.configOptions,
     config?.configOptionOverrides,
+    config?.configOptions,
   ).find((group) => group.category === "thought_level") ?? null;
   const permissionModeOverrideName = permissionModeOverrideId
     ? availablePermissionModes.find((option) => option.id === permissionModeOverrideId)?.name
       ?? (currentModeId === permissionModeOverrideId ? currentModeName : null)
+      ?? findAcpConfigOption(config?.modes, config?.configOptions, "mode", permissionModeOverrideId).name
       ?? permissionModeOverrideId
     : null;
+  const projectedAvailableModels = withUnavailableCurrentOption(
+    availableModels,
+    modelOverrideId,
+    modelOverrideName,
+  );
+  const projectedAvailablePermissionModes = withUnavailableCurrentOption(
+    availablePermissionModes,
+    permissionModeOverrideId,
+    permissionModeOverrideName,
+  );
   const resolvedCurrentModelName = currentModelName ?? (
-    currentModelId ? null : singleOptionName(availableModels)
+    currentModelId ? null : singleOptionName(projectedAvailableModels)
   );
   const resolvedCurrentModeName = currentModeName ?? (
-    currentModeId ? null : singleOptionName(availablePermissionModes)
+    currentModeId ? null : singleOptionName(projectedAvailablePermissionModes)
   );
   const resolvedModeLabel = resolvedCurrentModeName ?? currentModeId;
   const viewModel = {
@@ -89,8 +118,8 @@ export function createAcpSessionConfigViewModel(
     currentModeId,
     currentModeName: resolvedCurrentModeName,
     modeLabel: resolvedModeLabel,
-    availableModels,
-    availablePermissionModes,
+    availableModels: projectedAvailableModels,
+    availablePermissionModes: projectedAvailablePermissionModes,
     thoughtLevel,
   };
 
@@ -103,6 +132,7 @@ export function createAcpSessionConfigViewModel(
 export function normalizeAcpSelectConfigGroups(
   configOptions: unknown,
   overrides: Record<string, string> | null | undefined = undefined,
+  fallbackConfigOptions: unknown = undefined,
 ): AcpSessionConfigGroup[] {
   return (arrayValue(configOptions) ?? []).flatMap((raw) => {
     const option = rawObject(raw);
@@ -112,6 +142,11 @@ export function normalizeAcpSelectConfigGroups(
     const options = normalizeConfigOptionList(arrayValue(option?.options), category);
     if (options.length === 0) return [];
     const overrideValue = overrides?.[id]?.trim() || null;
+    const overrideValueName = overrideValue
+      ? options.find((option) => option.id === overrideValue)?.name
+        ?? configOptionValueName(fallbackConfigOptions, id, overrideValue)
+        ?? overrideValue
+      : null;
     return [{
       id,
       category,
@@ -119,10 +154,119 @@ export function normalizeAcpSelectConfigGroups(
       description: stringValue(option?.description)?.trim() || null,
       currentValue: stringValue(option?.currentValue)?.trim() || null,
       overrideValue,
+      overrideValueName,
       canSelectUnspecified: overrideValue === null,
-      options,
+      options: withUnavailableCurrentOption(options, overrideValue, overrideValueName),
     }];
   });
+}
+
+function configOptionValueName(
+  configOptions: unknown,
+  optionId: string,
+  value: string,
+) {
+  const option = arrayValue(configOptions)
+    ?.map(rawObject)
+    .find((candidate) => stringValue(candidate?.id) === optionId);
+  return normalizeConfigOptionList(arrayValue(option?.options), optionId)
+    .find((candidate) => candidate.id === value)
+    ?.name ?? null;
+}
+
+export function acpProviderConfigCatalog(
+  registry: AgentRegistryVm | null | undefined,
+  provider: string | null | undefined,
+): AcpProviderConfigCatalog | null {
+  if (!provider) return null;
+  const agent = registry?.agents.find((candidate) => candidate.agentType === provider);
+  if (!agent?.diagnostic?.available || !agent.diagnostic.checkedAt) return null;
+  return {
+    observedAt: agent.diagnostic.checkedAt,
+    models: agent.supportedModels ?? [],
+    modes: agent.supportedModes ?? [],
+    configOptions: agent.configOptions ?? [],
+  };
+}
+
+export function isAcpCatalogObservationNewer(
+  candidate: string | null | undefined,
+  current: string | null | undefined,
+) {
+  const candidateValue = catalogObservationValue(candidate);
+  if (!candidateValue) return false;
+  const currentValue = catalogObservationValue(current);
+  if (!currentValue) return true;
+  if (candidateValue.raw === currentValue.raw) return false;
+  if (candidateValue.epoch !== null && currentValue.epoch !== null) {
+    return candidateValue.epoch > currentValue.epoch;
+  }
+  return candidateValue.raw > currentValue.raw;
+}
+
+function projectAcpSessionConfigCatalog(
+  config: AcpSessionConfigVm | null | undefined,
+  providerCatalog: AcpProviderConfigCatalog | null | undefined,
+) {
+  if (!providerCatalog || !isAcpCatalogObservationNewer(
+    providerCatalog.observedAt,
+    config?.catalogObservedAt,
+  )) {
+    return {
+      models: config?.models,
+      modes: config?.modes,
+      configOptions: config?.configOptions,
+    };
+  }
+  return {
+    models: {
+      availableModels: providerCatalog.models.map((model) => ({
+        modelId: model.id,
+        name: model.name,
+        description: model.description,
+      })),
+    },
+    modes: {
+      availableModes: providerCatalog.modes.map((mode) => ({
+        id: mode.id,
+        name: mode.name,
+        description: mode.description,
+      })),
+    },
+    configOptions: mergeProviderCatalogCurrentValues(
+      providerCatalog.configOptions,
+      config?.configOptions,
+    ),
+  };
+}
+
+function mergeProviderCatalogCurrentValues(
+  providerOptions: AcpSelectConfigOptionVm[],
+  sessionOptions: unknown,
+) {
+  const sessionOptionList = arrayValue(sessionOptions)?.map(rawObject) ?? [];
+  return providerOptions.map((option) => {
+    const sessionOption = sessionOptionList.find((candidate) =>
+      stringValue(candidate?.id) === option.id
+      || (
+        option.category
+        && stringValue(candidate?.category) === option.category
+      ));
+    return {
+      ...option,
+      type: "select",
+      currentValue: stringValue(sessionOption?.currentValue)?.trim() || undefined,
+    };
+  });
+}
+
+function catalogObservationValue(value: string | null | undefined) {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const epochMatch = /^(\d+)Z?$/.exec(raw);
+  if (epochMatch) return { raw, epoch: Number(epochMatch[1]) };
+  const parsed = Date.parse(raw);
+  return { raw, epoch: Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null };
 }
 
 export function findAcpConfigOption(
@@ -172,6 +316,7 @@ function createAcpSessionConfigSignature(
       id: viewModel.thoughtLevel.id,
       currentValue: viewModel.thoughtLevel.currentValue,
       overrideValue: viewModel.thoughtLevel.overrideValue,
+      overrideValueName: viewModel.thoughtLevel.overrideValueName,
       canSelectUnspecified: viewModel.thoughtLevel.canSelectUnspecified,
       options: viewModel.thoughtLevel.options.map(signatureOption),
     } : null,
@@ -179,7 +324,19 @@ function createAcpSessionConfigSignature(
 }
 
 function signatureOption(option: AcpSessionConfigOption) {
-  return [option.id, option.name, option.description ?? null];
+  return [option.id, option.name, option.description ?? null, option.available ?? true];
+}
+
+function withUnavailableCurrentOption(
+  options: AcpSessionConfigOption[],
+  value: string | null,
+  name: string | null,
+) {
+  if (!value || options.some((option) => option.id === value)) return options;
+  return [
+    { id: value, name: name ?? value, description: null, available: false },
+    ...options,
+  ];
 }
 
 function singleOptionName(options: AcpSessionConfigOption[]) {

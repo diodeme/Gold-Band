@@ -355,7 +355,8 @@ use crate::provider::{
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
-    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, blocked_runtime_error_info, runtime_error,
+    DEFAULT_AUTO_RETRY_MAX_ATTEMPTS, RuntimeErrorDomain, blocked_runtime_error_info,
+    manual_runtime_error_info, runtime_error,
 };
 use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, write_json};
 
@@ -379,6 +380,29 @@ const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
 pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
 pub const ACP_HISTORY_SYNC_UNSUPPORTED_CODE: &str = "acp.history-sync-unsupported";
+pub const ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE: &str = "acp.session-config-value-unavailable";
+
+fn session_config_value_unavailable_error(
+    category: impl Into<String>,
+    config_id: impl Into<String>,
+    value: impl Into<String>,
+    available_values: Vec<String>,
+) -> anyhow::Error {
+    let category = category.into();
+    let config_id = config_id.into();
+    let value = value.into();
+    runtime_error(manual_runtime_error_info(
+        RuntimeErrorDomain::Config,
+        ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE,
+        format!("ACP session config value `{value}` is unavailable for `{config_id}`"),
+        json!({
+            "category": category,
+            "configId": config_id,
+            "value": value,
+            "availableValues": available_values,
+        }),
+    ))
+}
 
 #[derive(Debug)]
 struct AcpCancelled;
@@ -1218,6 +1242,7 @@ fn attached_sync_required(
 fn plan_attached_session_reuse(
     config_changed: bool,
     sync_required: bool,
+    config_catalog_refresh_required: bool,
     external_session_sync_enabled: bool,
     provider_freshness: &ProviderFreshnessBaseline,
 ) -> AttachedSessionReusePlan {
@@ -1227,12 +1252,34 @@ fn plan_attached_session_reuse(
     if sync_required {
         return AttachedSessionReusePlan::Reload("external-session-sync-required");
     }
+    if config_catalog_refresh_required {
+        return AttachedSessionReusePlan::Reload("session-config-catalog-refresh-required");
+    }
     if external_session_sync_enabled
         && provider_freshness != &ProviderFreshnessBaseline::Unsupported
     {
         return AttachedSessionReusePlan::ProbeFreshness;
     }
     AttachedSessionReusePlan::Reuse
+}
+
+fn catalog_observation_is_newer(candidate: Option<&str>, current: Option<&str>) -> bool {
+    let Some(candidate) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    if candidate == current {
+        return false;
+    }
+    match (
+        candidate.trim_end_matches('Z').parse::<u64>(),
+        current.trim_end_matches('Z').parse::<u64>(),
+    ) {
+        (Ok(candidate), Ok(current)) => candidate > current,
+        _ => candidate > current,
+    }
 }
 
 fn evaluate_provider_revision(
@@ -1269,6 +1316,7 @@ struct AttachedSessionRuntime {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    config_catalog_observed_at: Option<String>,
     config_fingerprint: u64,
     provider_freshness: ProviderFreshnessBaseline,
     connection_key: AdapterConnectionKey,
@@ -1489,6 +1537,8 @@ struct AcpRuntime<'a> {
     models: Option<Value>,
     modes: Option<Value>,
     config_options: Option<Value>,
+    config_catalog_observed_at: Option<String>,
+    config_catalog_refresh_required_at: Option<String>,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
     config_option_overrides: BTreeMap<String, String>,
@@ -2610,9 +2660,13 @@ impl<'a> AcpRuntime<'a> {
             .iter()
             .map(|item| item.id.clone())
             .collect();
-        let prompt_retry = load_session_metadata(&paths.snapshot, None)
-            .ok()
-            .and_then(|metadata| metadata.prompt_retry);
+        let prior_metadata = [paths.snapshot.as_path(), paths.session.as_path()]
+            .into_iter()
+            .find(|path| path.exists())
+            .and_then(|path| load_session_metadata(path, None).ok());
+        let prompt_retry = prior_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.prompt_retry.clone());
         let pending_retry_prompt_event = prompt_retry
             .as_ref()
             .and_then(|state| state.prompt_event_id.as_deref())
@@ -2654,9 +2708,21 @@ impl<'a> AcpRuntime<'a> {
             active_prompt_turn: None,
             pending_retry_prompt_event,
             prompt_retry,
-            models: None,
-            modes: None,
-            config_options: None,
+            models: prior_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.models.clone()),
+            modes: prior_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modes.clone()),
+            config_options: prior_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.config_options.clone()),
+            config_catalog_observed_at: prior_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.config_catalog_observed_at.clone()),
+            config_catalog_refresh_required_at: prior_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.config_catalog_refresh_required_at.clone()),
             model_override: None,
             permission_mode_override: None,
             config_option_overrides: BTreeMap::new(),
@@ -2843,8 +2909,11 @@ impl<'a> AcpRuntime<'a> {
             let required_sync = restore_intent == SessionRestoreIntent::SyncHistory;
             match restore {
                 Ok(result) => {
-                    self.capture_session_config(&result);
+                    let catalog_updated = self.capture_session_config(&result);
                     self.set_session_id(session_id.to_string());
+                    if catalog_updated {
+                        self.persist_session_catalog_observation()?;
+                    }
                     if restore_method == SessionRestoreMethod::Resume {
                         self.session_update_phase = SessionUpdatePhase::AwaitingTurnStart;
                     }
@@ -2931,6 +3000,7 @@ impl<'a> AcpRuntime<'a> {
             "ACP session/new completed"
         );
         let result = session_new_result?;
+        self.config_catalog_refresh_required_at = None;
         self.capture_session_config(&result);
         let session_id = result
             .get("sessionId")
@@ -2992,6 +3062,7 @@ impl<'a> AcpRuntime<'a> {
         self.models = entry.models.clone();
         self.modes = entry.modes.clone();
         self.config_options = entry.config_options.clone();
+        self.config_catalog_observed_at = entry.config_catalog_observed_at.clone();
         self.provider_freshness = entry.provider_freshness.clone();
         self.sync_required = attached_sync_required(
             entry.external_session_sync_enabled,
@@ -3003,6 +3074,10 @@ impl<'a> AcpRuntime<'a> {
         let reuse_plan = plan_attached_session_reuse(
             entry.config_fingerprint != desired_config_fingerprint,
             self.sync_required,
+            catalog_observation_is_newer(
+                self.config_catalog_refresh_required_at.as_deref(),
+                self.config_catalog_observed_at.as_deref(),
+            ),
             self.runtime_policy.external_session_sync_enabled,
             &entry.provider_freshness,
         );
@@ -3089,16 +3164,49 @@ impl<'a> AcpRuntime<'a> {
         self.session_id = Some(session_id);
     }
 
-    fn capture_session_config(&mut self, result: &Value) {
+    fn capture_session_config(&mut self, result: &Value) -> bool {
+        let mut observed_catalog = false;
         if let Some(models) = result.get("models") {
             self.models = Some(models.clone());
+            observed_catalog = true;
         }
         if let Some(modes) = result.get("modes") {
             self.modes = Some(modes.clone());
+            observed_catalog = true;
         }
         if let Some(config_options) = result.get("configOptions") {
             self.config_options = Some(config_options.clone());
+            observed_catalog = true;
         }
+        if observed_catalog {
+            let observed_at = current_timestamp();
+            self.config_catalog_observed_at = Some(observed_at.clone());
+            if !catalog_observation_is_newer(
+                self.config_catalog_refresh_required_at.as_deref(),
+                Some(&observed_at),
+            ) {
+                self.config_catalog_refresh_required_at = None;
+            }
+        }
+        observed_catalog
+    }
+
+    fn persist_session_catalog_observation(&self) -> Result<()> {
+        let path = if self.paths.snapshot.exists() {
+            self.paths.snapshot.as_path()
+        } else if self.paths.session.exists() {
+            self.paths.session.as_path()
+        } else {
+            return Ok(());
+        };
+        let mut metadata = load_session_metadata(path, self.session_id.clone())?;
+        metadata.models = self.models.clone();
+        metadata.modes = self.modes.clone();
+        metadata.config_options = self.config_options.clone();
+        metadata.config_catalog_observed_at = self.config_catalog_observed_at.clone();
+        metadata.config_catalog_refresh_required_at =
+            self.config_catalog_refresh_required_at.clone();
+        write_session_metadata(path, &metadata)
     }
 
     /// Applies the effective session configuration for the ACP session.
@@ -3140,22 +3248,37 @@ impl<'a> AcpRuntime<'a> {
                     .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
             })
         else {
+            if self.config_options.is_some() {
+                return Err(session_config_value_unavailable_error(
+                    "config",
+                    config_id,
+                    value,
+                    Vec::new(),
+                ));
+            }
             bail!("ACP session does not expose config option `{config_id}`");
         };
         let category = option.get("category").and_then(Value::as_str);
         if matches!(category, Some("model" | "mode")) {
             return Ok(());
         }
-        let valid = option
+        let available_values = option
             .get("options")
             .and_then(Value::as_array)
-            .is_some_and(|options| {
-                options
-                    .iter()
-                    .any(|item| item.get("value").and_then(Value::as_str) == Some(value))
-            });
-        if !valid {
-            bail!("ACP config option `{config_id}` does not support value `{value}`");
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("value").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if !available_values.iter().any(|item| item == value) {
+            return Err(session_config_value_unavailable_error(
+                category.unwrap_or("config"),
+                config_id,
+                value,
+                available_values,
+            ));
         }
         let session_id = self
             .session_id
@@ -3186,20 +3309,9 @@ impl<'a> AcpRuntime<'a> {
                 requested,
                 available,
             } => {
-                append_diagnostic(
-                    &self.paths.diagnostics,
-                    "warn",
-                    format!(
-                        "configured ACP model `{requested}` is no longer available; using the provider default"
-                    ),
-                    Some(json!({
-                        "event": "acp_model_config_normalized",
-                        "requestedModel": requested,
-                        "availableModels": available,
-                    })),
-                )?;
-                self.model_override = None;
-                return Ok(());
+                return Err(session_config_value_unavailable_error(
+                    "model", "model", requested, available,
+                ));
             }
         };
         if has_model_config_option(self.config_options.as_ref()) {
@@ -4888,6 +5000,8 @@ impl<'a> AcpRuntime<'a> {
             models: self.models.clone(),
             modes: self.modes.clone(),
             config_options: self.config_options.clone(),
+            config_catalog_observed_at: self.config_catalog_observed_at.clone(),
+            config_catalog_refresh_required_at: self.config_catalog_refresh_required_at.clone(),
             model_override: self.model_override.clone(),
             permission_mode_override: self.permission_mode_override.clone(),
             config_option_overrides: self.config_option_overrides.clone(),
@@ -5532,6 +5646,7 @@ impl<'a> AcpRuntime<'a> {
                 models: self.models.clone(),
                 modes: self.modes.clone(),
                 config_options: self.config_options.clone(),
+                config_catalog_observed_at: self.config_catalog_observed_at.clone(),
                 config_fingerprint,
                 provider_freshness: self.provider_freshness.clone(),
                 connection_key,
@@ -6045,11 +6160,12 @@ fn resolve_permission_mode(
         return Ok(permission_mode.to_string());
     }
 
-    bail!(
-        "ACP permission mode `{}` is not supported by this agent; available modes: {}",
+    Err(session_config_value_unavailable_error(
+        "mode",
+        "mode",
         permission_mode,
-        available.join(", ")
-    )
+        available,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6227,19 +6343,19 @@ mod tests {
         SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
         append_bounded, attached_sync_required, cancel_attempt_prompt,
-        canonical_prompt_event_identity, cleanup_doctor_acp_dir_after_success,
-        confirmed_context_usage_update, drain_frames_until_quiet,
-        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
-        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
-        is_transport_interruption, latest_visible_turn_id, merge_tool_revision,
-        next_prompt_retry_attempt, permission_decision_timeline_event, plan_attached_session_reuse,
-        plan_session_restore, prompt_activity, prompt_cancellation_outcome,
-        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, session_resume_params, settle_prompt_event,
-        should_suppress_session_update, stable_message_item_id,
+        canonical_prompt_event_identity, catalog_observation_is_newer,
+        cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
+        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
+        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
+        is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
+        merge_tool_revision, next_prompt_retry_attempt, permission_decision_timeline_event,
+        plan_attached_session_reuse, plan_session_restore, prompt_activity,
+        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unidentified_agent_output_failure,
         unregister_provider_control,
     };
@@ -6347,7 +6463,7 @@ mod tests {
     };
     use crate::config::RuntimeConfig;
     use crate::provider::prepare_acp_mcp_servers;
-    use crate::runtime_error::{RecoveryMode, normalize_runtime_error};
+    use crate::runtime_error::{RecoveryMode, RuntimeErrorDomain, normalize_runtime_error};
 
     #[test]
     fn initialize_requests_nested_agent_transcripts_at_the_adapter_boundary() {
@@ -6870,6 +6986,7 @@ mod tests {
         let plan = plan_attached_session_reuse(
             false,
             sync_required,
+            false,
             true,
             &ProviderFreshnessBaseline::Unknown,
         );
@@ -6884,17 +7001,52 @@ mod tests {
     #[test]
     fn attached_session_reuse_only_probes_freshness_without_required_sync() {
         assert_eq!(
-            plan_attached_session_reuse(false, false, true, &ProviderFreshnessBaseline::Unknown,),
+            plan_attached_session_reuse(
+                false,
+                false,
+                false,
+                true,
+                &ProviderFreshnessBaseline::Unknown,
+            ),
             AttachedSessionReusePlan::ProbeFreshness
         );
         assert_eq!(
-            plan_attached_session_reuse(false, false, false, &ProviderFreshnessBaseline::Unknown,),
+            plan_attached_session_reuse(
+                false,
+                false,
+                false,
+                false,
+                &ProviderFreshnessBaseline::Unknown,
+            ),
             AttachedSessionReusePlan::Reuse
         );
         assert_eq!(
-            plan_attached_session_reuse(true, false, false, &ProviderFreshnessBaseline::Unknown,),
+            plan_attached_session_reuse(
+                true,
+                false,
+                false,
+                false,
+                &ProviderFreshnessBaseline::Unknown,
+            ),
             AttachedSessionReusePlan::Reload("session-config-changed")
         );
+    }
+
+    #[test]
+    fn newer_doctor_catalog_forces_one_attached_session_reload() {
+        assert_eq!(
+            plan_attached_session_reuse(
+                false,
+                false,
+                true,
+                false,
+                &ProviderFreshnessBaseline::Unsupported,
+            ),
+            AttachedSessionReusePlan::Reload("session-config-catalog-refresh-required")
+        );
+        assert!(catalog_observation_is_newer(Some("200Z"), Some("199Z")));
+        assert!(!catalog_observation_is_newer(Some("200Z"), Some("200Z")));
+        assert!(!catalog_observation_is_newer(Some("199Z"), Some("200Z")));
     }
 
     #[test]
@@ -8252,11 +8404,22 @@ mod tests {
         });
 
         let error = resolve_permission_mode("unknown", None, Some(&modes))
-            .expect_err("unknown mode should fail before sending it to the agent")
-            .to_string();
+            .expect_err("unknown mode should fail before sending it to the agent");
+        let unavailable = normalize_runtime_error(&error);
 
-        assert!(error.contains("unknown"));
-        assert!(error.contains("read-only, auto"));
+        assert_eq!(unavailable.domain, RuntimeErrorDomain::Config);
+        assert_eq!(unavailable.recovery, RecoveryMode::Manual);
+        assert_eq!(
+            unavailable.code_str(),
+            super::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(unavailable.params["category"], "mode");
+        assert_eq!(unavailable.params["configId"], "mode");
+        assert_eq!(unavailable.params["value"], "unknown");
+        assert_eq!(
+            unavailable.params["availableValues"],
+            serde_json::json!(["read-only", "auto"])
+        );
     }
 
     #[test]

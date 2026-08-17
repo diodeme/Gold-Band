@@ -26,6 +26,7 @@ export type AcpSingleConfigMenuOption = {
   id: string;
   name: string;
   description?: string | null;
+  available?: boolean;
 };
 
 type Props = {
@@ -116,7 +117,12 @@ export function AcpSingleConfigMenu({
             </DropdownMenuRadioItem>
           ) : null}
           {options.map((option) => (
-            <DropdownMenuRadioItem key={option.id} value={option.id} className="items-start py-2">
+            <DropdownMenuRadioItem
+              key={option.id}
+              value={option.id}
+              disabled={option.available === false}
+              className="items-start py-2"
+            >
               <span className="block min-w-0">
                 <span className="block truncate font-medium">{option.name}</span>
                 {option.description ? (

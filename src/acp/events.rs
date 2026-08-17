@@ -57,6 +57,15 @@ pub struct AcpSessionMetadata {
     pub modes: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Value>,
+    /// Time when this session last observed a model/mode/config-option catalog
+    /// from the ACP provider. Catalog freshness must not be inferred from the
+    /// session's general `updated_at`, which also changes for ordinary turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_catalog_observed_at: Option<String>,
+    /// A newer successful Doctor catalog selected by the user must be checked
+    /// against this concrete session before its override is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_catalog_refresh_required_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

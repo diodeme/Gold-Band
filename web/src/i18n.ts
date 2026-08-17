@@ -1594,6 +1594,7 @@ const resources = {
         hiddenRuntimeContext: "隐藏运行上下文",
         hiddenStableSystemPrompt: "隐藏系统提示",
         hiddenPromptCharacters: "{{count}} 字符",
+        hiddenPromptUnavailable: "无法读取这段隐藏提示",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -3713,6 +3714,7 @@ const resources = {
         hiddenRuntimeContext: "Hidden runtime context",
         hiddenStableSystemPrompt: "Hidden system prompt",
         hiddenPromptCharacters: "{{count}} characters",
+        hiddenPromptUnavailable: "This hidden prompt section is unavailable",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:

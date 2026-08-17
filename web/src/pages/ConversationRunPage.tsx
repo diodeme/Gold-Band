@@ -205,6 +205,7 @@ export function ConversationRunPage({
       resource.kind !== 'workflow-view' &&
       resource.kind !== 'workflow-edit' &&
       resource.kind !== 'system-prompt' &&
+      resource.kind !== 'hidden-prompt-section' &&
       resource.kind !== 'raw-frames'
     ) return null;
     return (
@@ -224,6 +225,7 @@ export function ConversationRunPage({
       workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
       workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
       workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
+      workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
     ];
     return () => unregister.forEach((dispose) => dispose());

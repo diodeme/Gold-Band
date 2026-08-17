@@ -1154,3 +1154,12 @@ attempt-001/
 - 可见度与会话：范围 20%–100%、默认 60%、步长 1%。拖动只更新局部 state 与 CSS variable，commit 才持久化。Theme SDK 将图片层与 scrim 分离到 `::before / ::after`；会话主页和运行页共同消费 `conversation` surface，ACP timeline 与包住 Composer 的整宽 sticky footer 使用透明承载；prompt-kit Composer、任务列表、prompt queue 和 manual-check 面板保持不透明 card，只让控件左右空白区透出壁纸。
 - 接口与回归：Rust 测试覆盖 v9 迁移、导入/最近 10 条/恢复、缺失资产收敛、单段协议 token、路径穿越与损坏索引拒绝；Web 测试覆盖最近选择、1% 规范化、Windows URL、设置顺序、小卡片/Dialog、Slider commit 和会话 surface 投影；Theme SDK 测试固定图片/scrim 分层。
 - 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素和既有图片预加载；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper，与实际数据规模匹配，无需额外 benchmark。
+
+## 2026-08-17：隐藏 Prompt 链接与右侧只读工作区
+
+- 根因与交互：隐藏 system/runtime context 的解析与紧凑投影设计继续保留，但消息组件内的 `Collapsible` 把长文档误建模为局部披露内容，未复用已经支持多 Tab、Markdown/源码和只读查看的右侧工作区。隐藏段改为带 Lucide 文档图标、原有语义颜色和字符数的 shadcn link Button；删除块背景、箭头、内联展开正文与 content-expansion 生命周期。
+- 数据与接口：新增 `HiddenPromptSectionWorkspaceLocator = AcpAttemptWorkspaceLocator + eventId + eventSeq + partIndex` 和对应资源类型/稳定 key。点击经既有 `openResource` 打开或激活 Tab；资源 LRU 只保存 locator。内容面板按 `eventSeq - 1` 请求一个 ACP 语义块，再以精确 event identity 和 part index 解析正文，不使用标题或显示文案反查，也不把长 prompt 复制进全局工作区状态。
+- 组件复用：内容区继续复用 `SystemPromptPanel`；产品层 rendered 模式使用现有 prompt-kit `Markdown / Streamdown` 生成静态 Markdown DOM，raw 模式使用现有 `WorkspaceFileEditor(editable=false)` 展示源码，两种视图二选一挂载并沿用既有视图偏好。右侧 Tab renderer、图标和中英文缺失态只扩展一个资源分支，不新增后端接口、编辑器、Markdown renderer、依赖、缓存或持久字段。
+- 渲染回归修正：用户截图确认最初实现把 `rendered` 映射成了 CodeMirror `live-preview`，虽隐藏部分 Markdown 标记但仍是编辑器排版，并非真实渲染。共享 `SystemPromptPanel` 现统一承担只读文档模式映射，渲染态使用 Streamdown、源码态使用 CodeMirror，工具栏明确切换两种产品语义；DOM 回归固定默认标题/粗体真实渲染、源码原文不变、`editable=false` 及双向切换。
+- 验收：Vitest 固定隐藏段图标链接、不生成 Collapsible、点击输出稳定 part index、跨 branch/section key 隔离、精确 event revision 解析，以及工作区只发起一次单语义块读取并把目标正文交给共享只读面板；同时执行完整 Web 测试、TypeScript、生产构建，并在内置浏览器 deep link 下检查浅色/深色、hover/focus、窄工作区和长 Markdown 的 rendered/source 切换。
+- 性能与过度设计评审：未打开时不挂载 Markdown/编辑器或解析第二份正文；打开时为一次有界语义块 I/O 与一次 O(prompt length) 解析。移除隐藏正文 `<pre>`、展开 state、token 和展开宽度测量，工作区命令继续使用低频稳定 Context，Tab/宽度变化不扩大历史 Markdown 渲染范围。一个 locator 资源类型足以表达真实生命周期，不增加状态机、队列、缓存或假设性抽象，无需专项 benchmark。

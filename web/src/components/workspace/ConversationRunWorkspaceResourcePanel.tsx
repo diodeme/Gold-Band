@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getAcpRawFrames, getAcpSession, getAgentRegistry, getProfiles } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
+import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
 import { GraphView } from '@/components/GraphView';
 import { StatusBadge } from '@/components/StatusBadge';
 import { WorkflowEditor, parseWorkflowJson, type WorkflowEditorSessionDraft } from '@/components/WorkflowEditor';
@@ -22,6 +23,7 @@ import type {
 import {
   type RawFramesWorkspaceResource,
   type RightWorkspaceResource,
+  type HiddenPromptSectionWorkspaceResource,
   type SystemPromptWorkspaceResource,
   type WorkflowEditWorkspaceResource,
   type WorkflowViewWorkspaceResource,
@@ -31,6 +33,7 @@ type ConversationRunWorkspaceResource =
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
+  | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource;
 
 interface ConversationRunWorkspaceResourcePanelProps {
@@ -63,6 +66,9 @@ export function ConversationRunWorkspaceResourcePanel({
   }
   if (resource.kind === 'system-prompt') {
     return <SystemPromptWorkspacePanel resource={resource} />;
+  }
+  if (resource.kind === 'hidden-prompt-section') {
+    return <HiddenPromptSectionWorkspacePanel resource={resource} />;
   }
   return <RawFramesWorkspacePanel resource={resource} />;
 }
@@ -259,6 +265,61 @@ function SystemPromptWorkspacePanel({ resource }: { resource: SystemPromptWorksp
   if (loading) return <WorkspaceLoadingState />;
   if (error) return <WorkspaceErrorState message={error} />;
   return <SystemPromptPanel prompt={prompt} />;
+}
+
+function HiddenPromptSectionWorkspacePanel({
+  resource,
+}: {
+  resource: HiddenPromptSectionWorkspaceResource;
+}) {
+  const { t } = useTranslation();
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    const locator = resource.locator;
+    void getAcpSession(
+      locator.projectId,
+      locator.taskId,
+      locator.runId,
+      locator.roundId,
+      locator.nodeId,
+      locator.attemptId,
+      {
+        branchId: locator.branchId,
+        afterSeq: Math.max(0, locator.eventSeq - 1),
+        eventLimit: 1,
+        pageSize: 1,
+      },
+      null,
+      locator.outerNodeId,
+      locator.outerAttemptId,
+    ).then((session) => {
+      if (!active) return;
+      const section = resolveGoldBandHiddenSection(session?.events ?? [], locator);
+      if (section) {
+        setContent(section.text);
+      } else {
+        setError(t('acp.hiddenPromptUnavailable'));
+      }
+    }).catch((reason) => {
+      if (active) setError(displayAppError(t, reason));
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [resource.key, t]);
+  if (loading) return <WorkspaceLoadingState />;
+  if (error) return <WorkspaceErrorState message={error} />;
+  return (
+    <SystemPromptPanel
+      prompt={content}
+      documentKey={resource.key}
+      resourceKind={resource.kind}
+      emptyMessage={t('acp.hiddenPromptUnavailable')}
+    />
+  );
 }
 
 function RawFramesWorkspacePanel({ resource }: { resource: RawFramesWorkspaceResource }) {

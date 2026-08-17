@@ -276,6 +276,8 @@ function workspaceTabIcon(tab: RightWorkspaceResource) {
     ? <GitBranch className="size-3.5 shrink-0" />
     : tab.kind === 'workflow-edit'
       ? <PencilLine className="size-3.5 shrink-0" />
+      : tab.kind === 'hidden-prompt-section'
+        ? <FileText className="size-3.5 shrink-0" />
       : tab.kind === 'system-prompt'
         ? <FileCode2 className="size-3.5 shrink-0" />
         : tab.kind === 'scheduled-task-config'

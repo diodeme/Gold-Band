@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
+    const session = await browserApi.getAcpSession(
+      'default',
+      'mock-task',
+      'run-052',
+      'round-001',
+      'dev',
+      'attempt-001',
+    );
+
+    expect(session?.events[0]?.content).toContain('Gold Band stable system prompt');
+    expect(session?.events[0]?.content).toContain('Gold Band runtime context');
+    expect(session?.systemPromptAppend).toContain('**system prompt**');
+  });
+
   it('provides deterministic multi-page Git history for browser interaction regression', async () => {
     const first = await browserApi.getGitHistory('project-1', 'D:/repo', { limit: 300 });
     expect(first.commits).toHaveLength(300);

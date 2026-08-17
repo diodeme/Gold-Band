@@ -30,6 +30,12 @@ export interface AcpAttemptWorkspaceLocator extends ConversationRunLocator {
   branchId: string;
 }
 
+export interface HiddenPromptSectionWorkspaceLocator extends AcpAttemptWorkspaceLocator {
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
+}
+
 export type ConversationWorkspaceScope =
   | { kind: 'draft'; key: string; projectId: string }
   | { kind: 'conversation'; key: string; projectId: string; taskId: string; taskUuid?: string | null; runId: string };
@@ -121,6 +127,11 @@ export type SystemPromptWorkspaceResource = RightWorkspaceResourceBase & {
   locator: AcpAttemptWorkspaceLocator;
 };
 
+export type HiddenPromptSectionWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'hidden-prompt-section';
+  locator: HiddenPromptSectionWorkspaceLocator;
+};
+
 export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'raw-frames';
   locator: AcpAttemptWorkspaceLocator;
@@ -143,6 +154,7 @@ export type RightWorkspaceResource =
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
+  | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource;
 
@@ -717,6 +729,49 @@ export function conversationAssetWorkspaceResourceKey(
     locator.branchId,
     path ?? name,
   ].join(':');
+}
+
+export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSectionWorkspaceLocator) {
+  return [
+    'hidden-prompt-section',
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+    locator.eventId,
+    locator.eventSeq,
+    locator.partIndex,
+  ].join(':');
+}
+
+export function createHiddenPromptSectionWorkspaceResource(input: {
+  scopeKey: string;
+  title: string;
+  locator: AcpAttemptWorkspaceLocator;
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
+}): HiddenPromptSectionWorkspaceResource {
+  const locator: HiddenPromptSectionWorkspaceLocator = {
+    ...input.locator,
+    eventId: input.eventId,
+    eventSeq: input.eventSeq,
+    partIndex: input.partIndex,
+  };
+  return {
+    kind: 'hidden-prompt-section',
+    key: hiddenPromptSectionWorkspaceResourceKey(locator),
+    scopeKey: input.scopeKey,
+    title: input.title,
+    description: null,
+    attention: false,
+    locator,
+  };
 }
 
 export function draftAttachmentWorkspaceResourceKey(scopeKey: string, attachmentId: string) {

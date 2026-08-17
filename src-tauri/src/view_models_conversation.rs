@@ -3513,8 +3513,7 @@ pub fn validate_conversation_create_vm(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
@@ -3952,8 +3951,7 @@ pub fn prepare_conversation_task_vm(
         gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
 
     // Create task
@@ -4236,10 +4234,9 @@ mod tests {
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm,
-        PromptActivity, apply_workflow_interview_preference, attempt_control_mode,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_session_successors_from_state,
+        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_session_successors_from_state,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
         conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
@@ -5723,6 +5720,7 @@ mod tests {
                 active_template_name: None,
             }),
             attachment_paths: None,
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -5794,13 +5792,14 @@ mod tests {
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: None,
             auto_config: None,
             attachment_paths: None,
             work_location: ConversationWorkLocationVm::Worktree,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();

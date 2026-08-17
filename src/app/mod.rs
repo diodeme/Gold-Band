@@ -3811,13 +3811,7 @@ impl App {
         prompt_id: Option<String>,
         input: Option<ConversationPromptInput>,
     ) -> Result<RunState> {
-        orchestrator_run_continue_with_prompt_input(
-            self,
-            task_id,
-            run_id,
-            prompt_id,
-            input,
-        )
+        orchestrator_run_continue_with_prompt_input(self, task_id, run_id, prompt_id, input)
     }
 
     pub fn run_continue_with_model_override(

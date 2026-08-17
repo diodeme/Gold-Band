@@ -623,7 +623,10 @@ mod tests {
         manager
             .ensure_worktree(&root, &worktree, "gb-test-conversation", &head)
             .unwrap();
-        assert_eq!(GitRepositoryService::default().head(&worktree).unwrap(), head);
+        assert_eq!(
+            GitRepositoryService::default().head(&worktree).unwrap(),
+            head
+        );
 
         manager
             .ensure_worktree(&root, &worktree, "gb-test-conversation", &head)

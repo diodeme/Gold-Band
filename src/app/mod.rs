@@ -45,8 +45,7 @@ use crate::process::recover_persisted_process_group;
 use crate::provider::{
     ConversationPromptInput, DoctorResult, PromptBundle, PromptVisibility, ProviderAdapter,
     ProviderCapabilities, ProviderInfo, UserPromptRenderMode, provider_from_agent,
-    render_prompt_bundle, supported_models_from_capabilities,
-    supported_modes_from_capabilities,
+    render_prompt_bundle, supported_modes_from_capabilities,
 };
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,

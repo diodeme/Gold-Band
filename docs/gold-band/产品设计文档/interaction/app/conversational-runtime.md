@@ -322,7 +322,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 数据持久化到 attempt 目录的 `acp.prompt-queue.json`，采用 FIFO，最多 10 条；每条保存稳定 item id、稳定 prompt id、正文、附件路径、创建时间和 `queued / dispatching` 状态。关闭应用、停止会话或切换页面都不得删除队列。
 - 队列与 ACP/runtime lifecycle 归属同一 attempt。Workflow / AUTO 不投影队列，且不改变其运行中 composer 锁定策略；Direct 无队列时的普通发送、runtime continue、repair 也不进入用户优先等待窗口。
-- 队列列表紧贴 composer 上边缘，位于 usage/token 行下方。它与任务列表复用同一套紧凑折叠 surface、`card` 背景、主题边线、整行标题触发器、右侧展开箭头和内容分隔样式，同一 composer 栈内不得出现任务列表为 `card`、队列为半透明 `muted` 的色差；区别是待发送队列默认展开，先展示 FIFO 前 3 条，超过 3 条时通过列表底部“查看更多 / 仅显示前 3 条”切换展示范围。标题行只负责整体收起/展开，用户选择的展示范围在当前组件生命周期内保持，两个动作不得混用。每条使用 icon action 提供编辑、使用、删除，并包含 tooltip 与 aria-label；编辑保存后保持原顺序。
+- 队列列表紧贴 composer 上边缘，位于 usage/token 行下方。它与任务列表复用同一套紧凑折叠 surface、`card` 背景、主题边线、整行标题触发器、右侧展开箭头和内容分隔样式，同一 composer 栈内不得出现任务列表为 `card`、队列为半透明 `muted` 的色差；区别是待发送队列默认展开，先展示 FIFO 前 3 条，超过 3 条时通过列表底部“查看更多 / 仅显示前 3 条”切换展示范围。标题行只负责整体收起/展开，用户选择的展示范围在当前组件生命周期内保持，两个动作不得混用。每条使用 icon action 提供编辑、使用、删除，并包含 tooltip 与 aria-label；编辑通过唯一的 restore 接口原子取回完整 authoring payload 并恢复到 composer 草稿，同时删除原 durable 队列项，不保留已淘汰的原位 update 接口。
 - 运行中允许编辑和删除 queued 项；“使用”仅在会话停止/空闲时可用，用于指定某一条继续。被指定项以原稳定 prompt id 进入统一发送链路，不建立第二套消息展示。
 - 用户停止或应用关闭后不自动弹出/发送队列。点击停止时必须先在进程内同步设置发送门禁，并持久化 `autoDispatchSuspended=true`、递增 revision；这既取消已等待的候选，也阻止停止之后才到达的 success 终态重新注册候选。只有用户之后主动提交新消息或点击某条“使用”才解除门禁。失败、取消和停止不继续出队，并按 durable timeline 结算当前 dispatch：已存在稳定 prompt id 的项目已经发送，必须删除；只有尚未写入用户 timeline 的未接受项才恢复到队列原位置。
 - 自动候选先进入常量化 600 ms 用户优先窗口。窗口内真实用户提交会递增 queue revision，使低优先级自动 claim 失效，用户消息先进入已有 attempt 级 ACP prompt lock；该用户 turn 成功后再继续队列。仲裁位于后端，前端不使用 `setTimeout` 猜顺序。

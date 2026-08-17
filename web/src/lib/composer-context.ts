@@ -52,6 +52,10 @@ export function createUserPromptSubmission(
   return { displayText, quotes: promptQuotes };
 }
 
+export function hasUserPromptPayload(content: string, attachmentCount: number) {
+  return content.trim().length > 0 || attachmentCount > 0;
+}
+
 export function serializeUserPromptSubmission(input: ConversationPromptInput) {
   const displayText = input.displayText.trim();
   if (input.quotes.length === 0) return displayText;

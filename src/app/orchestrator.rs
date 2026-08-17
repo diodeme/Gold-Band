@@ -522,7 +522,9 @@ fn apply_continue_input_to_prompt_state(
     state.model_override = model_override;
     state.permission_mode_override = permission_mode_override;
 
-    if let Some(mut input) = input.filter(|value| !value.display_text.trim().is_empty()) {
+    if let Some(mut input) = input.filter(|value| {
+        !value.display_text.trim().is_empty() || !state.input_attachment_paths.is_empty()
+    }) {
         input.display_text = input.display_text.trim().to_string();
         state.resume_prompt = Some(localized_runtime_control_resume_with_message_prompt(
             language,
@@ -12613,6 +12615,44 @@ mod tests {
     }
 
     #[test]
+    fn runtime_continue_with_attachment_only_keeps_a_visible_empty_user_message() {
+        let state = runtime_control_resume_prompt_state(
+            DesktopLanguage::ZhCn,
+            serde_json::json!({ "acpSessionId": "session-1" }),
+            None,
+            Some(ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+            }),
+            Some("prompt-attachment-only".to_string()),
+            vec!["C:/temp/context.txt".to_string()],
+            None,
+            None,
+        );
+
+        assert_eq!(
+            state
+                .prompt_display
+                .as_ref()
+                .map(|value| value.display_text.as_str()),
+            Some("")
+        );
+        assert_eq!(state.input_attachment_paths, vec!["C:/temp/context.txt"]);
+        assert_eq!(
+            state.user_prompt_render_mode,
+            UserPromptRenderMode::UserMessage
+        );
+        assert_eq!(state.resume_prompt_visibility, PromptVisibility::Visible);
+        assert!(
+            state
+                .resume_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("<hidden")
+        );
+    }
+
+    #[test]
     fn fixed_runtime_continue_starting_lease_is_idempotent() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -13326,6 +13366,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 Some(RuntimeAttemptLocator {
@@ -13597,6 +13638,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13724,6 +13766,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13835,6 +13878,7 @@ mod tests {
             pause_reason: Some(PauseReason::WaitingForUserInput),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::AwaitingManualCheck,
                 Some(RuntimeAttemptLocator {
@@ -13980,6 +14024,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 Some(RuntimeAttemptLocator {

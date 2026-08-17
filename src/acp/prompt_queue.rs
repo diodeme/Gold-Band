@@ -113,7 +113,7 @@ pub fn enqueue_prompt(
     attachment_paths: Vec<String>,
 ) -> Result<QueuedPrompt, PromptQueueError> {
     let input = input.into();
-    if input.display_text.trim().is_empty() {
+    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
         return Err(PromptQueueError::Empty);
     }
     with_typed_queue_lock(attempt_dir, || {
@@ -626,6 +626,28 @@ mod tests {
         assert_eq!(
             enqueue_prompt(&dir, "overflow".to_string(), Vec::new()),
             Err(PromptQueueError::Full)
+        );
+    }
+
+    #[test]
+    fn queue_accepts_attachment_only_payloads_and_rejects_a_fully_empty_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+            },
+            vec!["C:/temp/context.txt".to_string()],
+        )
+        .unwrap();
+
+        assert!(queued.content.is_empty());
+        assert_eq!(queued.attachment_paths, vec!["C:/temp/context.txt"]);
+        assert_eq!(
+            enqueue_prompt(&dir, String::new(), Vec::new()),
+            Err(PromptQueueError::Empty)
         );
     }
 

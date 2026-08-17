@@ -2521,10 +2521,29 @@ impl App {
     pub fn create_task_from_requirement_with_bindings(
         &self,
         input: CreateTaskInput,
+        workflow: WorkflowDsl,
+        model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.create_task_from_payload_with_bindings(input, workflow, model_bindings, true)
+    }
+
+    pub fn create_conversation_task_from_payload_with_bindings(
+        &self,
+        input: CreateTaskInput,
+        workflow: WorkflowDsl,
+        model_bindings: WorkflowModelBindings,
+    ) -> Result<TaskSummary> {
+        self.create_task_from_payload_with_bindings(input, workflow, model_bindings, false)
+    }
+
+    fn create_task_from_payload_with_bindings(
+        &self,
+        input: CreateTaskInput,
         mut workflow: WorkflowDsl,
         mut model_bindings: WorkflowModelBindings,
+        require_text: bool,
     ) -> Result<TaskSummary> {
-        if input.requirement_content.trim().is_empty() {
+        if require_text && input.requirement_content.trim().is_empty() {
             bail!("requirement content cannot be empty");
         }
         migrate_authoring_workflow(&mut workflow, &mut model_bindings, None)?;

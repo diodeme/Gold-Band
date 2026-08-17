@@ -81,34 +81,40 @@ pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) 
     format!("{quote_blocks}\n\n{display_text}")
 }
 
-/// Content block types for ACP session/prompt requests.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// Attachment content awaiting projection into an ACP session/prompt content block.
+///
+/// The live ACP connection capabilities decide whether this becomes visual/embedded
+/// content or the protocol-baseline resource link at the outbound request boundary.
+#[derive(Debug, Clone)]
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpImageBlock {
     pub data: String,
     pub mime_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+    pub link: AcpResourceLinkBlock,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpResourceBlock {
     pub resource: AcpTextResourceContents,
+    pub link: AcpResourceLinkBlock,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpTextResourceContents {
     pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpResourceLinkBlock {
+    pub name: String,
     pub uri: String,
+    pub mime_type: String,
+    pub size: u64,
 }
 
 /// Resolved attachment ready to be sent to ACP.
@@ -706,8 +712,9 @@ pub enum PromptVisibility {
 }
 
 /// Resolve file paths into ResolvedAttachment structs.
-/// For images: base64-encode and produce an AcpContentBlock::Image.
-/// For text files: read as UTF-8 and produce an AcpContentBlock::Resource.
+/// For images: base64-encode and retain both visual content and resource-link metadata.
+/// For text files: read as UTF-8 and retain both embedded content and resource-link metadata.
+/// The current ACP connection capabilities choose the final protocol shape when prompting.
 /// Other files are skipped.
 pub fn resolve_attachments(
     paths: &[String],
@@ -728,17 +735,23 @@ pub fn resolve_attachments(
             .expect("attachment metadata is only created for a supported format");
         let data = std::fs::read(std_path)?;
         let uri = format!("file://{}", path_str.replace('\\', "/"));
+        let link = AcpResourceLinkBlock {
+            name: meta.name.clone(),
+            uri,
+            mime_type: meta.mime_type.clone(),
+            size: meta.size,
+        };
         let block = match format.content_kind {
             AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
                 data: base64_encode(&data),
                 mime_type: format.mime_type.to_string(),
-                uri: Some(uri),
+                link,
             }),
             AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
                 resource: AcpTextResourceContents {
                     text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
-                    uri,
                 },
+                link,
             }),
         };
         resolved.push(ResolvedAttachment { meta, block });

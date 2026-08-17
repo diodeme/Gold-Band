@@ -960,7 +960,7 @@ export function ACPChatDialog(
     clearAttachments,
     resolveAttachmentPaths,
     dropZoneHandlers,
-    extractPasteFiles,
+    handlePaste,
   } = useAttachmentPicker({
     attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
   });
@@ -1475,6 +1475,7 @@ export function ACPChatDialog(
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     acpStatus: effective?.status,
     prompt,
+    hasAttachments: pendingAttachments.length > 0,
     waitingForPermission,
     sending,
     awaitingResponse: activeAwaitingResponse,
@@ -2885,11 +2886,16 @@ export function ACPChatDialog(
       return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
+    const optimisticAttachments = optimisticAttachmentPreviews(
+      draftSnapshot?.attachments ?? [],
+      attPaths,
+    );
     const optimisticEvent = optimisticUserEvent(
       draftContent,
       undefined,
       submittedQuotes,
       latestCanonicalTimelinePosition(loadedEventsRef.current),
+      optimisticAttachments,
     );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
@@ -3865,7 +3871,7 @@ export function ACPChatDialog(
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
                 onDrop={dropZoneHandlers.onDrop}
-                onPaste={extractPasteFiles}
+                onPaste={handlePaste}
                 fileInputRef={fileInputRef}
                 onFilesChange={handleFilesFromInput}
                 onPickFiles={pickFiles}
@@ -5511,7 +5517,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [event.content?.length, event.endedSeq, event.id, event.kind, event.seq, isUser, streamingDraft, streamingMarkdownItemKey]);
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
-  const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
+  const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
     ? runtimeControlMessageParts(event)
@@ -5519,7 +5525,11 @@ const MessageBubble = memo(function MessageBubble({
   const messageText = runtimeControlParts.display
     ? runtimeControlParts.visibleText
     : (event.content ?? "");
-  const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
+  const showMessageBubble = streamingDraft || messageText.trim().length > 0;
+  const attachmentOnly = isUser
+    && hasAttachments
+    && userQuotes.length === 0
+    && !showMessageBubble;
   const quotableAgentMessage = !isUser && !streamingDraft && !failed && messageText.trim().length > 0;
   const openHiddenPromptSection = useCallback((request: HiddenPromptSectionOpenRequest) => {
     if (!branchLocator || !workspace?.scopeKey || event.optimistic) return;
@@ -5602,7 +5612,14 @@ const MessageBubble = memo(function MessageBubble({
           />
         ) : null}
         {hasAttachments ? (
-          <div className={cn("flex max-w-full flex-col gap-2 px-1", isUser && "items-end")}>
+          <div
+            data-acp-attachment-only={attachmentOnly ? "true" : undefined}
+            className={cn(
+              "flex max-w-full flex-col gap-2 px-1",
+              isUser && "items-end",
+              attachmentOnly && "pt-0.5",
+            )}
+          >
             {attachmentGroups.images.length > 0 ? (
               <div
                 data-acp-attachment-row="images"
@@ -8366,6 +8383,7 @@ export function optimisticUserEvent(
   promptId = createAcpPromptId(),
   quotes: import('@/types').UserPromptQuote[] = [],
   afterSeq: number | null = null,
+  attachments: MessageAttachmentPreview[] = [],
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -8381,8 +8399,26 @@ export function optimisticUserEvent(
       promptId,
       optimisticAfterSeq: afterSeq,
       ...(quotes.length > 0 ? { quotes } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     },
   };
+}
+
+export function optimisticAttachmentPreviews(
+  attachments: readonly AttachmentItem[],
+  paths: readonly string[],
+): MessageAttachmentPreview[] {
+  return attachments.flatMap((attachment, index) => {
+    const path = paths[index];
+    return path
+      ? [{
+          name: attachment.name,
+          path,
+          type: attachment.mime,
+          size: attachment.size,
+        }]
+      : [];
+  });
 }
 
 function optimisticPromptAfterSeq(event: AcpUiEventVm) {

@@ -1588,16 +1588,21 @@ pub async fn stat_attachment_files(
 
 #[tauri::command]
 pub fn materialize_conversation_attachments(
-    state: State<'_, DesktopState>,
+    _state: State<'_, DesktopState>,
     input: MaterializeConversationAttachmentsInput,
 ) -> CommandResult<Vec<AttachmentFileVm>> {
-    let app = state.app().map_err(command_error)?;
-    let root = app
-        .paths
-        .user_gold_band_dir()
-        .join("temp")
-        .join("conversation-attachments")
-        .join(Uuid::new_v4().to_string());
+    let root = Utf8PathBuf::from_path_buf(
+        std::env::temp_dir()
+            .join("gold-band")
+            .join("conversation-attachments")
+            .join(Uuid::new_v4().to_string()),
+    )
+    .map_err(|path| {
+        CommandErrorVm::new(
+            "conversation.attachment-materialize-failed",
+            serde_json::json!({ "path": path.display().to_string() }),
+        )
+    })?;
     materialize_attachment_files_to_dir(&root, &input.files)
 }
 
@@ -2424,6 +2429,7 @@ mod tests {
         let user_inputs = root.join("user-inputs");
         std::fs::create_dir_all(user_inputs.as_std_path()).unwrap();
         std::fs::write(user_inputs.join("image.png").as_std_path(), [1_u8, 2, 3]).unwrap();
+        std::fs::write(user_inputs.join("notes.txt").as_std_path(), "runtime notes").unwrap();
 
         let content = message_attachment_content_from_attempt_dir(
             &root,
@@ -2436,6 +2442,16 @@ mod tests {
         assert_eq!(content.title, "image.png");
         assert!(content.content.starts_with("data:image/png;base64,"));
         assert_eq!(content.content, "data:image/png;base64,AQID");
+
+        let text_content = message_attachment_content_from_attempt_dir(
+            &root,
+            "notes.txt",
+            "user-inputs/notes.txt",
+        )
+        .unwrap();
+        assert_eq!(text_content.kind, "message-attachment");
+        assert_eq!(text_content.title, "notes.txt");
+        assert_eq!(text_content.content, "runtime notes");
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 

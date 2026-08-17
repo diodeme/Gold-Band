@@ -208,6 +208,7 @@ export type RightWorkspaceResourceCloseResolver = (
 
 export type RightWorkspaceAction =
   | { type: 'open'; resource: RightWorkspaceResource }
+  | { type: 'synchronize'; resource: RightWorkspaceResource }
   | { type: 'activate'; key: string }
   | { type: 'close'; key: string };
 
@@ -403,6 +404,14 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
         activeTabKey: resource.key,
       };
     }
+    case 'synchronize': {
+      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      if (existing < 0) return state;
+      return {
+        ...state,
+        tabs: state.tabs.map((tab, index) => index === existing ? action.resource : tab),
+      };
+    }
     case 'activate':
       return state.tabs.some((tab) => tab.key === action.key)
         ? { ...state, activeTabKey: action.key }
@@ -508,7 +517,10 @@ export function RightWorkspaceProvider({
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
     const current = effectiveStore.peek(currentScope);
-    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return null;
+    if (
+      (action.type === 'open' || action.type === 'synchronize')
+      && action.resource.scopeKey !== currentScope.key
+    ) return null;
     const next = rightWorkspaceReducer(current, action);
     if (next === current) return null;
     effectiveStore.save(currentScope, next);
@@ -570,7 +582,13 @@ export function RightWorkspaceProvider({
   }, [effectiveStore]);
   const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
     setConversationDirectoryEntryState(entry);
-  }, []);
+    if (!entry) return;
+    const resource: ConversationDirectoryWorkspaceResource = {
+      ...entry,
+      key: conversationDirectoryWorkspaceResourceKey(entry.locator),
+    };
+    if (commit({ type: 'synchronize', resource })) render();
+  }, [commit]);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
@@ -685,7 +703,11 @@ export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessi
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
+  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId].join(':');
+}
+
+export function conversationDirectoryWorkspaceDataKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
+  return [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {

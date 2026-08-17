@@ -19,6 +19,7 @@ import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext'
 import { RightWorkspaceDock } from './RightWorkspaceDock';
 import {
   ConversationWorkspaceStore,
+  conversationDirectoryWorkspaceDataKey,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   RightWorkspaceProvider,
@@ -160,7 +161,7 @@ function FileWorkspaceIntegration({
   )), [layout, workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('conversation-directory', (resource: RightWorkspaceResource) => (
     resource.kind === 'conversation-directory'
-      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationDirectoryWorkspacePanel resource={resource} layout={layout} /></Suspense>
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationDirectoryWorkspacePanel key={conversationDirectoryWorkspaceDataKey(resource.locator)} resource={resource} layout={layout} /></Suspense>
       : null
   )), [layout, workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('file-diff', (resource: RightWorkspaceResource) => (

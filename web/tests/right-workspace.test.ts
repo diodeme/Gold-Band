@@ -5,6 +5,7 @@ import {
   agentTranscriptResourceKey,
   CONVERSATION_WORKSPACE_LRU_LIMIT,
   ConversationWorkspaceStore,
+  conversationDirectoryWorkspaceResourceKey,
   conversationRunWorkspaceResourceKey,
   createHiddenPromptSectionWorkspaceResource,
   createConversationWorkspaceScope,
@@ -91,6 +92,48 @@ describe('right workspace resource model', () => {
         partIndex: 2,
       },
     });
+  });
+
+  it('keeps one run-directory tab bound to the selected attempt without activating unrelated resources', () => {
+    const scopeKey = 'conversation:project-1:task-1:run-1';
+    const locator = {
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+    };
+    const firstDirectory: RightWorkspaceResource = {
+      kind: 'conversation-directory',
+      key: conversationDirectoryWorkspaceResourceKey(locator),
+      scopeKey,
+      title: 'Run directory',
+      attention: false,
+      locator,
+    };
+    const workspace: RightWorkspaceResource = {
+      kind: 'file-browser',
+      key: fileBrowserWorkspaceResourceKey('project-1'),
+      scopeKey,
+      projectId: 'project-1',
+      title: 'Workspace',
+      attention: false,
+    };
+    const nextDirectory: RightWorkspaceResource = {
+      ...firstDirectory,
+      locator: { ...locator, nodeId: 'node-2', attemptId: 'attempt-2' },
+    };
+
+    expect(conversationDirectoryWorkspaceResourceKey(nextDirectory.locator)).toBe(firstDirectory.key);
+    let state = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource: firstDirectory });
+    state = rightWorkspaceReducer(state, { type: 'open', resource: workspace });
+    state = rightWorkspaceReducer(state, { type: 'synchronize', resource: nextDirectory });
+
+    expect(state.tabs).toHaveLength(2);
+    expect(state.activeTabKey).toBe(workspace.key);
+    expect(state.tabs.find((tab) => tab.kind === 'conversation-directory')).toEqual(nextDirectory);
+    expect(state.tabs.find((tab) => tab.kind === 'file-browser')).toBe(workspace);
   });
 
   it('opens, activates, and deduplicates resources by stable key', () => {

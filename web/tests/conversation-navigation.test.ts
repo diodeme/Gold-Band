@@ -168,15 +168,27 @@ describe('conversation navigation presentation transaction', () => {
 });
 
 describe('conversation sidebar navigation wiring', () => {
-  it('routes task and run selections through the cache-aware conversation navigation entry', () => {
+  it('routes run exits plus task and run selections through the cache-aware conversation navigation entry', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
-    const taskSelection = source.match(/onConversationSelectTask=\{[\s\S]*?onConversationSelectRun=/)?.[0] ?? '';
     const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
+    const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
+    const taskSelection = source.match(/onConversationSelectTask=\{[\s\S]*?onConversationSelectRun=/)?.[0] ?? '';
     const runSelection = source.match(/onConversationSelectRun=\{[\s\S]*?onConversationPauseRun=/)?.[0] ?? '';
+    const searchSelection = source.match(/<ConversationSearchDialog[\s\S]*?\/>/)?.[0] ?? '';
+    const interventionNavigation = source.match(/const handleInterventionNavigate[\s\S]*?useInterventionNotifications/)?.[0] ?? '';
 
-    expect(taskSelection).toContain('onSelectConversation({');
+    expect(quickChatSelection).toContain("onSelectConversation({ kind: 'conversation-home' })");
     expect(quickChatSelection).toContain('resolveConversationHomeWorkspaceId(');
+    expect(workspaceQuickChatSelection).toContain("onSelectConversation({ kind: 'conversation-home' })");
+    expect(taskSelection).toContain('onSelectConversation({');
     expect(runSelection).toContain('onSelectConversation({');
+    expect(searchSelection).toContain('onSelectConversation(page)');
+    expect(interventionNavigation).toContain('onSelectConversation(page)');
+    expect(interventionNavigation).toContain('onSelectConversation(runPage)');
+    expect(quickChatSelection).not.toContain('setConversationPage(');
+    expect(workspaceQuickChatSelection).not.toContain('setConversationPage(');
+    expect(searchSelection).not.toContain('setConversationPage(');
+    expect(interventionNavigation).not.toContain('setConversationPage(');
     expect(taskSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
     expect(runSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
   });

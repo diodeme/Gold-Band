@@ -3,6 +3,7 @@ import {
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
+  resolveConversationRunReentrySelection,
   shouldEnableConversationAutoFollow,
   shouldQueueConversationRunRefreshForAcpUpdate,
 } from '@/lib/conversation-session-follow';
@@ -20,6 +21,63 @@ function runPageResetCount(runIds: string[]) {
 }
 
 describe('conversation session follow helpers', () => {
+  const availableSessionKeys = new Set([
+    'round-001/history/attempt-001',
+    'round-001/latest/attempt-002',
+  ]);
+
+  it('restores a remembered manual attempt instead of the latest attempt on reentry', () => {
+    expect(resolveConversationRunReentrySelection({
+      followMode: 'manual',
+      rememberedSelectedSessionKey: 'round-001/history/attempt-001',
+      defaultSelectedSessionKey: 'round-001/latest/attempt-002',
+      hasSessionKey: (key) => availableSessionKeys.has(key),
+    })).toEqual({
+      followMode: 'manual',
+      selectedSessionKey: 'round-001/history/attempt-001',
+      preserveSelectedSession: true,
+    });
+  });
+
+  it('lets an explicit attempt deep link override remembered navigation state', () => {
+    expect(resolveConversationRunReentrySelection({
+      followMode: 'auto',
+      rememberedSelectedSessionKey: 'round-001/latest/attempt-002',
+      explicitSelectedSessionKey: 'round-001/history/attempt-001',
+      defaultSelectedSessionKey: 'round-001/latest/attempt-002',
+      hasSessionKey: (key) => availableSessionKeys.has(key),
+    })).toEqual({
+      followMode: 'manual',
+      selectedSessionKey: 'round-001/history/attempt-001',
+      preserveSelectedSession: true,
+    });
+  });
+
+  it('falls back deterministically without re-enabling auto-follow when a remembered attempt is unavailable', () => {
+    expect(resolveConversationRunReentrySelection({
+      followMode: 'manual',
+      rememberedSelectedSessionKey: 'round-001/missing/attempt-001',
+      defaultSelectedSessionKey: 'round-001/latest/attempt-002',
+      hasSessionKey: (key) => availableSessionKeys.has(key),
+    })).toEqual({
+      followMode: 'manual',
+      selectedSessionKey: 'round-001/latest/attempt-002',
+      preserveSelectedSession: true,
+    });
+  });
+
+  it('uses the latest backend selection when auto-follow reenters without a user selection change', () => {
+    expect(resolveConversationRunReentrySelection({
+      followMode: 'auto',
+      defaultSelectedSessionKey: 'round-001/latest/attempt-002',
+      hasSessionKey: (key) => availableSessionKeys.has(key),
+    })).toEqual({
+      followMode: 'auto',
+      selectedSessionKey: 'round-001/latest/attempt-002',
+      preserveSelectedSession: false,
+    });
+  });
+
   it('selects the incoming session when there is no current selection', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: null,

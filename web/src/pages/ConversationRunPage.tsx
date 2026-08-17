@@ -20,7 +20,10 @@ import { conversationRunWorkspaceResourceKey, useRightWorkspace, type Conversati
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
-import { isRuntimeControlledConversationLifecycle } from '@/lib/conversation-session-follow';
+import {
+  isRuntimeControlledConversationLifecycle,
+  type ConversationSessionFollowMode,
+} from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
 import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
 
@@ -78,6 +81,7 @@ interface ConversationRunPageProps {
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
+  followMode: ConversationSessionFollowMode;
   onTitleChange?: (title: string) => void;
 }
 
@@ -91,6 +95,7 @@ export function ConversationRunPage({
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
+  followMode,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
@@ -120,9 +125,8 @@ export function ConversationRunPage({
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
   const isAtBottomRef = useRef(true);
-  const manualAutoFollowDisabledRef = useRef(false);
+  const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
-  const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
@@ -130,14 +134,9 @@ export function ConversationRunPage({
   );
 
   useEffect(() => {
-    onAutoFollowChangeRef.current = onAutoFollowChange;
-  }, [onAutoFollowChange]);
-
-  useEffect(() => {
-    manualAutoFollowDisabledRef.current = false;
+    manualAutoFollowDisabledRef.current = followMode === 'manual';
     pendingAutoFollowRestoreSessionKeyRef.current = null;
-    onAutoFollowChangeRef.current?.(true);
-  }, [run.runId]);
+  }, [followMode, run.projectId, run.runId, run.taskId]);
 
   // Close session switcher on outside click
   useEffect(() => {

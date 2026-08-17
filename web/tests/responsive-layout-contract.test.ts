@@ -63,7 +63,8 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('h-8');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('items-center');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('rounded-t-2xl');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('[--conversation-workspace-info-surface:light-dark(var(--gold-surface-high),var(--gb-conversation-background))]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).not.toContain('var(--gb-conversation-background)');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:-left-4');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:absolute');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName).toContain('before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
@@ -93,7 +94,9 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName');
     expect(composerSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName).toContain('@container/conversation-composer');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('grid gap-1.5');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).not.toContain('border-t');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).not.toContain('pt-');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('grid-cols-1');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).toContain('@xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName).not.toContain('@sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto]');
@@ -107,7 +110,7 @@ describe('responsive desktop layout contracts', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@lg/conversation-composer:grid-cols-');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).toContain('@2xl/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName).not.toContain('@2xl/conversation-composer:flex');
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('w-full max-w-none');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toBe('h-8 px-2.5 w-full max-w-none');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('w-fit');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('justify-self-end');
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName).toContain('@sm/conversation-composer:col-start-2');
@@ -120,12 +123,15 @@ describe('responsive desktop layout contracts', () => {
     expect(composerSource).not.toContain('basis-[22rem]');
   });
 
-  it('keeps the session composer command bar compact without shrinking the responsive home toolbar', () => {
+  it('uses the session composer control baseline in the responsive home toolbar', () => {
     expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('mt-1');
     expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('px-1 py-1');
     expect(ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName).toContain('h-8');
     expect(acpChatSource.match(/triggerClassName=\{ACP_SESSION_COMPOSER_LAYOUT\.configTriggerClassName\}/gu)).toHaveLength(2);
-    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('mt-3');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName).toContain('mt-2');
+    expect(CONVERSATION_HOME_COMPOSER_LAYOUT.configTriggerClassName).toContain(ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName);
+    expect(composerSource).toContain('className="size-7 rounded-full"');
+    expect(composerSource).not.toContain('className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25');
   });
 
   it('stacks run-mode and Agent controls before their composer container is wide enough', () => {

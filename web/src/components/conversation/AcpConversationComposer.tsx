@@ -226,7 +226,6 @@ export function AcpConversationComposer({
             <PromptInputTextarea
               ref={textareaRef}
               className="min-h-12 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
-              userResizable
               valuePrefix={committedSlashCommand?.prefix}
               leadingAdornment={committedSlashCommand ? (
                 <SlashCommandInputTag

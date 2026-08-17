@@ -1221,3 +1221,17 @@ attempt-001/
 - 实现：继续复用现有 shadcn `SelectTrigger`、`Button` 与主题 token；两个专用上下文触发器的 surface 只由共享交互 class 管理，工作位置按钮不再叠加通用 `button-ghost` 主题 recipe。静态态统一透明，hover / focus / menu open 统一使用 `accent / accent-foreground`，并显式把两者收敛为 28px 高、相同圆角和水平内边距。工作位置菜单复用工作空间已有的指针/键盘关闭分流：指针关闭阻止 Radix 回灌焦点并 blur，键盘关闭保留 focus restoration。定时任务胶囊变体、工作位置校验和偏好作用域不变。
 - 回归要求：现有 jsdom 组件接口测试固定两个触发器静态透明、交互态 accent、Select size variant 与 Button 高度/内边距，并固定指针关闭工作位置菜单后触发器不重新获得焦点；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下用 computed style 检查静态、hover、菜单展开/外部关闭、浅色/深色和窄宽度表现。
 - 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。
+
+## 2026-08-17：快速对话工作空间信息栏明暗层级一致
+
+- 根因与实现：工作空间信息栏原先在浅色主题使用 `surface-high`，深色主题却使用与页面相同的 `conversation-background`，导致深色下主体、顶部圆角和两侧连接肩一起融入背景。信息栏现统一消费主题的 `surface-high` 语义材质，主体与连接肩继续共享一个 CSS 变量，不增加 `dark:` 特判或硬编码颜色。
+- 回归要求：组件与布局契约固定信息栏不再消费 `conversation-background`，并在浅色、深色主题中检查主体、圆角和两侧连接肩均可辨；工作空间/工作位置控件的透明静态态及 hover、focus、menu open 交互态保持不变。
+- 性能与过度设计评审：仅替换一个静态 CSS 变量映射，不新增状态、effect、依赖、I/O、缓存、订阅或渲染分支；主题切换仍只触发样式重算，性能影响可忽略，现有布局常量足以表达该视觉契约。
+
+## 2026-08-18：快速对话与会话详情 Composer 视觉基线归一
+
+- 追溯结果：快速对话顶部工作空间信息栏的深色 surface 消失由 `da174e0`（`feat(conversation): add worktree-backed quick chats`，2026-08-17 15:31:30 +08:00）引入；该提交首次创建信息栏时把深色背景映射到与页面相同的 `conversation-background`。修复继续使用前述统一 `surface-high` 契约。
+- 工具栏归一：保留快速对话 Direct / Workflow / Auto 的容器查询布局和会话详情停止 / 继续 / 队列的业务差异，只共享视觉尺寸基线。快速对话附件入口收敛为 28px，模型、权限和发送保持 32px；正文与底栏之间删除额外分割线并缩小留白，配置触发器与会话详情复用同一静态尺寸常量。
+- 输入高度：删除 prompt-kit 中唯一的 `userResizable` 分支、指针监听和用户最小高度状态；快速对话与会话详情统一为内容自动增长到 320px 上限，之后仅 textarea 内部滚动，不展示浏览器原生 resize 角标。定时任务配置等独立表单 textarea 的手工调整能力不受影响。
+- 回归要求：接口测试固定两类 composer 的配置控件尺寸、快速对话无顶部分割线和 28px 附件入口，并固定会话详情 textarea 为 `resize-none`；autosize 测试继续覆盖未达上限隐藏滚动条、达到上限封顶和内部滚动。浅色、深色及窄宽度页面验证不得出现布局退化。
+- 性能与过度设计评审：删除一次 pointerdown 后的全局 pointerup / pointercancel 监听和局部最小高度状态；正常输入仍保持每次受控值提交一次布局测量，不增加 state、effect、请求、缓存、订阅或渲染分支。两类 composer 的业务结构不同，因此不强行合并组件；只共享已有布局层的尺寸常量，复杂度低于原实现且无新增性能风险。

@@ -133,7 +133,7 @@ describe('AcpConversationComposer', () => {
     expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
   });
 
-  it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {
+  it('places the localized attachment action before config and keeps the textarea autosize-only', async () => {
     await renderComposer({ configBar: <span data-test-config="true">config</span> });
 
     const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
@@ -144,9 +144,10 @@ describe('AcpConversationComposer', () => {
     expect(config).toBeTruthy();
     expect(commandBar?.contains(attachmentButton)).toBe(true);
     expect(attachmentButton?.compareDocumentPosition(config as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(textarea?.className).toContain('resize-y');
+    expect(textarea?.className).toContain('resize-none');
+    expect(textarea?.className).not.toContain('resize-y');
     expect(textarea?.className).toContain('min-h-12');
-    expect(textarea?.style.maxHeight).toBe('320px');
+    expect(textarea?.style.maxHeight).toBe('');
   });
 
   it('does not reserve a standalone keyboard-hint row', async () => {
@@ -154,33 +155,6 @@ describe('AcpConversationComposer', () => {
 
     expect(host.textContent).not.toContain('Enter 发送');
     expect(host.textContent).not.toContain('Shift+Enter');
-  });
-
-  it('keeps a drag-selected height as the local autosize minimum', async () => {
-    await renderComposer();
-
-    const textarea = host.querySelector<HTMLTextAreaElement>('textarea');
-    expect(textarea).toBeTruthy();
-    let height = 48;
-    vi.spyOn(textarea as HTMLTextAreaElement, 'getBoundingClientRect').mockImplementation(() => ({
-      x: 0,
-      y: 0,
-      width: 320,
-      height,
-      top: 0,
-      right: 320,
-      bottom: height,
-      left: 0,
-      toJSON: () => ({}),
-    }));
-
-    await act(async () => {
-      textarea?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      height = 180;
-      window.dispatchEvent(new Event('pointerup'));
-    });
-
-    expect(textarea?.style.height).toBe('180px');
   });
 
   it('renders quotes and attachments inside the prompt input context area', async () => {

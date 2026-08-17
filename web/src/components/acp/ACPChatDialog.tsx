@@ -3929,7 +3929,7 @@ function AcpErrorState({ reason, transparent = false }: { reason: string; transp
 }
 
 function AcpLoadingState({ label, transparent = false }: { label: string; transparent?: boolean }) {
-  return <BrandLoadingState label={label} className={transparent ? "bg-transparent" : undefined} />;
+  return <BrandLoadingState label={label} surface={transparent ? "transparent" : "background"} />;
 }
 
 function AcpInterruptedState({ label, transparent = false }: { label: string; transparent?: boolean }) {
@@ -4884,6 +4884,7 @@ function AcpPendingTimelineState({ label }: { label: string }) {
   return (
     <BrandLoadingState
       label={label}
+      surface="transparent"
       className="min-h-[10rem]"
       logoClassName="w-14"
     />

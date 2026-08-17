@@ -4,12 +4,14 @@ interface BrandLoadingStateProps {
   label: string;
   className?: string;
   logoClassName?: string;
+  surface?: 'background' | 'transparent';
 }
 
 export function BrandLoadingState({
   label,
   className,
   logoClassName,
+  surface = 'background',
 }: BrandLoadingStateProps) {
   return (
     <div
@@ -17,7 +19,8 @@ export function BrandLoadingState({
       aria-live="polite"
       aria-label={label}
       className={cn(
-        'flex h-full min-h-0 w-full items-center justify-center bg-background',
+        'flex h-full min-h-0 w-full items-center justify-center',
+        surface === 'transparent' ? 'bg-transparent' : 'bg-background',
         className,
       )}
       data-brand-loading-state="true"

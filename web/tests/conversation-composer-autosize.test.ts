@@ -22,9 +22,4 @@ describe('conversation composer autosize contract', () => {
     expect(promptInputTextareaSize(480, 320)).toEqual({ height: '320px', overflowY: 'auto' });
   });
 
-  it('keeps a user-resized minimum while still growing with content', () => {
-    expect(promptInputTextareaSize(56, 320, 180)).toEqual({ height: '180px', overflowY: 'hidden' });
-    expect(promptInputTextareaSize(216, 320, 180)).toEqual({ height: '216px', overflowY: 'hidden' });
-    expect(promptInputTextareaSize(480, 320, 180)).toEqual({ height: '320px', overflowY: 'auto' });
-  });
 });

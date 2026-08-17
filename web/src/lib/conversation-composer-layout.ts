@@ -1,3 +1,5 @@
+const COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME = 'h-8 px-2.5';
+
 export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   contentMaxWidthClassName: 'max-w-3xl',
   opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
@@ -5,15 +7,15 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-4',
   attachedInfoRailClassName: 'min-w-0',
-  attachedInfoClassName: "relative mx-12 flex h-8 min-w-0 items-center gap-1 rounded-t-2xl [--conversation-workspace-info-surface:light-dark(var(--gold-surface-high),var(--gb-conversation-background))] bg-[var(--conversation-workspace-info-surface)] px-3 shadow-none before:pointer-events-none before:absolute before:-left-4 before:bottom-0 before:size-4 before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] before:content-[''] after:pointer-events-none after:absolute after:-right-4 after:bottom-0 after:size-4 after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] after:content-['']",
-  toolbarClassName: 'mt-3 grid gap-2 border-t border-border/40 pt-3',
+  attachedInfoClassName: "relative mx-12 flex h-8 min-w-0 items-center gap-1 rounded-t-2xl [--conversation-workspace-info-surface:var(--gold-surface-high)] bg-[var(--conversation-workspace-info-surface)] px-3 shadow-none before:pointer-events-none before:absolute before:-left-4 before:bottom-0 before:size-4 before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] before:content-[''] after:pointer-events-none after:absolute after:-right-4 after:bottom-0 after:size-4 after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] after:content-['']",
+  toolbarClassName: 'mt-2 grid gap-1.5',
   simpleToolbarClassName: 'grid-cols-1 @xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto] @xs/conversation-composer:items-center @xs/conversation-composer:gap-3',
   configuredToolbarClassName: 'grid-cols-1 @2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
   leadingActionsClassName: 'flex min-w-0 items-center gap-2',
   workspaceControlClassName: 'w-fit min-w-0 max-w-full flex-initial',
   simpleTrailingActionsClassName: 'flex min-w-0 justify-end',
   configuredTrailingActionsClassName: 'grid min-w-0 grid-cols-1 gap-2 @sm/conversation-composer:grid-cols-2 @lg/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] @2xl/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
-  configTriggerClassName: 'w-full max-w-none',
+  configTriggerClassName: `${COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME} w-full max-w-none`,
   submitActionsClassName: 'flex w-fit min-w-0 shrink-0 justify-self-end @sm/conversation-composer:col-start-2 @lg/conversation-composer:col-start-3',
   sendButtonClassName: 'h-8 w-auto shrink-0 gap-1.5 rounded-full px-3',
   optionSectionClassName: 'flex flex-col items-stretch gap-2 rounded-xl border border-border/50 bg-card/40 px-4 py-3 @sm/conversation-composer:flex-row @sm/conversation-composer:items-center @sm/conversation-composer:gap-3',
@@ -28,7 +30,7 @@ export const ACP_SESSION_COMPOSER_LAYOUT = {
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
   leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
   trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',
-  configTriggerClassName: 'h-8 px-2.5',
+  configTriggerClassName: COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME,
   staticConfigClassName: 'h-8 px-2.5 py-0',
   actionButtonClassName: 'h-8 gap-1.5 rounded-full px-3',
 } as const;

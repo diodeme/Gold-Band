@@ -92,24 +92,6 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
         </span>
       ) : null}
 
-      {showWorktree ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              className="flex min-w-0 shrink items-center gap-1.5 rounded-sm text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              tabIndex={0}
-              data-acp-worktree="true"
-            >
-              <GitFork className="size-3.5 shrink-0" />
-              <span className="truncate">{t('conversation.runtime.worktree')}</span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
-            {worktreePath}
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
-
       {showContext ? (
         <span className="flex shrink-0 items-center gap-1.5">
           <span className="text-muted-foreground/80">{t('acp.usagePanel.contextWindow')}</span>
@@ -153,6 +135,24 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
             </TooltipContent>
           </Tooltip>
         </span>
+      ) : null}
+
+      {showWorktree ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="ml-auto flex min-w-0 shrink items-center gap-1 rounded-sm text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              tabIndex={0}
+              data-acp-worktree="true"
+            >
+              <GitFork className="size-3.5 shrink-0" />
+              <span className="truncate">{t('conversation.runtime.worktree')}</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={6} className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+            {worktreePath}
+          </TooltipContent>
+        </Tooltip>
       ) : null}
     </div>
   );

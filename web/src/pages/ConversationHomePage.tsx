@@ -57,7 +57,7 @@ export function ConversationHomePage({
       CONVERSATION_HOME_COMPOSER_LAYOUT.opticalBottomPaddingClassName,
     )}>
       <div className={cn('w-full space-y-5', CONVERSATION_HOME_COMPOSER_LAYOUT.contentMaxWidthClassName)}>
-        <div className="text-center space-y-1.5">
+        <div className="space-y-1.5 text-center">
           <ConversationGreeting />
         </div>
         <ConversationComposer

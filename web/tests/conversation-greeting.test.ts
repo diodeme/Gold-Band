@@ -65,6 +65,11 @@ describe('conversation greeting rendering contract', () => {
 
   it('isolates time state from the composer and refreshes only at boundaries or resume events', () => {
     expect(homeSource).toContain('<ConversationGreeting />');
+    expect(homeSource).toContain('items-center justify-center');
+    expect(homeSource).toContain('CONVERSATION_HOME_COMPOSER_LAYOUT.opticalBottomPaddingClassName');
+    expect(homeSource).not.toContain('data-conversation-home-composer-dock="true"');
+    expect(greetingSource).toContain('text-3xl');
+    expect(greetingSource).not.toContain('text-2xl');
     expect(greetingSource).toContain('tracking-tight text-title');
     expect(greetingSource).not.toContain('text-foreground/80');
     expect(greetingSource).not.toContain('ConversationHelloMark');

@@ -1,5 +1,13 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-18：ACP 结构化终态优先收敛
+
+- 根因：ACP `session/prompt` 的 JSON-RPC response、session update 和普通 Agent 文本属于不同语义通道；旧实现只按 `end_turn` 和文本候选结算，并在 artifact 输出策略替换时丢失了 terminal failure 观察，导致 Codex 已通过 `willRetry=false` 或 `threadStatus=systemError` 宣告失败后，Runtime 仍可能进入 finalize / repair。问题是 ACP 控制面终态没有进入统一生命周期分类，不是某条 429 文本或某个节点的特例。
+- 数据与接口：在单次 `AcpRuntime` prompt 生命周期内维护 transient `AcpPromptTerminalState`，只观察 adapter 已声明的结构化 Codex terminal metadata；`session/prompt` JSON-RPC error 直接转换为结构化 `provider.acp-prompt-failed`。用户停止仍拥有最高终态优先级；否则 terminal failure 优先于 `end_turn`、文本和 artifact，并在 provider 边界统一清除 retry policy、固定为 `RecoveryMode::Manual`。
+- 生命周期：RuntimeControlled 业务 turn 收到结构化 terminal failure 后不写 `finalizing` checkpoint、不进入 finalize；failure 出现在 finalize / repair 时保留已有 checkpoint，但当前 drive 不再继续 repair。普通 worker、AI-DYNAMIC leaf 和 acceptance 最终都收敛为可显式继续的 `Paused + RuntimeAbnormal`。只有尚未形成 provider terminal verdict 的 transport interruption、临时本地资源等 `Auto` 错误保留最多三次自动重试；artifact/schema 非法继续使用独立的最多三次 repair，耗尽后同样进入可继续的 `RuntimeAbnormal`。
+- 现场验收：task-038 的 `dev-test` 为 `end_turn → threadStatus=systemError → 无 ID 429 普通文本`，立即以通用 `provider.acp-error` 暂停，未 finalize、repair 或 auto retry；`accept` 的 prompt 直接返回携带 `usageLimitExceeded` 的 JSON-RPC error，立即以精确 `provider.acp-prompt-failed` 暂停。两者控制状态一致；横幅详情差异来自前者结构化 metadata 只有通用 systemError、后者 RPC error 携带精确原因，Runtime 不从普通文本猜错误分类。用户普通对话、显式继续和用户停止的既有优先级保持不变。
+- 验收与评审：接口回归固定 terminal failure 覆盖 `end_turn`、晚到 quiet-drain terminal 可见、prompt RPC error 为 Manual 且无 retry policy、mixed terminal 不产生 `runtime_auto_retry`，并复核“最终无稳定 ID”、repair 三次耗尽、RuntimeAbnormal 可继续及停止后退出 retry wait 的既有契约；ACP client 97 项、provider 29 项、`worker_bootstrap` 20 项和 2 项 lifecycle 定向测试全部通过。复用现有 `AcpPromptFailure`、`RuntimeErrorInfo`、provider classifier 和 pause state，不新增持久字段、依赖、队列、扫描或第二套状态机；每个 session update 仅做常数级 metadata 字段读取，锁范围、I/O、消息窗口和渲染范围均不变，无需专项 benchmark。
+
 ## 2026-08-17：会话侧栏工作空间分组间距收紧
 
 - 根因：工作空间列表结构、sticky 标题和展开生命周期设计正确，但每个分组外层仍统一使用 16px 底部间距，折叠工作空间较多时产生了超过分组层级所需的连续空白。这是共享排版 token 偏松，不是单个工作空间或截图尺寸的特例。

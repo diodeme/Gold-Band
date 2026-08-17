@@ -25,6 +25,7 @@
     "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",
     "test:macos-signing": "node --test scripts/configure-macos-signing.test.mjs",
     "test:macos-installer": "node --test scripts/install-gold-band-macos.test.mjs",
+    "test:readme-i18n": "node --test scripts/readme-i18n-links.test.mjs",
     "test:release-checksums": "node --test scripts/generate-release-checksums.test.mjs",
     "web:build": "npm run themes:build && tsc -p web/tsconfig.build.json && vite build --config web/vite.config.ts",
     "web:preview": "vite preview --config web/vite.config.ts",

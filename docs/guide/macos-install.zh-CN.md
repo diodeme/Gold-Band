@@ -1,5 +1,11 @@
 # macOS 安装与排错指南
 
+<!-- DOCS-I18N:START -->
+
+[English](./macos-install.md) | **中文**
+
+<!-- DOCS-I18N:END -->
+
 Gold Band 的 macOS Release 在尚未配置 Apple Developer Program 凭证时，由 Tauri bundler 完成 ad-hoc 签名，但没有 Developer ID 签名和 Apple 公证。因此，从网络下载后首次打开可能被 Gatekeeper 拦截。本页提供 macOS 原生手动流程，以及只面向带 `.sha256` 校验文件的新 Release 的安装脚本。
 
 > 发布流水线使用的 Tauri updater private key / `.sig` 只服务应用内更新完整性校验，与 Gatekeeper 的 Developer ID 和 Apple 公证不是同一套信任体系。
@@ -24,8 +30,8 @@ Gold Band 的 macOS Release 在尚未配置 Apple Developer Program 凭证时，
 `scripts/install-gold-band-macos.sh` 不依赖 Python、jq、Homebrew 或 Xcode Command Line Tools，只使用 macOS 自带的 `curl`、`plutil`、`shasum`、`hdiutil`、`codesign`、`ditto` 和 `xattr`。
 
 ```bash
-bash scripts/install-gold-band-macos.sh              # 安装 latest Release 和当前 Mac 的原生架构
-bash scripts/install-gold-band-macos.sh --yes        # 已安装时直接替换
+bash scripts/install-gold-band-macos.sh
+bash scripts/install-gold-band-macos.sh --yes
 GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh
 GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.13.0_aarch64.dmg
 ```
@@ -40,7 +46,7 @@ GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.1
 6. 在 `/Applications` 同一文件系统内暂存并再次校验，替换旧 App；切换失败时恢复旧版本。
 7. 所有校验通过后，只对暂存 App 移除 `com.apple.quarantine`，随后可直接从 Finder 打开。
 
-脚本只支持合入 checksum 发布流程后、同时包含 `.sha256` sidecar 的新 Release；包括 v0.12.4 在内的历史 Release 不做兼容，请使用上面的手动安装流程。
+脚本只支持 checksum 发布流程接入后、同时包含 `.sha256` sidecar 的新 Release。历史 Release 不包含该资产，如需安装请使用上面的手动流程。
 
 ## 4. 校验边界
 

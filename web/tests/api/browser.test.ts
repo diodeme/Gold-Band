@@ -2,6 +2,33 @@ import { describe, expect, it } from 'vitest';
 import { browserApi } from '../../src/api/browser';
 
 describe('browserApi', () => {
+  it('keeps queued authoring payload out of lifecycle summaries and restores one item on demand', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-053');
+    const item = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0]?.lifecycle?.promptQueue?.items[0];
+    expect(item).toMatchObject({
+      id: 'browser-queued-1',
+      attachmentCount: 1,
+      quoteCount: 0,
+    });
+    expect(item).not.toHaveProperty('attachmentPaths');
+    expect(item).not.toHaveProperty('quotes');
+
+    const restored = await browserApi.restoreConversationQueuedPrompt(
+      'default',
+      'mock-task',
+      'run-053',
+      'round-001',
+      'dev',
+      'attempt-001',
+      'browser-queued-1',
+    );
+    expect(restored.draft).toEqual({
+      content: '完成当前修改后，补充对应的回归测试。',
+      quotes: [],
+      attachmentPaths: ['C:/browser/mock.png'],
+    });
+  });
+
   it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
     const session = await browserApi.getAcpSession(
       'default',

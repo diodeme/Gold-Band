@@ -357,8 +357,12 @@ export function submitConversationPrompt(projectId: string | null | undefined, t
   return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
-export function updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId);
+export function reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId);
+}
+
+export function restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -699,6 +703,10 @@ export function openFileWithSystemApp(path: string) {
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function statAttachmentFiles(paths: string[]) {
+  return getRuntimeApi().statAttachmentFiles(paths);
 }
 
 export function materializeConversationAttachments(files: Parameters<ReturnType<typeof getRuntimeApi>['materializeConversationAttachments']>[0]) {

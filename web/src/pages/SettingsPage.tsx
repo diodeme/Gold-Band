@@ -15,6 +15,7 @@ import {
   resolveAppearance,
   normalizeFontFamilies,
   moveFontFamily,
+  themeFontStackDisplayName,
   toggleFontFamily,
   themePackageSummaries,
   type DesktopFontOption,
@@ -46,10 +47,10 @@ type TypographySection = 'ui' | 'editor';
 
 const typographyDisclosureSessionKey = 'gold-band:settings:typography-disclosure:v1';
 
-function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection, locale?: string) {
+function effectiveTypographySize(appearance: AppearancePreference, personalization: PersonalizationPreference, kind: TypographySection) {
   const preference = personalization.typography[kind].fontSize;
   if (preference.source === 'custom') return preference.px;
-  return resolveAppearance(appearance, locale).typography[kind].size;
+  return resolveAppearance(appearance).typography[kind].size;
 }
 
 function withTypographySize(
@@ -111,8 +112,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const [appearance, setAppearance] = useState(preferences.appearance);
   const [personalization, setPersonalization] = useState(preferences.personalization);
   const [language, setLanguage] = useState(preferences.language);
-  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language));
-  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language));
+  const [uiFontSize, setUiFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui'));
+  const [editorFontSize, setEditorFontSize] = useState(() => effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor'));
   const useLocalClaude = false;
   const [verboseLogging, setVerboseLogging] = useState(preferences.verboseLogging);
   const [systemFonts, setSystemFonts] = useState<string[]>([]);
@@ -125,8 +126,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   useEffect(() => setAppearance(preferences.appearance), [preferences.appearance]);
   useEffect(() => setPersonalization(preferences.personalization), [preferences.personalization]);
   useEffect(() => setLanguage(preferences.language), [preferences.language]);
-  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
-  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor', preferences.language)), [preferences.appearance, preferences.language, preferences.personalization]);
+  useEffect(() => setUiFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'ui')), [preferences.appearance, preferences.personalization]);
+  useEffect(() => setEditorFontSize(effectiveTypographySize(preferences.appearance, preferences.personalization, 'editor')), [preferences.appearance, preferences.personalization]);
   useEffect(() => setVerboseLogging(preferences.verboseLogging), [preferences.verboseLogging]);
   useEffect(() => setUpdaterOverrideUrl(updaterSettings.overrideUrl ?? ''), [updaterSettings.overrideUrl]);
 
@@ -188,7 +189,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const saveAppearance = (next: AppearancePreference) => {
     setAppearance(next);
-    applyAppearance(next, language);
+    applyAppearance(next);
     applyPersonalization(personalization);
     onSave(next, personalization, language, useLocalClaude, verboseLogging);
   };
@@ -200,8 +201,6 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
 
   const chooseLanguage = (value: DesktopLanguage) => {
     setLanguage(value);
-    applyAppearance(appearance, value);
-    applyPersonalization(personalization);
     onSave(appearance, personalization, value, useLocalClaude, verboseLogging);
   };
 
@@ -215,8 +214,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const chooseTypographySize = (kind: 'ui' | 'editor', value: number) => {
     const next = withTypographySize(personalization, kind, { source: 'custom', px: value });
     setPersonalization(next);
-    setUiFontSize(effectiveTypographySize(appearance, next, 'ui', language));
-    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor', language));
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
     onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
@@ -229,8 +228,8 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
   const resetTypographySize = (kind: 'ui' | 'editor') => {
     const next = withTypographySize(personalization, kind, { source: 'theme' });
     setPersonalization(next);
-    setUiFontSize(effectiveTypographySize(appearance, next, 'ui', language));
-    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor', language));
+    setUiFontSize(effectiveTypographySize(appearance, next, 'ui'));
+    setEditorFontSize(effectiveTypographySize(appearance, next, 'editor'));
     applyPersonalization(next);
     onSave(appearance, next, language, useLocalClaude, verboseLogging);
   };
@@ -263,12 +262,22 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
     });
   };
 
-  const effectiveAppearance = resolveAppearance(appearance, language);
+  const effectiveAppearance = resolveAppearance(appearance);
   const themeWallpapersByColorScheme = useMemo(() => ({
-    light: resolveAppearance({ ...appearance, colorScheme: 'light' }, language).wallpapers.settings,
-    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }, language).wallpapers.settings,
-  }), [appearance, language]);
+    light: resolveAppearance({ ...appearance, colorScheme: 'light' }).wallpapers.settings,
+    dark: resolveAppearance({ ...appearance, colorScheme: 'dark' }).wallpapers.settings,
+  }), [appearance]);
   const currentTheme = getThemePackage(appearance.themeId);
+  const defaultUiFontDisplayName = themeFontStackDisplayName(
+    effectiveAppearance.themeId,
+    effectiveAppearance.scheme.typography.uiStackId,
+    language,
+  );
+  const defaultEditorFontDisplayName = themeFontStackDisplayName(
+    effectiveAppearance.themeId,
+    effectiveAppearance.scheme.typography.editorStackId,
+    language,
+  );
   const currentThemeSummary = themePackageSummaries.find(({ id }) => id === effectiveAppearance.themeId)
     ?? themePackageSummaries[0];
   const defaultFontOption = desktopFontOptions[0];
@@ -401,7 +410,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultFontOption}
-                    defaultDisplayName={effectiveAppearance.typography.ui.displayName}
+                    defaultDisplayName={defaultUiFontDisplayName}
                     installedFontOptions={installedFontOptions}
                     selectedFonts={selectedUiFonts}
                     sample="Gold-Band / 优化 resume 会话 / 0123"
@@ -426,7 +435,7 @@ export function SettingsPage({ preferences, appInfo, updaterSettings, metricsSet
                   />
                   <FontPreferenceSetting
                     defaultOption={defaultEditorFontOption}
-                    defaultDisplayName={effectiveAppearance.typography.editor.displayName}
+                    defaultDisplayName={defaultEditorFontDisplayName}
                     installedFontOptions={installedFontOptions}
                     selectedFonts={selectedEditorFonts}
                     sample={'const workflow = "AI";'}

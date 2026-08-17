@@ -102,6 +102,7 @@
 ### 5.2 行为
 - 字体区分为“界面 UI”和“编辑器”两个 shadcn Collapsible 展开栏；展开状态写入 `sessionStorage`，只在当前应用会话内记忆，不进入用户配置文件。
 - 字体与字号统一保存在 `PersonalizationPreference.typography`。界面 UI / 编辑器字体分别使用 `fontStack: { source: theme } | { source: custom, families: string[] }`，字号分别使用 `source: theme | custom`；不得通过空字符串或值恰好等于 14/12 推断继承。
+- 主题包是默认字体栈的唯一来源，用户 `custom` 有序栈是唯一覆盖来源。界面语言只改变 i18n 文案、文档语言语义和字体栈 `displayName` 的本地化展示，不得选择、删除、重排或重新写入 font family；中英文混排统一交给浏览器按固定栈逐字形 fallback。
 - 主题字体的作者 `family` 可以带包命名空间和 `Variable/VF` 标记，但必须保留字体文件元数据中的 canonical family；Theme SDK 在产物发布前完成一致性校验，产品展示名继续由字体栈的本地化 `displayName` 提供。构建器为运行时 package 派生浏览器专用 `runtimeFamily`，主题作者不得填写，用户偏好也不持久化该字段。主题字体只能从 content-hash 资产图注册，应用入口不得额外全局导入同一字体。
 - 生成 CSS 中跨主题的 `@font-face` 必须通过 `runtimeFamily + weightMin/weightMax + style + coverage` 形成不会竞争的匹配身份，不能让同一匹配键指向多个主题 URL。Variable Font 必须以资产元数据范围内的连续区间注册，不能把同一 variable 文件重复伪装成 400/500/600/700 静态 face。主题切换和自定义字体栈只把已保存的作者 family 投影为当前主题 runtime family，不改写用户数据；浏览器只允许请求当前主题实际命中的字体资源。
 - 点击未选字体会追加到栈末尾；点击已选字体或删除按钮会取消；已选项显示从 1 开始的优先级，并可通过上移/下移调整。清空最后一项后必须写回 `source: theme`，不保存空的 custom 栈。
@@ -175,17 +176,18 @@
 - 设置页先选择设计风格主题包，再选择明暗模式；`system` 只解析当前主题包内的 light/dark。当前两个内置主题均不声明视觉质量能力，因此不显示质量档控件。
 - 主题运行时只更新根 `data-theme / data-color-scheme / data-visual-quality / data-material-model`、封闭 CSS variables 与原生窗口安全底色，不请求会话、不重建 timeline 或编辑器。
 - 共享 shadcn/ui、prompt-kit 与应用壳以稳定 `data-theme-role` 消费材质 recipe；主题卡在宽内容区三列，窄窗口自动单列。
-- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”必须显示当前 locale/script 解析后的主题字体名称。
+- Theme Contract v2 将 shape、elevation、motion、scrollbar、完整组件状态 recipe、字体资源、语义图标槽和四类壁纸 surface 纳入同一封闭契约。设置页提供用户壁纸覆盖入口，但不改变主题包声明；“默认字体”显示当前主题 stack 的本地化 `displayName`，语言不参与 family 解析。
 - Theme Contract v2 的 motion 分离装饰表面与位移动效：`color` 只过渡颜色，`surface` 可追加 elevation，只有可按压控件的 `press` 可以过渡 transform。Dropdown、Select、Popover、Dialog、Sheet 等定位型浮层由组件库拥有定位与开合 transform，主题只声明其颜色、材质、几何和阴影。
 - 当组件库浮层内部还拥有 fixed 子浮层时，定位节点与主题材质层必须隔离：定位、Portal、焦点与裁剪继续由组件库拥有，backdrop filter 仅作用于无交互视觉层，不能改变子浮层的 containing block。
 - Dialog、Sheet、AlertDialog 统一 Portal 到 `body` 下与 `#root` 同级的专用 overlay host；host 保持 `overflow: visible` 且不建立 transform/filter/contain containing block。Dropdown Menu 与 Context Menu 的 Content/SubContent 只保留 Radix 定位、焦点和 dismiss 语义，开合 transform、透明度、材质及内容裁剪下沉到内部视觉层，避免 WebView2 定位与动画矩阵竞争。
 - 主题资源只允许包内 WOFF/WOFF2、PNG、WebP，经 Theme SDK 校验路径、签名、尺寸、授权与 hash 后进入同源 `theme-assets`。MiSans 简体常用字子集只声明 `zh-CN/Hans` 覆盖，繁中、日文和韩文继续使用系统字体 fallback。
-- 语言切换只重新解析当前主题的字体 stack 并更新根变量，不持久化派生值；主题切换只更新根属性、CSS variables 与资源 locator，不触发业务数据刷新。
+- 语言切换只更新 i18n 文案、文档语言语义与字体栈名称展示，不重新解析或写入字体变量；主题切换才更新主题字体 stack、根属性、CSS variables 与资源 locator，用户自定义字体栈继续作为覆盖，不触发业务数据刷新。
 - 设置内容区标记稳定 `settings` wallpaper surface，会话主页与会话运行页标记稳定 `conversation` surface。当前主题未声明、质量档关闭或资源加载失败时，仅回退对应语义底色，不影响主题其余能力；用户壁纸存在时统一覆盖主题图片。
-- 2026-08-16 Theme Engine v2 开发实现完成：两个内置主题已破坏式迁移到 Contract v2，全局硬编码 MiSans TTF 路径删除，设置页默认字体名称改由 `ResolvedTypography` 提供；主题构建、Web 生产构建和 Rust workspace compile check 通过。单元/接口、浏览器与 EXE 交互验收按开发节点边界交由后续测试和验收节点执行。
-- 2026-08-16 测试反馈修正：`resolveAppearance` 的默认 locale 解析不再直接依赖 DOM，Node/SSR 环境按 document language、navigator language、`en` 依次回退；DOM projector 在 wallpaper 查询、图片预加载和主题图标事件分发前检查对应浏览器 capability。完整浏览器行为不变，最小接口环境不需要伪造无关 DOM API。
+- 2026-08-16 Theme Engine v2 开发实现完成：两个内置主题已破坏式迁移到 Contract v2，全局硬编码 MiSans TTF 路径删除，设置页默认字体名称由主题 stack 的本地化 `displayName` 提供；主题构建、Web 生产构建和 Rust workspace compile check 通过。单元/接口、浏览器与 EXE 交互验收按开发节点边界交由后续测试和验收节点执行。
+- 2026-08-16 测试反馈修正：system scheme 在缺少 matchMedia 时使用 light 安全值；DOM projector 在 wallpaper 查询、图片预加载和主题图标事件分发前检查对应浏览器 capability。完整浏览器行为不变，最小接口环境不需要伪造无关 DOM API。
 - 2026-08-16 第二轮测试：设置页两个内置主题、light/dark/system、640px 窄窗、恢复正常宽度和动态字体名称通过浏览器验收，主题核心行覆盖率达到 98.18%。当前仍不得标记 Theme Engine v2 完成：全局 Inter CSS import 绕过主题资源图，且旧主题 wallpaper 的迟到加载失败会清空新主题投影；SDK 另缺少字体 family 元数据一致性校验和生成资源目录的陈旧文件清理。
 - 2026-08-16 第四轮及 round-002 复核：第二、三轮发现的 Inter 旁路、wallpaper 迟到回调、字体 family 元数据、陈旧资源和跨主题 font-face identity 问题均已在现有契约与生命周期根部闭环。当前 Theme Engine v2 业务实现完成；Theme SDK、TypeScript、Vite 生产构建与 Rust workspace compile check 通过，`web/dist/theme-assets` 4 个文件共 5,326,544 bytes，生产产物无 TTF。浏览器长帧/GPU/图片内存、EXE 与安装包总增量因当前环境无法执行，按用户授权放行并明确记为未执行。
+- 2026-08-17 字体栈与界面语言解耦：Theme Contract 破坏式删除 `byLocale / byScript`，两个内置主题固定声明 `Inter Variable → Gold Band MiSans → 系统 fallback`。`resolveAppearance / applyAppearance` 不再接收语言，语言切换不再触发外观或个性化字体投影；设置页仅独立本地化 stack `displayName`。回归测试固定中英文界面共享同一 family 顺序，并拒绝主题包重新声明语言分支。
 - 2026-08-14 基础主题包补全：Theme SDK 已生成可提交的 `runtime-theme.json`、`builtin-theme.css`、`asset-manifest.json`、Web Catalog 与 Rust Catalog；后端保存偏好从 Catalog 能力声明判断主题存在性和质量档，不再硬编码主题 ID。当前开发节点完成 Style Dictionary 构建、TypeScript/Vite 生产构建和 Rust desktop compile check；单元/接口与浏览器交互仍由后续测试、验收节点执行。
 - 2026-08-14 测试节点复验：Theme SDK 构建正例及缺失 token、alias 循环、非法 recipe、质量档越界负例通过；Web、Rust Catalog、旧外观迁移、偏好持久化与个性化迁移定向用例覆盖当前主题契约。
 - 2026-08-14 覆盖率工具链收敛：与 Vitest 同版本的 V8 coverage provider 作为固定开发依赖随 lockfile 安装，并提供统一 `web:test:coverage` 入口；后续测试节点不再临时修改依赖树，覆盖率结果仍必须以该节点实际执行为准。

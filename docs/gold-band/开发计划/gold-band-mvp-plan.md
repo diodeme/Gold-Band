@@ -22,6 +22,13 @@
 - 验收：DOM 单元测试固定父级 `flex-1` 只作用于布局槽位，展示态 trigger 与编辑态输入框均不继承伸展宽度且保留最大宽度约束；执行定向 Vitest、TypeScript 与 Web 生产构建，并使用内置浏览器 deep link 检查短标题、标题后空白命中、长标题与窄窗口编辑态。
 - 性能与过度设计评审：没有新增 React state、effect、DOM 测量、ResizeObserver、缓存、I/O、依赖或逐帧计算；每次输入仍只更新标题组件自身，宽度由浏览器既有布局阶段计算。现有 canonical title、保存接口和事件链足以表达需求，不新增状态模型或抽象。
 
+## 2026-08-17：字体栈与界面语言解耦
+
+- 根因：Theme Contract 同时保存固定 `defaultFaces` 和 `byLocale / byScript` 分支，外观 resolver 又把界面语言作为字体 family 的投影输入；切到英文后 MiSans 被从全局栈删除，仍存在的中文任务名、文件名和消息便回退到系统字体。问题来自主题字体权威模型错误，不是侧栏字号、字重或局部样式不一致。
+- 数据与实现：破坏式删除 Theme SDK、Web Zod、Rust serde 与主题包中的 `byLocale / byScript`，主题 `defaultFaces` 成为唯一默认有序栈；两个内置主题固定为 `Inter Variable → Gold Band MiSans → 系统 CJK fallback → sans-serif`。`resolveAppearance / applyAppearance` 删除语言参数，App 与 Settings 的语言事件不再重新应用外观或个性化字体；设置页通过独立 helper 读取 stack 的本地化 `displayName`。用户 `custom` 栈继续是唯一覆盖来源，浏览器原生 glyph fallback 继续负责混排。
+- 验收：Theme SDK 拒绝重新声明语言分支并固定生成 CSS 的 Inter/MiSans 顺序；Vitest 固定主题 resolver 的完整 UI 栈及 UI/editor 隔离，Rust Catalog 固定两个内置主题的 `defaultFaces`；执行主题构建、定向单元测试、TypeScript、Web 生产构建和 Rust 定向测试，并在内置浏览器 deep link 中比较中英文切换前后的根变量与侧栏中文标题 computed `font-family`。
+- 性能与过度设计评审：删除两类条件分支、locale 解析和语言变化触发的根变量重写，不新增状态、Context、依赖、缓存、队列、扫描或逐字符 JavaScript。MiSans 仍由浏览器在内容实际需要中文 glyph 时命中；已有固定有序栈和用户覆盖模型足以表达不变量，无需新增字体状态机或兼容层。
+
 ## 2026-08-15：会话侧边栏固定区与滚动区收敛
 
 - 根因：侧栏把置顶区放在 workspace `ScrollArea` 之外，导致置顶会话增长时持续挤占 workspace 可视高度；同时“置顶”仍消费辅助 `text-xs`，与已经统一为 UI 基准字号的功能入口不一致。问题来自滚动容器边界和排版 token 未同步完成，不是单个截图尺寸下的间距问题。

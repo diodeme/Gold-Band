@@ -673,21 +673,21 @@ export function App() {
     [availableUpdateVersion, updateBadges.announcementClosedVersion],
   );
   useEffect(() => {
-    applyAppearance(preferences.appearance, preferences.language);
-  }, [preferences.appearance, preferences.language]);
+    applyAppearance(preferences.appearance);
+  }, [preferences.appearance]);
 
   useEffect(() => {
     if (preferences.appearance.colorScheme !== 'system') return undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
-    const syncSystemTheme = () => applyAppearance(preferences.appearance, preferences.language);
+    const syncSystemTheme = () => applyAppearance(preferences.appearance);
     colorScheme.addEventListener('change', syncSystemTheme);
     return () => colorScheme.removeEventListener('change', syncSystemTheme);
-  }, [preferences.appearance, preferences.language]);
+  }, [preferences.appearance]);
 
   useEffect(() => {
     applyPersonalization(preferences.personalization);
     applyWallpaperPersonalization(preferences.personalization.wallpaper, preferences.wallpapers);
-  }, [preferences.appearance, preferences.language, preferences.personalization, preferences.wallpapers]);
+  }, [preferences.appearance, preferences.personalization, preferences.wallpapers]);
 
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
@@ -700,7 +700,7 @@ export function App() {
     const revealWindow = async () => {
       const appWindow = getCurrentWindow();
       if (!windowRevealedRef.current) {
-        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance, preferences.language));
+        await syncDesktopWindowSurface(resolveAppearance(preferences.appearance));
       }
       await syncDesktopWindowMinimum(
         appWindow,

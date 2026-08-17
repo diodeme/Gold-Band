@@ -13,6 +13,7 @@ import {
   normalizeAppearancePreference,
   resolveAppearance,
   resolveColorScheme,
+  themeFontStackDisplayName,
   themePackageSummaries,
 } from '../src/theme';
 
@@ -253,7 +254,7 @@ describe('appearance resolver', () => {
     expect(normalized.visualQualityByTheme).toEqual({});
   });
 
-  it('uses a safe light and locale fallback without browser globals', () => {
+  it('uses a safe light fallback without browser globals', () => {
     vi.stubGlobal('window', undefined);
     vi.stubGlobal('document', undefined);
     vi.stubGlobal('navigator', undefined);
@@ -263,16 +264,18 @@ describe('appearance resolver', () => {
     expect(effective.typography.ui.families[0]).toBe('Inter Variable');
   });
 
-  it('resolves locale and script-specific UI fonts without leaking into the editor domain', () => {
-    const simplifiedChinese = resolveAppearance(preference(), 'zh-CN');
-    const english = resolveAppearance(preference(), 'en-US');
-    const malformed = resolveAppearance(preference(), 'not_a_locale');
+  it('resolves one theme-owned UI font stack independently from interface language', () => {
+    const effective = resolveAppearance(preference());
 
-    expect(simplifiedChinese.typography.ui.families).toContain('Gold Band MiSans');
-    expect(english.typography.ui.families).not.toContain('Gold Band MiSans');
-    expect(simplifiedChinese.typography.editor.families).not.toContain('Gold Band MiSans');
-    expect(simplifiedChinese.typography.ui.displayName).toBe('Inter Variable · MiSans');
-    expect(malformed.typography.ui.families).toEqual(english.typography.ui.families);
+    expect(effective.typography.ui.families.slice(0, 2)).toEqual([
+      'Inter Variable',
+      'Gold Band MiSans',
+    ]);
+    expect(effective.typography.editor.families).not.toContain('Gold Band MiSans');
+    expect(themeFontStackDisplayName(effective.themeId, effective.scheme.typography.uiStackId, 'zh-cn'))
+      .toBe('Inter Variable · MiSans');
+    expect(themeFontStackDisplayName(effective.themeId, effective.scheme.typography.uiStackId, 'en'))
+      .toBe('Inter Variable · MiSans');
   });
 
   it('normalizes malformed preferences to the canonical default', () => {

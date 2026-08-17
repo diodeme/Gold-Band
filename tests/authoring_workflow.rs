@@ -438,6 +438,34 @@ fn built_in_workflow_templates_include_lightweight_topology_and_are_idempotent()
 }
 
 #[test]
+fn built_in_workflow_entry_nodes_require_manual_check() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for (template_id, node_id) in [("default", "interview"), ("default-lightweight", "grill")] {
+        let template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap();
+        let node = template
+            .workflow
+            .nodes
+            .iter()
+            .find(|node| node.id() == node_id)
+            .unwrap();
+        let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+            panic!("{template_id}/{node_id} should be a worker node");
+        };
+        assert_eq!(worker.manual_check, Some(true));
+        assert!(worker.output.is_none());
+        assert!(worker.success_condition.is_none());
+    }
+}
+
+#[test]
 fn optional_entry_preference_trims_only_built_in_optional_entry() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();

@@ -851,12 +851,12 @@ export function ConversationComposer({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
+                className="size-7 rounded-full"
                 onClick={() => { void pickFiles(); }}
                 disabled={busy || submittingAttachments}
                 aria-label={t('acp.attachHint')}
               >
-                <Paperclip className="size-4" />
+                <Paperclip className="size-3.5" />
               </Button>
               {scheduledMode ? (
                 <ConversationWorkspaceControl

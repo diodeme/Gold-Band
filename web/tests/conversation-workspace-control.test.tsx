@@ -237,7 +237,8 @@ describe('quick conversation workspace control', () => {
     expect(infoBar!.className).toContain('h-8');
     expect(infoBar!.className).toContain('items-center');
     expect(infoBar!.className).toContain('rounded-t-2xl');
-    expect(infoBar!.className).toContain('[--conversation-workspace-info-surface:light-dark(var(--gold-surface-high),var(--gb-conversation-background))]');
+    expect(infoBar!.className).toContain('[--conversation-workspace-info-surface:var(--gold-surface-high)]');
+    expect(infoBar!.className).not.toContain('var(--gb-conversation-background)');
     expect(infoBar!.className).toContain('before:-left-4');
     expect(infoBar!.className).toContain('before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)]');
     expect(infoBar!.className).toContain('after:-right-4');

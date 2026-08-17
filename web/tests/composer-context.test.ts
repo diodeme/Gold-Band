@@ -4,6 +4,7 @@ import {
   MAX_COMPOSER_QUOTES,
   addComposerQuote,
   createUserPromptSubmission,
+  hasUserPromptPayload,
   serializeUserPromptSubmission,
   userPromptQuotesFromRaw,
   type ComposerQuote,
@@ -74,5 +75,13 @@ describe('composer quote contract', () => {
       code: 'composer.quote.count-exceeded',
       maxQuotes: MAX_COMPOSER_QUOTES,
     });
+  });
+});
+
+describe('composer payload contract', () => {
+  it('allows text-only and attachment-only payloads while rejecting a completely empty draft', () => {
+    expect(hasUserPromptPayload('hello', 0)).toBe(true);
+    expect(hasUserPromptPayload('', 1)).toBe(true);
+    expect(hasUserPromptPayload('   ', 0)).toBe(false);
   });
 });

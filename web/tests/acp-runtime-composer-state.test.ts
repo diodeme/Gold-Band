@@ -147,6 +147,20 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('allows an attachment-only prompt while keeping a completely empty prompt disabled', () => {
+    const attachmentOnly = deriveAcpRuntimeComposerState(baseInput({
+      prompt: '',
+      hasAttachments: true,
+    }));
+    const empty = deriveAcpRuntimeComposerState(baseInput({
+      prompt: '',
+      hasAttachments: false,
+    }));
+
+    expect(attachmentOnly.canSubmit).toBe(true);
+    expect(empty.canSubmit).toBe(false);
+  });
+
   it('keeps a new-session composer locked while its first timeline item catches up', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       promptQueueEnabled: true,

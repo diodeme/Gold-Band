@@ -42,6 +42,7 @@ export interface AcpRuntimeComposerStateInput {
   runtimeErrorMessage?: string | null;
   acpStatus?: string | null;
   prompt: string;
+  hasAttachments?: boolean;
   waitingForPermission: boolean;
   sending: boolean;
   awaitingResponse: boolean;
@@ -156,7 +157,7 @@ export function deriveAcpRuntimeComposerState(
       ? directInputDisabled
       : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
   );
-  const canSubmit = Boolean(input.prompt.trim())
+  const canSubmit = (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments))
     && submitTarget !== 'none'
     && !queueAtCapacity
     && !(input.sending && submitTarget !== 'queue-prompt')

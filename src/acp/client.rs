@@ -3,6 +3,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex, mpsc::RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use agent_client_protocol_schema::v1::{
+    AgentCapabilities, ContentBlock as ProtocolContentBlock, EmbeddedResource,
+    EmbeddedResourceResource, ImageContent, PromptCapabilities, ResourceLink, TextContent,
+    TextResourceContents,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -350,8 +355,8 @@ use crate::acp::usage::{
 use crate::config::{AcpAdapterConfig, ManagedAgentId, RuntimeConfig};
 use crate::domain::{SessionMode, TurnControlMode, TurnControlTransitionCause, VERSION};
 use crate::provider::{
-    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, PromptBundle, PromptVisibility, SkippedAcpMcpServer,
-    gold_band_hidden_block, prepare_acp_mcp_servers,
+    ACP_MCP_TRANSPORT_UNSUPPORTED_CODE, AcpContentBlock, AcpResourceLinkBlock, PromptBundle,
+    PromptVisibility, SkippedAcpMcpServer, gold_band_hidden_block, prepare_acp_mcp_servers,
 };
 use crate::runtime::{WorkerRefState, validate_worker_ref_state};
 use crate::runtime_error::{
@@ -2300,27 +2305,66 @@ fn session_prompt_params(
     prompt: &PromptBundle,
     restored: bool,
     supports_system_prompt: bool,
+    agent_capabilities: &AgentCapabilities,
 ) -> Value {
-    let mut prompt_blocks: Vec<Value> = Vec::new();
+    let mut prompt_blocks: Vec<ProtocolContentBlock> = Vec::new();
 
-    // Add attachment content blocks first (images, resources)
+    // Project attachment intent through the current live ACP connection capabilities.
     for block in &prompt.content_blocks {
-        prompt_blocks.push(serde_json::to_value(block).unwrap_or_default());
+        prompt_blocks.push(project_prompt_content_block(
+            block,
+            &agent_capabilities.prompt_capabilities,
+        ));
     }
 
-    // Add the text block with user prompt
     let text = session_prompt_text(provider_id, prompt, restored, supports_system_prompt);
     if !text.is_empty() {
-        prompt_blocks.push(json!({
-            "type": "text",
-            "text": text,
-        }));
+        prompt_blocks.push(ProtocolContentBlock::Text(TextContent::new(text)));
     }
 
     json!({
         "sessionId": session_id,
         "prompt": prompt_blocks,
     })
+}
+
+fn parse_agent_capabilities(value: &Value) -> AgentCapabilities {
+    serde_json::from_value(value.clone()).unwrap_or_default()
+}
+
+fn project_prompt_content_block(
+    block: &AcpContentBlock,
+    prompt_capabilities: &PromptCapabilities,
+) -> ProtocolContentBlock {
+    match block {
+        AcpContentBlock::Image(image) if prompt_capabilities.image => {
+            ProtocolContentBlock::Image(
+                ImageContent::new(image.data.clone(), image.mime_type.clone())
+                    .uri(image.link.uri.clone()),
+            )
+        }
+        AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
+            ProtocolContentBlock::Resource(EmbeddedResource::new(
+                EmbeddedResourceResource::TextResourceContents(
+                    TextResourceContents::new(
+                        resource.resource.text.clone(),
+                        resource.link.uri.clone(),
+                    )
+                    .mime_type(resource.link.mime_type.clone()),
+                ),
+            ))
+        }
+        AcpContentBlock::Image(image) => resource_link_content_block(&image.link),
+        AcpContentBlock::Resource(resource) => resource_link_content_block(&resource.link),
+    }
+}
+
+fn resource_link_content_block(link: &AcpResourceLinkBlock) -> ProtocolContentBlock {
+    ProtocolContentBlock::ResourceLink(
+        ResourceLink::new(link.name.clone(), link.uri.clone())
+            .mime_type(link.mime_type.clone())
+            .size(i64::try_from(link.size).ok()),
+    )
 }
 
 fn session_prompt_text(
@@ -4012,6 +4056,11 @@ impl<'a> AcpRuntime<'a> {
             }),
         );
         let _prompt_guard = self.connection.begin_prompt(session_id)?;
+        let agent_capabilities = self
+            .connection
+            .initialized_capabilities()
+            .ok_or_else(|| anyhow!("ACP prompt requires initialized connection capabilities"))?;
+        let agent_capabilities = parse_agent_capabilities(&agent_capabilities);
         let request = self.connection.begin_request(
             "session/prompt",
             session_prompt_params(
@@ -4020,6 +4069,7 @@ impl<'a> AcpRuntime<'a> {
                 prompt,
                 restored,
                 self.runtime_policy.supports_system_prompt,
+                &agent_capabilities,
             ),
         )?;
         self.append_outbound_frame(&request.frame)?;
@@ -6348,11 +6398,11 @@ mod tests {
         drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
         drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
         is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
-        merge_tool_revision, next_prompt_retry_attempt, permission_decision_timeline_event,
-        plan_attached_session_reuse, plan_session_restore, prompt_activity,
-        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
-        register_provider_control, request_prompt_cancel, resolve_permission_mode,
-        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        merge_tool_revision, next_prompt_retry_attempt, parse_agent_capabilities,
+        permission_decision_timeline_event, plan_attached_session_reuse, plan_session_restore,
+        prompt_activity, prompt_cancellation_outcome, prompt_usage_transaction_id,
+        provider_thread_is_active, register_provider_control, request_prompt_cancel,
+        resolve_permission_mode, resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
@@ -8306,6 +8356,148 @@ mod tests {
     }
 
     #[test]
+    fn session_prompt_projects_supported_attachment_content_from_live_capabilities() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
+        prompt.content_blocks = vec![
+            crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
+                data: "aW1hZ2U=".to_string(),
+                mime_type: "image/png".to_string(),
+                link: crate::provider::AcpResourceLinkBlock {
+                    name: "diagram.png".to_string(),
+                    uri: "file:///tmp/diagram.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    size: 5,
+                },
+            }),
+            crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
+                resource: crate::provider::AcpTextResourceContents {
+                    text: "notes".to_string(),
+                },
+                link: crate::provider::AcpResourceLinkBlock {
+                    name: "notes.txt".to_string(),
+                    uri: "file:///tmp/notes.txt".to_string(),
+                    mime_type: "text/plain".to_string(),
+                    size: 5,
+                },
+            }),
+        ];
+        let capabilities = parse_agent_capabilities(&json!({
+            "promptCapabilities": {
+                "image": true,
+                "embeddedContext": true
+            }
+        }));
+
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            false,
+            true,
+            &capabilities,
+        );
+
+        assert_eq!(
+            params["prompt"][0],
+            json!({
+                "type": "image",
+                "data": "aW1hZ2U=",
+                "mimeType": "image/png",
+                "uri": "file:///tmp/diagram.png"
+            })
+        );
+        assert_eq!(
+            params["prompt"][1],
+            json!({
+                "type": "resource",
+                "resource": {
+                    "text": "notes",
+                    "uri": "file:///tmp/notes.txt",
+                    "mimeType": "text/plain"
+                }
+            })
+        );
+        assert_eq!(params["prompt"][2], json!({"type": "text", "text": "clarify"}));
+    }
+
+    #[test]
+    fn session_prompt_falls_back_to_resource_links_without_optional_capabilities() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-attachments");
+        prompt.content_blocks = vec![
+            crate::provider::AcpContentBlock::Image(crate::provider::AcpImageBlock {
+                data: "aW1hZ2U=".to_string(),
+                mime_type: "image/png".to_string(),
+                link: crate::provider::AcpResourceLinkBlock {
+                    name: "diagram.png".to_string(),
+                    uri: "file:///tmp/diagram.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    size: 5,
+                },
+            }),
+            crate::provider::AcpContentBlock::Resource(crate::provider::AcpResourceBlock {
+                resource: crate::provider::AcpTextResourceContents {
+                    text: "notes".to_string(),
+                },
+                link: crate::provider::AcpResourceLinkBlock {
+                    name: "notes.txt".to_string(),
+                    uri: "file:///tmp/notes.txt".to_string(),
+                    mime_type: "text/plain".to_string(),
+                    size: 5,
+                },
+            }),
+        ];
+
+        let params = session_prompt_params(
+            "claude-acp",
+            "session-123",
+            &prompt,
+            false,
+            true,
+            &agent_client_protocol_schema::v1::AgentCapabilities::default(),
+        );
+
+        assert_eq!(
+            params["prompt"][0],
+            json!({
+                "type": "resource_link",
+                "name": "diagram.png",
+                "uri": "file:///tmp/diagram.png",
+                "mimeType": "image/png",
+                "size": 5
+            })
+        );
+        assert_eq!(
+            params["prompt"][1],
+            json!({
+                "type": "resource_link",
+                "name": "notes.txt",
+                "uri": "file:///tmp/notes.txt",
+                "mimeType": "text/plain",
+                "size": 5
+            })
+        );
+        assert_eq!(params["prompt"][2], json!({"type": "text", "text": "clarify"}));
+    }
+
+    #[test]
+    fn malformed_prompt_capabilities_fall_back_to_protocol_baseline() {
+        let malformed_fields = parse_agent_capabilities(&json!({
+            "promptCapabilities": {
+                "image": "yes",
+                "embeddedContext": []
+            }
+        }));
+        assert!(!malformed_fields.prompt_capabilities.image);
+        assert!(!malformed_fields.prompt_capabilities.embedded_context);
+
+        let malformed_root = parse_agent_capabilities(&json!("invalid"));
+        assert_eq!(
+            malformed_root.prompt_capabilities,
+            agent_client_protocol_schema::v1::PromptCapabilities::default()
+        );
+    }
+
+    #[test]
     fn codex_session_prompt_inlines_system_prompt() {
         let prompt = PromptBundle {
             system_prompt: "node constraints".to_string(),
@@ -8331,7 +8523,14 @@ mod tests {
         assert!(text.contains("node constraints"));
         assert!(text.ends_with("do the task"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt, false, false);
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            false,
+            false,
+            &agent_client_protocol_schema::v1::AgentCapabilities::default(),
+        );
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], text);
     }
@@ -8360,7 +8559,14 @@ mod tests {
         assert!(!text.contains("Gold Band stable system prompt"));
         assert!(!text.contains("node constraints"));
 
-        let params = session_prompt_params("codex-acp", "session-123", &prompt, true, false);
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            true,
+            false,
+            &agent_client_protocol_schema::v1::AgentCapabilities::default(),
+        );
         assert_eq!(params["sessionId"], "session-123");
         assert_eq!(params["prompt"][0]["text"], "follow up");
     }

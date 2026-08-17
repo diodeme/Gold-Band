@@ -2704,7 +2704,7 @@ pub async fn continue_conversation_runtime(
         outer_attempt_id,
     );
     if let Some(input) = input.as_ref() {
-        validate_conversation_prompt_input(input)?;
+        validate_conversation_prompt_input(input, attachment_paths.as_deref())?;
     }
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
@@ -4089,7 +4089,7 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    validate_conversation_prompt_input(&input)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
@@ -4200,7 +4200,7 @@ pub async fn send_acp_prompt(
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    validate_conversation_prompt_input(&input)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     send_acp_prompt_with_configured_app(
         app_handle,
         app,
@@ -5824,12 +5824,22 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
     CommandErrorVm::new(code, serde_json::json!({}))
 }
 
-fn validate_conversation_prompt_input(input: &ConversationPromptInput) -> CommandResult<()> {
-    if input.display_text.trim().is_empty() {
+fn validate_conversation_prompt_input(
+    input: &ConversationPromptInput,
+    attachment_paths: Option<&[String]>,
+) -> CommandResult<()> {
+    let attachment_paths = attachment_paths.unwrap_or_default();
+    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
         return Err(CommandErrorVm::new(
             "conversation.prompt-empty",
             serde_json::json!({}),
         ));
+    }
+    if let Some(code) = crate::view_models_conversation::validate_attachment_paths(attachment_paths)
+        .into_iter()
+        .next()
+    {
+        return Err(CommandErrorVm::new(code, serde_json::json!({})));
     }
     if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
         return Err(CommandErrorVm::new(
@@ -7894,12 +7904,12 @@ mod tests {
     #[test]
     fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
         let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
-        assert!(validate_conversation_prompt_input(&valid).is_ok());
+        assert!(validate_conversation_prompt_input(&valid, None).is_ok());
 
         let mut duplicate = valid.clone();
         duplicate.quotes.push(duplicate.quotes[0].clone());
         assert_eq!(
-            validate_conversation_prompt_input(&duplicate)
+            validate_conversation_prompt_input(&duplicate, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-invalid"
@@ -7910,7 +7920,7 @@ mod tests {
             &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
         );
         assert_eq!(
-            validate_conversation_prompt_input(&over_limit)
+            validate_conversation_prompt_input(&over_limit, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-limit-exceeded"
@@ -7924,7 +7934,7 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            validate_conversation_prompt_input(&too_many)
+            validate_conversation_prompt_input(&too_many, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-count-exceeded"
@@ -7939,18 +7949,44 @@ mod tests {
             }],
         };
         assert_eq!(
-            validate_conversation_prompt_input(&too_long_id)
+            validate_conversation_prompt_input(&too_long_id, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-metadata-too-long"
         );
 
         assert!(
-            validate_conversation_prompt_input(&prompt_with_quote(
-                "code-selection:anywhere",
-                "引用不需要在消息时间线中存在",
-            ))
+            validate_conversation_prompt_input(
+                &prompt_with_quote(
+                    "code-selection:anywhere",
+                    "引用不需要在消息时间线中存在",
+                ),
+                None,
+            )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn prompt_payload_validation_accepts_attachment_only_and_rejects_fully_empty_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let attachment = temp.path().join("context.txt");
+        std::fs::write(&attachment, "attachment content").unwrap();
+        let attachment = attachment.to_string_lossy().to_string();
+        let input = ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+        };
+
+        assert_eq!(
+            validate_conversation_prompt_input(&input, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-empty"
+        );
+        assert!(
+            validate_conversation_prompt_input(&input, Some(std::slice::from_ref(&attachment)))
+                .is_ok()
         );
     }
 

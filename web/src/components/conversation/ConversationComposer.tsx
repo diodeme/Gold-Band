@@ -36,6 +36,7 @@ import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-l
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { cn } from '@/lib/utils';
+import { hasUserPromptPayload } from '@/lib/composer-context';
 import {
   createDraftAttachmentWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
@@ -349,7 +350,7 @@ export function ConversationComposer({
     clearAttachments,
     resolveAttachmentPaths,
     dropZoneHandlers,
-    extractPasteFiles,
+    handlePaste,
   } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
 
   const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
@@ -387,7 +388,9 @@ export function ConversationComposer({
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit = content.trim().length > 0 && !busy && !submittingAttachments;
+  const canSubmit = hasUserPromptPayload(content, attachments.length)
+    && !busy
+    && !submittingAttachments;
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
@@ -813,7 +816,7 @@ export function ConversationComposer({
                 className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
                 placeholder={t('conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
-                onPaste={(e) => { void extractPasteFiles(e); }}
+                onPaste={(e) => { void handlePaste(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
                 onDrop={dropZoneHandlers.onDrop}

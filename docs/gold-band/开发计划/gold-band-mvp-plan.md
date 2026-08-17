@@ -1222,6 +1222,22 @@ attempt-001/
 - 回归要求：现有 jsdom 组件接口测试固定两个触发器静态透明、交互态 accent、Select size variant 与 Button 高度/内边距，并固定指针关闭工作位置菜单后触发器不重新获得焦点；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下用 computed style 检查静态、hover、菜单展开/外部关闭、浅色/深色和窄宽度表现。
 - 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。
 
+## 2026-08-17：超长粘贴转临时文本附件与附件独立提交
+
+- 根因与契约：原提交资格只检查正文，附件虽已具备完整选择、物化和 provider content block 链路，却不能独立构成用户输入；首次实现又把“超长粘贴优化”错误扩大成正文总长度规则。修复将会话输入统一定义为 `正文非空 || 附件非空`，并把自动转附件严格限定为单次 paste 事件；完全空 payload 仍在前后端拒绝，不增加占位正文或超长文本专用后端类型。
+- 前端实现：快速对话与 ACP composer 复用附件 hook 的 paste handler。优先沿用既有文件粘贴行为；没有文件且本次 `text/plain` 超过 6,400 字符时，阻止默认插入并生成一个可见的普通 `text/plain;charset=utf-8` 草稿附件。输入框已有正文保持不变，普通键盘输入、程序化草稿恢复和发送阶段不再做长度转换。生成附件继续使用既有数量、总大小、File 物化和草稿恢复机制，未提交时不创建本地文件。
+- 后端与生命周期：附件物化目录迁移到系统 `%TEMP%/gold-band/conversation-attachments/<uuid>/`。初始会话仅在附件存在时允许空 requirement，并通过 conversation 专用 task 创建入口保留通用 task 的正文必填约束；ACP command、Direct 队列和 Runtime Continue 均按完整 payload 校验，附件-only 用户消息继续携带可见消息语义和普通附件 metadata。
+- 回归固化：已补充 Web paste 阈值与两个 composer 接线测试，以及 Rust command、队列、Runtime Continue 和初始 task 创建接口测试，覆盖 6,400 边界、6,401 字符生成附件、普通输入/提交不转换、附件-only 放行与完全空 payload 拒绝。此前本任务的 Web 定向用例 49/49、纯附件消息 DOM 用例 3/3、`cargo test --lib session_prompt_` 5/5 均通过，`cargo check --lib` 通过；按用户要求，本次提交阶段不再执行编译、测试、构建、浏览器或 EXE 验证。
+- 性能与过度设计评审：普通输入不再执行任何长度门禁；仅 paste 事件读取一次剪贴板纯文本并做长度判断，超过阈值后才分配一个文本 File。生成文件继续受既有附件数量、总大小上限和后端路径校验约束。没有新增依赖、持久字段、缓存、轮询、队列、并发机制或额外渲染订阅；复用现有附件 aggregate 与物化接口足以表达生命周期，无需新的状态机或专项 benchmark。
+
+## 2026-08-18：ACP 附件按实时能力投影与纯附件消息展示
+
+- 根因与契约：附件已经具备统一解析与持久化模型，但出站 block 若不消费 live ACP capability，就会把 provider 差异硬编码到 Agent 名称或强制所有 Agent 支持同一种内联内容；同时消息组件把空正文和空消息混为一谈，使合法的附件-only 输入产生空气泡或被过滤。修复继续复用现有附件 aggregate、ACP `initialize` capability 与 timeline 用户事件，不新增 provider 特例或第二套消息模型。
+- 数据与接口：当前物理连接成功 `initialize` 返回的 `agentCapabilities` 是附件投影的唯一事实源。图片能力存在时发送 `image`，可嵌入上下文能力存在时发送 `resource`，对应能力缺失、畸形或为 false 时统一降级为协议基线 `resource_link`，并保留 URI、名称和 MIME metadata；不按 Agent 名称、版本或 Doctor 历史结果猜能力。初始 task 输入与本轮 user input 继续维持既有归属，只在 content block 投影边界选择表现形态。
+- 消息展示：附件-only 的 optimistic 与 canonical 事件携带同一附件 metadata；正文为空时不渲染空用户气泡，但附件行仍完整展示并与头像圆形区域垂直居中。正文与附件并存、图片与文件分行及右侧工作区预览契约保持不变。
+- 回归固化：Rust 接口测试覆盖 capability 完整、缺失、畸形和显式关闭时的 `image / resource / resource_link` 分支及 link metadata 保留；Web 组件测试覆盖 optimistic/canonical 附件-only 消息不出现空正文气泡、附件仍可见且布局对齐。上述用例已包含在此前通过的本任务定向验证中；按用户要求，本次提交阶段不再运行编译或测试。
+- 性能与过度设计评审：每个附件仅在既有线性解析过程中执行常量级 capability 分支，整体保持 O(附件数)；复用连接级 capability cache，不新增请求、扫描、持久字段、缓存、队列、锁或渲染订阅。现有 canonical identity 与生命周期足以表达全部不变量，无需新 aggregate、状态机或专项 benchmark。
+
 ## 2026-08-17：会话附件统一在右侧工作区预览
 
 - 根因与契约：右侧工作区与 `draft-attachment` / `conversation-asset` 资源模型已经成立，但 composer 点击入口按 `image/* + previewUrl` 特判，文本回退旧 Dialog；消息附件则已走工作区，形成同一附件领域的消费路径分裂。本次删除类型分流，快速对话、ACP composer 和消息气泡都只提交工作区资源 locator，不增加第二套预览状态或兼容入口。

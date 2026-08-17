@@ -20,13 +20,14 @@ export interface AttachmentItem {
   contentUrl?: string;
   /** Raw File object for browser-mode content reading. */
   file?: File;
-  source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file';
+  source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file' | 'generated';
 }
 
 // ── Constants ──
 
 export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024; // 50 MB
+export const LONG_PASTE_ATTACHMENT_THRESHOLD_CHARS = 6_400;
 
 // ── Helpers ──
 
@@ -130,6 +131,21 @@ function fileToItem(file: File, source: AttachmentItem['source']): AttachmentIte
     file,
     source,
   };
+}
+
+function createTextAttachmentItem(content: string, name: string): AttachmentItem {
+  return fileToItem(
+    new File([content], name, { type: 'text/plain;charset=utf-8' }),
+    'generated',
+  );
+}
+
+export function createLongPasteAttachmentItem(
+  content: string,
+  thresholdChars = LONG_PASTE_ATTACHMENT_THRESHOLD_CHARS,
+): AttachmentItem | null {
+  if (content.length <= thresholdChars) return null;
+  return createTextAttachmentItem(content, `pasted-text-${generateId()}.txt`);
 }
 
 export async function readAttachmentText(item: AttachmentItem): Promise<string> {
@@ -354,20 +370,30 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   };
 
   // ── Clipboard paste ──
-  const extractPasteFiles = useCallback(
+  const handlePaste = useCallback(
     (e: React.ClipboardEvent): boolean => {
       const items = e.clipboardData?.items;
-      if (!items) return false;
       const files: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].kind === 'file') {
-          const file = items[i].getAsFile();
-          if (file) files.push(file);
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].kind === 'file') {
+            const file = items[i].getAsFile();
+            if (file) files.push(file);
+          }
         }
       }
       if (files.length > 0) {
         e.preventDefault();
         validateAndAdd(filesToItems(files, 'paste'));
+        return true;
+      }
+
+      const longPasteAttachment = createLongPasteAttachmentItem(
+        e.clipboardData?.getData('text/plain') ?? '',
+      );
+      if (longPasteAttachment) {
+        e.preventDefault();
+        validateAndAdd([longPasteAttachment]);
         return true;
       }
       return false;
@@ -501,7 +527,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     resolveAttachmentPaths,
     resolveAttachmentInputs,
     dropZoneHandlers,
-    extractPasteFiles,
+    handlePaste,
     previewImage,
     setPreviewImage,
     textPreview,

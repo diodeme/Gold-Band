@@ -3518,7 +3518,8 @@ pub fn validate_conversation_create_vm(
     }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
-    if input.content.trim().is_empty() {
+    let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
+    if input.content.trim().is_empty() && attachment_paths.is_empty() {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -3895,6 +3896,14 @@ pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<PreparedConversationTask> {
+    anyhow::ensure!(
+        !input.content.trim().is_empty()
+            || input
+                .attachment_paths
+                .as_ref()
+                .is_some_and(|paths| !paths.is_empty()),
+        "conversation payload cannot be empty"
+    );
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -3965,8 +3974,11 @@ pub fn prepare_conversation_task_vm(
         workflow: workflow.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
     };
-    let summary =
-        app.create_task_from_requirement_with_bindings(task_input, workflow, model_bindings)?;
+    let summary = app.create_conversation_task_from_payload_with_bindings(
+        task_input,
+        workflow,
+        model_bindings,
+    )?;
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
@@ -5834,6 +5846,47 @@ mod tests {
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
         assert!(app.paths.task_file(&task_id).exists());
         assert!(!app.paths.runs_dir(&task_id).exists());
+    }
+
+    #[test]
+    fn conversation_task_creation_accepts_an_attachment_only_payload() {
+        let app = App::new(temp_repo_root());
+        let attachment = app.paths.repo_root.join("context.txt");
+        fs::write(attachment.as_std_path(), "attachment content").unwrap();
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: String::new(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: Some(vec![attachment.to_string()]),
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(app.paths.requirement_file(&task_id).as_std_path()).unwrap(),
+            ""
+        );
+        assert!(
+            app.paths
+                .task_dir(&task_id)
+                .join("authoring")
+                .join("inputs")
+                .join("context.txt")
+                .exists()
+        );
     }
 
     #[test]

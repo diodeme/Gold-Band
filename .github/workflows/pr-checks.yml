@@ -37,6 +37,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Test macOS installer contract
+        run: npm run test:macos-installer
+
+      - name: Test release checksums
+        run: npm run test:release-checksums
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:

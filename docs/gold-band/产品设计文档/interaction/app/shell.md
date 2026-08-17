@@ -232,7 +232,8 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-04：会话文件入口统一资源化。用户消息附件、Agent artifact、prompt turn 历史原文与 diff 都打开右侧工作区 Tab；旧 composer 上方资产聚合栏和会话内预览 modal 已删除。右侧 Dock/Sheet 继续共享同一资源状态，新增历史资源一律只读，不改变 live workspace 文件的编辑与自动保存语义。
 - 2026-08-04：Conversation 主页面与 session switch payload 删除仅服务旧聚合栏的 `artifacts/attachments` 数组；Round/节点排障入口及按名读取接口保留。会话首屏只携带 change set summary 指针，文件清单和正文分别在卡片/Tab 打开时懒加载。
 - 2026-08-09：桌面生命周期收归 Rust `DesktopLifecycleCoordinator`。macOS 红色关闭只销毁主窗口，Dock 重开可显示或按配置重建；Windows/Linux 关闭、Cmd+Q、菜单退出和 updater 退出统一执行“前端保存握手 → 后端有界清理 → 单次退出”。ACP、MCP、Agent doctor 与登录 Shell 探测统一由 `command-group` 受管进程组拥有，正常退出不再散落调用 `taskkill`、单进程 `kill()` 或手写 Unix PID kill。
-- 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。下载页、安装器和应用内不增加未公证提示，产物名不增加 unsigned 后缀。
+- 2026-08-09：macOS 发布采用单一可选凭证流水线。基础 bundle 配置使用 ad-hoc identity `-`；无 Apple 凭证时仍由 GitHub macOS runner 生成 arm64/x64 DMG，并对产出的 `.app` 执行 `codesign --verify --deep --strict`。凭证部分配置时立即失败，配置完整时由同一 `tauri-action` 接收证书、Developer ID、Apple ID、app-specific password 与 Team ID 完成签名和公证。产品下载页和应用内不增加未公证分支，产物名不增加 unsigned 后缀。
+- 2026-08-17：Apple Developer Program 凭证未就绪期间，仓库提供外部 macOS 安装脚本；它不是第二套产品 bundle。两条 release workflow 为各平台发布资产生成同名 `.sha256`，脚本只接受有 sidecar 的新 DMG，并依次验证摘要、磁盘映像、固定 bundle identity 与 codesign；在 `/Applications` 同卷暂存并支持旧 App 恢复，校验通过后才移除 quarantine。历史 Release 不增加兼容 fallback。
 
 ---
 

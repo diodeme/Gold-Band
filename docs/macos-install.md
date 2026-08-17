@@ -1,73 +1,63 @@
 # macOS 安装与排错指南
 
-Gold Band 的 macOS 发行包（`.dmg`）目前**未经过 Apple 公证（Notarization）**，也没有使用 Apple Developer ID 进行代码签名。因此 macOS 的 Gatekeeper 会在首次打开时拦截应用。本文说明原因、解决方法，并提供一个一键安装脚本。
+Gold Band 的 macOS Release 在尚未配置 Apple Developer Program 凭证时，由 Tauri bundler 完成 ad-hoc 签名，但没有 Developer ID 签名和 Apple 公证。因此，从网络下载后首次打开可能被 Gatekeeper 拦截。本页提供 macOS 原生手动流程，以及只面向带 `.sha256` 校验文件的新 Release 的安装脚本。
 
-> 仓库中的 `TAURI_SIGNING_PRIVATE_KEY` / `.sig` 仅用于 Tauri 自更新器（对应 `plugins.updater.pubkey`），**与 Gatekeeper 无关**。
+> 发布流水线使用的 Tauri updater private key / `.sig` 只服务应用内更新完整性校验，与 Gatekeeper 的 Developer ID 和 Apple 公证不是同一套信任体系。
 
-## 1. 为什么会被拦截
+## 1. 选择正确的架构
 
-macOS 的 Gatekeeper 在首次打开从网络下载的应用时会检查：
+- Apple Silicon（M 系列）：下载 `aarch64` 版本，例如 `Gold.Band_x.y.z_aarch64.dmg`。
+- Intel Mac：下载 `x64` 版本。
 
-1. 是否用 **Apple Developer ID 证书**做了代码签名；
-2. 是否通过 **Apple 公证**（提交 Apple 服务器扫描并拿到回执）。
+安装脚本默认根据 `uname -m` 选择架构，也可以通过 `GOLD_BAND_ARCH=aarch64` 或 `GOLD_BAND_ARCH=x64` 显式指定。
 
-本项目的 DMG 这两步都没有做（构建 `identifier` 为 `local.gold-band.desktop`，属本地/开发构建），因此首次打开会出现以下提示之一：
+## 2. 手动安装
 
-- “无法验证‘Gold Band’是否包含可能危害 Mac 的恶意软件”
-- “‘Gold Band’已损坏，无法打开。请推出磁盘映像。”
+1. 从项目的官方 GitHub Release 下载对应架构的 DMG。
+2. 挂载 DMG，把 `Gold Band.app` 拖到 `/Applications`，然后推出 DMG。
+3. 在 Finder 中按住 Control 点击 `Gold Band.app`，选择“打开”，再确认一次“打开”。
 
-> 这是**安全机制拦截，不是安装包损坏**。文件本身正常，提示里的“已损坏”是 Gatekeeper 对“无法验证”应用的统一措辞。
+这是 macOS 为单个未公证 App 提供的例外流程。不要使用 `sudo spctl --master-disable` 全局关闭 Gatekeeper。
 
-## 2. 选择正确的架构
+## 3. 安装脚本
 
-- **Apple Silicon（M 系列，如 M5）**：请下载 `aarch64` 版本（如 `Gold.Band_x.y.z_aarch64.dmg`）。这是 M 系列的原生架构。
-- **Intel / 老机器**：使用 `x64` 版本。注意 Apple 已逐步废弃 Rosetta 转译，`x64` 包可能在新版 macOS 中被标记为“Intel 芯片的软件后续不再支持”，优先选 `aarch64`。
-
-## 3. 手动安装步骤（推荐）
-
-1. 挂载 DMG，将 `Gold Band.app` **拖到 `/Applications`** 完成安装。
-2. **推出（卸载）** 该 DMG。
-3. 移除隔离属性（只删 `xattr`，不改 App 内容，解决 Gatekeeper 拦截）：
-
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/Gold\ Band.app
-   ```
-
-4. **右键（Control+单击）`Gold Band.app` → 打开**，在弹窗中点「打开」一次，将其加入 Gatekeeper 白名单。之后双击即可正常启动。
-
-> ⚠️ 不要用 `sudo spctl --master-disable` 关闭全局 Gatekeeper——那会放行所有未签名软件，是过度操作。只放行这一个 App 即可，系统 SIP/沙盒/防火墙都照常生效。
-
-## 4. 一键安装脚本
-
-`scripts/install-gold-band-macos.sh` 自动完成：定位/下载 DMG → 校验完整性 → 移除隔离属性 → 挂载并用 `ditto` 安装到 `/Applications` → 移除 App 隔离属性。
+`scripts/install-gold-band-macos.sh` 不依赖 Python、jq、Homebrew 或 Xcode Command Line Tools，只使用 macOS 自带的 `curl`、`plutil`、`shasum`、`hdiutil`、`codesign`、`ditto` 和 `xattr`。
 
 ```bash
-bash scripts/install-gold-band-macos.sh            # 用 ~/Downloads 里的 DMG，找不到则自动下载
-bash scripts/install-gold-band-macos.sh -y         # 已存在时自动覆盖（跳过确认）
-bash scripts/install-gold-band-macos.sh <path>     # 指定本地 DMG 路径
+bash scripts/install-gold-band-macos.sh              # 安装 latest Release 和当前 Mac 的原生架构
+bash scripts/install-gold-band-macos.sh --yes        # 已安装时直接替换
+GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh
+GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.13.0_aarch64.dmg
 ```
 
-脚本最后会提示你仍需**手动右键「打开」一次**（应用未公证，绕不开的一次性 GUI 确认）。
+脚本按固定顺序执行：
 
-**校验边界（重要）**：该 Release 暂未为 DMG 提供官方校验和/签名文件（`.sig` 仅覆盖 deb/rpm/AppImage/exe/msi/app.tar.gz，唯独 DMG 没有）。因此脚本采用 GitHub API 返回的 asset `sha256` 比对本地文件，能防**下载截断/损坏**，但**无法防范 GitHub Release 本身被篡改**。请始终从官方仓库 `github.com/diodeme/Gold-Band` 的 Release 下载。无网络时脚本降级为本地大小检查并明确告警。
+1. 未指定版本时，通过 GitHub Release API 的 `tag_name` 获取 latest 版本。
+2. 下载或复用 `~/Downloads` 中名称完全匹配的 DMG。
+3. 下载同一 Release 中的 `${DMG_NAME}.sha256`，校验摘要中的文件名和 SHA256。
+4. 使用 `hdiutil verify` 校验 DMG 内部完整性。
+5. 只接受名称为 `Gold Band.app`、bundle identifier 为 `local.gold-band.desktop` 且通过 `codesign --verify --deep --strict` 的 App。
+6. 在 `/Applications` 同一文件系统内暂存并再次校验，替换旧 App；切换失败时恢复旧版本。
+7. 所有校验通过后，只对暂存 App 移除 `com.apple.quarantine`，随后可直接从 Finder 打开。
 
-## 5. 已知问题：打开后立即退出（已在 0.12.4 修复）
+脚本只支持合入 checksum 发布流程后、同时包含 `.sha256` sidecar 的新 Release；包括 v0.12.4 在内的历史 Release 不做兼容，请使用上面的手动安装流程。
 
-在 v0.12.0 ~ v0.12.3 区间，如果本机**曾运行过更新版本的 dev 构建**（会把全局设置 `~/.gold-band/settings.json` 的 `settingsSchemaVersion` 写成 `3`），再用**旧版 DMG**（二进制只支持到 schema v2）打开时，应用会**启动即退出，且无崩溃报告**。直接启动二进制的报错为：
+## 4. 校验边界
 
-```
+两条 Release workflow 会在所有平台资产上传完成后，以流式 SHA256 为 DMG、App updater archive、EXE、MSI、AppImage、DEB 和 RPM 生成同名 `.sha256`。安装脚本缺少 sidecar、摘要格式错误、文件名不匹配或实际摘要不一致时都会终止，不提供弱校验 fallback。
+
+DMG 与 `.sha256` 来自同一个 GitHub Release，因此该机制可以发现下载损坏、截断和资产错配，但不能抵御官方 GitHub 仓库或 Release 发布权限本身被攻破。拿到 Apple Developer Program 凭证后，仍应由现有 Tauri release 流程完成 Developer ID 签名和公证。
+
+## 5. 历史问题：设置 schema 导致旧版启动退出
+
+在 v0.12.0 至 v0.12.3 中，如果本机较新的开发构建已经把 `~/.gold-band/settings.json` 写为 `settingsSchemaVersion: 3`，旧二进制只支持 schema v2 时会主动退出，并输出：
+
+```text
 failed to start Gold Band desktop: settings schema version 3 is newer than supported version 2
 ```
 
-原因：应用内部有设置 schema 版本守卫（`src/config/mod.rs`），读到的版本比二进制支持的新就主动退出（干净退出，故无崩溃报告）。
+该问题已在 v0.12.4 修复。优先升级到 v0.12.4 或更高版本，不要为了运行旧版而降低持久化设置的 schema 版本。
 
-解决方法（按风险从低到高）：
+## 6. 后续正式发布路径
 
-- **升级到 v0.12.4 或更高**：客户端内置更新已支持 schema v3，可正常打开（推荐）。
-- 或手动把 `~/.gold-band/settings.json` 的 `settingsSchemaVersion` 从 `3` 改成 `2`（改前务必备份该文件）。
-
-> 教训：避免在同一台机器上混用“旧版发布 DMG”和“新版 dev 构建”——二者会互相改写设置 schema 版本，导致打不开。想用稳定 DMG 时，就别再跑 dev 版写设置。
-
-## 6. 推荐路径：客户端更新
-
-从 v0.12.4 起，应用内置的 Tauri 更新器（使用 `plugins.updater.pubkey` 自签名校验）可正常工作，直接在客户端内升级即可，无需手动处理 Gatekeeper。
+当前脚本是尚未取得 Apple Developer Program 凭证期间的临时安装路径。凭证就绪后，现有 release workflow 会把证书、Developer ID identity、Apple ID、app-specific password 与 Team ID 交给 Tauri bundler，在同一构建路径完成正式签名和公证；届时用户不应再需要 Gatekeeper 绕行脚本。

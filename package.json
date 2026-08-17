@@ -21,6 +21,8 @@
     "test:dev-watch-config": "node --test scripts/dev-watch-config.test.mjs",
     "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",
     "test:macos-signing": "node --test scripts/configure-macos-signing.test.mjs",
+    "test:macos-installer": "node --test scripts/install-gold-band-macos.test.mjs",
+    "test:release-checksums": "node --test scripts/generate-release-checksums.test.mjs",
     "web:build": "tsc -p web/tsconfig.build.json && vite build --config web/vite.config.ts",
     "web:preview": "vite preview --config web/vite.config.ts",
     "agent-catalog:refresh": "node scripts/prepare-agent-catalog.mjs",

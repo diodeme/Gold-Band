@@ -373,7 +373,7 @@ fn default_workflow_dsl(
                 "interview",
                 "Conduct a deep interview to clarify the requirement and produce a clear specification.",
                 false,
-                false,
+                true,
             ),
             worker(
                 provider,
@@ -517,6 +517,7 @@ fn default_lightweight_workflow_dsl(
         role_key: &str,
         goal: &str,
         validation: bool,
+        manual_check: bool,
     ) -> NodeDsl {
         let artifact = validation.then(|| format!("{id}-result"));
         NodeDsl::Worker(WorkerNode {
@@ -544,7 +545,7 @@ fn default_lightweight_workflow_dsl(
             }),
             permission_mode: None,
             config_options: Default::default(),
-            manual_check: None,
+            manual_check: manual_check.then_some(true),
             prompt_envelope: crate::dsl::PromptEnvelopeMode::RuntimeManaged,
         })
     }
@@ -565,6 +566,7 @@ fn default_lightweight_workflow_dsl(
                 "grill",
                 default_workflow_goal(language, "grill"),
                 false,
+                true,
             ),
             worker(
                 provider,
@@ -572,6 +574,7 @@ fn default_lightweight_workflow_dsl(
                 "dev-test",
                 "dev-test",
                 default_workflow_goal(language, "dev-test"),
+                false,
                 false,
             ),
             worker(
@@ -581,6 +584,7 @@ fn default_lightweight_workflow_dsl(
                 "accept",
                 default_workflow_goal(language, "accept"),
                 true,
+                false,
             ),
         ],
         edges: vec![
@@ -6539,7 +6543,7 @@ mod tests {
         assert_eq!(state.recent_desktop_workspaces[0], "D:/Projects/Repo9");
     }
     #[test]
-    fn default_workflow_interview_node_succeeds_without_manual_check() {
+    fn default_workflow_interview_node_requires_manual_check() {
         let paths =
             crate::storage::GoldBandPaths::new(Utf8PathBuf::from("/tmp/interview-default-success"));
         let profiles = super::ensure_default_user_profiles(&paths).unwrap();
@@ -6555,11 +6559,10 @@ mod tests {
             .expect("default workflow contains an interview node");
         let interview_node = NodeDsl::Worker(interview.clone());
 
-        // 采访节点默认成功：不开启人工 check，也没有 AI 输出验证，
-        // 产出 interview-spec.md 后直接走默认成功分支，无需人工判定。
+        // 采访节点不使用 AI 输出验证，产出 interview-spec.md 后等待用户人工判定。
         assert!(
-            !interview_node.manual_check_enabled(),
-            "interview node must default to no manual check"
+            interview_node.manual_check_enabled(),
+            "interview node must require manual check"
         );
         assert!(
             interview.output.is_none() && interview.success_condition.is_none(),

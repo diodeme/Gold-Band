@@ -6,7 +6,10 @@ const openerMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/api/shared', () => ({
-  invokeCommand: vi.fn(() => Promise.resolve({ profiles: [] })),
+  invokeCommand: vi.fn(() => Promise.resolve({
+    profiles: [],
+    preferences: { wallpapers: { recentWallpapers: [] } },
+  })),
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
 vi.mock('@tauri-apps/plugin-opener', () => openerMocks);

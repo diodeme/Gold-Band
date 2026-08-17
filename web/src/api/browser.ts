@@ -1159,7 +1159,7 @@ export const browserApi: RuntimeApi = {
   continueRun(_projectId, taskId, runId) {
     return Promise.resolve({ ...mockRunDetail.run, taskId, id: runId });
   },
-  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
+  continueConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId, _input, _promptId, _attachmentPaths) {
     return Promise.resolve({ kind: 'runtime-continue-started', session: null, run: null, lifecycle: null });
   },
   recoverConversationRuntime(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _expectedRevision) {
@@ -1780,6 +1780,7 @@ export const browserApi: RuntimeApi = {
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
       runtimeErrorMessage: null,
+      worktree: null,
     };
     return Promise.resolve(run);
   },
@@ -1813,6 +1814,13 @@ export const browserApi: RuntimeApi = {
       workflowGraph: { nodes: [], edges: [] },
       resumable: false,
       runtimeErrorMessage: null,
+      worktree: input.workLocation === 'worktree'
+        ? {
+          path: `/preview/gold-band/worktrees/${Date.now()}`,
+          branch: `gold-band/conversation/${Date.now()}`,
+          forkCommit: 'preview-head',
+        }
+        : null,
     };
     browserConversationRuns.set(run.runId, run);
     return Promise.resolve(run);

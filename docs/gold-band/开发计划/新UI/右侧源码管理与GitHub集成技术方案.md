@@ -1057,7 +1057,7 @@ Git CLI 失败时，`params` 还必须包含 `exitCode` 和可选 `reason`。`re
 
 使用临时真实 Git repository，覆盖：
 
-- Git 未安装/非 repository/unborn HEAD/detached HEAD。
+- Git 未安装/非 repository/unborn HEAD/detached HEAD；unborn 真实仓库必须同时通过 snapshot 与空 history 接口，且保留未跟踪文件。
 - staged/unstaged/untracked/conflict。
 - staged/unstaged 批量 numstat，包含同一文件 index/worktree 分层统计、rename 和 binary。
 - CRLF/LF 与单独 CR 统一为 LF；8000 行文件仅换行风格不同且新增 2 行时必须为 `+2/-0`，正文不含 CR。
@@ -1178,6 +1178,8 @@ Browser preview 的源码管理 fixture 提供 `origin` 与 `fork` 两个 remote
 2026-08-12 大文件 Diff 精度与初始定位回归：Gold-Band `2ab91a05..6b965885` 的 `src-tauri/src/commands.rs` 权威 Git 终态为 `+221/-40`。CodeMirror Merge 默认 `scanLimit=500` 在约 7700 行文件上提前降级，实测把真实约 98 个变化块误渲染为 `+3896/-3715` 的大片变化；提高到 10000 后恢复为 `+203/-22` 的精确 CodeMirror 字符/行块投影，20 次本地算法基线平均约 131ms，并设置 300ms timeout 防止极端输入长期占用主线程。审阅 landing 状态拆为 `top / first-change / last-change`：文件列表和左右文件切换从顶部打开，只有上下差异跨文件时定位首/末变化，消除首次打开直接跳到第 27 个差异的问题。该修改不增加任何后端 Git 命令、正文请求或缓存体积。
 
 2026-08-13 审阅 summary 与滚动状态回归：确认 Git `numstat` 与 CodeMirror diff 对移动/重复代码可能给出不同增删统计，审阅 item 现携带历史 numstat、workspace numstat 或 GitHub PR files API 的领域 summary，列表与 Diff Tab 统一消费；正文算法只渲染 chunks，权威 summary 缺失时才使用 comparison fallback。历史 Commit 列表和聚合文件列表使用 repository/workspace-scoped 独立轻量 scroll offset，相同 review 从 Diff 返回时在 viewport 重挂载并完成布局后恢复文件位置，分页在状态提交前把 Commit offset 归零；scroll handler 只写运行期数字，不发布 React state。鼠标 Commit 点击后主动释放普通 button focus，键盘 focus-visible 保留。以上修改不增加 Git/网络请求、正文解析、缓存条目或重渲染范围；布局后只执行一次常数级滚动恢复。
+
+2026-08-17 unborn repository 回归：Git porcelain v2 的 `branch.oid (initial)` 在 typed 解析入口统一规范化为 `None`，删除 snapshot 消费端的 sentinel 特判，使 snapshot、history 与 revision 共享同一 HEAD 语义。真实临时仓库接口测试固定 `git init` 后无首次提交时 snapshot 仍可读取未跟踪文件、repository 标记为 unborn 且 history 返回空页；不新增 Git 命令、前端状态、缓存或依赖。
 
 ## 18. 最终验收标准
 

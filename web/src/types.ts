@@ -2238,16 +2238,16 @@ export interface ConversationRunVm {
   worktree?: ConversationRunWorktreeVm | null;
 }
 
-export interface ConversationRunWorktreeVm {
-  path: string;
-  branch: string;
-  forkCommit: string;
-}
-
 export interface ConversationQueuedPromptDraftVm {
   content: string;
   quotes: UserPromptQuote[];
   attachmentPaths: string[];
+}
+
+export interface ConversationRunWorktreeVm {
+  path: string;
+  branch: string;
+  forkCommit: string;
 }
 
 export interface ConversationSessionSwitchVm {

@@ -82,10 +82,18 @@ describe('conversation navigation presentation transaction', () => {
     )).toBe('project-draft');
   });
 
-  it('starts quick chat in the current run workspace when leaving a conversation', () => {
+  it('keeps the quick-chat draft workspace when leaving a conversation', () => {
     expect(resolveConversationHomeWorkspaceId(
       { kind: 'conversation-run', projectId: 'project-run', taskId: 'task-1', runId: 'run-1' },
       'project-draft',
+      'project-last-session',
+    )).toBe('project-draft');
+  });
+
+  it('falls back to the current run workspace when no quick-chat draft exists', () => {
+    expect(resolveConversationHomeWorkspaceId(
+      { kind: 'conversation-run', projectId: 'project-run', taskId: 'task-1', runId: 'run-1' },
+      null,
       'project-last-session',
     )).toBe('project-run');
   });

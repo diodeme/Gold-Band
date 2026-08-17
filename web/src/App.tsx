@@ -59,6 +59,7 @@ import {
 import { isTauriRuntime } from './api/shared';
 import {
   applyConversationSidebarRunLifecycle,
+  applyConversationSidebarRunStateUpdate,
   applyConversationSidebarTaskActivity,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
@@ -342,6 +343,7 @@ export function App() {
   const conversationRunStopPendingRef = useRef(false);
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
+  const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
   const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
@@ -828,6 +830,28 @@ export function App() {
   }, [applyConversationSidebar, bootstrap, uiMode]);
 
   useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeConversationRunStateUpdates((event) => {
+      if (!active) return;
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarRunStateUpdate(current, event);
+        if (next !== current) conversationSidebarRef.current = next;
+        return next;
+      });
+      conversationRunStateRefreshRef.current?.(event);
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [bootstrap, uiMode]);
+
+  useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     let active = true;
     let dispose: (() => void) | undefined;
@@ -913,10 +937,9 @@ export function App() {
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
     let stopListeningAcp: (() => void) | null = null;
-    let stopListeningRun: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
-    const refreshConversationRunAndSidebar = () => {
+    const refreshConversationRun = () => {
       refreshTimer = null;
       if (refreshInFlight) {
         refreshAgain = true;
@@ -940,11 +963,8 @@ export function App() {
       });
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
-      Promise.all([
-        getConversationRun(projectId, taskId, runId, selectedKey),
-        getConversationSidebar(),
-      ])
-        .then(([run, sidebar]) => {
+      getConversationRun(projectId, taskId, runId, selectedKey)
+        .then((run) => {
           if (!active) return;
           const latestFollowState = conversationSessionFollowRef.current;
           const latestSelectedKey = latestFollowState.selectedSessionKey
@@ -966,7 +986,6 @@ export function App() {
             selectedSessionKey: effectiveSelectedKey,
             preserveSelectedSession: latestFollowState.mode === 'manual',
           });
-          applyConversationSidebar(sidebar);
         })
         .catch(() => {})
         .finally(() => {
@@ -974,12 +993,12 @@ export function App() {
           if (!active || !refreshAgain) return;
           refreshAgain = false;
           if (refreshTimer === null) {
-            refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+            refreshTimer = window.setTimeout(refreshConversationRun, 0);
           }
         });
     };
 
-    const queueConversationRunAndSidebarRefresh = (
+    const queueConversationRunRefresh = (
       sessionKey?: string | null,
       runtimeControlled = false,
       delayMs = 120,
@@ -991,12 +1010,28 @@ export function App() {
       if (refreshTimer !== null) {
         if (delayMs === 0) {
           window.clearTimeout(refreshTimer);
-          refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, 0);
+          refreshTimer = window.setTimeout(refreshConversationRun, 0);
         }
         return;
       }
-      refreshTimer = window.setTimeout(refreshConversationRunAndSidebar, delayMs);
+      refreshTimer = window.setTimeout(refreshConversationRun, delayMs);
     };
+
+    const refreshSelectedRunFromStateEvent: Parameters<typeof subscribeConversationRunStateUpdates>[0] = (event) => {
+      if (!active) return;
+      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      const sessionKey = conversationSessionKeyFromParts(event);
+      const currentRun = conversationRunRef.current;
+      const eventLeaf = currentRun
+        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
+        : null;
+      queueConversationRunRefresh(
+        sessionKey,
+        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        0,
+      );
+    };
+    conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
 
     void subscribeAcpSessionUpdates((event) => {
       if (!active) return;
@@ -1076,7 +1111,7 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunAndSidebarRefresh(resolveConversationEventSelectedSessionKey({
+      queueConversationRunRefresh(resolveConversationEventSelectedSessionKey({
         currentSelectedKey,
         incomingSessionKey: sessionKey,
         followMode: followState.mode,
@@ -1095,37 +1130,15 @@ export function App() {
       })
       .catch(() => {});
 
-    void subscribeConversationRunStateUpdates((event) => {
-      if (!active) return;
-      if (event.taskId !== taskId || event.runId !== runId) return;
-      if (event.projectId && event.projectId !== projectId) return;
-      const sessionKey = conversationSessionKeyFromParts(event);
-      const currentRun = conversationRunRef.current;
-      const eventLeaf = currentRun
-        ? findConversationLeafByKey(currentRun.sessionTree, sessionKey)
-        : null;
-      queueConversationRunAndSidebarRefresh(
-        sessionKey,
-        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
-        0,
-      );
-    })
-      .then((dispose) => {
-        if (active) {
-          stopListeningRun = dispose;
-        } else {
-          dispose();
-        }
-      })
-      .catch(() => {});
-
     return () => {
       active = false;
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      if (conversationRunStateRefreshRef.current === refreshSelectedRunFromStateEvent) {
+        conversationRunStateRefreshRef.current = null;
+      }
       stopListeningAcp?.();
-      stopListeningRun?.();
     };
-  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationSidebar, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

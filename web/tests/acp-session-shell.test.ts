@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
+  isAcpSessionLoadingSurfaceState,
   missingAcpSessionRetryDelay,
+  resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
   shouldCreateLiveAcpSessionShell,
 } from '@/lib/acp-session-shell';
@@ -147,6 +149,28 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('initializing');
   });
 
+  it('keeps a current new session in its initializing shell while terminal data catches up', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: false,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
+  it('does not replace a current ready startup projection with historical content loading', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: true,
+      baseSessionReady: true,
+      hasLiveSessionShell: false,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      showInitializingShell: true,
+    })).toBe('initializing');
+  });
+
   it('keeps a durably established session available while its detail payload is temporarily absent', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
@@ -186,6 +210,51 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('isAcpSessionLoadingSurfaceState', () => {
+  it('only renders generic historical content loading as an isolated loading surface', () => {
+    expect(isAcpSessionLoadingSurfaceState('loading')).toBe(true);
+    expect(isAcpSessionLoadingSurfaceState('initializing')).toBe(false);
+  });
+
+  it('does not hide available, interrupted, or failed sessions behind the loading surface', () => {
+    expect(isAcpSessionLoadingSurfaceState('available')).toBe(false);
+    expect(isAcpSessionLoadingSurfaceState('interrupted')).toBe(false);
+    expect(isAcpSessionLoadingSurfaceState('error')).toBe(false);
+  });
+});
+
+describe('resolveAcpTimelineSurfaceState', () => {
+  it('shows the timeline as soon as the first displayable item arrives', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: true,
+      initialSessionLoading: true,
+      runtimeActive: true,
+      initializationOwner: true,
+      sending: true,
+    })).toBe('timeline');
+  });
+
+  it('keeps a current new session pending while its persisted timeline catches up', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: false,
+      initialSessionLoading: false,
+      runtimeActive: false,
+      initializationOwner: true,
+      sending: false,
+    })).toBe('pending');
+  });
+
+  it('shows empty only after a non-initializing inactive query confirms no timeline', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: false,
+      initialSessionLoading: false,
+      runtimeActive: false,
+      initializationOwner: false,
+      sending: false,
+    })).toBe('empty');
   });
 });
 

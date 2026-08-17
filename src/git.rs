@@ -1,4 +1,5 @@
 use std::process::Output;
+use std::time::Instant;
 
 use anyhow::{Context, Result, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -243,30 +244,43 @@ impl GitWorkspaceManager {
         branch: &str,
         fork_commit: &str,
     ) -> Result<()> {
-        if path.exists() {
-            return self.validate_worktree(path, branch);
-        }
-        if let Err(error) = self.create_worktree(repository_root, path, branch, fork_commit) {
-            if let Ok(identity) =
-                GitSourceControlService::default().repository_identity(repository_root)
-            {
-                let _ = GitCoordinationService.with_runtime_write(
-                    &identity.common_dir,
-                    None,
-                    "runtime-worktree-create-cleanup",
-                    || {
-                        let _ = self.runner.run(
-                            repository_root,
-                            &["worktree", "remove", "--force", path.as_str()],
-                        );
-                        let _ = self.runner.run(repository_root, &["branch", "-D", branch]);
-                        Ok(())
-                    },
-                );
+        let existed = path.exists();
+        if !existed {
+            if let Err(error) = self.create_worktree(repository_root, path, branch, fork_commit) {
+                if let Ok(identity) =
+                    GitSourceControlService::default().repository_identity(repository_root)
+                {
+                    let _ = GitCoordinationService.with_runtime_write(
+                        &identity.common_dir,
+                        None,
+                        "runtime-worktree-create-cleanup",
+                        || {
+                            let _ = self.runner.run(
+                                repository_root,
+                                &["worktree", "remove", "--force", path.as_str()],
+                            );
+                            let _ = self.runner.run(repository_root, &["branch", "-D", branch]);
+                            Ok(())
+                        },
+                    );
+                }
+                return Err(error);
             }
-            return Err(error);
         }
-        self.validate_worktree(path, branch)
+
+        let validation_started_at = Instant::now();
+        let validation_result = self.validate_worktree(path, branch);
+        tracing::info!(
+            target: "gold_band::perf",
+            repository_root = repository_root.as_str(),
+            workspace_root = path.as_str(),
+            branch,
+            mode = if existed { "existing" } else { "created" },
+            elapsed_ms = validation_started_at.elapsed().as_millis(),
+            status = if validation_result.is_ok() { "ok" } else { "error" },
+            "Git worktree validation completed"
+        );
+        validation_result
     }
 
     pub fn checkpoint(
@@ -339,11 +353,22 @@ impl GitWorkspaceManager {
         fork_commit: &str,
     ) -> Result<()> {
         let identity = GitSourceControlService::default().repository_identity(repository_root)?;
+        let lock_wait_started_at = Instant::now();
         GitCoordinationService.with_runtime_write(
             &identity.common_dir,
             None,
             "runtime-worktree-create",
-            || self.create_worktree_unlocked(repository_root, path, branch, fork_commit),
+            || {
+                tracing::info!(
+                    target: "gold_band::perf",
+                    repository_root = repository_root.as_str(),
+                    workspace_root = path.as_str(),
+                    branch,
+                    lock_wait_ms = lock_wait_started_at.elapsed().as_millis(),
+                    "Git worktree create lock acquired"
+                );
+                self.create_worktree_unlocked(repository_root, path, branch, fork_commit)
+            },
         )
     }
 
@@ -357,10 +382,24 @@ impl GitWorkspaceManager {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent.as_std_path())?;
         }
-        let output = self.runner.run(
+        let command_started_at = Instant::now();
+        let output_result = self.runner.run(
             repository_root,
             &["worktree", "add", "-b", branch, path.as_str(), fork_commit],
-        )?;
+        );
+        tracing::info!(
+            target: "gold_band::perf",
+            repository_root = repository_root.as_str(),
+            workspace_root = path.as_str(),
+            branch,
+            elapsed_ms = command_started_at.elapsed().as_millis(),
+            status = match &output_result {
+                Ok(output) if output.success => "ok",
+                _ => "error",
+            },
+            "git worktree add completed"
+        );
+        let output = output_result?;
         ensure!(
             output.success,
             "git worktree add failed: {}",

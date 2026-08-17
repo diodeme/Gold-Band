@@ -130,6 +130,22 @@ describe('ACPSessionHeader', () => {
     expect(html).not.toContain('权限');
   });
 
+  it('does not expose a missing session id while a new session is initializing', () => {
+    const value = session();
+    value.sessionId = null;
+
+    const html = renderHeader({
+      session: value,
+      rawActive: false,
+      rawLoading: false,
+      onToggleRaw: () => undefined,
+      onOpenSystemPrompt: () => undefined,
+    });
+
+    expect(html).toContain('Claude');
+    expect(html).not.toContain('无 session id');
+  });
+
   it('combines the Direct title, session identity and diagnostics in one header row with its calibrated outer spacing', () => {
     const html = renderHeader({
       session: session(),

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   resolveConversationContentQueryState,
   sessionBelongsToLeaf,
+  shouldShowConversationContentLoadingState,
 } from '../src/pages/ConversationRunPage';
 import type { AcpSessionVm, ConversationRunVm, ConversationSessionLeafVm } from '../src/types';
 
@@ -107,5 +108,33 @@ describe('ConversationRunPage content loading gate', () => {
       { identity: 'session-a', state: 'success' },
       false,
     )).toBe('loading');
+  });
+
+  it('keeps a current session on its runtime-projected chat shell before establishment', () => {
+    expect(shouldShowConversationContentLoadingState('loading', {
+      current: true,
+      sessionEstablished: false,
+    })).toBe(false);
+  });
+
+  it('keeps a current session on the same chat shell after establishment', () => {
+    expect(shouldShowConversationContentLoadingState('loading', {
+      current: true,
+      sessionEstablished: true,
+    })).toBe(false);
+  });
+
+  it('keeps the isolated content loading state for an uncached historical session', () => {
+    expect(shouldShowConversationContentLoadingState('loading', {
+      current: false,
+      sessionEstablished: true,
+    })).toBe(true);
+  });
+
+  it('does not show the content loading state after hydration completes', () => {
+    expect(shouldShowConversationContentLoadingState('success', {
+      current: true,
+      sessionEstablished: false,
+    })).toBe(false);
   });
 });

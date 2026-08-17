@@ -53,6 +53,7 @@ export interface AcpRuntimeComposerStateInput {
   hasResponseAfterTurn: boolean;
   hasTimelineItems: boolean;
   hasEffectiveEvents: boolean;
+  initialTimelinePending?: boolean;
   timelineProcessingKind: AcpComposerProcessingKind;
 }
 
@@ -96,6 +97,7 @@ export function deriveAcpRuntimeComposerState(
   const acpActive = !acpTerminal && lifecycleAcpRunning;
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
   const waitingForPermission = input.waitingForPermission;
+  const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
@@ -137,6 +139,7 @@ export function deriveAcpRuntimeComposerState(
     input.sending ||
     waitingForOptimisticPrompt ||
     awaitingResponse ||
+    initialTimelinePending ||
     sessionActive ||
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
@@ -145,6 +148,7 @@ export function deriveAcpRuntimeComposerState(
   const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
   const directInputDisabled =
     stopInProgress ||
+    initialTimelinePending ||
     mode === 'invalid-workflow' ||
     mode === 'runtime-error';
   const inputDisabled = (
@@ -173,7 +177,7 @@ export function deriveAcpRuntimeComposerState(
     !input.waitingForPermission &&
     !composerLocked &&
     !directTurnHandoff &&
-    (turnSubmitting || awaitingResponse || sessionActive || stopInProgress || mode === 'runtime-active');
+    (turnSubmitting || awaitingResponse || initialTimelinePending || sessionActive || stopInProgress || mode === 'runtime-active');
   const externalMessage = externalMessageForMode(input, mode, runtimeErrorMessage);
 
   return {
@@ -202,9 +206,11 @@ export function deriveAcpRuntimeComposerState(
     processingKind,
     statusActive,
     showStatus: !sessionSuperseded && !input.waitingForPermission && statusActive,
-    placeholderKind: directQueueFacet
-      ? 'default'
-      : placeholderKindForMode(input, mode, activePromptLocked),
+    placeholderKind: initialTimelinePending
+      ? 'runtime-controlled'
+      : directQueueFacet
+        ? 'default'
+        : placeholderKindForMode(input, mode, activePromptLocked),
     message: externalMessage,
   };
 }

@@ -68,6 +68,13 @@ export function resolveConversationContentQueryState(
   return hydrated ? 'success' : 'loading';
 }
 
+export function shouldShowConversationContentLoadingState(
+  queryState: AcpInitialSessionQueryState,
+  selectedLeaf: Pick<ConversationSessionLeafVm, 'current'> | null,
+) {
+  return queryState === 'loading' && !selectedLeaf?.current;
+}
+
 function normalizeSessionPath(path: string) {
   return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
 }
@@ -272,7 +279,10 @@ export function ConversationRunPage({
       ? hasHydratedAcpSessionContent(selectedContentIdentity)
       : false,
   );
-  const showPageLoadingState = selectedContentQueryState === 'loading';
+  const showPageLoadingState = shouldShowConversationContentLoadingState(
+    selectedContentQueryState,
+    selectedLeaf,
+  );
   const handleInitialSessionQueryStateChange = useCallback((state: AcpInitialSessionQueryState) => {
     if (!selectedContentIdentity) return;
     setContentQueryProjection({ identity: selectedContentIdentity, state });

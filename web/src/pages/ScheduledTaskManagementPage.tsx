@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { AlarmClock, MoreHorizontal, Pause, Play, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
@@ -15,7 +15,8 @@ import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/componen
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
 import type { ScheduledTaskEditVm, ScheduledTaskVm } from '@/types';
 
-type StatusFilter = 'all' | 'running' | 'disabled';
+type StatusFilter = 'all' | 'enabled' | 'disabled';
+type TaskAction = 'enable' | 'run' | 'edit' | 'delete';
 
 export const scheduledWorkspaceFilterTriggerClassName = 'w-28 text-xs';
 
@@ -44,16 +45,32 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [workspaceFilter, setWorkspaceFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [actionError, setActionError] = useState(false);
+  const [pendingTaskActions, setPendingTaskActions] = useState<Record<string, TaskAction>>({});
+  const pendingTaskActionsRef = useRef<Record<string, TaskAction>>({});
+  const taskListRequestIdRef = useRef(0);
+  const taskMutationGenerationRef = useRef(0);
   const [editing, setEditing] = useState<{ task: ScheduledTaskVm; definition: ScheduledTaskEditVm } | null>(null);
   const [editLoading, setEditLoading] = useState(false);
   const [deleting, setDeleting] = useState<ScheduledTaskVm | null>(null);
 
   const loadTasks = useCallback(() => {
+    const requestId = ++taskListRequestIdRef.current;
+    const mutationGeneration = taskMutationGenerationRef.current;
     setLoading(true);
+    setLoadError(false);
     return listScheduledTasks(null)
-      .then(setTasks)
-      .catch(() => setTasks([]))
-      .finally(() => setLoading(false));
+      .then((nextTasks) => {
+        if (requestId !== taskListRequestIdRef.current || mutationGeneration !== taskMutationGenerationRef.current) return;
+        setTasks(nextTasks);
+      })
+      .catch(() => {
+        if (requestId === taskListRequestIdRef.current) setLoadError(true);
+      })
+      .finally(() => {
+        if (requestId === taskListRequestIdRef.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
@@ -65,6 +82,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void subscribeScheduledTaskUpdates((event) => {
+      taskMutationGenerationRef.current += 1;
       setTasks((prev) =>
         prev.map((item) =>
           item.id === event.scheduledTaskId && event.task
@@ -88,29 +106,61 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
   );
 
   const visibleTasks = useMemo(() => tasks.filter((task) => {
-    const matchesStatus = filter === 'disabled' ? !task.enabled : filter === 'running' ? task.enabled : true;
+    const matchesStatus = filter === 'disabled' ? !task.enabled : filter === 'enabled' ? task.enabled : true;
     const matchesWorkspace = workspaceFilter === 'all' || task.workspaceName === workspaceFilter;
     return matchesStatus && matchesWorkspace;
   }), [filter, tasks, workspaceFilter]);
 
-  const updateEnabled = (task: ScheduledTaskVm, enabled: boolean) => {
-    void setScheduledTaskEnabled(task.projectId, task.id, enabled).then((updated) => {
+  const setTaskPending = (taskId: string, action: TaskAction | null) => {
+    const next = { ...pendingTaskActionsRef.current };
+    if (action) next[taskId] = action;
+    else delete next[taskId];
+    pendingTaskActionsRef.current = next;
+    setPendingTaskActions(next);
+  };
+
+  const updateEnabled = async (task: ScheduledTaskVm, enabled: boolean) => {
+    if (pendingTaskActionsRef.current[task.id]) return;
+    setTaskPending(task.id, 'enable');
+    setActionError(false);
+    try {
+      const updated = await setScheduledTaskEnabled(task.projectId, task.id, enabled);
+      taskMutationGenerationRef.current += 1;
       setTasks((current) => current.map((item) => item.id === updated.id ? updated : item));
-    });
+    } catch {
+      setActionError(true);
+    } finally {
+      setTaskPending(task.id, null);
+    }
   };
 
   const runNow = async (task: ScheduledTaskVm) => {
-    await runScheduledTaskNow(task.projectId, task.id);
-    await loadTasks();
+    if (pendingTaskActionsRef.current[task.id]) return;
+    setTaskPending(task.id, 'run');
+    setActionError(false);
+    try {
+      await runScheduledTaskNow(task.projectId, task.id);
+      await loadTasks();
+    } catch {
+      setActionError(true);
+    } finally {
+      setTaskPending(task.id, null);
+    }
   };
 
   const openEdit = async (task: ScheduledTaskVm) => {
+    if (pendingTaskActionsRef.current[task.id]) return;
+    setTaskPending(task.id, 'edit');
+    setActionError(false);
     setEditLoading(true);
     try {
       const definition = await getScheduledTask(task.projectId, task.id);
       setEditing({ task, definition });
+    } catch {
+      setActionError(true);
     } finally {
       setEditLoading(false);
+      setTaskPending(task.id, null);
     }
   };
 
@@ -143,21 +193,23 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
               {workspaces.map((workspace) => <SelectItem key={workspace} value={workspace}>{workspace}</SelectItem>)}
             </SelectContent>
           </Select>
-          <div className="flex items-center rounded-md border border-border/70 p-0.5" aria-label={t('scheduled.management.statusFilter')}>
+          <div className="flex items-center gap-0.5" aria-label={t('scheduled.management.statusFilter')}>
             {([
               ['all', 'all'],
-              ['running', 'active'],
+              ['enabled', 'enabled'],
               ['disabled', 'disabled'],
             ] as const).map(([value, labelKey]) => (
-              <button
+              <Button
                 key={value}
                 type="button"
-                className={`rounded px-3 py-1.5 text-xs transition-colors ${filter === value ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                size="sm"
+                variant={filter === value ? 'secondary' : 'ghost'}
+                className="h-8 px-3 text-xs"
                 aria-pressed={filter === value}
                 onClick={() => setFilter(value)}
               >
                 {t(`scheduled.management.${labelKey}`)}
-              </button>
+              </Button>
             ))}
           </div>
           </>
@@ -165,9 +217,11 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-4">
-        {loading ? <div className="border-y border-border/60 py-12 text-center text-sm text-muted-foreground">{t('scheduled.management.loading')}</div> : null}
-        {!loading && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">{t('scheduled.management.empty')}</div> : null}
-        {!loading && visibleTasks.length > 0 ? (
+        {loadError ? <p className="mb-3 text-sm text-destructive">{t('scheduled.management.loadFailed')}</p> : null}
+        {actionError ? <p className="mb-3 text-sm text-destructive">{t('scheduled.management.actionFailed')}</p> : null}
+        {loading && tasks.length === 0 ? <div className="border-y border-border/60 py-12 text-center text-sm text-muted-foreground">{t('scheduled.management.loading')}</div> : null}
+        {!loading && !loadError && visibleTasks.length === 0 ? <div className="border-y border-border/60 py-14 text-center text-sm text-muted-foreground">{t('scheduled.management.empty')}</div> : null}
+        {visibleTasks.length > 0 ? (
           <section className="w-full min-w-0">
           <div className="hidden grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)_2.75rem_2rem] items-center gap-4 border-b border-border/60 px-3 pb-3 text-xs text-muted-foreground md:grid">
             <span>{t('scheduled.management.columns.task')}</span><span>{t('scheduled.management.columns.schedule')}</span><span>{t('scheduled.management.columns.next')}</span><span>{t('scheduled.management.columns.recent')}</span><span>{t('scheduled.management.columns.enabled')}</span><span />
@@ -183,7 +237,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-foreground/10 text-foreground"><AlarmClock className="size-4" /></span>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{task.title || t('scheduled.unnamed')}</div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span></div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span> · {task.workspaceName}</div>
                   </div>
                 </div>
                 <div className="hidden min-w-0 text-xs md:block">
@@ -199,7 +253,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   <div className="mt-1 truncate text-muted-foreground">{task.lastTriggerStatus === 'skipped' ? t('scheduled.management.queueSkipped') : scheduledTaskStatusLabel(t, task.status)}</div>
                 </div>
                 <div onClick={(e) => e.stopPropagation()}>
-                  <Switch checked={task.enabled} onCheckedChange={(enabled) => updateEnabled(task, enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
+                  <Switch checked={task.enabled} disabled={Boolean(pendingTaskActions[task.id])} onCheckedChange={(enabled) => void updateEnabled(task, enabled)} aria-label={t(task.enabled ? 'scheduled.management.disableAria' : 'scheduled.management.enableAria')} />
                 </div>
                 <div onClick={(e) => e.stopPropagation()}>
                   <DropdownMenu>
@@ -208,13 +262,13 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => onOpenDetail?.(task)}><MoreHorizontal className="size-4" />{t('scheduled.management.detail')}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => void runNow(task)}><Play className="size-4" />{t('scheduled.management.runNow')}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => void openEdit(task)} disabled={editLoading}><Pencil className="size-4" />{t('scheduled.management.edit')}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => updateEnabled(task, !task.enabled)}>
+                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} onClick={() => void runNow(task)}><Play className="size-4" />{t('scheduled.management.runNow')}</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void openEdit(task)} disabled={editLoading || Boolean(pendingTaskActions[task.id])}><Pencil className="size-4" />{t('scheduled.management.edit')}</DropdownMenuItem>
+                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} onClick={() => void updateEnabled(task, !task.enabled)}>
                         {task.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}
                         {t(task.enabled ? 'scheduled.management.disable' : 'scheduled.management.enable')}
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
+                      <DropdownMenuItem disabled={Boolean(pendingTaskActions[task.id])} className="text-destructive focus:text-destructive" onClick={() => setDeleting(task)}><Trash2 className="size-4" />{t('scheduled.management.delete')}</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -245,7 +299,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   content: content ?? definition.content,
                   runMode: definition.runMode,
                   workflowTemplateId: definition.workflowTemplateId,
-                  includeInterview: definition.includeInterview,
+                  includeOptionalEntry: definition.includeOptionalEntry,
                   directConfig: definition.directConfig,
                   autoConfig: definition.autoConfig,
                   schedule: config.schedule,
@@ -267,11 +321,20 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t('scheduled.management.cancel')}</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => {
+            <AlertDialogAction disabled={Boolean(deleting && pendingTaskActions[deleting.id])} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={(event) => {
+              event.preventDefault();
               if (!deleting) return;
               const task = deleting;
-              setDeleting(null);
-              void deleteScheduledTask(task.projectId, task.id).then(() => setTasks((current) => current.filter((item) => item.id !== task.id)));
+              setTaskPending(task.id, 'delete');
+              setActionError(false);
+              void deleteScheduledTask(task.projectId, task.id)
+                .then(() => {
+                  setTasks((current) => current.filter((item) => item.id !== task.id));
+                  taskMutationGenerationRef.current += 1;
+                  setDeleting(null);
+                })
+                .catch(() => setActionError(true))
+                .finally(() => setTaskPending(task.id, null));
             }}>{t('scheduled.management.confirmDelete')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

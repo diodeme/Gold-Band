@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
-import { getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge';
+import { getChunks, goToNextChunk, goToPreviousChunk } from '@codemirror/merge';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileText, LoaderCircle, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getFileComparison, getGitComparison } from '@/api';
+import { getGitComparison } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { loadTurnFileComparison } from '@/lib/turn-file-comparison-cache';
 import type { FileComparisonVm, GitFileComparisonVm } from '@/types';
 import type { GitFileComparisonWorkspaceResource, TurnFileWorkspaceResource } from '../right-workspace-context';
 import { useRightWorkspaceCommands } from '../right-workspace-context';
@@ -21,12 +22,12 @@ import {
 } from './editor-extensions';
 import { isMarkdownDocumentPath } from './markdown-document';
 import type { MarkdownEditorMode } from './file-content-store';
+import { ReadonlyUnifiedDiff } from './ReadonlyUnifiedDiff';
+
+export { DIFF_VIEW_SCAN_LIMIT, DIFF_VIEW_TIMEOUT_MS } from './ReadonlyUnifiedDiff';
 
 type FileComparisonWorkspaceResource = TurnFileWorkspaceResource | GitFileComparisonWorkspaceResource;
 type WorkspaceComparisonVm = FileComparisonVm | GitFileComparisonVm;
-
-export const DIFF_VIEW_SCAN_LIMIT = 10_000;
-export const DIFF_VIEW_TIMEOUT_MS = 300;
 
 export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonWorkspaceResource }) {
   const { t } = useTranslation();
@@ -61,7 +62,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
         : resource.gitSource.kind === 'github-pr'
         ? githubComparisonCache.get(resource.projectId, resource.gitSource)
         : getGitComparison(resource.projectId, resource.gitSource)
-      : getFileComparison(resource.locator, resource.changeSetId, resource.changeId);
+      : loadTurnFileComparison(resource.locator, resource.changeSetId, resource.changeId);
     void request
       .then((next) => {
         if (cancelled) return;
@@ -100,9 +101,10 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     if (!view || !chunk) return false;
     const from = Math.min(chunk.fromB, view.state.doc.length);
     const to = Math.min(chunk.toB, view.state.doc.length);
+    const range = EditorSelection.range(to, from);
     view.dispatch({
-      selection: EditorSelection.range(to, from),
-      effects: EditorView.scrollIntoView(EditorSelection.range(to, from)),
+      selection: range,
+      effects: EditorView.scrollIntoView(range),
     });
     setActiveChunkIndex(index);
     return true;
@@ -130,7 +132,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
 
   useEffect(() => {
     let cancelled = false;
-    if (isMarkdownDocumentPath(resource.title)) {
+    if (resource.kind === 'file-diff' || isMarkdownDocumentPath(resource.title)) {
       setLanguage(null);
       return () => { cancelled = true; };
     }
@@ -142,7 +144,6 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
 
   useEffect(() => setMarkdownMode('live-preview'), [resource.key]);
 
-  const before = comparison?.before?.content ?? '';
   const after = comparison?.after?.content ?? '';
   const markdownVersion = resource.kind === 'file-version'
     && isMarkdownDocumentPath(comparison?.path ?? resource.title);
@@ -158,18 +159,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
       workspaceSyntaxHighlighting,
     ];
     if (language) base.push(language);
-    if (resource.kind === 'file-diff') {
-      base.push(unifiedMergeView({
-        original: before,
-        highlightChanges: true,
-        gutter: true,
-        mergeControls: false,
-        collapseUnchanged: { margin: 3, minSize: 8 },
-        diffConfig: { scanLimit: DIFF_VIEW_SCAN_LIMIT, timeout: DIFF_VIEW_TIMEOUT_MS },
-      }));
-    }
     return base;
-  }, [before, language, resource.kind]);
+  }, [language]);
 
   if (errorCode) {
     return <PanelMessage icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`errors.${errorCode}`, { defaultValue: t('turnFiles.loadFailed') })} />;
@@ -238,20 +229,15 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             markdownMode={markdownMode}
             onMarkdownModeChange={setMarkdownMode}
           />
-        ) : (
-          <CodeMirror
-            ref={editorRef}
-            value={after}
-            height="100%"
-            width="100%"
-            theme="none"
-            basicSetup={false}
-            editable={false}
-            extensions={extensions}
+        ) : resource.kind === 'file-diff' ? (
+          <ReadonlyUnifiedDiff
+            comparison={comparison}
+            editorRef={editorRef}
+            ariaLabel={t('turnFiles.diffViewer')}
             onCreateEditor={(view) => {
               const count = getChunks(view.state)?.chunks.length ?? 0;
               setDiffChunkCount(count);
-              const initialIndex = resource.kind === 'file-diff' && 'gitSource' in resource && resource.reviewLanding === 'last-change'
+              const initialIndex = 'gitSource' in resource && resource.reviewLanding === 'last-change'
                 ? Math.max(0, count - 1)
                 : 0;
               setActiveChunkIndex(initialIndex);
@@ -263,8 +249,18 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
                 requestAnimationFrame(() => focusChunk(initialIndex));
               }
             }}
+          />
+        ) : (
+          <CodeMirror
+            value={after}
+            height="100%"
+            width="100%"
+            theme="none"
+            basicSetup={false}
+            editable={false}
+            extensions={extensions}
             className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
-            aria-label={resource.kind === 'file-diff' ? t('turnFiles.diffViewer') : t('turnFiles.versionViewer')}
+            aria-label={t('turnFiles.versionViewer')}
           />
         )}
       </div>

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { authoringWorkflowGraphSignature, authoringWorkflowTopologySignature } from '@/components/WorkflowEditor';
-import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
+import { authoringWorkflowGraphSignature, authoringWorkflowNodeAgentIds, authoringWorkflowTopologySignature } from '@/components/WorkflowEditor';
+import type { WorkflowDsl, WorkflowModelBindings, WorkflowWorkerNodeDsl } from '@/types';
 
 function worker(id: string, patch: Partial<WorkflowWorkerNodeDsl> = {}): WorkflowWorkerNodeDsl {
   return {
     type: 'worker',
     id,
-    provider: 'claude-acp',
+    executionSlotId: `slot-${id}`,
     profile: 'developer',
     goal: `Run ${id}`,
     ...patch,
@@ -49,10 +49,10 @@ describe('authoringWorkflowGraphSignature', () => {
     expect(authoringWorkflowGraphSignature(after)).toBe(authoringWorkflowGraphSignature(before));
   });
 
-  it('changes when topology or canvas presentation fields change', () => {
+  it('changes only when topology or canvas presentation fields change', () => {
     const before = workflow();
-    const providerChanged = workflow({
-      nodes: [worker('dev', { provider: 'codex-acp' }), worker('test')],
+    const nodeChanged = workflow({
+      nodes: [worker('implement'), worker('test')],
     });
     const edgeChanged = workflow({
       edges: [
@@ -61,9 +61,30 @@ describe('authoringWorkflowGraphSignature', () => {
       ],
     });
 
-    expect(authoringWorkflowGraphSignature(providerChanged)).not.toBe(authoringWorkflowGraphSignature(before));
+    expect(authoringWorkflowGraphSignature(nodeChanged)).not.toBe(authoringWorkflowGraphSignature(before));
     expect(authoringWorkflowGraphSignature(edgeChanged)).not.toBe(authoringWorkflowGraphSignature(before));
-    expect(authoringWorkflowTopologySignature(providerChanged)).toBe(authoringWorkflowTopologySignature(before));
+    expect(authoringWorkflowTopologySignature(nodeChanged)).not.toBe(authoringWorkflowTopologySignature(before));
     expect(authoringWorkflowTopologySignature(edgeChanged)).not.toBe(authoringWorkflowTopologySignature(before));
+  });
+
+  it('projects ordinary Worker Agent icons from stable model bindings without changing topology', () => {
+    const value = workflow();
+    const modelBindings: WorkflowModelBindings = {
+      definitionRevision: 'definition-1',
+      bindingRevision: 1,
+      bindings: [
+        { executionSlotId: 'slot-dev', agentId: 'codex-acp' },
+        { executionSlotId: 'slot-test', agentId: 'claude-acp' },
+      ],
+    };
+
+    expect(authoringWorkflowNodeAgentIds(value, modelBindings)).toEqual({
+      dev: 'codex-acp',
+      test: 'claude-acp',
+    });
+    expect(authoringWorkflowGraphSignature(value)).toBe(authoringWorkflowGraphSignature({
+      ...value,
+      nodes: value.nodes.map((node) => ({ ...node, provider: 'legacy-provider' })),
+    }));
   });
 });

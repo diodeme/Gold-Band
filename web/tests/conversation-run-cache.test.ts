@@ -35,6 +35,41 @@ describe('ConversationRunCache', () => {
     })).toBeNull();
   });
 
+  it('restores manual attempt navigation state with the cached run', () => {
+    const cache = new ConversationRunCache();
+    const selectedSessionKey = 'round-001/dev/attempt-001';
+    const cachedRun = {
+      ...run(1),
+      sessionTree: { rounds: [], selectedSessionKey },
+    };
+    cache.store(cachedRun, {
+      followMode: 'manual',
+      selectedSessionKey,
+    });
+
+    expect(cache.restoreEntry(cachedRun)?.viewState).toEqual({
+      followMode: 'manual',
+      selectedSessionKey,
+    });
+  });
+
+  it('keeps run view state when a refreshed run snapshot is stored', () => {
+    const cache = new ConversationRunCache();
+    const selectedSessionKey = 'round-001/history/attempt-001';
+    cache.store(run(1), {
+      followMode: 'manual',
+      selectedSessionKey,
+    });
+    cache.store({ ...run(1), title: 'Refreshed run' });
+
+    const restored = cache.restoreEntry(run(1));
+    expect(restored?.run.title).toBe('Refreshed run');
+    expect(restored?.viewState).toEqual({
+      followMode: 'manual',
+      selectedSessionKey,
+    });
+  });
+
   it('evicts the least recently used run at the shared finite limit', () => {
     const cache = new ConversationRunCache();
     for (let index = 0; index <= CONVERSATION_RUN_CACHE_LIMIT; index += 1) {

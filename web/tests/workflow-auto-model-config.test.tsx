@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 import i18n from '@/i18n';
 import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor, WorkflowNodeInspector, workflowEditorSupportedAgents } from '@/components/WorkflowEditor';
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
-import type { AgentRegistryVm, WorkflowDsl } from '@/types';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import type { AgentRegistryVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
 
 const agentRegistry = {
   agents: [{
@@ -23,15 +24,30 @@ const agentRegistry = {
   catalog: [],
 } as AgentRegistryVm;
 
-function renderWorkflowNodeInspector(workflow: WorkflowDsl) {
-  return renderToStaticMarkup(React.createElement(WorkflowNodeInspector, {
-    node: workflow.nodes[0],
+function renderWithTooltip(element: React.ReactElement) {
+  return renderToStaticMarkup(React.createElement(TooltipProvider, null, element));
+}
+
+function renderWorkflowNodeInspector(
+  workflow: WorkflowDsl,
+  modelBindings: WorkflowModelBindings = { definitionRevision: '', bindingRevision: 0, bindings: [] },
+) {
+  const node = workflow.nodes[0];
+  return renderWithTooltip(React.createElement(WorkflowNodeInspector, {
+    node,
+    binding: node?.type === 'worker'
+      ? modelBindings.bindings.find((binding) => binding.executionSlotId === node.executionSlotId) ?? null
+      : null,
+    modelBindings,
     agents: workflowEditorSupportedAgents(agentRegistry),
-    profiles: workflow.nodes[0]?.type === 'worker' ? [{ id: 'interview', name: 'Interview' }] : [],
+    profiles: node?.type === 'worker' ? [{ id: 'interview', name: 'Interview' }] : [],
     workflow,
     workflowTemplates: null,
     fieldErrors: {},
     onUpdate: () => undefined,
+    onBindingUpdate: () => undefined,
+    onBindingSync: () => undefined,
+    workflowControl: React.createElement('div', { 'data-slot': 'workflow-control-config' }),
     t: i18n.t.bind(i18n),
   }));
 }
@@ -66,30 +82,42 @@ describe('workflow and AUTO model configuration', () => {
       nodes: [{
         type: 'worker',
         id: 'interview',
-        provider: 'claude-acp',
+        executionSlotId: 'slot-interview',
         profile: 'interview',
-        model: 'sonnet',
-        config_options: { reasoning_effort: 'high' },
       }],
       edges: [{ from: 'interview', to: '$end', on: 'success' }],
     };
 
-    const editorHtml = renderToStaticMarkup(React.createElement(WorkflowEditor, {
+    const modelBindings = { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot-interview', agentId: 'claude-acp', modelId: 'sonnet', configOptions: { reasoning_effort: 'high' } }] };
+    const editorHtml = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
+      modelBindings,
       agentRegistry,
       profiles: [{ id: 'interview', name: 'Interview' }],
       onSave: () => undefined,
       showSaveAction: false,
     }));
-    const html = renderWorkflowNodeInspector(workflow);
+    const html = renderWorkflowNodeInspector(workflow, modelBindings);
 
     expect(editorHtml).not.toContain('Sonnet · High');
     expect(html).toContain('Sonnet · High');
     expect(html).toContain('data-slot="dropdown-menu-trigger"');
+    const modelConfigIndex = html.indexOf('data-slot="worker-model-config"');
+    const workflowControlIndex = html.indexOf('data-slot="workflow-control-config"');
+    const nodeConfigIndex = html.indexOf('data-slot="worker-node-config"');
+    expect(modelConfigIndex).toBeGreaterThan(-1);
+    expect(workflowControlIndex).toBeGreaterThan(modelConfigIndex);
+    expect(nodeConfigIndex).toBeGreaterThan(workflowControlIndex);
+    expect(html).toContain('data-slot="worker-inspector"');
+  });
+
+  it('states that model synchronization is limited to the current workflow', () => {
+    expect(i18n.getResource('zh-CN', 'translation', 'workflowEditor.syncDialogDescription')).toContain('仅在当前工作流内');
+    expect(i18n.getResource('en', 'translation', 'workflowEditor.syncDialogDescription')).toContain('current workflow only');
   });
 
   it('replays an AUTO fixed-agent model and thought level through the same selector', () => {
-    const html = renderToStaticMarkup(React.createElement(RunModeManagementPage, {
+    const html = renderWithTooltip(React.createElement(RunModeManagementPage, {
       projectId: 'project-a',
       workspaceName: 'Project A',
       workspaces: [{ projectId: 'project-a', name: 'Project A', workspacePath: 'D:/project-a' }],
@@ -152,7 +180,7 @@ describe('workflow and AUTO model configuration', () => {
       edges: [{ from: 'route', to: '$end', on: 'success' }],
     };
 
-    const editorHtml = renderToStaticMarkup(React.createElement(WorkflowEditor, {
+    const editorHtml = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
       profiles: [],
@@ -168,7 +196,7 @@ describe('workflow and AUTO model configuration', () => {
   });
 
   it('replays every dynamic AUTO model role with its own thought-level override', () => {
-    const html = renderToStaticMarkup(React.createElement(RunModeManagementPage, {
+    const html = renderWithTooltip(React.createElement(RunModeManagementPage, {
       projectId: 'project-a',
       workspaceName: 'Project A',
       workspaces: [{ projectId: 'project-a', name: 'Project A', workspacePath: 'D:/project-a' }],

@@ -6,6 +6,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { cn } from '@/lib/utils';
 import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
 
+const SESSION_TREE_ROW_HOVER_CLASS = 'hover:bg-sidebar-accent/55 hover:text-sidebar-accent-foreground';
+
 interface ConversationSessionSwitcherProps {
   tree: ConversationSessionTreeVm;
   selectedKey?: string | null;
@@ -44,7 +46,7 @@ function RoundNode({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium">
+        <Button variant="ghost" className={cn('h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium', SESSION_TREE_ROW_HOVER_CLASS)}>
           <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
           {round.label}
         </Button>
@@ -77,7 +79,7 @@ function TreeNode({
     <div>
       <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger asChild>
-          <Button variant="ghost" className="h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs">
+          <Button variant="ghost" className={cn('h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs', SESSION_TREE_ROW_HOVER_CLASS)}>
             <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
             <span className="truncate">{node.label}</span>
           </Button>
@@ -121,9 +123,12 @@ function SessionLeaf({
   return (
     <button
       type="button"
+      aria-current={selected ? 'true' : undefined}
+      data-selected={selected}
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent',
-        selected && 'bg-sidebar-accent text-sidebar-accent-foreground',
+        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs',
+        SESSION_TREE_ROW_HOVER_CLASS,
+        selected && 'bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent',
       )}
       onClick={onSelect}
     >

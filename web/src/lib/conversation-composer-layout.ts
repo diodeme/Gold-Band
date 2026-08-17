@@ -4,11 +4,13 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   textareaMinHeightClassName: 'min-h-14',
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-4',
+  attachedInfoRailClassName: 'min-w-0',
+  attachedInfoClassName: "relative mx-12 flex h-8 min-w-0 items-center gap-1 rounded-t-2xl [--conversation-workspace-info-surface:light-dark(var(--gold-surface-high),var(--gb-conversation-background))] bg-[var(--conversation-workspace-info-surface)] px-3 shadow-none before:pointer-events-none before:absolute before:-left-4 before:bottom-0 before:size-4 before:[background:radial-gradient(circle_at_top_left,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] before:content-[''] after:pointer-events-none after:absolute after:-right-4 after:bottom-0 after:size-4 after:[background:radial-gradient(circle_at_top_right,transparent_0_15px,var(--conversation-workspace-info-surface)_16px)] after:content-['']",
   toolbarClassName: 'mt-3 grid gap-2 border-t border-border/40 pt-3',
-  simpleToolbarClassName: 'grid-cols-1 @sm/conversation-composer:grid-cols-[minmax(0,1fr)_auto] @sm/conversation-composer:items-center @sm/conversation-composer:gap-3',
+  simpleToolbarClassName: 'grid-cols-1 @xs/conversation-composer:grid-cols-[minmax(0,1fr)_auto] @xs/conversation-composer:items-center @xs/conversation-composer:gap-3',
   configuredToolbarClassName: 'grid-cols-1 @2xl/conversation-composer:grid-cols-[minmax(12rem,0.75fr)_minmax(28rem,1.25fr)] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
   leadingActionsClassName: 'flex min-w-0 items-center gap-2',
-  workspaceControlClassName: 'min-w-0 max-w-none flex-1',
+  workspaceControlClassName: 'w-fit min-w-0 max-w-full flex-initial',
   simpleTrailingActionsClassName: 'flex min-w-0 justify-end',
   configuredTrailingActionsClassName: 'grid min-w-0 grid-cols-1 gap-2 @sm/conversation-composer:grid-cols-2 @lg/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] @2xl/conversation-composer:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] @2xl/conversation-composer:items-center @2xl/conversation-composer:gap-3',
   configTriggerClassName: 'w-full max-w-none',
@@ -22,6 +24,7 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 } as const;
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
+  stackSurfaceClassName: 'border-0',
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
   leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
   trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',

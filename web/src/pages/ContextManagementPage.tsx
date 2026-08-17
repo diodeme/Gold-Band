@@ -20,6 +20,7 @@ import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
+import { SkillSyncTargetSelector } from '@/components/SkillSyncTargetSelector';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -1239,32 +1240,36 @@ function SkillSheet({
             </div>
           ) : (
             <>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
-                <select
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              <div className="space-y-1">
+                <span id="skill-scope-label" className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
+                <Select
                   value={mode === 'edit' && editWorkspacePath ? `project:${editWorkspacePath}` : form.source}
-                  onChange={(event) => setForm((current) => ({ ...current, source: event.target.value }))}
+                  onValueChange={(source) => setForm((current) => ({ ...current, source }))}
                   disabled={mode === 'edit'}
                 >
-                  {mode === 'edit' && editWorkspacePath ? (
-                    <option value={`project:${editWorkspacePath}`}>
-                      {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
-                    </option>
-                  ) : (
-                    <>
-                      {workspaces.map((workspace) => (
-                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</option>
-                      ))}
-                      <option value="global">{t('contextManagement.skills.globalBadge', 'Global')}</option>
-                      {workspaces.length === 0 && <option value="project">{t('contextManagement.skills.projectBadge', 'Project')}</option>}
-                    </>
-                  )}
-                </select>
+                  <SelectTrigger className="h-10 w-full" aria-labelledby="skill-scope-label">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {mode === 'edit' && editWorkspacePath ? (
+                      <SelectItem value={`project:${editWorkspacePath}`}>
+                        {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
+                      </SelectItem>
+                    ) : (
+                      <>
+                        {workspaces.map((workspace) => (
+                          <SelectItem key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</SelectItem>
+                        ))}
+                        <SelectItem value="global">{t('contextManagement.skills.globalBadge', 'Global')}</SelectItem>
+                        {workspaces.length === 0 && <SelectItem value="project">{t('contextManagement.skills.projectBadge', 'Project')}</SelectItem>}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   {currentSkillStorageHint}
                 </p>
-              </label>
+              </div>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.name', '名称')}</span>
                 <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -1273,24 +1278,7 @@ function SkillSheet({
                 <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
                 <Textarea className="min-h-24 text-sm leading-relaxed" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
               </label>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.skills.syncTargets', '同步到')}</span>
-                {availableSyncAgents.length > 0 ? (
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {availableSyncAgents.map((agent) => (
-                      <label key={agent.agentType} className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={syncTargets.includes(agent.agentType)} onChange={(event) => {
-                          setSyncTargets((current) => event.target.checked ? [...current, agent.agentType] : current.filter((target) => target !== agent.agentType));
-                        }} />
-                        <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-4')} />
-                        <span className="text-sm">{agent.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">{t('contextManagement.skills.noConfiguredAgents', 'No configured agent available for sync.')}</p>
-                )}
-              </label>
+              <SkillSyncTargetSelector agents={availableSyncAgents} value={syncTargets} onValueChange={setSyncTargets} />
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
                 <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />

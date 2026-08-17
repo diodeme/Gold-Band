@@ -253,7 +253,7 @@ function validateAssetReferences({ manifest, presets, fonts, icons, wallpapers, 
       if (face.weightMin < asset.fontMetadata.weightMin || face.weightMax > asset.fontMetadata.weightMax) throw themeError('theme.font-metadata-invalid', `${manifest.id}: ${face.id} font weight range is not supported by ${face.assetId}`);
       for (const locale of face.coverage.locales ?? []) try { new Intl.Locale(locale); } catch { throw themeError('theme.font-coverage-invalid', `${manifest.id}: invalid locale ${locale}`); }
     }
-    for (const stack of fonts.stacks) for (const faceId of [...stack.defaultFaces, ...Object.values(stack.byScript ?? {}).flat(), ...Object.values(stack.byLocale ?? {}).flat()]) if (!faceIds.has(faceId)) throw themeError('theme.font-stack-unresolved', `${manifest.id}: ${stack.id} references ${faceId}`);
+    for (const stack of fonts.stacks) for (const faceId of stack.defaultFaces) if (!faceIds.has(faceId)) throw themeError('theme.font-stack-unresolved', `${manifest.id}: ${stack.id} references ${faceId}`);
     const stackIds = new Set(fonts.stacks.map((stack) => stack.id));
     for (const scheme of ['light', 'dark']) for (const id of [presets[scheme].typography.uiStackId, presets[scheme].typography.editorStackId]) if (!stackIds.has(id)) throw themeError('theme.font-stack-unresolved', `${manifest.id}: unknown stack ${id}`);
   }
@@ -309,13 +309,15 @@ function compilePackageCss(themePackage) {
   }
   for (const [schemeName, scheme] of Object.entries(themePackage.schemes)) {
     const declarations = Object.entries(scheme.semantic).map(([name, value]) => `${semanticCssVariable(name)}:${value}`);
-    declarations.push(...tokenDeclarations(scheme), ...typographyDeclarations(themePackage, scheme, 'en'));
+    declarations.push(...tokenDeclarations(scheme), ...typographyDeclarations(themePackage, scheme));
     blocks.push(`${selector}[data-color-scheme='${schemeName}']{${declarations.join(';')}}`);
   }
   blocks.push(
     `${selector} body,${selector} #root,${selector} .app-window-shell{background-color:var(--gold-workspace);background-image:var(--gb-theme-background-image);background-attachment:fixed;background-size:cover}`,
     `${selector} [data-theme-wallpaper-slot]{position:relative;isolation:isolate}`,
-    `${selector} [data-theme-wallpaper-slot]::before{position:absolute;z-index:-1;inset:0;pointer-events:none;content:"";background-image:linear-gradient(color-mix(in srgb,var(--gb-wallpaper-overlay-color) calc(var(--gb-wallpaper-overlay-opacity)*100%),transparent),color-mix(in srgb,var(--gb-wallpaper-overlay-color) calc(var(--gb-wallpaper-overlay-opacity)*100%),transparent)),var(--gb-wallpaper-image,none);background-position:var(--gb-wallpaper-position,center);background-size:var(--gb-wallpaper-size,cover);background-repeat:var(--gb-wallpaper-repeat,no-repeat);opacity:var(--gb-wallpaper-opacity,1)}`,
+    `${selector} [data-theme-wallpaper-slot]::before,${selector} [data-theme-wallpaper-slot]::after{position:absolute;inset:0;pointer-events:none;content:""}`,
+    `${selector} [data-theme-wallpaper-slot]::before{z-index:-2;background-image:var(--gb-wallpaper-image,none);background-position:var(--gb-wallpaper-position,center);background-size:var(--gb-wallpaper-size,cover);background-repeat:var(--gb-wallpaper-repeat,no-repeat);opacity:var(--gb-wallpaper-opacity,1)}`,
+    `${selector} [data-theme-wallpaper-slot]::after{z-index:-1;background:color-mix(in srgb,var(--gb-wallpaper-overlay-color,transparent) calc(var(--gb-wallpaper-overlay-opacity,0)*100%),transparent)}`,
   );
   const recipeComponentBlocks = [];
   for (const [role, recipe] of Object.entries(themePackage.recipes)) {
@@ -351,9 +353,9 @@ function tokenDeclarations(scheme) {
   ];
 }
 
-function typographyDeclarations(themePackage, scheme, locale) {
-  const ui = resolveFontStack(themePackage, scheme.typography.uiStackId, locale);
-  const editor = resolveFontStack(themePackage, scheme.typography.editorStackId, locale);
+function typographyDeclarations(themePackage, scheme) {
+  const ui = resolveFontStack(themePackage, scheme.typography.uiStackId);
+  const editor = resolveFontStack(themePackage, scheme.typography.editorStackId);
   return [
     `--gb-theme-ui-font-family:${serializeFontFamilies(ui.families, 'sans-serif')}`, `--gb-theme-editor-font-family:${serializeFontFamilies(editor.families, 'monospace')}`,
     `--gb-theme-ui-font-size:${scheme.typography.uiSize}px`, `--gb-theme-editor-font-size:${scheme.typography.editorSize}px`,
@@ -362,16 +364,13 @@ function typographyDeclarations(themePackage, scheme, locale) {
   ];
 }
 
-function resolveFontStack(themePackage, stackId, locale) {
+function resolveFontStack(themePackage, stackId) {
   const safe = stackId.includes('editor') ? { families: ['JetBrains Mono', 'SFMono-Regular', 'Consolas'] } : { families: ['Inter Variable', 'Gold Band MiSans', 'Microsoft YaHei UI', 'PingFang SC'] };
   if (!themePackage.fonts) return safe;
   const stack = themePackage.fonts.stacks.find((candidate) => candidate.id === stackId);
   if (!stack) return safe;
-  const normalizedLocale = new Intl.Locale(locale).toString();
-  const script = new Intl.Locale(locale).maximize().script;
-  const faceIds = stack.byLocale?.[normalizedLocale] ?? stack.byScript?.[script] ?? stack.defaultFaces;
   const faces = new Map(themePackage.fonts.faces.map((face) => [face.id, face.runtimeFamily]));
-  return { families: [...new Set([...faceIds.map((id) => faces.get(id)).filter(Boolean), ...stack.systemFallbacks])] };
+  return { families: [...new Set([...stack.defaultFaces.map((id) => faces.get(id)).filter(Boolean), ...stack.systemFallbacks])] };
 }
 
 function compileRecipeCss(selector, role, recipe) {

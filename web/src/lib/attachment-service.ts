@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from './attachments';
 import { materializeConversationAttachments, pickAttachmentFiles } from '@/api';
-import type { MaterializeAttachmentFileInput } from '@/api/client';
+import type { AttachmentFileRef, MaterializeAttachmentFileInput } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
 
 // ── Types ──
@@ -87,6 +87,26 @@ function guessMimeFromExtension(name: string): string {
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function attachmentItemsFromPaths(
+  paths: readonly string[],
+  fileRefs: readonly AttachmentFileRef[] = [],
+): AttachmentItem[] {
+  const refsByPath = new Map(fileRefs.map((file) => [file.path, file]));
+  return paths.map((path, index) => {
+    const file = refsByPath.get(path);
+    const name = file?.name || path.split(/[\\/]/).pop() || path;
+    return {
+      id: `queued-${generateId()}-${index}`,
+      name,
+      size: file?.size ?? 0,
+      mime: guessMimeFromExtension(name),
+      path,
+      previewUrl: file?.previewUrl ?? undefined,
+      source: 'dialog' as const,
+    };
+  });
 }
 
 function filesToItems(files: File[], source: AttachmentItem['source']): AttachmentItem[] {

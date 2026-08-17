@@ -1,5 +1,12 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-17：会话侧栏工作空间分组间距收紧
+
+- 根因：工作空间列表结构、sticky 标题和展开生命周期设计正确，但每个分组外层仍统一使用 16px 底部间距，折叠工作空间较多时产生了超过分组层级所需的连续空白。这是共享排版 token 偏松，不是单个工作空间或截图尺寸的特例。
+- 实现：继续复用现有 React、Tailwind 与 shadcn `ScrollArea`，将所有工作空间分组的统一底部间距从 16px 收敛到 8px；不改变标题行高、会话行高、展开内容、sticky 接替或“添加工作空间”入口。
+- 验收：DOM 组件测试通过稳定的 workspace group 标记固定所有分组消费紧凑间距 token，视觉层级契约同时禁止回退到旧间距；2 个定向 Vitest 文件共 7 项测试通过，TypeScript 与 Web 生产构建通过。内置浏览器 deep link 在 1280px、720px、重新拉宽到 1440px 三种宽度下确认折叠/展开分组的计算间距均为 8px，无横向溢出或控制台告警；多工作空间一致性由包含 2 个 workspace 的 DOM 契约固定。
+- 性能与过度设计评审：只替换一个共享 Tailwind spacing utility，并增加测试标记；不新增状态、effect、DOM 测量、依赖、缓存、请求或渲染分支。工作空间列表仍是既有单次 O(n) React 映射，DOM 数量与重渲染范围不变，无需 benchmark。
+
 ## 2026-08-16：产品悬浮提示统一迁移
 
 - 根因：项目已经确立 shadcn/Radix Tooltip 与全局 Provider，但多个页面仍直接使用浏览器 `title`，React Flow 画布控制和 Streamdown 代码/图片控制还会由依赖内部间接生成 `title`。这是共享交互契约覆盖不完整，不是工作流或文件列表的局部样式问题。
@@ -14,6 +21,13 @@
 - 实现：继续复用现有 React、Tailwind 与 shadcn Tooltip，不引入新组件或依赖。展示态与编辑态都增加只负责页头布局的外层槽位；Tooltip/click trigger 使用 intrinsic `inline-flex`，输入框使用浏览器原生 `field-sizing: content`，两者均通过 `max-w-full` 受槽位约束；同步补充输入框无障碍名称。
 - 验收：DOM 单元测试固定父级 `flex-1` 只作用于布局槽位，展示态 trigger 与编辑态输入框均不继承伸展宽度且保留最大宽度约束；执行定向 Vitest、TypeScript 与 Web 生产构建，并使用内置浏览器 deep link 检查短标题、标题后空白命中、长标题与窄窗口编辑态。
 - 性能与过度设计评审：没有新增 React state、effect、DOM 测量、ResizeObserver、缓存、I/O、依赖或逐帧计算；每次输入仍只更新标题组件自身，宽度由浏览器既有布局阶段计算。现有 canonical title、保存接口和事件链足以表达需求，不新增状态模型或抽象。
+
+## 2026-08-17：字体栈与界面语言解耦
+
+- 根因：Theme Contract 同时保存固定 `defaultFaces` 和 `byLocale / byScript` 分支，外观 resolver 又把界面语言作为字体 family 的投影输入；切到英文后 MiSans 被从全局栈删除，仍存在的中文任务名、文件名和消息便回退到系统字体。问题来自主题字体权威模型错误，不是侧栏字号、字重或局部样式不一致。
+- 数据与实现：破坏式删除 Theme SDK、Web Zod、Rust serde 与主题包中的 `byLocale / byScript`，主题 `defaultFaces` 成为唯一默认有序栈；两个内置主题固定为 `Inter Variable → Gold Band MiSans → 系统 CJK fallback → sans-serif`。`resolveAppearance / applyAppearance` 删除语言参数，App 与 Settings 的语言事件不再重新应用外观或个性化字体；设置页通过独立 helper 读取 stack 的本地化 `displayName`。用户 `custom` 栈继续是唯一覆盖来源，浏览器原生 glyph fallback 继续负责混排。
+- 验收：Theme SDK 拒绝重新声明语言分支并固定生成 CSS 的 Inter/MiSans 顺序；Vitest 固定主题 resolver 的完整 UI 栈及 UI/editor 隔离，Rust Catalog 固定两个内置主题的 `defaultFaces`；执行主题构建、定向单元测试、TypeScript、Web 生产构建和 Rust 定向测试，并在内置浏览器 deep link 中比较中英文切换前后的根变量与侧栏中文标题 computed `font-family`。
+- 性能与过度设计评审：删除两类条件分支、locale 解析和语言变化触发的根变量重写，不新增状态、Context、依赖、缓存、队列、扫描或逐字符 JavaScript。MiSans 仍由浏览器在内容实际需要中文 glyph 时命中；已有固定有序栈和用户覆盖模型足以表达不变量，无需新增字体状态机或兼容层。
 
 ## 2026-08-15：会话侧边栏固定区与滚动区收敛
 
@@ -104,6 +118,7 @@
 - 高级调度 / 多 run 并发 orchestration
 
 ### 桌面端 MVP 增量
+- 2026-08-13：完成“默认轻量工作流”。保留稳定 ID `default` 并将展示名调整为“默认完整工作流”，新增 `default-lightweight`，拓扑为 `grill -> dev-test -> accept`；新增内置 `pf-builtin-dev-test` 中英文角色 prompt。轻量模板验收失败通过 `$new-round(new_round_entry=dev-test)` 回到开发测试；完整与轻量模板都默认配置 `max_attempts=10`、`max_rounds=3`，重试和新 Round 次数统一遵循现有 Control DSL。原 `includeInterview` 特判已删除，改为模板元数据驱动的可选入口能力；模板只用 `isBuiltIn` 区分是否内置，不定义完整/轻量类型枚举。完整模板显示采访开关，轻量模板显示拷问开关，偏好按 workspace/template 持久化，定时任务冻结创建时的有效选择。Rust 编译与专项接口测试、Web 全量测试、生产构建及 `/chat`、`/chat/run-modes` 页面验收通过；根 crate 全量 Rust 测试在 10 分钟工具窗口内未结束且无失败输出，已在实施方案中如实记录。详细数据、接口、测试与性能结论见 `docs/gold-band/开发计划/新增流程/默认轻量工作流实施方案.md`。
 - 2026-08-12：完成 Workflow Runtime execution 与 ACP 生命周期解耦。`run.json.execution` 以显式 phase、精确 locator 和单调 revision 成为 Workflow/AUTO 阶段唯一权威源；Runtime control、ACP session availability、进程内 live turn 与 latest turn 历史分别投影。破坏式删除 `runtime active + ACP terminal => launching-next-node` 及通用 ACP active/terminal DTO 消费，`acp.snapshot.json / acp.session.json` 也从混合 `status` 迁移为 `availability + latestTurnStatus`，旧文件首次读取后一次性回写。停止后的 NonRuntime 追问结束仍保持 Paused，继续命令在后台启动前先提交 checkpoint phase。`run-progress.json` 仅作 revision 对齐后的观测，启动恢复仍统一收敛为 `Paused + ProcessInterrupted`。Rust/Web 接口回归覆盖停止/恢复、manual check、Direct、AI-DYNAMIC、stale snapshot/progress、metadata migration 与 sidebar/composer 单调收敛；不增加轮询、timeline 扫描或 token 热路径写入。
 - 2026-08-10：完成 AI-DYNAMIC 工作空间树与 Git 基础设施 V2。破坏式删除 Agent-facing `WorkspaceMode / WorkspacePolicy`，runtime 以 `WorkspaceState` catalog 统一管理 main/worktree 的身份、父子关系、所有权和生命周期；`single` 继承来源 workspace，`fanout` 自动从来源 workspace checkpoint 分叉隔离 worktree，嵌套 fanout 的 merge/acceptance 回到 `group.targetWorkspaceId`。新增基于 Git CLI 的 typed `GitRepositoryService / GitWorkspaceManager`，供 runtime 与后续右侧 Git 面板共用；AUTO 和含 AI-DYNAMIC 的固定工作流在创建 run 前执行 Git/仓库/HEAD/worktree preflight，桌面端用 shadcn 对话框支持下载 Git、重新检测、初始化仓库或切换工作流。Rust 接口测试固化 preflight、checkpoint、single 继承、fanout 隔离和嵌套父 workspace 路由；后续右侧 Git 状态/提交面板继续复用该服务边界，不进入本次 UI 范围。
 - 2026-08-07：补齐内置角色元数据国际化。内置角色名称、摘要与正文统一按 `desktop_language` 选择中文或英文版本；`pf-builtin-*` profile ID、默认工作流 DSL、任务 workflow 和运行快照中的角色引用保持不变。Rust 单元测试覆盖全部内置角色的中英文名称、摘要差异与 ID 稳定性。
@@ -215,7 +230,8 @@
 - 2026-08-11：Release Please 明确启用 `bump-minor-pre-major`。在正式进入 `1.0.0` 前，带 `!` 或 `BREAKING CHANGE` 的提交从当前 `0.x` 版本提升 minor 并归零 patch，例如 `0.12.4` 发布为 `0.13.0`；进入稳定版后的 major 版本规则不受影响。配置契约由 `npm run test:release-config` 固化，避免发布策略被后续配置调整意外移除。
 - 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，手动触发用于补跑 release-please 主链路；updater manifest 生成时显式使用 release tag，避免 workflow_dispatch 分支名进入 `version` 或下载 URL；Windows 平台优先选择签名的 setup exe 作为更新安装包；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback，重建时应用源码来自 release tag，发布脚本和 manifest 生成逻辑来自所选 workflow 分支。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON；本地生成 `latest.json` 时必须优先匹配本次构建 version 对应的签名安装包，避免目录残留旧包时 URL 指回历史 exe。
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
-- 2026-06-12：高级设置中“记录详细日志”“开启指标上报”的常驻说明文案改为与“使用本地 Claude”一致的 tips icon tooltip 形式，减少长说明占位；“开启指标上报”标题颜色与相邻设置项统一为 muted heading 样式；这两项开关位置也改为与“使用本地 Claude”一致，放到标题行内而不是远端右对齐。
+- 2026-06-12：高级设置中“记录详细日志”“开启指标上报”的常驻说明文案改为 tips icon tooltip 形式，减少长说明占位；“开启指标上报”标题颜色与相邻设置项统一为 muted heading 样式；这两项开关统一放到标题行内而不是远端右对齐。
+- 2026-08-16：高级设置移除“使用本地 Claude”开关和页面挂载时的本地可执行文件探测；前端保存设置时固定提交 `useLocalClaude = false`，后端 `RuntimeConfig` 加载入口也固定投影为 `false`，历史持久化的 `true` 不再影响运行时，旧用户升级后立即使用 ACP npm 包内版本。后端字段、接口和既有 ACP 解析代码继续保留，未来重新开放时恢复单一配置投影与前端入口即可。
 - 2026-05-27：更新提示新增分层红点：后台发现当前可更新版本时，左侧 Settings、设置页 Advanced tab 和 Updates 分组标题同时提醒；Settings 和 Advanced 的已读状态按版本号持久化，用户逐层进入时只清当前层，Updates 红点仅在当前无可更新版本时消失。
 - 2026-05-27：右侧主内容区顶部新增一次性更新公告区；首次发现某个新版本时展示公告，点击后弹窗引导用户前往 设置 → 高级 → 更新；公告关闭状态与可用更新快照一并持久化，重启应用后若版本仍可更新则公告继续可见，直到用户关闭或后续检查确认无更新。
 - 2026-05-27：修正更新状态区的缓存展示语义；当重启后仅命中持久化的可用更新快照、实时 `updateStatus` 仍是 `idle` 时，UI 仍按“可更新”态展示状态文案、版本号和安装入口，避免出现“尚未检查”与可更新版本并存。
@@ -225,6 +241,7 @@
 - 2026-06-11：修复新 UI ACP 会话的跨节点自动跳转策略；前端把“是否允许自动跟随 running session”提升为显式状态，只有当前消息窗口贴底且用户仍在跟随当前运行会话时，新的 ACP live event 才会把选中会话切到下一运行节点。用户手动切到其他 session 或滚离底部后，后台节点继续运行，但不会再抢占当前会话视图；run VM 刷新若未命中自动跟随条件，必须保留既有 `selectedSessionKey`，并且手动切换与已排队的 live refresh 冲突时，手动选择优先。
 - 2026-06-12：会话页手动切换后的 auto-follow 判定改为基于 `run.activeSessions` 是否包含当前选中 session，而不是依赖叶子节点自身的 `runtimeDisplay.tone`；这样已完成节点在树状态短暂滞后时，也不会被误判为仍应跟随并再次跳回后台运行节点。
 - 2026-06-12：修复新 UI 默认选错 session 的问题。run VM 无显式 `selectedSessionKey` 时默认按 attempt 开始时间选择最新 session，避免 task-040 这类最新 `开发/attempt-002` 被 workflow 顺序最后的 `测试/attempt-001` 抢占；`process-interrupted` 可继续态仍保留 composer 输入触发 workflow runtime continue 的既有设计。
+- 2026-08-17：补齐 auto-follow 跨页面重挂载的 run 级生命周期。Conversation run 的 12 项内存 LRU 现在原子保存 `followMode + selectedSessionKey`；用户查看历史 attempt 或滚离底部后，切换到其他页面再返回会恢复原 attempt，并继续命中既有 ACP event-window 滚动锚点。删除 `conversationPage` 变化与 `ConversationRunPage` mount 时无条件恢复 auto 的入口；侧边栏“快速对话”、工作区“新会话”、搜索结果和通知跳转也统一经过 cache-aware 导航边界；ACP viewport 首帧直接使用缓存的 `atBottom` follow 意图，避免子组件先以贴底状态覆盖滚动锚点；initial-load 使用 remembered session key 请求正文并在后台快照合并时保留 manual selection，显式 attempt deep link 仍拥有最高优先级。新增缓存、reentry 选择、导航入口、滚动初始状态和组件重挂载回归测试；不增加后端字段、持久化 I/O、无界缓存或新的滚动实现。
 - 2026-06-12：补齐会话页运行中停止链路并收敛为统一入口。新 UI composer 不再在前端区分普通 ACP prompt 与 workflow runtime continue，而是统一调用桌面 `stop_active_session`；后端内部判定 run running 时复用既有 `App::run_pause` 完成 run 暂停、当前 attempt cancel、provider pid 清理和 dynamic descendants 暂停，run 已非 running 但 ACP 追问仍活跃时复用 `cancel_acp_session` 停止该 ACP session，避免前端和 Tauri command 层复制第二套停止逻辑。
 - 2026-06-25：runtime 增加 `runtime-abnormal` 可继续异常暂停，用于本地 IO/资源、ACP transport 或 driver 异常，区别于 provider/model/workflow 前提错误导致的 `error-blocked`；JSONL append/roll/timeline overwrite 按同一路径串行化，避免并发写坏一行 JSONL；AI-DYNAMIC continue 前会先接受已完整落盘的 `dynamic-node-completion`，避免 session 已完成但 driver 异常暂停后重复发送；doctor ACP 目录改为临时/有界诊断产物，成功后删除、失败时只保留最近一次 bounded bundle。
 - 2026-06-28：修复关闭应用/启动恢复后权限申请重复弹窗的问题。停止流程中的 attempt cancel 现在会同步把未决 ACP permission request 写成 `cancelled` response，并 upsert `acp.timeline.jsonl` / legacy `acp.events.jsonl` 的 `permissionRequest(status=cancelled)`；ACP prompt 的 cancelled/interrupted/error 收尾路径也会执行同一 pending interaction 收敛。`AcpSessionVm.events` 即使做分页裁剪也会附带每个 permission request 的最新终态，用来覆盖前端缓存中的旧 pending。重进页面只回放取消/已选择事实，不再恢复权限弹窗；迟到的旧弹窗授权不能把已取消权限反写为 `selected`。已选择的 `selected` 权限事件不会被停止流程覆盖。前端 ACP event 合并改为按 canonical permission request id 替换 permission 事件，不再把 `sessionId` 混入权限请求身份；后端 cancelled permission event 继承原 pending event 的 session/tool/raw 上下文，避免同一权限裂变为旧 pending 与新 cancelled 两条 UI 事实。
@@ -967,6 +984,7 @@ attempt-001/
 - 进程治理：引入 `command-group 5.0.1` 的 `ManagedProcessGroup`。Windows 使用 Job Object 和 `CREATE_NO_WINDOW`，Unix 使用进程组 TERM→KILL；ACP、MCP stdio、Agent doctor 与登录 Shell PATH 探测已迁移，正常退出不再散落终止单个 PID。
 - 跨端集成：工作空间与会话目录 reveal 统一使用官方 `tauri-plugin-opener`；通知点击统一进入 Rust 待导航队列并恢复主窗口，Windows Toast 保持现有展示，macOS/Linux 使用 `notify-rust` typed response，消除窗口重建时事件早于监听器的竞态。
 - 发布策略：macOS 默认由 Tauri bundler ad-hoc 签名，同一 release 流水线继续产出 arm64/x64 DMG；Apple 凭证全空、部分、完整三种配置由脚本校验，完整时在同一 `tauri-action` 签名公证，构建后严格验证 `.app` 签名。产品不增加 unsigned 分支、文件名后缀或额外提示。
+- 临时安装闭环：Apple Developer Program 凭证未就绪期间，仓库脚本只服务带 `.sha256` 的新 macOS Release。两条发布流水线在资产汇总阶段为 DMG、macOS updater archive、Windows installer 和 Linux packages 流式生成 sidecar；安装脚本不依赖 Python/jq，固定校验 sidecar、DMG、App 名、bundle identifier 与 codesign，并通过同卷暂存、旧 App 备份和失败恢复完成替换。历史 Release 不回填 checksum，也不进入弱校验 fallback。
 - 详细设计与验收见 `开发计划/生命周期整理/桌面生命周期与跨平台集成重构.md`。
 
 ---
@@ -999,7 +1017,7 @@ attempt-001/
 
 - 根因修复：原实现把“业务执行”和“runtime 控制结果归一化”压在同一个 prompt turn，导致 agent 在工作开始前就被结构化 artifact 协议约束，自然业务回复与控制 JSON 相互污染。保留现有 `output_contract` 作为 runtime 控制契约，并新增 `PostTurnProjection / InlineControl` 发射模式，不拆出第二套 contract 领域。
 - 执行契约：普通 workflow worker 与 AI-DYNAMIC 的 worker / workflow invocation / acceptance 先以 Conversation 策略完成可见业务 turn，再复用同一 ACP session 发送隐藏 `RuntimeFinalize` prompt 生成 artifact；AI-DYNAMIC bootstrap dispatcher 的职责就是分发，继续使用 `InlineControl` 在首轮接收并输出完整动态协议。Direct / `RawAgent` 不变。
-- 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。停止、进程恢复和自动重试只要观察到该 durable phase，就跳过业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
+- 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。纯继续、进程恢复和自动重试观察到 `finalizing` 时跳过已完成的业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。若用户在 finalize 暂停边界选择继续并发送，则先原子改写为 `business-turn` 并执行新的用户业务 turn，成功后再回到 `finalizing`；该业务 turn 再次中断时不得直接跳 artifact。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
 - 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
 - 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
 
@@ -1008,12 +1026,12 @@ attempt-001/
 ## 2026-08-10：工作流停止后 Runtime 控制与自由会话分离
 
 - 根因修复：将“Agent turn 是否由 Runtime 消费”从 prompt 内容与节点暂停状态中抽离为 invocation 级 `RuntimeControlled / NonRuntimeControlled`。普通消息不会再因为回复结束而读取 artifact、计算 outcome 或推进 workflow。
-- 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立“继续工作流”按钮。文本提交固定走 NonRuntime ACP prompt，显式继续调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息。
+- 交互收敛：`Paused + ProcessInterrupted` 不新增状态；composer 保持普通聊天，并提供独立继续动作。发送按钮与 Enter 固定走 NonRuntime ACP prompt；没有可发送输入时继续动作显示“继续工作流”，调用 `continue_conversation_runtime` 并发送隐藏 `RuntimeResume`，不创建可见用户消息；存在可发送输入时显示“继续并发送”，以一次 continue command 原子提交用户输入与恢复意图，用户气泡只显示用户输入。
 - 边界提示：Workflow/AUTO 的中英文基础 runtime system prompt 预先声明用户主动打断并转向其他内容时，在 Runtime 明确恢复前无需遵守 artifact 输出语义；中断期间针对当前任务的最新用户指引在恢复后继续有效，可调整任务内容、交付结果与角色流程，但不能覆盖 artifact contract、文件规则及安全边界。AI-DYNAMIC 通过既有 system 组合自然继承且不重复提示。停止后的普通消息保持用户原文，不再追加一次性 suspended hidden context；显式继续的隐藏 `runtimeControlResume` 只用一句短提示声明 Runtime 控制与当前输出契约恢复，不重复 system 规则，也不自动恢复中断前的角色流程。
-- artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 恢复只跳过业务 turn并重新请求完整 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
+- artifact 完整性：PostTurn finalize 中断输出一律不可信；`artifact-emission.json(finalizing)` 的纯恢复只跳过上一业务 turn并重新请求完整 finalize；继续并发送原子切换为 `business-turn`，先执行用户新消息再重新 finalize。InlineControl、PostTurnProjection 与 AI-DYNAMIC 精确 leaf resume 继续复用现有 contract 和 scheduler。
 - 并发与接受边界：`WorkflowContinued` 只在 accepted prompt event 落盘后以 source transition CAS 提交，迟到 resume 不覆盖新 stop。固定工作流 continue 使用 per-run starting lease 拦截双击，且不持有全局锁等待 Agent turn。
 - 性能收口：legacy cursor 缺失时只回扫 timeline 一次并持久化 negative cache；cursor 并发写入使用固定 64 路路径哈希短锁，不维护随 attempt 数增长并在热路径全表清理的锁注册表。Direct / `RawAgent` 首轮直接派生为 NonRuntimeControlled。
-- 回归固化：Rust 覆盖 control cursor、NonRuntime 重复 stop、accepted 后 resume commit、stale resume CAS、legacy negative cache、停止后普通 prompt 原文透传、固定 continue starting lease、Direct 首轮、stop probe、NonRuntime contract policy 与 interrupted PostTurn；Provider prompt bundle 覆盖 PostTurn 业务 turn 不暴露 output DSL，Web 覆盖 paused action + 普通 composer、显式继续入口和旧 `interrupted-input/runtime-continue` 语义删除。
+- 回归固化：Rust 覆盖 control cursor、NonRuntime 重复 stop、accepted 后 resume commit、stale resume CAS、legacy negative cache、停止后普通 prompt 原文透传、固定 continue starting lease、Direct 首轮、stop probe、NonRuntime contract policy 与 interrupted PostTurn，并固定 `finalizing + RuntimeResume` 只恢复 finalize、`finalizing + UserMessage` 进入 `business-turn`、二次停止后仍先恢复业务 turn；Provider prompt bundle 覆盖 PostTurn 业务 turn 不暴露 output DSL，以及继续并发送时 provider 组合 prompt 与 UI `prompt_display` 分离；Web 覆盖 paused action + 普通 composer、发送/Enter 不恢复、继续并发送只产生一次 Runtime continue、失败恢复草稿、accepted optimistic processing 收敛、`show=false` hidden 段不生成气泡入口，以及旧 `interrupted-input/runtime-continue` 语义删除。
 - 继续资格收紧：通用 continue 只恢复 `ProcessInterrupted / RuntimeAbnormal`；manual check 等待保持 NonRuntime 并只由成功/失败按钮推进，permission、elicitation/waiting 与 ErrorBlocked 不能被通用入口绕过。fixed 与 AI-DYNAMIC 复用同一领域判定。
 - durable acceptance：`runtime-continue-started` 改为 Running 状态落盘后的启动握手结果；启动前失败同步返回结构化错误。握手后意外失败只对原 active attempt 做 CAS 收敛并刷新权威 lifecycle，迟到错误不覆盖用户 stop/完成/attempt 切换；AI-DYNAMIC 同时回收 re-arm leaf 与 starting registry。
 - 性能约束：握手使用一次性 channel、无轮询；fixed starting lease 在 Running durable fact 后释放，不跨 Agent turn。失败状态 CAS 复用固定 64 路短锁和 dynamic graph lock，只覆盖小型状态文件写入。
@@ -1143,3 +1161,64 @@ attempt-001/
 - 实现：字体 face 改用有序且受资产 metadata 约束的 `weightMin/weightMax`，内置 Inter/MiSans 分别生成连续 range；应用壳增加无 transform/filter/contain/overflow 裁剪的 body-level overlay host；菜单 Content/SubContent 将材质、overflow 与 slide/zoom/fade 下沉到内部视觉层，Radix 节点只负责定位、焦点和 dismiss。
 - 回归与文档：Theme SDK、Web Schema、内置主题、生成产物、SDK README、UI 交互规则、产品设置规范和主题 v2 计划同步；定向测试固定区间验证、跨主题字体身份、Portal host 和定位/视觉层职责边界。
 - 性能与过度设计评审：每主题 font-face 从 8 条收敛为 2 条，只新增一个静态 host 和打开菜单时的一层 DOM；无新依赖、状态、订阅、缓存、队列、测量或 I/O，减少字体匹配键并避免定位节点的 transform 合成竞争。
+
+## 2026-08-17：用户壁纸导入、最近使用与会话表面覆盖
+
+- 根因与边界：Theme Contract v2 已有 `app / conversation / workspace / settings` 四类 wallpaper surface，但只表达主题包资产，不能表达用户级覆盖；会话运行页和 ACP 根容器又以实色背景遮住了 surface。实现升级既有 personalization，而不把用户资产写入主题包，也不在页面局部拼接 background image。
+- 数据契约：personalization schema v4 使用 `wallpaper.byColorScheme.light / dark = { image, opacityPercent }`；settings schema v10 将 v3 单壁纸同值复制到两种模式后删除旧结构。壁纸仓库 v1 只维护全局共享的最多 10 条 MRU 资产记录，VM 不再投影冗余 selected ID，两种模式的当前选择均以 personalization 为唯一权威；MRU 裁剪保护两种模式仍在引用的资产并淘汰最旧未引用项，恢复主题不删除历史。
+- 资源链路：导入支持 PNG/JPEG/WebP，限制 32 MiB、4096×4096 与 1600 万像素；blocking pool 规范化完整图至约 4 MiB，以通过容量约束的最终像素图作为单一事实源，分别编码完整图和 320×180 WebP 缩略图，不再为缩略图回读解码完整图。前端 Theme Runtime 按 URL 统一管理有界的壁纸资源状态，surface 只持有 descriptor key 投影；重复刷新直接 no-op，已 ready 资源在新 surface 首帧前同步复用，真实 URL 变更则成功后原子替换。自定义协议只接受单段 `{uuid}.full / {uuid}.thumbnail` token，并校验 UUID、索引、固定文件名和 MIME，修复 Windows `convertFileSrc` 对内嵌斜杠编码后协议解析失败的问题。
+- 交互实现：设置项位于字体与头像之间，复用 shadcn Tabs、Popover、Slider、Button 与 Dialog。Tabs 首次定位当前 resolved 模式，浅色/深色的导入、选择最近、恢复和可见度分别写入对应配置。主预览限制为 256×144 的小卡片，最近列表全局共享且只懒加载缩略图。
+- 可见度与会话：浅色/深色各自保存 20%–100%、默认 60%、步长 1% 的可见度。拖动只更新局部 state 与当前 active scheme 的 CSS variable，commit 才持久化。运行时在主题或系统明暗变化后从 resolved scheme 重新推导用户壁纸；会话 surface 与 Composer 透明承载边界保持不变。
+- 接口与回归：Rust 测试覆盖 v9 迁移、导入/最近 10 条/恢复、缺失资产收敛、单段协议 token、完整图与缩略图的可解码及尺寸契约、路径穿越与损坏索引拒绝；Web 测试覆盖最近选择、1% 规范化、Windows URL、设置顺序、小卡片/Dialog、Slider commit 和会话 surface 投影；Theme SDK 测试固定图片/scrim 分层。
+- 本轮验收：settings v10 迁移与桌面端壁纸校验、共享 MRU/去重上限及跨模式选中资产保留、单侧缺失收敛共 4 项 Rust 定向测试通过；Theme Engine、壁纸偏好、主题运行时与 surface 首帧协调 4 个 Vitest 文件共 33 项通过，覆盖同 URL 跨页面复用、不同 surface 主题壁纸首次加载后复用、URL 切换原子替换、失败隔离、迟到回调和首次绘制前协调；TypeScript `--noEmit` 与 Web 生产构建通过。内置浏览器 deep link 实测浅色/深色独立选择与 60%/59% 可见度切换、共享 2 条最近记录、单侧恢复、1% 键盘步进、720px/1440px 无横向溢出，以及会话 surface 壁纸生效；本轮复核快速对话与设置页分别挂载 `conversation / settings` surface、切换无控制台错误。Composer 卡片保持实色，其内容轨道、左右 padding 与整宽 sticky footer 计算背景均为透明。
+- 性能与过度设计评审：最近历史严格有界为 10，当前只加载一张完整图，Popover 懒加载缩略图；不新增 ResizeObserver、窗口尺寸状态、无界缓存、队列或逐帧持久化。壁纸资源表仅保留当前主题有效槽与两种明暗选中资产，surface 使用 `WeakMap` 随 DOM 生命周期自动释放，不进入 React 根状态或扩大页面重渲染范围。拖动热路径只做常数次 CSS variable 更新，会话 wallpaper surface 只增加固定伪元素；复用已有 Theme Engine、协议、shadcn 组件和 blocking helper。对 2188×1272、3.51 MiB 真实资产的 release 分段测量确认，删除为生成缩略图而进行的完整图二次解码可减少约 80–100 ms 的 O(像素数) 重复工作；最终像素图与编码字节共存的峰值与旧链路回读后的共存模式同阶。本轮不新增依赖、通用缓存框架、并发队列或过渡动画，与实际规模匹配。
+
+## 2026-08-17：新会话启动态与内容加载遮罩分域
+
+- 会话运行页继续复用 runtime canonical lifecycle 展示 `preparing-workspace / starting-node` 启动态；当前 attempt 的 ACP session 尚未 ready 时不再叠加“正在加载会话”的历史内容遮罩，也不允许 partial session 继续渲染“无 session id”、空 timeline 或 composer。`initializing` 统一提前返回现有品牌 Logo 启动态，ready 后原子开放完整会话。既有 established session 未命中正文缓存时仍保留原加载遮罩，缓存、readiness fetch 和请求数量均不变。
+- Web 接口级回归覆盖新会话 launch、已建立未缓存会话、hydration 完成和 `initializing -> isolated loading surface` 四类边界，防止后续再次把启动生命周期与历史内容加载或 partial session shell 混合。
+- 过度设计与性能评审：仅从 leaf 已有 `current + sessionEstablished` 事实派生展示条件，不新增状态、状态机、缓存、轮询、请求或额外订阅；判断为 O(1)，不会扩大渲染或 I/O 范围。
+
+## 2026-08-17：隐藏 Prompt 链接与右侧只读工作区
+
+- 根因与交互：隐藏 system/runtime context 的解析与紧凑投影设计继续保留，但消息组件内的 `Collapsible` 把长文档误建模为局部披露内容，未复用已经支持多 Tab、Markdown/源码和只读查看的右侧工作区。隐藏段改为带 Lucide 文档图标、原有语义颜色和字符数的 shadcn link Button；删除块背景、箭头、内联展开正文与 content-expansion 生命周期。
+- 数据与接口：新增 `HiddenPromptSectionWorkspaceLocator = AcpAttemptWorkspaceLocator + eventId + eventSeq + partIndex` 和对应资源类型/稳定 key。点击经既有 `openResource` 打开或激活 Tab；资源 LRU 只保存 locator。内容面板按 `eventSeq - 1` 请求一个 ACP 语义块，再以精确 event identity 和 part index 解析正文，不使用标题或显示文案反查，也不把长 prompt 复制进全局工作区状态。
+- 组件复用：内容区继续复用 `SystemPromptPanel`；产品层 rendered 模式使用现有 prompt-kit `Markdown / Streamdown` 生成静态 Markdown DOM，raw 模式使用现有 `WorkspaceFileEditor(editable=false)` 展示源码，两种视图二选一挂载并沿用既有视图偏好。右侧 Tab renderer、图标和中英文缺失态只扩展一个资源分支，不新增后端接口、编辑器、Markdown renderer、依赖、缓存或持久字段。
+- 渲染回归修正：用户截图确认最初实现把 `rendered` 映射成了 CodeMirror `live-preview`，虽隐藏部分 Markdown 标记但仍是编辑器排版，并非真实渲染。共享 `SystemPromptPanel` 现统一承担只读文档模式映射，渲染态使用 Streamdown、源码态使用 CodeMirror，工具栏明确切换两种产品语义；DOM 回归固定默认标题/粗体真实渲染、源码原文不变、`editable=false` 及双向切换。
+- 验收：Vitest 固定隐藏段图标链接、不生成 Collapsible、点击输出稳定 part index、跨 branch/section key 隔离、精确 event revision 解析，以及工作区只发起一次单语义块读取并把目标正文交给共享只读面板；同时执行完整 Web 测试、TypeScript、生产构建，并在内置浏览器 deep link 下检查浅色/深色、hover/focus、窄工作区和长 Markdown 的 rendered/source 切换。
+- 性能与过度设计评审：未打开时不挂载 Markdown/编辑器或解析第二份正文；打开时为一次有界语义块 I/O 与一次 O(prompt length) 解析。移除隐藏正文 `<pre>`、展开 state、token 和展开宽度测量，工作区命令继续使用低频稳定 Context，Tab/宽度变化不扩大历史 Markdown 渲染范围。一个 locator 资源类型足以表达真实生命周期，不增加状态机、队列、缓存或假设性抽象，无需专项 benchmark。
+
+## 2026-08-17：快速对话跨页面工作空间恢复
+
+- 根因：快速对话已有 `draftConversationWorkspaceId` 作为应用运行期事实，设置页返回时能正常消费它；但从会话详情点击“快速对话”时，导航决策无条件优先取当前 run 的 workspace，将仍然有效的 draft 投影覆盖；这是既有状态转换优先级错误，不是持久化模型缺失。
+- 实现：纯导航决策固定“quick-chat draft → 当前会话 workspace → 最近会话 workspace”优先级，并继续在快速对话入口的用户事件链中应用；某 workspace 下显式点击“新会话”才切换 draft，无 draft 时的会话与最近工作空间兜底不变。
+- 边界与回归：Vitest 契约覆盖从设置返回保留 draft、从其他 workspace 会话详情返回仍保留 draft、无 draft 时使用当前会话 workspace、非会话页无 draft 时回退最近会话 workspace，并固定入口接入统一决策。`lastConversationWorkspace`、会话列表最近 workspace 置顶和后端状态结构不变，单纯切换快速对话 workspace 不触发排序。
+- 本轮验收：已完成导航决策、回归契约与文档静态复核；按用户要求未运行 Vitest、TypeScript、Web 生产构建或页面交互验证。
+- 性能与过度设计评审：决策为固定三项的 O(1) 分支，只在用户点击导航时执行；不新增 effect、状态、持久字段、I/O、依赖、缓存、队列或渲染订阅，现有 App 级 draft 已足以表达跨页面生命周期，无需升级为跨重启偏好。
+
+## 2026-08-17：已发起 ACP 会话动态配置目录
+
+- 根因与数据边界：此前把 Run 发起时的不可变配置快照和 ACP Provider 的可变能力目录绑定在一起，导致 Doctor 已发现新模型、权限或 select config option 后，历史 session 仍只能看到旧目录。修复后 Run 初始绑定继续不可变；session override 继续按 attempt 持久化；可选目录改为 Doctor / Session 最近成功观测的投影，不新增独立 catalog aggregate。
+- 权威与时间规则：Session 通过 `session/new / resume / load` 持久化目录及 `configCatalogObservedAt`，Doctor 通过既有 Agent registry 提供同一 Provider parser 的目录。Doctor 仅在严格更新时覆盖展示和选择校验，同时间或更晚 Session 优先；失败 Doctor、空 capabilities 和无关 Agent 更新不覆盖当前 session 的最近成功目录或当前值。
+- 惰性确认：选择 Doctor-only 配置时持久化 override 与 `configCatalogRefreshRequiredAt`；下次 continue 复用现有 attached-session registry、singleflight 和 resume/load 链路，对原 session 强制重载一次。Session 响应目录先落盘再应用 override；仍不支持时返回 `acp.session-config-value-unavailable` 的 Config / Manual 结构化错误并阻止 prompt，不静默回退默认模型。前端补拉最新 Session，将失效 override 保留为禁用项，用户改选后继续。
+- 前端状态边界：会话页只从当前 session provider 派生 Doctor catalog，并与低频 session config view model 合并；Doctor current value 不进入业务 session。配置选择继续使用 optimistic patch，但以单调 mutation generation 约束失败回滚，早期失败不覆盖后续选择或期间到达的新目录；结构化不可用错误显示统一 i18n 文案。
+- 性能影响：每次 Agent registry 或当前 session config 变化只对当前 Provider 的小型目录做一次 O(catalog) 投影，签名不包含纯时间戳，流式消息不会触发配置栏重渲染。只有用户实际选择 Doctor-only 值后的下一次 continue 增加一次 resume/load；不扫描历史 attempt、不批量改写 session、不增加轮询、无界缓存、队列或扩大锁范围，无明显性能风险，无需专项 benchmark。
+- 过度设计评审：现有 Run snapshot、session metadata、Agent registry、attached runtime registry 和 resume/load 已足以表达全部不变量；仅增加两个 session metadata 时间字段与结构化错误，不新增 catalog 服务、后台同步器或跨层 identity，复杂度与低频竞态风险匹配。
+- 回归要求：Rust 接口测试固定 Doctor 严格更新时写 refresh marker、Session 同时间优先、attached session 只触发一次 reload，以及失效配置归类为 Config / Manual 并携带可用值；Web 测试固定 Doctor/Session 投影、current value 所有权、失效项禁用和无关 Agent 更新不改变配置签名。合入前执行桌面 crate check、Web 生产构建，并用前端 deep link 验证正常与窄宽度选择器。
+- 本轮验收：4 个 Rust 定向接口测试通过；ACP session config 与错误 i18n 共 26 个 Web 测试通过；`cargo check -p gold-band-desktop` 与 Web 生产构建通过。内置浏览器 deep link 实测模型复合目录、权限目录和相邻菜单切换；720×900 下文档 `scrollWidth === clientWidth`、两个配置触发器与 352px 菜单均未越界，控制台无 error/warn。预览数据不含历史 session，Doctor/Session 新旧目录和 stale override 由上述接口测试验收。
+
+## 2026-08-17：PostTurn finalize 边界继续并发送
+
+- 根因：`artifact-emission.json(finalizing)` 原本只表达“上一业务 turn 已完成”，provider 却把它解释为任何 Runtime continue 都必须直接恢复 finalize；因此 `UserMessage` 类型的继续并发送也会被隐藏 artifact prompt 覆盖。修复扩展既有 checkpoint phase，不建立第二套 Runtime 状态机。
+- 生命周期：`finalizing + RuntimeResume` 继续重新请求完整 artifact；`finalizing + UserMessage` 在发送用户 prompt 前原子切换为 `business-turn`，先执行新的业务 turn，成功后再回写 `finalizing` 并生成新的隐藏 finalize。业务 turn 再次中断时保留 `business-turn`，后续继续不得直接跳 artifact。
+- 提示契约：继续并发送使用独立中英文条件模板，并直接消费现有 `OutputEmissionMode`。`PostTurnProjection` 先执行可见用户指令，本 turn 不适用此前的 artifact 输出约束且不输出 artifact，后续独立归一化；`InlineControl` 先执行用户指令，完成后在同一 turn 按当前契约输出 artifact；无 contract 时只执行用户指令。纯继续模板保持原语义。
+- 回归验收：Provider 单元接口 25 项通过，覆盖纯继续、继续并发送、二次停止恢复和损坏 checkpoint；Runtime 继续组合 prompt 定向测试 1 项通过；PostTurn 发射模式与中断完成判定定向测试 4 项通过。`git diff --check` 无空白错误。
+- 本轮增量回归：中英文条件模板覆盖 PostTurn、InlineControl 与无 contract 三个分支；固定 workflow continue 接口固定 PostTurn 组合 prompt；AI-DYNAMIC emission 映射固定 bootstrap=InlineControl、worker/acceptance=PostTurn、merge=无 contract；AI-DYNAMIC 集成测试目标完成编译。
+- 性能与过度设计评审：继续复用 attempt 级单个小型 checkpoint、既有原子 JSON 写入与 canonical `OutputEmissionMode`，只增加一次 O(1) phase/模板分支；动态 leaf 在既有 graph 读取与锁区间内取得目标节点 emission policy，不增加 graph 加载、timeline 扫描、缓存、队列、锁、依赖或渲染订阅。仅在 finalize 边界插入新用户业务 turn 时多写一次 `business-turn`。新增 durable phase 用于表达“新业务 turn 尚未可靠完成”这一现有 `finalizing` 无法表达的具体不变量；提示分支不新增状态或第二套策略事实源，复杂度与恢复正确性风险匹配。
+
+## 2026-08-17：快速会话上下文选择器选中态统一
+
+- 根因：工作空间 `SelectTrigger` 和工作位置 `Button` 是同级上下文控件，但两者复用了不同 primitive 默认值：交互态没有统一，且 `SelectTrigger` 的 `data-[size=default]:h-9` 以更高选择器优先级覆盖业务层 `h-7`，造成静态背景与高度不一致。问题属于共享视觉契约缺失，不是选择状态或持久化缺失。
+- 实现：继续复用现有 shadcn `SelectTrigger`、`Button` 与主题 token；两个专用上下文触发器的 surface 只由共享交互 class 管理，工作位置按钮不再叠加通用 `button-ghost` 主题 recipe。静态态统一透明，hover / focus / menu open 统一使用 `accent / accent-foreground`，并显式把两者收敛为 28px 高、相同圆角和水平内边距。工作位置菜单复用工作空间已有的指针/键盘关闭分流：指针关闭阻止 Radix 回灌焦点并 blur，键盘关闭保留 focus restoration。定时任务胶囊变体、工作位置校验和偏好作用域不变。
+- 回归要求：现有 jsdom 组件接口测试固定两个触发器静态透明、交互态 accent、Select size variant 与 Button 高度/内边距，并固定指针关闭工作位置菜单后触发器不重新获得焦点；同时执行 Web 类型检查、生产构建，并在内置浏览器 deep link 下用 computed style 检查静态、hover、菜单展开/外部关闭、浅色/深色和窄宽度表现。
+- 性能与过度设计评审：只增加常量级 class 合并与 DOM 属性，不新增 state、effect、持久字段、依赖、I/O、缓存、队列、订阅或额外渲染；两个现有控件和一个共享样式常量足以表达不变量，不引入新组件或通用状态抽象，无需专项 benchmark。

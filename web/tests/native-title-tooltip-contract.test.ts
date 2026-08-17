@@ -14,8 +14,9 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-function nativeTitleLocations() {
-  const locations: string[] = [];
+function nativeUiPrimitiveViolations() {
+  const nativeSelectLocations: string[] = [];
+  const nativeTitleLocations: string[] = [];
   for (const path of sourceFiles(sourceRoot)) {
     const source = readFileSync(path, 'utf8');
     const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -29,18 +30,28 @@ function nativeTitleLocations() {
         );
         if (title && (nativeElement || forwardsToNativeElement)) {
           const position = file.getLineAndCharacterOfPosition(title.getStart(file));
-          locations.push(`${relative(process.cwd(), path)}:${position.line + 1}`);
+          nativeTitleLocations.push(`${relative(process.cwd(), path)}:${position.line + 1}`);
+        }
+        if (tagName === 'select') {
+          const position = file.getLineAndCharacterOfPosition(node.tagName.getStart(file));
+          nativeSelectLocations.push(`${relative(process.cwd(), path)}:${position.line + 1}`);
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(file);
   }
-  return locations;
+  return { nativeSelectLocations, nativeTitleLocations };
 }
 
-describe('visual tooltip contract', () => {
+const violations = nativeUiPrimitiveViolations();
+
+describe('shared UI primitive contract', () => {
   it('does not use browser-native title attributes for product tooltips', () => {
-    expect(nativeTitleLocations()).toEqual([]);
+    expect(violations.nativeTitleLocations).toEqual([]);
+  });
+
+  it('does not use browser-native select elements for product selectors', () => {
+    expect(violations.nativeSelectLocations).toEqual([]);
   });
 });

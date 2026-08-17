@@ -4,7 +4,14 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const resizablePanelCalls = vi.hoisted(() => new Map<string, string[]>());
+const resizablePanelBehaviors = vi.hoisted(() => new Map<string, string[]>());
+const resizablePanelHandles = vi.hoisted(() => new Map<string, { collapsed: boolean; calls: string[] }>());
+const resizableGroupLayouts = vi.hoisted(() => [] as Array<Record<string, number>>);
+const resizableGroupWidth = vi.hoisted(() => ({ value: 1_290 }));
+const resizableGroupEvents = vi.hoisted(() => ({
+  onLayoutChanged: null as null | ((layout: Record<string, number>, meta: { isUserInteraction: boolean }) => void),
+}));
+const resizableGroupConstraintLag = vi.hoisted(() => ({ centerMinPixels: null as number | null }));
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
@@ -16,28 +23,80 @@ vi.mock('@/components/AppTitleBar', () => ({
 }));
 
 vi.mock('@/components/conversation/ConversationSidebar', () => ({
-  ConversationSidebar: () => <aside />,
+  ConversationSidebar: () => <aside data-testid="conversation-sidebar" />,
+}));
+
+vi.mock('@/components/workspace/RightWorkspaceDock', () => ({
+  RightWorkspaceDock: () => <aside data-testid="right-workspace-dock" />,
 }));
 
 vi.mock('@/components/ui/resizable', async () => {
   const ReactModule = await vi.importActual<typeof import('react')>('react');
   return {
-    ResizablePanelGroup: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-    ResizablePanel: ({ children, id, panelRef }: { children: React.ReactNode; id: string; panelRef?: React.Ref<unknown> }) => {
-      const collapsed = ReactModule.useRef(false);
-      ReactModule.useImperativeHandle(panelRef, () => ({
-        collapse: () => { collapsed.current = true; },
-        expand: () => { collapsed.current = false; },
-        isCollapsed: () => collapsed.current,
-        resize: (size: number | string) => {
-          const calls = resizablePanelCalls.get(id) ?? [];
-          calls.push(`resize:${size}`);
-          resizablePanelCalls.set(id, calls);
+    ResizablePanelGroup: ({ children, elementRef, groupRef, onLayoutChanged }: { children: React.ReactNode; elementRef?: React.Ref<HTMLDivElement>; groupRef?: React.Ref<unknown>; onLayoutChanged?: (layout: Record<string, number>, meta: { isUserInteraction: boolean }) => void }) => {
+      const layoutRef = ReactModule.useRef<Record<string, number>>({});
+      resizableGroupEvents.onLayoutChanged = onLayoutChanged ?? null;
+      ReactModule.useImperativeHandle(groupRef, () => ({
+        getLayout: () => layoutRef.current,
+        setLayout: (layout: Record<string, number>) => {
+          const applied = { ...layout };
+          for (const [id, size] of Object.entries(layout)) {
+            const state = resizablePanelHandles.get(id);
+            if (state && size <= 0.01) state.collapsed = true;
+          }
+          for (const [id, size] of Object.entries(layout)) {
+            const state = resizablePanelHandles.get(id);
+            if (!state?.collapsed || size <= 0.01) continue;
+            applied[id] = 0;
+            applied['workspace-center'] = (applied['workspace-center'] ?? 0) + size;
+          }
+          const laggedCenterMinPixels = resizableGroupConstraintLag.centerMinPixels;
+          const laggedCenterMinPercentage = laggedCenterMinPixels == null
+            ? null
+            : laggedCenterMinPixels / resizableGroupWidth.value * 100;
+          if (
+            laggedCenterMinPercentage != null
+            && (applied['workspace-right'] ?? 0) > 0.01
+            && (applied['workspace-center'] ?? 0) < laggedCenterMinPercentage
+          ) {
+            const deficit = laggedCenterMinPercentage - (applied['workspace-center'] ?? 0);
+            applied['workspace-center'] = laggedCenterMinPercentage;
+            applied['workspace-navigation'] = Math.max(0, (applied['workspace-navigation'] ?? 0) - deficit);
+            resizableGroupConstraintLag.centerMinPixels = null;
+          }
+          layoutRef.current = applied;
+          resizableGroupLayouts.push(applied);
+          return applied;
         },
       }));
-      return <div>{children}</div>;
+      return (
+        <div
+          ref={(node) => {
+            if (node) Object.defineProperty(node, 'clientWidth', { configurable: true, value: resizableGroupWidth.value });
+            if (typeof elementRef === 'function') elementRef(node);
+            else if (elementRef) elementRef.current = node;
+          }}
+        >
+          {children}
+        </div>
+      );
     },
-    ResizableHandle: () => <div />,
+    ResizablePanel: ({ children, groupResizeBehavior, id, panelRef }: { children: React.ReactNode; groupResizeBehavior: string; id: string; panelRef?: React.Ref<unknown> }) => {
+      const behaviors = resizablePanelBehaviors.get(id) ?? [];
+      behaviors.push(groupResizeBehavior);
+      resizablePanelBehaviors.set(id, behaviors);
+      const state = resizablePanelHandles.get(id) ?? { collapsed: false, calls: [] };
+      resizablePanelHandles.set(id, state);
+      ReactModule.useImperativeHandle(panelRef, () => ({
+        collapse: () => { state.collapsed = true; state.calls.push('collapse'); },
+        expand: () => { state.collapsed = false; state.calls.push('expand'); },
+        getSize: () => ({ asPercentage: 0, inPixels: 0 }),
+        isCollapsed: () => state.collapsed,
+        resize: () => {},
+      }));
+      return <div data-panel="">{children}</div>;
+    },
+    ResizableHandle: ({ elementRef, id }: { elementRef?: React.Ref<HTMLDivElement>; id?: string }) => <div ref={elementRef} id={id} tabIndex={0} />,
   };
 });
 
@@ -49,12 +108,18 @@ vi.mock('@/components/ui/sheet', () => ({
 
 import { WorkspaceShell } from '@/components/workspace/WorkspaceShell';
 import { FALLBACK_WORKSPACE_LAYOUT } from '@/components/workspace/workspace-layout';
-import { ConversationWorkspaceStore } from '@/components/workspace/right-workspace-context';
+import { ConversationWorkspaceStore, createDraftConversationWorkspaceScope } from '@/components/workspace/right-workspace-context';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
-  resizablePanelCalls.clear();
+  resizablePanelBehaviors.clear();
+  resizablePanelHandles.clear();
+  resizableGroupLayouts.splice(0, resizableGroupLayouts.length);
+  resizableGroupWidth.value = 1_290;
+  resizableGroupEvents.onLayoutChanged = null;
+  resizableGroupConstraintLag.centerMinPixels = null;
+  vi.clearAllMocks();
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
@@ -107,7 +172,10 @@ describe('WorkspaceShell sidebar width hydration', () => {
           </WorkspaceShell>,
         );
       });
-      expect(resizablePanelCalls.get('workspace-navigation')).toEqual(['resize:256']);
+      expect(resizableGroupLayouts.at(-1)).toMatchObject({
+        'workspace-navigation': 256 / 1_290 * 100,
+        'workspace-right': 0,
+      });
 
       await act(async () => {
         root.render(
@@ -120,7 +188,260 @@ describe('WorkspaceShell sidebar width hydration', () => {
         );
       });
 
-      expect(resizablePanelCalls.get('workspace-navigation')).toEqual(['resize:256', 'resize:176']);
+      expect(resizableGroupLayouts.at(-1)).toMatchObject({
+        'workspace-navigation': 176 / 1_290 * 100,
+        'workspace-right': 0,
+      });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps both side-panel width owners stable across run-mode capability changes', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
+    const commonProps = {
+      appName: 'Gold Band',
+      windowFrameStyle: 'native-compositor' as const,
+      appConfig: {
+        acpSessionTitleRefreshEnabled: false,
+        acpChatEventPageSize: 360,
+        turnFiles: { cardPreviewLimit: 3 },
+        workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+      },
+      vm: {
+        workspaces: [],
+        pinnedTasks: [],
+        tasksByWorkspace: {},
+        preferences: { 'sidebar.width': 176, 'rightWorkspace.width': 690 },
+      },
+      conversationWorkspaceStore: store,
+      sidebarCollapsed: false,
+      onSelect: () => {},
+      onToggleSidebar: () => {},
+      onNewConversation: () => {},
+      onSearch: () => {},
+      onSelectTask: () => {},
+      onSelectRun: () => {},
+      onPinTask: () => {},
+      onUnpinTask: () => {},
+      onRenameTask: () => {},
+      onDeleteTask: () => {},
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      expect(container.querySelector('[data-testid="conversation-sidebar"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="right-workspace-dock"]')).not.toBeNull();
+
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'run-mode-management' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      expect(container.querySelector('[data-testid="conversation-sidebar"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="right-workspace-dock"]')).toBeNull();
+      const leftPanelState = resizablePanelHandles.get('workspace-navigation');
+      if (leftPanelState) leftPanelState.collapsed = true;
+
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+
+      expect(container.querySelector('[data-testid="conversation-sidebar"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="right-workspace-dock"]')).not.toBeNull();
+      expect(resizablePanelBehaviors.get('workspace-navigation')?.every((value) => value === 'preserve-pixel-size')).toBe(true);
+      expect(resizablePanelBehaviors.get('workspace-center')?.every((value) => value === 'preserve-relative-size')).toBe(true);
+      expect(resizablePanelBehaviors.get('workspace-right')?.every((value) => value === 'preserve-pixel-size')).toBe(true);
+      expect(resizableGroupLayouts.at(-1)).toMatchObject({
+        'workspace-navigation': 176 / 1_290 * 100,
+        'workspace-center': 424 / 1_290 * 100,
+        'workspace-right': 690 / 1_290 * 100,
+      });
+      expect(resizablePanelHandles.get('workspace-navigation')?.calls).toContain('expand');
+      expect(resizablePanelHandles.get('workspace-right')?.calls).toContain('expand');
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 690 });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('replays the canonical layout once after a feature-page center constraint settles', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
+    resizableGroupWidth.value = 1_360;
+    const animationFrames = new Map<number, FrameRequestCallback>();
+    let nextAnimationFrameId = 1;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = nextAnimationFrameId++;
+      animationFrames.set(id, callback);
+      return id;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      animationFrames.delete(id);
+    });
+    const flushAnimationFrames = () => {
+      const callbacks = [...animationFrames.values()];
+      animationFrames.clear();
+      callbacks.forEach((callback) => callback(0));
+    };
+    const commonProps = {
+      appName: 'Gold Band',
+      windowFrameStyle: 'native-compositor' as const,
+      appConfig: {
+        acpSessionTitleRefreshEnabled: false,
+        acpChatEventPageSize: 360,
+        turnFiles: { cardPreviewLimit: 3 },
+        workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+      },
+      vm: {
+        workspaces: [],
+        pinnedTasks: [],
+        tasksByWorkspace: {},
+        preferences: { 'sidebar.width': 332, 'rightWorkspace.width': 484 },
+      },
+      conversationWorkspaceStore: store,
+      sidebarCollapsed: false,
+      onSelect: () => {},
+      onToggleSidebar: () => {},
+      onNewConversation: () => {},
+      onSearch: () => {},
+      onSelectTask: () => {},
+      onSelectRun: () => {},
+      onPinTask: () => {},
+      onUnpinTask: () => {},
+      onRenameTask: () => {},
+      onDeleteTask: () => {},
+    };
+
+    try {
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      await act(async () => flushAnimationFrames());
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'scheduled-tasks' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+      await act(async () => flushAnimationFrames());
+
+      resizableGroupConstraintLag.centerMinPixels = 640;
+      await act(async () => {
+        root.render(
+          <WorkspaceShell {...commonProps} active={{ kind: 'conversation-home' }}>
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+
+      const constrained = resizableGroupLayouts.at(-1)!;
+      expect(constrained['workspace-navigation'] * 13.6).toBeCloseTo(236, 5);
+      expect(constrained['workspace-center'] * 13.6).toBeCloseTo(640, 5);
+      expect(constrained['workspace-right'] * 13.6).toBeCloseTo(484, 5);
+      expect(animationFrames.size).toBe(1);
+
+      await act(async () => flushAnimationFrames());
+
+      const converged = resizableGroupLayouts.at(-1)!;
+      expect(converged['workspace-navigation'] * 13.6).toBeCloseTo(332, 5);
+      expect(converged['workspace-center'] * 13.6).toBeCloseTo(544, 5);
+      expect(converged['workspace-right'] * 13.6).toBeCloseTo(484, 5);
+      expect(animationFrames.size).toBe(0);
+      expect(store.peekShellState(draftScope)).toMatchObject({ requestedOpen: true, width: 484 });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('persists a right drag from the completed layout even when the separator exposes no pointer intent', async () => {
+    const { saveConversationPreference } = await import('@/api');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = new ConversationWorkspaceStore();
+    const draftScope = createDraftConversationWorkspaceScope('default');
+    store.openWorkspace(draftScope, { explicit: true });
+    resizableGroupWidth.value = 1_271;
+
+    try {
+      await act(async () => {
+        root.render(
+          <WorkspaceShell
+            appName="Gold Band"
+            windowFrameStyle="native-compositor"
+            appConfig={{
+              acpSessionTitleRefreshEnabled: false,
+              acpChatEventPageSize: 360,
+              turnFiles: { cardPreviewLimit: 3 },
+              workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
+            }}
+            vm={{
+              workspaces: [],
+              pinnedTasks: [],
+              tasksByWorkspace: {},
+              preferences: { 'sidebar.width': 176, 'rightWorkspace.width': 772 },
+            }}
+            active={{ kind: 'conversation-home' }}
+            conversationWorkspaceStore={store}
+            sidebarCollapsed={false}
+            onSelect={() => {}}
+            onToggleSidebar={() => {}}
+            onNewConversation={() => {}}
+            onSearch={() => {}}
+            onSelectTask={() => {}}
+            onSelectRun={() => {}}
+            onPinTask={() => {}}
+            onUnpinTask={() => {}}
+            onRenameTask={() => {}}
+            onDeleteTask={() => {}}
+          >
+            <div />
+          </WorkspaceShell>,
+        );
+      });
+
+      await act(async () => {
+        resizableGroupEvents.onLayoutChanged?.({
+          'workspace-navigation': 13.869,
+          'workspace-center': 28.369,
+          'workspace-right': 57.762,
+        }, { isUserInteraction: false });
+        resizableGroupEvents.onLayoutChanged?.({
+          'workspace-navigation': 13.869,
+          'workspace-center': 63.436,
+          'workspace-right': 22.695,
+        }, { isUserInteraction: true });
+      });
+
+      expect(store.peekShellState(draftScope).width).toBe(288);
+      expect(saveConversationPreference).toHaveBeenCalledWith('rightWorkspace.width', 288);
     } finally {
       await act(async () => root.unmount());
     }

@@ -37,8 +37,13 @@ describe('ACP message theme contract', () => {
     expect(chatSource).not.toContain('var(--primary)_26%');
   });
 
-  it('delegates hidden runtime context and runtime control surfaces to the theme package', () => {
-    expect(hiddenPromptSource).toContain('data-theme-role="message-disclosure"');
+  it('renders hidden prompt navigation as a semantic link and keeps runtime control themed', () => {
+    expect(hiddenPromptSource).toContain('variant="link"');
+    expect(hiddenPromptSource).toContain('data-hidden-prompt-link="true"');
+    expect(hiddenPromptSource).toContain('text-foreground/80');
+    expect(hiddenPromptSource).toContain('has-[>svg]:px-0');
+    expect(hiddenPromptSource).toContain('<FileText');
+    expect(hiddenPromptSource).not.toContain('<Collapsible');
     expect(chatSource).toContain('data-theme-role="runtime-control"');
     expect(hiddenPromptSource).not.toContain('bg-foreground/[0.025]');
     expect(chatSource).not.toContain('border-primary/20 bg-primary/5');
@@ -78,14 +83,12 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).toContain('style={measuredInlineSize ? { width: `${measuredInlineSize}px` } : undefined}');
     expect(hiddenPromptSource).not.toContain('max-w-4xl');
     expect(hiddenPromptSource).not.toContain('max-w-6xl');
-    expect(hiddenPromptSource).toContain('className="grid min-w-0 max-w-full overflow-hidden"');
     expect(hiddenPromptSource).toContain(
-      'group grid min-w-0 grid-cols-[minmax(0,1fr)_auto]',
+      'h-auto min-w-0 max-w-full justify-start gap-1.5 p-0',
     );
-    expect(hiddenPromptSource).toContain(
-      '<CollapsibleContent className="min-w-0 max-w-full">',
-    );
-    expect(hiddenPromptSource).toContain('max-h-72 w-max min-w-0 max-w-full');
+    expect(hiddenPromptSource).toContain('expandedHiddenLineInlineSizes: []');
+    expect(hiddenPromptSource).not.toContain('CollapsibleContent');
+    expect(hiddenPromptSource).not.toContain('max-h-72');
     expect(hiddenPromptSource).not.toContain('[contain:inline-size]');
     expect(hiddenPromptSource).not.toContain('w-full min-w-0');
     expect(hiddenPromptSource).not.toContain('open ? "w-full" : "w-fit"');

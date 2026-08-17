@@ -9,6 +9,7 @@ import {
   ChatContainerRoot,
   type ChatContainerContext,
 } from '@/components/prompt-kit/chat-container';
+import { ConversationViewport } from '@/components/conversation/ConversationViewport';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -78,6 +79,37 @@ describe('prompt-kit ChatContainer stick-to-bottom lifecycle', () => {
     alignChatContainerViewportToBottomBeforePaint(viewport);
 
     expect(viewport.scrollTop).toBe(800);
+  });
+
+  it('mounts a remembered manual conversation viewport without rejoining bottom follow', async () => {
+    vi.stubGlobal('ResizeObserver', ControlledResizeObserver);
+    const contextRef = React.createRef<ChatContainerContext>();
+    const atBottomChanges: boolean[] = [];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          React.createElement(
+            ConversationViewport,
+            {
+              scrollClassName: 'overflow-y-auto',
+              contextRef,
+              initialFollowing: false,
+              onAtBottomChange: (atBottom: boolean) => atBottomChanges.push(atBottom),
+            },
+            'remembered history',
+          ),
+        );
+      });
+
+      expect(contextRef.current?.isAtBottom).toBe(false);
+      expect(atBottomChanges.at(-1)).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it('reports only explicit wheel, keyboard, or scrollbar-pointer input as user scrolling', async () => {

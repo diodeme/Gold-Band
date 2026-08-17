@@ -1,3 +1,4 @@
+use base64::Engine;
 use camino::Utf8PathBuf;
 use gold_band::app::App;
 use gold_band::config::{
@@ -114,7 +115,8 @@ pub fn save_scheduled_runtime_settings(
 pub struct ConversationRunModeSettingsVm {
     pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    #[serde(default)]
+    pub optional_entry_preferences: std::collections::HashMap<String, bool>,
     pub direct_config: Option<crate::view_models_conversation::ConversationDirectConfigVm>,
     #[serde(default)]
     pub direct_preferences: std::collections::HashMap<
@@ -149,6 +151,7 @@ fn validate_direct_capabilities(
                 code: "direct.agent.unavailable".to_string(),
                 label: "Selected Direct Agent is unavailable".to_string(),
                 recovery_path: "/chat/agents".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let models =
@@ -166,6 +169,7 @@ fn validate_direct_capabilities(
                 code: "direct.model.not-found".to_string(),
                 label: "Selected model is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let modes =
@@ -183,6 +187,7 @@ fn validate_direct_capabilities(
                 code: "direct.permission.not-found".to_string(),
                 label: "Selected permission mode is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     result.valid = result.missing_items.is_empty();
@@ -233,14 +238,15 @@ pub fn list_scheduled_tasks(
         .list(project_id.as_deref())
         .map_err(scheduled_service_error)?
         .into_iter()
-        .map(|definition| {
+        .map(|record| {
             let workspace_name = service
-                .workspace_name(&definition.project_id)
+                .workspace_name(&record.definition.project_id)
                 .map_err(scheduled_service_error)?;
             Ok(
                 crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-                    &definition,
+                    &record.definition,
                     &workspace_name,
+                    record.next_run_at,
                 ),
             )
         })
@@ -252,18 +258,60 @@ pub fn list_scheduled_task_occurrences(
     state: State<'_, DesktopState>,
     project_id: String,
     scheduled_task_id: String,
-    limit: Option<u32>,
-) -> CommandResult<Vec<crate::view_models_conversation::ScheduledOccurrenceVm>> {
+    cursor: Option<String>,
+    status: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ScheduledOccurrencePageVm> {
+    let cursor = cursor
+        .as_deref()
+        .map(decode_occurrence_cursor)
+        .transpose()?;
+    let status = status
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| invalid_occurrence_query("status", "invalid-status"))?;
     state
         .scheduled_service()
         .map_err(command_error)?
-        .list_occurrences(
-            &project_id,
-            &scheduled_task_id,
-            limit.unwrap_or(50).clamp(1, 200) as usize,
+        .list_occurrence_page(&project_id, &scheduled_task_id, status, cursor.as_ref())
+        .map(
+            |page| crate::view_models_conversation::ScheduledOccurrencePageVm {
+                items: scheduled_occurrence_vms_from_occurrences(&page.items),
+                next_cursor: page.next_cursor.as_ref().map(encode_occurrence_cursor),
+            },
         )
-        .map(|occurrences| scheduled_occurrence_vms_from_occurrences(&occurrences))
         .map_err(scheduled_service_error)
+}
+
+fn encode_occurrence_cursor(cursor: &gold_band::scheduler::db::OccurrencePageCursor) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(cursor).expect("occurrence cursor serialization is infallible"))
+}
+
+fn decode_occurrence_cursor(
+    cursor: &str,
+) -> CommandResult<gold_band::scheduler::db::OccurrencePageCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+                serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+            serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
+        )
+    })
+}
+
+fn invalid_occurrence_query(field: &str, reason: &str) -> CommandErrorVm {
+    CommandErrorVm::new(
+        gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+        serde_json::json!({ "field": field, "reason": reason }),
+    )
 }
 
 fn scheduled_occurrence_vms_from_occurrences(
@@ -285,13 +333,14 @@ pub fn get_scheduled_task_diagnostics(
     let record = service
         .get(&project_id, &scheduled_task_id)
         .map_err(scheduled_service_error)?;
-    let occurrences = service
-        .list_occurrences(&project_id, &scheduled_task_id, 200)
+    let (run_count, occurrences) = service
+        .occurrence_diagnostics(&project_id, &scheduled_task_id)
         .map_err(scheduled_service_error)?;
     Ok(scheduled_task_diagnostics_vm(
         project_id,
         scheduled_task_id,
         record,
+        run_count,
         occurrences,
     ))
 }
@@ -300,12 +349,9 @@ fn scheduled_task_diagnostics_vm(
     project_id: String,
     scheduled_task_id: String,
     record: gold_band::scheduler::db::ScheduledJobRecord,
+    run_count: u64,
     occurrences: Vec<gold_band::scheduler::occurrence::ScheduledOccurrence>,
 ) -> crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
-    let run_count = occurrences
-        .iter()
-        .filter(|occurrence| occurrence.run_id.is_some())
-        .count() as u64;
     crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
         scheduled_task_id,
         project_id,
@@ -378,6 +424,7 @@ pub fn set_scheduled_task_enabled(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }
@@ -396,6 +443,7 @@ pub fn create_scheduled_task(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }
@@ -1024,7 +1072,7 @@ pub fn get_conversation_run_mode(
             |entry| crate::view_models_conversation::ConversationRunModeVm {
                 mode: entry.mode.as_str().to_string(),
                 workflow_template_id: entry.workflow_template_id.clone(),
-                include_interview: entry.include_interview,
+                optional_entry_preferences: entry.optional_entry_preferences.clone(),
                 direct_config: entry.direct_config.as_ref().map(|config| {
                     crate::view_models_conversation::ConversationDirectConfigVm {
                         agent_type: config.agent_type.clone(),
@@ -1125,7 +1173,7 @@ pub fn save_conversation_run_mode(
         ConversationRunModeEntry {
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
-            include_interview: settings.include_interview,
+            optional_entry_preferences: settings.optional_entry_preferences,
             direct_config: settings
                 .direct_config
                 .map(|config| ConversationDirectConfig {
@@ -1975,10 +2023,10 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, materialize_attachment_files_to_dir,
-        message_attachment_content_from_attempt_dir, scheduled_occurrence_vms_from_occurrences,
-        scheduled_runtime_settings_vm, scheduled_service_error,
-        validate_scheduled_runtime_settings_input,
+        conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
+        materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
+        scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
+        scheduled_service_error, validate_scheduled_runtime_settings_input,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
@@ -1990,6 +2038,25 @@ mod tests {
     use uuid::Uuid;
 
     use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
+
+    #[test]
+    fn occurrence_cursor_round_trips_and_rejects_invalid_input() {
+        use chrono::{TimeZone, Utc};
+
+        let cursor = gold_band::scheduler::db::OccurrencePageCursor {
+            scheduled_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 1).unwrap(),
+            id: "occurrence-20".to_string(),
+        };
+
+        assert_eq!(
+            decode_occurrence_cursor(&encode_occurrence_cursor(&cursor)).unwrap(),
+            cursor
+        );
+        let error = decode_occurrence_cursor("not-a-cursor").unwrap_err();
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "cursor");
+    }
 
     #[test]
     fn scheduled_occurrence_list_keeps_skipped_and_missed_history() {
@@ -2163,6 +2230,7 @@ mod tests {
             "project-a".to_string(),
             "scheduled-a".to_string(),
             record,
+            0,
             Vec::new(),
         );
 
@@ -2211,6 +2279,7 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
                 execution: RuntimeExecutionState::new(
                     RuntimeExecutionPhase::Terminal,
                     None,
@@ -2494,7 +2563,7 @@ mod tests {
             gold_band::config::ConversationRunModeEntry {
                 mode: gold_band::config::ConversationRunMode::Auto,
                 workflow_template_id: None,
-                include_interview: None,
+                optional_entry_preferences: Default::default(),
                 direct_config: None,
                 direct_preferences: Default::default(),
                 auto_config: None,

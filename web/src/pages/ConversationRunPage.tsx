@@ -14,11 +14,19 @@ import {
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import { ConversationRunHeader } from '@/components/conversation/ConversationRunHeader';
 import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
+import { useThemeWallpaperSurface } from '@/components/theme/ThemeAssetsContext';
 import { confirmCloseConversationRunWorkspaceResource, ConversationRunWorkspaceResourcePanel } from '@/components/workspace/ConversationRunWorkspaceResourcePanel';
 import { conversationRunWorkspaceResourceKey, useRightWorkspace, type ConversationDirectoryWorkspaceEntry, type RightWorkspaceResource } from '@/components/workspace/right-workspace-context';
 import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode } from '@/lib/conversation-runtime-workflow';
-import { isRuntimeControlledConversationLifecycle } from '@/lib/conversation-session-follow';
-import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm } from '../types';
+import { conversationPageForSession } from '@/lib/conversation-navigation';
+import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
+import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
+import {
+  isRuntimeControlledConversationLifecycle,
+  type ConversationSessionFollowMode,
+} from '@/lib/conversation-session-follow';
+import { pathFromRoute, taskListPage } from '@/routes';
+import type { AcpSessionVm, AgentRegistryVm, AppConfigVm, ConversationRunVm, ConversationSessionLeafVm, GraphNodeVm, WorkflowModelBindings, WorkflowVm } from '../types';
 
 function activeSessionKey(session: {
   roundId: string;
@@ -60,6 +68,13 @@ export function resolveConversationContentQueryState(
   return hydrated ? 'success' : 'loading';
 }
 
+export function shouldShowConversationContentLoadingState(
+  queryState: AcpInitialSessionQueryState,
+  selectedLeaf: Pick<ConversationSessionLeafVm, 'current'> | null,
+) {
+  return queryState === 'loading' && !selectedLeaf?.current;
+}
+
 function normalizeSessionPath(path: string) {
   return path.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
 }
@@ -70,10 +85,11 @@ interface ConversationRunPageProps {
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
   onEditWorkflow: () => void;
-  onSaveWorkflow?: (json: string) => Promise<void>;
+  onSaveWorkflow?: (json: string, modelBindings: WorkflowModelBindings) => Promise<WorkflowVm>;
   onSelectSession: (leaf: ConversationSessionLeafVm, followActive?: boolean) => void;
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
+  followMode: ConversationSessionFollowMode;
   onTitleChange?: (title: string) => void;
 }
 
@@ -87,9 +103,11 @@ export function ConversationRunPage({
   onSelectSession,
   onLifecycleSnapshot,
   onAutoFollowChange,
+  followMode,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
+  useThemeWallpaperSurface();
   const workspace = useRightWorkspace();
   const translatePauseReason = (reason?: string | null) => {
     if (!reason) return t('conversation.runtime.sessionPaused');
@@ -115,9 +133,8 @@ export function ConversationRunPage({
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
   const isAtBottomRef = useRef(true);
-  const manualAutoFollowDisabledRef = useRef(false);
+  const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
-  const onAutoFollowChangeRef = useRef(onAutoFollowChange);
   const headerAreaRef = useRef<HTMLDivElement>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
@@ -125,14 +142,9 @@ export function ConversationRunPage({
   );
 
   useEffect(() => {
-    onAutoFollowChangeRef.current = onAutoFollowChange;
-  }, [onAutoFollowChange]);
-
-  useEffect(() => {
-    manualAutoFollowDisabledRef.current = false;
+    manualAutoFollowDisabledRef.current = followMode === 'manual';
     pendingAutoFollowRestoreSessionKeyRef.current = null;
-    onAutoFollowChangeRef.current?.(true);
-  }, [run.runId]);
+  }, [followMode, run.projectId, run.runId, run.taskId]);
 
   // Close session switcher on outside click
   useEffect(() => {
@@ -200,6 +212,7 @@ export function ConversationRunPage({
       resource.kind !== 'workflow-view' &&
       resource.kind !== 'workflow-edit' &&
       resource.kind !== 'system-prompt' &&
+      resource.kind !== 'hidden-prompt-section' &&
       resource.kind !== 'raw-frames'
     ) return null;
     return (
@@ -219,6 +232,7 @@ export function ConversationRunPage({
       workspace.registerResourceRenderer('workflow-view', renderWorkspaceResource),
       workspace.registerResourceRenderer('workflow-edit', renderWorkspaceResource),
       workspace.registerResourceRenderer('system-prompt', renderWorkspaceResource),
+      workspace.registerResourceRenderer('hidden-prompt-section', renderWorkspaceResource),
       workspace.registerResourceRenderer('raw-frames', renderWorkspaceResource),
     ];
     return () => unregister.forEach((dispose) => dispose());
@@ -265,7 +279,10 @@ export function ConversationRunPage({
       ? hasHydratedAcpSessionContent(selectedContentIdentity)
       : false,
   );
-  const showPageLoadingState = selectedContentQueryState === 'loading';
+  const showPageLoadingState = shouldShowConversationContentLoadingState(
+    selectedContentQueryState,
+    selectedLeaf,
+  );
   const handleInitialSessionQueryStateChange = useCallback((state: AcpInitialSessionQueryState) => {
     if (!selectedContentIdentity) return;
     setContentQueryProjection({ identity: selectedContentIdentity, state });
@@ -368,6 +385,10 @@ export function ConversationRunPage({
 
   const selectedSessionMatchesLeaf = sessionBelongsToLeaf(run.selectedSession, run, selectedLeaf);
   const selectedSession = selectedSessionMatchesLeaf ? run.selectedSession : null;
+  const selectedProviderCatalog = useMemo(
+    () => acpProviderConfigCatalog(agentRegistry, selectedSession?.provider),
+    [agentRegistry, selectedSession?.provider],
+  );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
   const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
@@ -383,6 +404,14 @@ export function ConversationRunPage({
       ? translateSelectedRuntimeError(selectedSessionDisplay?.code, run.pauseReason, selectedSessionErrorDetails)
       : null);
   const canViewWorkflow = !isDirect && canViewConversationRuntimeWorkflow(run, selectedLeaf);
+  const supersededBy = selectedLeaf?.lifecycle?.composer.supersededBy;
+  const supersedingLeaf = supersededBy
+    ? findConversationLeafByKey(run.sessionTree, activeSessionKey(supersededBy))
+    : null;
+  const supersedingPage = supersededBy ? conversationPageForSession(run, supersededBy) : null;
+  const supersedingHref = supersedingPage
+    ? pathFromRoute('task-orchestration', taskListPage, supersedingPage)
+    : null;
   const runtimeComposerContext: AcpRuntimeComposerContext | undefined = selectedLeaf
     ? {
         isOrchestrated: run.runMode !== 'direct',
@@ -394,13 +423,25 @@ export function ConversationRunPage({
         pauseMessage: isDirect ? undefined : translatePauseReason(selectedSessionPauseReason),
         runtimeError: selectedRuntimeErrorMessage,
         onRepair: handleRepairWorkflow,
+        supersededSessionNavigation: supersedingHref
+          ? {
+              href: supersedingHref,
+              onNavigate: () => {
+                if (supersedingLeaf) {
+                  handleSessionSelection(supersedingLeaf);
+                } else {
+                  window.location.assign(supersedingHref);
+                }
+              },
+            }
+          : undefined,
       }
     : undefined;
 
   return (
     <TooltipProvider>
-      <div className="relative h-full min-h-0 bg-background">
-      <div className={`flex h-full min-h-0 flex-col bg-background ${showPageLoadingState ? 'invisible' : ''}`}>
+      <div data-theme-wallpaper-slot="conversation" className="relative h-full min-h-0 bg-background">
+      <div className={`flex h-full min-h-0 flex-col bg-transparent ${showPageLoadingState ? 'invisible' : ''}`}>
         <div ref={headerAreaRef} className="shrink-0 relative">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
@@ -473,6 +514,7 @@ export function ConversationRunPage({
           <ACPChatDialog
             key={`${run.taskUuid ?? run.taskId}:${selectedSessionKey ?? 'empty'}`}
             session={selectedSession}
+            providerCatalog={selectedProviderCatalog}
             sessionEstablished={selectedLeaf.sessionEstablished}
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
@@ -490,6 +532,8 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             showInitializingSessionShell={selectedLeaf.current}
+            wallpaperSurface
+            worktreePath={run.worktree?.path}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}
@@ -528,7 +572,7 @@ export function ConversationRunPage({
       {showPageLoadingState ? (
         <BrandLoadingState
           label={t('conversation.runtime.loadingSession')}
-          className="absolute inset-0"
+          className="absolute inset-0 bg-background/88 backdrop-blur-sm"
         />
       ) : null}
     </div>
@@ -538,7 +582,7 @@ export function ConversationRunPage({
 
 function ConversationEmptySessionState({ label, active }: { label: string; active: boolean }) {
   if (active) {
-    return <BrandLoadingState label={label} />;
+    return <BrandLoadingState label={label} className="bg-background/88 backdrop-blur-sm" />;
   }
   return (
     <div className="flex h-full items-center justify-center text-sm text-muted-foreground">

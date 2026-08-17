@@ -187,8 +187,6 @@ const fontStackSchema = {
   properties: {
     id: { type: 'string', minLength: 1 }, displayName: localizedTextSchema,
     defaultFaces: { type: 'array', maxItems: MAX_FONT_STACK_FAMILIES, uniqueItems: true, items: { type: 'string', minLength: 1 } },
-    byScript: { type: 'object', patternProperties: { '^[A-Z][a-z]{3}$': { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1 } } }, additionalProperties: false },
-    byLocale: { type: 'object', patternProperties: { '^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$': { type: 'array', uniqueItems: true, items: { type: 'string', minLength: 1 } } }, additionalProperties: false },
     systemFallbacks: { type: 'array', minItems: 1, maxItems: MAX_FONT_STACK_FAMILIES, uniqueItems: true, items: { type: 'string', minLength: 1, maxLength: MAX_FONT_FAMILY_CHARS } },
   },
 };

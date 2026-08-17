@@ -83,6 +83,10 @@ pub enum PromptQueueError {
     Dispatching,
     #[error("queued prompt content is empty")]
     Empty,
+    #[error("prompt queue revision is stale")]
+    RevisionConflict,
+    #[error("prompt queue order is invalid")]
+    InvalidOrder,
     #[error("prompt queue storage is unavailable")]
     Storage,
 }
@@ -135,26 +139,65 @@ pub fn enqueue_prompt(
     })
 }
 
-pub fn update_queued_prompt(
+pub fn reorder_queued_prompts(
     attempt_dir: &Utf8Path,
-    item_id: &str,
-    content: String,
+    expected_revision: u64,
+    ordered_item_ids: Vec<String>,
 ) -> Result<PromptQueue, PromptQueueError> {
-    if content.trim().is_empty() {
-        return Err(PromptQueueError::Empty);
-    }
     with_typed_queue_lock(attempt_dir, || {
         let mut queue =
             load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
-        let item = queue
-            .items
-            .iter_mut()
-            .find(|item| item.id == item_id)
-            .ok_or(PromptQueueError::NotFound)?;
-        if item.state == QueuedPromptState::Dispatching {
-            return Err(PromptQueueError::Dispatching);
+        if queue.revision != expected_revision {
+            return Err(PromptQueueError::RevisionConflict);
         }
-        item.content = content;
+
+        let current_item_ids = queue
+            .items
+            .iter()
+            .filter(|item| item.state == QueuedPromptState::Queued)
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        let current_id_set = current_item_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let ordered_id_set = ordered_item_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        if ordered_item_ids.len() != current_item_ids.len()
+            || ordered_id_set.len() != ordered_item_ids.len()
+            || ordered_id_set != current_id_set
+        {
+            return Err(PromptQueueError::InvalidOrder);
+        }
+        if ordered_item_ids == current_item_ids {
+            return Ok(queue);
+        }
+
+        let mut queued_items = queue
+            .items
+            .iter()
+            .filter(|item| item.state == QueuedPromptState::Queued)
+            .cloned()
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut reordered_items = ordered_item_ids
+            .into_iter()
+            .map(|item_id| {
+                queued_items
+                    .remove(&item_id)
+                    .ok_or(PromptQueueError::InvalidOrder)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter();
+        for item in &mut queue.items {
+            if item.state == QueuedPromptState::Queued {
+                *item = reordered_items
+                    .next()
+                    .ok_or(PromptQueueError::InvalidOrder)?;
+            }
+        }
         persist_mutation_unlocked(attempt_dir, &mut queue)
             .map_err(|_| PromptQueueError::Storage)?;
         Ok(queue)
@@ -165,6 +208,13 @@ pub fn delete_queued_prompt(
     attempt_dir: &Utf8Path,
     item_id: &str,
 ) -> Result<PromptQueue, PromptQueueError> {
+    take_queued_prompt(attempt_dir, item_id).map(|(_, queue)| queue)
+}
+
+pub fn take_queued_prompt(
+    attempt_dir: &Utf8Path,
+    item_id: &str,
+) -> Result<(QueuedPrompt, PromptQueue), PromptQueueError> {
     with_typed_queue_lock(attempt_dir, || {
         let mut queue =
             load_and_reconcile_unlocked(attempt_dir).map_err(|_| PromptQueueError::Storage)?;
@@ -176,10 +226,10 @@ pub fn delete_queued_prompt(
         if queue.items[index].state == QueuedPromptState::Dispatching {
             return Err(PromptQueueError::Dispatching);
         }
-        queue.items.remove(index);
+        let item = queue.items.remove(index);
         persist_mutation_unlocked(attempt_dir, &mut queue)
             .map_err(|_| PromptQueueError::Storage)?;
-        Ok(queue)
+        Ok((item, queue))
     })
 }
 
@@ -567,17 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn queue_preserves_position_when_editing_and_limits_capacity() {
+    fn queue_limits_capacity() {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
-        let first = enqueue_prompt(&dir, "first".to_string(), Vec::new()).unwrap();
-        let second = enqueue_prompt(&dir, "second".to_string(), Vec::new()).unwrap();
-        let queue = update_queued_prompt(&dir, &first.id, "edited".to_string()).unwrap();
-        assert_eq!(queue.items[0].id, first.id);
-        assert_eq!(queue.items[0].content, "edited");
-        assert_eq!(queue.items[1].id, second.id);
-
-        for index in 2..MAX_QUEUED_PROMPTS {
+        for index in 0..MAX_QUEUED_PROMPTS {
             enqueue_prompt(&dir, format!("item-{index}"), Vec::new()).unwrap();
         }
         assert_eq!(
@@ -613,13 +656,13 @@ mod tests {
     }
 
     #[test]
-    fn editing_queued_body_preserves_structured_quotes() {
+    fn reorder_queued_prompts_persists_the_requested_order_and_preserves_payloads() {
         let temp = tempfile::tempdir().unwrap();
         let dir = attempt_dir(&temp);
-        let queued = enqueue_prompt(
+        let first = enqueue_prompt(
             &dir,
             ConversationPromptInput {
-                display_text: "原正文".to_string(),
+                display_text: "first".to_string(),
                 quotes: vec![UserPromptQuote {
                     id: "quote-1".to_string(),
                     source_message_key: "textDelta-message-1".to_string(),
@@ -629,10 +672,93 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
+        let second = enqueue_prompt(&dir, "second".to_string(), Vec::new()).unwrap();
+        let third =
+            enqueue_prompt(&dir, "third".to_string(), vec!["C:/third.png".to_string()]).unwrap();
+        let revision = load_prompt_queue(&dir).unwrap().revision;
 
-        let queue = update_queued_prompt(&dir, &queued.id, "新正文".to_string()).unwrap();
-        assert_eq!(queue.items[0].content, "新正文");
-        assert_eq!(queue.items[0].quotes, queued.quotes);
+        let queue = reorder_queued_prompts(
+            &dir,
+            revision,
+            vec![third.id.clone(), first.id.clone(), second.id.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            queue
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![third.id.as_str(), first.id.as_str(), second.id.as_str()]
+        );
+        assert_eq!(queue.items[0].attachment_paths, vec!["C:/third.png"]);
+        assert_eq!(queue.items[1].quotes, first.quotes);
+        assert_eq!(queue.revision, revision + 1);
+        assert_eq!(load_prompt_queue(&dir).unwrap(), queue);
+    }
+
+    #[test]
+    fn reorder_queued_prompts_rejects_stale_or_invalid_orders_without_mutating_the_queue() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let first = enqueue_prompt(&dir, "first".to_string(), Vec::new()).unwrap();
+        let second = enqueue_prompt(&dir, "second".to_string(), Vec::new()).unwrap();
+        let original = load_prompt_queue(&dir).unwrap();
+
+        assert_eq!(
+            reorder_queued_prompts(
+                &dir,
+                original.revision.saturating_sub(1),
+                vec![second.id.clone(), first.id.clone()],
+            ),
+            Err(PromptQueueError::RevisionConflict)
+        );
+        assert_eq!(load_prompt_queue(&dir).unwrap(), original);
+
+        assert_eq!(
+            reorder_queued_prompts(
+                &dir,
+                original.revision,
+                vec![first.id.clone(), first.id.clone()],
+            ),
+            Err(PromptQueueError::InvalidOrder)
+        );
+        assert_eq!(load_prompt_queue(&dir).unwrap(), original);
+
+        let unchanged = reorder_queued_prompts(
+            &dir,
+            original.revision,
+            vec![first.id.clone(), second.id.clone()],
+        )
+        .unwrap();
+        assert_eq!(unchanged.revision, original.revision);
+        assert_eq!(unchanged, original);
+    }
+
+    #[test]
+    fn taking_a_queued_prompt_returns_its_complete_authoring_payload_and_removes_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: "restore me".to_string(),
+                quotes: vec![UserPromptQuote {
+                    id: "quote-1".to_string(),
+                    source_message_key: "message-1".to_string(),
+                    text: "quoted".to_string(),
+                }],
+            },
+            vec!["C:/evidence.png".to_string()],
+        )
+        .unwrap();
+
+        let (restored, queue) = take_queued_prompt(&dir, &queued.id).unwrap();
+
+        assert_eq!(restored, queued);
+        assert!(queue.items.is_empty());
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
     }
 
     #[test]
@@ -810,7 +936,7 @@ mod tests {
         assert!(queue.items.is_empty());
         assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
         assert_eq!(
-            update_queued_prompt(&dir, &item.id, "different prompt".to_string()),
+            delete_queued_prompt(&dir, &item.id),
             Err(PromptQueueError::NotFound)
         );
     }

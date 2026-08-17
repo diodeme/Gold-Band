@@ -1,5 +1,6 @@
 import { getRuntimeApi } from './api/client';
 import type { RuntimeApi } from './api/client';
+import type { ResolvedColorScheme } from './types';
 
 export { isTauriRuntime } from './api/shared';
 
@@ -42,6 +43,10 @@ export function updateAgent(agentType: string, input: Parameters<ReturnType<type
 
 export function deleteAgent(agentType: string) {
   return getRuntimeApi().deleteAgent(agentType);
+}
+
+export function getAgentBindingUsage(agentType: string) {
+  return getRuntimeApi().getAgentBindingUsage(agentType);
 }
 
 export function doctorAgent(agentType: string) {
@@ -92,28 +97,28 @@ export function getTaskDetail(taskId: string) {
   return getRuntimeApi().getTaskDetail(taskId);
 }
 
-export function getWorkflow(taskId: string) {
-  return getRuntimeApi().getWorkflow(taskId);
+export function getWorkflow(taskId: string, projectId?: string | null) {
+  return getRuntimeApi().getWorkflow(taskId, projectId);
 }
 
 export function createTask(input: Parameters<ReturnType<typeof getRuntimeApi>['createTask']>[0]) {
   return getRuntimeApi().createTask(input);
 }
 
-export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2]) {
-  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow);
+export function saveTaskWorkflow(projectId: string | null | undefined, taskId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[2], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveTaskWorkflow']>[3]) {
+  return getRuntimeApi().saveTaskWorkflow(projectId, taskId, workflow, modelBindings);
 }
 
 export function getWorkflowTemplates() {
   return getRuntimeApi().getWorkflowTemplates();
 }
 
-export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1]) {
-  return getRuntimeApi().saveWorkflowTemplate(name, workflow);
+export function saveWorkflowTemplate(name: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['saveWorkflowTemplate']>[2]) {
+  return getRuntimeApi().saveWorkflowTemplate(name, workflow, modelBindings);
 }
 
-export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1]) {
-  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow);
+export function updateWorkflowTemplate(templateId: string, workflow: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[1], modelBindings?: Parameters<ReturnType<typeof getRuntimeApi>['updateWorkflowTemplate']>[2]) {
+  return getRuntimeApi().updateWorkflowTemplate(templateId, workflow, modelBindings);
 }
 
 export function deleteWorkflowTemplate(templateId: string) {
@@ -156,8 +161,8 @@ export function continueRun(projectId: string | null | undefined, taskId: string
   return getRuntimeApi().continueRun(projectId, taskId, runId);
 }
 
-export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
+export function continueConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null, input?: import('./types').ConversationPromptInput, promptId?: string | null, attachmentPaths?: string[]) {
+  return getRuntimeApi().continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths);
 }
 
 export function recoverConversationRuntime(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number) {
@@ -357,8 +362,12 @@ export function submitConversationPrompt(projectId: string | null | undefined, t
   return getRuntimeApi().submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
 }
 
-export function updateConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, content: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId);
+export function reorderConversationQueuedPrompts(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, expectedRevision: number, orderedItemIds: string[], outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId);
+}
+
+export function restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
+  return getRuntimeApi().restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
 export function deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -435,6 +444,22 @@ export function saveDesktopAvatarShape(kind: Parameters<ReturnType<typeof getRun
 
 export function clearDesktopAvatar(kind: Parameters<ReturnType<typeof getRuntimeApi>['clearDesktopAvatar']>[0]) {
   return getRuntimeApi().clearDesktopAvatar(kind);
+}
+
+export function importDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().importDesktopWallpaper(colorScheme);
+}
+
+export function selectRecentDesktopWallpaper(colorScheme: ResolvedColorScheme, wallpaperId: string) {
+  return getRuntimeApi().selectRecentDesktopWallpaper(colorScheme, wallpaperId);
+}
+
+export function saveDesktopWallpaperOpacity(colorScheme: ResolvedColorScheme, opacityPercent: number) {
+  return getRuntimeApi().saveDesktopWallpaperOpacity(colorScheme, opacityPercent);
+}
+
+export function restoreThemeDesktopWallpaper(colorScheme: ResolvedColorScheme) {
+  return getRuntimeApi().restoreThemeDesktopWallpaper(colorScheme);
 }
 
 export function saveUpdaterSettings(overrideUrl: string | null) {
@@ -521,8 +546,8 @@ export function deleteScheduledTask(projectId: string, scheduledTaskId: string) 
   return getRuntimeApi().deleteScheduledTask(projectId, scheduledTaskId);
 }
 
-export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, limit?: number) {
-  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, limit);
+export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null) {
+  return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
 }
 
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
@@ -687,6 +712,10 @@ export function openFileWithSystemApp(path: string) {
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {
   return getRuntimeApi().pickAttachmentFiles();
+}
+
+export function statAttachmentFiles(paths: string[]) {
+  return getRuntimeApi().statAttachmentFiles(paths);
 }
 
 export function materializeConversationAttachments(files: Parameters<ReturnType<typeof getRuntimeApi>['materializeConversationAttachments']>[0]) {

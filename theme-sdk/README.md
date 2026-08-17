@@ -7,10 +7,11 @@ or executable extensions.
 
 Theme Contract v2 keeps asset identity separate from physical files. `resources.json` declares stable IDs,
 types, package-relative paths, and license references; the compiler derives signatures, media metadata,
-content hashes, and same-origin output URLs. Font faces and locale/script-aware stacks in `fonts.json` refer
-to those IDs. A face's CSS `family` must retain the canonical family embedded in its font asset; a package may
+content hashes, and same-origin output URLs. Font faces and fixed ordered stacks in `fonts.json` refer to those
+IDs. A face's CSS `family` must retain the canonical family embedded in its font asset; a package may
 add a namespace prefix or a `Variable`/`VF` marker, while unrelated aliases are rejected. Product-facing stack
-labels belong in localized `displayName`. The compiler adds `runtimeFamily` only to generated packages: it is
+labels belong in localized `displayName`, but interface language never branches or reorders font families. The
+compiler adds `runtimeFamily` only to generated packages: it is
 the browser-global font-face identity and is scoped when another theme could otherwise compete for the same
 family/weight/style key. Theme authors must not declare it. `presets.json` selects stacks for each scheme.
 

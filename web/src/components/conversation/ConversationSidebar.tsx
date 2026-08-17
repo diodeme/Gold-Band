@@ -331,7 +331,11 @@ export const ConversationSidebar = memo(function ConversationSidebar({
         {/* Workspace sections — scrollable with sticky headers */}
           <div className="pt-2">
             {vm.workspaces.map((ws) => (
-              <div key={ws.projectId} className="mb-4">
+              <div
+                key={ws.projectId}
+                data-conversation-workspace-group={ws.projectId}
+                className="mb-2"
+              >
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
                   <button
                     type="button"

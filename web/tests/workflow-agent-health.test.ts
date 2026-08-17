@@ -51,7 +51,7 @@ describe('workflow agent health', () => {
       nodes: [{
         type: 'worker',
         id: 'cursor-node',
-        provider: 'cursor',
+        executionSlotId: 'slot-cursor',
         profile: 'developer',
         goal: 'Implement the change',
       }],
@@ -63,6 +63,11 @@ describe('workflow agent health', () => {
       [{ id: 'developer', name: 'Developer' }],
       [],
       (key) => key,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot-cursor', agentId: 'cursor' }] },
     );
 
     expect(validation.valid).toBe(false);

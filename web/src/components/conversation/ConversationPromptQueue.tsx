@@ -1,16 +1,31 @@
 import {
-  Check,
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
   ChevronDown,
   CornerDownLeft,
+  GripVertical,
   ListPlus,
+  MessageSquareQuote,
   Paperclip,
   Pencil,
-  MessageSquareQuote,
   Trash2,
-  X,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -19,7 +34,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Tooltip,
   TooltipContent,
@@ -27,17 +41,31 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import type { ConversationPromptQueueVm } from '@/types';
+import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import type { ConversationPromptQueueVm, ConversationQueuedPromptVm } from '@/types';
 
 const DEFAULT_VISIBLE_ITEMS = 3;
+
+export function moveQueueItemIds(
+  itemIds: readonly string[],
+  activeId: string,
+  overId: string,
+): string[] {
+  const fromIndex = itemIds.indexOf(activeId);
+  const toIndex = itemIds.indexOf(overId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return [...itemIds];
+  return arrayMove([...itemIds], fromIndex, toIndex);
+}
 
 export interface ConversationPromptQueueProps {
   queue: ConversationPromptQueueVm;
   sessionActive: boolean;
   mutationPending: boolean;
+  composerOccupied: boolean;
   attachedAbove?: boolean;
   integratedInfoTab?: boolean;
-  onEdit: (itemId: string, content: string) => void | Promise<void>;
+  onRestore: (itemId: string) => void | Promise<void>;
+  onReorder: (orderedItemIds: string[], expectedRevision: number) => void | Promise<void>;
   onUse: (itemId: string) => void | Promise<void>;
   onDelete: (itemId: string) => void | Promise<void>;
 }
@@ -46,42 +74,48 @@ export function ConversationPromptQueue({
   queue,
   sessionActive,
   mutationPending,
+  composerOccupied,
   attachedAbove = false,
   integratedInfoTab = false,
-  onEdit,
+  onRestore,
+  onReorder,
   onUse,
   onDelete,
 }: ConversationPromptQueueProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const [showAll, setShowAll] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const hasMore = queue.items.length > DEFAULT_VISIBLE_ITEMS;
-  const visibleItems = showAll ? queue.items : queue.items.slice(0, DEFAULT_VISIBLE_ITEMS);
-
-  useEffect(() => {
-    if (editingId && !queue.items.some((item) => item.id === editingId)) {
-      setEditingId(null);
-      setDraft('');
-    }
-  }, [editingId, queue.items]);
+  const [optimisticOrder, setOptimisticOrder] = useState<{
+    baseRevision: number;
+    itemIds: string[];
+  } | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const orderedItems = useMemo(() => {
+    if (!optimisticOrder || optimisticOrder.baseRevision !== queue.revision) return queue.items;
+    const itemsById = new Map(queue.items.map((item) => [item.id, item]));
+    const items = optimisticOrder.itemIds.flatMap((id) => {
+      const item = itemsById.get(id);
+      return item ? [item] : [];
+    });
+    return items.length === queue.items.length ? items : queue.items;
+  }, [optimisticOrder, queue.items, queue.revision]);
+  const hasMore = orderedItems.length > DEFAULT_VISIBLE_ITEMS;
+  const visibleItems = showAll ? orderedItems : orderedItems.slice(0, DEFAULT_VISIBLE_ITEMS);
 
   if (queue.items.length === 0) return null;
 
-  const startEdit = (itemId: string, content: string) => {
-    setEditingId(itemId);
-    setDraft(content);
-  };
-  const cancelEdit = () => {
-    setEditingId(null);
-    setDraft('');
-  };
-  const saveEdit = async () => {
-    const content = draft.trim();
-    if (!editingId || !content || mutationPending) return;
-    await onEdit(editingId, content);
-    cancelEdit();
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || mutationPending) return;
+    const currentIds = orderedItems.map((item) => item.id);
+    const nextIds = moveQueueItemIds(currentIds, String(active.id), String(over.id));
+    if (nextIds.every((id, index) => id === currentIds[index])) return;
+    setOptimisticOrder({ baseRevision: queue.revision, itemIds: nextIds });
+    void Promise.resolve(onReorder(nextIds, queue.revision)).catch(() => {
+      setOptimisticOrder(null);
+    });
   };
 
   return (
@@ -89,7 +123,8 @@ export function ConversationPromptQueue({
       open={open}
       onOpenChange={setOpen}
       className={cn(
-        'overflow-hidden border border-b-0 border-border bg-card',
+        'overflow-hidden bg-card',
+        ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
         attachedAbove ? 'rounded-none' : 'rounded-t-2xl',
         integratedInfoTab && !attachedAbove && 'rounded-tl-none',
       )}
@@ -117,27 +152,30 @@ export function ConversationPromptQueue({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden">
-        <div className="divide-y divide-border/25 border-t border-border/35 px-3 pb-1.5">
-          {visibleItems.map((item, index) => (
-            <QueueItem
-              key={item.id}
-              index={index}
-              item={item}
-              editing={editingId === item.id}
-              draft={draft}
-              sessionActive={sessionActive}
-              mutationPending={mutationPending}
-              onDraftChange={setDraft}
-              onEdit={() => startEdit(item.id, item.content)}
-              onCancel={cancelEdit}
-              onSave={() => { void saveEdit(); }}
-              onUse={() => { void onUse(item.id); }}
-              onDelete={() => { void onDelete(item.id); }}
-            />
-          ))}
-        </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext
+            items={visibleItems.map((item) => item.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="px-3 pb-1.5" data-queue-items="true">
+              {visibleItems.map((item) => (
+                <QueueItem
+                  key={item.id}
+                  index={orderedItems.findIndex((candidate) => candidate.id === item.id)}
+                  item={item}
+                  sessionActive={sessionActive}
+                  mutationPending={mutationPending}
+                  composerOccupied={composerOccupied}
+                  onRestore={() => { void onRestore(item.id); }}
+                  onUse={() => { void onUse(item.id); }}
+                  onDelete={() => { void onDelete(item.id); }}
+                />
+              ))}
+            </div>
+          </SortableContext>
+        </DndContext>
         {hasMore ? (
-          <div className="border-t border-border/25 px-3 py-1">
+          <div className="px-3 py-1" data-queue-show-more-row="true">
             <Button
               type="button"
               variant="ghost"
@@ -161,15 +199,11 @@ export function ConversationPromptQueue({
 
 interface QueueItemProps {
   index: number;
-  item: ConversationPromptQueueVm['items'][number];
-  editing: boolean;
-  draft: string;
+  item: ConversationQueuedPromptVm;
   sessionActive: boolean;
   mutationPending: boolean;
-  onDraftChange: (value: string) => void;
-  onEdit: () => void;
-  onCancel: () => void;
-  onSave: () => void;
+  composerOccupied: boolean;
+  onRestore: () => void;
   onUse: () => void;
   onDelete: () => void;
 }
@@ -177,78 +211,99 @@ interface QueueItemProps {
 function QueueItem({
   index,
   item,
-  editing,
-  draft,
   sessionActive,
   mutationPending,
-  onDraftChange,
-  onEdit,
-  onCancel,
-  onSave,
+  composerOccupied,
+  onRestore,
   onUse,
   onDelete,
 }: QueueItemProps) {
   const { t } = useTranslation();
+  const {
+    attributes,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id, disabled: mutationPending });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
   return (
-    <div className="flex min-h-8 min-w-0 items-center gap-2 py-1 text-xs" data-queue-item-id={item.id}>
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        'flex min-h-8 min-w-0 items-center gap-1.5 py-1 text-xs',
+        isDragging && 'relative z-10 bg-card opacity-80 shadow-sm',
+      )}
+      data-queue-item-id={item.id}
+      data-queue-dragging={isDragging ? 'true' : 'false'}
+    >
+      <TooltipProvider delayDuration={250}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              ref={setActivatorNodeRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 cursor-grab touch-none rounded-full text-muted-foreground active:cursor-grabbing"
+              disabled={mutationPending}
+              {...attributes}
+              {...listeners}
+              aria-label={t('acp.promptQueue.reorder')}
+            >
+              <GripVertical className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t('acp.promptQueue.reorder')}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <span className="w-4 shrink-0 text-center text-ui-caption tabular-nums text-muted-foreground">
         {index + 1}
       </span>
-      {editing ? (
-        <Textarea
-          autoFocus
-          value={draft}
-          onChange={(event) => onDraftChange(event.target.value)}
-          className="min-h-8 resize-none bg-background/70 py-1 text-xs"
-          aria-label={t('acp.promptQueue.editInput')}
-        />
-      ) : (
-        <div className="min-w-0 flex-1">
-          <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
-            {item.content}
-          </p>
-          {item.attachmentCount > 0 || item.quoteCount > 0 ? (
-            <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
-              {item.quoteCount > 0 ? (
-                <span className="inline-flex items-center gap-1">
-                  <MessageSquareQuote className="size-3" />
-                  {t('acp.userQuoteCount', { count: item.quoteCount })}
-                </span>
-              ) : null}
-              {item.attachmentCount > 0 ? (
-                <span className="inline-flex items-center gap-1">
-                  <Paperclip className="size-3" />
-                  {item.attachmentCount}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      )}
+      <div className="min-w-0 flex-1">
+        <p className="line-clamp-2 whitespace-pre-wrap break-words leading-5 text-foreground/90 [overflow-wrap:anywhere]">
+          {item.content}
+        </p>
+        {item.attachmentCount > 0 || item.quoteCount > 0 ? (
+          <div className="mt-0.5 flex items-center gap-2 text-ui-caption text-muted-foreground">
+            {item.quoteCount > 0 ? (
+              <span className="inline-flex items-center gap-1">
+                <MessageSquareQuote className="size-3" />
+                {t('acp.userQuoteCount', { count: item.quoteCount })}
+              </span>
+            ) : null}
+            {item.attachmentCount > 0 ? (
+              <span className="inline-flex items-center gap-1">
+                <Paperclip className="size-3" />
+                {item.attachmentCount}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       <TooltipProvider delayDuration={250}>
         <div className="flex shrink-0 items-center gap-0.5">
-          {editing ? (
-            <>
-              <QueueIconButton label={t('acp.promptQueue.save')} disabled={!draft.trim() || mutationPending} onClick={onSave}>
-                <Check className="size-3.5" />
-              </QueueIconButton>
-              <QueueIconButton label={t('acp.promptQueue.cancel')} disabled={mutationPending} onClick={onCancel}>
-                <X className="size-3.5" />
-              </QueueIconButton>
-            </>
-          ) : (
-            <>
-              <QueueIconButton label={t('acp.promptQueue.edit')} disabled={mutationPending} onClick={onEdit}>
-                <Pencil className="size-3.5" />
-              </QueueIconButton>
-              <QueueIconButton label={t('acp.promptQueue.use')} disabled={sessionActive || mutationPending} onClick={onUse}>
-                <CornerDownLeft className="size-3.5" />
-              </QueueIconButton>
-              <QueueIconButton label={t('acp.promptQueue.delete')} disabled={mutationPending} onClick={onDelete} destructive>
-                <Trash2 className="size-3.5" />
-              </QueueIconButton>
-            </>
-          )}
+          <QueueIconButton
+            label={t('acp.promptQueue.edit')}
+            tooltipLabel={composerOccupied ? t('acp.promptQueue.editDraftOccupied') : undefined}
+            disabled={mutationPending || composerOccupied}
+            onClick={onRestore}
+          >
+            <Pencil className="size-3.5" />
+          </QueueIconButton>
+          <QueueIconButton label={t('acp.promptQueue.use')} disabled={sessionActive || mutationPending} onClick={onUse}>
+            <CornerDownLeft className="size-3.5" />
+          </QueueIconButton>
+          <QueueIconButton label={t('acp.promptQueue.delete')} disabled={mutationPending} onClick={onDelete} destructive>
+            <Trash2 className="size-3.5" />
+          </QueueIconButton>
         </div>
       </TooltipProvider>
     </div>
@@ -257,33 +312,38 @@ function QueueItem({
 
 function QueueIconButton({
   label,
+  tooltipLabel,
   disabled,
   onClick,
   destructive = false,
   children,
 }: {
   label: string;
+  tooltipLabel?: string;
   disabled: boolean;
   onClick: () => void;
   destructive?: boolean;
   children: ReactNode;
 }) {
+  const button = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className={cn('size-7 rounded-full', destructive && 'text-destructive hover:text-destructive')}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </Button>
+  );
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={cn('size-7 rounded-full', destructive && 'text-destructive hover:text-destructive')}
-          aria-label={label}
-          disabled={disabled}
-          onClick={onClick}
-        >
-          {children}
-        </Button>
+        {disabled ? <span className="inline-flex" tabIndex={0}>{button}</span> : button}
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltipLabel ?? label}</TooltipContent>
     </Tooltip>
   );
 }

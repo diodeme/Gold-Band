@@ -2,9 +2,10 @@ use camino::Utf8PathBuf;
 use gold_band::domain::{InvocationKind, SessionMode, TurnControlMode};
 use gold_band::prompts::PromptExecutionSurface;
 use gold_band::provider::{
-    ColdFileRef, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptHiddenSection,
-    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
-    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
+    ColdFileRef, ConversationPromptInput, OutputEmissionMode, PromptArtifactRef,
+    PromptAttachmentRef, PromptHiddenSection, PromptOutputContract, PromptPredecessorContext,
+    PromptRuntimeContext, PromptVisibility, RuntimeControlIntent, StreamMode, UserPromptQuote,
+    UserPromptRenderMode, WorkerInvocation, render_prompt_bundle,
 };
 
 fn runtime_context() -> PromptRuntimeContext {
@@ -98,6 +99,7 @@ fn invocation() -> WorkerInvocation {
         continue_ref: None,
         resume_prompt: None,
         resume_prompt_id: None,
+        prompt_display: None,
         resume_prompt_visibility: PromptVisibility::Visible,
         stream_mode: StreamMode::None,
         log_prompts: false,
@@ -532,6 +534,35 @@ fn render_runtime_resume_is_a_hidden_control_turn() {
         Some("runtimeControlResume")
     );
     assert!(prompt.user_prompt.contains("用户已选择继续工作流"));
+}
+
+#[test]
+fn render_runtime_resume_with_message_keeps_internal_prompt_out_of_display_projection() {
+    let mut req = invocation();
+    req.session_mode = SessionMode::Continue;
+    req.user_prompt_render_mode = UserPromptRenderMode::UserMessage;
+    req.runtime_control_intent = RuntimeControlIntent::Resume;
+    req.resume_prompt = Some(
+        "请继续检查\n\n<hidden data-gold-band-hidden=\"true\" show=\"false\" title=\"Gold Band runtime control\">resume</hidden>"
+            .to_string(),
+    );
+    req.resume_prompt_visibility = PromptVisibility::Visible;
+    req.prompt_display = Some(ConversationPromptInput {
+        display_text: "请继续检查".to_string(),
+        quotes: vec![UserPromptQuote {
+            id: "quote-1".to_string(),
+            source_message_key: "answer-1".to_string(),
+            text: "引用内容".to_string(),
+        }],
+    });
+
+    let prompt = render_prompt_bundle(&req).unwrap();
+
+    assert!(prompt.user_prompt.contains("show=\"false\""));
+    assert_eq!(prompt.display_text.as_deref(), Some("请继续检查"));
+    assert_eq!(prompt.quotes.len(), 1);
+    assert_eq!(prompt.visibility, PromptVisibility::Visible);
+    assert_eq!(prompt.runtime_control_intent, RuntimeControlIntent::Resume);
 }
 
 #[test]

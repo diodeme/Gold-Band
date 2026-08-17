@@ -23,7 +23,7 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 ## 3. 信息架构
 
-源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。`not-installed` 显示系统 Git 未安装与官方下载入口；`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
+源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。`not-installed` 显示系统 Git 未安装与官方下载入口；`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
 
 源码管理包含四个页签：
 
@@ -50,7 +50,7 @@ Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`�
 
 Commit 列表与当前聚合文件列表是两个独立滚动域，按 repository/workspace 运行期会话保存轻量 scroll offset；打开 Diff Tab 再返回时分别恢复，不能互相覆盖。滚动恢复必须在审阅 viewport 重挂载并完成布局后应用，不能只在数据 identity 变化时设置一次。切换历史页属于新列表导航，Commit 列表必须回到顶部；聚合文件滚动位置只在相同 review identity 下恢复。鼠标点击 Commit 不保留普通焦点方框，键盘 Tab 导航仍保留 `focus-visible` 可访问焦点。
 
-多提交“总 Diff”采用 IntelliJ IDEA Log 的 `collectChanges + zipChanges` 心智：只收集显式选中 Commit 的 first-parent Changes，再按历史从旧到新连接同一文件的演化链。文件路径不是全局唯一演化身份：只有祖先拓扑可连接的修改才进入同一条链；跨分支但文件 Patch 等价的重复修改按 stable patch identity 去重；跨分支且内容不同的修改保留为多条独立链，此时右栏允许同一路径出现多次并显示各自终点的 8 位短 SHA。每条链打开后比较该文件最早相关变化之前的版本与最后相关变化之后的版本，按正常文件行号展示最终 Diff，不按 Commit 分段。创建后又删除且没有净端点的文件不显示；重命名沿 `oldPath → path` 串联。非连续选择不会纳入只由未选中 Commit 触碰的其他文件，但首尾版本之间未选中 Commit 对同一文件的影响可能出现在最终内容中。Root Commit 与空树比较，Merge Commit 使用 first-parent Changes。点击 Commit 必须在同一事件链立即发布选中态和详情 loading；聚合文件 summary 按相同首尾端点分组执行批量 numstat，不允许为每个文件读取正文或产生 N+1 Git 命令，正文只在进入 Diff Tab 后加载。Commit 右键菜单提供 8 位短 SHA、完整 SHA 和“查看提交归属”。提交归属只展示当前包含它的本地/远端分支与 Tag、是否进入当前分支、第一父主线/首次 Merge 路径和父提交，不使用 reflog 推断、也不声称能还原历史分支来源。
+多提交“总 Diff”采用 IntelliJ IDEA Log 的 `collectChanges + zipChanges` 心智：只收集显式选中 Commit 的 first-parent Changes，再按历史从旧到新连接同一文件的演化链。文件路径不是全局唯一演化身份：只有祖先拓扑可连接的修改才进入同一条链；跨分支但文件 Patch 等价的重复修改按 stable patch identity 去重；跨分支且内容不同的修改保留为多条独立链，此时右栏允许同一路径出现多次并显示各自终点的 8 位短 SHA。每条链打开后比较该文件最早相关变化之前的版本与最后相关变化之后的版本，按正常文件行号展示最终 Diff，不按 Commit 分段。创建后又删除且没有净端点的文件不显示；重命名沿 `oldPath → path` 串联。非连续选择不会纳入只由未选中 Commit 触碰的其他文件，但首尾版本之间未选中 Commit 对同一文件的影响可能出现在最终内容中。Root Commit 与空树比较；聚合链的 `beforeOid = null` 同样表示空树，空树 OID 必须由当前仓库的 Git object format 动态生成，不得硬编码 SHA-1。Merge Commit 使用 first-parent Changes。点击 Commit 必须在同一事件链立即发布选中态和详情 loading；聚合文件 summary 按相同首尾端点分组执行批量 numstat，不允许为每个文件读取正文或产生 N+1 Git 命令，正文只在进入 Diff Tab 后加载。Commit 右键菜单提供 8 位短 SHA、完整 SHA 和“查看提交归属”。提交归属只展示当前包含它的本地/远端分支与 Tag、是否进入当前分支、第一父主线/首次 Merge 路径和父提交，不使用 reflog 推断、也不声称能还原历史分支来源。
 
 更改区、历史聚合区和 PR 文件区点击文件都创建同一种审阅会话并打开同一个 Diff Tab。Tab 支持上/下一个差异、上/下一个文件，四个图标按钮都使用 shadcn Tooltip 明确语义；从文件列表首次打开以及使用左/右文件按钮切换时从文件顶部开始，只有在当前文件最后一处差异继续向下或第一处差异继续向上时，才进入下一/上一文件并定位其首/末差异。更改区的 staged 与 unstaged/untracked 分别形成独立序列，PR 使用 immutable base/head OID 下的全部文件。审阅会话只在有界运行期 Store 保存文件 locator 序列和列表已有的权威增删统计，Tab locator 仅保存 `reviewSessionId + reviewItemId`；同一会话切换文件替换原 Tab，不新增 Tab。文件内容按需加载，仅缓存当前和相邻项，迟到响应不得覆盖当前文件。Git numstat/GitHub files summary 与 CodeMirror 正文匹配算法可能对移动代码产生不同统计，列表与 Diff Tab 必须统一展示领域 summary，CodeMirror 只负责差异块渲染，不建立第二统计事实源。
 

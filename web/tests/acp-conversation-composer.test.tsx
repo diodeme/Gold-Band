@@ -50,6 +50,7 @@ function baseProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     canSubmit: true,
     sendButtonBusy: false,
     showRuntimeContinue: false,
+    runtimeContinueKind: null,
     runtimeContinueSubmitting: false,
     onRuntimeContinue: vi.fn(),
     configBar: null,
@@ -102,6 +103,34 @@ describe('AcpConversationComposer', () => {
     expect(commandBar?.contains(config)).toBe(true);
     expect(commandBar?.className).toBe(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName);
     expect(sendButton?.className).toContain(ACP_SESSION_COMPOSER_LAYOUT.actionButtonClassName);
+  });
+
+  it('uses the shared send eligibility for continue labels and action hints', async () => {
+    await renderComposer({
+      canSubmit: false,
+      queueSubmit: false,
+      showRuntimeContinue: true,
+      runtimeContinueKind: 'continue-current-attempt',
+    });
+
+    let continueButton = host.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+    let sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(continueButton?.textContent).toContain('继续工作流');
+    expect(continueButton?.getAttribute('aria-label')).toBe('继续运行工作流');
+    expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
+
+    await renderComposer({
+      prompt: '请继续',
+      canSubmit: true,
+      queueSubmit: false,
+      showRuntimeContinue: true,
+      runtimeContinueKind: 'continue-current-attempt',
+    });
+    continueButton = host.querySelector<HTMLButtonElement>('[data-acp-continue-workflow="true"]');
+    sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(continueButton?.textContent).toContain('继续并发送');
+    expect(continueButton?.getAttribute('aria-label')).toBe('发送消息并继续工作流');
+    expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
   });
 
   it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {
@@ -162,6 +191,8 @@ describe('AcpConversationComposer', () => {
 
     const contextArea = host.querySelector('[data-composer-context-area="true"]');
     const promptInput = host.querySelector('[data-slot="prompt-input"]');
+    expect(promptInput?.classList.contains('border-0')).toBe(true);
+    expect(promptInput?.classList.contains('border')).toBe(false);
     const textarea = host.querySelector('textarea');
     expect(contextArea).toBeTruthy();
     expect(promptInput).toBeTruthy();
@@ -171,5 +202,38 @@ describe('AcpConversationComposer', () => {
     const imageChip = contextArea?.querySelector('[data-composer-attachment-chip="true"]');
     expect(imageChip?.querySelector('img')).toBeTruthy();
     expect(imageChip?.textContent).not.toContain('image.png');
+  });
+
+  it('replaces the textarea with a linked read-only notice for a superseded session', async () => {
+    const onNavigate = vi.fn();
+    const onDrop = vi.fn();
+    await renderComposer({
+      inputDisabled: true,
+      canSubmit: false,
+      queueSubmit: false,
+      onDrop,
+      supersededSession: {
+        label: 'node-x / attempt-003',
+        href: '/chat/projects/project-a/tasks/task-a/runs/run-a/rounds/round-a/nodes/node-x/attempts/attempt-003',
+        onNavigate,
+      },
+    });
+
+    const notice = host.querySelector('[data-acp-session-superseded="true"]');
+    const link = notice?.querySelector<HTMLAnchorElement>('a');
+    const attachmentButton = host.querySelector<HTMLButtonElement>('button[aria-label="添加附件"]');
+    const sendButton = host.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+    expect(host.querySelector('textarea')).toBeNull();
+    expect(notice?.textContent).toContain('此会话已由 node-x / attempt-003 接续');
+    expect(link?.getAttribute('href')).toContain('/nodes/node-x/attempts/attempt-003');
+    expect(link?.className).toContain('text-link');
+    expect(link?.className).toContain('text-xs');
+    expect(attachmentButton?.disabled).toBe(true);
+    expect(sendButton?.disabled).toBe(true);
+
+    await act(async () => link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })));
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    await act(async () => notice?.closest('[data-attachment-dropzone]')?.dispatchEvent(new Event('drop', { bubbles: true })));
+    expect(onDrop).not.toHaveBeenCalled();
   });
 });

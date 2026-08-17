@@ -99,8 +99,8 @@ describe('completed Agent message Markdown copy action', () => {
       expect(assistantContent?.classList.contains('pt-2')).toBe(true);
       expect(assistantContent?.classList.contains('pb-0')).toBe(true);
       expect(assistantContent?.classList.contains('py-3')).toBe(false);
-      expect(actionRow?.classList.contains('min-h-6')).toBe(true);
-      expect(actionRow?.querySelector('[data-agent-message-copy="true"]')?.classList.contains('size-6')).toBe(true);
+      expect(actionRow?.classList.contains('h-5')).toBe(true);
+      expect(actionRow?.querySelector('[data-agent-message-copy="true"]')?.classList.contains('size-5')).toBe(true);
       expect(userContent?.classList.contains('py-3')).toBe(true);
     } finally {
       await act(async () => root.unmount());

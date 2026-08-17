@@ -311,8 +311,9 @@ describe('workflow editor interaction contracts', () => {
     expect(graphControlsSource).toContain('showZoom={false} showFitView={false} showInteractive={false}');
     expect(graphControlsSource).toContain('<TooltipTrigger asChild>');
     expect(stylesSource).toContain('.workflow-graph .react-flow__controls-button svg');
-    expect(stylesSource).toContain('fill: none;\n  stroke: currentColor;');
-    expect(stylesSource).not.toContain('.workflow-graph .react-flow__controls-button svg {\n  fill: currentColor;');
+    const normalizedStylesSource = stylesSource.replace(/\r\n/g, '\n');
+    expect(normalizedStylesSource).toContain('fill: none;\n  stroke: currentColor;');
+    expect(normalizedStylesSource).not.toContain('.workflow-graph .react-flow__controls-button svg {\n  fill: currentColor;');
     expect(editorSource).not.toContain('<MiniMap');
     expect(editorSource).not.toContain('showMiniMap');
     expect(editorSource).not.toContain('workflowGraphExceedsViewport');

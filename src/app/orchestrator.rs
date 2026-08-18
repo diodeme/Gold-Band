@@ -110,6 +110,7 @@ struct PreparedRunData {
 pub struct PreparedRun {
     data: Option<PreparedRunData>,
     run_dir: Utf8PathBuf,
+    runtime_candidate: Option<super::RuntimeCandidateRegistration>,
 }
 
 impl PreparedRun {
@@ -118,6 +119,9 @@ impl PreparedRun {
     }
 
     pub fn accept(mut self) -> AcceptedRun {
+        if let Some(runtime_candidate) = self.runtime_candidate.take() {
+            runtime_candidate.commit();
+        }
         AcceptedRun {
             data: self.data.take().expect("prepared run data exists"),
         }
@@ -126,6 +130,9 @@ impl PreparedRun {
 
 impl Drop for PreparedRun {
     fn drop(&mut self) {
+        if let Some(runtime_candidate) = self.runtime_candidate.take() {
+            let _ = runtime_candidate.abort();
+        }
         if self.data.is_some() {
             let _ = std::fs::remove_dir_all(self.run_dir.as_std_path());
         }
@@ -743,6 +750,11 @@ fn terminalize_background_drive_error_with_policy(
 
     match convergence {
         Ok(AttemptRuntimePauseResult::Converged) => {
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                &fallback_run.id,
+                fallback_run.execution.recovery_candidate_token.as_deref(),
+            );
             emit_background_drive_error_from_fallback(
                 app,
                 task_id,
@@ -762,6 +774,15 @@ fn terminalize_background_drive_error_with_policy(
                     fallback_node,
                 )
             {
+                if let Ok(run) = app.run_status(task_id, &fallback_run.id)
+                    && run.status != RunStatus::Running
+                {
+                    app.finish_runtime_candidate_best_effort(
+                        task_id,
+                        &fallback_run.id,
+                        run.execution.recovery_candidate_token.as_deref(),
+                    );
+                }
                 emit_background_drive_error_from_fallback(
                     app,
                     task_id,
@@ -1055,6 +1076,7 @@ fn prepare_run_from_workflow(
     let mut prepared = PreparedRun {
         data: None,
         run_dir,
+        runtime_candidate: None,
     };
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
@@ -1083,7 +1105,7 @@ fn prepare_run_from_workflow(
         outer_node_id: None,
         outer_attempt_id: None,
     };
-    let run = RunState {
+    let mut run = RunState {
         version: VERSION.to_string(),
         id: run_id.clone(),
         task_id: task_id.to_string(),
@@ -1111,8 +1133,13 @@ fn prepare_run_from_workflow(
             now.clone(),
         ),
     };
+    let runtime_candidate = app.begin_runtime_candidate(task_id, &run_id)?;
+    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+    }
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
+    prepared.runtime_candidate = runtime_candidate;
     write_json(
         &app.paths.workflow_snapshot_file(task_id, &run_id),
         &validated.raw,
@@ -1514,6 +1541,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         return Ok(false);
     }
     let mut run: RunState = read_json(&run_path)?;
+    let mut run_became_inactive = run.status != RunStatus::Running;
     if run.status == RunStatus::Running
         && run.current_round.as_deref() == Some(round_id)
         && run.current_node.as_deref() == Some(outer_node_id)
@@ -1526,6 +1554,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         run.transition_current_execution(RuntimeExecutionPhase::Paused, now.clone())?;
         validate_run_state(&run)?;
         write_json(&run_path, &run)?;
+        run_became_inactive = true;
     }
 
     let round_path = app.paths.round_file(task_id, run_id, round_id);
@@ -1568,6 +1597,15 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
         }
     }
 
+    let recovery_candidate_token = run.execution.recovery_candidate_token.clone();
+    drop(_guard);
+    if run_became_inactive {
+        app.finish_runtime_candidate_best_effort(
+            task_id,
+            run_id,
+            recovery_candidate_token.as_deref(),
+        );
+    }
     Ok(true)
 }
 
@@ -1781,6 +1819,15 @@ fn run_continue_with_launch_signal(
         _ => bail!("current attempt is not continuable"),
     };
 
+    let runtime_candidate = if !claimed_runtime_resume && run.status != RunStatus::Running {
+        let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+        if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+            run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+        }
+        runtime_candidate
+    } else {
+        None
+    };
     drive_from_node_with_initial_session(
         app,
         task_id,
@@ -1803,6 +1850,7 @@ fn run_continue_with_launch_signal(
         initial_model_override,
         initial_permission_mode_override,
         launch,
+        runtime_candidate,
     )?;
     Ok(run)
 }
@@ -1964,6 +2012,15 @@ fn run_continue_dynamic_inner(
     ) {
         return Ok(run);
     }
+    let runtime_candidate = if run.status == RunStatus::Paused {
+        let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+        if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+            run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+        }
+        runtime_candidate
+    } else {
+        None
+    };
     outer_node.status = RunStatus::Paused;
     outer_node.outcome = None;
     outer_node.finished_at = None;
@@ -1989,6 +2046,7 @@ fn run_continue_dynamic_inner(
         prompt_state.model_override,
         prompt_state.permission_mode_override,
         None,
+        runtime_candidate,
     );
     drive_result?;
     Ok(run)
@@ -2163,6 +2221,7 @@ pub(crate) fn run_continue_background(
         bail!("current attempt is waiting for manual check");
     }
     let execution_id = next_runtime_execution_id();
+    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
     {
         let state_lock = super::attempt_runtime_state_lock(
             app,
@@ -2210,6 +2269,10 @@ pub(crate) fn run_continue_background(
         current_run.status = RunStatus::Running;
         current_run.pause_reason = None;
         current_run.updated_at = resumed_at.clone();
+        if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+            current_run.execution.recovery_candidate_token =
+                Some(runtime_candidate.token().to_string());
+        }
         current_run.transition_current_execution(resume_phase, resumed_at)?;
         crate::runtime::validate_node_state(&node)?;
         validate_run_state(&current_run)?;
@@ -2222,6 +2285,9 @@ pub(crate) fn run_continue_background(
             let _ = write_json(&node_path, &node);
             return Err(error);
         }
+    }
+    if let Some(runtime_candidate) = runtime_candidate {
+        runtime_candidate.commit();
     }
     let background_app = app.clone_for_background();
     let task_id = task_id.to_string();
@@ -2318,6 +2384,7 @@ pub(crate) fn run_recover_completed_background(
     let resolved_profiles =
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
 
+    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
     let state_lock =
         super::attempt_runtime_state_lock(app, task_id, run_id, round_id, node_id, attempt_id);
     let mut run;
@@ -2349,6 +2416,9 @@ pub(crate) fn run_recover_completed_background(
         run.outcome = None;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
+        if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+            run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+        }
         run.transition_current_execution(
             RuntimeExecutionPhase::Transitioning,
             run.updated_at.clone(),
@@ -2359,6 +2429,9 @@ pub(crate) fn run_recover_completed_background(
         validate_round_state(&round)?;
         crate::runtime::validate_node_state(&node)?;
         persist_runtime_state(app, task_id, &run, &round, &node)?;
+    }
+    if let Some(runtime_candidate) = runtime_candidate {
+        runtime_candidate.commit();
     }
 
     let attempt_dir = app
@@ -2380,6 +2453,13 @@ pub(crate) fn run_recover_completed_background(
         expected_execution_id.as_deref(),
     )?
     else {
+        if run.status != RunStatus::Running {
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                run_id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
+        }
         return Ok(run);
     };
 
@@ -2419,6 +2499,7 @@ pub(crate) fn run_recover_completed_background(
                 None,
                 prompt_state.model_override,
                 prompt_state.permission_mode_override,
+                None,
                 None,
             ) {
                 terminalize_background_drive_error(
@@ -2475,6 +2556,7 @@ fn submit_manual_check_with_launch_signal(
         resolve_workflow_profiles(&app.paths, &validated.raw, app.config.desktop_language)?;
     let mut run = app.run_status(task_id, run_id)?;
     let (mut round, mut node) = current_attempt_state(app, task_id, &run)?;
+    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
 
     node.status = RunStatus::Completed;
     node.outcome = Some(outcome);
@@ -2483,6 +2565,9 @@ fn submit_manual_check_with_launch_signal(
     run.status = RunStatus::Running;
     run.pause_reason = None;
     run.updated_at = now_rfc3339_like();
+    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+    }
     run.transition_current_execution(RuntimeExecutionPhase::Transitioning, run.updated_at.clone())?;
     round.status = RunStatus::Running;
     round.outcome = None;
@@ -2539,6 +2624,9 @@ fn submit_manual_check_with_launch_signal(
         ),
     );
     persist_runtime_state(app, task_id, &run, &round, &node)?;
+    if let Some(runtime_candidate) = runtime_candidate {
+        runtime_candidate.commit();
+    }
     let decision = decide_next_step(&validated, &run, &round, &node);
     let next = apply_control_decision(
         app,
@@ -2551,6 +2639,13 @@ fn submit_manual_check_with_launch_signal(
         decision,
         None,
     )?;
+    if next.is_none() && run.status != RunStatus::Running {
+        app.finish_runtime_candidate_best_effort(
+            task_id,
+            run_id,
+            run.execution.recovery_candidate_token.as_deref(),
+        );
+    }
     if let Some(next) = next.as_ref()
         && let Some(launch_fallback) = launch_fallback.as_ref()
     {
@@ -2591,6 +2686,7 @@ fn submit_manual_check_with_launch_signal(
             None,
             prompt_state.model_override,
             prompt_state.permission_mode_override,
+            None,
             None,
         )?;
     }
@@ -2776,6 +2872,10 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
         fresh_node,
         fresh_profile,
     );
+    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+    }
     round.trace.push(round_trace_step(
         next_trace_sequence(&round),
         &node_id,
@@ -2804,7 +2904,7 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
             None,
         ),
     );
-    drive_from_node(
+    drive_from_node_with_runtime_candidate(
         app,
         task_id,
         &validated,
@@ -2812,6 +2912,7 @@ pub(crate) fn run_retry(app: &App, task_id: &str, run_id: &str) -> Result<RunSta
         &mut run,
         &mut round,
         fresh,
+        runtime_candidate,
     )?;
     Ok(run)
 }
@@ -4117,6 +4218,28 @@ pub(crate) fn drive_from_node(
     round: &mut RoundState,
     node: NodeState,
 ) -> Result<()> {
+    drive_from_node_with_runtime_candidate(
+        app,
+        task_id,
+        workflow,
+        resolved_profiles,
+        run,
+        round,
+        node,
+        None,
+    )
+}
+
+fn drive_from_node_with_runtime_candidate(
+    app: &App,
+    task_id: &str,
+    workflow: &ValidatedWorkflow,
+    resolved_profiles: &super::profile_resolver::ResolvedWorkflowMetadata,
+    run: &mut RunState,
+    round: &mut RoundState,
+    node: NodeState,
+    runtime_candidate: Option<super::RuntimeCandidateRegistration>,
+) -> Result<()> {
     drive_from_node_with_initial_session(
         app,
         task_id,
@@ -4139,6 +4262,7 @@ pub(crate) fn drive_from_node(
         None,
         None,
         None,
+        runtime_candidate,
     )
 }
 
@@ -6453,17 +6577,24 @@ fn restore_outer_attempt_running_for_dynamic_resume(
     if round.status != RunStatus::Paused || node.status != RunStatus::Paused {
         return Ok(false);
     }
+    let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
     let previous_pause_reason = run.pause_reason.unwrap_or(PauseReason::ProcessInterrupted);
     let now = now_rfc3339_like();
     run.status = RunStatus::Running;
     run.pause_reason = None;
     run.updated_at = now;
+    if let Some(runtime_candidate) = runtime_candidate.as_ref() {
+        run.execution.recovery_candidate_token = Some(runtime_candidate.token().to_string());
+    }
     round.status = RunStatus::Running;
     round.outcome = None;
     node.status = RunStatus::Running;
     node.outcome = None;
     node.finished_at = None;
     persist_runtime_state(app, task_id, &run, &round, &node)?;
+    if let Some(runtime_candidate) = runtime_candidate {
+        runtime_candidate.commit();
+    }
     app.record_metrics_resume_cause(
         task_id,
         run_id,
@@ -12112,6 +12243,27 @@ fn safe_dynamic_ref(value: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+fn commit_runtime_candidate_after_running_persist(
+    runtime_candidate: &mut Option<super::RuntimeCandidateRegistration>,
+    persisted: Result<bool>,
+) -> Result<bool> {
+    match persisted {
+        Ok(true) => {
+            if let Some(runtime_candidate) = runtime_candidate.take() {
+                runtime_candidate.commit();
+            }
+            Ok(true)
+        }
+        Ok(false) => {
+            if let Some(runtime_candidate) = runtime_candidate.take() {
+                runtime_candidate.abort()?;
+            }
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn drive_from_node_with_initial_session(
     app: &App,
     task_id: &str,
@@ -12134,6 +12286,7 @@ fn drive_from_node_with_initial_session(
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
+    mut runtime_candidate: Option<super::RuntimeCandidateRegistration>,
 ) -> Result<()> {
     let mut session_mode = initial_session_mode;
     let mut continue_ref = initial_continue_ref;
@@ -12210,7 +12363,10 @@ fn drive_from_node_with_initial_session(
                 run.pause_reason,
             ),
         );
-        if !persist_runtime_state_if_execution_current(app, task_id, run, round, &node)? {
+        if !commit_runtime_candidate_after_running_persist(
+            &mut runtime_candidate,
+            persist_runtime_state_if_execution_current(app, task_id, run, round, &node),
+        )? {
             return Ok(());
         }
         notify_runtime_continue_started(&mut launch, run);
@@ -12533,6 +12689,11 @@ fn drive_from_node_with_initial_session(
                     return Ok(());
                 }
                 emit_pause_side_effects(app, task_id, run, round, &failed_node);
+                app.finish_runtime_candidate_best_effort(
+                    task_id,
+                    &run.id,
+                    run.execution.recovery_candidate_token.as_deref(),
+                );
                 return Ok(());
             }
         };
@@ -12663,6 +12824,11 @@ fn drive_from_node_with_initial_session(
                 return Ok(());
             }
             emit_pause_side_effects(app, task_id, run, round, &node);
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                &run.id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
             return Ok(());
         }
 
@@ -12701,6 +12867,11 @@ fn drive_from_node_with_initial_session(
                         ControlDecision::PauseRun(PauseReason::RuntimeAbnormal),
                         expected_execution_id.as_deref(),
                     )?;
+                    app.finish_runtime_candidate_best_effort(
+                        task_id,
+                        &run.id,
+                        run.execution.recovery_candidate_token.as_deref(),
+                    );
                     return Ok(());
                 }
 
@@ -12726,6 +12897,11 @@ fn drive_from_node_with_initial_session(
                         ControlDecision::PauseRun(PauseReason::ErrorBlocked),
                         node.runtime_execution_id.as_deref(),
                     )?;
+                    app.finish_runtime_candidate_best_effort(
+                        task_id,
+                        &run.id,
+                        run.execution.recovery_candidate_token.as_deref(),
+                    );
                     return Ok(());
                 };
 
@@ -12827,6 +13003,11 @@ fn drive_from_node_with_initial_session(
                 return Ok(());
             }
             emit_pause_side_effects(app, task_id, run, round, &node);
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                &run.id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
             return Ok(());
         }
 
@@ -12908,6 +13089,13 @@ fn drive_from_node_with_initial_session(
             continue;
         }
         // Workflow ended - NodeCompleted already emitted above before control decision.
+        if run.status != RunStatus::Running {
+            app.finish_runtime_candidate_best_effort(
+                task_id,
+                &run.id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
+        }
         run.last_executed_node = Some(completed_snapshot);
         return Ok(());
     }
@@ -12923,6 +13111,27 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    #[test]
+    fn runtime_candidate_commits_only_after_canonical_running_persist() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = crate::storage::GoldBandPaths::new(repo_root);
+        let core_db = Utf8PathBuf::from_path_buf(temp.path().join("core.db")).unwrap();
+        let coordinator = crate::app::RuntimeRecoveryCoordinator::new(core_db);
+        coordinator
+            .complete_startup_recovery(std::collections::HashSet::new())
+            .unwrap();
+        let mut registration = Some(coordinator.begin(&paths, "task-001", "run-001").unwrap());
+
+        assert!(
+            !commit_runtime_candidate_after_running_persist(&mut registration, Ok(false)).unwrap()
+        );
+        assert!(registration.is_none());
+        assert!(coordinator.list_persisted_candidates().unwrap().is_empty());
+        assert!(coordinator.begin_shutdown().unwrap().is_empty());
+    }
 
     #[test]
     fn metrics_resume_cause_is_consumed_without_pause_reason_inference() {

@@ -17,6 +17,11 @@ conversationInlineImageMaxDimension = 2560
 notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
 
+[projectIdentity]
+maxLength = 80
+hashHexLength = 8
+separator = "--"
+
 [workspaceLayout]
 shellMinWidth = 480
 shellMinHeight = 680

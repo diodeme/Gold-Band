@@ -4,7 +4,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
-use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,7 +13,7 @@ use crate::acp::events::{
     AcpUiEvent, AgentTranscriptRelation, agent_transcript_tool_output,
     extract_agent_transcript_relation, load_timeline_items, write_timeline_items,
 };
-use crate::storage::{ensure_parent_dir, write_json};
+use crate::storage::{atomic_write_file, ensure_parent_dir, write_json};
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
@@ -1134,9 +1133,10 @@ fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -
         return Ok(false);
     }
     ensure_parent_dir(&path)?;
-    let mut file = AtomicWriteFile::open(path.as_std_path())?;
-    file.write_all(&content)?;
-    file.commit()?;
+    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        file.write_all(&content)?;
+        Ok(())
+    })?;
     Ok(true)
 }
 

@@ -19,9 +19,8 @@ use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
     normalize_provider_runtime_failure, runtime_error,
 };
-use crate::storage::{active_storage_path_config, read_json, write_json};
+use crate::storage::{active_storage_path_config, atomic_write_file, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
-use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
@@ -30,7 +29,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::str::FromStr;
 use tracing::debug;
 
@@ -971,9 +970,10 @@ pub fn resolve_user_input_attachments(
                 .is_some_and(|(source, destination)| source == destination);
         if !same_file {
             let mut source_file = std::fs::File::open(source)?;
-            let mut file = AtomicWriteFile::open(destination.as_std_path())?;
-            std::io::copy(&mut source_file, &mut file)?;
-            file.commit()?;
+            atomic_write_file(destination.as_std_path(), |file| -> Result<()> {
+                std::io::copy(&mut source_file, file)?;
+                Ok(())
+            })?;
         }
         if let Some(attachment) = resolved_attachment(
             destination.as_std_path(),

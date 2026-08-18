@@ -7,7 +7,7 @@ use tracing::Level;
 fn embedded_project_app_config() -> &'static ProjectAppConfig {
     static CONFIG: OnceLock<ProjectAppConfig> = OnceLock::new();
     CONFIG.get_or_init(|| {
-        config::Config::builder()
+        let config: ProjectAppConfig = config::Config::builder()
             .add_source(config::File::from_str(
                 include_str!("../../configs/app-config.toml"),
                 config::FileFormat::Toml,
@@ -15,8 +15,24 @@ fn embedded_project_app_config() -> &'static ProjectAppConfig {
             .build()
             .expect("embedded app-config.toml is valid")
             .try_deserialize()
-            .expect("embedded app-config.toml deserializes to ProjectAppConfig")
+            .expect("embedded app-config.toml deserializes to ProjectAppConfig");
+        config
+            .project_identity
+            .as_ref()
+            .expect("embedded app-config.toml defines projectIdentity")
+            .validate()
+            .expect("embedded projectIdentity config is valid");
+        config
     })
+}
+
+pub fn project_identity_config() -> &'static ProjectIdentityConfig {
+    static CONFIG: OnceLock<ProjectIdentityConfig> = OnceLock::new();
+    CONFIG.get_or_init(|| project_identity_config_from(embedded_project_app_config()))
+}
+
+fn project_identity_config_from(config: &ProjectAppConfig) -> ProjectIdentityConfig {
+    config.project_identity.clone().unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1235,6 +1251,8 @@ pub struct StateConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectAppConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_identity: Option<ProjectIdentityConfig>,
     pub acp_session_title_refresh_enabled: Option<bool>,
     pub acp_chat_event_page_size: Option<usize>,
     pub acp_raw_max_size_bytes: Option<u64>,
@@ -1260,6 +1278,56 @@ pub struct ProjectAppConfig {
     pub workspace_files: Option<WorkspaceFilesConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_files: Option<TurnFilesConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIdentityConfig {
+    pub max_length: usize,
+    pub hash_hex_length: usize,
+    pub separator: String,
+}
+
+impl Default for ProjectIdentityConfig {
+    fn default() -> Self {
+        Self {
+            max_length: 80,
+            hash_hex_length: 8,
+            separator: "--".to_string(),
+        }
+    }
+}
+
+impl ProjectIdentityConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.hash_hex_length == 0 || self.hash_hex_length > blake3::OUT_LEN * 2 {
+            return Err(anyhow!(
+                "project identity hashHexLength must be between 1 and {}",
+                blake3::OUT_LEN * 2
+            ));
+        }
+        if self.separator.is_empty()
+            || !self.separator.is_ascii()
+            || !self
+                .separator
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(anyhow!(
+                "project identity separator must contain only path-safe ASCII characters"
+            ));
+        }
+        if self.max_length <= self.separator.len() + self.hash_hex_length {
+            return Err(anyhow!(
+                "project identity maxLength must leave at least one slug character"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn slug_max_length(&self) -> usize {
+        self.max_length - self.separator.len() - self.hash_hex_length
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1846,10 +1914,10 @@ mod tests {
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
         DEFAULT_DESKTOP_WALLPAPER_OPACITY_PERCENT, DesktopAvailableUpdate, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference, ManagedAgentConfig,
-        ManagedAgentId, PersonalizationPreference, ProjectAppConfig, RuntimeConfig,
-        RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery, TurnFilesConfig,
-        VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
-        catalog_agent_default_config,
+        ManagedAgentId, PersonalizationPreference, ProjectAppConfig, ProjectIdentityConfig,
+        RuntimeConfig, RuntimeLogLevel, SettingsConfig, StateConfig, SystemPromptDelivery,
+        TurnFilesConfig, VisualQuality, WallpaperImagePreference, WorkspaceLayoutConfig,
+        catalog_agent_default_config, project_identity_config,
     };
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
@@ -2370,6 +2438,28 @@ mod tests {
         assert_eq!(layout.context_cards.window_min_width, 520);
         assert_eq!(layout.workflow_canvas.window_min_width, 640);
         assert_eq!(layout.settings.window_min_width, 480);
+    }
+
+    #[test]
+    fn embedded_project_identity_config_is_valid_and_derives_slug_limit() {
+        let identity = project_identity_config();
+
+        identity.validate().unwrap();
+        assert_eq!(identity.max_length, 80);
+        assert_eq!(identity.hash_hex_length, 8);
+        assert_eq!(identity.separator, "--");
+        assert_eq!(identity.slug_max_length(), 70);
+    }
+
+    #[test]
+    fn project_identity_config_rejects_inconsistent_lengths() {
+        let identity = ProjectIdentityConfig {
+            max_length: 10,
+            hash_hex_length: 8,
+            separator: "--".to_string(),
+        };
+
+        assert!(identity.validate().is_err());
     }
 
     #[test]

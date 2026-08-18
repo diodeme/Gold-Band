@@ -57,17 +57,17 @@ test('fails when the release contains no supported platform artifacts', (t) => {
   assert.match(result.stderr, /No supported release assets/);
 });
 
-test('both release entry points publish checksums after generating the updater manifest', () => {
+test('both release entry points publish the installer and checksums after the updater manifest', () => {
   for (const workflow of ['.github/workflows/release.yml', '.github/workflows/release-please.yml']) {
     const source = readFileSync(path.resolve(workflow), 'utf8');
     const manifestIndex = source.indexOf('node scripts/generate-updater-json.mjs release-assets latest.json');
     const checksumIndex = source.indexOf('node scripts/generate-release-checksums.mjs release-assets');
     const uploadIndex = source.indexOf(
-      'gh release upload "${RELEASE_TAG}" latest.json release-assets/*.sha256 --clobber',
+      'gh release upload "${RELEASE_TAG}" latest.json scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber',
     );
 
     assert.notEqual(manifestIndex, -1, `${workflow} must generate latest.json`);
     assert.ok(checksumIndex > manifestIndex, `${workflow} must generate checksums after latest.json`);
-    assert.ok(uploadIndex > checksumIndex, `${workflow} must upload generated checksums`);
+    assert.ok(uploadIndex > checksumIndex, `${workflow} must upload the installer and generated checksums`);
   }
 });

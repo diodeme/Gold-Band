@@ -2381,11 +2381,13 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            markAcpSessionContentHydrated(eventWindowKey);
             snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(updated));
-            initialFetchSucceeded = true;
-            setInitialSessionQueryState("success");
-            break;
+            if (isAcpSessionReadyForInitialDisplay(updated)) {
+              markAcpSessionContentHydrated(eventWindowKey);
+              initialFetchSucceeded = true;
+              setInitialSessionQueryState("success");
+              break;
+            }
           }
         } catch (error) {
           logAcpSessionQueryTiming("request-error", requestTraceId, sessionIdentity, {

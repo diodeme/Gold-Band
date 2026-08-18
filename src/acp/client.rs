@@ -375,7 +375,9 @@ const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
+const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
+const PROMPT_CANCEL_DRAIN_FRAME_BUDGET: usize = 64;
+const PROMPT_CANCEL_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
 const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_FRESHNESS_TIMEOUT: Duration = Duration::from_secs(5);
 const PROMPT_TERMINAL_QUIET_PERIOD: Duration = Duration::from_millis(200);
@@ -631,6 +633,58 @@ where
         }
     }
     Ok(drained_frames)
+}
+
+fn drain_available_frames_bounded<Receive, Observe>(
+    frame_budget: usize,
+    time_budget: Duration,
+    mut receive: Receive,
+    mut observe: Observe,
+) -> Result<usize>
+where
+    Receive: FnMut() -> Result<Option<Value>>,
+    Observe: FnMut(Value) -> Result<()>,
+{
+    let started_at = Instant::now();
+    let mut drained_frames = 0usize;
+    while drained_frames < frame_budget && started_at.elapsed() < time_budget {
+        let Some(value) = receive()? else {
+            break;
+        };
+        observe(value)?;
+        drained_frames = drained_frames.saturating_add(1);
+    }
+    Ok(drained_frames)
+}
+
+fn prompt_cancel_terminal_timeout(
+    cancel_started_at: Option<Instant>,
+    default_timeout: Duration,
+) -> Result<Duration> {
+    let Some(cancel_started_at) = cancel_started_at else {
+        return Ok(default_timeout);
+    };
+    let remaining = PROMPT_CANCEL_TIMEOUT.saturating_sub(cancel_started_at.elapsed());
+    if remaining.is_zero() {
+        Err(anyhow!(AcpCancelDrainTimeout {
+            timeout: PROMPT_CANCEL_TIMEOUT,
+        }))
+    } else {
+        Ok(remaining.min(default_timeout))
+    }
+}
+
+fn map_prompt_terminal_drain_error(
+    error: anyhow::Error,
+    cancel_started_at: Option<Instant>,
+) -> anyhow::Error {
+    if cancel_started_at.is_some() && error.downcast_ref::<AcpPromptRouteDrainTimeout>().is_some() {
+        anyhow!(AcpCancelDrainTimeout {
+            timeout: PROMPT_CANCEL_TIMEOUT,
+        })
+    } else {
+        error
+    }
 }
 
 fn session_list_is_unsupported(error: &anyhow::Error) -> bool {
@@ -4409,14 +4463,26 @@ impl<'a> AcpRuntime<'a> {
             let mut last_title_refresh_at = Instant::now();
             loop {
                 if self.is_prompt_cancel_requested() {
-                    self.observe_prompt_cancel_request()?;
                     cancel_started_at.get_or_insert_with(Instant::now);
+                    self.observe_prompt_cancel_request()?;
+                }
+                if cancel_started_at
+                    .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
+                {
+                    break Err(anyhow!(AcpCancelDrainTimeout {
+                        timeout: PROMPT_CANCEL_TIMEOUT,
+                    }));
                 }
                 let wait_for = cancel_started_at
-                    .and_then(|started| PROMPT_CANCEL_TIMEOUT.checked_sub(started.elapsed()))
-                    .map(|remaining| remaining.min(STOP_CHECK_INTERVAL))
+                    .map(|started| {
+                        PROMPT_CANCEL_TIMEOUT
+                            .saturating_sub(started.elapsed())
+                            .min(STOP_CHECK_INTERVAL)
+                    })
                     .unwrap_or(STOP_CHECK_INTERVAL);
-                self.drain_available_inbound()?;
+                if cancel_started_at.is_none() {
+                    self.drain_available_inbound()?;
+                }
                 self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                 match request.recv_timeout_with_session_route_watermark(wait_for) {
                     Ok(response) => {
@@ -4439,7 +4505,11 @@ impl<'a> AcpRuntime<'a> {
                             )?;
                             self.usage.record_prompt_usage(prompt_usage);
                         }
-                        self.drain_available_inbound()?;
+                        if cancel_started_at.is_some() {
+                            self.drain_available_inbound_bounded()?;
+                        } else {
+                            self.drain_available_inbound()?;
+                        }
                         if value.get("error").is_none() {
                             let watermark = response.session_route_watermark.ok_or_else(|| {
                                 anyhow!(AcpPromptRouteUnavailable {
@@ -4452,8 +4522,22 @@ impl<'a> AcpRuntime<'a> {
                                     reason: "session route closed before terminal convergence",
                                 }));
                             }
-                            self.drain_inbound_through_route_watermark(watermark)?;
-                            self.drain_prompt_terminal_until_quiet(session_id)?;
+                            let route_timeout = prompt_cancel_terminal_timeout(
+                                cancel_started_at,
+                                self.runtime_policy.prompt_terminal_route_timeout,
+                            )?;
+                            self.drain_inbound_through_route_watermark(watermark, route_timeout)
+                                .map_err(|error| {
+                                    map_prompt_terminal_drain_error(error, cancel_started_at)
+                                })?;
+                            let quiet_timeout = prompt_cancel_terminal_timeout(
+                                cancel_started_at,
+                                self.runtime_policy.prompt_terminal_route_timeout,
+                            )?;
+                            self.drain_prompt_terminal_until_quiet(session_id, quiet_timeout)
+                                .map_err(|error| {
+                                    map_prompt_terminal_drain_error(error, cancel_started_at)
+                                })?;
                         }
                         self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
                         if let Some(error) = value.get("error") {
@@ -4473,24 +4557,6 @@ impl<'a> AcpRuntime<'a> {
                             &mut last_title_refresh_at,
                         );
                         self.maybe_emit_live_timing_update(Instant::now(), "tick")?;
-                        if cancel_started_at
-                            .is_some_and(|started| started.elapsed() >= PROMPT_CANCEL_TIMEOUT)
-                        {
-                            self.connection.cancel_pending(request.id);
-                            let _ = append_structured_diagnostic(
-                                &self.paths.diagnostics,
-                                "warn",
-                                "acp.cancel-drain-timeout",
-                                Some(json!({
-                                    "timeoutSeconds": PROMPT_CANCEL_TIMEOUT.as_secs(),
-                                    "sessionId": session_id,
-                                    "requestId": request.id,
-                                })),
-                            );
-                            break Err(anyhow!(AcpCancelDrainTimeout {
-                                timeout: PROMPT_CANCEL_TIMEOUT,
-                            }));
-                        }
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         self.connection.cancel_pending(request.id);
@@ -4508,6 +4574,23 @@ impl<'a> AcpRuntime<'a> {
                 }
             }
         })();
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.downcast_ref::<AcpCancelDrainTimeout>().is_some())
+        {
+            self.connection.cancel_pending(request.id);
+            let _ = append_structured_diagnostic(
+                &self.paths.diagnostics,
+                "warn",
+                "acp.cancel-drain-timeout",
+                Some(json!({
+                    "timeoutSeconds": PROMPT_CANCEL_TIMEOUT.as_secs(),
+                    "sessionId": session_id,
+                    "requestId": request.id,
+                })),
+            );
+        }
         let status = if result.is_ok() { "ok" } else { "error" };
         let stop_reason = result
             .as_ref()
@@ -5003,7 +5086,7 @@ impl<'a> AcpRuntime<'a> {
         if self.session_id.is_some() {
             self.send_cancel_notification_best_effort();
         }
-        self.drain_available_inbound()
+        self.drain_available_inbound_bounded().map(|_| ())
     }
 
     fn send_cancel_notification_best_effort(&mut self) {
@@ -5152,6 +5235,8 @@ impl<'a> AcpRuntime<'a> {
         loop {
             if self.is_prompt_cancel_requested() {
                 self.send_cancel_notification_best_effort();
+                self.drain_available_inbound_bounded()?;
+                return Ok(());
             }
             let value = match self.rx.as_ref().map(|receiver| receiver.try_recv()) {
                 Some(Ok(value)) => value,
@@ -5165,9 +5250,29 @@ impl<'a> AcpRuntime<'a> {
         }
     }
 
+    fn drain_available_inbound_bounded(&mut self) -> Result<usize> {
+        let receiver = self.rx.as_ref().cloned();
+        drain_available_frames_bounded(
+            PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
+            PROMPT_CANCEL_DRAIN_TIME_BUDGET,
+            || match receiver.as_ref().map(|receiver| receiver.try_recv()) {
+                Some(Ok(value)) => Ok(Some(value)),
+                Some(Err(SessionRouteTryRecvError::Empty)) | None => Ok(None),
+                Some(Err(SessionRouteTryRecvError::Disconnected)) => {
+                    Err(anyhow!(AcpTransportInterrupted))
+                }
+            },
+            |value| {
+                self.append_inbound_frame(&value)?;
+                self.handle_inbound(value)
+            },
+        )
+    }
+
     fn drain_inbound_through_route_watermark(
         &mut self,
         watermark: SessionRouteWatermark,
+        timeout: Duration,
     ) -> Result<()> {
         let receiver = self
             .rx
@@ -5181,7 +5286,7 @@ impl<'a> AcpRuntime<'a> {
         }
         let started_at = Instant::now();
         let drained_frames = drain_frames_until_route_watermark(
-            self.runtime_policy.prompt_terminal_route_timeout,
+            timeout,
             || receiver.has_consumed(watermark),
             |wait_for| receiver.recv_timeout(wait_for),
             |value| {
@@ -5205,7 +5310,11 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn drain_prompt_terminal_until_quiet(&mut self, session_id: &str) -> Result<()> {
+    fn drain_prompt_terminal_until_quiet(
+        &mut self,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
         let receiver = self.rx.as_ref().cloned().ok_or_else(|| {
             anyhow!(AcpPromptRouteUnavailable {
                 reason: "session route was unavailable during terminal quiet drain",
@@ -5214,7 +5323,7 @@ impl<'a> AcpRuntime<'a> {
         let started_at = Instant::now();
         let drained_frames = drain_frames_until_quiet_with_timeout_error(
             PROMPT_TERMINAL_QUIET_PERIOD,
-            self.runtime_policy.prompt_terminal_route_timeout,
+            timeout,
             |wait_for| receiver.recv_timeout(wait_for),
             |value| {
                 self.append_inbound_frame(&value)?;
@@ -6742,9 +6851,9 @@ fn permission_decision_timeline_event(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashSet, VecDeque};
     use std::sync::mpsc::RecvTimeoutError;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use serde_json::{Value, json};
 
@@ -6755,7 +6864,8 @@ mod tests {
         AcpPromptOutputAccumulator, AcpPromptRetryState, AcpPromptRouteDrainTimeout,
         AcpPromptRouteUnavailable, AcpPromptTerminalState, AcpPromptTokenUsage, AcpRuntime,
         AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
-        DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY, PriorAttemptMetrics,
+        DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
+        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
         PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
         RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
         SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
@@ -6763,18 +6873,19 @@ mod tests {
         active_timeline_streams_by_branch, append_bounded, attached_sync_required,
         cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        drain_frames_until_quiet, drain_frames_until_quiet_with_timeout_error,
-        drain_frames_until_route_watermark, evaluate_provider_revision, initialize_params,
-        is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
+        drain_available_frames_bounded, drain_frames_until_quiet,
+        drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
+        evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
+        is_transport_interruption, latest_visible_turn_id, map_prompt_terminal_drain_error,
         merge_tool_revision, next_prompt_retry_attempt, parse_agent_capabilities,
         permission_decision_timeline_event, plan_attached_session_reuse, plan_session_restore,
-        preserve_interrupted_session_identity, prompt_activity, prompt_cancellation_outcome,
-        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
-        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
-        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, session_resume_params, settle_prompt_event,
-        should_suppress_session_update, stable_message_item_id,
+        preserve_interrupted_session_identity, prompt_activity, prompt_cancel_terminal_timeout,
+        prompt_cancellation_outcome, prompt_usage_transaction_id, provider_thread_is_active,
+        register_provider_control, request_prompt_cancel, resolve_permission_mode,
+        resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
+        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
 
@@ -7480,6 +7591,56 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_available_drain_yields_with_a_large_backlog() {
+        let mut queued = (0..(PROMPT_CANCEL_DRAIN_FRAME_BUDGET * 4))
+            .map(|index| json!({ "index": index }))
+            .collect::<VecDeque<_>>();
+        let mut observed = Vec::new();
+
+        let drained = drain_available_frames_bounded(
+            PROMPT_CANCEL_DRAIN_FRAME_BUDGET,
+            Duration::from_secs(1),
+            || Ok(queued.pop_front()),
+            |value| {
+                observed.push(value);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(drained, PROMPT_CANCEL_DRAIN_FRAME_BUDGET);
+        assert_eq!(observed.len(), PROMPT_CANCEL_DRAIN_FRAME_BUDGET);
+        assert_eq!(queued.len(), PROMPT_CANCEL_DRAIN_FRAME_BUDGET * 3);
+    }
+
+    #[test]
+    fn cancellation_deadline_bounds_terminal_drain_to_ten_seconds() {
+        assert_eq!(PROMPT_CANCEL_TIMEOUT, Duration::from_secs(10));
+
+        let started_at = Instant::now()
+            .checked_sub(PROMPT_CANCEL_TIMEOUT)
+            .expect("test instant supports the cancellation interval");
+        let error =
+            prompt_cancel_terminal_timeout(Some(started_at), Duration::from_secs(5)).unwrap_err();
+
+        assert!(error.downcast_ref::<AcpCancelDrainTimeout>().is_some());
+    }
+
+    #[test]
+    fn cancellation_converts_terminal_route_timeout_to_cancelled_outcome() {
+        let error = map_prompt_terminal_drain_error(
+            anyhow::anyhow!(AcpPromptRouteDrainTimeout {
+                timeout: Duration::from_millis(1),
+            }),
+            Some(Instant::now()),
+        );
+
+        let outcome = prompt_cancellation_outcome(false, Some(&error));
+        assert!(outcome.observed);
+        assert!(outcome.drain_timed_out);
+    }
+
+    #[test]
     fn prompt_terminal_route_convergence_errors_are_auto_recoverable() {
         for error in [
             anyhow::anyhow!(AcpPromptRouteDrainTimeout {
@@ -7638,7 +7799,7 @@ mod tests {
     #[test]
     fn cancel_drain_timeout_remains_a_cancellation_terminal_outcome() {
         let error = anyhow::anyhow!(AcpCancelDrainTimeout {
-            timeout: std::time::Duration::from_secs(30),
+            timeout: PROMPT_CANCEL_TIMEOUT,
         });
 
         let outcome = prompt_cancellation_outcome(false, Some(&error));
@@ -7690,6 +7851,8 @@ mod tests {
             super::prompt_activity_under(task_dir),
             Some(PromptActivity::Running)
         );
+        sibling.mark_stopped();
+        assert_eq!(super::prompt_activity_under(task_dir), None);
         unregister_provider_control(&sibling_attempt_dir, &sibling);
         unregister_provider_control(unrelated_dir, &unrelated);
         assert_eq!(super::prompt_activity_under(task_dir), None);

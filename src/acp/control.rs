@@ -270,7 +270,7 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
         return load_session_metadata_value(path, None);
     }
     Ok(serde_json::json!({
-        "availability": "established",
+        "availability": "unavailable",
         "latestTurnStatus": "none",
         "restored": false,
         "createdAt": current_timestamp(),
@@ -281,6 +281,22 @@ fn session_value(path: &Utf8Path) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::acp::events::{AcpUiEvent, write_timeline_items};
+
+    #[test]
+    fn timeline_scan_placeholder_is_not_an_established_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+
+        persist_timeline_scan_complete_unlocked(attempt_dir).unwrap();
+
+        for name in [SNAPSHOT_FILE, SESSION_FILE] {
+            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
+            assert_eq!(metadata["availability"], "unavailable");
+            assert_eq!(metadata["latestTurnStatus"], "none");
+            assert_eq!(metadata[TIMELINE_SCAN_COMPLETE_FIELD], true);
+            assert!(metadata.get("sessionId").is_none());
+        }
+    }
 
     #[test]
     fn runtime_control_cursor_does_not_invent_a_terminal_turn_status() {

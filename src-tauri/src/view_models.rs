@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
-use gold_band::acp::events::load_session_metadata;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
     AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
@@ -4084,6 +4083,32 @@ pub fn acp_session_vm(
             "semanticTotal": event_scan.event_page.total,
         }),
     );
+    let session_id = continue_ref
+        .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            session
+                .get("acpSessionId")
+                .or_else(|| session.get("sessionId"))
+                .and_then(|value| value.as_str())
+        })
+        .map(str::to_string);
+    let has_displayable_timeline_event = event_scan
+        .events
+        .iter()
+        .any(|event| !is_hidden_from_chat(event) && is_session_timeline_event(event));
+    if session.get("availability").and_then(Value::as_str) == Some("unavailable")
+        && session_id.is_none()
+        && !has_displayable_timeline_event
+        && branch_record.is_none()
+    {
+        trace_acp_session_query(
+            &mut query_trace,
+            "session-not-materialized",
+            serde_json::json!({ "availability": "unavailable" }),
+        );
+        return Ok(None);
+    }
     apply_agent_index_projection(
         &mut event_scan.timeline_projection,
         &agent_index,
@@ -4157,16 +4182,7 @@ pub fn acp_session_vm(
         parent_branch_id,
         read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
         branch_execution: branch_record.map(agent_execution_vm),
-        session_id: continue_ref
-            .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                session
-                    .get("acpSessionId")
-                    .or_else(|| session.get("sessionId"))
-                    .and_then(|value| value.as_str())
-            })
-            .map(str::to_string),
+        session_id,
         title: session
             .get("title")
             .and_then(|value| value.as_str())
@@ -6799,9 +6815,7 @@ fn session_metadata_status(session: &serde_json::Value) -> &str {
 }
 
 fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
-    load_session_metadata(path, None)
-        .ok()
-        .and_then(|metadata| serde_json::to_value(metadata).ok())
+    gold_band::acp::events::load_session_metadata_value(path, None).ok()
 }
 
 fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
@@ -7871,6 +7885,7 @@ mod tests {
                 revision: 7,
                 phase: RuntimeExecutionPhase::Paused,
                 locator: None,
+                recovery_candidate_token: None,
                 updated_at: "t1".to_string(),
             },
         };
@@ -10139,6 +10154,44 @@ mod tests {
         assert_eq!(elapsed, Some(11));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn acp_session_vm_ignores_unavailable_runtime_control_placeholder() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        let snapshot_path = app.paths.acp_snapshot_file(
+            "task-placeholder",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        write_json(
+            &snapshot_path,
+            &json!({
+                "availability": "unavailable",
+                "latestTurnStatus": "none",
+                "restored": false,
+                "createdAt": "1787036946Z",
+                "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-placeholder",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(session.is_none(), "unexpected ACP session VM: {session:#?}");
     }
 
     #[test]

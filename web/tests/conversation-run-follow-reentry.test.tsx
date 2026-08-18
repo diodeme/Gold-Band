@@ -83,6 +83,8 @@ describe('ConversationRunPage follow mode reentry', () => {
           onEditWorkflow={vi.fn()}
           onSelectSession={vi.fn()}
           onAutoFollowChange={onAutoFollowChange}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
         />,
       );
     });

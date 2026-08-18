@@ -20,7 +20,11 @@ import {
   MIN_IMAGE_SCALE,
   normalizedCtrlWheelScale,
 } from '@/lib/image-zoom-gesture';
-import { copyAttachmentImage, saveAttachmentImageAs } from '@/lib/image-actions';
+import {
+  copyAttachmentImage,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS,
+  saveAttachmentImageAs,
+} from '@/lib/image-actions';
 
 const IMAGE_ZOOM_STEP = 0.2;
 
@@ -47,6 +51,15 @@ export const WorkspaceImageCanvas = memo(function WorkspaceImageCanvas({
   const pendingTransformRef = useRef<typeof transformStateRef.current | null>(null);
   const transformFrameRef = useRef<number | null>(null);
   const [imageActionState, setImageActionState] = useState<ImageActionState>('idle');
+
+  useEffect(() => {
+    if (imageActionState !== 'copied' && imageActionState !== 'saved') return;
+    const completedState = imageActionState;
+    const timeout = window.setTimeout(() => {
+      setImageActionState((current) => current === completedState ? 'idle' : current);
+    }, IMAGE_ACTION_FEEDBACK_DURATION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [imageActionState]);
 
   useEffect(() => {
     transformStateRef.current = { scale: 1, positionX: 0, positionY: 0 };

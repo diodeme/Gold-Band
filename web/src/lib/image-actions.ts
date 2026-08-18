@@ -3,6 +3,7 @@ import type { ImageActionInput, ImageActionSourceInput } from '@/api/client';
 import type { AttachmentItem } from './attachment-service';
 
 const MAX_IMAGE_ACTION_BYTES = 25 * 1024 * 1024;
+export const IMAGE_ACTION_FEEDBACK_DURATION_MS = 1_800;
 
 export async function copyAttachmentImage(attachment: AttachmentItem): Promise<void> {
   await copyImageToClipboard(await attachmentImageActionInput(attachment));

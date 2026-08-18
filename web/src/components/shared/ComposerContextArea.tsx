@@ -1,5 +1,5 @@
 import { Copy, Download, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -14,7 +14,11 @@ import { isImageMime } from '@/lib/attachments';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ComposerQuote } from '@/lib/composer-context';
 import { formatSize } from '@/lib/attachment-service';
-import { copyAttachmentImage, saveAttachmentImageAs } from '@/lib/image-actions';
+import {
+  copyAttachmentImage,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS,
+  saveAttachmentImageAs,
+} from '@/lib/image-actions';
 import { cn } from '@/lib/utils';
 
 type ImageActionState = 'idle' | 'copying' | 'saving' | 'copied' | 'saved' | 'failed';
@@ -97,6 +101,16 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
   const details = `${item.name} · ${formatSize(item.size)}`;
   const [imageAction, setImageAction] = useState<ImageActionState>('idle');
   const pendingImageAction = imageAction === 'copying' || imageAction === 'saving';
+
+  useEffect(() => {
+    if (imageAction !== 'copied' && imageAction !== 'saved') return;
+    const completedState = imageAction;
+    const timeout = window.setTimeout(() => {
+      setImageAction((current) => current === completedState ? 'idle' : current);
+    }, IMAGE_ACTION_FEEDBACK_DURATION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [imageAction]);
+
   const imageActionMessage = imageAction === 'copying'
     ? t('workspace.filesPanel.copyingImage')
     : imageAction === 'saving'

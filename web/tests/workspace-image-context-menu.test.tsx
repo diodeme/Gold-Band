@@ -12,6 +12,7 @@ const imageActionMocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/image-actions', () => ({
   copyAttachmentImage: imageActionMocks.copy,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
   saveAttachmentImageAs: imageActionMocks.save,
 }));
 
@@ -43,12 +44,14 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 describe('workspace image context menu', () => {
   afterEach(() => {
+    vi.useRealTimers();
     imageActionMocks.copy.mockClear();
     imageActionMocks.save.mockClear();
     document.body.replaceChildren();
   });
 
   it('offers copy and save-as for a draft image and reports action completion', async () => {
+    vi.useFakeTimers();
     const attachment = {
       id: 'image', name: 'image.png', size: 12, mime: 'image/png',
       path: 'D:/image.png', previewUrl: 'asset://image', source: 'dialog' as const,
@@ -75,6 +78,9 @@ describe('workspace image context menu', () => {
       await act(async () => saveButton?.click());
       expect(imageActionMocks.save).toHaveBeenCalledWith(attachment);
       expect(container.textContent).toContain('图片已保存');
+
+      await act(async () => vi.advanceTimersByTime(1_800));
+      expect(container.textContent).not.toContain('图片已保存');
     } finally {
       await act(async () => root.unmount());
     }

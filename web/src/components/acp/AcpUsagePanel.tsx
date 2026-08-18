@@ -10,6 +10,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { ACP_SESSION_COMPOSER_BORDER_WIDTH_PX } from '@/lib/conversation-composer-layout';
 
 export { formatTokenCount } from '@/lib/format-token';
 
@@ -33,6 +34,23 @@ export const CONTEXT_USAGE_THRESHOLDS = {
 } as const;
 
 export type ContextUsageTone = 'unknown' | 'healthy' | 'elevated' | 'warning' | 'critical';
+
+const ACP_SESSION_INFO_CONNECTOR_RADIUS_PX = 10;
+const ACP_SESSION_INFO_CONNECTOR_EXTENT_PX = ACP_SESSION_INFO_CONNECTOR_RADIUS_PX
+  + ACP_SESSION_COMPOSER_BORDER_WIDTH_PX;
+const ACP_SESSION_INFO_CONNECTOR_VIEW_BOX = [
+  -ACP_SESSION_COMPOSER_BORDER_WIDTH_PX,
+  0,
+  ACP_SESSION_INFO_CONNECTOR_EXTENT_PX,
+  ACP_SESSION_INFO_CONNECTOR_EXTENT_PX,
+].join(' ');
+const ACP_SESSION_INFO_CONNECTOR_FILL_PATH = [
+  `M ${-ACP_SESSION_COMPOSER_BORDER_WIDTH_PX} 0`,
+  `H 0 A ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} 0 0 0 ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX}`,
+  `V ${ACP_SESSION_INFO_CONNECTOR_EXTENT_PX}`,
+  `H ${-ACP_SESSION_COMPOSER_BORDER_WIDTH_PX} Z`,
+].join(' ');
+const ACP_SESSION_INFO_CONNECTOR_STROKE_PATH = `M 0 0 A ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} 0 0 0 ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX} ${ACP_SESSION_INFO_CONNECTOR_RADIUS_PX}`;
 
 const CONTEXT_USAGE_TONE_COLORS: Record<ContextUsageTone, string> = {
   unknown: 'var(--muted-foreground)',
@@ -154,6 +172,25 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
           </TooltipContent>
         </Tooltip>
       ) : null}
+
+      <svg
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-2.5 bottom-[calc(-1*var(--acp-session-composer-border-width))] h-[calc(0.625rem+var(--acp-session-composer-border-width))] w-[calc(0.625rem+var(--acp-session-composer-border-width))] overflow-visible"
+        data-acp-session-info-connector="true"
+        viewBox={ACP_SESSION_INFO_CONNECTOR_VIEW_BOX}
+      >
+        <path
+          d={ACP_SESSION_INFO_CONNECTOR_FILL_PATH}
+          fill="var(--card)"
+        />
+        <path
+          d={ACP_SESSION_INFO_CONNECTOR_STROKE_PATH}
+          fill="none"
+          stroke="var(--border)"
+          strokeWidth={ACP_SESSION_COMPOSER_BORDER_WIDTH_PX}
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
     </div>
   );
 }, areUsagePanelPropsEqual);

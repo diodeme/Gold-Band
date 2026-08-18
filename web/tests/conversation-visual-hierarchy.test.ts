@@ -19,6 +19,7 @@ describe('conversation visual hierarchy contract', () => {
 
   it('uses tighter spacing inside groups and wider spacing between message groups', () => {
     const dialog = source('../src/components/acp/ACPChatDialog.tsx');
+    const usagePanel = source('../src/components/acp/AcpUsagePanel.tsx');
     const composer = source('../src/components/conversation/AcpConversationComposer.tsx');
     const quickComposer = source('../src/components/conversation/ConversationComposer.tsx');
 
@@ -28,9 +29,21 @@ describe('conversation visual hierarchy contract', () => {
     expect(dialog).toContain('[filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]');
     expect(dialog).not.toContain('focus-within:[filter:');
     expect(dialog).toContain('absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full');
-    expect(dialog).toContain('rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
-    expect(dialog).toContain("before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']");
-    expect(dialog).not.toContain('after:border-b after:border-l after:border-border');
+    expect(dialog).toContain('rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none');
+    expect(dialog).toContain('style={ACP_SESSION_COMPOSER_BORDER_STYLE}');
+    expect(dialog).toContain("after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']");
+    expect(dialog).not.toContain('before:shadow-[');
+    expect(dialog).not.toContain('after:border-b after:border-l');
+    expect(usagePanel).toContain('data-acp-session-info-connector="true"');
+    expect(usagePanel).toContain('bottom-[calc(-1*var(--acp-session-composer-border-width))]');
+    expect(usagePanel).toContain('h-[calc(0.625rem+var(--acp-session-composer-border-width))]');
+    expect(usagePanel).toContain('viewBox={ACP_SESSION_INFO_CONNECTOR_VIEW_BOX}');
+    expect(usagePanel).toContain('d={ACP_SESSION_INFO_CONNECTOR_FILL_PATH}');
+    expect(usagePanel).toContain('d={ACP_SESSION_INFO_CONNECTOR_STROKE_PATH}');
+    expect(usagePanel).toContain('fill="var(--card)"');
+    expect(usagePanel).toContain('stroke="var(--border)"');
+    expect(usagePanel).toContain('strokeWidth={ACP_SESSION_COMPOSER_BORDER_WIDTH_PX}');
+    expect(usagePanel).toContain('vectorEffect="non-scaling-stroke"');
     expect(dialog).toContain('composerInfoTabTarget === "todo"');
     expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "queue"}');
     expect(dialog).toContain('integratedInfoTab={composerInfoTabTarget === "composer"}');

@@ -817,7 +817,7 @@ export function ConversationComposer({
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
           disabled={busy || submittingAttachments}
-          className="relative rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm"
+          className={CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName}
         >
           <ComposerContextArea
             attachments={attachments}
@@ -835,7 +835,7 @@ export function ConversationComposer({
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
-                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
+                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
                     description={committedSlashCommand.command.description}
@@ -845,7 +845,7 @@ export function ConversationComposer({
               <PromptInputTextarea
                 ref={composerTextareaRef}
                 style={committedInputLayout.textareaStyle}
-                className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
+                className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}
                 placeholder={t('conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => { void handlePaste(e); }}

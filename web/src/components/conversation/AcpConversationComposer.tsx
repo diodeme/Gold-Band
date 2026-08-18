@@ -225,7 +225,7 @@ export function AcpConversationComposer({
           ) : (
             <PromptInputTextarea
               ref={textareaRef}
-              className="min-h-12 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
+              className={ACP_SESSION_COMPOSER_LAYOUT.textareaClassName}
               valuePrefix={committedSlashCommand?.prefix}
               leadingAdornment={committedSlashCommand ? (
                 <SlashCommandInputTag

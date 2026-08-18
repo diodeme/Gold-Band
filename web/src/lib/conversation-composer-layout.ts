@@ -1,10 +1,20 @@
+import type { CSSProperties } from 'react';
+
 const COMPOSER_CONFIG_TRIGGER_SIZE_CLASS_NAME = 'h-8 px-2.5';
 const COMPOSER_MODE_CONTROL_HEIGHT_CLASS_NAME = 'h-7';
+const COMPOSER_TEXTAREA_BASE_CLASS_NAME = 'min-h-12 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground';
+
+export const ACP_SESSION_COMPOSER_BORDER_WIDTH_PX = 1;
+
+export const ACP_SESSION_COMPOSER_BORDER_STYLE = {
+  '--acp-session-composer-border-width': `${ACP_SESSION_COMPOSER_BORDER_WIDTH_PX}px`,
+} as CSSProperties & { '--acp-session-composer-border-width': string };
 
 export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   contentMaxWidthClassName: 'max-w-3xl',
   opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
-  textareaMinHeightClassName: 'min-h-14',
+  promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-4 py-2 shadow-sm',
+  textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`,
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-1.5',
   attachedInfoRailClassName: 'min-w-0',
@@ -32,7 +42,8 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 } as const;
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
-  stackSurfaceClassName: 'border-0',
+  stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]',
+  textareaClassName: COMPOSER_TEXTAREA_BASE_CLASS_NAME,
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
   leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
   trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',

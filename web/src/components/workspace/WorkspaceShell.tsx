@@ -703,7 +703,7 @@ function WorkspaceShellLayout({
           )}
           groupResizeBehavior={autoCollapse.rightOwnsWindowResize ? 'preserve-pixel-size' : 'preserve-relative-size'}
         >
-          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace', showLeft && 'rounded-tl-2xl')}>
+          <main data-theme-wallpaper-slot="workspace" className={cn('relative flex h-full min-w-0 flex-col overflow-hidden border-t border-sidebar-border bg-gold-workspace', showLeft && 'rounded-tl-2xl border-l')}>
             {children}
           </main>
         </ResizablePanel>

@@ -166,11 +166,13 @@ describe('AcpConversationComposer', () => {
     const wrapper = host.querySelector('[data-slot="prompt-input-textarea-with-adornment"]');
     const textarea = wrapper?.querySelector('textarea');
     const adornment = wrapper?.querySelector(':scope > span');
-    expect(wrapper?.className).toContain('px-3');
+    expect(wrapper?.className).toContain('px-2.5');
     expect(wrapper?.className).not.toContain('py-2');
     expect(textarea?.className).toContain('px-0');
+    expect(textarea?.className).not.toContain('px-2.5');
     expect(textarea?.className).toContain('py-2');
     expect(adornment?.className).toContain('top-2');
+    expect(adornment?.className).toContain('left-2.5');
   });
 
   it('does not reserve a standalone keyboard-hint row', async () => {

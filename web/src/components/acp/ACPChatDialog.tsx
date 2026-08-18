@@ -234,7 +234,10 @@ import {
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_BORDER_STYLE,
+  ACP_SESSION_COMPOSER_LAYOUT,
+} from '@/lib/conversation-composer-layout';
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import {
@@ -3808,6 +3811,7 @@ export function ACPChatDialog(
             <div
               className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"
               data-acp-conversation-rail="composer"
+              style={ACP_SESSION_COMPOSER_BORDER_STYLE}
             >
               <AcpUsagePanel
                 usage={effective?.usage}
@@ -3815,8 +3819,8 @@ export function ACPChatDialog(
                 sessionSeconds={composerSessionSeconds}
                 worktreePath={worktreePath}
                 className={cn(
-                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']",
                   ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
                 )}
               />
             {!readOnly && showManualCheckActions ? (

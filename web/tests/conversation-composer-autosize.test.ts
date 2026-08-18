@@ -8,7 +8,8 @@ describe('conversation composer autosize contract', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT).toMatchObject({
       contentMaxWidthClassName: 'max-w-3xl',
       opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
-      textareaMinHeightClassName: 'min-h-14',
+      promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-4 py-2 shadow-sm',
+      textareaClassName: 'min-h-12 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground w-full overflow-y-hidden px-0',
       textareaMaxHeightPx: 320,
     });
   });

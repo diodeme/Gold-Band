@@ -50,9 +50,9 @@ describe('App window shell style', () => {
     expect(shell).toContain('ResizablePanelGroup');
     expect(shell).toContain('id="workspace-left-resize-handle"');
     expect(shell).toContain('id="workspace-right-resize-handle"');
-    expect(shell).toContain('border-t border-workspace-divider bg-gold-workspace');
+    expect(shell).toContain('border-t border-sidebar-border bg-gold-workspace');
     expect(shell).toContain('bg-workspace-divider hover:bg-primary/30');
-    expect(shell).toContain("'relative flex h-full min-w-0 flex-col overflow-hidden border-t border-workspace-divider bg-gold-workspace'");
+    expect(shell).toContain("showLeft && 'rounded-tl-2xl border-l'");
     expect(shell).not.toContain('bg-sidebar-border/70 hover:bg-primary/30');
     expect(workbenchShell).toContain('border-l border-t border-workspace-divider');
     expect(shell).not.toContain('mousemove');
@@ -73,7 +73,7 @@ describe('App window shell style', () => {
     expect(conversationShell).toContain("<main data-theme-wallpaper-slot=\"workspace\" className={cn('relative flex h-full");
     expect(conversationShell).not.toContain("<main className={cn('relative z-10");
     expect(conversationShell).not.toContain('bg-gold-workspace [box-shadow:var(--workspace-main-surface-shadow)]');
-    expect(conversationShell).not.toContain("showLeft && 'rounded-tl-2xl border-l'");
+    expect(conversationShell).toContain("showLeft && 'rounded-tl-2xl border-l'");
     expect(workbenchShell).toContain('relative z-10 flex min-w-0');
     expect(styles).toContain('--workspace-main-surface-shadow:');
     expect(styles).toMatch(/--workspace-main-surface-shadow:\s*0 -8px 16px -8px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 85%, transparent\),\s*0 0 16px color-mix\(in srgb, var\(--gold-window-edge-shadow\) 45%, transparent\);/u);

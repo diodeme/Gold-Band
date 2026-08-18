@@ -228,7 +228,7 @@ function PromptInputTextarea({
       onKeyDown={handleKeyDown}
       className={cn(
         "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-        hasLeadingAdornment && "px-0 py-0",
+        hasLeadingAdornment && "px-0",
         className
       )}
       rows={1}
@@ -242,7 +242,7 @@ function PromptInputTextarea({
   return (
     <div
       data-slot="prompt-input-textarea-with-adornment"
-      className={cn("relative min-w-0 px-3 py-2", containerClassName)}
+      className={cn("relative min-w-0 px-3", containerClassName)}
     >
       <span
         ref={leadingAdornmentLayout.adornmentRef}

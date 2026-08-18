@@ -106,7 +106,7 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
             aria-label={details}
           >
           {image && item.previewUrl ? (
-            <img src={item.previewUrl} alt="" className="size-7 rounded-md object-cover" />
+            <img src={item.previewUrl} alt="" className="size-7 rounded-md border border-border object-cover" />
           ) : image ? (
             <ImageIcon className="size-4 text-muted-foreground" />
           ) : (

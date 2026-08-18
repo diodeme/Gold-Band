@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACP_SESSION_COMPOSER_BORDER_STYLE,
+  ACP_SESSION_COMPOSER_BORDER_WIDTH_PX,
   ACP_SESSION_COMPOSER_LAYOUT,
   CONVERSATION_HOME_COMPOSER_LAYOUT,
 } from '@/lib/conversation-composer-layout';
@@ -140,6 +142,11 @@ describe('responsive desktop layout contracts', () => {
   });
 
   it('uses the session composer control baseline in the responsive home toolbar', () => {
+    expect(ACP_SESSION_COMPOSER_BORDER_WIDTH_PX).toBe(1);
+    expect(ACP_SESSION_COMPOSER_BORDER_STYLE['--acp-session-composer-border-width'])
+      .toBe(`${ACP_SESSION_COMPOSER_BORDER_WIDTH_PX}px`);
+    expect(ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName)
+      .toContain('[border-width:var(--acp-session-composer-border-width)]');
     expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('mt-1');
     expect(ACP_SESSION_COMPOSER_LAYOUT.commandBarClassName).toContain('px-1 py-1');
     expect(ACP_SESSION_COMPOSER_LAYOUT.configTriggerClassName).toContain('h-8');

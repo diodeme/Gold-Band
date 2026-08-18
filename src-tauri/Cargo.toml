@@ -41,6 +41,7 @@ tracing = "0.1"
 base64 = "0.22"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+whoami = "1"
 walkdir = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
 notify = "8"

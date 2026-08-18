@@ -757,6 +757,178 @@ pub struct SessionMetrics {
     pub session_elapsed_seconds: u64,
 }
 
+/// Optional cumulative totals owned by one persisted ACP attempt. Missing
+/// provider data remains `None`; metrics callers must never guess it as zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttemptMetrics {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub elapsed_ms: Option<u64>,
+}
+
+pub fn read_attempt_metrics(session_path: &Utf8Path) -> AttemptMetrics {
+    let Some(snapshot_path) = session_path
+        .parent()
+        .map(|path| path.join("acp.snapshot.json"))
+    else {
+        return AttemptMetrics::default();
+    };
+    let Ok(contents) = std::fs::read_to_string(snapshot_path.as_std_path()) else {
+        return AttemptMetrics::default();
+    };
+    let Ok(metadata) = serde_json::from_str::<AcpSessionMetadata>(&contents) else {
+        return AttemptMetrics::default();
+    };
+    AttemptMetrics {
+        input_tokens: metadata.attempt_input_tokens,
+        output_tokens: metadata.attempt_output_tokens,
+        cache_read_tokens: metadata.attempt_cached_read_tokens,
+        total_tokens: metadata.attempt_total_tokens,
+        elapsed_ms: metadata
+            .timing
+            .map(|timing| timing.session_elapsed_seconds.saturating_mul(1000)),
+    }
+}
+
+pub fn read_attempt_session_model(session_path: &Utf8Path) -> Option<String> {
+    let snapshot_path = session_path.parent()?.join("acp.snapshot.json");
+    let metadata = read_attempt_session_metadata(&snapshot_path)
+        .or_else(|| read_attempt_session_metadata(session_path))?;
+    metadata
+        .model_override
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| config_option_current_value(metadata.config_options.as_ref(), "model"))
+        .or_else(|| {
+            metadata
+                .models
+                .as_ref()
+                .and_then(|value| value.get("currentModelId"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+}
+
+pub fn read_attempt_session_model_name(session_path: &Utf8Path) -> Option<String> {
+    let snapshot_path = session_path.parent()?.join("acp.snapshot.json");
+    let metadata = read_attempt_session_metadata(&snapshot_path)
+        .or_else(|| read_attempt_session_metadata(session_path))?;
+    let selected = metadata
+        .models
+        .as_ref()
+        .and_then(|value| value.get("currentModelId"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            metadata
+                .model_override
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| config_option_current_value(metadata.config_options.as_ref(), "model"))?;
+    metrics_model_display_name(&metadata, &selected)
+}
+
+pub(crate) fn metrics_model_display_name(
+    metadata: &AcpSessionMetadata,
+    model_id: &str,
+) -> Option<String> {
+    let model_id = model_id.trim();
+    if model_id.eq_ignore_ascii_case("default") {
+        return default_model_display_name(metadata.config_options.as_ref())
+            .or_else(|| {
+                config_option_display_name(metadata.config_options.as_ref(), "model", model_id)
+            })
+            .or_else(|| model_display_name(metadata.models.as_ref(), model_id))
+            .or_else(|| Some(model_id.to_string()));
+    }
+    config_option_display_name(metadata.config_options.as_ref(), "model", model_id)
+        .or_else(|| model_display_name(metadata.models.as_ref(), model_id))
+        .or_else(|| Some(model_id.to_string()))
+}
+
+pub(crate) fn read_attempt_session_metadata(path: &Utf8Path) -> Option<AcpSessionMetadata> {
+    let contents = std::fs::read_to_string(path.as_std_path()).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn config_option_current_value(config_options: Option<&Value>, option_id: &str) -> Option<String> {
+    config_options?
+        .as_array()?
+        .iter()
+        .find(|option| option.get("id").and_then(|value| value.as_str()) == Some(option_id))
+        .and_then(|option| option.get("currentValue"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+fn config_option_display_name(
+    config_options: Option<&Value>,
+    option_id: &str,
+    value: &str,
+) -> Option<String> {
+    find_config_option(config_options, option_id)
+        .and_then(|option| option.get("options"))
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("value").and_then(Value::as_str) == Some(value))
+        })
+        .and_then(|option| option.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn model_display_name(models: Option<&Value>, model_id: &str) -> Option<String> {
+    models
+        .and_then(|value| value.get("availableModels"))
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|model| model.get("modelId").and_then(Value::as_str) == Some(model_id))
+        })
+        .and_then(|model| model.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn default_model_display_name(config_options: Option<&Value>) -> Option<String> {
+    let description = find_config_option(config_options, "model")?
+        .get("options")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|option| option.get("value").and_then(Value::as_str) == Some("default"))?
+        .get("description")
+        .and_then(Value::as_str)?;
+    parse_current_model_from_description(description)
+}
+
+fn parse_current_model_from_description(description: &str) -> Option<String> {
+    let marker = "currently ";
+    let start = description.to_ascii_lowercase().find(marker)? + marker.len();
+    let tail = &description[start..];
+    let candidate = tail.split(['[', ')', '|', ',']).next()?.trim();
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn find_config_option<'a>(config_options: Option<&'a Value>, option_id: &str) -> Option<&'a Value> {
+    config_options?.as_array()?.iter().find(|option| {
+        option.get("id").and_then(Value::as_str) == Some(option_id)
+            || option.get("category").and_then(Value::as_str) == Some(option_id)
+    })
+}
+
 /// Read token totals from the ACP session metadata file and timeline.
 /// First reads `acp.snapshot.json`, then scans `acp.timeline.jsonl` for usage events
 /// to pick up the latest accumulated totals. Returns (input, output, cache_read, total).
@@ -3672,6 +3844,140 @@ mod tests {
         assert_eq!(m.cache_read_tokens, 200);
         assert_eq!(m.total_tokens, 1700);
         assert_eq!(m.session_elapsed_seconds, 842);
+    }
+
+    #[test]
+    fn attempt_metrics_use_attempt_totals_and_preserve_unknowns() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "inputTokens":100,"totalTokens":100,
+            "attemptInputTokens":260,"attemptTotalTokens":300,
+            "timing":{"sessionElapsedSeconds":12,"paused":false}
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        let metrics = super::read_attempt_metrics(&session_path);
+        assert_eq!(metrics.input_tokens, Some(260));
+        assert_eq!(metrics.output_tokens, None);
+        assert_eq!(metrics.cache_read_tokens, None);
+        assert_eq!(metrics.total_tokens, Some(300));
+        assert_eq!(metrics.elapsed_ms, Some(12_000));
+
+        let missing_dir = TempDir::new().unwrap();
+        let missing = super::read_attempt_metrics(
+            &camino::Utf8Path::from_path(missing_dir.path())
+                .unwrap()
+                .join("acp.session.json"),
+        );
+        assert_eq!(missing.output_tokens, None);
+    }
+
+    #[test]
+    fn read_attempt_session_model_falls_back_to_config_current_value() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "configOptions":[{"id":"model","currentValue":"config-model"}],
+            "models":{"currentModelId":"models-model"}
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        assert_eq!(
+            super::read_attempt_session_model(&session_path).as_deref(),
+            Some("config-model")
+        );
+
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "modelOverride":"override-model",
+            "configOptions":[{"id":"model","currentValue":"config-model"}]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_attempt_session_model(&session_path).as_deref(),
+            Some("override-model")
+        );
+    }
+
+    #[test]
+    fn read_attempt_session_model_name_resolves_config_option_display_name() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "modelOverride":"opus",
+            "configOptions":[
+                {
+                    "id":"model",
+                    "currentValue":"opus",
+                    "options":[
+                        {"value":"default","name":"Default (recommended)","description":"Use the default model (currently glm-5.1[1m])"},
+                        {"value":"opus","name":"glm-5.2"}
+                    ]
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        assert_eq!(
+            super::read_attempt_session_model(&session_path).as_deref(),
+            Some("opus")
+        );
+        assert_eq!(
+            super::read_attempt_session_model_name(&session_path).as_deref(),
+            Some("glm-5.2")
+        );
+    }
+
+    #[test]
+    fn read_attempt_session_model_name_parses_default_from_description() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("acp.snapshot.json"),
+            r#"{
+            "adapterId":"t","adapterDisplayName":"T","cwd":".","status":"ok",
+            "restored":false,"capabilities":{},"createdAt":"","updatedAt":"",
+            "configOptions":[
+                {
+                    "id":"model",
+                    "currentValue":"default",
+                    "options":[
+                        {"value":"default","name":"Default (recommended)","description":"Use the default model (currently deepseek-v4-pro[1m])"}
+                    ]
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        let session_path = camino::Utf8Path::from_path(dir.path())
+            .unwrap()
+            .join("acp.session.json");
+        assert_eq!(
+            super::read_attempt_session_model_name(&session_path).as_deref(),
+            Some("deepseek-v4-pro")
+        );
     }
 
     #[test]

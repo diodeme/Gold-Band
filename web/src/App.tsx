@@ -55,8 +55,10 @@ import {
   subscribeConversationRunStateUpdates,
   subscribeScheduledTaskUpdates,
   updateNotificationAttention,
+  recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
   applyConversationSidebarRunLifecycle,
@@ -691,6 +693,12 @@ export function App() {
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
+
+  useEffect(() => {
+    return registerHeartbeatActivityListeners(() => {
+      recordActivity().catch(() => {});
+    });
+  }, []);
 
   const loadProfiles = useCallback(async () => {
     const result = await getProfiles();

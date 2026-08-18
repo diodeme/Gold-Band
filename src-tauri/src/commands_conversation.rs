@@ -40,7 +40,6 @@ fn scheduled_service_error(
     }
     CommandErrorVm::new(error.code.to_string(), params)
 }
-
 fn validate_scheduled_runtime_settings_input(
     input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
 ) -> crate::scheduled_service::ScheduledServiceResult<()> {
@@ -596,6 +595,7 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationCreateResultVm> {
+    let _ = state.record_heartbeat_activity();
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
@@ -662,6 +662,7 @@ pub fn rerun_conversation_task(
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let _ = state.record_heartbeat_activity();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;

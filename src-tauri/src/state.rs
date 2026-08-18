@@ -10,8 +10,9 @@ use gold_band::acp::commands::{
     AcpCommandCatalog, AcpCommandItem, catalog_key, merge_native_skill_commands, workspace_key,
 };
 use gold_band::acp::events::current_timestamp;
-use gold_band::app::observability::RuntimeLifecycleBus;
-use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe};
+use gold_band::app::ActiveMetricTurn;
+use gold_band::app::observability::{ExecutionObservabilityState, RuntimeLifecycleBus};
+use gold_band::app::{App, NotificationDedup, ProviderDoctorProbe, RuntimeLifecycleEvent};
 use gold_band::config::{
     ManagedAgentConfig, ManagedAgentId, ProviderDiagnosticSnapshot, RuntimeConfig, SettingsConfig,
     StateConfig,
@@ -224,8 +225,13 @@ pub struct DesktopState {
     /// 干预通知去重表（弹窗层统一管理，路径 A/B 共享同一实例）。
     notification_dedup: Arc<NotificationDedup>,
     lifecycle_bus: RuntimeLifecycleBus,
+    observability_states:
+        Arc<Mutex<std::collections::HashMap<String, ExecutionObservabilityState>>>,
+    active_metric_turns: Arc<Mutex<std::collections::HashMap<String, ActiveMetricTurn>>>,
     /// MCP 服务器健康状态缓存（启动后台线程 + 手动诊断共同写入，列表读取）。
     mcp_health: Mutex<BTreeMap<String, gold_band::config::McpServerState>>,
+    /// 进程级心跳上报器（由生命周期总线驱动六类 reason）。
+    heartbeat_reporter: Arc<crate::metrics::heartbeat::HeartbeatReporter>,
 }
 
 impl DesktopState {
@@ -252,8 +258,41 @@ impl DesktopState {
             notification_attention: Mutex::new(NotificationAttentionState::default()),
             notification_dedup: Arc::new(NotificationDedup::new()),
             lifecycle_bus: RuntimeLifecycleBus::new(),
+            observability_states: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            active_metric_turns: Arc::new(Mutex::new(std::collections::HashMap::new())),
             mcp_health: Mutex::new(BTreeMap::new()),
+            heartbeat_reporter: crate::metrics::heartbeat::HeartbeatReporter::new(
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
         }
+    }
+
+    /// 发布真实用户活动事实；heartbeat 由异步 metrics subscriber 投影。
+    pub fn record_heartbeat_activity(&self) -> Result<()> {
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::UserActivityObserved);
+        Ok(())
+    }
+
+    /// 发布应用启动/配置重评估事实；reporter 保证每进程只交付一次 appStarted。
+    pub fn reevaluate_heartbeat_config(&self) -> Result<()> {
+        self.lifecycle_bus
+            .emit(RuntimeLifecycleEvent::ApplicationStarted);
+        Ok(())
+    }
+
+    pub(crate) fn record_heartbeat_reason(
+        &self,
+        reason: crate::metrics::heartbeat::HeartbeatReason,
+    ) -> Result<()> {
+        let config = self.context()?;
+        let settings = crate::metrics::heartbeat_settings(&config.config);
+        self.heartbeat_reporter.record(&settings, reason);
+        Ok(())
+    }
+
+    pub(crate) fn lifecycle_bus(&self) -> RuntimeLifecycleBus {
+        self.lifecycle_bus.clone()
     }
 
     /// 读取 MCP 健康状态缓存快照（供列表 VM 附加展示）。
@@ -311,8 +350,12 @@ impl DesktopState {
             .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
             .clone();
         let diagnostics = self.agent_diagnostics.clone();
+        let metrics_enabled = crate::metrics::core_metrics_collection_enabled(&context.config);
         Ok(App::with_config(context.repo_root, context.config)
             .with_lifecycle_bus(self.lifecycle_bus.clone())
+            .with_observability_states(self.observability_states.clone())
+            .with_active_metric_turns(self.active_metric_turns.clone())
+            .with_metrics_collection_enabled(metrics_enabled)
             .with_provider_diagnostics_source(Arc::new(move || {
                 Ok(diagnostics
                     .lock()

@@ -28,7 +28,18 @@
   "currentNode": "dev",
   "currentAttempt": "attempt-002",
   "acceptanceLoopsUsed": 0,
-  "pauseReason": null
+  "pauseReason": null,
+  "execution": {
+    "revision": 3,
+    "phase": "running-node",
+    "locator": {
+      "roundId": "round-001",
+      "nodeId": "dev",
+      "attemptId": "attempt-002"
+    },
+    "recoveryCandidateToken": "0e531c98-0a36-43a9-b0bf-eec272aa7a41",
+    "updatedAt": "2026-03-20T10:32:00Z"
+  }
 }
 ```
 
@@ -48,6 +59,7 @@
 - `currentAttempt`
 - `acceptanceLoopsUsed`
 - `pauseReason`
+- `execution`
 
 ---
 
@@ -131,6 +143,17 @@
 
 `pauseReason` 是外层生命周期字段。更细的异常语义由 run progress / run events 中的 `RuntimeErrorInfo` 表达：`recovery=auto` 表示 runtime 正在或已经进行 bounded retry，耗尽后降级为 `runtime-abnormal`；`recovery=manual` 表示用户处理外部条件后可继续；`recovery=blocked` 表示不能普通 continue。旧 run 没有 `RuntimeErrorInfo` 时，`runtime-abnormal` 默认视为 manual，`error-blocked` 默认视为 blocked。
 
+### `execution.recoveryCandidateToken`
+
+- 类型：string | null
+- 含义：当前 run execution generation 在用户级 `core.db.runtime_recovery_candidates` 中的 fencing token
+
+说明：
+- token 必须在 run 首次或再次持久化为 `Running` 前登记并写入。
+- token 只保护候选删除的 generation 一致性，不决定 `status / outcome / phase`，也不能代替 `run.json` canonical lifecycle。
+- run 持久化为非 Running 后，候选使用该 token 条件删除；旧 execution 的迟到清理不得删除新 token。
+- 历史 run 缺少此字段时按 `null` 读取。启动恢复仍以候选行定位并以 canonical status 校验，不从 token 推断生命周期。
+
 ### `lastExecutedNode`
 - 类型：object | null
 - 含义：最近一次完成的节点快照，用于节点指标上报、下一节点启动时的 predecessor 语义，以及运行中断后的恢复分析；它是观察性快照，不参与控制流判定。
@@ -163,6 +186,7 @@
 - `acceptanceLoopsUsed` 不是非负整数
 - `status != paused` 但 `pauseReason != null`
 - `pauseReason` 不属于合法枚举且不为 null
+- `execution.recoveryCandidateToken` 非 null 且不是非空 string
 - `currentRound | currentNode | currentAttempt` 任一字段缺失
 - `currentAttempt != null` 但 `currentNode = null`
 - `currentNode != null` 但 `currentRound = null`
@@ -171,6 +195,7 @@
 
 ## 6. 相关文档
 - [Runtime 概览](../overview.md)
+- [用户级核心状态与 Runtime 恢复](../core-state-and-recovery.md)
 - [控制层](../control.md)
 - [round.json](round.json.md)
 - [node.json](node.json.md)

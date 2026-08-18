@@ -1,5 +1,28 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-19：workspace ProjectId 统一与一次性迁移
+
+- 根因：旧 `project_id` 只是路径 slug，存在字符折叠和路径截断碰撞；Runtime recovery 与 ACP command catalog 又以规范化路径 `workspace_key` 建立平行身份。这是 workspace canonical identity 的根本缺陷，不是调用点漏传作用域。现统一为 `{最多 70 位可读 slug}--{8 位 BLAKE3}`，完整上限 80，三项源参数只从 `configs/app-config.toml [projectIdentity]` 读取。
+- 数据与迁移：`project_id` 成为目录、状态引用、缓存、Runtime recovery 与 Scheduler 阻塞集合的唯一 workspace 身份。`core.db` recovery schema v2 删除 `workspace_key`；`stateSchemaVersion=2` 重写 workspace、last、pin 和 run mode。启动迁移器预检查后执行旧目录 rename、manifest，以及 `run.json`、`worker-ref.json`、ACP session/snapshot 和文件变更记录中 executable locator 的结构化改写，再同步重建搜索投影，最后写入 `core_schema.workspace_identity=2`；已完成 v1 的机器会补跑 locator 修复。raw/timeline/diagnostics 历史不改写，rename 后中断与重复启动均按当前磁盘事实继续，完成版本命中后不再扫描。
+- 边界与失败：workspace 注册和恢复严格校验 manifest，`workspace.already-exists`、`workspace.project-id-collision` 与 `workspace.manifest-mismatch` 分开返回，不保留旧 ID alias、大小写兼容或按路径重算 fallback。项目目录整体移动时 Scheduler DB 字节原样保留，但不迁移 Scheduler 表/definition schema；Git worktree 修复不在本次范围。
+- 验收：ProjectId 配置/固定向量/长度、manifest、core v1→v2、recovery fencing、ACP catalog、目录与状态迁移、rename 后续跑、搜索重建、Scheduler DB 字节不变及 marker 幂等定向测试通过；两个 Rust crate 构建与格式/diff 检查通过。按约定未执行全量回归或前端验证。
+- 性能与过度设计评审：日常只增加单路径规范化与 BLAKE3 的 O(path length) 成本；目录同卷 rename 为元数据操作，recovery 迁移受 4096 条上限约束，搜索 O(tasks + sessions) 重建只发生一次。复用现有配置、manifest、StateConfig、core schema、SQLite transaction 和搜索 backfill，没有新增长期 alias 表、双写、轮询、队列、无界缓存或第二套 workspace aggregate。
+
+## 2026-08-19：workspace manifest 写放大与原子写入口收敛
+
+- 根因：`project.json` 是低频、可重建的 workspace identity manifest，却由高频 `App::with_config / with_repo_root` 构造路径无条件原子重写；桌面 IPC、刷新、恢复和 scheduler 会反复构造 `App`，把普通读取放大为磁盘写入。Windows 上 21,297 个 `.project.json.*` 残留说明至少有同量级原子写尝试未完成提交或清理；由于旧实现吞掉错误，无法再区分 commit 失败、进程中断和清理失败的占比。这是写入生命周期边界错误，不是需要替换 `atomic-write-file` 的库缺陷。
+- 数据与接口：`ProjectManifest` 增加反序列化和语义相等能力，`GoldBandPaths::provision_project_manifest()` 返回 `Written / Unchanged`，`validate_project_manifest()` 为恢复候选提供只读 identity 校验；统一的 `storage::atomic_write_file()` 只封装临时文件写入与 commit，并原样传播写入/commit 错误。桌面端在首次 workspace 注册、桌面 workspace 切换和应用升级后的 scheduler workspace 注册边界按内容 provision；`App` 构造、普通详情读取和恢复扫描不再写 manifest。
+- 失败语义：manifest provision 的写入/commit I/O 失败统一按第 1、2、4、8…次记录聚合诊断，包含 project、manifest 路径、OS `ErrorKind`、raw OS error 和完整错误链；普通 `DesktopContext` 读取继续，显式注册/切换等写边界仍可返回该错误，Scheduler 对单个失败 workspace 隔离并跳过注册。已有非空 runtime 缺少 manifest、manifest 损坏或稳定 identity 不匹配在所有边界都返回结构化数据完整性错误，不得被普通读取分支吞掉。接受 `atomic-write-file` 在极少数 commit 失败/进程异常时可能残留临时文件。canonical `run / round / node` 写入仍通过同一 helper 的错误返回路径中止状态转换，只有二次临时文件清理失败可忽略。
+- 验收：核心库和桌面端 `cargo check` 通过；定向单测固定 manifest 首次写入、相同内容不改 mtime、版本/路径内容变化重写、恢复候选只读校验、原子写 open 错误向上传播、`App` 构造不创建 `project.json`，以及桌面 manifest I/O 错误在显式写边界返回、在普通读取边界继续、完整性错误始终不被吞。按要求不执行全量回归和 UI/网页验证。
+- 性能与过度设计评审：高频 `App` 构造由每次一次原子写降为零 manifest I/O；低频注册边界为一次 O(1) 小 JSON 读取/比较，只有内容变化才产生一次原子写。除版本化的一次性 identity 迁移外，不增加常驻 workspace 扫描、缓存、锁表、重试线程或临时文件清理器。现有 manifest identity 与 canonical lifecycle 已足够表达不变量，不新增第二套状态模型或依赖。
+
+## 2026-08-18：内置验证与审查角色非阻塞边界补齐
+
+- 根因：测试与审查角色已有前序产物读取和 git 工作区回退规则，但没有完整区分“验证结论失败”和“工作流节点阻塞”；环境限制、人工验收或开发节点缺少报告可能被错误解释为 BLOCKED。这是既有角色职责契约不完整，不是 Runtime 生命周期或数据模型缺陷。
+- 实现：中英文测试 profile 明确环境问题或人工验收只需如实记录未执行项与证据缺口，不构成阻塞条件；中英文审查 profile 明确前序开发节点没有产出 `dev-report.md` 时继续以当前 git 工作区对应改动为准。继续复用现有 profile system prompt、工作区 diff 和报告格式，不新增 fallback 层或运行时特判。
+- 验收：通过 `App::profiles()` 接口同时读取中英文内置测试、审查角色，固定非阻塞语义及工作区回退契约；提示词通过现有 Rust 编译期 `include_str!` 管理，中英文目录结构保持一致。
+- 性能与过度设计评审：仅增加四处静态提示词文本和一项接口回归，不新增状态、持久字段、依赖、扫描、缓存、队列、锁或 I/O；每次调用只增加常量级 prompt 字符串长度，现有 canonical profile ID 和加载路径均不变，无需 benchmark。
+
 ## 2026-08-18：ACP 结构化终态优先收敛
 
 - 根因：ACP `session/prompt` 的 JSON-RPC response、session update 和普通 Agent 文本属于不同语义通道；旧实现只按 `end_turn` 和文本候选结算，并在 artifact 输出策略替换时丢失了 terminal failure 观察，导致 Codex 已通过 `willRetry=false` 或 `threadStatus=systemError` 宣告失败后，Runtime 仍可能进入 finalize / repair。问题是 ACP 控制面终态没有进入统一生命周期分类，不是某条 429 文本或某个节点的特例。
@@ -1303,6 +1326,13 @@ attempt-001/
 - 验收结果：定向 Web 测试 43 项通过，生产类型检查与 Vite 构建通过。内置浏览器 deep link 到 `run-053` Direct 队列夹具，固定“UI 显示加入队列、browser API 返回 acp-session”的真实边界；正常宽度、760px、恢复 1440px 和长文本提交均清空草稿且不显示发送失败，页面无横向溢出。完整 Web 回归 1460 项中 1459 项通过；唯一失败是既有 `TurnFileChangesCard` 源码 `mb-3` 与旧测试仍断言 `mb-2` 的无关基线差异，本次不修改该布局契约。
 - 性能与过度设计评审：只增加常量级返回类型判定并复用现有 session 合并入口，不新增状态机、持久字段、依赖、请求、缓存、队列、扫描、宽订阅或渲染边界；复用现有 canonical lifecycle 与结果联合类型即可表达全部不变量，无需新 aggregate 或专项 benchmark。
 
+## 2026-08-18：快速对话与会话详情输入首行基线统一
+
+- 根因：两类 composer 已经复用 prompt-kit `PromptInputTextarea`，但会话详情保留 textarea 自身的 `py-2`，快速对话却把垂直留白全部移到父 surface 并覆盖为 `py-0`；带命令标签时 prompt-kit wrapper 又同时承担横向和垂直 inset。共享组件设计成立，问题来自盒模型职责分叉，不是字体栈、业务状态或 autosize 生命周期缺失。
+- 实现：布局层新增共享 textarea 基线，快速对话与会话详情统一消费 `min-h-12 + py-2 + text-sm/leading-6`；快速对话 surface 收敛为 `px-4 py-2` 并继续保留正文 `px-0`，会话详情继续保留 `px-3`。prompt-kit adornment wrapper 删除垂直 padding，只保留横向 inset，命令标签与 textarea 的 `py-2` 首行对齐。删除快速对话旧 `min-h-14/py-0` 消费路径，不增加兼容分支或局部位移。
+- 回归要求：接口与 DOM 测试固定两类 composer 使用共享 textarea class、快速对话横向边缘不变、普通和命令标签状态都由 textarea 单独持有 `py-2`，wrapper 不再重复垂直 inset；autosize 继续覆盖 320px 上限与内部滚动。执行 Web 定向测试、类型检查、生产构建，并在实际快速对话和会话详情中检查空态光标、中文 placeholder、输入正文、命令标签、窄宽度与长文本。
+- 性能与过度设计评审：仅合并静态 Tailwind class 与现有 prompt-kit wrapper 职责，不新增 state、effect、ResizeObserver、请求、持久字段、依赖、缓存、队列或渲染订阅；autosize 的测量次数和 O(文本高度) 浏览器布局成本不变。现有布局常量与共享 copy-in 组件足以表达不变量，无需新组件、字体系统改造、自绘光标或专项 benchmark。
+
 ## 2026-08-18：附件内联上下文预算与图片派生图
 
 - 根因：附件 resolver 在 Agent capability 投影前完整读取并展开所有受支持文件，文本可把几十 MiB 正文直接放入上下文，图片也只受上传大小约束；长粘贴另有 6400 字符常量，形成三套不一致边界。问题来自 prompt attachment 缺少统一 projection policy，不是某个 Agent 或扩展名特例。
@@ -1310,3 +1340,15 @@ attempt-001/
 - 实现：`AcpContentBlock` 增加不可重新展开的显式 `ResourceLink`。超限文本 metadata-first 直接生成 link；图片先读 metadata/header，超限时直接从文件流进入 Rust `image` 的受限解码器，依次尝试 2560 px 内的无损 WebP、JPEG 92 和有界缩小尺寸，只保留本轮内存派生图，失败回退原文件 link。只有原始编码和尺寸都在预算内时才读取原图字节。user input 继续原子持久化到 attempt，但复制改为流式 I/O，不为大文本分配整文件缓冲。live ACP capability 仍决定预算内 `Image / Resource` 是否可发送，link-only Agent 行为不变。
 - 回归要求：Rust 固定配置 roundtrip/override/VM、文本 64000/64001 字节、图片字节与尺寸压缩、损坏图片 link fallback、显式 link 在完整 capability 下仍不展开、Task/Attempt 原文件归属；Web 固定 ASCII 与中文多字节粘贴边界。执行 root/desktop 定向单测、类型检查、生产构建和会话页 deep link 粘贴验证。
 - 验收结果：`cargo check -p gold-band`、`cargo check -p gold-band-desktop`、Rust provider 32 项、config 41 项、显式 link 与桌面配置 VM 定向测试、前端粘贴 2 项、TypeScript 检查、格式检查和生产构建均通过。内置浏览器实际验证 64000 ASCII 保留正文、64001 转附件、21333 个中文字符（63999 字节）保留正文、21334 个转附件；普通图片附件可加入 composer，800px 窄宽度与恢复 1440px 后输入框和附件入口持续可见，控制台无 error/warn。
+- 性能与过度设计评审：大文本从整文件读取改为一次 metadata，用户附件复制使用 O(1) 内存流式 I/O；超限图片不保留原始编码缓冲，解码最长边限制为 8192、分配限制为 128 MiB、缩放编码最多 10 次，且不进入 React 热路径。只新增一个相关 policy 值对象和一种协议意图，不新增持久状态、缓存、队列、轮询、全量扫描或并发机制；现有 attachment identity 与 ACP capability 足以表达不变量。
+
+## 2026-08-18：用户级有界 Runtime 恢复索引与启动性能回归修复
+
+- 根因修复：0.13.0 为恢复全部会话工作空间，把启动恢复从单 workspace 扩张为 `conversationWorkspaces × tasks × runs` 全历史扫描；其成本随用户历史累计，且与新增 scheduler 启动串行叠加。恢复范围设计本身错误，不通过并行扫描、缓存或延迟整页刷新掩盖。
+- 数据边界：新增用户级、跨工作空间、不可按缓存或 workspace 删除的 `core.db`；当前 recovery schema v2 仅包含有界 `runtime_recovery_candidates`，并已从 v1 一次性删除 `workspace_key`。`run.json` 仍是唯一 lifecycle canonical state；候选表只保存可能非终态的 locator 和 execution fencing token，进程内 `ActiveRuntimeRegistry` 只投影本进程真实活跃 run，不建立第二套生命周期。
+- 一致性顺序：run 写 `Running` 前必须先登记候选并把 token 写入 `run.json.execution.recoveryCandidateToken`；首次启动、显式继续、动态继续和重试统一在 drive 首次成功持久化 `Running` 后才提交 provisional registration，execution 已被取代时撤销候选，避免前置失败进入 active registry。持久化为 Paused/Completed 后按 `(project_id, task, run, token)` 条件删除。崩溃最多多留候选，不会漏掉已 Running run；旧 generation 的迟到清理不能删除新 generation。候选上限 4096，满额拒绝新 run，不淘汰旧候选。
+- 启停恢复：Tauri setup 先开放窗口壳，在 blocking worker 中只读候选并以 workspace identity 与 canonical run 校验；不存在、已非 Running 或 `recoveryCandidateToken` 与候选 token 不一致的 run 只条件消费旧候选，不改动 canonical run，只有 Running 且 token 一致时才收敛为 `Paused + ProcessInterrupted` 后消费。成功候选用完即删，下一次启动不再看到；恢复 lifecycle 通过既有局部 event 更新。scheduler 以恢复完成为启动门闩；退出先关闭 admission、等待 scheduler 停止，再仅暂停 registry 快照中的活跃 locator。
+- 失败隔离：SQLite 使用 WAL、FULL synchronous、短事务和 3 秒 busy timeout；registry 锁内不做 SQLite、文件、provider、scheduler I/O，也不跨 await。候选全集无法读取时维持全局恢复门闩；单 workspace 或单候选恢复/删除失败只隔离对应 workspace，其它工作空间继续，避免为跨 workspace 强一致引入全局长锁或死锁。
+- 进程边界：用户级 `core.db` 与桌面 Runtime 统一为同用户、同发布渠道单实例。复用 Tauri 官方 single-instance plugin 作为第一个 plugin 建立进程互斥；第二次启动只恢复并聚焦已有主窗口，不进入 setup、恢复或 scheduler，不新增自研 lease、heartbeat 或 PID fencing。
+- 验收要求：接口测试固定跨 workspace 候选恢复、不扫描无候选历史、stale token 不能删除新 generation、已 Paused 候选只消费且下一次启动 no-op、候选登记失败不进入 active registry、未成功持久化 Running 的 provisional registration 会撤销、正常退出暂停并清理后候选表为空，以及 scheduler 只在恢复 gate 后注册。执行 core/desktop 定向测试、两个 Rust crate check、格式与 diff 检查，并以 production build 对候选为空和跨 workspace 候选场景复测 Windows 启动耗时。
+- 性能与过度设计评审：启动复杂度从无界 `O(W + Σ(tasks + runs))` 收敛为 `O(C)`，`C <= 4096` 且正常只等于可能非终态 run 数量；空候选只有一次 SQLite 小查询。只新增一张索引表、一个进程级 coordinator 和一个 token metadata，不新增轮询、历史缓存、无界队列、全量 UI refresh 或跨文件事务，复杂度与防漏恢复及 generation 竞态相匹配。

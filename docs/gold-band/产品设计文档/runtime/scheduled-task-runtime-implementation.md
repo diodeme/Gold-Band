@@ -4,6 +4,14 @@
 
 统一运行时改造前已经具备结构化 schedule、内容指纹、Composer 创建入口、全局管理页和 Direct/Workflow/AUTO 的基础 Task/Run 物化链路。当时的 JSON definition、`lastTriggerAt` 游标和每秒全量轮询只作为迁移前基线，不能作为可靠性实现继续扩展；当前活跃路径已经由 SQLite 与 deadline coordinator 取代。
 
+## 当前持久化契约（2026-08-19）
+
+`scheduled_jobs` 与 `scheduled_occurrences` 统一存放在用户级 `~/.gold-band/core.db`。`GoldBandPaths::scheduler_db_path()` 直接复用 `core_db_path()`；Scheduler 通过 `core_schema(component = 'scheduler', version = 1)` 管理自己的表版本，与 `core`、`workspace_identity` 等 component 共用物理数据库但保持独立 schema ownership。
+
+`project_id` 是应用内 workspace 的唯一业务身份。job 主键、occurrence 主键、外键、唯一约束、索引、repository API、coordinator key、heartbeat/active guard registry key 与 lifecycle event 都显式包含 `project_id`；`workspaceKey` 已废弃，workspace path 仅用于定位和归属校验。`scheduled_jobs` 使用 `(project_id, id)` 主键，`scheduled_occurrences` 使用 `(project_id, id)` 主键并以 `(project_id, job_id)` 外键级联到 job，计划点以 `(project_id, job_id, scheduled_at, trigger_kind)` 去重。
+
+这是开发阶段的破坏式切换。旧项目级/用户级 `scheduled-tasks.db`、旧 JSON store、`scheduler_schema`、`scheduler_migrations` 以及所有 import/fallback 路径均已删除；runtime 不打开旧文件，也不迁移已有任务。下文 Phase 1 至 Phase 10.9 保留实施历史；与本节冲突的旧迁移或 per-workspace database 描述均由本节和 Phase 10.10 取代。
+
 ## 目标运行时结构
 
 调度器由四层组成：
@@ -15,11 +23,11 @@
 
 ### Phase 1 repository contract (2026-08-03)
 
-`ScheduledTaskDatabase` 使用独立的 `GoldBandPaths::scheduler_db_path()`，与搜索数据库保持分离。数据库启用 WAL 和 busy timeout，维护单例 schema version、`scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
+`ScheduledTaskDatabase` 通过 `GoldBandPaths::scheduler_db_path()` 打开用户级 `core.db`。数据库启用 WAL、foreign keys、`synchronous = FULL` 和 3 秒 busy timeout，使用 component-scoped schema version 管理 `scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(project_id, job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 `project_id`、owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
 
 ### Phase 2 repository and time semantics (2026-08-03)
 
-旧 `ScheduledTaskStore` 的 definition/trigger 可以按 definition 事务导入 SQLite；重复导入是 no-op，definition ID 或 `(job_id, scheduled_at, trigger_kind)` 冲突会返回类型化 migration error，Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
+旧 `ScheduledTaskStore` 和导入接口已经删除，不再作为启动输入或冲突来源。Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
 
 ### Scheduler contract baseline (2026-08-06)
 
@@ -38,7 +46,7 @@ pending
   -> attention_required  AskUserQuestion，Run 可恢复但 scheduler 释放 lease
 ```
 
-`attention_required` 不会创建下一条同一问题的并发会话；用户回答后继续原 Run，完成时回写原 occurrence。Occurrence 的 claim 受 `(job_id, scheduled_at, trigger_kind)` 唯一约束保护。
+`attention_required` 不会创建下一条同一问题的并发会话；用户回答后继续原 Run，完成时回写原 occurrence。Occurrence 的 claim 和去重均受完整 `project_id` 作用域保护。
 
 ## 无人值守策略
 
@@ -70,9 +78,9 @@ Direct 与 Workflow/AUTO 之间切换属于执行模式边界，更新时会清�
 
 页面提供启用/暂停、编辑、删除、立即执行和详情/历史入口。没有独立名称输入；标题始终由 instruction 首行摘要生成。
 
-## 迁移
+## 破坏式切换
 
-首次初始化 scheduler database 时扫描旧 JSON definition 和 trigger 文件并幂等导入。迁移成功后旧 JSON 不再被 runtime 读写；删除调度定义只删除调度数据和输入快照，不删除 Gold Band Task/Run/ACP 历史。
+首次初始化只在 `core.db` 创建当前 scheduler component 和表，不扫描旧 JSON 或旧 SQLite。旧 `scheduled-tasks.db` 即使存在或损坏也不会被打开。删除调度定义只删除当前项目的调度数据和输入快照，不删除 Gold Band Task/Run/ACP 历史。
 
 ## 验收重点
 
@@ -99,7 +107,7 @@ The web runtime facade now exposes occurrence history, diagnostics, manual run-n
 
 The scheduled-task management page provides a run-now action, a selected-task execution detail area, status-aware occurrence history, retry/run counters, next-run and last-error diagnostics, and live refresh when the backend emits an occurrence or scheduled-task update. `failed` and `attention_required` remain visible terminal states; they are not converted into indefinite loading or waiting UI states.
 
-### Phase 5 workspace isolation and startup migration (2026-08-03)
+### Phase 5 workspace isolation and startup migration（历史，已由 Phase 10.10 取代）(2026-08-03)
 
 The scheduler SQLite database is scoped to `GoldBandPaths::runtime_root` so each workspace has an independent definition and occurrence store. The scheduler loop queries only definitions whose `project_id` matches the current workspace, and the execution adapter rejects a mismatched definition before creating a Task, Run, or ACP session.
 
@@ -314,3 +322,13 @@ Scheduler repository schema 升级到 v3。新数据库直接创建带 `revision
 `next_run_at` 的 authoring 转换使用以下唯一规则：非 schedule 字段编辑保留 SQLite 已推进的 deadline；启用任务真实修改 schedule 时使用 `schedule.next_occurrence_after(now)`，停用任务修改 schedule 时保持 `None`；disabled→enabled 同样从 `now` 计算，enabled→disabled 写入 `None`；enabled→enabled 与 disabled→disabled 是幂等读取，直接返回当前 record，不增加 revision，也不发送 coordinator command。`derived_next_run_at` 继续只服务创建、legacy backfill 等需要按历史游标恢复连续性的路径，不再用于用户修改 schedule 或同状态启停。
 
 这一设计没有新增 scheduler 状态、缓存或后台队列。schema migration 复用既有版本表和事务；deadline 复用 `ScheduleSpec::next_occurrence_after` 与现有 CAS record。回归固定 v1 数据保留、v2 索引一次性升级、v3 重开 `PRAGMA schema_version` 不变化、Repeat/Cron/Every 在 stale `last_trigger_at` 下仍得到未来 deadline，以及同状态启停不改 record/coordinator command。
+
+### Phase 10.10 Scheduler 并入 core.db 与 canonical project identity（2026-08-19）
+
+Scheduler 存储由“每 workspace 一个数据库”破坏式收敛为用户级 `core.db`。物理隔离不再承担 workspace identity 职责；所有 repository 和 runtime 调用必须显式传递 canonical `project_id`，SQL 主键、外键、唯一约束和查询索引统一以它作为第一列。definition JSON 的 `projectId` 与 SQL 行作用域不一致时拒绝读取，防止损坏数据绕过边界。两个项目允许复用相同 job ID 或 occurrence ID，读取、claim、lease、恢复、通知、保留清理和删除仍严格隔离。
+
+旧项目级/用户级 `scheduled-tasks.db` 和 JSON store 不迁移、不导入、不读取、不 fallback；相应 path helper、migration marker、schema upgrade 和 startup import 代码已删除。新 scheduler schema 直接登记在共享 `core_schema` 的独立 `scheduler` component 下，因此可以与 Runtime recovery 表共存而不耦合两者版本。初始化策略与 `core.db` 对齐为 WAL、foreign keys、`synchronous = FULL` 和 3 秒 busy timeout。
+
+性能上，enabled deadline、active occurrence、history 和 status history 索引都以 `project_id` 开头；正常协调、恢复、分页和 retention 查询只访问单项目范围，不因共享物理库引入跨项目全表扫描、N+1、额外缓存或扩大锁范围。方案复用既有 `core.db`、`core_schema`、事务和 coordinator，没有新增聚合、状态机、队列或迁移抽象，复杂度与当前开发阶段的数据规模和风险匹配。
+
+定向验收覆盖 repository、core-state 共库、storage path、runtime/lease/lifecycle、service CRUD 和 attention lookup：45 + 6 + 1 + 87 + 26 + 2 项测试全部通过，core library 与 desktop 均编译通过，diff integrity 通过。按开发约定未执行全量回归、前端构建或 UI/EXE 启动验证。

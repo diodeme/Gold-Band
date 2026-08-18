@@ -1,6 +1,6 @@
 import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
-import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
@@ -14,6 +14,16 @@ const browserFontCandidates = [
 
 type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
+
+function imageActionBlob(input: ImageActionInput): Blob {
+  if (input.source.kind !== 'bytes') {
+    throw { code: 'image-action.source-unreadable', params: {} };
+  }
+  const binary = atob(input.source.dataBase64);
+  const bytes = Uint8Array.from(binary, (value) => value.charCodeAt(0));
+  const mime = input.mime.startsWith('image/') ? input.mime : 'application/octet-stream';
+  return new Blob([bytes], { type: mime });
+}
 
 const browserConversationRuns = new Map<string, ConversationRunVm>();
 const browserConversationTasks = new Map<string, ConversationTaskRowVm>();
@@ -991,7 +1001,7 @@ export const browserApi: RuntimeApi = {
       ];
     return Promise.resolve({
       agentType,
-      workspaceKey: workspacePath,
+      projectId: workspacePath === '/default' ? 'default' : 'browser-preview',
       updatedAt: localTimestamp(),
       commands,
     });
@@ -1303,6 +1313,9 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(() => {});
   },
   subscribeConversationRunStateUpdates() {
+    return Promise.resolve(() => {});
+  },
+  subscribeConversationTerminalResultUpdates() {
     return Promise.resolve(() => {});
   },
   subscribeInterventionNavigate() {
@@ -1656,6 +1669,18 @@ export const browserApi: RuntimeApi = {
       tasksByWorkspace: { default: [previewTask, ...browserConversationTasks.values()] },
     };
     return Promise.resolve(sidebar);
+  },
+  acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
+    const task = browserConversationTasks.get(taskId);
+    if (task?.projectId !== projectId) {
+      return Promise.resolve({ acknowledged: false, unreadTerminalResult: null });
+    }
+    const current = task?.unreadTerminalResult ?? null;
+    if (task && current?.eventId === eventId) {
+      task.unreadTerminalResult = null;
+      return Promise.resolve({ acknowledged: true, unreadTerminalResult: null });
+    }
+    return Promise.resolve({ acknowledged: false, unreadTerminalResult: current });
   },
   listScheduledTasks(projectId) {
     return Promise.resolve(browserScheduledTasks
@@ -2159,6 +2184,26 @@ export const browserApi: RuntimeApi = {
   },
   openFileWithSystemApp(_path) {
     return Promise.resolve();
+  },
+  async copyImageToClipboard(input) {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      return Promise.reject({ code: 'image-action.clipboard-unavailable', params: {} });
+    }
+    const blob = imageActionBlob(input);
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+  },
+  async saveImageAs(input) {
+    const blob = imageActionBlob(input);
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = input.fileName;
+      anchor.click();
+      return true;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   },
   pickAttachmentFiles() {
     return Promise.resolve([]);

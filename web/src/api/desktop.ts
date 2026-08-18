@@ -1,5 +1,5 @@
 import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -153,6 +153,13 @@ export const desktopApi: RuntimeApi = {
   async subscribeConversationRunStateUpdates(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<ConversationRunStateUpdatedEventVm>('gold-band://conversation-run-state-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
+  async subscribeConversationTerminalResultUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ConversationTerminalResultUpdatedEventVm>('gold-band://conversation-terminal-result-updated', (event) => {
       if (event.payload) listener(event.payload);
     });
     return () => unlisten();
@@ -472,6 +479,11 @@ export const desktopApi: RuntimeApi = {
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
   },
+  acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
+    return invokeCommand('acknowledge_conversation_terminal_result', {
+      input: { projectId, taskId, eventId },
+    });
+  },
   async subscribeScheduledNotifications(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     const unlisten: UnlistenFn = await listen<ScheduledNotificationEventVm>('gold-band://scheduled-notification', (event) => {
@@ -650,6 +662,24 @@ export const desktopApi: RuntimeApi = {
   async openFileWithSystemApp(path) {
     const { openPath } = await import('@tauri-apps/plugin-opener');
     await openPath(path);
+  },
+  copyImageToClipboard(input) {
+    return invokeCommand('copy_image_to_clipboard', { source: input.source });
+  },
+  async saveImageAs(input) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const extension = input.fileName.includes('.')
+      ? input.fileName.slice(input.fileName.lastIndexOf('.') + 1).toLowerCase()
+      : '';
+    const destinationPath = await save({
+      defaultPath: input.fileName,
+      filters: extension ? [{ name: 'Image', extensions: [extension] }] : undefined,
+    });
+    if (!destinationPath) return false;
+    await invokeCommand('save_image_as', {
+      input: { source: input.source, destinationPath },
+    });
+    return true;
   },
   async pickAttachmentFiles() {
     const { open } = await import('@tauri-apps/plugin-dialog');

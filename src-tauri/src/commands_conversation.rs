@@ -6,6 +6,7 @@ use gold_band::config::{
     ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
     ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
+use gold_band::storage::GoldBandPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -18,14 +19,16 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    spawn_blocking_command,
+    resolve_command_app, spawn_blocking_command,
+};
+use crate::conversation_attention::{
+    ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
 };
 use crate::conversation_workspace::{
     app_for_workspace, project_id_for_workspace, project_ids_match, remove_workspace_from_state,
     workspace_entry_for_project,
 };
-use crate::state::DesktopContext;
-use crate::state::DesktopState;
+use crate::state::{DesktopContext, DesktopState, provision_project_manifest_for_desktop};
 use crate::view_models::ContentVm;
 use crate::workspace_files::WorkspaceFileRuntime;
 
@@ -226,6 +229,35 @@ pub async fn get_conversation_sidebar(
         "conversation sidebar loaded"
     );
     result
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeConversationTerminalResultInput {
+    project_id: String,
+    task_id: String,
+    event_id: String,
+}
+
+#[tauri::command]
+pub fn acknowledge_conversation_terminal_result(
+    state: State<'_, DesktopState>,
+    input: AcknowledgeConversationTerminalResultInput,
+) -> CommandResult<ConversationTerminalResultAcknowledgementVm> {
+    let app = resolve_command_app(&state, Some(&input.project_id))?;
+    app.task_show(&input.task_id).map_err(|_| {
+        CommandErrorVm::new(
+            "task.not-found",
+            serde_json::json!({
+                "projectId": input.project_id,
+                "taskId": input.task_id,
+            }),
+        )
+    })?;
+    let _write_guard = state
+        .conversation_attention_write_guard()
+        .map_err(command_error)?;
+    acknowledge_terminal_result(&app, &input.task_id, &input.event_id).map_err(command_error)
 }
 
 #[tauri::command]
@@ -1291,19 +1323,36 @@ pub async fn add_conversation_workspace(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace_path_str.clone());
-        let project_id = project_id_for_workspace(&workspace_path_str);
+        let selected_paths = GoldBandPaths::new(workspace_path.clone());
+        let project_id = selected_paths.project_id.clone();
         let mut state = gold_band_app.load_state().map_err(command_error)?;
 
         if state
             .conversation_workspaces
             .iter()
-            .any(|workspace| project_ids_match(&workspace.project_id, &project_id))
+            .any(|workspace| {
+                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                    .normalized_repo_root
+                    == selected_paths.normalized_repo_root
+            })
         {
             return Err(CommandErrorVm::new(
                 "workspace.already-exists",
                 serde_json::json!({ "name": name }),
             ));
         }
+        if state
+            .conversation_workspaces
+            .iter()
+            .any(|workspace| workspace.project_id == project_id)
+        {
+            return Err(CommandErrorVm::new(
+                "workspace.project-id-collision",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        }
+
+        provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
 
         state
             .conversation_workspaces
@@ -1376,14 +1425,27 @@ pub async fn sync_conversation_workspace(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace_path.clone());
-        let project_id = project_id_for_workspace(&workspace_path);
+        let selected_paths = GoldBandPaths::new(Utf8PathBuf::from(&workspace_path));
+        let project_id = selected_paths.project_id.clone();
         let mut state = app.load_state().map_err(command_error)?;
 
-        let resolved_project_id = if let Some((_, resolved_project_id)) =
-            workspace_entry_for_project(&state, &project_id)
+        let existing_path = state.conversation_workspaces.iter().find(|workspace| {
+            GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
+                == selected_paths.normalized_repo_root
+        });
+        let resolved_project_id = if let Some(workspace) = existing_path {
+            workspace.project_id.clone()
+        } else if state
+            .conversation_workspaces
+            .iter()
+            .any(|workspace| workspace.project_id == project_id)
         {
-            resolved_project_id
+            return Err(CommandErrorVm::new(
+                "workspace.project-id-collision",
+                serde_json::json!({ "projectId": project_id }),
+            ));
         } else {
+            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
             state
                 .conversation_workspaces
                 .push(ConversationWorkspaceEntry {
@@ -1416,6 +1478,7 @@ pub async fn delete_conversation_task(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
         let app = context.app();
         let mut app_state = app.load_state().map_err(command_error)?;
@@ -1452,6 +1515,15 @@ pub async fn delete_conversation_task(
             )
         })?;
         gold_band::storage::sqlite::delete_task(&task_dir);
+        {
+            let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {
+                CommandErrorVm::new(
+                    "conversation.attention-write-lock-failed",
+                    serde_json::json!({ "taskId": task_id }),
+                )
+            })?;
+            remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
+        }
         app_state
             .conversation_pins
             .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
@@ -2521,7 +2593,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn workspace_entry_matches_legacy_project_id_case_insensitively() {
+    fn workspace_entry_rejects_noncanonical_project_id_case() {
         let mut state = gold_band::config::StateConfig::default();
         state
             .conversation_workspaces
@@ -2532,16 +2604,14 @@ mod tests {
                 added_at: "2025-01-01T00:00:00Z".to_string(),
             });
 
-        let result =
-            super::workspace_entry_for_project(&state, "D--Projects-code-ai-claude-code").unwrap();
+        let result = super::workspace_entry_for_project(&state, "D--Projects-code-ai-claude-code");
 
-        assert_eq!(result.0, "D:\\Projects\\code\\ai\\claude code");
-        assert_eq!(result.1, "d--projects-code-ai-claude-code");
+        assert!(result.is_none());
     }
 
     #[cfg(windows)]
     #[test]
-    fn indexed_task_path_resolves_legacy_workspace_without_dropping_search_result() {
+    fn indexed_legacy_task_path_does_not_use_a_runtime_alias() {
         let mut state = gold_band::config::StateConfig::default();
         state
             .conversation_workspaces
@@ -2555,11 +2625,11 @@ mod tests {
 
         let (indexed_project_id, workspace_name) =
             super::extract_project_from_task_path(task_path, &state);
-        let resolved = super::workspace_entry_for_project(&state, &indexed_project_id).unwrap();
+        let resolved = super::workspace_entry_for_project(&state, &indexed_project_id);
 
         assert_eq!(indexed_project_id, "D--Projects-code-ai-claude-code");
         assert_eq!(workspace_name, "claude code");
-        assert_eq!(resolved.1, "d--projects-code-ai-claude-code");
+        assert!(resolved.is_none());
     }
 
     #[test]

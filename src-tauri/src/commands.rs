@@ -72,10 +72,15 @@ use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
     load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
+use crate::conversation_attention::{
+    ConversationTerminalResultKind, ConversationTerminalResultVm, record_terminal_result,
+};
 use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
+use crate::state::{
+    DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
+};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, install_pending_file,
@@ -109,6 +114,7 @@ const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
 const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
+const CONVERSATION_TERMINAL_RESULT_EVENT: &str = "gold-band://conversation-terminal-result-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
 const QUEUED_PROMPT_ID_PREFIX: &str = "turn-queued-";
@@ -912,6 +918,25 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
+pub(crate) fn emit_recovered_conversation_run_state(
+    app_handle: &AppHandle,
+    recovered: &RecoveredConversationRun,
+) {
+    let _ = app_handle.emit(
+        CONVERSATION_RUN_STATE_EVENT,
+        ConversationRunStateUpdatedEventVm {
+            project_id: recovered.project_id.clone(),
+            task_id: recovered.task_id.clone(),
+            run_id: recovered.run_id.clone(),
+            round_id: recovered.round_id.clone(),
+            node_id: recovered.node_id.clone(),
+            attempt_id: recovered.attempt_id.clone(),
+            status: recovered.status,
+            outcome: recovered.outcome,
+        },
+    );
+}
+
 pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
@@ -961,6 +986,152 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
         "desktop.conversation-run-state",
         create_conversation_run_state_subscriber(app_handle.clone()),
     );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.conversation-terminal-result",
+        create_conversation_terminal_result_subscriber(app_handle.clone()),
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTerminalResultCandidate {
+    project_id: String,
+    task_id: String,
+    result: ConversationTerminalResultVm,
+    requires_direct_mode_check: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTerminalResultUpdatedEventVm {
+    project_id: String,
+    task_id: String,
+    unread_terminal_result: ConversationTerminalResultVm,
+}
+
+fn conversation_terminal_result_candidate(
+    event: &RuntimeLifecycleEvent,
+) -> Option<ConversationTerminalResultCandidate> {
+    match event {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            completion_agent_label,
+            ..
+        } if completion_agent_label.is_some() && *outcome != RunOutcome::Success => {
+            Some(ConversationTerminalResultCandidate {
+                project_id: project_id.clone(),
+                task_id: task_id.clone(),
+                result: ConversationTerminalResultVm {
+                    event_id: event_id.clone(),
+                    run_id: run_id.clone(),
+                    kind: match outcome {
+                        RunOutcome::Killed => ConversationTerminalResultKind::Stopped,
+                        RunOutcome::Failure => ConversationTerminalResultKind::Failed,
+                        RunOutcome::Success => return None,
+                    },
+                    occurred_at: occurred_at.clone(),
+                },
+                requires_direct_mode_check: false,
+            })
+        }
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            batch_progress,
+            ..
+        } if !batch_progress.continues => Some(ConversationTerminalResultCandidate {
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            result: ConversationTerminalResultVm {
+                event_id: event_id.clone(),
+                run_id: run_id.clone(),
+                kind: match outcome {
+                    AcpTurnOutcome::Completed => ConversationTerminalResultKind::Completed,
+                    AcpTurnOutcome::Cancelled => ConversationTerminalResultKind::Stopped,
+                    AcpTurnOutcome::Failed => ConversationTerminalResultKind::Failed,
+                },
+                occurred_at: occurred_at.clone(),
+            },
+            requires_direct_mode_check: true,
+        }),
+        _ => None,
+    }
+}
+
+fn create_conversation_terminal_result_subscriber(
+    app_handle: AppHandle,
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        let Some(candidate) = conversation_terminal_result_candidate(&event) else {
+            return;
+        };
+        let Some(desktop_state) = app_handle.try_state::<DesktopState>() else {
+            warn!("desktop state unavailable while recording Direct terminal result");
+            return;
+        };
+        let app = match resolve_command_app(&desktop_state, Some(&candidate.project_id)) {
+            Ok(app) => app,
+            Err(error) => {
+                warn!(
+                    code = %error.code,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result workspace resolution failed"
+                );
+                return;
+            }
+        };
+        if candidate.requires_direct_mode_check
+            && conversation_run_mode(&app, &candidate.task_id)
+                != Some(gold_band::config::ConversationRunMode::Direct)
+        {
+            return;
+        }
+        let write_guard = match desktop_state.conversation_attention_write_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(?error, "Direct terminal result write lock failed");
+                return;
+            }
+        };
+        if app.task_show(&candidate.task_id).is_err() {
+            return;
+        }
+        let recorded = match record_terminal_result(&app, &candidate.task_id, candidate.result) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result persistence failed"
+                );
+                return;
+            }
+        };
+        drop(write_guard);
+        if !recorded.changed {
+            return;
+        }
+        if let Some(unread_terminal_result) = recorded.unread_terminal_result {
+            let _ = app_handle.emit(
+                CONVERSATION_TERMINAL_RESULT_EVENT,
+                ConversationTerminalResultUpdatedEventVm {
+                    project_id: candidate.project_id,
+                    task_id: candidate.task_id,
+                    unread_terminal_result,
+                },
+            );
+        }
+    })
 }
 
 fn create_conversation_run_state_subscriber(
@@ -1359,6 +1530,17 @@ pub(crate) async fn prepare_app_exit_inner(
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
 
+    // Close the process-wide admission gate before scheduler shutdown. A run
+    // start either appears in this snapshot or observes ShuttingDown; no
+    // registry lock is held while scheduler, file, provider, or SQLite work runs.
+    let active_runtime_candidates = match state.runtime_recovery().begin_shutdown() {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            result.record_warning("app-exit.runtime-gate-failed", &error);
+            Vec::new()
+        }
+    };
+
     // Stop the scheduler before stopping ACP/runtime sessions so no new
     // occurrence can acquire a lease while desktop cleanup is in progress.
     // `shutdown` waits for both the coordinator acknowledgement and task join.
@@ -1370,8 +1552,57 @@ pub(crate) async fn prepare_app_exit_inner(
 
     match state.app() {
         Ok(runtime_app) => {
+            let runtime_recovery = state.runtime_recovery();
             match tauri::async_runtime::spawn_blocking(move || {
-                runtime_app.stop_all_running_sessions().map(|_| ())
+                let mut failure_count = 0usize;
+                for candidate in active_runtime_candidates {
+                    let workspace_root = camino::Utf8PathBuf::from(&candidate.workspace_path);
+                    let paths = gold_band::storage::GoldBandPaths::new(workspace_root.clone());
+                    if paths.project_id != candidate.project_id
+                        || paths.validate_project_manifest().is_err()
+                    {
+                        failure_count += 1;
+                        warn!(
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate workspace identity changed during exit"
+                        );
+                        continue;
+                    }
+                    let workspace_app =
+                        runtime_app.with_repo_root(workspace_root, runtime_app.config.clone());
+                    if let Err(error) = workspace_app.run_pause(
+                        &candidate.task_id,
+                        &candidate.run_id,
+                        PauseReason::ProcessInterrupted,
+                    ) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime pause failed during exit"
+                        );
+                        continue;
+                    }
+                    if let Err(error) = runtime_recovery.consume_persisted_candidate(&candidate) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate cleanup failed during exit"
+                        );
+                    }
+                }
+                runtime_app.close_active_runtime_connections()?;
+                if failure_count > 0 {
+                    anyhow::bail!("{failure_count} active runtime exit operations failed");
+                }
+                Ok(())
             })
             .await
             {
@@ -1834,7 +2065,8 @@ fn collect_agent_binding_usage(
         if !scheduler_db_path.exists() {
             continue;
         }
-        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?.scan_job_definitions()?;
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?
+            .scan_job_definitions(&app.paths.project_id)?;
         unknown_scheduled_task_count += scan.invalid_count;
         for definition in scan.definitions {
             match scheduled_task_references_agent(&definition, agent_id) {
@@ -6318,6 +6550,15 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
+    if let Some(error) = error.downcast_ref::<gold_band::app::RuntimeRecoveryError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::core_state::CoreStateError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::ProjectManifestError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
@@ -7732,7 +7973,13 @@ fn scheduled_attention_requires_coordinator(
     let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
         .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
     Ok(database
-        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .find_attention_occurrence_by_links(
+            &app.paths.project_id,
+            task_id,
+            run_id,
+            round_id,
+            attempt_id,
+        )
         .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
         .is_some())
 }
@@ -8292,6 +8539,88 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "Claude".to_string(),
+            outcome,
+            task_title: None,
+            completion_agent_label: Some("Claude".to_string()),
+        }
+    }
+
+    fn acp_turn_finished(outcome: AcpTurnOutcome, continues: bool) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id: "turn-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:01Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            turn_id: "turn-001".to_string(),
+            agent_label: "Claude".to_string(),
+            outcome,
+            batch_progress: AcpTurnBatchProgress {
+                completed_reply_count: 1,
+                continues,
+            },
+            task_title: None,
+        }
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_waits_for_the_terminal_reply_batch() {
+        assert!(
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Success))
+                .is_none()
+        );
+        assert!(
+            conversation_terminal_result_candidate(&acp_turn_finished(
+                AcpTurnOutcome::Completed,
+                true
+            ))
+            .is_none()
+        );
+
+        let completed = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Completed,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(
+            completed.result.kind,
+            ConversationTerminalResultKind::Completed
+        );
+        assert!(completed.requires_direct_mode_check);
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_maps_failure_and_stop_semantics() {
+        let failed =
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Failure))
+                .unwrap();
+        assert_eq!(failed.result.kind, ConversationTerminalResultKind::Failed);
+        assert!(!failed.requires_direct_mode_check);
+
+        let stopped = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Cancelled,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(stopped.result.kind, ConversationTerminalResultKind::Stopped);
+    }
+
     #[test]
     fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
         let mut session = serde_json::json!({
@@ -8772,6 +9101,7 @@ mod tests {
         let owner_id = "owner-1";
         database
             .claim_occurrence(
+                &app.paths.project_id,
                 &occurrence.id,
                 owner_id,
                 now,
@@ -8780,6 +9110,7 @@ mod tests {
             .unwrap();
         database
             .finish_occurrence(
+                &app.paths.project_id,
                 &occurrence.id,
                 owner_id,
                 gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,

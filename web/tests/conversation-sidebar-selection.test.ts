@@ -283,6 +283,19 @@ describe('ConversationSidebar run selection identity', () => {
       ...event,
       activity: null,
     })).toBeNull();
+    expect(conversationTaskActivityFromUpdate({
+      ...event,
+      lifecycle: {
+        runtime: { status: 'paused', resumable: true, current: true, active: true, continuable: false, phase: 'stopping' },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: true },
+        displayStatus: 'stopping',
+        runtimeDisplay: { code: 'stopping', tone: 'running', icon: 'dot', terminal: false, resumable: true, reasonCode: 'process-interrupted', blockingError: false },
+        continueKind: null,
+        composer: { mode: 'runtime-active', submitTarget: 'none', processingKind: 'stopping', statusKey: null, canStop: false, lockInput: true },
+      },
+      activity: null,
+    })).toBeNull();
     expect(conversationTaskActivityFromUpdate(event)).toBeUndefined();
   });
 

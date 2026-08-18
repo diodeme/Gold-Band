@@ -20,8 +20,8 @@ vi.mock('@/components/workspace/files/ReadonlyTextWorkspaceViewer', () => ({
 }));
 
 vi.mock('@/components/workspace/files/WorkspaceImageCanvas', () => ({
-  WorkspaceImageCanvas: (props: { src: string; alt: string }) => (
-    <div data-testid="workspace-image" data-src={props.src}>{props.alt}</div>
+  WorkspaceImageCanvas: (props: { src: string; alt: string; attachment?: { id: string } }) => (
+    <div data-testid="workspace-image" data-src={props.src} data-attachment-id={props.attachment?.id}>{props.alt}</div>
   ),
 }));
 
@@ -98,6 +98,7 @@ describe('draft attachment workspace panel', () => {
       });
 
       expect(container.querySelector<HTMLElement>('[data-testid="workspace-image"]')?.dataset.src).toBe('asset://image');
+      expect(container.querySelector<HTMLElement>('[data-testid="workspace-image"]')?.dataset.attachmentId).toBe('image');
       expect(container.querySelector('[data-testid="readonly-text-workspace"]')).toBeNull();
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {

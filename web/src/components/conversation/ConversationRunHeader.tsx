@@ -1,7 +1,9 @@
-import { AlarmClock, Eye, FolderOpen, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import { AlarmClock, Eye, RotateCcw, Workflow, ChevronDown } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ConversationRunVm, ConversationSessionLeafVm } from '../../types';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
@@ -13,8 +15,9 @@ interface ConversationRunHeaderProps {
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
-  onToggleSessionSwitcher: () => void;
+  onSessionSwitcherOpenChange: (open: boolean) => void;
   sessionSwitcherOpen: boolean;
+  sessionSwitcher: ReactNode;
   selectedSessionLeaf?: ConversationSessionLeafVm | null;
   canViewWorkflow?: boolean;
   canEditWorkflow?: boolean;
@@ -27,8 +30,9 @@ export function ConversationRunHeader({
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
-  onToggleSessionSwitcher,
+  onSessionSwitcherOpenChange,
   sessionSwitcherOpen,
+  sessionSwitcher,
   selectedSessionLeaf,
   canViewWorkflow,
   canEditWorkflow,
@@ -61,26 +65,39 @@ export function ConversationRunHeader({
         />
 
         {/* Session switcher toggle */}
-        {!isDirect ? <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1.5 px-2 text-xs font-normal"
-          aria-expanded={sessionSwitcherOpen}
-          onClick={onToggleSessionSwitcher}
-        >
-          {selectedSessionLeaf ? (
-            <span
-              aria-hidden="true"
-              className="relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80"
+        {!isDirect ? (
+          <Popover open={sessionSwitcherOpen} onOpenChange={onSessionSwitcherOpenChange}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs font-normal"
+                aria-expanded={sessionSwitcherOpen}
+              >
+                {selectedSessionLeaf ? (
+                  <span
+                    aria-hidden="true"
+                    className="relative inline-flex size-3 shrink-0 items-center justify-center rounded-full border border-background/80"
+                  >
+                    <span className={cn('relative inline-block size-2 rounded-full', selectedSessionDotClass)} />
+                  </span>
+                ) : null}
+                <span className="truncate text-muted-foreground">
+                  {run.sessionTree.selectedSessionKey ?? t('conversation.runtime.sessionSwitcher')}
+                </span>
+                <ChevronDown className={cn('size-3 transition-transform', sessionSwitcherOpen && 'rotate-180')} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              sideOffset={4}
+              collisionPadding={12}
+              className="w-64 overflow-hidden p-0"
             >
-              <span className={cn('relative inline-block size-2 rounded-full', selectedSessionDotClass)} />
-            </span>
-          ) : null}
-          <span className="truncate text-muted-foreground">
-            {run.sessionTree.selectedSessionKey ?? t('conversation.runtime.sessionSwitcher')}
-          </span>
-          <ChevronDown className={cn('size-3 transition-transform', sessionSwitcherOpen && 'rotate-180')} />
-        </Button> : null}
+              {sessionSwitcher}
+            </PopoverContent>
+          </Popover>
+        ) : null}
 
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-1">

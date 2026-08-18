@@ -4,12 +4,15 @@ import type { ConversationPage, ConversationRunVm } from '@/types';
 
 export const CONVERSATION_RUN_CACHE_LIMIT = 12;
 
+export type ConversationSessionTreeExpansion = Readonly<Record<string, boolean>>;
+
 type ConversationRunLocator = Pick<ConversationRunVm, 'projectId' | 'taskId' | 'runId'>
   | Extract<ConversationPage, { kind: 'conversation-run' }>;
 
 export interface ConversationRunViewState {
   followMode: ConversationSessionFollowMode;
   selectedSessionKey: string | null;
+  sessionTreeExpansion: ConversationSessionTreeExpansion;
 }
 
 export interface ConversationRunCacheEntry {
@@ -34,7 +37,11 @@ export class ConversationRunCache {
     return this.entries.get(conversationRunCacheKey(locator)) ?? null;
   }
 
-  store(run: ConversationRunVm, viewState?: ConversationRunViewState) {
+  peekViewState(locator: ConversationRunLocator) {
+    return this.entries.peek(conversationRunCacheKey(locator))?.viewState ?? null;
+  }
+
+  store(run: ConversationRunVm, viewState?: Partial<ConversationRunViewState>) {
     const key = conversationRunCacheKey(run);
     const current = this.entries.peek(key);
     const canonicalRun = {
@@ -44,10 +51,26 @@ export class ConversationRunCache {
     delete canonicalRun.autoTitle;
     this.entries.set(key, {
       run: canonicalRun,
-      viewState: viewState ?? current?.viewState ?? {
+      viewState: {
         followMode: 'auto',
         selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,
+        sessionTreeExpansion: {},
+        ...current?.viewState,
+        ...viewState,
       },
+    });
+  }
+
+  updateViewState(run: ConversationRunVm, patch: Partial<ConversationRunViewState>) {
+    const key = conversationRunCacheKey(run);
+    const current = this.entries.peek(key);
+    if (!current) {
+      this.store(run, patch);
+      return;
+    }
+    this.entries.set(key, {
+      ...current,
+      viewState: { ...current.viewState, ...patch },
     });
   }
 }

@@ -49,6 +49,7 @@ describe('ConversationRunCache', () => {
     expect(cache.restoreEntry(cachedRun)?.viewState).toEqual({
       followMode: 'manual',
       selectedSessionKey,
+      sessionTreeExpansion: {},
     });
   });
 
@@ -71,7 +72,24 @@ describe('ConversationRunCache', () => {
     expect(restored?.viewState).toEqual({
       followMode: 'manual',
       selectedSessionKey,
+      sessionTreeExpansion: {},
     });
+  });
+
+  it('keeps session-tree expansion in the bounded in-memory run view state', () => {
+    const cache = new ConversationRunCache();
+    const cachedRun = run(1);
+    const roundBranchKey = '["round","round-001"]';
+    cache.store(cachedRun);
+    cache.updateViewState(cachedRun, {
+      sessionTreeExpansion: { [roundBranchKey]: false },
+    });
+    cache.store({ ...cachedRun, runStatus: 'running' } as ConversationRunVm);
+
+    expect(cache.restoreEntry(cachedRun)?.viewState.sessionTreeExpansion).toEqual({
+      [roundBranchKey]: false,
+    });
+    expect(cache.peekViewState(run(2))).toBeNull();
   });
 
   it('evicts the least recently used run at the shared finite limit', () => {

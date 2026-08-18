@@ -2508,6 +2508,10 @@ export function App() {
           appConfig={appConfig}
           agentRegistry={agentRegistry}
           followMode={conversationSessionFollowRef.current.mode}
+          initialSessionTreeExpansion={conversationRunCache.peekViewState(conversationRun)?.sessionTreeExpansion ?? {}}
+          onSessionTreeExpansionChange={(sessionTreeExpansion) => {
+            conversationRunCache.updateViewState(conversationRun, { sessionTreeExpansion });
+          }}
           onRerun={() => {
             if (!conversationRun) return;
             rerunConversationTask(conversationRun.projectId, conversationRun.taskId)

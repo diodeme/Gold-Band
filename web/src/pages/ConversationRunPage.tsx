@@ -22,6 +22,10 @@ import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
 import {
+  conversationRunCacheKey,
+  type ConversationSessionTreeExpansion,
+} from '@/lib/conversation-run-cache';
+import {
   isRuntimeControlledConversationLifecycle,
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
@@ -91,6 +95,8 @@ interface ConversationRunPageProps {
   onLifecycleSnapshot?: (snapshot: AcpLifecycleSnapshot) => void;
   onAutoFollowChange?: (enabled: boolean) => void;
   followMode: ConversationSessionFollowMode;
+  initialSessionTreeExpansion: ConversationSessionTreeExpansion;
+  onSessionTreeExpansionChange: (expansion: ConversationSessionTreeExpansion) => void;
   onTitleChange?: (title: string) => void;
 }
 
@@ -106,6 +112,8 @@ export function ConversationRunPage({
   onLifecycleSnapshot,
   onAutoFollowChange,
   followMode,
+  initialSessionTreeExpansion,
+  onSessionTreeExpansionChange,
   onTitleChange,
 }: ConversationRunPageProps) {
   const { t } = useTranslation();
@@ -133,11 +141,21 @@ export function ConversationRunPage({
     return normalizedDetails ? `${message}：${normalizedDetails}` : message;
   };
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
+  const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
+  const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
+    runKey: string;
+    expansion: ConversationSessionTreeExpansion;
+  }>(() => ({
+    runKey: sessionTreeExpansionRunKey,
+    expansion: initialSessionTreeExpansion,
+  }));
+  const sessionTreeExpansion = sessionTreeExpansionState.runKey === sessionTreeExpansionRunKey
+    ? sessionTreeExpansionState.expansion
+    : initialSessionTreeExpansion;
   const [rerunConfirmOpen, setRerunConfirmOpen] = useState(false);
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
-  const headerAreaRef = useRef<HTMLDivElement>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -148,17 +166,14 @@ export function ConversationRunPage({
     pendingAutoFollowRestoreSessionKeyRef.current = null;
   }, [followMode, run.projectId, run.runId, run.taskId]);
 
-  // Close session switcher on outside click
-  useEffect(() => {
-    if (!sessionSwitcherOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (headerAreaRef.current && !headerAreaRef.current.contains(e.target as Node)) {
-        setSessionSwitcherOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [sessionSwitcherOpen]);
+  const handleSessionTreeExpansionChange = useCallback((branchKey: string, open: boolean) => {
+    const nextExpansion = { ...sessionTreeExpansion, [branchKey]: open };
+    setSessionTreeExpansionState({
+      runKey: sessionTreeExpansionRunKey,
+      expansion: nextExpansion,
+    });
+    onSessionTreeExpansionChange(nextExpansion);
+  }, [onSessionTreeExpansionChange, sessionTreeExpansion, sessionTreeExpansionRunKey]);
 
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
@@ -444,7 +459,7 @@ export function ConversationRunPage({
     <TooltipProvider>
       <div data-theme-wallpaper-slot="conversation" className="relative h-full min-h-0 bg-background">
       <div className={`flex h-full min-h-0 flex-col bg-transparent ${showPageLoadingState ? 'invisible' : ''}`}>
-        <div ref={headerAreaRef} className="shrink-0 relative">
+        <div className="relative shrink-0">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
             taskTitle={taskTitle}
@@ -454,24 +469,22 @@ export function ConversationRunPage({
             onRerun={handleRerun}
             onEditWorkflow={handleEditWorkflow}
             onViewWorkflow={handleViewWorkflow}
-            onToggleSessionSwitcher={() => setSessionSwitcherOpen((prev) => !prev)}
+            onSessionSwitcherOpenChange={setSessionSwitcherOpen}
             sessionSwitcherOpen={sessionSwitcherOpen}
-            onTitleChange={onTitleChange}
-          /> : null}
-
-          {/* Session switcher dropdown */}
-          {!isDirect && sessionSwitcherOpen ? (
-            <div className="absolute right-5 top-12 z-50">
+            sessionSwitcher={!isDirect ? (
               <ConversationSessionSwitcher
                 tree={run.sessionTree}
                 selectedKey={run.sessionTree.selectedSessionKey}
+                expansion={sessionTreeExpansion}
+                onExpansionChange={handleSessionTreeExpansionChange}
                 onSelectSession={(leaf) => {
                   handleSessionSelection(leaf, isAutoFollowRestorableLeaf(leaf));
                   setSessionSwitcherOpen(false);
                 }}
               />
-            </div>
-          ) : null}
+            ) : null}
+            onTitleChange={onTitleChange}
+          /> : null}
         </div>
 
       {/* Active sessions indicator */}

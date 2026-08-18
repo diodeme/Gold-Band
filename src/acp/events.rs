@@ -7,6 +7,7 @@ use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
@@ -1685,6 +1686,23 @@ pub fn normalize_session_update(
     event
 }
 
+/// Returns true when an Agent text/thought chunk cannot produce any visible
+/// content by itself. The original provider frame remains in `acp.raw.jsonl`;
+/// callers use this predicate only to keep placeholder chunks out of canonical
+/// output until the same stream accumulates real text.
+pub fn is_semantically_empty_agent_content(event: &AcpUiEvent) -> bool {
+    if !matches!(event.kind.as_str(), "textDelta" | "thoughtDelta") {
+        return false;
+    }
+    let Some(content) = event.content.as_deref() else {
+        return true;
+    };
+    content.is_empty()
+        || content
+            .chars()
+            .all(|character| character.general_category() == GeneralCategory::Format)
+}
+
 const CLAUDE_COMPACTION_STARTED_MESSAGE: &str = "Compacting...";
 const CLAUDE_COMPACTION_COMPLETED_MESSAGE: &str = "Compacting completed.";
 const PROVIDER_CONTEXT_COMPACTION_META_POINTER: &str = "/_meta/contextCompaction";
@@ -2161,8 +2179,9 @@ mod tests {
         append_raw_frame, append_structured_diagnostic, append_timeline_patch,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
-        extract_usage_fields, kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata,
-        load_timeline_items, normalize_session_update, permission_request_event, user_prompt_event,
+        extract_usage_fields, is_semantically_empty_agent_content, kind_to_ui_kind,
+        latest_timeline_source_seq, load_session_metadata, load_timeline_items,
+        normalize_session_update, permission_request_event, user_prompt_event,
         user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
@@ -2313,6 +2332,36 @@ mod tests {
     #[test]
     fn kind_to_ui_user_message_chunk() {
         assert_eq!(kind_to_ui_kind("user_message_chunk"), "userTextDelta");
+    }
+
+    #[test]
+    fn semantic_empty_agent_content_recognizes_empty_and_unicode_format_chunks() {
+        for update in [
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "\u{200b}" }
+            }),
+            json!({
+                "sessionUpdate": "agent_thought_chunk",
+                "content": { "type": "text", "text": "" }
+            }),
+        ] {
+            let event = normalize_session_update(1, Some("session-1".to_string()), &update);
+            assert!(is_semantically_empty_agent_content(&event));
+        }
+    }
+
+    #[test]
+    fn semantic_empty_agent_content_preserves_whitespace_and_visible_text() {
+        for text in [" ", "he\u{200b}llo"] {
+            let update = json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": text }
+            });
+            let event = normalize_session_update(1, Some("session-1".to_string()), &update);
+            assert!(!is_semantically_empty_agent_content(&event));
+            assert_eq!(event.content.as_deref(), Some(text));
+        }
     }
 
     #[test]

@@ -4940,6 +4940,10 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   nested?: boolean;
 }) {
   const branchLocator = useContext(AcpBranchLocatorContext);
+  if (
+    (event.kind === "textDelta" || event.kind === "thoughtDelta")
+    && !hasVisibleAcpTextContent(event.content)
+  ) return null;
   if (isAgentLink(event))
     return nested ? (
       <AgentLinkRow event={event} />
@@ -7249,6 +7253,7 @@ function nextLiveStreamingMarkdownTarget(
   const position = timelineEventPosition(event);
   if (event.kind === "userTextDelta") return null;
   if (event.kind === "textDelta" || event.kind === "thoughtDelta") {
+    if (!hasVisibleAcpTextContent(event.content)) return current;
     if (latestPromptPosition != null && position <= latestPromptPosition) return null;
     return { key: `${event.kind}-${event.id}`, position };
   }
@@ -7532,6 +7537,10 @@ function batchAcpActivities(
 function isRenderableEvent(event: AcpUiEventVm) {
   const raw = rawObject(event.raw);
   if (raw?.hiddenFromChat === true) return false;
+  if (
+    (event.kind === "textDelta" || event.kind === "thoughtDelta")
+    && !hasVisibleAcpTextContent(event.content)
+  ) return false;
   if (event.kind === "permissionRequest" || event.kind === "elicitationRequest" || event.kind === "elicitationResponse") return false;
   if (hiddenEventKinds.has(event.kind)) return false;
   const sessionUpdate = raw?.sessionUpdate;
@@ -8434,6 +8443,16 @@ export function optimisticUserEvent(
       ...(attachments.length > 0 ? { attachments } : {}),
     },
   };
+}
+
+const acpInvisibleTextCharacterPattern = /[\s\p{Cf}]/u;
+
+function hasVisibleAcpTextContent(content?: string | null) {
+  if (!content) return false;
+  for (const character of content) {
+    if (!acpInvisibleTextCharacterPattern.test(character)) return true;
+  }
+  return false;
 }
 
 export function optimisticAttachmentPreviews(

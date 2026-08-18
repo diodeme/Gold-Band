@@ -338,8 +338,9 @@ use crate::acp::events::{
     AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
     AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
     append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
-    current_timestamp, latest_timeline_source_seq, load_session_metadata, normalize_session_update,
-    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
+    current_timestamp, is_semantically_empty_agent_content, latest_timeline_source_seq,
+    load_session_metadata, normalize_session_update, permission_request_event,
+    user_prompt_event_with_quotes, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -1016,22 +1017,39 @@ enum AcpPromptMessageStreamIdentity {
 }
 
 #[derive(Debug, Clone, Default)]
+struct AcpPromptStableMessageAccumulator {
+    identity: String,
+    text: String,
+    chars: usize,
+}
+
+#[derive(Debug, Clone, Default)]
 struct AcpPromptOutputAccumulator {
     output: AcpPromptOutput,
     active_message: Option<AcpPromptMessageStreamIdentity>,
+    recent_message_identities: Vec<AcpPromptMessageStreamIdentity>,
+    stable_message: Option<AcpPromptStableMessageAccumulator>,
     visible_chars: usize,
-    last_message_chars: usize,
+    active_anonymous_chars: usize,
 }
 
 const ACP_PROMPT_OUTPUT_MESSAGE_LIMIT: usize = 3;
 
 impl AcpPromptOutputAccumulator {
     fn observe(&mut self, _update: &Value, event: &AcpUiEvent) {
+        if is_semantically_empty_agent_content(event) {
+            return;
+        }
         if event.kind != "textDelta" {
-            // Match the canonical timeline's text stream boundary. An
-            // elicitation is an intervention inside the current message; all
-            // other non-text events end it.
-            if event.kind != "elicitationRequest" {
+            // Identified messages may legally interleave with tool and metadata
+            // updates. Only an anonymous contiguous segment ends at those
+            // boundaries; the next identified chunk can resume by identity.
+            if event.kind != "elicitationRequest"
+                && matches!(
+                    self.active_message,
+                    Some(AcpPromptMessageStreamIdentity::Anonymous)
+                )
+            {
                 self.active_message = None;
             }
             return;
@@ -1048,25 +1066,57 @@ impl AcpPromptOutputAccumulator {
             .map(AcpPromptMessageStreamIdentity::Stable)
             .unwrap_or(AcpPromptMessageStreamIdentity::Anonymous);
         let has_stable_id = matches!(message_identity, AcpPromptMessageStreamIdentity::Stable(_));
-        if self.active_message.as_ref() != Some(&message_identity) {
-            self.last_message_chars = 0;
-            self.output.recent_messages.push(AcpPromptMessageOutput {
-                text: String::new(),
-                has_stable_id,
-            });
-            if self.output.recent_messages.len() > ACP_PROMPT_OUTPUT_MESSAGE_LIMIT {
-                self.output.recent_messages.remove(0);
+        self.output.observed_stable_message |= has_stable_id;
+        match &message_identity {
+            AcpPromptMessageStreamIdentity::Stable(identity) => {
+                let stable = self.stable_message.get_or_insert_with(Default::default);
+                if stable.identity != *identity {
+                    stable.identity.clone_from(identity);
+                    stable.text.clear();
+                    stable.chars = 0;
+                }
+                append_bounded(&mut stable.text, &mut stable.chars, content, 64_000);
+
+                if let Some(index) = self
+                    .recent_message_identities
+                    .iter()
+                    .position(|candidate| candidate == &message_identity)
+                {
+                    self.recent_message_identities.remove(index);
+                    self.output.recent_messages.remove(index);
+                }
+                self.recent_message_identities
+                    .push(message_identity.clone());
+                self.output.recent_messages.push(AcpPromptMessageOutput {
+                    text: stable.text.clone(),
+                    has_stable_id: true,
+                });
+                self.active_anonymous_chars = 0;
+            }
+            AcpPromptMessageStreamIdentity::Anonymous => {
+                if self.active_message.as_ref() != Some(&message_identity) {
+                    self.active_anonymous_chars = 0;
+                    self.recent_message_identities
+                        .push(message_identity.clone());
+                    self.output.recent_messages.push(AcpPromptMessageOutput {
+                        text: String::new(),
+                        has_stable_id: false,
+                    });
+                }
+                if let Some(message) = self.output.recent_messages.last_mut() {
+                    append_bounded(
+                        &mut message.text,
+                        &mut self.active_anonymous_chars,
+                        content,
+                        64_000,
+                    );
+                }
             }
         }
         self.active_message = Some(message_identity);
-        self.output.observed_stable_message |= has_stable_id;
-        if let Some(message) = self.output.recent_messages.last_mut() {
-            append_bounded(
-                &mut message.text,
-                &mut self.last_message_chars,
-                content,
-                64_000,
-            );
+        while self.output.recent_messages.len() > ACP_PROMPT_OUTPUT_MESSAGE_LIMIT {
+            self.output.recent_messages.remove(0);
+            self.recent_message_identities.remove(0);
         }
     }
 }
@@ -1645,9 +1695,56 @@ struct AcpRuntime<'a> {
 
 #[derive(Default)]
 struct AcpBranchTimelineStreams {
-    text: Option<AcpTimelineStreamState>,
-    thought: Option<AcpTimelineStreamState>,
-    plan: Option<AcpTimelineStreamState>,
+    text: AcpTimelineStreamSlot,
+    thought: AcpTimelineStreamSlot,
+    plan: AcpTimelineStreamSlot,
+}
+
+#[derive(Default)]
+struct AcpTimelineStreamSlot {
+    current: Option<AcpTimelineStreamState>,
+    suspended_stable: Option<AcpTimelineStreamState>,
+}
+
+impl AcpTimelineStreamSlot {
+    fn has_state(&self) -> bool {
+        self.current.is_some() || self.suspended_stable.is_some()
+    }
+
+    fn close_anonymous(&mut self) {
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|stream| stream.source_id.is_none())
+        {
+            self.current = None;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.current = None;
+        self.suspended_stable = None;
+    }
+
+    fn latest(&self) -> Option<&AcpTimelineStreamState> {
+        self.current.as_ref().or(self.suspended_stable.as_ref())
+    }
+
+    fn restore_snapshot(&mut self, stream: AcpTimelineStreamState) {
+        if stream.source_id.is_some() {
+            self.current = Some(stream);
+            self.suspended_stable = None;
+            return;
+        }
+        if let Some(stable) = self
+            .current
+            .take()
+            .filter(|current| current.source_id.is_some())
+        {
+            self.suspended_stable = Some(stable);
+        }
+        self.current = Some(stream);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5347,6 +5444,9 @@ impl<'a> AcpRuntime<'a> {
         emit_live_update: bool,
     ) -> Result<()> {
         let mut timeline_item = self.timeline_item_for_event(event);
+        if is_semantically_empty_agent_content(event) {
+            return Ok(());
+        }
         let agent_prompt = agent_prompt_event(&timeline_item);
         let agent_result = agent_result_event(&timeline_item).filter(|result| {
             !self.timeline_items.values().any(|existing| {
@@ -5568,7 +5668,7 @@ impl<'a> AcpRuntime<'a> {
     /// Apply a streaming delta — get-or-create the stream, append content,
     /// and stamp the item with stream identity + sequence bounds.
     fn apply_streaming_delta(
-        stream: &mut Option<AcpTimelineStreamState>,
+        slot: &mut AcpTimelineStreamSlot,
         item: &mut crate::acp::events::AcpUiEvent,
         stable_id: &str,
         source_id: Option<&str>,
@@ -5576,18 +5676,38 @@ impl<'a> AcpRuntime<'a> {
         seq: u64,
         timestamp: &str,
     ) {
-        let source_changed =
-            stream
-                .as_ref()
-                .is_some_and(|active| match (active.source_id.as_deref(), source_id) {
-                    (Some(active), Some(incoming)) => active != incoming,
-                    (None, None) => false,
-                    _ => true,
-                });
-        if source_changed {
-            *stream = None;
+        match source_id {
+            Some(source_id) => {
+                let current_matches = slot
+                    .current
+                    .as_ref()
+                    .is_some_and(|stream| stream.source_id.as_deref() == Some(source_id));
+                if !current_matches {
+                    let resumed = slot
+                        .suspended_stable
+                        .take()
+                        .filter(|stream| stream.source_id.as_deref() == Some(source_id));
+                    slot.current = resumed;
+                }
+                slot.suspended_stable = None;
+            }
+            None => {
+                let current_is_anonymous = slot
+                    .current
+                    .as_ref()
+                    .is_some_and(|stream| stream.source_id.is_none());
+                if !current_is_anonymous {
+                    if let Some(stable) = slot
+                        .current
+                        .take()
+                        .filter(|stream| stream.source_id.is_some())
+                    {
+                        slot.suspended_stable = Some(stable);
+                    }
+                }
+            }
         }
-        let stream = stream.get_or_insert_with(|| AcpTimelineStreamState {
+        let stream = slot.current.get_or_insert_with(|| AcpTimelineStreamState {
             item_id: stable_id.to_string(),
             source_id: source_id.map(str::to_string),
             started_seq: seq,
@@ -5623,20 +5743,22 @@ impl<'a> AcpRuntime<'a> {
         item.ended_at = Some(timestamp.to_string());
     }
 
-    /// Stamp a non-streaming event with sequence bounds and clear all streams.
+    /// Stamp a non-streaming event with sequence bounds. Foreign events close
+    /// only anonymous contiguous segments; identified streams remain resumable
+    /// until a real turn boundary or a different stable identity arrives.
     fn finalize_non_streaming_event(
         streams: (
-            &mut Option<AcpTimelineStreamState>,
-            &mut Option<AcpTimelineStreamState>,
-            &mut Option<AcpTimelineStreamState>,
+            &mut AcpTimelineStreamSlot,
+            &mut AcpTimelineStreamSlot,
+            &mut AcpTimelineStreamSlot,
         ),
         item: &mut crate::acp::events::AcpUiEvent,
         seq: u64,
         timestamp: &str,
     ) {
-        *streams.0 = None;
-        *streams.1 = None;
-        *streams.2 = None;
+        streams.0.close_anonymous();
+        streams.1.close_anonymous();
+        streams.2.close_anonymous();
         item.started_seq = Some(item.started_seq.unwrap_or(seq));
         item.ended_seq = Some(seq);
         item.started_at = Some(
@@ -5645,6 +5767,12 @@ impl<'a> AcpRuntime<'a> {
                 .unwrap_or_else(|| timestamp.to_string()),
         );
         item.ended_at = Some(timestamp.to_string());
+    }
+
+    fn clear_timeline_streams(streams: &mut AcpBranchTimelineStreams) {
+        streams.text.clear();
+        streams.thought.clear();
+        streams.plan.clear();
     }
 
     fn apply_context_compaction_event(
@@ -5799,9 +5927,7 @@ impl<'a> AcpRuntime<'a> {
                 );
             }
             "contextCompaction" => {
-                streams.text = None;
-                streams.thought = None;
-                streams.plan = None;
+                Self::clear_timeline_streams(&mut streams);
                 self.apply_context_compaction_event(&mut item, seq, &timestamp);
             }
             "usageUpdate" => {
@@ -5859,6 +5985,9 @@ impl<'a> AcpRuntime<'a> {
                 item.ended_at = Some(timestamp);
             }
             _ => {
+                if item.kind == "userTextDelta" {
+                    Self::clear_timeline_streams(&mut streams);
+                }
                 Self::finalize_non_streaming_event(
                     (&mut streams.text, &mut streams.thought, &mut streams.plan),
                     &mut item,
@@ -5868,20 +5997,20 @@ impl<'a> AcpRuntime<'a> {
             }
         }
         // An elicitation request is an intervention inside the current turn,
-        // not a transcript boundary. Every other non-stream event closes the
-        // active stream, matching restart recovery below.
+        // not a transcript boundary. Other kinds close only anonymous
+        // contiguous segments; stable provider identities remain resumable.
         if item.kind != "elicitationRequest" {
             if item.kind != "textDelta" {
-                streams.text = None;
+                streams.text.close_anonymous();
             }
             if item.kind != "thoughtDelta" {
-                streams.thought = None;
+                streams.thought.close_anonymous();
             }
             if item.kind != "plan" {
-                streams.plan = None;
+                streams.plan.close_anonymous();
             }
         }
-        if streams.text.is_some() || streams.thought.is_some() || streams.plan.is_some() {
+        if streams.text.has_state() || streams.thought.has_state() || streams.plan.has_state() {
             self.active_timeline_streams.insert(branch_id, streams);
         }
         item
@@ -6051,16 +6180,17 @@ fn active_timeline_streams(
     Option<AcpTimelineStreamState>,
     Option<AcpTimelineStreamState>,
 ) {
-    active_timeline_streams_from_refs(items.iter().collect())
+    let streams = active_timeline_streams_from_refs(items.iter().collect());
+    (
+        streams.text.latest().cloned(),
+        streams.thought.latest().cloned(),
+        streams.plan.latest().cloned(),
+    )
 }
 
 fn active_timeline_streams_from_refs(
     mut ordered: Vec<&crate::acp::events::AcpUiEvent>,
-) -> (
-    Option<AcpTimelineStreamState>,
-    Option<AcpTimelineStreamState>,
-    Option<AcpTimelineStreamState>,
-) {
+) -> AcpBranchTimelineStreams {
     ordered.sort_by_key(|item| (item.ended_seq.unwrap_or(item.seq), item.seq));
     let mut streams = AcpBranchTimelineStreams::default();
     for item in ordered {
@@ -6086,25 +6216,32 @@ fn active_timeline_streams_from_refs(
         };
         match item.kind.as_str() {
             "textDelta" => {
-                streams.text = Some(stream());
-                streams.thought = None;
-                streams.plan = None;
+                streams.text.restore_snapshot(stream());
+                streams.thought.close_anonymous();
+                streams.plan.close_anonymous();
             }
             "thoughtDelta" => {
-                streams.text = None;
-                streams.thought = Some(stream());
-                streams.plan = None;
+                streams.text.close_anonymous();
+                streams.thought.restore_snapshot(stream());
+                streams.plan.close_anonymous();
             }
             "plan" => {
-                streams.text = None;
-                streams.thought = None;
-                streams.plan = Some(stream());
+                streams.text.close_anonymous();
+                streams.thought.close_anonymous();
+                streams.plan.restore_snapshot(stream());
             }
             "elicitationRequest" => {}
-            _ => streams = AcpBranchTimelineStreams::default(),
+            "userTextDelta" | "contextCompaction" => {
+                streams = AcpBranchTimelineStreams::default();
+            }
+            _ => {
+                streams.text.close_anonymous();
+                streams.thought.close_anonymous();
+                streams.plan.close_anonymous();
+            }
         }
     }
-    (streams.text, streams.thought, streams.plan)
+    streams
 }
 
 fn active_timeline_streams_by_branch(
@@ -6120,15 +6257,9 @@ fn active_timeline_streams_by_branch(
     events_by_branch
         .into_iter()
         .filter_map(|(branch_id, branch_items)| {
-            let (text, thought, plan) = active_timeline_streams_from_refs(branch_items);
-            (text.is_some() || thought.is_some() || plan.is_some()).then_some((
-                branch_id,
-                AcpBranchTimelineStreams {
-                    text,
-                    thought,
-                    plan,
-                },
-            ))
+            let streams = active_timeline_streams_from_refs(branch_items);
+            (streams.text.has_state() || streams.thought.has_state() || streams.plan.has_state())
+                .then_some((branch_id, streams))
         })
         .collect()
 }
@@ -7885,6 +8016,39 @@ mod tests {
     }
 
     #[test]
+    fn active_identified_stream_survives_tool_boundary_during_restart_recovery() {
+        let mut text = timeline_event("message-1", 1, "textDelta", None, Some("draft"), None);
+        text.raw = Some(json!({ "messageId": "answer-1" }));
+        let tool = timeline_event("tool-1", 2, "toolCall", Some("running"), None, None);
+
+        let (text, thought, plan) = active_timeline_streams(&[text, tool]);
+
+        assert_eq!(text.unwrap().content, "draft");
+        assert!(thought.is_none());
+        assert!(plan.is_none());
+    }
+
+    #[test]
+    fn active_identified_stream_closes_at_next_user_turn() {
+        let mut text = timeline_event("message-1", 1, "textDelta", None, Some("done"), None);
+        text.raw = Some(json!({ "messageId": "answer-1" }));
+        let user = timeline_event(
+            "prompt-2",
+            2,
+            "userTextDelta",
+            Some("completed"),
+            Some("next"),
+            None,
+        );
+
+        let (text, thought, plan) = active_timeline_streams(&[text, user]);
+
+        assert!(text.is_none());
+        assert!(thought.is_none());
+        assert!(plan.is_none());
+    }
+
+    #[test]
     fn terminal_tool_update_preserves_intermediate_input_and_diff_before_release() {
         let intermediate = timeline_event(
             "tool-call-1",
@@ -7972,6 +8136,98 @@ mod tests {
         assert_eq!(output.output.recent_messages[1].text, "warning");
         assert!(!output.output.recent_messages[1].has_stable_id);
         assert!(output.output.observed_stable_message);
+    }
+
+    #[test]
+    fn prompt_output_ignores_semantically_empty_agent_placeholders() {
+        let updates = [
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "\u{200b}" }
+            }),
+            json!({
+                "sessionUpdate": "agent_thought_chunk",
+                "content": { "type": "text", "text": "" }
+            }),
+            json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "hi" }
+            }),
+        ];
+        let mut output = AcpPromptOutputAccumulator::default();
+        for (index, update) in updates.iter().enumerate() {
+            output.observe(
+                update,
+                &normalize_session_update(index as u64 + 1, Some("session-1".to_string()), update),
+            );
+        }
+
+        assert_eq!(output.output.visible_text, "hi");
+        assert_eq!(output.output.recent_messages.len(), 1);
+        assert_eq!(output.output.recent_messages[0].text, "hi");
+    }
+
+    #[test]
+    fn prompt_output_resumes_identified_message_across_tool_updates() {
+        let first = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "是否" }
+        });
+        let tool = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tool-1",
+            "status": "in_progress"
+        });
+        let second = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "匹配。" }
+        });
+        let mut output = AcpPromptOutputAccumulator::default();
+        for (seq, update) in [(1, &first), (2, &tool), (3, &second)] {
+            output.observe(
+                update,
+                &normalize_session_update(seq, Some("session-1".to_string()), update),
+            );
+        }
+
+        assert_eq!(output.output.visible_text, "是否匹配。");
+        assert_eq!(output.output.recent_messages.len(), 1);
+        assert_eq!(output.output.recent_messages[0].text, "是否匹配。");
+        assert!(output.output.recent_messages[0].has_stable_id);
+    }
+
+    #[test]
+    fn prompt_output_keeps_anonymous_warning_separate_while_stable_message_resumes() {
+        let first = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "完整" }
+        });
+        let warning = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "warning" }
+        });
+        let second = json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "answer-1",
+            "content": { "type": "text", "text": "回答" }
+        });
+        let mut output = AcpPromptOutputAccumulator::default();
+        for (seq, update) in [(1, &first), (2, &warning), (3, &second)] {
+            output.observe(
+                update,
+                &normalize_session_update(seq, Some("session-1".to_string()), update),
+            );
+        }
+
+        assert_eq!(output.output.visible_text, "完整warning回答");
+        assert_eq!(output.output.recent_messages.len(), 2);
+        assert_eq!(output.output.recent_messages[0].text, "warning");
+        assert!(!output.output.recent_messages[0].has_stable_id);
+        assert_eq!(output.output.recent_messages[1].text, "完整回答");
+        assert!(output.output.recent_messages[1].has_stable_id);
     }
 
     #[test]
@@ -8141,7 +8397,7 @@ mod tests {
 
     #[test]
     fn streaming_delta_accumulates_content_and_sequence_bounds() {
-        let mut stream = None;
+        let mut stream = super::AcpTimelineStreamSlot::default();
         let mut first = AcpUiEvent {
             id: "event-1".to_string(),
             seq: 10,
@@ -8210,7 +8466,7 @@ mod tests {
 
     #[test]
     fn streaming_delta_starts_a_new_stream_when_message_identity_changes() {
-        let mut stream = None;
+        let mut stream = super::AcpTimelineStreamSlot::default();
         let mut warning = timeline_event(
             "event-warning",
             10,
@@ -8249,7 +8505,7 @@ mod tests {
 
     #[test]
     fn streaming_delta_without_provider_identity_keeps_contiguous_fallback_stream() {
-        let mut stream = None;
+        let mut stream = super::AcpTimelineStreamSlot::default();
         let mut first = timeline_event("event-1", 10, "textDelta", None, Some("hel"), None);
         AcpRuntime::apply_streaming_delta(
             &mut stream,
@@ -8273,6 +8529,136 @@ mod tests {
 
         assert_eq!(second.id, "assistant-message-event-1");
         assert_eq!(second.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn identified_stream_resumes_after_interleaved_tool_update() {
+        let mut streams = super::AcpBranchTimelineStreams::default();
+        let mut first = timeline_event(
+            "event-1",
+            10,
+            "textDelta",
+            None,
+            Some("TypeScript 接口已通过，是否"),
+            None,
+        );
+        AcpRuntime::apply_streaming_delta(
+            &mut streams.text,
+            &mut first,
+            "assistant-message-answer-1",
+            Some("assistant-message-answer-1"),
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut tool = timeline_event("tool-1", 11, "toolCall", Some("in_progress"), None, None);
+        AcpRuntime::finalize_non_streaming_event(
+            (&mut streams.text, &mut streams.thought, &mut streams.plan),
+            &mut tool,
+            11,
+            "11Z",
+        );
+        let mut second = timeline_event("event-2", 12, "textDelta", None, Some("匹配。"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut streams.text,
+            &mut second,
+            "assistant-message-answer-1",
+            Some("assistant-message-answer-1"),
+            256_000,
+            12,
+            "12Z",
+        );
+
+        assert_eq!(
+            second.content.as_deref(),
+            Some("TypeScript 接口已通过，是否匹配。")
+        );
+        assert_eq!(second.started_seq, Some(10));
+        assert_eq!(second.ended_seq, Some(12));
+    }
+
+    #[test]
+    fn anonymous_warning_does_not_replace_suspended_identified_stream() {
+        let mut stream = super::AcpTimelineStreamSlot::default();
+        let mut first = timeline_event("event-1", 10, "textDelta", None, Some("完整"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut first,
+            "assistant-message-answer-1",
+            Some("assistant-message-answer-1"),
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut warning = timeline_event(
+            "event-warning",
+            11,
+            "textDelta",
+            None,
+            Some("warning"),
+            None,
+        );
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut warning,
+            "assistant-message-event-warning",
+            None,
+            256_000,
+            11,
+            "11Z",
+        );
+        let mut second = timeline_event("event-2", 12, "textDelta", None, Some("回答"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut stream,
+            &mut second,
+            "assistant-message-answer-1",
+            Some("assistant-message-answer-1"),
+            256_000,
+            12,
+            "12Z",
+        );
+
+        assert_eq!(warning.id, "assistant-message-event-warning");
+        assert_eq!(warning.content.as_deref(), Some("warning"));
+        assert_eq!(second.id, "assistant-message-answer-1");
+        assert_eq!(second.content.as_deref(), Some("完整回答"));
+    }
+
+    #[test]
+    fn anonymous_stream_starts_new_item_after_tool_boundary() {
+        let mut streams = super::AcpBranchTimelineStreams::default();
+        let mut first = timeline_event("event-1", 10, "textDelta", None, Some("before"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut streams.text,
+            &mut first,
+            "assistant-message-event-1",
+            None,
+            256_000,
+            10,
+            "10Z",
+        );
+        let mut tool = timeline_event("tool-1", 11, "toolCall", Some("completed"), None, None);
+        AcpRuntime::finalize_non_streaming_event(
+            (&mut streams.text, &mut streams.thought, &mut streams.plan),
+            &mut tool,
+            11,
+            "11Z",
+        );
+        let mut second = timeline_event("event-2", 12, "textDelta", None, Some("after"), None);
+        AcpRuntime::apply_streaming_delta(
+            &mut streams.text,
+            &mut second,
+            "assistant-message-event-2",
+            None,
+            256_000,
+            12,
+            "12Z",
+        );
+
+        assert_eq!(first.content.as_deref(), Some("before"));
+        assert_eq!(second.id, "assistant-message-event-2");
+        assert_eq!(second.content.as_deref(), Some("after"));
+        assert_eq!(second.started_seq, Some(12));
     }
 
     #[test]
@@ -8305,14 +8691,14 @@ mod tests {
         assert_eq!(
             streams
                 .get(&branch_a)
-                .and_then(|stream| stream.text.as_ref())
+                .and_then(|stream| stream.text.latest())
                 .map(|stream| stream.content.as_str()),
             Some("A")
         );
         assert_eq!(
             streams
                 .get(&branch_b)
-                .and_then(|stream| stream.text.as_ref())
+                .and_then(|stream| stream.text.latest())
                 .map(|stream| stream.content.as_str()),
             Some("B")
         );
@@ -8320,7 +8706,7 @@ mod tests {
 
     #[test]
     fn streaming_thought_blocks_preserve_chunk_boundaries_as_paragraphs() {
-        let mut stream = None;
+        let mut stream = super::AcpTimelineStreamSlot::default();
         let mut first = AcpUiEvent {
             id: "thought-1".to_string(),
             seq: 10,
@@ -8383,7 +8769,7 @@ mod tests {
 
     #[test]
     fn streaming_thought_token_chunks_remain_contiguous() {
-        let mut stream = None;
+        let mut stream = super::AcpTimelineStreamSlot::default();
         let mut first = AcpUiEvent {
             id: "thought-1".to_string(),
             seq: 10,

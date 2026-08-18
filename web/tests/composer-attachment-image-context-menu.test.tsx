@@ -15,6 +15,7 @@ const imageActionMocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/image-actions', () => ({
   copyAttachmentImage: imageActionMocks.copy,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS: 1_800,
   saveAttachmentImageAs: imageActionMocks.save,
 }));
 
@@ -59,11 +60,13 @@ describe('composer image attachment context menu', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     document.body.replaceChildren();
   });
 
   it('offers the shared image actions from an image thumbnail', async () => {
+    vi.useFakeTimers();
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -95,6 +98,10 @@ describe('composer image attachment context menu', () => {
 
       expect(imageActionMocks.copy).toHaveBeenCalledOnce();
       expect(imageActionMocks.copy).toHaveBeenCalledWith(imageAttachment);
+      expect(document.body.textContent).toContain('图片已复制');
+
+      await act(async () => vi.advanceTimersByTime(1_800));
+      expect(document.body.textContent).not.toContain('图片已复制');
     } finally {
       await act(async () => root.unmount());
     }

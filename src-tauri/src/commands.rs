@@ -513,6 +513,94 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .unwrap_or_else(|| locator.node_id.clone())
 }
 
+// ── Direct metrics background worker ──────────────────────────────────
+// The command thread must never block on file I/O or mutex operations.
+// These lightweight jobs carry only String data; the worker thread does
+// all heavy lifting (task_show, observability snapshot, ACP session read).
+
+#[derive(Debug, Clone)]
+enum DirectMetricsJob {
+    TurnStarted {
+        locator: AttemptLocator,
+        repo_root: String,
+    },
+    TurnFinished {
+        locator: AttemptLocator,
+        turn_id: String,
+        agent_label: String,
+        outcome: AcpTurnOutcome,
+        repo_root: String,
+    },
+    InterventionRequested {
+        context: gold_band::app::AcpLiveEventContext,
+        request_id: String,
+        kind: RuntimeInterventionKind,
+        repo_root: String,
+    },
+}
+
+const DIRECT_METRICS_QUEUE_CAPACITY: usize = 512;
+
+static DIRECT_METRICS_SENDER: std::sync::OnceLock<std::sync::mpsc::SyncSender<DirectMetricsJob>> =
+    std::sync::OnceLock::new();
+
+fn direct_metrics_sender() -> Option<std::sync::mpsc::SyncSender<DirectMetricsJob>> {
+    DIRECT_METRICS_SENDER.get().cloned()
+}
+
+fn init_direct_metrics_worker(app: App) {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<DirectMetricsJob>(DIRECT_METRICS_QUEUE_CAPACITY);
+    if DIRECT_METRICS_SENDER.set(sender).is_err() {
+        return; // already initialised
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("direct-metrics-worker".into())
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut scoped_app = app.clone_for_background();
+                    match &job {
+                        DirectMetricsJob::TurnStarted { locator, repo_root } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, None);
+                        }
+                        DirectMetricsJob::TurnFinished {
+                            locator,
+                            outcome,
+                            repo_root,
+                            ..
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, Some(*outcome));
+                        }
+                        DirectMetricsJob::InterventionRequested {
+                            context,
+                            request_id,
+                            kind,
+                            repo_root,
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_request_intervention_metrics(
+                                &scoped_app,
+                                context,
+                                request_id,
+                                *kind,
+                            );
+                        }
+                    }
+                }));
+            }
+        });
+}
+
 fn emit_acp_turn_finished(
     app: &App,
     locator: &AttemptLocator,
@@ -547,6 +635,198 @@ fn emit_acp_turn_finished(
             .ok()
             .and_then(|task| task.title),
     });
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnFinished {
+            locator: locator.clone(),
+            turn_id: turn_id.to_string(),
+            agent_label: agent_label.to_string(),
+            outcome,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnStarted {
+            locator: locator.clone(),
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_direct_turn_metrics_fact(
+    app: &App,
+    locator: &AttemptLocator,
+    outcome: Option<AcpTurnOutcome>,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    if gold_band::app::direct_conversation_agent_label(app, &locator.task_id).is_none() {
+        return;
+    }
+    let Ok(task) = app.task_show(&locator.task_id) else {
+        return;
+    };
+    let Some(task_uuid) = task.uuid else { return };
+    let attempt_dir = locator.attempt_dir(app);
+    let occurred_at = current_timestamp();
+    let execution_id = task_uuid.clone();
+    let attempt_key = format!("direct:{task_uuid}");
+    let attempt_path = app
+        .paths
+        .run_dir(&locator.task_id, &locator.run_id)
+        .join("observability")
+        .join(&execution_id)
+        .join(&execution_id)
+        .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+    let is_follow_up = if outcome.is_none() {
+        app.direct_metrics_is_follow_up(&attempt_key, Some(attempt_dir.as_path()), &attempt_path)
+    } else {
+        false
+    };
+    let active_turn = if outcome.is_none() {
+        match app.active_metrics_turn(&attempt_key) {
+            Some(turn) => turn,
+            None => {
+                let usage_baseline =
+                    gold_band::app::App::direct_usage_baseline(Some(attempt_dir.as_path()));
+                let turn = gold_band::app::ActiveMetricTurn::new(
+                    execution_id.clone(),
+                    execution_id.clone(),
+                    1,
+                    usage_baseline,
+                );
+                app.begin_metrics_turn(attempt_key.clone(), turn.clone());
+                turn
+            }
+        }
+    } else {
+        let Some(turn) = app.active_metrics_turn(&attempt_key) else {
+            return;
+        };
+        turn
+    };
+    let provider = acp_turn_provider_id(app, locator);
+    let model = current_acp_session_model_name(&attempt_dir);
+    let attempt_state =
+        app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+            if outcome.is_none() {
+                state.record_started_at(occurred_at.clone());
+                if is_follow_up {
+                    state.record_follow_up();
+                }
+            }
+            if outcome.is_some() {
+                let segments = gold_band::app::App::direct_usage_segments_after(
+                    Some(attempt_dir.as_path()),
+                    active_turn.usage_baseline_turn_seq,
+                );
+                let usages = gold_band::app::App::direct_model_usages_from_segments(
+                    &segments,
+                    provider.as_deref(),
+                    model.as_deref(),
+                );
+                for usage in usages {
+                    state.record_model_usage(usage);
+                }
+                if segments.is_empty()
+                    && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
+                {
+                    let usage = gold_band::acp::events::read_attempt_metrics(
+                        &attempt_dir.join("acp.session.json"),
+                    );
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        gold_band::app::observability::TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            }
+            state.next_revision();
+        });
+    let direct_revision = attempt_state.event_revision;
+    let event_type = if outcome.is_some() {
+        gold_band::app::observability::LifecycleEventType::ExecutionCompleted
+    } else {
+        gold_band::app::observability::LifecycleEventType::ExecutionStarted
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        event_type,
+        direct_revision,
+        occurred_at.clone(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        gold_band::app::observability::MetricsSessionMode::Direct,
+        task_uuid,
+        gold_band::app::observability::ExecutionKind::Turn,
+        active_turn.execution_id.clone(),
+    );
+    fact.task_title = task.title.clone();
+    fact.attempt_id = Some(active_turn.attempt_id.clone());
+    fact.attempt_index = Some(active_turn.attempt_index);
+    fact.provider = provider;
+    fact.model = model;
+    fact.collection_state_recovered = attempt_state.collection_state_recovered;
+    if let Some(outcome) = outcome {
+        fact.outcome = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::ExecutionOutcome::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::ExecutionOutcome::Failed,
+            AcpTurnOutcome::Cancelled => gold_band::app::observability::ExecutionOutcome::Cancelled,
+        });
+        fact.terminal_reason = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::TerminalReason::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::TerminalReason::ProviderError,
+            AcpTurnOutcome::Cancelled => {
+                gold_band::app::observability::TerminalReason::UserCancelled
+            }
+        });
+        let usages = attempt_state.model_usages();
+        let elapsed_sum = usages
+            .iter()
+            .filter_map(|usage| usage.acp_session_elapsed_ms)
+            .fold(None, |total, value| {
+                Some(total.unwrap_or(0u64).saturating_add(value))
+            });
+        let sum = |get: fn(&gold_band::app::observability::TokenUsage) -> Option<u64>| {
+            usages
+                .iter()
+                .filter_map(|usage| get(&usage.usage))
+                .fold(None, |total, value| {
+                    Some(total.unwrap_or(0u64).saturating_add(value))
+                })
+        };
+        if !usages.is_empty() {
+            fact.usage = Some(gold_band::app::observability::TokenUsage {
+                input_tokens: sum(|u| u.input_tokens),
+                output_tokens: sum(|u| u.output_tokens),
+                cache_read_tokens: sum(|u| u.cache_read_tokens),
+                total_tokens: sum(|u| u.total_tokens),
+            });
+            fact.model_usages = Some(usages);
+        }
+        fact.timing = Some(gold_band::app::observability::LifecycleTiming {
+            started_at: attempt_state
+                .started_at
+                .clone()
+                .unwrap_or_else(|| occurred_at.clone()),
+            ended_at: Some(occurred_at),
+            acp_session_elapsed_ms: elapsed_sum,
+        });
+        fact.counters = Some(attempt_state.counters.clone());
+    }
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+    if outcome.is_some() {
+        app.release_observability_state(&active_turn.execution_id);
+        app.end_metrics_turn(&attempt_key);
+    }
 }
 
 fn finish_acp_prompt_preflight<T>(
@@ -655,10 +935,21 @@ pub(crate) fn resolve_command_app(
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
-    app.lifecycle_bus.subscribe_named(
-        "desktop.metrics",
-        crate::metrics::create_metrics_subscriber(app_handle.clone()),
-    );
+    if crate::channel::current_channel_config().channel == "wb"
+        && crate::metrics::metrics_settings(&app.config).enabled
+        && crate::metrics::get_api_key(&app.config).is_some()
+    {
+        app.lifecycle_bus.subscribe_named_with_mode(
+            "core.metrics-producer",
+            gold_band::app::observability::SubscriberMode::Inline,
+            app.create_metrics_fact_producer(),
+        );
+        app.lifecycle_bus.subscribe_named(
+            "desktop.metrics",
+            crate::metrics::create_metrics_subscriber(app_handle.clone()),
+        );
+        init_direct_metrics_worker(app.clone_for_background());
+    }
     app.lifecycle_bus.subscribe_named(
         "desktop.notifications",
         crate::notifications::create_intervention_notification_subscriber(
@@ -2080,6 +2371,7 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_start_background(&task_id, None)
@@ -2671,10 +2963,22 @@ pub fn continue_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    app.run_continue_background(&task_id, &run_id, None, None)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    app.record_metrics_resume_cause(
+        &task_id,
+        &run_id,
+        gold_band::app::observability::ResumeCause::ManualContinue,
+    );
+    let result = app.run_continue_background(&task_id, &run_id, None, None);
+    if result.is_err() {
+        app.clear_metrics_resume_cause(
+            &task_id,
+            &run_id,
+            gold_band::app::observability::ResumeCause::ManualContinue,
+        );
+    }
+    result.map(run_summary_vm).map_err(command_error)
 }
 
 #[tauri::command]
@@ -2912,6 +3216,7 @@ pub async fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
@@ -2958,6 +3263,7 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_retry(&task_id, &run_id)
@@ -3043,6 +3349,12 @@ pub fn update_notification_attention(
         .map_err(command_error)
 }
 
+/// Frontend activity signal: pointerdown, keydown, or business command.
+#[tauri::command]
+pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
+    state.record_heartbeat_activity().map_err(command_error)
+}
+
 #[tauri::command]
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
@@ -3063,6 +3375,7 @@ pub fn save_metrics_settings(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
+    let _ = state.reevaluate_heartbeat_config();
     Ok(metrics_settings(&updated_context.config))
 }
 
@@ -3227,13 +3540,14 @@ fn maybe_emit_permission_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        PERMISSION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            PERMISSION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -3247,6 +3561,14 @@ fn maybe_emit_permission_intervention(
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::PermissionRequested,
+        );
+    }
 }
 
 fn maybe_emit_elicitation_intervention(
@@ -3267,13 +3589,14 @@ fn maybe_emit_elicitation_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        ELICITATION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            ELICITATION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -3287,6 +3610,254 @@ fn maybe_emit_elicitation_intervention(
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+    }
+}
+
+fn emit_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::InterventionRequested {
+            context: context.clone(),
+            request_id: request_id.to_string(),
+            kind,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    let Ok(run) = app.run_status(&context.task_id, &context.run_id) else {
+        return;
+    };
+    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+        return;
+    };
+    let is_direct =
+        gold_band::app::direct_conversation_agent_label(app, &context.task_id).is_some();
+    let is_auto = !is_direct && context.outer_node_id.is_some();
+    let active_turn = if is_direct {
+        app.active_metrics_turn(&format!("direct:{task_uuid}"))
+    } else {
+        None
+    };
+    let execution_id = active_turn
+        .as_ref()
+        .map(|turn| turn.execution_id.clone())
+        .unwrap_or_else(|| task_uuid.clone());
+    let event_revision;
+    let collection_state_recovered;
+    let _state = if let Some(active_turn) = active_turn.as_ref() {
+        let attempt_path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(&active_turn.attempt_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let attempt_state =
+            app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+                match kind {
+                    RuntimeInterventionKind::PermissionRequested => {
+                        state.record_permission(request_id)
+                    }
+                    RuntimeInterventionKind::ElicitationRequested => {
+                        state.record_elicitation(request_id)
+                    }
+                    _ => {}
+                }
+                state.next_revision();
+            });
+        event_revision = attempt_state.event_revision;
+        collection_state_recovered = attempt_state.collection_state_recovered;
+        attempt_state
+    } else {
+        let path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let state = app.update_observability_state(&execution_id, path, |state| {
+            match kind {
+                RuntimeInterventionKind::PermissionRequested => state.record_permission(request_id),
+                RuntimeInterventionKind::ElicitationRequested => {
+                    state.record_elicitation(request_id)
+                }
+                _ => {}
+            }
+            state.next_revision();
+        });
+        event_revision = state.event_revision;
+        collection_state_recovered = state.collection_state_recovered;
+        state
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        gold_band::app::observability::LifecycleEventType::InterventionRequested,
+        event_revision,
+        current_timestamp(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        if is_direct {
+            gold_band::app::observability::MetricsSessionMode::Direct
+        } else if is_auto {
+            gold_band::app::observability::MetricsSessionMode::Auto
+        } else {
+            gold_band::app::observability::MetricsSessionMode::Workflow
+        },
+        task_uuid,
+        if is_direct {
+            gold_band::app::observability::ExecutionKind::Turn
+        } else if is_auto {
+            gold_band::app::observability::ExecutionKind::OuterRun
+        } else {
+            gold_band::app::observability::ExecutionKind::Run
+        },
+        execution_id.clone(),
+    );
+    fact.task_title = app.task_show(&context.task_id).ok().and_then(|t| t.title);
+    fact.intervention_kind = Some(match kind {
+        RuntimeInterventionKind::PermissionRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Permission
+        }
+        RuntimeInterventionKind::ElicitationRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Elicitation
+        }
+        RuntimeInterventionKind::ManualDecisionRequired => {
+            gold_band::app::observability::MetricsInterventionKind::ManualDecision
+        }
+        RuntimeInterventionKind::RuntimeAbnormal => {
+            gold_band::app::observability::MetricsInterventionKind::RuntimeAbnormal
+        }
+        RuntimeInterventionKind::ErrorBlocked => {
+            gold_band::app::observability::MetricsInterventionKind::ErrorBlocked
+        }
+        RuntimeInterventionKind::ProcessInterrupted => {
+            gold_band::app::observability::MetricsInterventionKind::ProcessInterrupted
+        }
+    });
+    if is_direct {
+        if let Some(turn) = active_turn {
+            fact.attempt_id = Some(turn.attempt_id.clone());
+            fact.attempt_index = Some(turn.attempt_index);
+        }
+    } else {
+        apply_intervention_node_context(app, context, &run_uuid, &mut fact, is_auto);
+    }
+    fact.collection_state_recovered = collection_state_recovered;
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+}
+
+fn apply_intervention_node_context(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    run_uuid: &str,
+    fact: &mut gold_band::app::observability::MetricsLifecycleFact,
+    is_auto: bool,
+) {
+    let round_index = read_json::<gold_band::runtime::RoundState>(&app.paths.round_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+    ))
+    .ok()
+    .map(|round| round.index);
+    fact.round_index = round_index;
+
+    if is_auto {
+        let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) else {
+            return;
+        };
+        let Ok(graph) =
+            read_json::<gold_band::dynamic::DynamicGraphState>(&app.paths.dynamic_graph_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ))
+        else {
+            return;
+        };
+        let Some(dynamic_node) = graph.nodes.iter().find(|node| node.id == context.node_id) else {
+            return;
+        };
+        fact.attempt_index =
+            gold_band::app::observability::attempt_index_from_local_id(&context.attempt_id);
+        fact.role_name = Some(dynamic_node.title.clone());
+        if let Some(node_uuid) = dynamic_node.uuid.as_deref() {
+            fact.node_id = Some(node_uuid.to_string());
+            fact.attempt_id =
+                gold_band::app::observability::derive_attempt_id(node_uuid, &context.attempt_id);
+        }
+        return;
+    }
+
+    let Ok(node) = read_json::<NodeState>(&app.paths.node_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+    )) else {
+        return;
+    };
+    fact.attempt_index =
+        gold_band::app::observability::attempt_index_from_local_id(&node.attempt_id);
+    fact.role_name = Some(node_intervention_role_name(&node));
+    let Some(node_uuid) = node.uuid.as_deref() else {
+        return;
+    };
+    let logical = round_index
+        .and_then(|round_index| {
+            gold_band::app::observability::derive_execution_id(
+                run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+        })
+        .unwrap_or_else(|| node_uuid.to_string());
+    fact.node_id = Some(logical);
+    fact.attempt_id = Some(node_uuid.to_string());
+}
+
+fn node_intervention_role_name(node: &NodeState) -> String {
+    node.resolved_config
+        .get("profileName")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            node.resolved_config
+                .get("profile")
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or_else(|| node.node_id.as_str())
+        .to_string()
 }
 
 fn acp_intervention_node_label(
@@ -4043,6 +4614,7 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -4163,6 +4735,7 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     send_acp_prompt_with_configured_app(
@@ -4216,6 +4789,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
+    emit_direct_turn_started(&app, &locator);
     let preflight = ensure_conversation_prompt_available(&app, &locator);
     finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
@@ -4679,6 +5253,8 @@ pub fn respond_acp_permission(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let resume_cause = gold_band::app::observability::ResumeCause::PermissionResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -4691,8 +5267,12 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -4710,8 +5290,12 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         acp_session_vm(
             &app,
             &task_id,
@@ -5997,7 +6581,11 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
 }
 
 fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
-    current_acp_session_override(attempt_dir, "modelOverride")
+    gold_band::acp::events::read_attempt_session_model(&attempt_dir.join("acp.session.json"))
+}
+
+fn current_acp_session_model_name(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    gold_band::acp::events::read_attempt_session_model_name(&attempt_dir.join("acp.session.json"))
 }
 
 fn current_acp_session_permission_mode_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
@@ -7024,6 +7612,7 @@ pub async fn respond_elicitation(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
 
     // Reclaim the durable scheduled occurrence before writing the response file.
@@ -7059,14 +7648,18 @@ pub async fn respond_elicitation(
         app.paths
             .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
     };
-    write_elicitation_response(
+    let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+    if let Err(error) = write_elicitation_response(
         &attempt_dir,
         &elicitation_id,
         action.clone(),
         content.clone(),
         current_timestamp(),
-    )
-    .map_err(command_error)?;
+    ) {
+        app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+        return Err(command_error(error));
+    }
 
     // Emit session update so the frontend can refresh the timeline
     // immediately. The runtime owns consumption and cleanup of the durable
@@ -7684,6 +8277,7 @@ mod tests {
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::dynamic::DynamicGraphState;
+    use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
     use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
@@ -8735,7 +9329,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_follow_up_uses_only_gold_band_model_override() {
+    fn current_acp_session_model_override_prefers_explicit_override() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-model-override-test-{}",
             uuid::Uuid::new_v4()
@@ -8746,26 +9340,93 @@ mod tests {
         write_json(
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
-                "models": { "currentModelId": "default" },
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "models": { "currentModelId": "agent-default" },
                 "configOptions": [
-                    { "id": "model", "currentValue": "default" }
+                    { "id": "model", "currentValue": "agent-default" }
                 ]
-            }),
-        )
-        .unwrap();
-        assert_eq!(current_acp_session_model_override(&attempt_dir), None);
-
-        write_json(
-            &attempt_dir.join("acp.snapshot.json"),
-            &serde_json::json!({
-                "modelOverride": "default",
-                "models": { "currentModelId": "default" }
             }),
         )
         .unwrap();
         assert_eq!(
             current_acp_session_model_override(&attempt_dir).as_deref(),
-            Some("default")
+            Some("agent-default")
+        );
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "override-default",
+                "models": { "currentModelId": "agent-default" },
+                "configOptions": [
+                    { "id": "model", "currentValue": "agent-default" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("override-default")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_acp_session_model_name_resolves_display_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-model-name-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "opus",
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "currentValue": "opus",
+                        "options": [
+                            { "value": "opus", "name": "glm-5.2" }
+                        ]
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("opus")
+        );
+        assert_eq!(
+            current_acp_session_model_name(&attempt_dir).as_deref(),
+            Some("glm-5.2")
         );
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -10310,5 +10971,317 @@ mod tests {
         );
 
         assert_eq!(*seen.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn workflow_intervention_metrics_carry_current_node_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-workflow-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some("plan".to_string()),
+                current_attempt: Some("attempt-001".to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid.clone()),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let mut node = NodeState {
+            version: gold_band::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            node_type: gold_band::domain::NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: gold_band::domain::RunStatus::Running,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: Default::default(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("Planner"));
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "plan", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            "elicit-1",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.event_type,
+            gold_band::app::observability::LifecycleEventType::InterventionRequested
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+        assert_eq!(
+            fact.node_id.as_deref(),
+            gold_band::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn auto_intervention_metrics_carry_current_dynamic_unit_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-auto-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let dynamic_node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(outer_node_id.to_string()),
+                current_attempt: Some(outer_attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let dynamic_node = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "bootstrap",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Bootstrap",
+            "task": "Bootstrap",
+            "status": "running",
+            "outcome": null,
+            "groupId": null,
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "provider": "codex-acp",
+            "profile": null,
+            "permissionMode": null,
+            "model": null,
+            "sessionMode": "new",
+            "continueFromNodeId": null,
+            "workflowId": null,
+            "workflowSnapshotId": null,
+            "childRunId": null,
+            "startedAt": started_at,
+            "finishedAt": null,
+            "uuid": dynamic_node_uuid
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": {
+                    "version": gold_band::domain::VERSION,
+                    "id": "dynamic-run-001",
+                    "parentRunId": run_id,
+                    "parentRoundId": round_id,
+                    "parentNodeId": outer_node_id,
+                    "parentAttemptId": outer_attempt_id,
+                    "status": "running",
+                    "outcome": null,
+                    "pauseReason": null,
+                    "startedAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:01Z",
+                    "control": {},
+                    "allowedWorkflowSnapshots": [],
+                    "currentNodeIds": ["bootstrap"]
+                },
+                "nodes": [dynamic_node],
+                "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:00Z"
+                }],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            "permission-1",
+            RuntimeInterventionKind::PermissionRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.session_mode,
+            gold_band::app::observability::MetricsSessionMode::Auto
+        );
+        assert_eq!(
+            fact.execution_kind,
+            gold_band::app::observability::ExecutionKind::OuterRun
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.node_id.as_deref(), Some(dynamic_node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Bootstrap"));
+        assert_eq!(
+            fact.attempt_id.as_deref(),
+            gold_band::app::observability::derive_attempt_id(&dynamic_node_uuid, "attempt-001")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
     }
 }

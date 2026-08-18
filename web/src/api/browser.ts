@@ -1601,6 +1601,9 @@ export const browserApi: RuntimeApi = {
       apiKeySet: false,
     });
   },
+  recordActivity() {
+    return Promise.resolve();
+  },
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },

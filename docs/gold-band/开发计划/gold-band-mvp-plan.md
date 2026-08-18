@@ -1002,6 +1002,7 @@ attempt-001/
 - 进程治理：引入 `command-group 5.0.1` 的 `ManagedProcessGroup`。Windows 使用 Job Object 和 `CREATE_NO_WINDOW`，Unix 使用进程组 TERM→KILL；ACP、MCP stdio、Agent doctor 与登录 Shell PATH 探测已迁移，正常退出不再散落终止单个 PID。
 - 跨端集成：工作空间与会话目录 reveal 统一使用官方 `tauri-plugin-opener`；通知点击统一进入 Rust 待导航队列并恢复主窗口，Windows Toast 保持现有展示，macOS/Linux 使用 `notify-rust` typed response，消除窗口重建时事件早于监听器的竞态。
 - 发布策略：macOS 默认由 Tauri bundler ad-hoc 签名，同一 release 流水线继续产出 arm64/x64 DMG；Apple 凭证全空、部分、完整三种配置由脚本校验，完整时在同一 `tauri-action` 签名公证，构建后严格验证 `.app` 签名。产品不增加 unsigned 分支、文件名后缀或额外提示。
+- 临时安装闭环：Apple Developer Program 凭证未就绪期间，仓库脚本只服务带 `.sha256` 的新 macOS Release。两条发布流水线在资产汇总阶段为 DMG、macOS updater archive、Windows installer 和 Linux packages 流式生成 sidecar；安装脚本不依赖 Python/jq，固定校验 sidecar、DMG、App 名、bundle identifier 与 codesign，并通过同卷暂存、旧 App 备份和失败恢复完成替换。历史 Release 不回填 checksum，也不进入弱校验 fallback。
 - 详细设计与验收见 `开发计划/生命周期整理/桌面生命周期与跨平台集成重构.md`。
 
 ---

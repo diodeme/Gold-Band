@@ -210,7 +210,10 @@ jobs:
       - name: Generate latest.json
         run: node scripts/generate-updater-json.mjs release-assets latest.json
 
-      - name: Upload latest.json
+      - name: Generate release checksums
+        run: node scripts/generate-release-checksums.mjs release-assets
+
+      - name: Upload updater manifest and release checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${RELEASE_TAG}" latest.json --clobber
+        run: gh release upload "${RELEASE_TAG}" latest.json release-assets/*.sha256 --clobber

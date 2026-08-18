@@ -444,6 +444,9 @@ export const desktopApi: RuntimeApi = {
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
     return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
   },
+  recordActivity() {
+    return invokeCommand('record_activity');
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },

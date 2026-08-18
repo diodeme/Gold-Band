@@ -342,7 +342,6 @@ interface ACPChatDialogProps {
   onAtBottomChange?: (atBottom: boolean) => void;
   onInitialSessionQueryStateChange?: (state: AcpInitialSessionQueryState) => void;
   allowEventOnlySessionShell?: boolean;
-  showInitializingSessionShell?: boolean;
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
@@ -795,7 +794,6 @@ export function ACPChatDialog(
     onAtBottomChange,
     onInitialSessionQueryStateChange,
     allowEventOnlySessionShell = true,
-    showInitializingSessionShell = false,
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
@@ -1202,7 +1200,18 @@ export function ACPChatDialog(
   }, [eventWindowKey]);
 
   const baseSession = currentSession ?? session;
+  const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const initializationLifecycleActive = Boolean(
+    (!runtimeStopAccepted || localRuntimeLifecycle != null)
+    && (
+      projectionLifecycle?.runtime.active
+      || (projectionLifecycle?.acp.liveTurnActivity ?? 'idle') !== 'idle'
+      || projectionLifecycle?.acp.stopping
+      || projectionLifecycle?.composer.mode === 'runtime-active'
+      || projectionLifecycle?.composer.mode === 'stopping'
+    ),
+  );
   const liveSessionShell = useMemo(
     () =>
       shouldCreateLiveAcpSessionShell({
@@ -1236,7 +1245,7 @@ export function ACPChatDialog(
   );
   const initializingSessionShell = useMemo(
     () =>
-      showInitializingSessionShell &&
+      initializationLifecycleActive &&
       !baseSession &&
       !liveSessionShell &&
       !establishedSessionShell
@@ -1251,7 +1260,7 @@ export function ACPChatDialog(
       liveSessionShell,
       loadedEvents,
       runtimeActiveFromContext,
-      showInitializingSessionShell,
+      initializationLifecycleActive,
     ],
   );
   const visibleSession = useMemo(
@@ -1331,7 +1340,6 @@ export function ACPChatDialog(
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
-  const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const projectedSessionStatus = projectionLifecycle && projectionLifecycle.acp.liveTurnActivity !== 'idle'
     ? (projectionLifecycle.acp.stopping
         ? "cancelling"
@@ -1352,8 +1360,7 @@ export function ACPChatDialog(
   const timelineSurfaceState = resolveAcpTimelineSurfaceState({
     hasTimelineItems: timeline.length > 0,
     initialSessionLoading: initialSessionQueryState === "loading",
-    runtimeActive: runtimeActiveFromContext,
-    initializationOwner: Boolean(showInitializingSessionShell),
+    runtimeActive: initializationLifecycleActive,
     sending,
   });
   const acpSessionActive = isSessionActiveStatus(effective?.status);
@@ -3582,11 +3589,23 @@ export function ACPChatDialog(
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
-    showInitializingShell: showInitializingSessionShell,
+    showInitializingShell: initializationLifecycleActive,
   });
 
   if (sessionShellState === 'error') {
-    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
+    return (
+      <AcpErrorState
+        reason={
+          acpSessionLoadErrorReason(
+            runtimeComposerContext?.runtimeError,
+            sessionLoadError,
+            baseSession,
+            t("acp.missingSessionReason"),
+          )
+        }
+        transparent={wallpaperSurface}
+      />
+    );
   }
 
   if (sessionShellState === 'interrupted') {
@@ -6995,6 +7014,15 @@ export function visibleAcpBannerError(
   events: AcpUiEventVm[],
 ) {
   return runtimeError ?? visibleSessionError(session, events);
+}
+
+export function acpSessionLoadErrorReason(
+  runtimeError: string | null | undefined,
+  sessionLoadError: string | null | undefined,
+  session: AcpSessionVm | null | undefined,
+  fallback: string,
+) {
+  return runtimeError ?? sessionLoadError ?? session?.diagnostics.lastError ?? fallback;
 }
 
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {

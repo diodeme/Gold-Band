@@ -178,6 +178,37 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.placeholderKind).toBe('runtime-controlled');
   });
 
+  it('restores a normal composer after an empty current Direct attempt settles as cancelled', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          active: false,
+          current: true,
+          phase: 'paused',
+          pauseReason: 'process-interrupted',
+        },
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'idle',
+          latestTurnStatus: 'cancelled',
+          stopping: false,
+        },
+      }),
+      acpStatus: 'cancelled',
+      hasTimelineItems: false,
+      hasEffectiveEvents: false,
+      initialTimelinePending: false,
+    }));
+
+    expect(state.mode).toBe('normal');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+    expect(state.showStatus).toBe(false);
+    expect(state.processingKind).toBe('processing');
+  });
+
   it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({

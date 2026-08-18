@@ -4893,6 +4893,41 @@ mod tests {
     }
 
     #[test]
+    fn initialization_cancel_converges_from_stopping_to_idle_without_navigation() {
+        let stopping = derive_conversation_attempt_lifecycle(
+            None,
+            Some(PromptActivity::CancelRequested),
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(stopping.acp.live_turn_activity, "cancel-requested");
+        assert!(stopping.acp.stopping);
+        assert_eq!(stopping.composer.mode, "stopping");
+
+        let settled = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(settled.acp.live_turn_activity, "idle");
+        assert_eq!(settled.acp.latest_turn_status, "cancelled");
+        assert!(!settled.acp.stopping);
+        assert_eq!(settled.composer.mode, "normal");
+        assert!(!settled.composer.lock_input);
+    }
+
+    #[test]
     fn workflow_failure_runtime_suppresses_stale_acp_running() {
         let lifecycle = derive_conversation_attempt_lifecycle(
             Some("running"),

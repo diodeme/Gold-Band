@@ -101,6 +101,51 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
   });
 
+  it('clears a background Direct activity globally without replacing unrelated sidebar data', () => {
+    const workspaceA = { projectId: 'project-a', workspacePath: '/a', name: 'A' };
+    const workspaceB = { projectId: 'project-b', workspacePath: '/b', name: 'B' };
+    const taskA = {
+      projectId: 'project-a',
+      taskId: 'task-001',
+      title: 'Workspace A task',
+      autoTitle: false,
+      runMode: 'direct' as const,
+      runs: [],
+      pinned: false,
+      activity: { phase: 'running', stopping: false },
+    };
+    const taskB = {
+      projectId: 'project-b',
+      taskId: 'task-001',
+      title: 'Workspace B task',
+      autoTitle: false,
+      runMode: 'direct' as const,
+      runs: [],
+      pinned: true,
+      activity: { phase: 'running', stopping: false },
+    };
+    const sidebar = {
+      workspaces: [workspaceA, workspaceB],
+      pinnedTasks: [taskB],
+      tasksByWorkspace: {
+        'project-a': [taskA],
+        'project-b': [taskB],
+      },
+      preferences: { density: 'compact' },
+    };
+
+    const next = applyConversationSidebarTaskActivity(sidebar, 'project-b', 'task-001', null);
+
+    expect(next).not.toBe(sidebar);
+    expect(next.workspaces).toBe(sidebar.workspaces);
+    expect(next.preferences).toBe(sidebar.preferences);
+    expect(next.tasksByWorkspace['project-a']).toBe(sidebar.tasksByWorkspace['project-a']);
+    expect(next.tasksByWorkspace['project-a'][0]).toBe(taskA);
+    expect(next.tasksByWorkspace['project-b'][0].activity).toBeNull();
+    expect(next.pinnedTasks[0].activity).toBeNull();
+    expect(applyConversationSidebarTaskActivity(next, 'project-b', 'task-001', null)).toBe(next);
+  });
+
   it('projects a continued runtime into both task and run sidebar dots immediately', () => {
     const run = {
       runId: 'run-001',

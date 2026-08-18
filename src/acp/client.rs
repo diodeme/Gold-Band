@@ -368,6 +368,7 @@ use crate::storage::{GoldBandPaths, ensure_parent_dir, read_json, roll_jsonl, wr
 const STOP_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LIVE_STREAM_UPDATE_INTERVAL: Duration = Duration::from_millis(75);
 const LIVE_TIMING_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+const ACP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const DOCTOR_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const DOCTOR_DIAGNOSTIC_MAX_SIZE: u64 = 512 * 1024;
 const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
@@ -1887,6 +1888,11 @@ pub fn run_prompt(
     let mut prompt = prompt.clone();
     prepare_runtime_control_prompt(&attempt_dir, &mut prompt)?;
     let prompt = &prompt;
+    let continued_session_id = continue_ref
+        .as_ref()
+        .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut runtime = AcpRuntime::start(
         provider_id,
         config,
@@ -1904,7 +1910,8 @@ pub fn run_prompt(
     runtime.permission_mode_override = permission_mode.clone();
     runtime.config_option_overrides = config_options.clone();
     let initialize_started_at = Instant::now();
-    let initialize_result = runtime.initialize();
+    let initialize_result =
+        runtime.initialize_for_prompt(config, use_local_claude, require_local_claude_executable);
     info!(
         target: "gold_band::perf",
         provider_id,
@@ -1915,15 +1922,30 @@ pub fn run_prompt(
     let capabilities = match initialize_result {
         Ok(capabilities) => capabilities,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
-            let _ = runtime.mark_pending_retry_cancelled();
-            let run = runtime.interrupted_run(false, "cancelled");
-            runtime.shutdown();
-            return Ok(run);
+            let capabilities = runtime
+                .connection
+                .initialized_capabilities()
+                .unwrap_or_else(|| json!({}));
+            return finalize_unaccepted_prompt_interruption(
+                runtime,
+                continued_session_id.as_deref(),
+                "cancelled",
+                capabilities,
+                session_update,
+            );
         }
         Err(error) if is_transport_interruption(&error) => {
-            let run = runtime.interrupted_run(false, "interrupted");
-            runtime.shutdown();
-            return Ok(run);
+            let capabilities = runtime
+                .connection
+                .initialized_capabilities()
+                .unwrap_or_else(|| json!({}));
+            return finalize_unaccepted_prompt_interruption(
+                runtime,
+                continued_session_id.as_deref(),
+                "interrupted",
+                capabilities,
+                session_update,
+            );
         }
         Err(error) => return Err(error),
     };
@@ -1944,15 +1966,22 @@ pub fn run_prompt(
     ) {
         Ok(restored) => restored,
         Err(error) if error.downcast_ref::<AcpCancelled>().is_some() => {
-            let _ = runtime.mark_pending_retry_cancelled();
-            let run = runtime.interrupted_run(false, "cancelled");
-            runtime.shutdown();
-            return Ok(run);
+            return finalize_unaccepted_prompt_interruption(
+                runtime,
+                continued_session_id.as_deref(),
+                "cancelled",
+                capabilities,
+                session_update,
+            );
         }
         Err(error) if is_transport_interruption(&error) => {
-            let run = runtime.interrupted_run(false, "interrupted");
-            runtime.shutdown();
-            return Ok(run);
+            return finalize_unaccepted_prompt_interruption(
+                runtime,
+                continued_session_id.as_deref(),
+                "interrupted",
+                capabilities,
+                session_update,
+            );
         }
         Err(error) => {
             let _ = append_diagnostic(
@@ -2157,6 +2186,52 @@ pub fn run_prompt(
         runtime.release_managed_session();
     }
     Ok(run)
+}
+
+/// Settles a logical prompt that was interrupted before the provider accepted
+/// `session/prompt`. The terminal snapshot is durable before the attempt-local
+/// provider control is released, and the authoritative update is published
+/// only after readers can observe idle activity.
+fn finalize_unaccepted_prompt_interruption(
+    mut runtime: AcpRuntime<'_>,
+    continued_session_id: Option<&str>,
+    stop_reason: &str,
+    capabilities: Value,
+    session_update: Option<&dyn Fn() -> Result<()>>,
+) -> Result<AcpPromptRun> {
+    let _ = runtime.mark_pending_retry_cancelled();
+    let runtime_owned_session_route = runtime.session_id.is_some();
+    let restored =
+        preserve_interrupted_session_identity(&mut runtime.session_id, continued_session_id);
+    let run = runtime.interrupted_run(restored, stop_reason);
+    let snapshot_result = runtime.write_session(
+        "cancelled",
+        restored,
+        Some(stop_reason.to_string()),
+        capabilities,
+    );
+    if !runtime_owned_session_route {
+        // The continued id above is a durable identity only. This runtime did
+        // not register its route, so shutdown must not unregister a route that
+        // may belong to another attempt sharing the physical connection.
+        runtime.session_id = None;
+    }
+    runtime.shutdown();
+    snapshot_result?;
+    if let Some(session_update) = session_update {
+        let _ = session_update();
+    }
+    Ok(run)
+}
+
+fn preserve_interrupted_session_identity(
+    current_session_id: &mut Option<String>,
+    continued_session_id: Option<&str>,
+) -> bool {
+    if current_session_id.is_none() {
+        *current_session_id = continued_session_id.map(str::to_string);
+    }
+    continued_session_id.is_some() && current_session_id.as_deref() == continued_session_id
 }
 
 fn prepare_runtime_control_prompt(attempt_dir: &Utf8Path, prompt: &mut PromptBundle) -> Result<()> {
@@ -2863,7 +2938,72 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn initialize(&mut self) -> Result<Value> {
-        self.initialize_with_timeout(None)
+        self.initialize_with_timeout(Some(ACP_INITIALIZE_TIMEOUT))
+    }
+
+    fn initialize_for_prompt(
+        &mut self,
+        config: &AcpAdapterConfig,
+        use_local_claude: bool,
+        require_local_claude_executable: bool,
+    ) -> Result<Value> {
+        for retry in 0..=1 {
+            match self.initialize() {
+                Ok(capabilities) => {
+                    if self.is_prompt_cancel_requested() {
+                        return Err(anyhow!(AcpCancelled));
+                    }
+                    return Ok(capabilities);
+                }
+                Err(_error) if self.is_prompt_cancel_requested() => {
+                    return Err(anyhow!(AcpCancelled));
+                }
+                Err(error) if retry == 0 && self.connection_key.is_some() => {
+                    self.replace_managed_connection(
+                        config,
+                        use_local_claude,
+                        require_local_claude_executable,
+                    )?;
+                    let _ = append_structured_diagnostic(
+                        &self.paths.diagnostics,
+                        "warning",
+                        "acp.initialize-connection-replaced",
+                        Some(json!({
+                            "reason": error.to_string(),
+                            "retry": 1,
+                            "pid": self.connection.pid(),
+                        })),
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("ACP initialize retry loop always returns")
+    }
+
+    fn replace_managed_connection(
+        &mut self,
+        config: &AcpAdapterConfig,
+        use_local_claude: bool,
+        require_local_claude_executable: bool,
+    ) -> Result<()> {
+        let key = self
+            .connection_key
+            .clone()
+            .ok_or_else(|| anyhow!("standalone ACP connection cannot be replaced"))?;
+        let resolution = AdapterConnectionManager::shared().get_or_spawn_with_outcome(
+            &key.provider_id,
+            config,
+            key.workspace_root,
+            use_local_claude,
+            require_local_claude_executable,
+        )?;
+        self.connection = resolution.connection;
+        std::fs::write(
+            self.paths.provider_pid.as_std_path(),
+            self.connection.pid().to_string(),
+        )?;
+        Ok(())
     }
 
     fn interrupted_run(&self, restored: bool, stop_reason: &str) -> AcpPromptRun {
@@ -2905,7 +3045,31 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
-        if let Some(capabilities) = self.connection.initialized_capabilities() {
+        let timeout = timeout.unwrap_or(ACP_INITIALIZE_TIMEOUT);
+        let connection = Arc::clone(&self.connection);
+        let outcome = connection.initialize_once(|| {
+            let result = self.request_connection_owned_with_timeout(
+                "initialize",
+                initialize_params(),
+                timeout,
+            )?;
+            Ok(result
+                .get("agentCapabilities")
+                .cloned()
+                .unwrap_or_else(|| json!({})))
+        });
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(key) = self.connection_key.as_ref() {
+                    AdapterConnectionManager::shared().evict_if_current(key, &connection);
+                } else {
+                    connection.shutdown();
+                }
+                return Err(error);
+            }
+        };
+        if !outcome.performed {
             self.append_timing_diagnostic(
                 "acp_initialize_cached",
                 json!({
@@ -2913,16 +3077,8 @@ impl<'a> AcpRuntime<'a> {
                     "status": "ok",
                 }),
             );
-            return Ok(capabilities);
         }
-        let result = self.request_with_timeout("initialize", initialize_params(), timeout)?;
-        let capabilities = result
-            .get("agentCapabilities")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        self.connection
-            .set_initialized_capabilities(capabilities.clone());
-        Ok(capabilities)
+        Ok(outcome.capabilities)
     }
 
     fn setup_session(
@@ -3959,7 +4115,7 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.request_with_progress(method, params, None, None)
+        self.request_with_progress(method, params, None, None, true)
     }
 
     fn request_with_timeout(
@@ -3968,7 +4124,16 @@ impl<'a> AcpRuntime<'a> {
         params: Value,
         timeout: Option<Duration>,
     ) -> Result<Value> {
-        self.request_with_progress(method, params, timeout, None)
+        self.request_with_progress(method, params, timeout, None, true)
+    }
+
+    fn request_connection_owned_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        self.request_with_progress(method, params, Some(timeout), None, false)
     }
 
     fn request_with_progress(
@@ -3977,8 +4142,9 @@ impl<'a> AcpRuntime<'a> {
         params: Value,
         timeout: Option<Duration>,
         title_refresh: Option<(&Utf8Path, &str, bool, Option<String>, &Value)>,
+        observe_attempt_cancellation: bool,
     ) -> Result<Value> {
-        if self.is_prompt_cancel_requested() {
+        if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
             self.observe_prompt_cancel_request()?;
             return Err(anyhow!(AcpCancelled));
         }
@@ -3996,7 +4162,7 @@ impl<'a> AcpRuntime<'a> {
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
         loop {
-            if self.is_prompt_cancel_requested() {
+            if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                 self.observe_prompt_cancel_request()?;
                 self.connection.cancel_pending(request.id);
                 return Err(anyhow!(AcpCancelled));
@@ -4030,7 +4196,7 @@ impl<'a> AcpRuntime<'a> {
                 Ok(value) => {
                     self.append_inbound_frame(&value)?;
                     self.drain_available_inbound()?;
-                    if self.is_prompt_cancel_requested() {
+                    if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                         self.observe_prompt_cancel_request()?;
                         return Err(anyhow!(AcpCancelled));
                     }
@@ -6468,12 +6634,13 @@ mod tests {
         is_pending_retry_prompt_event, is_transport_interruption, latest_visible_turn_id,
         merge_tool_revision, next_prompt_retry_attempt, parse_agent_capabilities,
         permission_decision_timeline_event, plan_attached_session_reuse, plan_session_restore,
-        prompt_activity, prompt_cancellation_outcome, prompt_usage_transaction_id,
-        provider_thread_is_active, register_provider_control, request_prompt_cancel,
-        resolve_permission_mode, resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
-        runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
-        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
+        preserve_interrupted_session_identity, prompt_activity, prompt_cancellation_outcome,
+        prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
+        request_prompt_cancel, resolve_permission_mode, resolve_session_model,
+        retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
+        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
+        session_prompt_text, session_resume_params, settle_prompt_event,
+        should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
 
@@ -6598,6 +6765,30 @@ mod tests {
                 .pointer("/clientCapabilities/elicitation/form")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn interrupted_setup_preserves_only_a_real_continued_session_identity() {
+        let mut new_session = None;
+        assert!(!preserve_interrupted_session_identity(
+            &mut new_session,
+            None,
+        ));
+        assert!(new_session.is_none());
+
+        let mut continued_session = None;
+        assert!(preserve_interrupted_session_identity(
+            &mut continued_session,
+            Some("session-existing"),
+        ));
+        assert_eq!(continued_session.as_deref(), Some("session-existing"));
+
+        let mut replacement_session = Some("session-new".to_string());
+        assert!(!preserve_interrupted_session_identity(
+            &mut replacement_session,
+            Some("session-existing"),
+        ));
+        assert_eq!(replacement_session.as_deref(), Some("session-new"));
     }
 
     #[test]
@@ -7339,12 +7530,16 @@ mod tests {
         let task_dir = camino::Utf8Path::new("test/provider-control-task");
         let attempt_dir =
             task_dir.join("runs/run-001/rounds/round-001/nodes/direct/attempts/attempt-001");
+        let sibling_attempt_dir =
+            task_dir.join("runs/run-002/rounds/round-001/nodes/direct/attempts/attempt-001");
         let unrelated_dir =
             camino::Utf8Path::new("test/provider-control-other/runs/run-001/attempt-001");
         let control = register_provider_control(&attempt_dir);
+        let sibling = register_provider_control(&sibling_attempt_dir);
         let unrelated = register_provider_control(unrelated_dir);
 
         control.mark_running();
+        sibling.mark_running();
         assert_eq!(
             super::prompt_activity_under(task_dir),
             Some(PromptActivity::Running)
@@ -7357,6 +7552,11 @@ mod tests {
         );
 
         unregister_provider_control(&attempt_dir, &control);
+        assert_eq!(
+            super::prompt_activity_under(task_dir),
+            Some(PromptActivity::Running)
+        );
+        unregister_provider_control(&sibling_attempt_dir, &sibling);
         unregister_provider_control(unrelated_dir, &unrelated);
         assert_eq!(super::prompt_activity_under(task_dir), None);
     }

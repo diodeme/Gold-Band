@@ -180,6 +180,7 @@ export function AcpConversationComposer({
           className={cn(
             'bg-card !shadow-none transition-colors',
             ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+            ACP_SESSION_COMPOSER_LAYOUT.promptInputClassName,
             attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
             integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}

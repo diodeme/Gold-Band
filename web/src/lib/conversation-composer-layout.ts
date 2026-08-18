@@ -13,7 +13,7 @@ export const ACP_SESSION_COMPOSER_BORDER_STYLE = {
 export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
   contentMaxWidthClassName: 'max-w-3xl',
   opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
-  promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-4 py-2 shadow-sm',
+  promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm',
   textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`,
   textareaMaxHeightPx: 320,
   containerClassName: '@container/conversation-composer flex flex-col gap-1.5',
@@ -43,7 +43,8 @@ export const CONVERSATION_HOME_COMPOSER_LAYOUT = {
 
 export const ACP_SESSION_COMPOSER_LAYOUT = {
   stackSurfaceClassName: 'border border-border [border-width:var(--acp-session-composer-border-width)]',
-  textareaClassName: COMPOSER_TEXTAREA_BASE_CLASS_NAME,
+  promptInputClassName: 'px-0',
+  textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} px-2.5`,
   commandBarClassName: 'mt-1 flex min-w-0 flex-wrap items-center gap-1.5 px-1 py-1',
   leadingActionsClassName: 'flex min-w-0 flex-1 items-center gap-1.5',
   trailingActionsClassName: 'ml-auto shrink-0 gap-1.5 pl-1',

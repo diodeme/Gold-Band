@@ -2,10 +2,10 @@
 
 ## 1. 文件与数据库位置
 
-定时任务属于 application runtime store，不写入项目工作树。调度定义和 occurrence 使用独立 SQLite 数据库，instruction 与附件仍保留项目级输入快照：
+定时任务属于 application runtime store，不写入项目工作树。调度定义和 occurrence 与用户级核心状态共用一个 SQLite 数据库，instruction 与附件仍保留项目级输入快照：
 
 ```text
-~/.gold-band/projects/{project-id}/scheduled-tasks.db
+~/.gold-band/core.db
 
 ~/.gold-band/projects/{project-id}/scheduled-tasks/{scheduled-task-id}/
   input/
@@ -23,7 +23,7 @@
 {
   "version": "0.2",
   "id": "scheduled-task-001",
-  "projectId": "D--Projects-code-ai-Gold-Band",
+  "projectId": "gold-band--2f4a7c91",
   "enabled": true,
   "mode": "direct",
   "sessionPolicy": "continuous",
@@ -34,7 +34,7 @@
     "attachmentPaths": [],
     "workflowSnapshotPath": null,
     "autoConfigPath": null,
-    "workspaceProjectId": "D--Projects-code-ai-Gold-Band",
+    "workspaceProjectId": "gold-band--2f4a7c91",
     "directAgentId": "agent-001"
   },
   "executionConfig": {
@@ -59,7 +59,8 @@
 
 ## 3. 字段约束
 
-- `version` 当前逻辑模型为 `0.2`；SQLite schema 通过 migration 管理。
+- `version` 当前逻辑模型为 `0.2`；SQLite schema 通过 `core_schema` 的 `scheduler` component 独立管理。
+- `projectId` 是应用内 workspace 的唯一业务身份。job、occurrence、查询、事件与去重都必须显式携带该作用域；不再使用 `workspaceKey` 或路径作为平行业务身份。
 - `mode` 为 `direct | workflow | auto`。
 - `sessionPolicy` 为 `new | continuous`；Workflow/AUTO 必须为 `new`。
 - `taskId` 在首次触发前允许为 `null`，首次物化后指向当前 task。
@@ -77,26 +78,28 @@
 
 ```sql
 CREATE TABLE scheduled_jobs (
-    id TEXT PRIMARY KEY,
-    project_id TEXT,
+    project_id TEXT NOT NULL,
+    id TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     definition_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1,
-    next_run_at INTEGER
+    next_run_at INTEGER,
+    PRIMARY KEY (project_id, id)
 );
 
 CREATE INDEX idx_scheduled_jobs_enabled_deadline
-    ON scheduled_jobs(enabled, next_run_at)
+    ON scheduled_jobs(project_id, enabled, next_run_at)
     WHERE enabled = 1;
 ```
 
-计划时间到达时，repository 在一个 immediate transaction 中校验 `project_id + id + revision + enabled`，按已保存的 `next_run_at` 插入或取得 scheduled occurrence，并推进下一计划点及 `revision`。陈旧 revision 不物化 occurrence。创建定义只写 `scheduled_jobs`；手动“立即执行”只创建 manual occurrence，不修改 `next_run_at` 或 job revision。runtime projection 写入 Task 关联或最近结果时必须在同一事务内推进 `updated_at` 至少 1ms，并让 `definition_json.updatedAt` 与 SQL `updated_at` 完全一致，使旧 authoring 时间令牌立即冲突。
+SQL 行中的 `project_id` 与 `definition_json.projectId` 必须一致；不一致的数据视为损坏，不能跨项目返回。计划时间到达时，repository 在一个 immediate transaction 中校验 `project_id + id + revision + enabled`，按已保存的 `next_run_at` 插入或取得 scheduled occurrence，并推进下一计划点及 `revision`。陈旧 revision 不物化 occurrence。创建定义只写 `scheduled_jobs`；手动“立即执行”只创建 manual occurrence，不修改 `next_run_at` 或 job revision。runtime projection 写入 Task 关联或最近结果时必须在同一事务内推进 `updated_at` 至少 1ms，并让 `definition_json.updatedAt` 与 SQL `updated_at` 完全一致，使旧 authoring 时间令牌立即冲突。
 
 ```sql
 CREATE TABLE scheduled_occurrences (
-    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    id TEXT NOT NULL,
     job_id TEXT NOT NULL,
     scheduled_at INTEGER NOT NULL,
     trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('scheduled', 'manual')),
@@ -118,11 +121,15 @@ CREATE TABLE scheduled_occurrences (
     finished_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    UNIQUE(job_id, scheduled_at, trigger_kind)
+    PRIMARY KEY (project_id, id),
+    FOREIGN KEY (project_id, job_id)
+        REFERENCES scheduled_jobs(project_id, id)
+        ON DELETE CASCADE,
+    UNIQUE(project_id, job_id, scheduled_at, trigger_kind)
 );
 ```
 
-`owner_id + lease_until + heartbeat_at` 用于原子认领、心跳续租和崩溃恢复。后端只保存 `error_code` 与 `error_params`，不保存面向用户的错误文案。
+`owner_id + lease_until + heartbeat_at` 用于原子认领、心跳续租和崩溃恢复。所有 occurrence 读写、claim、lease、完成、恢复与历史查询都必须同时匹配 `project_id`；相同 job ID 或 occurrence ID 可以在不同项目中安全共存。后端只保存 `error_code` 与 `error_params`，不保存面向用户的错误文案。
 
 ## 5. Occurrence 生命周期
 
@@ -150,15 +157,13 @@ Occurrence 状态为 `pending | running | retrying | succeeded | failed | skippe
 
 队列重试只增加 `attempt`，不为同一个计划时间生成新的 occurrence。`manual` occurrence 不推进 `nextRunAt`。
 
-## 6. 迁移与删除
+## 6. Schema、破坏式切换与删除
 
-schema v2 使用 `scheduler_migrations(name, applied_at, details_json)` 保存持久化完成标记。`legacy-json-v1` 和 `legacy-shared-db-v1` 都先把源数据读取成内存快照，再用一个 immediate transaction 导入全部 definition/occurrence，最后写 marker 并提交；任一冲突会回滚数据和 marker。marker 已存在时，即使目标数据库为空也不得重新读取或导入旧源。旧 shared SQLite 只复制当前 `project_id` 的数据到项目数据库。
+Scheduler 在用户级 `core.db` 的 `core_schema` 中以 `component = 'scheduler'` 独立登记 schema version；它与 Runtime recovery 等 component 共用物理数据库，但不共用表或版本号。数据库统一启用 WAL、foreign keys、`synchronous = FULL` 与 3 秒 busy timeout。
 
-schema 升级按版本顺序在事务中执行，v1 到 v2 不丢失 definition 或 occurrence。升级事务会解析已有 `definition_json`，并使用统一规则回填 enabled job 的 `next_run_at`：baseline 为 `lastTriggerAt`，没有时为 `createdAt - 1s`，再调用 schedule 的 `next_occurrence_after`；legacy JSON 和 shared SQLite 的 null deadline 使用同一派生函数。disabled job 与已完成 one-shot 自然保持 `None`。数据库版本高于当前二进制支持版本时直接拒绝打开，绝不向下覆盖版本号。
+本次切换是开发阶段的破坏式更新：旧的项目级或用户级 `scheduled-tasks.db`、旧 JSON definition/trigger、旧 `scheduler_schema` 与 `scheduler_migrations` 均直接废弃。runtime 不扫描、不打开、不导入、不双写，也不在新库为空时 fallback 到任何旧数据。已有用户需要重新创建定时任务。
 
 终态 occurrence 按有界批次清理，`batch_size` 必须大于零，只处理 cutoff 之前的 `succeeded | failed | skipped | missed`。`attention_required`、非终态 occurrence，以及调用方提供的活动 Run ID 所关联记录必须保留；清理不会删除 Task、Run、Round、ACP 会话或产物。
-
-迁移完成后旧 JSON 只作为迁移证据，不再作为 repository 的读写或 fallback 权威。命令层停止 JSON 双写由统一 schedule service 切换阶段完成。
 
 runtime 仍保存结构化 `contentSnapshot` 与 `contentFingerprint`。指纹是 authoring 内容的 canonical SHA-256 投影；model、thought level、permission 和 Direct session policy 仍属于执行配置，不参与指纹。
 

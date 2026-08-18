@@ -44,11 +44,14 @@
 - 用户可通过原生目录选择器打开新的 workspace；选择后立即刷新任务编排页面栈。
 - 桌面端原生目录选择器在主线程必须使用非阻塞调用；禁止在 workspace 选择链路使用 blocking dialog API，避免 macOS 上触发 event loop 卡死。
 - 最近使用 workspace 写入用户级本地偏好，不属于 task / run / round canonical state。
-- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）只在当前进程内维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧边栏、命令和 Runtime 启动恢复不得无条件使用 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止、附件读取或恢复都先从持久化工作空间解析路径，再构造 workspace-scoped `App.paths.repo_root`。
+- **新旧 UI 多工作空间职责分离**：旧 UI（工作台模式）只在当前进程内维护单一全局 workspace（`DesktopContext.repo_root`），所有 task/run 操作均在该 workspace 下执行；新 UI（会话模式）以 `conversation_workspaces` 作为唯一工作空间列表，并以 `last_conversation_workspace` 记录最后活跃项。会话侧边栏和命令不得无条件使用 `DesktopContext.repo_root`；每次创建、追问、查看历史、权限处理、停止或附件读取都先从持久化工作空间解析路径，再构造 workspace-scoped `App.paths.repo_root`。Runtime 启动恢复不扫描该列表，只消费用户级 `core.db` 中跨工作空间的有界 recovery candidates，并对每条候选构造 scoped App。
+- **Workspace 唯一身份**：`projectId` 是 workspace 唯一业务身份，目录、路由、事件、缓存、持久引用和 Runtime recovery 均以它作为作用域；不再保留 `workspaceKey` 平行身份。`workspacePath` 是可重新校验的磁盘 locator，`name` 是用户可编辑展示字段，二者都不能反向成为关联主键。`projectId` 由规范化 workspace 路径确定性生成，格式为 `{最多 70 位可读 slug}--{8 位 BLAKE3 十六进制哈希}`，完整长度不超过 80；源参数统一来自 `configs/app-config.toml [projectIdentity]`，slug 上限由总长、分隔符和哈希长度计算，不重复配置。
+- **Manifest 失败边界**：桌面上下文初始化、workspace 注册、同步、切换、Runtime recovery 与 Scheduler 注册在访问项目运行目录前都必须完成 manifest 读取、归属校验或首次创建。缺失、损坏、归属冲突以及读取、创建、原子提交发生的 I/O 失败均阻断该 workspace 初始化或写入；不得因操作属于启动读取边界而吞掉 I/O 错误后继续运行。
+- **身份迁移恢复边界**：旧项目目录改名后，启动迁移必须同步改写 `run.json`、`worker-ref.json`、ACP session/snapshot 和文件变更记录中明确参与执行或恢复的旧 runtime locator，再提交 `core_schema.workspace_identity=2`。版本低于 2 时补跑该步骤，完成后启动直接跳过；raw/timeline/diagnostics 历史记录保持原样，不作为恢复事实源，也不建立旧 `projectId` fallback。
 - **工作台观察期边界**：2026-07-22 起产品内隐藏 Workbench / Conversation 形态切换入口，桌面根路径默认进入 `/chat` 会话主页；旧工作台页面、路由与单 workspace 状态暂时保留，只允许通过显式 `/tasks`、`/agents`、`/contexts`、`/settings` 等 deep link 访问，不再读取历史 UI 模式偏好覆盖默认入口。
 - **持久化边界**：`recent_desktop_workspaces` 仅由旧 UI 管理（`choose_workspace` / `select_recent_workspace` / `remove_recent_workspace`）；`conversation_workspaces` 和 `last_conversation_workspace` 仅由新 UI 管理（`add_conversation_workspace` / 成功创建/重跑后的 `save_last_conversation_workspace` / `remove_conversation_workspace`）。新 UI 添加、查看或草稿选择 workspace 不污染旧 UI 最近列表。
-- **废弃字段移除**：`SettingsConfig.desktop_workspace` 已删除，settings schema v6 在读取旧配置时移除磁盘上的 `desktopWorkspace`。旧 Workbench 仅保留 `recent_desktop_workspaces` 最近列表，不再持久化或恢复单一当前 workspace；会话 UI 与 Runtime 的 workspace canonical state 只允许来自 `conversation_workspaces`，`last_conversation_workspace` 只决定最近活跃项，不缩小启动恢复范围。
-- **旧状态迁移**：用户状态通过版本化 `stateSchemaVersion` 在桌面上下文初始化时迁移一次。迁移重新生成规范 `projectId`、按规范化路径去重，并同步重写会话运行模式、置顶和最后活跃引用；迁移成功后原子写回。版本已达当前值时不再扫描或写盘，避免每次启动重复修复。移除工作空间时必须把请求 ID、持久化 ID 与按 workspace 路径重算的 ID 作为同一身份的别名集合，统一清理 run mode、pin 和最后活跃引用，不能依赖当前操作系统是否大小写敏感。
+- **废弃字段移除**：`SettingsConfig.desktop_workspace` 已删除，settings schema v6 在读取旧配置时移除磁盘上的 `desktopWorkspace`。旧 Workbench 仅保留 `recent_desktop_workspaces` 最近列表，不再持久化或恢复单一当前 workspace；会话 UI 的 workspace canonical state 只允许来自 `conversation_workspaces`，`last_conversation_workspace` 只决定最近活跃项。Runtime 恢复范围由运行前登记的 recovery candidates 决定，不由最近或最后活跃列表扩张或缩小。
+- **旧状态迁移**：workspace identity 升级在桌面上下文初始化、Runtime recovery 与 Scheduler 启动之前执行一次。迁移按规范化路径确定性生成新 `projectId`，移动旧项目目录，重写 manifest、会话 workspace/run mode/pin/最后活跃引用，以及 `run.json`、`worker-ref.json`、ACP session/snapshot 和文件变更记录中明确位于旧 runtime root 下的 executable locator，同步重建搜索投影，最后写入 `core.db` 完成版本。带合法 manifest 的历史项目目录即使原 workspace 已删除或不在最近列表中，也以 manifest 所在实际目录作为迁移来源，不通过失效路径重新猜测旧目录名；无 manifest 且不被 StateConfig 识别的异常目录保持原样并跳过，不猜测归属、不阻断启动。版本低于 2 时即使目录已改名也补跑 locator 改写，达到 2 后不再枚举或写入 workspace 数据。迁移完成后的查询、移除和路由只接受持久化 canonical `projectId` 精确匹配，不再维护旧 ID、大小写或路径重算 alias；raw/timeline/diagnostics 历史内容保持不变。
 - **最近列表管理**：旧 UI workspace 选择页的最近列表每行提供打开与移除操作；移除只删除用户级 `recent_desktop_workspaces` 记录，不切换当前 workspace，不删除磁盘目录，也不影响新 UI 的 `conversation_workspaces`。当前正在使用的 workspace 不允许从最近列表移除；有效最近列表只剩一个 workspace 时也禁用移除，避免把工作台置入无当前 workspace 的状态。
 
 ### 3.3 一级菜单
@@ -193,7 +196,9 @@ Agent 管理
 - 主窗口关闭与应用退出是两个不同的生命周期动作。macOS 红色关闭只在前端冲刷编辑队列后销毁 `main` WebViewWindow，Rust runtime、ACP/MCP 连接和系统 Dock 应用继续存活；Windows/Linux 关闭主窗口则进入应用退出事务。Cmd+Q、系统菜单退出、updater 退出和无窗口退出统一由 Rust `DesktopLifecycleCoordinator` 协调，不能由前端直接销毁进程。
 - 应用退出状态固定为 `Running / ClosingMainWindow / AwaitingFrontend / Cleaning / ReadyToExit`。存在主窗口时，宿主发送带 `requestId` 的退出请求，前端复用同一保存事务并通过 `resolve_app_exit` 返回 `Proceed / Cancel`；监听失败或 15 秒内未响应必须取消退出，不能静默丢弃未保存内容。后端清理全局上限为 15 秒，超时后强制终止受管进程组，最终只调用一次 `app.exit(0)`。
 - macOS `RunEvent::Reopen` 和通知点击统一调用 `ensure_main_window()`：已有 `main` 时 show、unminimize、focus；窗口已销毁时使用 `WebviewWindowBuilder::from_config` 从权威 Tauri window config 重建，并继续复用 bootstrap 完成后的显示流程。此处 Dock 指 macOS 系统 Dock，与右侧 `RightWorkspaceDock` 无关。
-- 会话侧栏 Direct 任务的 Agent 图标在活动态叠加向外扩展 4px 的 2px 旋转环（外径 24px）；旋转环轨道与亮色段统一使用 `gold-running` 运行态语义色，保证深色和浅色主题都有足够对比度，不使用低对比度的通用 `primary` 色。
+- 会话侧栏 Direct 任务在活动态保持 Agent 图标的呼吸效果，不增加旋转环或终局状态点。
+- Direct turn 到达终局且对应会话尚未成功呈现时，在 Agent 图标右上角叠加未查看结果点：完成使用 `gold-success`，停止/取消使用 `gold-warning`，失败/异常使用 `gold-danger`。该点表达“未查看的终局事件”，不是 run 的权威状态；不得因查看而修改 `run.status`、`outcome` 或 ACP lifecycle。
+- 侧栏、置顶、搜索结果、系统通知和 deep link 必须汇入同一会话呈现事务。只有目标 project/task/run 已成功呈现，且待确认 `eventId` 仍是该任务最新终局事件时才持久化已查看；迟到的旧确认不得清除更新事件。仅导航开始、加载失败或打开了同任务的其他 run 时不得消失。
 
 ---
 

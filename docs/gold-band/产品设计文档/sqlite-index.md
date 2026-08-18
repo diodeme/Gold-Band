@@ -54,7 +54,6 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 |---|---|---|---|
 | `attempt_path` | TEXT PK | 文件系统路径 | 全局唯一 |
 | `session_id` | TEXT? | `snapshot.session_id` | 真实 ACP session ID；尚未建立或旧文件缺失时为 `NULL`，不得用 adapter、attempt ID 或 timeline 反推 |
-| `adapter_id` | TEXT | `snapshot.adapter_id` | ACP adapter 标识；当前可对应 `npx`、`kimi`、`opencode` 等启动命令 |
 | `task_id` | TEXT | 调用方传入 | 所属 task |
 | `run_id` | TEXT | 调用方传入 | |
 | `round_id` | TEXT | 调用方传入 | |
@@ -121,7 +120,9 @@ schema v2 会把已有 `tasks` 表从 `task_id` 主键迁移为 `task_path` 主�
 
 schema v3 将 task FTS tokenizer 从默认 `unicode61` 升级为 SQLite FTS5 内置 `trigram`。升级只用 `tasks` 表已有行重建派生 `tasks_fts`，不扫描 task 文件目录、不补齐历史未入库 task。该 tokenizer 用于支持中文、英文和中英混排内容的任意位置子串检索。
 
-schema v4 修正 ACP session identity：`sessions.session_id` 与 `session_prompts.session_id` 改为可空的真实 `snapshot.session_id`，并新增 `sessions.adapter_id` 独立保存 adapter 标识。升级时破坏式重建 session/prompt 派生表并从文件回填，保留 `tasks` 表；缺少真实 session ID 的旧 attempt 保持 `NULL`，不把旧的 adapter 命令继续伪装成 session ID。
+schema v4 首次把 `sessions.session_id` 与 `session_prompts.session_id` 改为可空的真实 `snapshot.session_id`，但曾临时增加不必要的 `sessions.adapter_id`。
+
+schema v5 删除该临时 `adapter_id`：搜索索引只保存检索和路由结果实际需要的 session identity，不复制启动命令或 provider identity。provider 的既有权威持久化边界仍是 `worker-ref.json.provider`。升级时破坏式重建 session/prompt 派生表并从文件回填，保留 `tasks` 表；缺少真实 session ID 的旧 attempt 保持 `NULL`。
 
 ## 搜索接口
 
@@ -180,7 +181,6 @@ workspace 项目 ID 必须统一通过 `GoldBandPaths::project_id` 生成，不�
 ```jsonc
 {
   "sessionId": null, // string | null
-  "adapterId": "npx",
   "attemptPath": "...",
   "taskId": "...",
   "runId": "...",

@@ -99,8 +99,9 @@
 
 - **入口**：纸夹按钮选择文件、拖拽文件到 composer、粘贴图片/文件；桌面端必须在基础 Tauri 配置和 channel overlay 中关闭原生 WebView file-drop，让文件拖拽进入前端 HTML5 drop zone，拖入 composer 时稳定显示可投放状态
 - **统一功能区**：快速对话与会话详情复用 composer 内部的上下文功能区；该区域与输入区共用同一背景、外边框和 focus ring，没有独立附件面板。无附件时不占高度，宽度不足自动换行，最多两行后内部滚动。
-- **预览**：图片附件只显示固定方形缩略图，不展示文件名，hover/focus Tooltip 显示名称与大小；非图片文件显示图标和截断文件名。两类附件点击后统一创建当前草稿作用域下的 `draft-attachment` 右侧工作区 Tab，不再按媒体类型分流到 Dialog。普通文本复用只读源码查看器；`.md/.markdown` 复用现有 Markdown 查看器，默认渲染并允许切换到只读源码。
+- **预览**：图片附件只显示带 1px 完整主题 `border` 边界的固定方形缩略图，不展示文件名，hover/focus Tooltip 显示名称与大小；边界颜色必须随主题及深浅模式切换。非图片文件显示图标和截断文件名。两类附件点击后统一创建当前草稿作用域下的 `draft-attachment` 右侧工作区 Tab，不再按媒体类型分流到 Dialog。图片缩略图和图片查看 Tab 均复用 shadcn/ui Context Menu 提供“复制图片”和“图片另存为”；菜单只绑定图片命中区，不扩展到非图片附件或删除按钮。复制写入系统图片剪贴板，另存为使用系统文件保存对话框并保留原始编码格式。图片查看 Tab 复用工作区图片画布；缩放组件会令内容图片本身不参与 pointer hit-test，Context Menu Trigger 必须使用与图片同尺寸的包装层承接命中，且显式关闭缩放组件默认的右键平移；左键仍由缩放画布执行平移，右键由图片 Context Menu 接管。普通文本复用只读源码查看器；`.md/.markdown` 复用现有 Markdown 查看器，默认渲染并允许切换到只读源码。
 - **按需读取与边界**：附件 chip 和草稿工作区状态只保存稳定附件 identity、名称、MIME、路径及短期读取 locator，不保存正文。浏览器 `File` 在打开 Tab 后读取；桌面文件选择器只为用户已经选择的可预览文本签发绑定精确路径与 revision 的短期只读 URL，正文同样在打开 Tab 后读取。文件变化或授权过期后旧 URL 不得继续返回内容；不得因为附件进入草稿就预读全部正文。
+- **图片动作边界**：缩略图和查看 Tab 共用同一附件图片动作接口。有本地路径的附件执行复制或另存为时只传路径，图片字节由桌面后台按需读取、校验和处理；粘贴等内存附件只在用户选择动作后传输当前单张图片，并继续受 25 MB 单文件上限约束。前后端内存来源 DTO 固定使用 `kind: "bytes"` 与 camelCase `dataBase64`，并由反序列化契约测试固化。图片解码、系统剪贴板调用和原子文件写入不得阻塞 WebView 事件线程；取消另存为是正常结果，不展示错误。
 - **操作**：每项支持删除；图片删除按钮在 hover/focus 显示，触摸设备常显。旧的 composer 外部附件区域和工具栏文件数量标签删除，不保留双入口。
 - **校验**：最多 10 个文件，单文件 ≤ 25 MB，总大小 ≤ 100 MB；支持常见文本/代码/文档/图片类型
 - **超长粘贴**：仅在用户执行粘贴动作时检查本次剪贴板的 `text/plain`；粘贴文本超过 6,400 字符时阻止默认文本插入，在当前 composer 草稿中生成一个可见的 `pasted-text-<timestamp>-<suffix>.txt` 文本附件。输入框已有正文保持不变，普通键盘输入、程序化草稿恢复和提交阶段均不按正文总长度转换；不超过阈值的粘贴继续按输入框默认行为插入。用户可在发送前查看或删除生成附件；不得插入“详细内容见附件”等占位文案。生成项继续走现有附件数量、总大小、格式和物化校验；超限时按普通附件错误处理。
@@ -210,7 +211,7 @@
 ## 状态规则
 - Workflow/AUTO 状态 = 最新 run 的最终状态；成功 = 绿色，失败/异常/停止 = 红色，暂停 = 黄色，运行中不显示时间
 - Direct 不用 run outcome 表达会话身份，不展示成功/暂停/失败色点。旋转环必须消费后端 task 级 canonical activity：同时覆盖首轮 runtime active、completed run 上的 same-session ACP follow-up 和 cancel requested；禁止只判断 `latestRun.status`，因为 Direct 后续追问期间底层 run 仍可能保持 completed。
-- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费此字段，并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
+- 高频 ACP session update 必须直接携带从 task 根目录聚合所有 per-attempt prompt control registry 后投影的轻量 `activity`，包括 `starting / accepted / running / cancel-requested`；只有该 task 已无活动 prompt 时，终态事件才用显式 `null` 清除。`session/new` 尚未返回即停止的 prompt 也必须在 control 释放后发布该清除事件；run 因可恢复语义保持 `paused / process-interrupted` 不得阻止圆环收敛。该投影只读内存控制状态，不得为侧边栏圆环重建完整 lifecycle、session 或 timeline。前端优先消费显式 `activity`（包括 `null`），并仅对旧的无 `activity` 事件回退到 lifecycle 投影。
 - App shell 必须跨当前页面与工作空间全局监听 run lifecycle 终态事件，并使用完整 `projectId + taskId + runId` locator 只更新普通工作空间区和置顶副本中命中的 `status/outcome`；后台 run 完成不得因为用户正在查看另一工作空间而遗漏。该事件不得重新请求或替换完整 `ConversationSidebarVm`，也不得加载后台 run 的 session tree、timeline 或正文；只有事件命中当前打开 run 时才局部刷新当前 `ConversationRunVm`。已投影的 terminal 状态不得被迟到的非终态更新回退。
 - App shell 同样必须建立唯一全局 ACP session update 订阅，并使用完整 `projectId + taskId` 只更新普通工作空间区和置顶副本中命中的 task `activity`；不得把该订阅绑定到当前打开 run。当前 run 的 session/detail 更新通过稳定回调消费同一事件，后台 task 不加载详情。重复的同 phase activity 必须保持侧栏及非目标对象 identity，不得让 token 级事件持续重渲染整棵侧栏。
 

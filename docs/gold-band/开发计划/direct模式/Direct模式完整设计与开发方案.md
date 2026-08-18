@@ -79,7 +79,7 @@ Direct 与普通 ACP follow-up 共用以下修复：
 - 选中 Agent 后恢复该 workspace 下这个 Agent 上次使用的模型和权限模式。
 - 模型和权限模式放在输入框右下角，与发送按钮形成同一组紧凑控制。
 - Direct 会话创建后持续复用同一个 ACP session，不向用户展示 workflow 成功、暂停或节点终态心智。
-- Direct 会话侧边栏使用 Agent icon 表达身份，不使用绿点、黄点、红点表达 run 结果。
+- Direct 会话侧边栏使用 Agent icon 表达身份；运行中沿用图标呼吸效果。终局后允许以绿/黄/红点表达尚未查看的完成/停止/失败事件，但不得把该点作为 run 状态本身。
 - 页面切换、session 切换后，正在执行的 Direct turn 必须恢复发送/处理/思考/工具/停止状态、耗时和 token。
 
 ### 3.2 技术目标
@@ -960,7 +960,7 @@ Direct `authoring/conversation.json` 建议结构：
 - 前端依赖 component-local awaiting state 判断持久 active 的规则。
 - Direct 借用 `ConversationAutoConfig` 的临时方案。
 - Direct 使用 Agent 文本下拉而不是 icon picker 的临时 UI。
-- Direct task row 的 runtime 彩色状态点。
+- Direct task row 把 runtime 状态直接替换成彩色点的旧方案；终局未查看提醒点作为独立投影保留。
 - Direct 页面中的 workflow 编辑/查看、session tree 和 launching-next-node 文案。
 - conversation metadata 中散落的 untyped `serde_json::Value` runMode 读取，逐步收敛到 typed metadata。
 
@@ -1013,7 +1013,7 @@ Direct `authoring/conversation.json` 建议结构：
 - lifecycle ACP active 且没有 optimistic event 时仍锁输入、显示状态、可停止。
 - 页面重新挂载后 timing/token 继续显示。
 - session terminal 后恢复输入。
-- Direct sidebar 使用 Agent icon，不渲染 status dot。
+- Direct sidebar 使用 Agent icon；运行中不渲染终局点，未查看的完成/停止/失败分别渲染绿/黄/红提醒点。
 - Direct sidebar 不渲染 run 子列表。
 - Workflow/AUTO sidebar 仍渲染 status dot。
 - Direct 搜索和置顶同样使用 Agent icon。
@@ -1084,11 +1084,11 @@ npm run web:build
 ### 18.5 侧边栏
 
 - [ ] Direct 行首是 Agent icon。
-- [ ] Direct 不显示绿/黄/红 run 状态点。
+- [x] Direct 不显示常驻 run 状态点；仅显示可确认的终局未查看提醒点。
 - [ ] Workflow/AUTO 状态点不受影响。
 - [ ] Direct 相对时间随后续对话更新。
 - [ ] Direct 置顶和搜索结果使用相同 Agent icon。
-- [ ] 后台 Direct 回复可选使用轻量 icon halo，不使用成功/暂停颜色。
+- [x] Direct 活动态沿用 Agent icon 呼吸效果；后台终局使用成功/停止/失败语义色提醒，成功呈现后消失。
 
 ## 19. 实施阶段
 
@@ -1220,7 +1220,7 @@ web/tests/*
 5. 快速会话模式顺序固定为 Direct、工作流、AUTO。
 6. Direct 使用 Agent icon picker；模型和权限放在 composer 右下角。
 7. 模型和权限按 workspace + agent 记忆。
-8. Direct 侧边栏使用 Agent icon，不展示 workflow 绿/黄/红状态点。
+8. Direct 侧边栏使用 Agent icon，不展示 Workflow 式常驻 run 状态点；只在终局事件尚未查看时叠加绿/黄/红提醒点。
 9. Direct 使用 lastActivityAt 表达持续对话的最近活动。
 10. 发送和停止继续使用 `submit_conversation_prompt` / `stop_active_session` 单一入口。
 11. token、耗时、权限、elicitation、附件和工具展示全部复用现有 ACP 管道。
@@ -1241,7 +1241,7 @@ web/tests/*
 - [x] Direct 无可选 Agent 时展示提示文案和“+”入口，点击直接进入 Agent 管理页。
 - [x] Direct 运行时隐藏 workflow、session tree、run outcome 和重跑心智，header 展示 Agent identity。
 - [x] Direct 侧边栏 task 行和搜索结果使用 Agent icon；身份槽位与 Workflow/AUTO 状态点等宽，标题起点对齐，最近排序与相对时间使用 `lastActivityAt`。
-- [x] Direct 侧边栏补齐 task 级活跃 turn 旋转环；后端聚合 runtime status 与 per-attempt live prompt activity，前端在 submit/stop lifecycle snapshot 和 live lifecycle 更新时同步置顶区与 workspace 区，completed run 追问不再丢失运行态提示。
+- [x] Direct 侧边栏补齐 task 级活跃 turn 呼吸效果；后端聚合 runtime status 与 per-attempt live prompt activity，前端在 submit/stop lifecycle snapshot 和 live lifecycle 更新时同步置顶区与 workspace 区，completed run 追问不再丢失运行态提示。
 - [x] Direct 侧边栏不展示 run 子列表；Direct ACP header 不展示无意义的“系统提示”按钮。
 - [x] 创建接口增加 Direct Agent/model/permission 后端校验，错误以结构化 code 返回。
 - [x] profile resolver 按 prompt envelope 分流：`runtime-managed` 必须解析角色，`raw-agent` 跳过角色解析且禁止绑定 profile；Direct 创建不再触发 `direct-agent is not associated with role`。
@@ -1358,3 +1358,33 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 - [x] Web 会话壳：已建立 session 的 detail payload 临时为空时仍渲染 composer；same-attempt resume refresh 不丢失 session 引用和历史 payload。
 - [ ] 完整 Rust/Web test 与 build。
 - [ ] Direct deep link 页面验收（位置、展开、编辑、删除、停止后使用、深浅主题）并清理测试资源。
+
+## 27. 2026-08-18 Direct 终局未查看提醒
+
+状态：已完成实现与验证。
+
+设计结论：
+
+- Direct 运行中继续使用既有 Agent icon 呼吸效果，不增加旋转环或状态点。
+- 完成、停止/取消、失败/异常分别投影绿、黄、红色未查看提醒点。提醒事实与 `run.status/outcome` 分离，查看操作不修改权威生命周期。
+- 复用 `AcpTurnFinished.eventId`；Direct 首轮失败/被终止使用 `RunCompleted.eventId`。批处理仍有后继 turn 时不提前产生完成提醒。
+- 每个 workspace 使用一个有版本的轻量 attention 文件，按 task 保存最新终局事件与已查看游标；侧栏快照每个 workspace 只读取一次并在内存中按 task 投影。
+- 侧栏、置顶、搜索、通知和 deep link 统一通过会话呈现入口确认。确认请求携带最新 `eventId`，后端和前端均拒绝用迟到响应清除更新提醒；目标 run 未成功呈现时不确认。
+- 删除 conversation task 时同步移除对应 attention 条目；写入复用已有原子 JSON 写工具和 workspace 内短临界区，不新增依赖、队列、缓存或第二套 lifecycle。
+
+接口级验收：
+
+- [x] 同一终局事件在匹配确认前持续未查看，确认后消失。
+- [x] 旧 `eventId` 的迟到确认不能清除新终局事件，已确认事件重放不会重新点亮。
+- [x] 同一 workspace 多 task 独立投影，删除 task 后仅清理对应条目。
+- [x] Direct 批处理只在最后一个 turn 产生完成提醒；失败与停止映射保持红/黄语义。
+- [x] 前端只在 project/task/run 完整匹配成功呈现的会话上确认，确认在途去重，旧响应不覆盖新事件。
+- [x] 提醒点使用 Gold Band 主题语义 token、Tooltip 和 `aria-label`，不只依赖颜色传达含义。
+
+最终验证：
+
+- `cargo test -p gold-band-desktop conversation_attention --no-fail-fast`：4 项通过。
+- `cargo test -p gold-band-desktop direct_terminal_result_projection --no-fail-fast`：2 项通过。
+- `npm run web:test -- web/tests/conversation-terminal-result.test.ts web/tests/conversation-terminal-result-ui.test.tsx web/tests/api/desktop.test.ts`：21 项通过。
+- `npx tsc -p web/tsconfig.build.json --noEmit` 与 `npx vite build --config web/vite.config.ts`：通过。
+- 本地 `/chat` 页面：浅色和深色均验证 8px 提醒点位于 16px Agent icon 右上角；危险色分别投影为浅色 `rgb(200, 50, 55)`、深色 `rgb(223, 107, 107)`，可访问名称为“Codex · 执行异常，尚未查看”。进入会话后的清除、迟到确认保护和在途去重由 DOM/导航/接口回归测试固化。

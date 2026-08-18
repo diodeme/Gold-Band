@@ -34,6 +34,7 @@ describe('EditableConversationTitle', () => {
       expect(trigger?.classList.contains('flex-1')).toBe(false);
       expect(trigger?.classList.contains('inline-flex')).toBe(true);
       expect(trigger?.classList.contains('max-w-full')).toBe(true);
+      expect(trigger?.classList.contains('-ml-1')).toBe(false);
 
       await act(async () => {
         trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

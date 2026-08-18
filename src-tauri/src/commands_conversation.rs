@@ -595,7 +595,7 @@ pub async fn create_conversation_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
-) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationCreateResultVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
@@ -734,7 +734,7 @@ pub async fn update_task_metadata(
     task_id: String,
     title: String,
     description: Option<String>,
-) -> CommandResult<()> {
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -746,6 +746,12 @@ pub async fn update_task_metadata(
             serde_json::json!({ "projectId": project_id }),
         ));
     };
+    let pin = app_state
+        .conversation_pins
+        .iter()
+        .find(|pin| pin.project_id == resolved_project_id && pin.task_id == task_id);
+    let pinned = pin.is_some();
+    let pin_order = pin.map(|pin| pin.order);
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::update_task_metadata_vm(
@@ -754,6 +760,8 @@ pub async fn update_task_metadata(
             &task_id,
             &title,
             description.as_deref(),
+            pinned,
+            pin_order,
         )
     })
     .await

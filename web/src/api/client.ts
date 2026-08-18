@@ -12,12 +12,14 @@ import type {
   AutoTemplateStore,
   ContentVm,
   ConversationAutoConfigVm,
+  ConversationCreateResultVm,
   ConversationCreateInput,
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationSearchResultVm,
   ConversationSessionSwitchVm,
   ConversationSidebarVm,
+  ConversationTaskRowVm,
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
   InterventionNavigateEventVm,
@@ -339,9 +341,9 @@ export interface RuntimeApi {
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
-  createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
+  createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
-  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<void>;
+  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;

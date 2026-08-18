@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -542,13 +542,13 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });
   },
   createConversationRun(input) {
-    return invokeCommand<ConversationRunVm>('create_conversation_run', { input });
+    return invokeCommand<ConversationCreateResultVm>('create_conversation_run', { input });
   },
   rerunConversationTask(projectId, taskId) {
     return invokeCommand<ConversationRunVm>('rerun_conversation_task', { projectId, taskId });
   },
   updateTaskMetadata(projectId, taskId, title, description) {
-    return invokeCommand('update_task_metadata', { projectId, taskId, title, description });
+    return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, title, description });
   },
   deleteConversationTask(projectId, taskId) {
     return invokeCommand<ConversationSidebarVm>('delete_conversation_task', { projectId, taskId });

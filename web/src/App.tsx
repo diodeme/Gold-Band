@@ -170,6 +170,10 @@ import {
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
 import {
+  applyConversationTaskSnapshot,
+  findConversationTask,
+} from '@/lib/conversation-task-state';
+import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
   type DesktopWindowMinimumSyncState,
@@ -186,6 +190,7 @@ import type {
   AppInfoVm,
   ConversationAttemptLifecycleVm,
   ConversationTaskActivityVm,
+  ConversationTaskRowVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationWorkLocation,
@@ -483,6 +488,14 @@ export function App() {
     const nextSidebar = prioritizeConversationSidebarWorkspace(sidebar, activeProjectId);
     conversationSidebarRef.current = nextSidebar;
     setConversationSidebar(nextSidebar);
+  }, []);
+
+  const applyConversationTask = useCallback((task: ConversationTaskRowVm) => {
+    setConversationSidebar((current) => {
+      const next = applyConversationTaskSnapshot(current, task);
+      conversationSidebarRef.current = next;
+      return next;
+    });
   }, []);
 
   const applyConversationTaskActivity = useCallback((
@@ -2142,13 +2155,10 @@ export function App() {
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
+        setError(null);
         updateTaskMetadata(projectId, taskId, title)
-          .then(() => getConversationSidebar())
-          .then((sidebar) => applyConversationSidebar(sidebar))
-          .catch(() => {});
-        if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
-          setConversationRun((prev) => prev ? { ...prev, title } : prev);
-        }
+          .then(applyConversationTask)
+          .catch((err) => setError(displayAppError(t, err)));
       }}
       onConversationDeleteTask={(projectId, taskId) => {
         deleteConversationTask(projectId, taskId)
@@ -2352,7 +2362,8 @@ export function App() {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
               setWorkflowRepairTarget(null);
-              const run = await createConversationRun(input);
+              const { task, run } = await createConversationRun(input);
+              applyConversationTask(task);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
                 createConversationWorkspaceScope({
@@ -2372,7 +2383,6 @@ export function App() {
                 taskId: run.taskId,
                 runId: run.runId,
               });
-              getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
               pushRoute('task-orchestration', taskListPage, {
                 kind: 'conversation-run',
                 projectId: run.projectId,
@@ -2478,9 +2488,15 @@ export function App() {
           <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
+      const taskTitle = findConversationTask(
+        conversationSidebar,
+        conversationPage.projectId,
+        conversationPage.taskId,
+      )?.title ?? conversationPage.taskId;
       return (
         <ConversationRunPage
           run={conversationRun}
+          taskTitle={taskTitle}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
           followMode={conversationSessionFollowRef.current.mode}
@@ -2592,11 +2608,10 @@ export function App() {
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
           onTitleChange={(title) => {
-            setConversationRun((prev) => prev ? { ...prev, title } : prev);
+            setError(null);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
-              .then(() => getConversationSidebar())
-              .then((sidebar) => applyConversationSidebar(sidebar))
-              .catch(() => {});
+              .then(applyConversationTask)
+              .catch((err) => setError(displayAppError(t, err)));
           }}
         />
       );

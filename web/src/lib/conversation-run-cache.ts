@@ -37,8 +37,13 @@ export class ConversationRunCache {
   store(run: ConversationRunVm, viewState?: ConversationRunViewState) {
     const key = conversationRunCacheKey(run);
     const current = this.entries.peek(key);
+    const canonicalRun = {
+      ...run,
+    } as ConversationRunVm & { title?: string; autoTitle?: boolean };
+    delete canonicalRun.title;
+    delete canonicalRun.autoTitle;
     this.entries.set(key, {
-      run,
+      run: canonicalRun,
       viewState: viewState ?? current?.viewState ?? {
         followMode: 'auto',
         selectedSessionKey: run.sessionTree.selectedSessionKey ?? null,

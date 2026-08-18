@@ -10,6 +10,9 @@ const workspaceMocks = vi.hoisted(() => ({
   setConversationDirectoryEntry: vi.fn(),
   openResource: vi.fn(),
 }));
+const headerMocks = vi.hoisted(() => ({
+  render: vi.fn(() => null),
+}));
 
 vi.mock('@/components/acp/ACPChatDialog', () => ({
   ACPChatDialog: () => null,
@@ -17,7 +20,7 @@ vi.mock('@/components/acp/ACPChatDialog', () => ({
   hasHydratedAcpSessionContent: vi.fn(() => false),
 }));
 vi.mock('@/components/conversation/ConversationRunHeader', () => ({
-  ConversationRunHeader: () => null,
+  ConversationRunHeader: headerMocks.render,
 }));
 vi.mock('@/components/conversation/ConversationSessionSwitcher', () => ({
   ConversationSessionSwitcher: () => null,
@@ -60,7 +63,6 @@ describe('ConversationRunPage follow mode reentry', () => {
       projectId: 'project-1',
       taskId: 'task-1',
       runId: 'run-1',
-      title: 'Run 1',
       runStatus: 'completed',
       runMode: 'workflow',
       activeSessions: [],
@@ -73,6 +75,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       root.render(
         <ConversationRunPage
           run={run}
+          taskTitle="Run 1"
           appConfig={{} as AppConfigVm}
           agentRegistry={null as AgentRegistryVm | null}
           followMode="manual"
@@ -85,6 +88,10 @@ describe('ConversationRunPage follow mode reentry', () => {
     });
 
     expect(onAutoFollowChange).not.toHaveBeenCalled();
+    expect(headerMocks.render).toHaveBeenCalledWith(
+      expect.objectContaining({ taskTitle: 'Run 1' }),
+      undefined,
+    );
 
     await act(async () => root.unmount());
   });

@@ -81,6 +81,7 @@ function normalizeSessionPath(path: string) {
 
 interface ConversationRunPageProps {
   run: ConversationRunVm;
+  taskTitle: string;
   appConfig: AppConfigVm;
   agentRegistry: AgentRegistryVm | null;
   onRerun: () => void;
@@ -95,6 +96,7 @@ interface ConversationRunPageProps {
 
 export function ConversationRunPage({
   run,
+  taskTitle,
   appConfig,
   agentRegistry,
   onRerun,
@@ -445,6 +447,7 @@ export function ConversationRunPage({
         <div ref={headerAreaRef} className="shrink-0 relative">
           {!isDirect || !selectedLeaf ? <ConversationRunHeader
             run={run}
+            taskTitle={taskTitle}
             selectedSessionLeaf={selectedLeaf}
             canViewWorkflow={canViewWorkflow}
             canEditWorkflow={run.runMode === 'workflow'}
@@ -537,7 +540,7 @@ export function ConversationRunPage({
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}
             directSessionHeader={isDirect ? {
-              title: run.title,
+              title: taskTitle,
               onTitleChange,
             } : undefined}
             usageCompact

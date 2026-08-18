@@ -273,8 +273,6 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
   projectId: 'default',
   taskId: 'mock-task',
   runId: 'run-051',
-  title: '错误阻塞预览',
-  autoTitle: true,
   runMode: 'workflow',
   workflowTemplateId: 'default',
   runStatus: 'paused',

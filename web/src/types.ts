@@ -415,7 +415,7 @@ export interface AcpCommandItemVm {
 
 export interface AcpCommandCatalogVm {
   agentType: string;
-  workspaceKey: string;
+  projectId: string;
   commands: AcpCommandItemVm[];
   updatedAt: string;
 }
@@ -2034,6 +2034,7 @@ export interface ConversationTaskRowVm {
   agentIdentity?: ConversationAgentIdentityVm | null;
   lastActivityAt?: string | null;
   activity?: ConversationTaskActivityVm | null;
+  unreadTerminalResult?: ConversationTerminalResultVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
@@ -2088,6 +2089,18 @@ export interface AcpAgentExecutionVm {
 export interface ConversationTaskActivityVm {
   phase: string;
   stopping: boolean;
+}
+
+export interface ConversationTerminalResultVm {
+  eventId: string;
+  runId: string;
+  kind: 'completed' | 'stopped' | 'failed';
+  occurredAt: string;
+}
+
+export interface ConversationTerminalResultAcknowledgementVm {
+  acknowledged: boolean;
+  unreadTerminalResult?: ConversationTerminalResultVm | null;
 }
 
 export interface ConversationRunSummaryVm {

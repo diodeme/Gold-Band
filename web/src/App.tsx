@@ -15,6 +15,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationSidebar,
+  acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
   switchConversationSession,
@@ -53,6 +54,7 @@ import {
   getGitCapability,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
+  subscribeConversationTerminalResultUpdates,
   subscribeScheduledTaskUpdates,
   updateNotificationAttention,
   recordActivity,
@@ -64,6 +66,8 @@ import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
   applyConversationSidebarTaskActivity,
+  applyConversationSidebarTerminalResultAcknowledgement,
+  applyConversationSidebarTerminalResultUpdate,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
@@ -164,6 +168,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
@@ -398,6 +403,7 @@ export function App() {
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
   const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeAcpSessionUpdates>[0] | null>(null);
+  const conversationTerminalAcknowledgementsInFlightRef = useRef(new Set<string>());
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
   const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
@@ -945,6 +951,59 @@ export function App() {
       dispose?.();
     };
   }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeConversationTerminalResultUpdates((event) => {
+      if (!active) return;
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarTerminalResultUpdate(current, event);
+        if (next !== current) conversationSidebarRef.current = next;
+        return next;
+      });
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (uiMode !== 'conversation') return;
+    const acknowledgementTarget = conversationTerminalResultAcknowledgementTarget(
+      conversationSidebar,
+      conversationPage,
+      conversationRun,
+    );
+    if (!acknowledgementTarget) return;
+    const acknowledgementKey = `${acknowledgementTarget.projectId}:${acknowledgementTarget.taskId}:${acknowledgementTarget.eventId}`;
+    if (conversationTerminalAcknowledgementsInFlightRef.current.has(acknowledgementKey)) return;
+    conversationTerminalAcknowledgementsInFlightRef.current.add(acknowledgementKey);
+    void acknowledgeConversationTerminalResult(
+      acknowledgementTarget.projectId,
+      acknowledgementTarget.taskId,
+      acknowledgementTarget.eventId,
+    ).then((acknowledgement) => {
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarTerminalResultAcknowledgement(
+          current,
+          acknowledgementTarget.projectId,
+          acknowledgementTarget.taskId,
+          acknowledgementTarget.eventId,
+          acknowledgement.unreadTerminalResult,
+        );
+        if (next !== current) conversationSidebarRef.current = next;
+        return next;
+      });
+    }).catch(() => {}).finally(() => {
+      conversationTerminalAcknowledgementsInFlightRef.current.delete(acknowledgementKey);
+    });
+  }, [conversationPage, conversationRun, conversationSidebar, uiMode]);
 
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return undefined;

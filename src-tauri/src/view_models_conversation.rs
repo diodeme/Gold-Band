@@ -39,6 +39,8 @@ use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
 };
 
+use crate::conversation_attention::{ConversationTerminalResultVm, unread_terminal_results};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledTaskVm {
@@ -443,6 +445,7 @@ pub struct ConversationTaskRowVm {
     pub agent_identity: Option<ConversationAgentIdentityVm>,
     pub last_activity_at: Option<String>,
     pub activity: Option<ConversationTaskActivityVm>,
+    pub unread_terminal_result: Option<ConversationTerminalResultVm>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
@@ -1138,6 +1141,7 @@ fn conversation_task_row_vm_from_task(
     task: &TaskState,
     pinned: bool,
     pin_order: Option<usize>,
+    unread_terminal_result: Option<&ConversationTerminalResultVm>,
 ) -> ConversationTaskRowVm {
     let task_id = &task.id;
     let metadata = read_conversation_metadata(app, task_id);
@@ -1156,6 +1160,9 @@ fn conversation_task_row_vm_from_task(
     let latest_run = runs.first().cloned();
     let last_activity_at = latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
     let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
+    let unread_terminal_result = (run_mode == "direct")
+        .then(|| unread_terminal_result.cloned())
+        .flatten();
 
     ConversationTaskRowVm {
         project_id: project_id.to_string(),
@@ -1171,6 +1178,7 @@ fn conversation_task_row_vm_from_task(
             .and_then(|metadata| metadata.agent_identity.clone()),
         last_activity_at,
         activity,
+        unread_terminal_result,
         latest_run,
         runs,
         pinned,
@@ -1191,8 +1199,14 @@ pub fn conversation_task_row_vm(
     let task = app
         .task_show(task_id)
         .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
+    let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
     Ok(conversation_task_row_vm_from_task(
-        app, project_id, &task, pinned, pin_order,
+        app,
+        project_id,
+        &task,
+        pinned,
+        pin_order,
+        unread_terminal_results.get(task_id),
     ))
 }
 
@@ -1220,6 +1234,7 @@ pub fn conversation_sidebar_vm_from_sources(
     }
 
     for source in sources {
+        let unread_terminal_results = unread_terminal_results(&source.app).unwrap_or_default();
         if let Ok(tasks) = source.app.task_list() {
             for task in tasks {
                 let task_id = &task.id;
@@ -1237,6 +1252,7 @@ pub fn conversation_sidebar_vm_from_sources(
                     &task,
                     pinned,
                     pin_order,
+                    unread_terminal_results.get(task_id),
                 );
 
                 if pinned {
@@ -2180,6 +2196,7 @@ fn derive_conversation_attempt_lifecycle(
         revision: 1,
         phase: execution_phase,
         locator: None,
+        recovery_candidate_token: None,
         updated_at: String::new(),
     };
     derive_conversation_attempt_lifecycle_with_facets(
@@ -4699,6 +4716,7 @@ mod tests {
             revision: 7,
             phase: RuntimeExecutionPhase::LaunchingNextNode,
             locator: None,
+            recovery_candidate_token: None,
             updated_at: "t1".to_string(),
         };
         let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
@@ -4729,6 +4747,7 @@ mod tests {
             revision: 4,
             phase: RuntimeExecutionPhase::AwaitingManualCheck,
             locator: None,
+            recovery_candidate_token: None,
             updated_at: "t1".to_string(),
         };
         let lifecycle = derive_conversation_attempt_lifecycle_with_facets(

@@ -325,6 +325,10 @@ export function subscribeConversationRunStateUpdates(listener: Parameters<NonNul
   return getRuntimeApi().subscribeConversationRunStateUpdates?.(listener) ?? Promise.resolve(() => {});
 }
 
+export function subscribeConversationTerminalResultUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeConversationTerminalResultUpdates']>>[0]) {
+  return getRuntimeApi().subscribeConversationTerminalResultUpdates?.(listener) ?? Promise.resolve(() => {});
+}
+
 export function subscribeScheduledTaskUpdates(listener: Parameters<NonNullable<RuntimeApi['subscribeScheduledTaskUpdates']>>[0]) {
   return getRuntimeApi().subscribeScheduledTaskUpdates?.(listener) ?? Promise.resolve(() => {});
 }
@@ -512,6 +516,10 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
 
 export function getConversationSidebar() {
   return getRuntimeApi().getConversationSidebar();
+}
+
+export function acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string) {
+  return getRuntimeApi().acknowledgeConversationTerminalResult(projectId, taskId, eventId);
 }
 
 export function setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -708,6 +716,14 @@ export function openExternalUrl(url: string) {
 
 export function openFileWithSystemApp(path: string) {
   return getRuntimeApi().openFileWithSystemApp(path);
+}
+
+export function copyImageToClipboard(input: import('./api/client').ImageActionInput) {
+  return getRuntimeApi().copyImageToClipboard(input);
+}
+
+export function saveImageAs(input: import('./api/client').ImageActionInput) {
+  return getRuntimeApi().saveImageAs(input);
 }
 // pickAttachmentFiles for file picker in desktop envs
 export function pickAttachmentFiles() {

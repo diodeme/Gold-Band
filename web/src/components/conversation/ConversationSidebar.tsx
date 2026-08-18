@@ -15,6 +15,14 @@ import { formatCompactRelativeTime } from '@/lib/datetime';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
 
+export function conversationSidebarTerminalResultDotClass(
+  kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
+) {
+  if (kind === 'completed') return 'bg-gold-success';
+  if (kind === 'stopped') return 'bg-gold-warning';
+  return 'bg-gold-danger';
+}
+
 export type ConversationSidebarNavigationKey =
   | 'quick-chat'
   | 'agents'
@@ -625,6 +633,10 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const showActivity = shouldShowConversationSidebarActivity(task);
+  const unreadTerminalResult = isDirect ? task.unreadTerminalResult ?? null : null;
+  const unreadTerminalResultLabel = unreadTerminalResult
+    ? t(`conversation.sidebar.terminalResult.${unreadTerminalResult.kind}`)
+    : null;
   const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
@@ -683,18 +695,38 @@ function TaskRow({
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
-          <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            <Tooltip>
-              <TooltipTrigger asChild>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className="relative flex size-4 items-center justify-center"
+                data-conversation-activity={showActivity ? task.activity?.phase : undefined}
+                data-conversation-terminal-result={unreadTerminalResult?.kind}
+                aria-label={unreadTerminalResultLabel
+                  ? `${task.agentIdentity.displayName} · ${unreadTerminalResultLabel}`
+                  : task.agentIdentity.displayName}
+              >
                 <img
                   src={agentIconSrc(task.agentIdentity.iconKey)}
                   alt=""
                   className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
                 />
-              </TooltipTrigger>
-              <TooltipContent>{task.agentIdentity.displayName}</TooltipContent>
-            </Tooltip>
-          </span>
+                {unreadTerminalResult ? (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'absolute -right-0.5 -top-0.5 size-2 rounded-full ring-1 ring-sidebar',
+                      conversationSidebarTerminalResultDotClass(unreadTerminalResult.kind),
+                    )}
+                  />
+                ) : null}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {unreadTerminalResultLabel
+                ? `${task.agentIdentity.displayName} · ${unreadTerminalResultLabel}`
+                : task.agentIdentity.displayName}
+            </TooltipContent>
+          </Tooltip>
         ) : (
           <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}

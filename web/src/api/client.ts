@@ -147,6 +147,22 @@ export interface ConversationRunStateUpdatedEventVm {
   outcome?: string | null;
 }
 
+export interface ConversationTerminalResultUpdatedEventVm {
+  projectId: string;
+  taskId: string;
+  unreadTerminalResult: import('../types').ConversationTerminalResultVm;
+}
+
+export type ImageActionSourceInput =
+  | { kind: 'path'; path: string }
+  | { kind: 'bytes'; dataBase64: string };
+
+export interface ImageActionInput {
+  source: ImageActionSourceInput;
+  fileName: string;
+  mime: string;
+}
+
 export interface ScheduledTaskUpdatedEventVm {
   projectId: string;
   scheduledTaskId: string;
@@ -277,6 +293,7 @@ export interface RuntimeApi {
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
+  subscribeConversationTerminalResultUpdates?(listener: (event: ConversationTerminalResultUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledNotifications?(listener: (event: ScheduledNotificationEventVm) => void): Promise<() => void>;
@@ -328,6 +345,7 @@ export interface RuntimeApi {
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;
+  acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;
   setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean): Promise<import('../types').ScheduledTaskVm>;
   createScheduledTask(input: import('../types').CreateScheduledTaskInput): Promise<import('../types').ScheduledTaskVm>;
@@ -376,6 +394,8 @@ export interface RuntimeApi {
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;
+  copyImageToClipboard(input: ImageActionInput): Promise<void>;
+  saveImageAs(input: ImageActionInput): Promise<boolean>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   statAttachmentFiles(paths: string[]): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;

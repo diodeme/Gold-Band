@@ -83,7 +83,7 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 3;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 4;
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -181,7 +181,7 @@ impl SearchIndex {
             )?;
         }
 
-        if !matches!(schema_version, 1 | 2 | SEARCH_INDEX_SCHEMA_VERSION) {
+        if schema_version != SEARCH_INDEX_SCHEMA_VERSION {
             conn.execute_batch(
                 "DROP TRIGGER IF EXISTS session_prompts_ai;
                 DROP TRIGGER IF EXISTS session_prompts_ad;
@@ -204,7 +204,8 @@ impl SearchIndex {
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
-                session_id   TEXT NOT NULL,
+                session_id   TEXT,
+                adapter_id   TEXT NOT NULL DEFAULT '',
                 attempt_path TEXT NOT NULL PRIMARY KEY,
                 task_id      TEXT NOT NULL,
                 run_id       TEXT NOT NULL,
@@ -222,7 +223,7 @@ impl SearchIndex {
             CREATE TABLE IF NOT EXISTS session_prompts (
                 id            TEXT NOT NULL,
                 attempt_path  TEXT NOT NULL,
-                session_id    TEXT NOT NULL,
+                session_id    TEXT,
                 prompt_id     TEXT,
                 timestamp     TEXT NOT NULL DEFAULT '',
                 text          TEXT NOT NULL DEFAULT '',
@@ -438,10 +439,11 @@ impl SearchIndex {
         let tx = conn.unchecked_transaction()?;
 
         let attempt_path = attempt_dir.to_string();
-        let (session_id, status, title, created_at, updated_at) = snapshot
+        let (session_id, adapter_id, status, title, created_at, updated_at) = snapshot
             .as_ref()
             .map(|s| {
                 (
+                    s.session_id.as_deref(),
                     s.adapter_id.as_str(),
                     match s.latest_turn_status {
                         crate::acp::events::AcpLatestTurnStatus::None => "none",
@@ -454,21 +456,23 @@ impl SearchIndex {
                     s.updated_at.as_str(),
                 )
             })
-            .unwrap_or(("", "", "", "", ""));
+            .unwrap_or((None, "", "", "", "", ""));
 
         tx.execute(
             "INSERT INTO sessions
-                (session_id, attempt_path, task_id, run_id, round_id,
+                (session_id, adapter_id, attempt_path, task_id, run_id, round_id,
                  node_id, attempt_id, outer_node_id, outer_attempt_id,
                  title, status, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
              ON CONFLICT(attempt_path) DO UPDATE SET
                 session_id=excluded.session_id,
+                adapter_id=excluded.adapter_id,
                 title=excluded.title,
                 status=excluded.status,
                 updated_at=excluded.updated_at",
             params![
                 session_id,
+                adapter_id,
                 attempt_path,
                 ctx.task_id,
                 ctx.run_id,
@@ -508,6 +512,7 @@ impl SearchIndex {
                     (id, attempt_path, session_id, prompt_id, timestamp, text, normalized_text)
                  VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(attempt_path, id) DO UPDATE SET
+                    session_id=excluded.session_id,
                     text=excluded.text,
                     normalized_text=excluded.normalized_text",
                 params![
@@ -802,7 +807,7 @@ impl SearchIndex {
         let conn = self.conn.lock().expect("search index lock poisoned");
         let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
         let mut stmt = conn.prepare(
-            "SELECT session_id, attempt_path, task_id, run_id, round_id, node_id,
+            "SELECT session_id, adapter_id, attempt_path, task_id, run_id, round_id, node_id,
                     attempt_id, outer_node_id, outer_attempt_id, title, status,
                     created_at, updated_at
              FROM sessions
@@ -813,18 +818,19 @@ impl SearchIndex {
         let rows = stmt.query_map(params![pattern, limit as i64], |row| {
             Ok(SessionSearchResult {
                 session_id: row.get(0)?,
-                attempt_path: row.get(1)?,
-                task_id: row.get(2)?,
-                run_id: row.get(3)?,
-                round_id: row.get(4)?,
-                node_id: row.get(5)?,
-                attempt_id: row.get(6)?,
-                outer_node_id: row.get(7)?,
-                outer_attempt_id: row.get(8)?,
-                title: row.get(9)?,
-                status: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                adapter_id: row.get(1)?,
+                attempt_path: row.get(2)?,
+                task_id: row.get(3)?,
+                run_id: row.get(4)?,
+                round_id: row.get(5)?,
+                node_id: row.get(6)?,
+                attempt_id: row.get(7)?,
+                outer_node_id: row.get(8)?,
+                outer_attempt_id: row.get(9)?,
+                title: row.get(10)?,
+                status: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
             })
         })?;
         rows.collect()
@@ -937,7 +943,7 @@ fn excerpt_around_search_term(text: &str, term: &str) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct PromptSearchResult {
     pub prompt_event_id: String,
-    pub session_id: String,
+    pub session_id: Option<String>,
     pub prompt_id: Option<String>,
     pub timestamp: String,
     pub text: String,
@@ -968,7 +974,8 @@ pub struct TaskSearchResult {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSearchResult {
-    pub session_id: String,
+    pub session_id: Option<String>,
+    pub adapter_id: String,
     pub attempt_path: String,
     pub task_id: String,
     pub run_id: String,
@@ -1007,6 +1014,12 @@ mod tests {
                 );
                 INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
                 VALUES ('task-1', '/tmp/task-1', 'Task 1', '', '', '', '');
+                CREATE TABLE sessions (
+                    session_id TEXT NOT NULL,
+                    attempt_path TEXT NOT NULL PRIMARY KEY
+                );
+                INSERT INTO sessions (session_id, attempt_path)
+                VALUES ('npx', '/tmp/attempt-1');
                 CREATE TABLE session_prompts (
                     id TEXT NOT NULL PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -1014,7 +1027,8 @@ mod tests {
                     timestamp TEXT NOT NULL DEFAULT '',
                     text TEXT NOT NULL DEFAULT '',
                     normalized_text TEXT NOT NULL DEFAULT ''
-                );",
+                );
+                PRAGMA user_version = 3;",
             )
             .unwrap();
         }
@@ -1036,13 +1050,47 @@ mod tests {
         assert!(task_fts_sql.contains("tokenize='trigram'"));
 
         let mut stmt = conn.prepare("PRAGMA table_info(session_prompts)").unwrap();
-        let column_names = stmt
-            .query_map([], |row| row.get::<_, String>(1))
+        let prompt_columns = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i32>(3)?))
+            })
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
-        assert!(column_names.iter().any(|name| name == "attempt_path"));
+        assert!(
+            prompt_columns
+                .iter()
+                .any(|(name, _)| name == "attempt_path")
+        );
+        assert!(
+            prompt_columns
+                .iter()
+                .any(|(name, not_null)| name == "session_id" && *not_null == 0)
+        );
+
+        let mut session_stmt = conn.prepare("PRAGMA table_info(sessions)").unwrap();
+        let session_columns = session_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i32>(3)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            session_columns
+                .iter()
+                .any(|(name, not_null)| name == "session_id" && *not_null == 0)
+        );
+        assert!(
+            session_columns
+                .iter()
+                .any(|(name, not_null)| name == "adapter_id" && *not_null == 1)
+        );
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_count, 0);
 
         let mut task_stmt = conn.prepare("PRAGMA table_info(tasks)").unwrap();
         let task_columns = task_stmt
@@ -1067,6 +1115,7 @@ mod tests {
             .unwrap();
         assert_eq!(task_count, 1);
         drop(stmt);
+        drop(session_stmt);
         drop(task_stmt);
         drop(conn);
         let migrated_results = index.search_tasks("Task", 10).unwrap();

@@ -23,11 +23,14 @@ use crate::storage::{active_storage_path_config, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageReader, Limits};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Cursor, Read, Write};
 use std::str::FromStr;
 use tracing::debug;
 
@@ -91,6 +94,7 @@ pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) 
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
+    ResourceLink(AcpResourceLinkBlock),
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +121,24 @@ pub struct AcpResourceLinkBlock {
     pub uri: String,
     pub mime_type: String,
     pub size: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentProjectionPolicy {
+    pub inline_content_max_bytes: u64,
+    pub inline_image_max_bytes: u64,
+    pub inline_image_max_dimension: u32,
+}
+
+impl From<&crate::config::RuntimeConfig> for AttachmentProjectionPolicy {
+    fn from(config: &crate::config::RuntimeConfig) -> Self {
+        Self {
+            inline_content_max_bytes: config.conversation_inline_content_max_bytes,
+            inline_image_max_bytes: config.conversation_inline_image_max_bytes,
+            inline_image_max_dimension: config.conversation_inline_image_max_dimension,
+        }
+    }
 }
 
 /// Resolved attachment ready to be sent to ACP.
@@ -282,6 +304,7 @@ pub struct WorkerInvocation {
     /// attempt and are materialized under user-inputs/* before prompting.
     #[serde(default)]
     pub user_input_attachment_paths: Vec<String>,
+    pub attachment_projection_policy: AttachmentProjectionPolicy,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -556,6 +579,11 @@ struct AttachmentFormat {
     content_kind: AttachmentContentKind,
 }
 
+const INLINE_IMAGE_DECODE_MAX_DIMENSION: u32 = 8_192;
+const INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
+const INLINE_IMAGE_JPEG_QUALITY: u8 = 92;
+const INLINE_IMAGE_RESIZE_ATTEMPTS: usize = 10;
+
 const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
     AttachmentFormat {
         extensions: &["png"],
@@ -722,14 +750,15 @@ pub enum PromptVisibility {
     Hidden,
 }
 
-/// Resolve file paths into ResolvedAttachment structs.
-/// For images: base64-encode and retain both visual content and resource-link metadata.
-/// For text files: read as UTF-8 and retain both embedded content and resource-link metadata.
-/// The current ACP connection capabilities choose the final protocol shape when prompting.
-/// Other files are skipped.
+/// Resolve file paths into attachment intents without exceeding the configured inline budgets.
+/// Text over the content budget is projected metadata-first as a resource link and is never read.
+/// Images are inspected metadata/header-first. Those outside the byte or dimension budget are
+/// streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
+/// path remains canonical and is used whenever the live Agent only supports links.
 pub fn resolve_attachments(
     paths: &[String],
     storage_prefix: &str,
+    policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
     let mut resolved = Vec::new();
     for path_str in paths {
@@ -742,8 +771,7 @@ pub fn resolve_attachments(
         if attachment_format(&extension).is_none() {
             continue;
         }
-        let data = std::fs::read(std_path)?;
-        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, data)? {
+        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, policy)? {
             resolved.push(attachment);
         }
     }
@@ -753,7 +781,7 @@ pub fn resolve_attachments(
 fn resolved_attachment(
     path: &std::path::Path,
     storage_prefix: &str,
-    data: Vec<u8>,
+    policy: AttachmentProjectionPolicy,
 ) -> Result<Option<ResolvedAttachment>> {
     let Some(meta) = attachment_meta_for_path(path, storage_prefix)? else {
         return Ok(None);
@@ -773,19 +801,138 @@ fn resolved_attachment(
         size: meta.size,
     };
     let block = match format.content_kind {
-        AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
-            data: base64_encode(&data),
-            mime_type: format.mime_type.to_string(),
-            link,
-        }),
-        AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
-            resource: AcpTextResourceContents {
-                text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
-            },
-            link,
-        }),
+        AttachmentContentKind::Image => {
+            project_image_attachment(path, format.mime_type, &link, policy)
+        }
+        AttachmentContentKind::Text if meta.size > policy.inline_content_max_bytes => {
+            AcpContentBlock::ResourceLink(link)
+        }
+        AttachmentContentKind::Text => {
+            let data = std::fs::read(path)?;
+            if data.len() as u64 > policy.inline_content_max_bytes {
+                AcpContentBlock::ResourceLink(link)
+            } else {
+                AcpContentBlock::Resource(AcpResourceBlock {
+                    resource: AcpTextResourceContents {
+                        text: String::from_utf8(data)
+                            .unwrap_or_else(|_| "[binary file]".to_string()),
+                    },
+                    link,
+                })
+            }
+        }
     };
     Ok(Some(ResolvedAttachment { meta, block }))
+}
+
+fn project_image_attachment(
+    path: &std::path::Path,
+    original_mime_type: &str,
+    link: &AcpResourceLinkBlock,
+    policy: AttachmentProjectionPolicy,
+) -> AcpContentBlock {
+    let Some((bytes, mime_type)) =
+        inline_image_derivative(path, original_mime_type, link.size, policy)
+    else {
+        return AcpContentBlock::ResourceLink(link.clone());
+    };
+    AcpContentBlock::Image(AcpImageBlock {
+        data: base64_encode(&bytes),
+        mime_type,
+        link: link.clone(),
+    })
+}
+
+fn inline_image_derivative(
+    path: &std::path::Path,
+    original_mime_type: &str,
+    source_size: u64,
+    policy: AttachmentProjectionPolicy,
+) -> Option<(Vec<u8>, String)> {
+    if policy.inline_image_max_bytes == 0 || policy.inline_image_max_dimension == 0 {
+        return None;
+    }
+    let dimensions = ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    let within_dimension_budget = dimensions.0 <= policy.inline_image_max_dimension
+        && dimensions.1 <= policy.inline_image_max_dimension;
+    if source_size <= policy.inline_image_max_bytes && within_dimension_budget {
+        if let Some(data) = read_file_with_limit(path, policy.inline_image_max_bytes) {
+            return Some((data, original_mime_type.to_string()));
+        }
+    }
+    if dimensions.0 > INLINE_IMAGE_DECODE_MAX_DIMENSION
+        || dimensions.1 > INLINE_IMAGE_DECODE_MAX_DIMENSION
+    {
+        return None;
+    }
+
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(INLINE_IMAGE_DECODE_MAX_DIMENSION);
+    limits.max_image_height = Some(INLINE_IMAGE_DECODE_MAX_DIMENSION);
+    limits.max_alloc = Some(INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES);
+    let mut reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    reader.limits(limits);
+    let decoded = reader.decode().ok()?;
+    let mut image = resize_image_to_dimension_budget(decoded, policy.inline_image_max_dimension);
+
+    if let Some(lossless) = encode_inline_webp(&image) {
+        if lossless.len() as u64 <= policy.inline_image_max_bytes {
+            return Some((lossless, "image/webp".to_string()));
+        }
+    }
+
+    for _ in 0..INLINE_IMAGE_RESIZE_ATTEMPTS {
+        let encoded = encode_inline_jpeg(&image)?;
+        if encoded.len() as u64 <= policy.inline_image_max_bytes {
+            return Some((encoded, "image/jpeg".to_string()));
+        }
+        let ratio = ((policy.inline_image_max_bytes as f64 / encoded.len() as f64).sqrt() * 0.94)
+            .clamp(0.25, 0.9);
+        let next_width = ((image.width() as f64 * ratio).floor() as u32).max(1);
+        let next_height = ((image.height() as f64 * ratio).floor() as u32).max(1);
+        if next_width == image.width() && next_height == image.height() {
+            break;
+        }
+        image = image.resize(next_width, next_height, FilterType::Triangle);
+    }
+    None
+}
+
+fn read_file_with_limit(path: &std::path::Path, max_bytes: u64) -> Option<Vec<u8>> {
+    let mut data = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut data)
+        .ok()?;
+    (data.len() as u64 <= max_bytes).then_some(data)
+}
+
+fn resize_image_to_dimension_budget(image: DynamicImage, max_dimension: u32) -> DynamicImage {
+    if image.width() <= max_dimension && image.height() <= max_dimension {
+        return image;
+    }
+    image.resize(max_dimension, max_dimension, FilterType::Triangle)
+}
+
+fn encode_inline_webp(image: &DynamicImage) -> Option<Vec<u8>> {
+    let mut output = Cursor::new(Vec::new());
+    image.write_to(&mut output, image::ImageFormat::WebP).ok()?;
+    Some(output.into_inner())
+}
+
+fn encode_inline_jpeg(image: &DynamicImage) -> Option<Vec<u8>> {
+    let mut encoded = Vec::new();
+    let rgb = DynamicImage::ImageRgb8(image.to_rgb8());
+    JpegEncoder::new_with_quality(&mut encoded, INLINE_IMAGE_JPEG_QUALITY)
+        .encode_image(&rgb)
+        .ok()?;
+    Some(encoded)
 }
 
 /// Persists attachments added by a user turn into the owning attempt before
@@ -793,6 +940,7 @@ fn resolved_attachment(
 pub fn resolve_user_input_attachments(
     paths: &[String],
     attempt_dir: &Utf8Path,
+    policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
     if paths.is_empty() {
         return Ok(Vec::new());
@@ -821,16 +969,16 @@ pub fn resolve_user_input_attachments(
                 .ok()
                 .zip(std::fs::canonicalize(destination.as_std_path()).ok())
                 .is_some_and(|(source, destination)| source == destination);
-        let bytes = std::fs::read(source)?;
         if !same_file {
+            let mut source_file = std::fs::File::open(source)?;
             let mut file = AtomicWriteFile::open(destination.as_std_path())?;
-            file.write_all(&bytes)?;
+            std::io::copy(&mut source_file, &mut file)?;
             file.commit()?;
         }
         if let Some(attachment) = resolved_attachment(
             destination.as_std_path(),
             USER_INPUT_ATTACHMENT_PREFIX,
-            bytes,
+            policy,
         )? {
             resolved.push(attachment);
         }
@@ -1716,9 +1864,13 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     let task_inputs = resolve_attachments(
         &req.task_input_attachment_paths,
         TASK_INPUT_ATTACHMENT_PREFIX,
+        req.attachment_projection_policy,
     )?;
-    let user_inputs =
-        resolve_user_input_attachments(&req.user_input_attachment_paths, &req.attempt_dir)?;
+    let user_inputs = resolve_user_input_attachments(
+        &req.user_input_attachment_paths,
+        &req.attempt_dir,
+        req.attachment_projection_policy,
+    )?;
     for resolved in task_inputs.into_iter().chain(user_inputs) {
         attachment_metas.push(resolved.meta);
         content_blocks.push(resolved.block);
@@ -2427,6 +2579,25 @@ mod tests {
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
 
+    fn test_attachment_projection_policy() -> AttachmentProjectionPolicy {
+        AttachmentProjectionPolicy::from(&crate::config::RuntimeConfig::default())
+    }
+
+    fn test_png(width: u32, height: u32) -> Vec<u8> {
+        let raster = image::ImageBuffer::from_fn(width, height, |x, y| {
+            image::Rgb([
+                ((x * 31 + y * 17) % 255) as u8,
+                ((x * 13 + y * 47) % 255) as u8,
+                ((x * 53 + y * 7) % 255) as u8,
+            ])
+        });
+        let mut output = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(raster)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        output.into_inner()
+    }
+
     fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         let runtime_context = PromptRuntimeContext {
             project_id: "project-001".to_string(),
@@ -2487,6 +2658,9 @@ mod tests {
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
             user_input_attachment_paths: Vec::new(),
+            attachment_projection_policy: AttachmentProjectionPolicy::from(
+                &crate::config::RuntimeConfig::default(),
+            ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
         }
@@ -2519,7 +2693,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let resolved = resolve_attachments(&paths, "task-inputs").unwrap();
+        let resolved =
+            resolve_attachments(&paths, "task-inputs", test_attachment_projection_policy())
+                .unwrap();
 
         assert_eq!(resolved.len(), paths.len());
         assert!(resolved.iter().all(|attachment| {
@@ -2534,8 +2710,12 @@ mod tests {
         let path = dir.path().join("acp.raw.jsonl");
         std::fs::write(&path, b"{\"event\":1}\n{\"event\":2}\n").unwrap();
 
-        let resolved =
-            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs").unwrap();
+        let resolved = resolve_attachments(
+            &[path.to_string_lossy().to_string()],
+            "task-inputs",
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].meta.name, "acp.raw.jsonl");
@@ -2549,14 +2729,98 @@ mod tests {
     }
 
     #[test]
+    fn text_attachment_uses_utf8_byte_boundary_before_reading_inline_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let at_limit = dir.path().join("at-limit.md");
+        let over_limit = dir.path().join("over-limit.md");
+        std::fs::write(&at_limit, vec![b'a'; 64_000]).unwrap();
+        std::fs::write(&over_limit, vec![b'b'; 64_001]).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 4 * 1024 * 1024,
+            inline_image_max_dimension: 2_560,
+        };
+
+        let resolved = resolve_attachments(
+            &[
+                at_limit.to_string_lossy().to_string(),
+                over_limit.to_string_lossy().to_string(),
+            ],
+            "task-inputs",
+            policy,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource) if resource.resource.text.len() == 64_000
+        ));
+        assert!(matches!(
+            &resolved[1].block,
+            AcpContentBlock::ResourceLink(link) if link.size == 64_001
+        ));
+    }
+
+    #[test]
+    fn oversized_image_is_bounded_by_bytes_and_dimensions_before_inline_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.png");
+        let bytes = test_png(256, 256);
+        std::fs::write(&path, &bytes).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 8 * 1024,
+            inline_image_max_dimension: 64,
+        };
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs", policy)
+                .unwrap();
+
+        assert!(bytes.len() > policy.inline_image_max_bytes as usize);
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Image(image)
+                if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
+                    && image.data.len()
+                        <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
+                    && image.link.mime_type == "image/png"
+        ));
+    }
+
+    #[test]
+    fn undecodable_oversized_image_falls_back_to_original_resource_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.png");
+        std::fs::write(&path, vec![0_u8; 8 * 1024]).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 4 * 1024,
+            inline_image_max_dimension: 64,
+        };
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs", policy)
+                .unwrap();
+
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::ResourceLink(link)
+                if link.uri.ends_with("/broken.png") && link.size == 8 * 1024
+        ));
+    }
+
+    #[test]
     fn prompt_bundle_preserves_task_inputs_and_persists_user_inputs_by_scope() {
         let dir = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         let task_image = root.join("task-image.png");
         let follow_up_image = root.join("follow-up.png");
         let follow_up_text = root.join("notes.txt");
-        std::fs::write(task_image.as_std_path(), [1_u8, 2, 3]).unwrap();
-        std::fs::write(follow_up_image.as_std_path(), [4_u8, 5, 6]).unwrap();
+        let task_image_bytes = test_png(2, 2);
+        let follow_up_image_bytes = test_png(3, 2);
+        std::fs::write(task_image.as_std_path(), &task_image_bytes).unwrap();
+        std::fs::write(follow_up_image.as_std_path(), &follow_up_image_bytes).unwrap();
         std::fs::write(follow_up_text.as_std_path(), "runtime notes").unwrap();
         let attempt_dir = root.join("attempt-001");
         let mut invocation = test_worker_invocation(attempt_dir.clone());
@@ -2582,7 +2846,7 @@ mod tests {
         assert!(!attempt_dir.join("user-inputs/task-image.png").exists());
         assert_eq!(
             std::fs::read(attempt_dir.join("user-inputs/follow-up.png").as_std_path()).unwrap(),
-            [4_u8, 5, 6]
+            follow_up_image_bytes
         );
         assert_eq!(
             std::fs::read_to_string(attempt_dir.join("user-inputs/notes.txt").as_std_path())
@@ -3043,6 +3307,9 @@ mod tests {
             cold_attachments: Vec::new(),
             task_input_attachment_paths: Vec::new(),
             user_input_attachment_paths: Vec::new(),
+            attachment_projection_policy: AttachmentProjectionPolicy::from(
+                &crate::config::RuntimeConfig::default(),
+            ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
         };

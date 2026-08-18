@@ -91,6 +91,9 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub conversation_inline_content_max_bytes: u64,
+    pub conversation_inline_image_max_bytes: u64,
+    pub conversation_inline_image_max_dimension: u32,
     pub turn_files: TurnFilesVm,
     pub workspace_layout: WorkspaceLayoutVm,
     pub workspace_files: WorkspaceFilesVm,
@@ -1231,6 +1234,9 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        conversation_inline_content_max_bytes: config.conversation_inline_content_max_bytes,
+        conversation_inline_image_max_bytes: config.conversation_inline_image_max_bytes,
+        conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
         turn_files: TurnFilesVm {
             card_preview_limit: config.turn_files.card_preview_limit,
         },
@@ -7809,6 +7815,9 @@ mod tests {
         let vm = app_config_vm(&RuntimeConfig::default());
         let value = serde_json::to_value(vm).unwrap();
 
+        assert_eq!(value["conversationInlineContentMaxBytes"], 64_000);
+        assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
+        assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
         assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
         assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 288);

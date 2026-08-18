@@ -1522,7 +1522,6 @@ pub struct MaterializeAttachmentFileInput {
     pub name: String,
     #[serde(default)]
     pub mime: Option<String>,
-    pub size: u64,
     pub data_base64: String,
 }
 
@@ -1882,7 +1881,7 @@ fn materialize_attachment_files_to_dir(
             )
         })?;
         let size = bytes.len() as u64;
-        if size == 0 || size != file.size {
+        if size == 0 {
             return Err(CommandErrorVm::new(
                 "conversation.attachment-unreadable",
                 serde_json::json!({ "name": file.name }),
@@ -2373,7 +2372,7 @@ mod tests {
     }
 
     #[test]
-    fn materializes_memory_attachments_with_unique_names() {
+    fn materializes_memory_attachments_from_canonical_decoded_bytes() {
         let root = Utf8PathBuf::from_path_buf(
             std::env::temp_dir()
                 .join("gold-band-materialize-test")
@@ -2384,13 +2383,11 @@ mod tests {
             MaterializeAttachmentFileInput {
                 name: "shot.png".to_string(),
                 mime: Some("image/png".to_string()),
-                size: 4,
                 data_base64: base64_encode(&[1, 2, 3, 4]),
             },
             MaterializeAttachmentFileInput {
                 name: "nested\\shot.png".to_string(),
                 mime: Some("image/png".to_string()),
-                size: 3,
                 data_base64: base64_encode(&[5, 6, 7]),
             },
         ];
@@ -2400,6 +2397,8 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "shot.png");
         assert_eq!(result[1].name, "shot-2.png");
+        assert_eq!(result[0].size, 4);
+        assert_eq!(result[1].size, 3);
         assert_eq!(std::fs::read(&result[0].path).unwrap(), vec![1, 2, 3, 4]);
         assert_eq!(std::fs::read(&result[1].path).unwrap(), vec![5, 6, 7]);
 
@@ -2417,7 +2416,6 @@ mod tests {
         let files = vec![MaterializeAttachmentFileInput {
             name: "archive.exe".to_string(),
             mime: None,
-            size: 2,
             data_base64: base64_encode(&[1, 2]),
         }];
 

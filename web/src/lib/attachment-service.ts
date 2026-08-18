@@ -23,11 +23,15 @@ export interface AttachmentItem {
   source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file' | 'generated';
 }
 
+export interface SerializedAttachmentFileInput extends MaterializeAttachmentFileInput {
+  /** Selection-time size retained only for APIs whose own contract requires it. */
+  size: number;
+}
+
 // ── Constants ──
 
 export const MAX_ATTACHMENT_COUNT = 10;
 export const MAX_ATTACHMENT_TOTAL = 50 * 1024 * 1024; // 50 MB
-export const LONG_PASTE_ATTACHMENT_THRESHOLD_CHARS = 6_400;
 
 // ── Helpers ──
 
@@ -142,9 +146,9 @@ function createTextAttachmentItem(content: string, name: string): AttachmentItem
 
 export function createLongPasteAttachmentItem(
   content: string,
-  thresholdChars = LONG_PASTE_ATTACHMENT_THRESHOLD_CHARS,
+  thresholdBytes: number,
 ): AttachmentItem | null {
-  if (content.length <= thresholdChars) return null;
+  if (new TextEncoder().encode(content).byteLength <= thresholdBytes) return null;
   return createTextAttachmentItem(content, `pasted-text-${generateId()}.txt`);
 }
 
@@ -178,6 +182,8 @@ export interface UseAttachmentPickerOptions {
   maxCount?: number;
   maxTotalSize?: number;
   maxFileSize?: number;
+  /** UTF-8 byte threshold above which a plain-text paste becomes an attachment. */
+  inlineContentMaxBytes?: number;
   attachments?: AttachmentStateController;
   /**
    * When set, only items whose guessed MIME starts with this prefix are
@@ -219,6 +225,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const maxCount = options.maxCount ?? MAX_ATTACHMENT_COUNT;
   const maxTotalSize = options.maxTotalSize ?? MAX_ATTACHMENT_TOTAL;
   const maxFileSize = options.maxFileSize;
+  const inlineContentMaxBytes = options.inlineContentMaxBytes;
   const acceptMimePrefix = options.acceptMimePrefix;
   const acceptedMimes = options.acceptedMimes;
 
@@ -388,9 +395,12 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
         return true;
       }
 
-      const longPasteAttachment = createLongPasteAttachmentItem(
-        e.clipboardData?.getData('text/plain') ?? '',
-      );
+      const longPasteAttachment = inlineContentMaxBytes === undefined
+        ? null
+        : createLongPasteAttachmentItem(
+          e.clipboardData?.getData('text/plain') ?? '',
+          inlineContentMaxBytes,
+        );
       if (longPasteAttachment) {
         e.preventDefault();
         validateAndAdd([longPasteAttachment]);
@@ -398,7 +408,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
       }
       return false;
     },
-    [validateAndAdd],
+    [inlineContentMaxBytes, validateAndAdd],
   );
 
   // ── Remove / Clear ──
@@ -456,7 +466,6 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
         pendingFiles.map(async (item) => ({
           name: item.name,
           mime: item.mime,
-          size: item.size,
           dataBase64: await fileToBase64(item.file!),
         })),
       );
@@ -479,7 +488,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   // Serialize browser/native File objects without materializing them to a local
   // path. Security-sensitive upload flows use this to keep filesystem paths out
   // of their command contract.
-  const resolveAttachmentInputs = useCallback(async (): Promise<MaterializeAttachmentFileInput[]> => {
+  const resolveAttachmentInputs = useCallback(async (): Promise<SerializedAttachmentFileInput[]> => {
     if (attachments.some((item) => !item.file)) {
       const message = t('conversation.attachmentMaterializeFailed');
       showTransientFileError(message);

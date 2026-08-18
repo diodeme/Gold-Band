@@ -192,7 +192,6 @@ export interface AttachmentFileRef {
 export interface MaterializeAttachmentFileInput {
   name: string;
   mime?: string | null;
-  size: number;
   dataBase64: string;
 }
 

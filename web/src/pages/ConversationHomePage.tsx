@@ -14,6 +14,7 @@ interface ConversationHomePageProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  inlineContentMaxBytes: number;
   initialScheduledMode?: boolean;
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
@@ -37,6 +38,7 @@ export function ConversationHomePage({
   workflowTemplates,
   profiles,
   busy,
+  inlineContentMaxBytes,
   initialScheduledMode = false,
   workLocation,
   onRunModeChange,
@@ -69,6 +71,7 @@ export function ConversationHomePage({
           workflowTemplates={workflowTemplates}
           profiles={profiles}
           busy={busy}
+          inlineContentMaxBytes={inlineContentMaxBytes}
           initialScheduledMode={initialScheduledMode}
           workLocation={workLocation}
           onRunModeChange={onRunModeChange}

@@ -144,6 +144,16 @@ describe('browserApi', () => {
     expect(resolved.target).toEqual({ line: 47, column: null, endLine: null });
   });
 
+  it('derives materialized attachment size from the decoded snapshot bytes', async () => {
+    const [attachment] = await browserApi.materializeConversationAttachments([{
+      name: 'active.log',
+      mime: 'text/plain',
+      dataBase64: 'AQIDBAU=',
+    }]);
+
+    expect(attachment).toMatchObject({ name: 'active.log', size: 5 });
+  });
+
   it('returns the shared comparison contract for GitHub pull request files', async () => {
     const comparison = await browserApi.getGitComparison('default', {
       kind: 'github-pr',

@@ -656,6 +656,9 @@ pub(crate) fn build_worker_invocation(
         cold_attachments,
         task_input_attachment_paths,
         user_input_attachment_paths,
+        attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
+            &app.config,
+        ),
         mcp_servers,
         scheduled_context: app.scheduled_task_context().cloned(),
     })

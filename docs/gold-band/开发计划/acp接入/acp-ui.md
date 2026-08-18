@@ -20,6 +20,7 @@
 - 2026-08-18 Composer 边框粗细单一配置：在 composer 布局层新增 `ACP_SESSION_COMPOSER_BORDER_WIDTH_PX`，并由它生成 rail CSS 变量、stack surface 边框、角标连接桥、SVG stroke、viewBox 与遮盖深度；后续只需修改该变量即可同步调整 joined surface 外轮廓，避免接缝参数再次漂移。
 - 2026-08-15 底部干预层布局收敛：权限申请、用户问询和会话级错误统一复用消息 content rail 的最大宽度、水平 padding 与消息行缩进，不再相对整个 viewport 单独排版。干预层底部由 Tailwind `pb-10` 统一提供 composer 信息 tab 的上探安全区，使 prompt-kit 自动贴底终点包含该留白；权限卡、问询卡和错误卡均不得被 tab 遮挡。接口回归固定 content rail 与安全区契约。
 - 会话运行区的产物/附件入口已改为与任务列表一致的 `Collapsible` 折叠面板：默认收起展示非零产物/附件计数，展开后点击文件项继续复用现有详情弹窗；当任务列表存在时，产物/附件面板固定在任务列表上方。
+- 2026-08-19 附件物化快照大小收敛：删除 `MaterializeAttachmentFileInput.size` 这一选择时瞬时元数据，后端以 Base64 解码后的实际字节作为唯一权威大小，并据此执行空文件、单文件、总量校验及返回 `AttachmentFileVm.size`。活动日志等源文件在选择后继续变化时保存实际读取快照，不再因选择时大小与读取后大小不同而报“附件保存失败”；接口回归固定 canonical size 与重复文件名物化语义。
 - 节点详情抽屉中的 artifact / attachment 内容以二级详情层打开，返回或关闭产物详情时恢复原节点详情抽屉。
 - 节点详情抽屉顶部只保留紧凑“查看详情 / 查看会话”切换，不重复展示长节点说明。
 - legacy `progress.events` / `raw.stream` 不再作为节点会话主视图，仅保留系统日志/诊断入口。

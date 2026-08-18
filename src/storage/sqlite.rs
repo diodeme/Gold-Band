@@ -83,7 +83,7 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 4;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 5;
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -205,7 +205,6 @@ impl SearchIndex {
 
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id   TEXT,
-                adapter_id   TEXT NOT NULL DEFAULT '',
                 attempt_path TEXT NOT NULL PRIMARY KEY,
                 task_id      TEXT NOT NULL,
                 run_id       TEXT NOT NULL,
@@ -297,20 +296,40 @@ impl SearchIndex {
     /// This is idempotent (`ON CONFLICT` upsert) and runs on the calling
     /// thread — call from `std::thread::spawn` to avoid blocking startup.
     fn backfill_from_disk(&self, projects_dir: &Utf8Path) {
-        let Ok(project_entries) = std::fs::read_dir(projects_dir.as_std_path()) else {
-            return;
-        };
-        for project_entry in project_entries.flatten() {
+        if let Err(error) = self.backfill_from_disk_strict(projects_dir) {
+            warn!(error = %error, "sqlite search index backfill did not complete");
+        }
+    }
+
+    pub fn rebuild_from_disk(&self, projects_dir: &Utf8Path) -> anyhow::Result<()> {
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("search index lock poisoned"))?;
+            let transaction = conn.unchecked_transaction()?;
+            transaction.execute("DELETE FROM session_prompts", [])?;
+            transaction.execute("DELETE FROM sessions", [])?;
+            transaction.execute("DELETE FROM tasks", [])?;
+            transaction.commit()?;
+        }
+        self.backfill_from_disk_strict(projects_dir)
+    }
+
+    fn backfill_from_disk_strict(&self, projects_dir: &Utf8Path) -> anyhow::Result<()> {
+        if !projects_dir.is_dir() {
+            return Ok(());
+        }
+        for project_entry in std::fs::read_dir(projects_dir.as_std_path())? {
+            let project_entry = project_entry?;
             let Some(tasks_dir) = to_utf8(project_entry.path().join("tasks")) else {
                 continue;
             };
             if !tasks_dir.is_dir() {
                 continue;
             }
-            let Ok(task_entries) = std::fs::read_dir(tasks_dir.as_std_path()) else {
-                continue;
-            };
-            for task_entry in task_entries.flatten() {
+            for task_entry in std::fs::read_dir(tasks_dir.as_std_path())? {
+                let task_entry = task_entry?;
                 let Some(task_dir) = to_utf8(task_entry.path()) else {
                     continue;
                 };
@@ -320,18 +339,20 @@ impl SearchIndex {
                 let Some(task_id) = file_name(&task_dir) else {
                     continue;
                 };
-                let _ = self.index_task(&task_dir, task_id);
-                self.backfill_task_attempts(&task_dir, task_id);
+                self.index_task(&task_dir, task_id)?;
+                self.backfill_task_attempts(&task_dir, task_id)?;
             }
         }
+        Ok(())
     }
 
-    fn backfill_task_attempts(&self, task_dir: &Utf8Path, task_id: &str) {
+    fn backfill_task_attempts(&self, task_dir: &Utf8Path, task_id: &str) -> anyhow::Result<()> {
         let runs_dir = task_dir.join("runs");
-        let Ok(run_entries) = std::fs::read_dir(runs_dir.as_std_path()) else {
-            return;
-        };
-        for run_entry in run_entries.flatten() {
+        if !runs_dir.is_dir() {
+            return Ok(());
+        }
+        for run_entry in std::fs::read_dir(runs_dir.as_std_path())? {
+            let run_entry = run_entry?;
             let Some(run_dir) = to_utf8(run_entry.path()) else {
                 continue;
             };
@@ -343,10 +364,11 @@ impl SearchIndex {
             };
 
             let rounds_dir = run_dir.join("rounds");
-            let Ok(round_entries) = std::fs::read_dir(rounds_dir.as_std_path()) else {
+            if !rounds_dir.is_dir() {
                 continue;
-            };
-            for round_entry in round_entries.flatten() {
+            }
+            for round_entry in std::fs::read_dir(rounds_dir.as_std_path())? {
+                let round_entry = round_entry?;
                 let Some(round_dir) = to_utf8(round_entry.path()) else {
                     continue;
                 };
@@ -358,10 +380,11 @@ impl SearchIndex {
                 };
 
                 let nodes_dir = round_dir.join("nodes");
-                let Ok(node_entries) = std::fs::read_dir(nodes_dir.as_std_path()) else {
+                if !nodes_dir.is_dir() {
                     continue;
-                };
-                for node_entry in node_entries.flatten() {
+                }
+                for node_entry in std::fs::read_dir(nodes_dir.as_std_path())? {
+                    let node_entry = node_entry?;
                     let Some(node_dir) = to_utf8(node_entry.path()) else {
                         continue;
                     };
@@ -372,10 +395,8 @@ impl SearchIndex {
                         continue;
                     };
 
-                    let Ok(attempt_entries) = std::fs::read_dir(node_dir.as_std_path()) else {
-                        continue;
-                    };
-                    for attempt_entry in attempt_entries.flatten() {
+                    for attempt_entry in std::fs::read_dir(node_dir.as_std_path())? {
+                        let attempt_entry = attempt_entry?;
                         let Some(attempt_dir) = to_utf8(attempt_entry.path()) else {
                             continue;
                         };
@@ -397,11 +418,12 @@ impl SearchIndex {
                             outer_node_id: None,
                             outer_attempt_id: None,
                         };
-                        let _ = self.index_session(&attempt_dir, &ctx);
+                        self.index_session(&attempt_dir, &ctx)?;
                     }
                 }
             }
         }
+        Ok(())
     }
 
     // ── index with retry ────────────────────────────────────────
@@ -439,12 +461,11 @@ impl SearchIndex {
         let tx = conn.unchecked_transaction()?;
 
         let attempt_path = attempt_dir.to_string();
-        let (session_id, adapter_id, status, title, created_at, updated_at) = snapshot
+        let (session_id, status, title, created_at, updated_at) = snapshot
             .as_ref()
             .map(|s| {
                 (
                     s.session_id.as_deref(),
-                    s.adapter_id.as_str(),
                     match s.latest_turn_status {
                         crate::acp::events::AcpLatestTurnStatus::None => "none",
                         crate::acp::events::AcpLatestTurnStatus::Completed => "completed",
@@ -456,23 +477,21 @@ impl SearchIndex {
                     s.updated_at.as_str(),
                 )
             })
-            .unwrap_or((None, "", "", "", "", ""));
+            .unwrap_or((None, "", "", "", ""));
 
         tx.execute(
             "INSERT INTO sessions
-                (session_id, adapter_id, attempt_path, task_id, run_id, round_id,
+                (session_id, attempt_path, task_id, run_id, round_id,
                  node_id, attempt_id, outer_node_id, outer_attempt_id,
                  title, status, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
              ON CONFLICT(attempt_path) DO UPDATE SET
                 session_id=excluded.session_id,
-                adapter_id=excluded.adapter_id,
                 title=excluded.title,
                 status=excluded.status,
                 updated_at=excluded.updated_at",
             params![
                 session_id,
-                adapter_id,
                 attempt_path,
                 ctx.task_id,
                 ctx.run_id,
@@ -807,7 +826,7 @@ impl SearchIndex {
         let conn = self.conn.lock().expect("search index lock poisoned");
         let pattern = format!("%{}%", query.replace('%', "\\%").replace('_', "\\_"));
         let mut stmt = conn.prepare(
-            "SELECT session_id, adapter_id, attempt_path, task_id, run_id, round_id, node_id,
+            "SELECT session_id, attempt_path, task_id, run_id, round_id, node_id,
                     attempt_id, outer_node_id, outer_attempt_id, title, status,
                     created_at, updated_at
              FROM sessions
@@ -818,19 +837,18 @@ impl SearchIndex {
         let rows = stmt.query_map(params![pattern, limit as i64], |row| {
             Ok(SessionSearchResult {
                 session_id: row.get(0)?,
-                adapter_id: row.get(1)?,
-                attempt_path: row.get(2)?,
-                task_id: row.get(3)?,
-                run_id: row.get(4)?,
-                round_id: row.get(5)?,
-                node_id: row.get(6)?,
-                attempt_id: row.get(7)?,
-                outer_node_id: row.get(8)?,
-                outer_attempt_id: row.get(9)?,
-                title: row.get(10)?,
-                status: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                attempt_path: row.get(1)?,
+                task_id: row.get(2)?,
+                run_id: row.get(3)?,
+                round_id: row.get(4)?,
+                node_id: row.get(5)?,
+                attempt_id: row.get(6)?,
+                outer_node_id: row.get(7)?,
+                outer_attempt_id: row.get(8)?,
+                title: row.get(9)?,
+                status: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
         rows.collect()
@@ -975,7 +993,6 @@ pub struct TaskSearchResult {
 #[serde(rename_all = "camelCase")]
 pub struct SessionSearchResult {
     pub session_id: Option<String>,
-    pub adapter_id: String,
     pub attempt_path: String,
     pub task_id: String,
     pub run_id: String,
@@ -1015,11 +1032,12 @@ mod tests {
                 INSERT INTO tasks (task_id, task_path, title, description, requirement_text, created_at, updated_at)
                 VALUES ('task-1', '/tmp/task-1', 'Task 1', '', '', '', '');
                 CREATE TABLE sessions (
-                    session_id TEXT NOT NULL,
+                    session_id TEXT,
+                    adapter_id TEXT NOT NULL DEFAULT '',
                     attempt_path TEXT NOT NULL PRIMARY KEY
                 );
-                INSERT INTO sessions (session_id, attempt_path)
-                VALUES ('npx', '/tmp/attempt-1');
+                INSERT INTO sessions (session_id, adapter_id, attempt_path)
+                VALUES ('session-real-123', 'npx', '/tmp/attempt-1');
                 CREATE TABLE session_prompts (
                     id TEXT NOT NULL PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -1028,7 +1046,7 @@ mod tests {
                     text TEXT NOT NULL DEFAULT '',
                     normalized_text TEXT NOT NULL DEFAULT ''
                 );
-                PRAGMA user_version = 3;",
+                PRAGMA user_version = 4;",
             )
             .unwrap();
         }
@@ -1082,11 +1100,7 @@ mod tests {
                 .iter()
                 .any(|(name, not_null)| name == "session_id" && *not_null == 0)
         );
-        assert!(
-            session_columns
-                .iter()
-                .any(|(name, not_null)| name == "adapter_id" && *not_null == 1)
-        );
+        assert!(!session_columns.iter().any(|(name, _)| name == "adapter_id"));
         let session_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();

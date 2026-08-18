@@ -3,7 +3,6 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 
 use anyhow::Result;
-use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_json::Value;
 
@@ -12,7 +11,9 @@ use crate::acp::events::{
     merge_timeline_item_revision,
 };
 use crate::acp::turn_files::{FileVersionRef, TurnFileCaptureConfig, TurnFileStore};
-use crate::storage::{append_jsonl_unlocked, ensure_parent_dir, with_jsonl_file_lock};
+use crate::storage::{
+    append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, with_jsonl_file_lock,
+};
 
 pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
@@ -228,15 +229,15 @@ fn write_canonical_timeline_unlocked(
     items: &[AcpUiEvent],
 ) -> Result<()> {
     ensure_parent_dir(path)?;
-    let mut file = AtomicWriteFile::open(path.as_std_path())?;
-    for item in items {
-        let mut item = item.clone();
-        externalize_timeline_event(blob_store, &mut item)?;
-        serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
-        file.write_all(b"\n")?;
-    }
-    file.commit()?;
-    Ok(())
+    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        for item in items {
+            let mut item = item.clone();
+            externalize_timeline_event(blob_store, &mut item)?;
+            serde_json::to_writer(&mut *file, &AcpTimelineItem { item })?;
+            file.write_all(b"\n")?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Debug, Default)]

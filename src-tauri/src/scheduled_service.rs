@@ -321,6 +321,7 @@ impl ScheduledTaskService {
             .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
         database
             .list_occurrence_page(
+                &resolved_project_id,
                 job_id,
                 status,
                 cursor,
@@ -343,10 +344,11 @@ impl ScheduledTaskService {
             .map_err(ScheduledServiceError::from_database)?
             .ok_or_else(|| ScheduledServiceError::not_found(project_id, job_id))?;
         let run_count = database
-            .count_run_occurrences(job_id)
+            .count_run_occurrences(&resolved_project_id, job_id)
             .map_err(ScheduledServiceError::from_database)?;
         let page = database
             .list_occurrence_page(
+                &resolved_project_id,
                 job_id,
                 None,
                 None,
@@ -966,7 +968,9 @@ fn resolve_conversation_workspace(
     let context = state
         .context()
         .map_err(|_| ScheduledServiceError::internal("read-desktop-context"))?;
-    let global_app = context.app();
+    let global_app = state
+        .app()
+        .map_err(|_| ScheduledServiceError::internal("resolve-runtime-app"))?;
     let app_state = global_app
         .load_state()
         .map_err(|_| ScheduledServiceError::internal("read-workspace-state"))?;
@@ -975,8 +979,10 @@ fn resolve_conversation_workspace(
     else {
         return Err(ScheduledServiceError::not_found(project_id, ""));
     };
-    let app = crate::conversation_workspace::app_for_workspace(&context, &workspace_path)
-        .map_err(|_| ScheduledServiceError::internal("resolve-workspace"))?;
+    let app = global_app.with_repo_root(
+        camino::Utf8PathBuf::from(workspace_path),
+        context.config.clone(),
+    );
     let workspace_name = app_state
         .conversation_workspaces
         .iter()
@@ -996,20 +1002,23 @@ fn list_conversation_workspaces(
     let context = state
         .context()
         .map_err(|_| ScheduledServiceError::internal("read-desktop-context"))?;
-    let app_state = context
+    let global_app = state
         .app()
+        .map_err(|_| ScheduledServiceError::internal("resolve-runtime-app"))?;
+    let app_state = global_app
         .load_state()
         .map_err(|_| ScheduledServiceError::internal("read-workspace-state"))?;
     app_state
         .conversation_workspaces
         .iter()
         .map(|workspace| {
-            crate::conversation_workspace::app_for_workspace(&context, &workspace.workspace_path)
-                .map(|app| ResolvedWorkspace {
-                    app,
-                    workspace_name: workspace.name.clone(),
-                })
-                .map_err(|_| ScheduledServiceError::internal("resolve-workspace"))
+            Ok(ResolvedWorkspace {
+                app: global_app.with_repo_root(
+                    camino::Utf8PathBuf::from(&workspace.workspace_path),
+                    context.config.clone(),
+                ),
+                workspace_name: workspace.name.clone(),
+            })
         })
         .collect()
 }
@@ -1550,7 +1559,7 @@ mod tests {
         assert!(
             fixture
                 .database
-                .list_occurrences(result.definition.id(), 10)
+                .list_occurrences(&result.definition.project_id, result.definition.id(), 10,)
                 .unwrap()
                 .is_empty()
         );
@@ -1594,7 +1603,10 @@ mod tests {
         let error = fixture.service.create(fixture.create_input()).unwrap_err();
 
         assert_eq!(error.code, ScheduledErrorCode::StorageFailed);
-        let definitions = fixture.database.list_job_definitions().unwrap();
+        let definitions = fixture
+            .database
+            .list_job_definitions_for_project(&fixture.app.paths.project_id)
+            .unwrap();
         assert_eq!(
             definitions.len(),
             1,
@@ -1635,7 +1647,13 @@ mod tests {
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
         assert_eq!(error.params["field"], "schedule.cron");
         assert_eq!(error.params["reason"], "invalid-cron");
-        assert!(fixture.database.list_job_definitions().unwrap().is_empty());
+        assert!(
+            fixture
+                .database
+                .list_job_definitions_for_project(&fixture.app.paths.project_id)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(fixture.coordinator.command_count(), 0);
     }
 
@@ -1790,7 +1808,7 @@ mod tests {
         assert_eq!(
             fixture
                 .database
-                .list_occurrences(&job_id, 10)
+                .list_occurrences(&fixture.app.paths.project_id, &job_id, 10)
                 .unwrap()
                 .into_iter()
                 .map(|occurrence: ScheduledOccurrence| occurrence.trigger_kind)
@@ -2240,7 +2258,7 @@ mod tests {
         assert!(
             fixture
                 .database
-                .list_occurrences(created.definition.id(), 10)
+                .list_occurrences(&created.definition.project_id, created.definition.id(), 10,)
                 .unwrap()
                 .is_empty()
         );

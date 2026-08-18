@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 
 use anyhow::{Context, Result, anyhow};
-use atomic_write_file::AtomicWriteFile;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
 
-use crate::storage::{append_jsonl_durable, ensure_parent_dir, read_json, write_json};
+use crate::storage::{
+    append_jsonl_durable, atomic_write_file, ensure_parent_dir, read_json, write_json,
+};
 
 pub const CHANGE_SET_NOT_FOUND: &str = "turn-files.change-set-not-found";
 pub const VERSION_NOT_FOUND: &str = "turn-files.version-not-found";
@@ -489,9 +490,10 @@ impl TurnFileStore {
         let path = self.blob_path(&hash);
         if !path.exists() {
             ensure_parent_dir(&path)?;
-            let mut file = AtomicWriteFile::open(path.as_std_path())?;
-            file.write_all(content.as_bytes())?;
-            file.commit()?;
+            atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+                file.write_all(content.as_bytes())?;
+                Ok(())
+            })?;
         }
         Ok(FileVersionRef {
             id: format!("captured-{hash}"),

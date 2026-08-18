@@ -27,7 +27,7 @@ fn write_session_snapshot(attempt_dir: &Utf8Path, session_id: Option<&str>) {
 }
 
 #[test]
-fn search_results_keep_real_session_identity_separate_from_adapter_identity() {
+fn search_results_use_real_session_identity_without_copying_adapter_config() {
     let dir = tempdir().unwrap();
     let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
     let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().join("attempt-001")).unwrap();
@@ -65,7 +65,6 @@ fn search_results_keep_real_session_identity_separate_from_adapter_identity() {
     let sessions = index.search_sessions("Indexed", 10).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].session_id.as_deref(), Some("session-real-123"));
-    assert_eq!(sessions[0].adapter_id, "npx");
     let prompts = index.search_prompts("Needle", 10).unwrap();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].session_id.as_deref(), Some("session-real-123"));
@@ -76,7 +75,6 @@ fn search_results_keep_real_session_identity_separate_from_adapter_identity() {
     let sessions = index.search_sessions("Indexed", 10).unwrap();
     assert_eq!(sessions.len(), 1);
     assert!(sessions[0].session_id.is_none());
-    assert_eq!(sessions[0].adapter_id, "npx");
     assert!(serde_json::to_value(&sessions[0]).unwrap()["sessionId"].is_null());
     let prompts = index.search_prompts("Needle", 10).unwrap();
     assert_eq!(prompts.len(), 1);
@@ -84,7 +82,7 @@ fn search_results_keep_real_session_identity_separate_from_adapter_identity() {
 }
 
 #[test]
-fn schema_v3_rebuilds_session_index_without_losing_tasks() {
+fn schema_v4_removes_adapter_config_without_losing_tasks() {
     let dir = tempdir().unwrap();
     let db_path = Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
     let conn = Connection::open(db_path.as_std_path()).unwrap();
@@ -101,17 +99,18 @@ fn schema_v3_rebuilds_session_index_without_losing_tasks() {
         INSERT INTO tasks (task_id, task_path, title)
         VALUES ('task-001', '/tmp/task-001', 'Preserved task');
         CREATE TABLE sessions (
-            session_id TEXT NOT NULL,
+            session_id TEXT,
+            adapter_id TEXT NOT NULL DEFAULT '',
             attempt_path TEXT NOT NULL PRIMARY KEY
         );
-        INSERT INTO sessions (session_id, attempt_path)
-        VALUES ('npx', '/tmp/attempt-001');
+        INSERT INTO sessions (session_id, adapter_id, attempt_path)
+        VALUES ('session-real-123', 'npx', '/tmp/attempt-001');
         CREATE TABLE session_prompts (
             id TEXT NOT NULL PRIMARY KEY,
             session_id TEXT NOT NULL,
             text TEXT NOT NULL DEFAULT ''
         );
-        PRAGMA user_version = 3;",
+        PRAGMA user_version = 4;",
     )
     .unwrap();
     drop(conn);
@@ -122,7 +121,7 @@ fn schema_v3_rebuilds_session_index_without_losing_tasks() {
     let schema_version: i32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema_version, 4);
+    assert_eq!(schema_version, 5);
     let task_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
         .unwrap();
@@ -146,9 +145,5 @@ fn schema_v3_rebuilds_session_index_without_losing_tasks() {
             .iter()
             .any(|(name, not_null)| name == "session_id" && *not_null == 0)
     );
-    assert!(
-        session_columns
-            .iter()
-            .any(|(name, not_null)| name == "adapter_id" && *not_null == 1)
-    );
+    assert!(!session_columns.iter().any(|(name, _)| name == "adapter_id"));
 }

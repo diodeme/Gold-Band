@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewWindow, WebviewWindowBuilder};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -264,7 +264,9 @@ pub fn resolve_app_exit(
     Ok(())
 }
 
-pub fn ensure_main_window(app_handle: &AppHandle) -> anyhow::Result<WebviewWindow> {
+pub fn ensure_main_window<R: Runtime>(
+    app_handle: &AppHandle<R>,
+) -> anyhow::Result<WebviewWindow<R>> {
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -305,7 +307,7 @@ pub fn request_app_restart(app_handle: &AppHandle) -> CommandResult<()> {
     }
 }
 
-fn focus_window_after_bootstrap(app_handle: AppHandle) {
+fn focus_window_after_bootstrap<R: Runtime>(app_handle: AppHandle<R>) {
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + WINDOW_FOCUS_TIMEOUT;
         while std::time::Instant::now() < deadline {
@@ -413,6 +415,7 @@ fn spawn_cleanup(app_handle: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::WebviewUrl;
 
     #[test]
     fn window_only_close_prevents_last_window_exit() {
@@ -487,5 +490,19 @@ mod tests {
             lifecycle.mark_ready_to_exit(),
             ExitCompletionAction::Restart
         );
+    }
+
+    #[test]
+    fn second_launch_reuses_the_existing_main_window() {
+        let app = tauri::test::mock_app();
+        WebviewWindowBuilder::new(app.handle(), "main", WebviewUrl::App("index.html".into()))
+            .visible(false)
+            .build()
+            .unwrap();
+
+        let restored = ensure_main_window(app.handle()).unwrap();
+
+        assert_eq!(restored.label(), "main");
+        assert_eq!(app.webview_windows().len(), 1);
     }
 }

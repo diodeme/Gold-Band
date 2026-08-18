@@ -3,7 +3,6 @@ use std::io::{BufRead, BufReader};
 
 use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
-use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,8 +12,8 @@ use crate::acp::control::AcpRuntimeControlCursor;
 use crate::artifacts::json_artifact_display_span;
 use crate::provider::UserPromptQuote;
 use crate::storage::{
-    append_jsonl, append_jsonl_unlocked, ensure_parent_dir, read_json, with_jsonl_file_lock,
-    write_json,
+    append_jsonl, append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, read_json,
+    with_jsonl_file_lock, write_json,
 };
 
 const AGENT_TRANSCRIPT_META_KEY: &str = "agentTranscript";
@@ -1134,16 +1133,16 @@ pub fn append_ui_event(path: &Utf8Path, event: &AcpUiEvent) -> Result<()> {
 pub fn write_timeline_items(path: &Utf8Path, items: &[AcpUiEvent]) -> Result<()> {
     with_jsonl_file_lock(path, || {
         ensure_parent_dir(path)?;
-        let mut file = AtomicWriteFile::open(path.as_std_path())?;
-        for item in items {
-            let mut item = item.clone();
-            crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut item)?;
-            serde_json::to_writer(&mut file, &AcpTimelineItem { item })?;
-            use std::io::Write as _;
-            file.write_all(b"\n")?;
-        }
-        file.commit()?;
-        Ok(())
+        atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+            for item in items {
+                let mut item = item.clone();
+                crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut item)?;
+                serde_json::to_writer(&mut *file, &AcpTimelineItem { item })?;
+                use std::io::Write as _;
+                file.write_all(b"\n")?;
+            }
+            Ok(())
+        })
     })
 }
 

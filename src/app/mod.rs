@@ -5,6 +5,7 @@ pub mod observability;
 mod orchestrator;
 mod profile_resolver;
 mod profiles;
+mod runtime_recovery;
 mod state_access;
 mod state_factory;
 mod transition_context;
@@ -15,6 +16,9 @@ pub use self::notification::{
     make_turn_dedup_key, reason_key,
 };
 pub use self::orchestrator::{AcceptedRun, PreparedRun};
+pub use self::runtime_recovery::{
+    RuntimeCandidateRegistration, RuntimeRecoveryCoordinator, RuntimeRecoveryError,
+};
 
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
@@ -1171,6 +1175,7 @@ pub struct App {
     active_metric_turns: Arc<std::sync::Mutex<HashMap<String, ActiveMetricTurn>>>,
     scheduled_occurrence_id: Option<String>,
     scheduled_task_context: Option<crate::provider::ScheduledTaskContextInfo>,
+    runtime_recovery: Option<Arc<RuntimeRecoveryCoordinator>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1473,6 +1478,7 @@ impl App {
             active_metric_turns: self.active_metric_turns.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
+            runtime_recovery: self.runtime_recovery.clone(),
         }
     }
 
@@ -1506,7 +1512,6 @@ impl App {
 
     pub fn with_repo_root(&self, repo_root: Utf8PathBuf, config: RuntimeConfig) -> Self {
         let paths = GoldBandPaths::new(repo_root);
-        let _ = paths.write_project_manifest();
         let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
@@ -1523,6 +1528,50 @@ impl App {
             active_metric_turns: self.active_metric_turns.clone(),
             scheduled_occurrence_id: self.scheduled_occurrence_id.clone(),
             scheduled_task_context: self.scheduled_task_context.clone(),
+            runtime_recovery: self.runtime_recovery.clone(),
+        }
+    }
+
+    pub fn with_runtime_recovery(
+        mut self,
+        runtime_recovery: Arc<RuntimeRecoveryCoordinator>,
+    ) -> Self {
+        self.runtime_recovery = Some(runtime_recovery);
+        self
+    }
+
+    pub(crate) fn begin_runtime_candidate(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<Option<RuntimeCandidateRegistration>> {
+        self.runtime_recovery
+            .as_ref()
+            .map(|coordinator| {
+                coordinator
+                    .begin(&self.paths, task_id, run_id)
+                    .map_err(Into::into)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn finish_runtime_candidate_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        candidate_token: Option<&str>,
+    ) {
+        let Some(coordinator) = &self.runtime_recovery else {
+            return;
+        };
+        if let Err(error) = coordinator.finish(&self.paths, task_id, run_id, candidate_token) {
+            tracing::warn!(
+                error = %error,
+                project_id = %self.paths.project_id,
+                task_id,
+                run_id,
+                "runtime recovery candidate cleanup failed"
+            );
         }
     }
 
@@ -3347,7 +3396,6 @@ impl App {
     }
 
     fn with_config_and_paths(paths: GoldBandPaths, config: RuntimeConfig) -> Self {
-        let _ = paths.write_project_manifest();
         let _ = ensure_default_user_profiles(&paths);
         Self {
             paths,
@@ -3364,6 +3412,7 @@ impl App {
             active_metric_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             scheduled_occurrence_id: None,
             scheduled_task_context: None,
+            runtime_recovery: None,
         }
     }
 
@@ -3995,9 +4044,14 @@ impl App {
 
     pub fn stop_all_running_sessions(&self) -> Result<Vec<RunState>> {
         let paused = self.pause_all_running_sessions()?;
+        self.close_active_runtime_connections()?;
+        Ok(paused)
+    }
+
+    pub fn close_active_runtime_connections(&self) -> Result<()> {
         self.cancel_all_active_acp_attempts_best_effort();
         acp_client::close_all_connections_bounded()?;
-        Ok(paused)
+        Ok(())
     }
 
     pub fn recover_interrupted_running_sessions(&self) -> Result<Vec<RunState>> {
@@ -4154,6 +4208,11 @@ impl App {
         loop {
             let observed = self.run_status(task_id, run_id)?;
             if observed.status != RunStatus::Running {
+                self.finish_runtime_candidate_best_effort(
+                    task_id,
+                    run_id,
+                    observed.execution.recovery_candidate_token.as_deref(),
+                );
                 return Ok(observed);
             }
             let (Some(round_id), Some(node_id), Some(attempt_id)) = (
@@ -4170,6 +4229,12 @@ impl App {
                 .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
             let mut run = self.run_status(task_id, run_id)?;
             if run.status != RunStatus::Running {
+                drop(guard);
+                self.finish_runtime_candidate_best_effort(
+                    task_id,
+                    run_id,
+                    run.execution.recovery_candidate_token.as_deref(),
+                );
                 return Ok(run);
             }
             if run.current_round.as_deref() != Some(round_id.as_str())
@@ -4213,6 +4278,11 @@ impl App {
             drop(guard);
 
             self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
+            self.finish_runtime_candidate_best_effort(
+                task_id,
+                run_id,
+                run.execution.recovery_candidate_token.as_deref(),
+            );
             return Ok(run);
         }
     }
@@ -4315,7 +4385,7 @@ impl App {
     ) -> Result<AttemptRuntimePauseResult> {
         let state_lock =
             attempt_runtime_state_lock(self, task_id, run_id, round_id, node_id, attempt_id);
-        let _guard = state_lock
+        let guard = state_lock
             .lock()
             .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
         let now = now_rfc3339_like();
@@ -4403,6 +4473,19 @@ impl App {
             }
         }
 
+        let run_became_inactive =
+            active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck);
+        let recovery_candidate_token = run
+            .as_ref()
+            .and_then(|run| run.execution.recovery_candidate_token.clone());
+        drop(guard);
+        if run_became_inactive {
+            self.finish_runtime_candidate_best_effort(
+                task_id,
+                run_id,
+                recovery_candidate_token.as_deref(),
+            );
+        }
         Ok(AttemptRuntimePauseResult::Converged)
     }
 
@@ -5337,6 +5420,17 @@ mod tests {
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap()
+    }
+
+    #[test]
+    fn app_construction_does_not_provision_project_manifest() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+
+        assert!(!app.paths.project_manifest_file().exists());
     }
 
     fn write_fixed_attempt_fixture(

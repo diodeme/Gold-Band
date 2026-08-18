@@ -27,13 +27,11 @@ Gold Band 的 macOS Release 在尚未配置 Apple Developer Program 凭证时，
 
 ## 3. 安装脚本
 
-`scripts/install-gold-band-macos.sh` 不依赖 Python、jq、Homebrew 或 Xcode Command Line Tools，只使用 macOS 自带的 `curl`、`plutil`、`shasum`、`hdiutil`、`codesign`、`ditto` 和 `xattr`。
+安装脚本会随每个新 GitHub Release 一起发布，用户无需 clone 仓库。第一条命令默认安装 latest Release，已有 App 时会询问是否替换；需要无交互确认替换时使用 `--yes`。
 
 ```bash
-bash scripts/install-gold-band-macos.sh
-bash scripts/install-gold-band-macos.sh --yes
-GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh
-GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.13.0_aarch64.dmg
+installer="${TMPDIR:-/tmp}/install-gold-band-macos.sh" && curl -fsSL https://github.com/diodeme/Gold-Band/releases/latest/download/install-gold-band-macos.sh -o "$installer" && bash "$installer"
+installer="${TMPDIR:-/tmp}/install-gold-band-macos.sh" && curl -fsSL https://github.com/diodeme/Gold-Band/releases/latest/download/install-gold-band-macos.sh -o "$installer" && bash "$installer" --yes
 ```
 
 脚本按固定顺序执行：

@@ -27,13 +27,11 @@ This is the exception flow macOS provides for an individual app that has not bee
 
 ## 3. Use the Installation Script
 
-`scripts/install-gold-band-macos.sh` does not require Python, jq, Homebrew, or Xcode Command Line Tools. It only uses the macOS built-in `curl`, `plutil`, `shasum`, `hdiutil`, `codesign`, `ditto`, and `xattr` commands.
+The installer is published with each new GitHub Release, so you do not need to clone the repository. The first command installs the latest Release and asks before replacing an existing app; use `--yes` to confirm replacement non-interactively.
 
 ```bash
-bash scripts/install-gold-band-macos.sh
-bash scripts/install-gold-band-macos.sh --yes
-GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh
-GOLD_BAND_VERSION=0.13.0 bash scripts/install-gold-band-macos.sh ./Gold.Band_0.13.0_aarch64.dmg
+installer="${TMPDIR:-/tmp}/install-gold-band-macos.sh" && curl -fsSL https://github.com/diodeme/Gold-Band/releases/latest/download/install-gold-band-macos.sh -o "$installer" && bash "$installer"
+installer="${TMPDIR:-/tmp}/install-gold-band-macos.sh" && curl -fsSL https://github.com/diodeme/Gold-Band/releases/latest/download/install-gold-band-macos.sh -o "$installer" && bash "$installer" --yes
 ```
 
 The script follows this fixed sequence:

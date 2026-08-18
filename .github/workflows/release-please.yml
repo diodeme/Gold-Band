@@ -251,7 +251,7 @@ jobs:
       - name: Generate release checksums
         run: node scripts/generate-release-checksums.mjs release-assets
 
-      - name: Upload updater manifest and release checksums
+      - name: Upload updater manifest, macOS installer, and release checksums
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${RELEASE_TAG}" latest.json release-assets/*.sha256 --clobber
+        run: gh release upload "${RELEASE_TAG}" latest.json scripts/install-gold-band-macos.sh release-assets/*.sha256 --clobber

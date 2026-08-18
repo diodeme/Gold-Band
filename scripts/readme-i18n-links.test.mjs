@@ -48,6 +48,12 @@ test('localized macOS guides link to each other and preserve command blocks', as
   for (const guide of [english, chinese]) {
     assert.equal(count(guide, '<!-- DOCS-I18N:START -->'), 1);
     assert.equal(count(guide, '<!-- DOCS-I18N:END -->'), 1);
+    assert.match(
+      guide,
+      /curl -fsSL https:\/\/github\.com\/diodeme\/Gold-Band\/releases\/latest\/download\/install-gold-band-macos\.sh -o "\$installer" && bash "\$installer"/,
+    );
+    assert.doesNotMatch(guide, /bash scripts\/install-gold-band-macos\.sh/);
+    assert.doesNotMatch(guide, /bash <\(curl/);
   }
 
   assert.deepEqual(fencedBlocks(english), fencedBlocks(chinese));

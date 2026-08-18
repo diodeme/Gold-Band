@@ -2176,7 +2176,7 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve(files.map((file, index) => ({
       path: `browser-memory://attachments/${Date.now()}-${index}-${encodeURIComponent(file.name)}`,
       name: file.name,
-      size: file.size,
+      size: atob(file.dataBase64).length,
     })));
   },
   getSupportedAttachmentExtensions() {

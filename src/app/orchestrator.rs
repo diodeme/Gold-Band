@@ -10439,6 +10439,9 @@ fn build_dynamic_worker_invocation(
         cold_attachments: Vec::new(),
         task_input_attachment_paths,
         user_input_attachment_paths,
+        attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
+            &ctx.app.config,
+        ),
         mcp_servers: Vec::new(),
         scheduled_context: None,
     };

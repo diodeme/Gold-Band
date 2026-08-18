@@ -631,6 +631,8 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。
 - 草稿附件正文只在活动 Tab 内按需加载。桌面路径附件通过 revision-bound 短期只读 URL 读取，浏览器或粘贴生成附件直接读取当前 `File`；Tab locator 与 composer 草稿均不得缓存正文或触发附件列表全量预读。消息气泡附件继续通过其 canonical `task-inputs` / `user-inputs` locator 读取，但与草稿附件共用同一只读文本/Markdown 展示组件。
+- Composer 与 ACP prompt 使用同一运行配置保护 Agent 上下文：普通粘贴按 UTF-8 字节计数，`conversationInlineContentMaxBytes` 同时是长文本转附件和文本附件内联 `resource` 的边界；超过边界的文本只读取 metadata 并投影显式 `resource_link`，不得先完整读取正文再降级。图片使用独立的 `conversationInlineImageMaxBytes` 与 `conversationInlineImageMaxDimension`；先读取 metadata 与图片头，超过任一边界时从文件流进入受限解码器并只生成本轮内存派生图，依次尝试尺寸受限的无损 WebP、高质量 JPEG 和有界逐级缩小。只有原始编码和尺寸均在预算内时才读取原始图片字节。原文件始终是 canonical attachment，派生失败则投影原文件 link，不覆盖、不持久化、不缓存压缩图。
+- 附件大小意图与 Agent 能力投影相互独立：显式 `resource_link` 在 Agent 声明 `image` / `embeddedContext` 时也不得重新展开；原本只支持 link 的 Agent 对所有附件继续只接收原文件 link。图片/文本处于内联预算内时，最终是否发送 `image` / `resource` 仍以当前 ACP `initialize` 返回的 live prompt capabilities 为准，不按 Agent ID 硬编码。
 - Composer 上下文功能区必须与其下方正文使用同一水平内容 inset：快速对话的附件缩略图、命令标签与普通文字共用无额外缩进的左边缘；会话详情追问的附件/引用标签与 prompt-kit textarea 共用 `px-3` 左边缘。共享上下文组件不得内置一套固定水平 padding，否则不同 composer 外层 padding 会产生错位。
 - 系统文件选择器得到的本地图片不得把真实文件路径交给 WebView；桌面后端在 blocking pool 中读取元数据并签发短期 preview grant，前端只消费协议 URL。粘贴、拖放和浏览器文件选择继续使用受草稿生命周期管理的 Object URL。
 - 已发送消息图片、artifact 图片与未发送图片统一使用右侧图片看板。图片面板的内容承载层与看板必须形成连续的 `min-height: 0` 纵向 flex 链，让手势 viewport 占满标题栏以下的全部可用高度；图片在该真实视口内水平、垂直居中，背景只使用明暗主题语义纯色，不使用透明棋盘格。普通滚轮与触摸板双指滚动不得缩放或平移；只有 `Ctrl + 滚轮`、浏览器映射为 Ctrl-wheel 的原生触摸板 pinch、触摸屏 pinch 和工具栏按钮改变缩放，放大后可用鼠标拖拽平移；“适应窗口”回到由视口约束计算的完整图片尺寸，不等同于最小缩放。

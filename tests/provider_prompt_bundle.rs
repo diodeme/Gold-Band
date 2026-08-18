@@ -121,6 +121,9 @@ fn invocation() -> WorkerInvocation {
         }],
         task_input_attachment_paths: Vec::new(),
         user_input_attachment_paths: Vec::new(),
+        attachment_projection_policy: gold_band::provider::AttachmentProjectionPolicy::from(
+            &gold_band::config::RuntimeConfig::default(),
+        ),
         mcp_servers: Vec::new(),
         scheduled_context: None,
     }

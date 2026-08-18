@@ -54,6 +54,7 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  inlineContentMaxBytes: number;
   initialScheduledMode?: boolean;
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
@@ -338,6 +339,7 @@ export function ConversationComposer({
   workflowTemplates,
   profiles,
   busy,
+  inlineContentMaxBytes,
   initialScheduledMode = false,
   workLocation,
   onRunModeChange,
@@ -384,7 +386,10 @@ export function ConversationComposer({
     resolveAttachmentPaths,
     dropZoneHandlers,
     handlePaste,
-  } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
+  } = useAttachmentPicker({
+    attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
+    inlineContentMaxBytes,
+  });
 
   const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;

@@ -336,6 +336,7 @@ interface ACPChatDialogProps {
   directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
+  inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
@@ -788,6 +789,7 @@ export function ACPChatDialog(
     directSessionHeader,
     eventIdPrefix,
     eventPageSize,
+    inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     optimisticEvents: controlledOptimisticEvents,
     onOptimisticEventsChange,
@@ -964,6 +966,7 @@ export function ACPChatDialog(
     handlePaste,
   } = useAttachmentPicker({
     attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
+    inlineContentMaxBytes,
   });
   useWindowDragGuard();
   const paginationDirectionRef = useRef<"older" | "newer" | null>(null);

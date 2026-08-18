@@ -2014,6 +2014,7 @@ dependencies = [
  "figlet-rs",
  "file-rotate",
  "iana-time-zone",
+ "image",
  "indexmap 2.14.0",
  "jsonschema",
  "libc",

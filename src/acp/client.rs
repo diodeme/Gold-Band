@@ -2592,6 +2592,7 @@ fn project_prompt_content_block(
         }
         AcpContentBlock::Image(image) => resource_link_content_block(&image.link),
         AcpContentBlock::Resource(resource) => resource_link_content_block(&resource.link),
+        AcpContentBlock::ResourceLink(link) => resource_link_content_block(link),
     }
 }
 
@@ -9271,6 +9272,45 @@ mod tests {
         assert_eq!(
             params["prompt"][2],
             json!({"type": "text", "text": "clarify"})
+        );
+    }
+
+    #[test]
+    fn explicit_resource_link_is_not_reexpanded_when_optional_capabilities_exist() {
+        let mut prompt = non_runtime_control_test_prompt("prompt-large-attachment");
+        prompt.content_blocks = vec![crate::provider::AcpContentBlock::ResourceLink(
+            crate::provider::AcpResourceLinkBlock {
+                name: "large.md".to_string(),
+                uri: "file:///tmp/large.md".to_string(),
+                mime_type: "text/markdown".to_string(),
+                size: 64_001,
+            },
+        )];
+        let capabilities = parse_agent_capabilities(&json!({
+            "promptCapabilities": {
+                "image": true,
+                "embeddedContext": true
+            }
+        }));
+
+        let params = session_prompt_params(
+            "codex-acp",
+            "session-123",
+            &prompt,
+            false,
+            true,
+            &capabilities,
+        );
+
+        assert_eq!(
+            params["prompt"][0],
+            json!({
+                "type": "resource_link",
+                "name": "large.md",
+                "uri": "file:///tmp/large.md",
+                "mimeType": "text/markdown",
+                "size": 64_001
+            })
         );
     }
 

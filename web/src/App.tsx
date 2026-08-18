@@ -306,6 +306,9 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  conversationInlineContentMaxBytes: 64_000,
+  conversationInlineImageMaxBytes: 4 * 1024 * 1024,
+  conversationInlineImageMaxDimension: 2_560,
   turnFiles: { cardPreviewLimit: 3 },
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
   workspaceFiles: FALLBACK_WORKSPACE_FILES,
@@ -2338,6 +2341,7 @@ export function App() {
           workflowTemplates={conversationWorkflowTemplates}
           profiles={profiles}
           busy={busy}
+          inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
@@ -2638,6 +2642,7 @@ export function App() {
         workflowTemplates={conversationWorkflowTemplates}
         profiles={profiles}
         busy={busy}
+        inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
         workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}

@@ -4879,9 +4879,12 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             prompt_bundle.quotes = quotes.clone();
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
-                    let resolved =
-                        gold_band::provider::resolve_user_input_attachments(paths, &attempt_dir)
-                            .map_err(command_error)?;
+                    let resolved = gold_band::provider::resolve_user_input_attachments(
+                        paths,
+                        &attempt_dir,
+                        gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                    )
+                    .map_err(command_error)?;
                     for attachment in resolved {
                         prompt_bundle.attachment_metas.push(attachment.meta);
                         prompt_bundle.content_blocks.push(attachment.block);
@@ -5040,9 +5043,12 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         prompt_bundle.quotes = quotes;
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
-                let resolved =
-                    gold_band::provider::resolve_user_input_attachments(paths, &attempt_dir)
-                        .map_err(command_error)?;
+                let resolved = gold_band::provider::resolve_user_input_attachments(
+                    paths,
+                    &attempt_dir,
+                    gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                )
+                .map_err(command_error)?;
                 for attachment in resolved {
                     prompt_bundle.attachment_metas.push(attachment.meta);
                     prompt_bundle.content_blocks.push(attachment.block);

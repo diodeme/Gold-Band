@@ -1302,3 +1302,11 @@ attempt-001/
 - 回归要求：Web 接口映射单测固定 `queued` 和 `acp-session` 两种合法结果，并保持 `rejected` 及其他命令结果进入失败路径；执行定向 Web 测试、类型检查、生产构建和内置浏览器 deep link 交互验收。
 - 验收结果：定向 Web 测试 43 项通过，生产类型检查与 Vite 构建通过。内置浏览器 deep link 到 `run-053` Direct 队列夹具，固定“UI 显示加入队列、browser API 返回 acp-session”的真实边界；正常宽度、760px、恢复 1440px 和长文本提交均清空草稿且不显示发送失败，页面无横向溢出。完整 Web 回归 1460 项中 1459 项通过；唯一失败是既有 `TurnFileChangesCard` 源码 `mb-3` 与旧测试仍断言 `mb-2` 的无关基线差异，本次不修改该布局契约。
 - 性能与过度设计评审：只增加常量级返回类型判定并复用现有 session 合并入口，不新增状态机、持久字段、依赖、请求、缓存、队列、扫描、宽订阅或渲染边界；复用现有 canonical lifecycle 与结果联合类型即可表达全部不变量，无需新 aggregate 或专项 benchmark。
+
+## 2026-08-18：附件内联上下文预算与图片派生图
+
+- 根因：附件 resolver 在 Agent capability 投影前完整读取并展开所有受支持文件，文本可把几十 MiB 正文直接放入上下文，图片也只受上传大小约束；长粘贴另有 6400 字符常量，形成三套不一致边界。问题来自 prompt attachment 缺少统一 projection policy，不是某个 Agent 或扩展名特例。
+- 数据与配置：`configs/app-config.toml` 新增 `conversationInlineContentMaxBytes=64000`、`conversationInlineImageMaxBytes=4194304`、`conversationInlineImageMaxDimension=2560`，经 `ProjectAppConfig -> RuntimeConfig -> AppConfigVm / WorkerInvocation` 显式传递。粘贴与文本按 UTF-8 字节消费同一内容边界；图片字节与像素尺寸单独管理，避免用文本 token 预算误伤视觉输入。图片默认值参考主流视觉模型的 2048–2576 px 高细节区间，并为桌面截图保留 4 MiB 派生图预算。
+- 实现：`AcpContentBlock` 增加不可重新展开的显式 `ResourceLink`。超限文本 metadata-first 直接生成 link；图片先读 metadata/header，超限时直接从文件流进入 Rust `image` 的受限解码器，依次尝试 2560 px 内的无损 WebP、JPEG 92 和有界缩小尺寸，只保留本轮内存派生图，失败回退原文件 link。只有原始编码和尺寸都在预算内时才读取原图字节。user input 继续原子持久化到 attempt，但复制改为流式 I/O，不为大文本分配整文件缓冲。live ACP capability 仍决定预算内 `Image / Resource` 是否可发送，link-only Agent 行为不变。
+- 回归要求：Rust 固定配置 roundtrip/override/VM、文本 64000/64001 字节、图片字节与尺寸压缩、损坏图片 link fallback、显式 link 在完整 capability 下仍不展开、Task/Attempt 原文件归属；Web 固定 ASCII 与中文多字节粘贴边界。执行 root/desktop 定向单测、类型检查、生产构建和会话页 deep link 粘贴验证。
+- 验收结果：`cargo check -p gold-band`、`cargo check -p gold-band-desktop`、Rust provider 32 项、config 41 项、显式 link 与桌面配置 VM 定向测试、前端粘贴 2 项、TypeScript 检查、格式检查和生产构建均通过。内置浏览器实际验证 64000 ASCII 保留正文、64001 转附件、21333 个中文字符（63999 字节）保留正文、21334 个转附件；普通图片附件可加入 composer，800px 窄宽度与恢复 1440px 后输入框和附件入口持续可见，控制台无 error/warn。

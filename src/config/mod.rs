@@ -1249,6 +1249,9 @@ pub struct ProjectAppConfig {
     pub acp_timeline_compact_max_size_bytes: Option<u64>,
     pub acp_timeline_compact_patch_ratio: Option<usize>,
     pub conversation_auto_title_max_chars: Option<usize>,
+    pub conversation_inline_content_max_bytes: Option<u64>,
+    pub conversation_inline_image_max_bytes: Option<u64>,
+    pub conversation_inline_image_max_dimension: Option<u32>,
     pub notification_auto_dismiss_target_secs: Option<u64>,
     pub require_local_claude_executable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1563,6 +1566,9 @@ pub struct RuntimeConfig {
     pub acp_timeline_compact_max_size_bytes: u64,
     pub acp_timeline_compact_patch_ratio: usize,
     pub conversation_auto_title_max_chars: usize,
+    pub conversation_inline_content_max_bytes: u64,
+    pub conversation_inline_image_max_bytes: u64,
+    pub conversation_inline_image_max_dimension: u32,
     pub notification_auto_dismiss_target_secs: u64,
     pub scheduled_keep_awake_enabled: bool,
     pub scheduled_completion_notifications_enabled: bool,
@@ -1617,6 +1623,9 @@ impl Default for RuntimeConfig {
             acp_timeline_compact_max_size_bytes: 8 * 1024 * 1024,
             acp_timeline_compact_patch_ratio: 4,
             conversation_auto_title_max_chars: DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS,
+            conversation_inline_content_max_bytes: 64_000,
+            conversation_inline_image_max_bytes: 4 * 1024 * 1024,
+            conversation_inline_image_max_dimension: 2_560,
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             scheduled_keep_awake_enabled: false,
             scheduled_completion_notifications_enabled: true,
@@ -1764,6 +1773,24 @@ impl RuntimeConfig {
             .filter(|value| *value > 0)
         {
             self.conversation_auto_title_max_chars = conversation_auto_title_max_chars;
+        }
+        if let Some(conversation_inline_content_max_bytes) = app_config
+            .conversation_inline_content_max_bytes
+            .filter(|value| *value > 0)
+        {
+            self.conversation_inline_content_max_bytes = conversation_inline_content_max_bytes;
+        }
+        if let Some(conversation_inline_image_max_bytes) = app_config
+            .conversation_inline_image_max_bytes
+            .filter(|value| *value > 0)
+        {
+            self.conversation_inline_image_max_bytes = conversation_inline_image_max_bytes;
+        }
+        if let Some(conversation_inline_image_max_dimension) = app_config
+            .conversation_inline_image_max_dimension
+            .filter(|value| *value > 0)
+        {
+            self.conversation_inline_image_max_dimension = conversation_inline_image_max_dimension;
         }
         if let Some(notification_auto_dismiss_target_secs) = app_config
             .notification_auto_dismiss_target_secs
@@ -2214,6 +2241,9 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            conversation_inline_content_max_bytes: Some(64_000),
+            conversation_inline_image_max_bytes: Some(4 * 1024 * 1024),
+            conversation_inline_image_max_dimension: Some(2_560),
             notification_auto_dismiss_target_secs: Some(20),
             require_local_claude_executable: Some(true),
             acp_session_idle_ttl_secs: Some(900),
@@ -2231,6 +2261,18 @@ mod tests {
         assert_eq!(roundtripped.acp_session_title_refresh_enabled, Some(true));
         assert_eq!(roundtripped.acp_chat_event_page_size, Some(240));
         assert_eq!(roundtripped.conversation_auto_title_max_chars, Some(20));
+        assert_eq!(
+            roundtripped.conversation_inline_content_max_bytes,
+            Some(64_000)
+        );
+        assert_eq!(
+            roundtripped.conversation_inline_image_max_bytes,
+            Some(4 * 1024 * 1024)
+        );
+        assert_eq!(
+            roundtripped.conversation_inline_image_max_dimension,
+            Some(2_560)
+        );
         assert_eq!(roundtripped.notification_auto_dismiss_target_secs, Some(20));
         assert_eq!(roundtripped.require_local_claude_executable, Some(true));
         assert_eq!(roundtripped.acp_session_idle_ttl_secs, Some(900));
@@ -2296,6 +2338,9 @@ mod tests {
             acp_session_title_refresh_enabled: Some(true),
             acp_chat_event_page_size: Some(240),
             conversation_auto_title_max_chars: Some(20),
+            conversation_inline_content_max_bytes: Some(32_000),
+            conversation_inline_image_max_bytes: Some(1024 * 1024),
+            conversation_inline_image_max_dimension: Some(1_568),
             notification_auto_dismiss_target_secs: Some(12),
             require_local_claude_executable: Some(true),
             ..Default::default()
@@ -2303,6 +2348,9 @@ mod tests {
         assert!(config.acp_session_title_refresh_enabled);
         assert_eq!(config.acp_chat_event_page_size, 240);
         assert_eq!(config.conversation_auto_title_max_chars, 20);
+        assert_eq!(config.conversation_inline_content_max_bytes, 32_000);
+        assert_eq!(config.conversation_inline_image_max_bytes, 1024 * 1024);
+        assert_eq!(config.conversation_inline_image_max_dimension, 1_568);
         assert_eq!(config.notification_auto_dismiss_target_secs, 12);
         assert!(config.require_local_claude_executable);
     }

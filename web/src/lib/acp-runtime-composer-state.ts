@@ -366,7 +366,16 @@ function processingKindForInput(
   if (backendProcessingKind === 'preparing-workspace') return 'preparing-workspace';
   if (backendProcessingKind === 'launching-next-node') return 'launching-next-node';
   if (awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
-  if (!input.hasTimelineItems) return input.hasEffectiveEvents ? 'processing' : 'launching';
+  if (!input.hasTimelineItems) {
+    if (input.hasEffectiveEvents) return 'processing';
+    const lifecycleLaunching = Boolean(
+      input.initialTimelinePending
+      || input.lifecycle?.runtime.active
+      || (input.lifecycle?.acp.liveTurnActivity ?? 'idle') !== 'idle'
+      || input.lifecycle?.acp.stopping,
+    );
+    return lifecycleLaunching ? 'launching' : backendProcessingKind;
+  }
   if (backendProcessingKind !== 'processing') return backendProcessingKind;
   return input.timelineProcessingKind;
 }

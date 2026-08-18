@@ -43,18 +43,39 @@ export function applyConversationSidebarTaskActivity(
   taskId: string,
   activity: ConversationTaskActivityVm | null,
 ): ConversationSidebarVm {
-  const updateTask = (task: ConversationTaskRowVm) => (
-    task.projectId === projectId && task.taskId === taskId
-      ? { ...task, activity }
-      : task
-  );
+  const updateTask = (task: ConversationTaskRowVm) => {
+    if (task.projectId !== projectId || task.taskId !== taskId) return task;
+    const currentActivity = task.activity ?? null;
+    if (
+      currentActivity === activity
+      || (
+        currentActivity !== null
+        && activity !== null
+        && currentActivity.phase === activity.phase
+        && currentActivity.stopping === activity.stopping
+      )
+    ) {
+      return task;
+    }
+    return { ...task, activity };
+  };
+
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const workspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
+  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
+  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
+  if (!pinnedChanged && !workspaceChanged) return sidebar;
+
   return {
     ...sidebar,
-    pinnedTasks: sidebar.pinnedTasks.map(updateTask),
-    tasksByWorkspace: {
-      ...sidebar.tasksByWorkspace,
-      [projectId]: (sidebar.tasksByWorkspace[projectId] ?? []).map(updateTask),
-    },
+    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    tasksByWorkspace: workspaceChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: nextWorkspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
   };
 }
 

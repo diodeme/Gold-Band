@@ -531,7 +531,6 @@ export function ConversationRunPage({
             onAtBottomChange={handleAtBottomChange}
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
-            showInitializingSessionShell={selectedLeaf.current}
             wallpaperSurface
             worktreePath={run.worktree?.path}
             runtimeComposerContext={runtimeComposerContext}

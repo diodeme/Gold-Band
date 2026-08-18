@@ -387,6 +387,7 @@ export function App() {
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
+  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeAcpSessionUpdates>[0] | null>(null);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
   const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
@@ -922,6 +923,40 @@ export function App() {
   }, [bootstrap, uiMode]);
 
   useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeAcpSessionUpdates((event) => {
+      if (!active) return;
+      const projectId = event.projectId?.trim();
+      if (projectId) {
+        const sidebarActivity = conversationTaskActivityFromUpdate(event);
+        if (event.lifecycle) {
+          applyConversationLifecycleSnapshotToSidebar(
+            projectId,
+            event.taskId,
+            event.runId,
+            event.lifecycle,
+            sidebarActivity === undefined
+              ? conversationTaskActivityFromLifecycle(event.lifecycle)
+              : sidebarActivity,
+          );
+        } else if (sidebarActivity !== undefined) {
+          applyConversationTaskActivity(projectId, event.taskId, sidebarActivity);
+        }
+      }
+      conversationAcpSessionRefreshRef.current?.(event);
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
+
+  useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     let active = true;
     let dispose: (() => void) | undefined;
@@ -1055,7 +1090,6 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
-    let stopListeningAcp: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1152,23 +1186,9 @@ export function App() {
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
 
-    void subscribeAcpSessionUpdates((event) => {
+    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeAcpSessionUpdates>[0] = (event) => {
       if (!active) return;
       if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
-      const sidebarActivity = conversationTaskActivityFromUpdate(event);
-      if (event.lifecycle) {
-        applyConversationLifecycleSnapshotToSidebar(
-          projectId,
-          taskId,
-          runId,
-          event.lifecycle,
-          sidebarActivity === undefined
-            ? conversationTaskActivityFromLifecycle(event.lifecycle)
-            : sidebarActivity,
-        );
-      } else if (sidebarActivity !== undefined) {
-        applyConversationTaskActivity(projectId, taskId, sidebarActivity);
-      }
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -1239,15 +1259,8 @@ export function App() {
         currentSelectedRuntimeControlled,
         incomingRuntimeControlled,
       }), incomingRuntimeControlled);
-    })
-      .then((dispose) => {
-        if (active) {
-          stopListeningAcp = dispose;
-        } else {
-          dispose();
-        }
-      })
-      .catch(() => {});
+    };
+    conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 
     return () => {
       active = false;
@@ -1255,9 +1268,11 @@ export function App() {
       if (conversationRunStateRefreshRef.current === refreshSelectedRunFromStateEvent) {
         conversationRunStateRefreshRef.current = null;
       }
-      stopListeningAcp?.();
+      if (conversationAcpSessionRefreshRef.current === refreshSelectedRunFromAcpEvent) {
+        conversationAcpSessionRefreshRef.current = null;
+      }
     };
-  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;

@@ -82,6 +82,8 @@
 - 自动标题仅在首次创建时生成
 - 调整 `conversationAutoTitleMaxChars` 只影响之后新建会话的自动标题，不回写历史 task，也不影响用户手动重命名
 - 描述为空，内容为完整输入
+- 会话标题属于 Task 领域，`TaskState.title` 及其 `ConversationTaskRowVm` 投影是唯一权威事实；`ConversationRunVm`、run 缓存和 ACP session title 不保存或覆盖会话标题。侧边栏、会话页头和 Direct 组合页头都按完整 `projectId + taskId` 读取同一 Task 投影。
+- 创建命令返回 `{ task, run }`，重命名命令返回持久化后的 `ConversationTaskRowVm`；前端只在收到权威 Task 快照后同时更新 workspace 列表与置顶副本。写入失败保持当前标题并展示结构化错误，不做乐观改名或静默刷新兜底。
 
 ### 工作树创建与运行目录
 

@@ -9,6 +9,7 @@ import { EditableConversationTitle } from '@/components/conversation/EditableCon
 
 interface ConversationRunHeaderProps {
   run: ConversationRunVm;
+  taskTitle: string;
   onRerun: () => void;
   onEditWorkflow: () => void;
   onViewWorkflow: () => void;
@@ -22,6 +23,7 @@ interface ConversationRunHeaderProps {
 
 export function ConversationRunHeader({
   run,
+  taskTitle,
   onRerun,
   onEditWorkflow,
   onViewWorkflow,
@@ -52,7 +54,7 @@ export function ConversationRunHeader({
           </Tooltip>
         ) : null}
         <EditableConversationTitle
-          title={run.title}
+          title={taskTitle}
           metadata={!isDirect ? run.runId : null}
           className="flex-1"
           onTitleChange={onTitleChange}

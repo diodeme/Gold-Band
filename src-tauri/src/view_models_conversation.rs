@@ -32,7 +32,7 @@ use gold_band::dsl::{
 use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
-    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, WorkerRefState,
+    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
@@ -498,8 +498,6 @@ pub struct ConversationRunVm {
     pub task_id: String,
     pub task_uuid: Option<String>,
     pub run_id: String,
-    pub title: String,
-    pub auto_title: bool,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
     pub direct_config: Option<ConversationDirectConfigVm>,
@@ -521,6 +519,13 @@ pub struct ConversationRunVm {
     pub runtime_error_message: Option<String>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCreateResultVm {
+    pub task: ConversationTaskRowVm,
+    pub run: ConversationRunVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1127,6 +1132,70 @@ pub(crate) fn conversation_task_activity_from_prompt(
 
 // ── Builder functions (stubs — full implementation in later phases) ──
 
+fn conversation_task_row_vm_from_task(
+    app: &App,
+    project_id: &str,
+    task: &TaskState,
+    pinned: bool,
+    pin_order: Option<usize>,
+) -> ConversationTaskRowVm {
+    let task_id = &task.id;
+    let metadata = read_conversation_metadata(app, task_id);
+    let run_mode = metadata
+        .as_ref()
+        .map(|metadata| metadata.run_mode.clone())
+        .unwrap_or_else(|| "workflow".to_string());
+    let run_list = app.run_list(task_id).unwrap_or_default();
+    let mut runs: Vec<ConversationRunSummaryVm> =
+        run_list.iter().map(conversation_run_summary_vm).collect();
+    runs.sort_by(|left, right| {
+        compare_conversation_timestamps(&right.updated_at, &left.updated_at)
+            .then_with(|| compare_conversation_timestamps(&right.started_at, &left.started_at))
+            .then_with(|| right.run_id.cmp(&left.run_id))
+    });
+    let latest_run = runs.first().cloned();
+    let last_activity_at = latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
+    let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
+
+    ConversationTaskRowVm {
+        project_id: project_id.to_string(),
+        task_id: task_id.clone(),
+        title: task.title.clone().unwrap_or_else(|| task_id.clone()),
+        auto_title: metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.title_auto_generated),
+        run_mode,
+        workflow_template_id: None,
+        agent_identity: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_identity.clone()),
+        last_activity_at,
+        activity,
+        latest_run,
+        runs,
+        pinned,
+        pinned_order: pin_order,
+        scheduled_task_id: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
+    }
+}
+
+pub fn conversation_task_row_vm(
+    app: &App,
+    project_id: &str,
+    task_id: &str,
+    pinned: bool,
+    pin_order: Option<usize>,
+) -> anyhow::Result<ConversationTaskRowVm> {
+    let task = app
+        .task_show(task_id)
+        .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
+    Ok(conversation_task_row_vm_from_task(
+        app, project_id, &task, pinned, pin_order,
+    ))
+}
+
 pub fn conversation_sidebar_vm_from_sources(
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
@@ -1162,52 +1231,13 @@ pub fn conversation_sidebar_vm_from_sources(
                     .find(|p| p.project_id == *project_id && p.task_id == *task_id)
                     .map(|p| p.order);
 
-                let metadata = read_conversation_metadata(&source.app, task_id);
-                let run_mode = metadata
-                    .as_ref()
-                    .map(|metadata| metadata.run_mode.clone())
-                    .unwrap_or_else(|| "workflow".to_string());
-
-                let run_list = source.app.run_list(task_id).unwrap_or_default();
-                let mut runs: Vec<ConversationRunSummaryVm> =
-                    run_list.iter().map(conversation_run_summary_vm).collect();
-                runs.sort_by(|left, right| {
-                    compare_conversation_timestamps(&right.updated_at, &left.updated_at)
-                        .then_with(|| {
-                            compare_conversation_timestamps(&right.started_at, &left.started_at)
-                        })
-                        .then_with(|| right.run_id.cmp(&left.run_id))
-                });
-                let latest_run = runs.first().cloned();
-                let last_activity_at =
-                    latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
-                let activity = conversation_task_activity(
-                    &source.app.paths.task_dir(task_id),
-                    latest_run.as_ref(),
-                );
-
-                let row = ConversationTaskRowVm {
-                    project_id: project_id.clone(),
-                    task_id: task_id.clone(),
-                    title: task.title.clone().unwrap_or_else(|| task_id.clone()),
-                    auto_title: metadata
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.title_auto_generated),
-                    run_mode,
-                    workflow_template_id: None,
-                    agent_identity: metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.agent_identity.clone()),
-                    last_activity_at,
-                    activity,
-                    latest_run,
-                    runs,
+                let row = conversation_task_row_vm_from_task(
+                    &source.app,
+                    project_id,
+                    &task,
                     pinned,
-                    pinned_order: pin_order,
-                    scheduled_task_id: metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.scheduled_task_id.clone()),
-                };
+                    pin_order,
+                );
 
                 if pinned {
                     pinned_tasks.push(row.clone());
@@ -2718,7 +2748,7 @@ pub fn conversation_run_vm(
         }
     };
 
-    // Read the task state for title
+    // Read the task state for stable task identity.
     let task_state = app
         .task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
@@ -2726,14 +2756,13 @@ pub fn conversation_run_vm(
         .uuid
         .clone()
         .or_else(|| Some(task_id.to_string()));
-    let title = task_state.title.unwrap_or_else(|| task_id.to_string());
 
     // Read conversation metadata if exists
     let conversation_metadata = read_conversation_metadata(app, task_id);
-    let (run_mode, auto_title) = conversation_metadata
+    let run_mode = conversation_metadata
         .as_ref()
-        .map(|metadata| (metadata.run_mode.clone(), metadata.title_auto_generated))
-        .unwrap_or_else(|| ("workflow".to_string(), false));
+        .map(|metadata| metadata.run_mode.clone())
+        .unwrap_or_else(|| "workflow".to_string());
     let is_orchestrated = conversation_run_mode_from_label(&run_mode)
         .unwrap_or(ConversationRunMode::Workflow)
         .is_orchestrated();
@@ -3346,8 +3375,6 @@ pub fn conversation_run_vm(
         task_id: task_id.to_string(),
         task_uuid,
         run_id: run_id.to_string(),
-        title,
-        auto_title,
         run_mode,
         workflow_template_id: None,
         direct_config: conversation_metadata
@@ -3870,10 +3897,6 @@ impl PreparedConversationTask {
         self.task_uuid.as_deref()
     }
 
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
     pub fn accept(mut self) -> (String, Option<String>, String) {
         self.armed = false;
         (
@@ -4060,11 +4083,10 @@ pub fn create_conversation_task_vm(
 pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<ConversationRunVm> {
+) -> anyhow::Result<ConversationCreateResultVm> {
     let prepared_task = prepare_conversation_task_vm(app, input)?;
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
-    let title = prepared_task.title().to_string();
 
     let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
         app.prepare_run_in_worktree(&task_id, None)?
@@ -4074,47 +4096,48 @@ pub fn create_conversation_run_vm(
     let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
     prepared_task.accept();
 
-    // Return early VM from the run
-    conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
-        Ok(ConversationRunVm {
-            project_id: input.project_id.clone(),
-            task_id: task_id.clone(),
-            task_uuid: task_uuid.clone(),
-            run_id: run.id,
-            title,
-            auto_title: true,
-            run_mode: input.run_mode.clone(),
-            workflow_template_id: input.workflow_template_id.clone(),
-            direct_config: input.direct_config.clone(),
-            agent_identity: input
-                .direct_config
-                .as_ref()
-                .and_then(|config| direct_agent_identity(app, &config.agent_type)),
-            last_activity_at: Some(chrono::Utc::now().to_rfc3339()),
-            run_status: enum_label(&run.status),
-            run_outcome: None,
-            session_tree: ConversationSessionTreeVm {
-                rounds: Vec::new(),
-                selected_session_key: None,
-            },
-            selected_session: None,
-            active_sessions: Vec::new(),
-            input_attachments: Vec::new(),
-            workflow_status: "valid".to_string(),
-            workflow_valid: true,
-            workflow_error: None,
-            workflow_json: None,
-            workflow_graph: GraphVm {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            },
-            resumable: false,
-            pause_reason: None,
-            runtime_error_message: None,
-            scheduled_task_id: input.scheduled_task_id.clone(),
-            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
-        })
-    })
+    // Return an early run snapshot together with the canonical task projection.
+    let run =
+        conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).unwrap_or_else(|_| {
+            ConversationRunVm {
+                project_id: input.project_id.clone(),
+                task_id: task_id.clone(),
+                task_uuid: task_uuid.clone(),
+                run_id: run.id,
+                run_mode: input.run_mode.clone(),
+                workflow_template_id: input.workflow_template_id.clone(),
+                direct_config: input.direct_config.clone(),
+                agent_identity: input
+                    .direct_config
+                    .as_ref()
+                    .and_then(|config| direct_agent_identity(app, &config.agent_type)),
+                last_activity_at: Some(chrono::Utc::now().to_rfc3339()),
+                run_status: enum_label(&run.status),
+                run_outcome: None,
+                session_tree: ConversationSessionTreeVm {
+                    rounds: Vec::new(),
+                    selected_session_key: None,
+                },
+                selected_session: None,
+                active_sessions: Vec::new(),
+                input_attachments: Vec::new(),
+                workflow_status: "valid".to_string(),
+                workflow_valid: true,
+                workflow_error: None,
+                workflow_json: None,
+                workflow_graph: GraphVm {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                },
+                resumable: false,
+                pause_reason: None,
+                runtime_error_message: None,
+                scheduled_task_id: input.scheduled_task_id.clone(),
+                worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            }
+        });
+    let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
+    Ok(ConversationCreateResultVm { task, run })
 }
 
 pub fn rerun_conversation_task_vm(
@@ -4155,8 +4178,6 @@ pub fn rerun_conversation_task_vm(
                 .and_then(|task| task.uuid)
                 .or_else(|| Some(task_id.to_string())),
             run_id: run.id,
-            title: String::new(),
-            auto_title: false,
             run_mode: "workflow".to_string(),
             workflow_template_id: None,
             direct_config: read_conversation_metadata(app, task_id)
@@ -4248,15 +4269,15 @@ mod tests {
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm,
-        PromptActivity, apply_workflow_interview_preference, attempt_control_mode,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_session_successors_from_state,
-        conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
+        ConversationWorkspaceVm, PromptActivity, apply_workflow_interview_preference,
+        attempt_control_mode, build_auto_workflow, build_direct_workflow,
+        conversation_attempt_lifecycle_vm, conversation_auto_title, conversation_run_vm,
+        conversation_session_successors_from_state, conversation_sidebar_vm_from_sources,
+        conversation_status_from_session, conversation_task_activity, conversation_task_row_vm,
+        conversation_workspace_vms, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
         find_leaf_by_key, lifecycle_is_active, scheduled_content_snapshot,
-        scheduled_task_vms_from_sources, switch_conversation_session_vm,
+        scheduled_task_vms_from_sources, switch_conversation_session_vm, update_task_metadata_vm,
         validate_conversation_create_vm, workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
@@ -5884,6 +5905,44 @@ mod tests {
     }
 
     #[test]
+    fn task_metadata_update_returns_the_authoritative_task_projection() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "h".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+
+        let task = update_task_metadata_vm(&app, "project-a", &task_id, "hi", None, true, Some(2))
+            .unwrap();
+
+        assert_eq!(task.project_id, "project-a");
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(task.title, "hi");
+        assert!(task.pinned);
+        assert_eq!(task.pinned_order, Some(2));
+        assert_eq!(
+            app.task_show(&task.task_id).unwrap().title.as_deref(),
+            Some("hi")
+        );
+    }
+
+    #[test]
     fn conversation_task_creation_accepts_an_attachment_only_payload() {
         let app = App::new(temp_repo_root());
         let attachment = app.paths.repo_root.join("context.txt");
@@ -6226,6 +6285,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        let serialized = serde_json::to_value(&vm).unwrap();
+        assert!(serialized.get("title").is_none());
+        assert!(serialized.get("autoTitle").is_none());
+        let task = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
+        assert_eq!(task.title, "中文节点资源回归");
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
             .attempts
@@ -7276,10 +7340,13 @@ mod tests {
 
 pub fn update_task_metadata_vm(
     app: &App,
-    _project_id: &str,
+    project_id: &str,
     task_id: &str,
     title: &str,
     description: Option<&str>,
-) -> anyhow::Result<()> {
-    app.update_task_metadata(task_id, title, description)
+    pinned: bool,
+    pin_order: Option<usize>,
+) -> anyhow::Result<ConversationTaskRowVm> {
+    app.update_task_metadata(task_id, title, description)?;
+    conversation_task_row_vm(app, project_id, task_id, pinned, pin_order)
 }

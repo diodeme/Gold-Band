@@ -2250,8 +2250,6 @@ export interface ConversationRunVm {
   taskId: string;
   taskUuid?: string | null;
   runId: string;
-  title: string;
-  autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
   directConfig?: ConversationDirectConfigVm | null;
@@ -2273,6 +2271,11 @@ export interface ConversationRunVm {
   runtimeErrorMessage?: string | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ConversationCreateResultVm {
+  task: ConversationTaskRowVm;
+  run: ConversationRunVm;
 }
 
 export interface ConversationQueuedPromptDraftVm {

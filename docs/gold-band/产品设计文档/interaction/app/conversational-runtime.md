@@ -527,7 +527,8 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 ## Direct 运行时呈现
 
 - Direct 对用户呈现为一个持续 Agent 对话，不展示 workflow、round/node/attempt path、run outcome、session switcher、重跑或工作流查看/编辑入口。
-- Direct 不保留独立运行标题栏；组合页头左侧按内容自然宽度紧邻展示可编辑会话标题、Agent icon/名称、可复制 sessionId，右侧通过独立操作区展示原始帧与目录按钮。紧凑态标题不预留隐藏编辑图标的布局宽度，标题只在过长时截断，不得用伸展布局把 Agent 身份推向中部；页头不重复展示 model 或 permission mode，`runId` 只保留在高级诊断数据中。
+- Direct 不保留独立运行标题栏；组合页头左侧按内容自然宽度紧邻展示可编辑会话标题、Agent icon/名称、可复制 sessionId，右侧通过独立操作区展示原始帧与目录按钮。常态标题项使用内容宽度且不得参与兄弟项 flex shrink，短标题必须完整显示；标题宽度最多占页头 40%，只有长标题真实超过上限时才截断。编辑态与常态复用同一外层宽度契约。标题 trigger 不得用负外边距缩减外层 intrinsic width，否则 `max-width: 100%` 会反向裁掉短标题字符。紧凑态标题不预留隐藏编辑图标的布局宽度，不得用伸展布局把 Agent 身份推向中部；页头不重复展示 model 或 permission mode，`runId` 只保留在高级诊断数据中。
+- 组合页头中的会话标题不是 run/session 字段：必须按 `projectId + taskId` 从 `ConversationTaskRowVm` 派生。`ConversationRunVm` 只承载 run 生命周期与 session 投影，run LRU 缓存必须剔除历史 `title/autoTitle` 字段；Provider 的 `session/list.title` 只属于 ACP session 诊断/同步语义，不得进入 Task 标题更新链路。
 - Direct ACP header 不展示“系统提示”按钮；Direct 的 system prompt 本就为空，不保留无效或禁用态入口。原始帧与其他诊断能力继续保留。
 - 消息、thought、plan、tool call、permission、elicitation、附件、raw frame、token、cost、context 和耗时继续复用现有 ACP/prompt-kit 管道。
 - composer 内的发送中、思考中、工具执行中、回复中、停止中和计时仍由 canonical lifecycle 驱动，不新增 Direct 专用 chat 组件。

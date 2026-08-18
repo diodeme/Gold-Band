@@ -4517,7 +4517,7 @@ export function ACPSessionHeader({
         {directSessionHeader ? (
           <EditableConversationTitle
             title={directSessionHeader.title}
-            className="mr-2 min-w-0 max-w-[40%] shrink"
+            className="mr-2 min-w-0 max-w-[40%] flex-none"
             showEditIcon={false}
             onTitleChange={directSessionHeader.onTitleChange}
           />

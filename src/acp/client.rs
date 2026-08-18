@@ -2478,12 +2478,10 @@ fn project_prompt_content_block(
     prompt_capabilities: &PromptCapabilities,
 ) -> ProtocolContentBlock {
     match block {
-        AcpContentBlock::Image(image) if prompt_capabilities.image => {
-            ProtocolContentBlock::Image(
-                ImageContent::new(image.data.clone(), image.mime_type.clone())
-                    .uri(image.link.uri.clone()),
-            )
-        }
+        AcpContentBlock::Image(image) if prompt_capabilities.image => ProtocolContentBlock::Image(
+            ImageContent::new(image.data.clone(), image.mime_type.clone())
+                .uri(image.link.uri.clone()),
+        ),
         AcpContentBlock::Resource(resource) if prompt_capabilities.embedded_context => {
             ProtocolContentBlock::Resource(EmbeddedResource::new(
                 EmbeddedResourceResource::TextResourceContents(
@@ -8880,7 +8878,10 @@ mod tests {
                 }
             })
         );
-        assert_eq!(params["prompt"][2], json!({"type": "text", "text": "clarify"}));
+        assert_eq!(
+            params["prompt"][2],
+            json!({"type": "text", "text": "clarify"})
+        );
     }
 
     #[test]
@@ -8939,7 +8940,10 @@ mod tests {
                 "size": 5
             })
         );
-        assert_eq!(params["prompt"][2], json!({"type": "text", "text": "clarify"}));
+        assert_eq!(
+            params["prompt"][2],
+            json!({"type": "text", "text": "clarify"})
+        );
     }
 
     #[test]

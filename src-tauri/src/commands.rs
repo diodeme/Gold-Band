@@ -3401,16 +3401,7 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
-    let activity = conversation_prompt_activity_vm(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
+    let activity = conversation_task_prompt_activity_vm(app, task_id);
     emit_acp_update(
         app_handle,
         Some(app),
@@ -3441,18 +3432,7 @@ fn emit_acp_event_update(
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
 ) {
-    let activity = activity_app.and_then(|app| {
-        conversation_prompt_activity_vm(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            outer_node_id.as_deref(),
-            outer_attempt_id.as_deref(),
-        )
-    });
+    let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
         app_handle,
         None,
@@ -3470,28 +3450,12 @@ fn emit_acp_event_update(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn conversation_prompt_activity_vm(
+fn conversation_task_prompt_activity_vm(
     app: &App,
     task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    outer_node_id: Option<&str>,
-    outer_attempt_id: Option<&str>,
 ) -> Option<ConversationTaskActivityVm> {
-    let attempt_dir = resolve_acp_attempt_dir(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    );
-    client::prompt_activity(&attempt_dir).map(conversation_task_activity_from_prompt)
+    client::prompt_activity_under(&app.paths.task_dir(task_id))
+        .map(conversation_task_activity_from_prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7937,10 +7901,7 @@ mod tests {
 
         assert!(
             validate_conversation_prompt_input(
-                &prompt_with_quote(
-                    "code-selection:anywhere",
-                    "引用不需要在消息时间线中存在",
-                ),
+                &prompt_with_quote("code-selection:anywhere", "引用不需要在消息时间线中存在",),
                 None,
             )
             .is_ok()

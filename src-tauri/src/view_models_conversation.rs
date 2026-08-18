@@ -3540,8 +3540,7 @@ pub fn validate_conversation_create_vm(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
@@ -3984,8 +3983,7 @@ pub fn prepare_conversation_task_vm(
         gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
 
     // Create task

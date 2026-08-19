@@ -36,6 +36,7 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
     case 'scheduled-task-detail':
       return 'scheduled-tasks';
     case 'conversation-run':
+    case 'personal-analytics':
     case 'settings':
       return null;
   }

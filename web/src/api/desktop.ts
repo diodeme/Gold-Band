@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -202,6 +202,31 @@ export const desktopApi: RuntimeApi = {
   },
   getAgentRegistry() {
     return invokeCommand('get_agent_registry');
+  },
+  getPersonalAnalytics() {
+    return invokeCommand('get_personal_analytics');
+  },
+  syncPersonalAnalytics() {
+    return invokeCommand('sync_personal_analytics');
+  },
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string) {
+    return invokeCommand('query_personal_analytics_report', { input: { range: normalizeRange(range), agentType } });
+  },
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
+    return invokeCommand('start_personal_analytics_insights', { input: { agentType, range: normalizeRange(range) } });
+  },
+  cancelPersonalAnalyticsInsights(operationId: string) {
+    return invokeCommand('cancel_personal_analytics_insights', { input: { operationId } });
+  },
+  cancelPersonalAnalytics(operationId: string) {
+    return invokeCommand('cancel_personal_analytics', { input: { operationId } });
+  },
+  async subscribePersonalAnalyticsUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<PersonalAnalyticsSnapshotVm>('gold-band://personal-analytics-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
   },
   getAgentCommandCatalog(agentType: string, workspacePath: string) {
     return invokeCommand('get_agent_command_catalog', { agentType, workspacePath });
@@ -756,3 +781,7 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand('preview_feedback_session_archive', { projectId, taskId });
   },
 };
+
+function normalizeRange(range: { start?: string | null; end?: string | null }) {
+  return { start: range.start ?? null, end: range.end ?? null };
+}

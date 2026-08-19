@@ -473,6 +473,162 @@ export interface ManagedAgentInput {
   externalSessionSyncEnabled: boolean;
 }
 
+export type PersonalAnalyticsOperationStatus =
+  | 'queued'
+  | 'scanning'
+  | 'analyzing'
+  | 'validating-report'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface PersonalAnalyticsErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface PersonalAnalyticsOperationVm {
+  operationId: string;
+  agentType: string;
+  status: PersonalAnalyticsOperationStatus;
+  revision: number;
+  progress: {
+    stage: PersonalAnalyticsOperationStatus;
+    processedUnits: number;
+    totalUnits: number;
+  };
+  sourceWatermark: string;
+  reportId: string | null;
+  error: PersonalAnalyticsErrorVm | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface PersonalAnalyticsRateMetricVm {
+  metricId: string;
+  numerator: number;
+  denominator: number;
+  unknownCount: number;
+  rate: number | null;
+  evidenceLocators: string[];
+}
+
+export interface PersonalAnalyticsTaskSummaryVm {
+  taskLocator: string;
+  title: string;
+  mode: string;
+  status: string;
+  outcome: string | null;
+  agentNames: string[];
+  totalTokens: number;
+  activeDurationSeconds: number;
+  activeDurationZeroFilled: boolean;
+  terminalNode: string | null;
+  lastActivityAt: string | null;
+}
+
+export interface PersonalAnalyticsNodeAggregateVm {
+  nodeId: string;
+  callCount: number;
+  retryCount: number;
+  totalActiveDurationSeconds: number;
+  averageActiveDurationSeconds: number;
+  activeDurationShare: number | null;
+  activeDurationZeroFilledCount: number;
+}
+
+export interface PersonalAnalyticsReportVm {
+  schemaVersion: string;
+  reportId: string;
+  generatedAt: string;
+  sourceWatermark: string;
+  indexRevision: number;
+  range: { start: string | null; end: string | null };
+  sourceCoverage: {
+    discoveredFiles: number;
+    eligibleFiles: number;
+    parsedFiles: number;
+    skippedFiles: number;
+    corruptFiles: number;
+    unknownVersionFiles: number;
+    discoveredBytes: number;
+    semanticEligibleItems: number;
+    semanticSampledItems: number;
+  };
+  overview: {
+    projectCount: number;
+    taskCount: number;
+    conversationCount: number;
+    runCount: number;
+    turnCount: number;
+    attemptCount: number;
+    earliestAt: string | null;
+    latestAt: string | null;
+  };
+  recentTasks: PersonalAnalyticsTaskSummaryVm[];
+  reliability: {
+    directReplyCompletionRate: PersonalAnalyticsRateMetricVm;
+    workflowRunTerminalSuccessRate: PersonalAnalyticsRateMetricVm;
+    autoOuterRunTerminalSuccessRate: PersonalAnalyticsRateMetricVm;
+    failedCount: number;
+    cancelledCount: number;
+    nonTerminalCount: number;
+  };
+  quality: {
+    retryReentryRate: PersonalAnalyticsRateMetricVm;
+    recoveredAfterRetryCount: number;
+    terminalSignals: Array<{ name: string; count: number }>;
+  };
+  efficiency: {
+    observedTerminalRunActiveSeconds: number;
+    averageTerminalRunActiveSeconds: number | null;
+    terminalRunSampleCount: number;
+    activeDurationZeroFilledCount: number;
+    pauseCount: number;
+    resumeCount: number;
+    manualContinueCount: number;
+    topDurationTasks: PersonalAnalyticsTaskSummaryVm[];
+    nodeAggregates: PersonalAnalyticsNodeAggregateVm[];
+  };
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    totalTokens: number;
+    observedPromptCount: number;
+    topTokenTasks: PersonalAnalyticsTaskSummaryVm[];
+  };
+  contextAndTools: {
+    toolCallCount: number;
+    permissionRequestCount: number;
+    elicitationRequestCount: number;
+    topTools: Array<{ name: string; count: number }>;
+    topAgents: Array<{ name: string; count: number }>;
+    verifiedSkillCallCount: number;
+    topSkills: Array<{ name: string; count: number }>;
+    eventKinds: Array<{ name: string; count: number }>;
+  };
+  insights: Array<{
+    section: 'quality' | 'efficiency' | 'token-usage' | 'context-and-skills';
+    title: string;
+    summary: string;
+    recommendation: string;
+    confidence: 'low' | 'medium' | 'high';
+    sampleCount: number;
+    evidenceLocators: string[];
+  }>;
+  warnings: Array<{ code: string; params: Record<string, unknown> }>;
+}
+
+export interface PersonalAnalyticsSnapshotVm {
+  operation: PersonalAnalyticsOperationVm | null;
+  insightOperation: PersonalAnalyticsOperationVm | null;
+  latestReport: PersonalAnalyticsReportVm | null;
+}
+
 export interface SummaryCardVm {
   key: string;
   label: string;
@@ -1872,6 +2028,7 @@ export type DesktopUiMode = 'conversation' | 'workbench';
 
 export type ConversationPage =
   | { kind: 'conversation-home' }
+  | { kind: 'personal-analytics' }
   | { kind: 'scheduled-task-create' }
   | {
       kind: 'conversation-run';

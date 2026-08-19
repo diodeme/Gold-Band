@@ -1410,7 +1410,6 @@ impl App {
         round_id: &str,
         outer_node_id: &str,
         outer_attempt_id: &str,
-        inner: Option<(&str, &str)>,
         phase: RuntimeExecutionPhase,
     ) -> Result<RunState> {
         let state_lock = attempt_runtime_state_lock(
@@ -1432,21 +1431,12 @@ impl App {
         {
             bail!("runtime execution locator is no longer current");
         }
-        let locator = match inner {
-            Some((node_id, attempt_id)) => RuntimeAttemptLocator {
-                round_id: round_id.to_string(),
-                node_id: node_id.to_string(),
-                attempt_id: attempt_id.to_string(),
-                outer_node_id: Some(outer_node_id.to_string()),
-                outer_attempt_id: Some(outer_attempt_id.to_string()),
-            },
-            None => RuntimeAttemptLocator {
-                round_id: round_id.to_string(),
-                node_id: outer_node_id.to_string(),
-                attempt_id: outer_attempt_id.to_string(),
-                outer_node_id: None,
-                outer_attempt_id: None,
-            },
+        let locator = RuntimeAttemptLocator {
+            round_id: round_id.to_string(),
+            node_id: outer_node_id.to_string(),
+            attempt_id: outer_attempt_id.to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
         };
         let phase = if phase == RuntimeExecutionPhase::RunningNode
             && matches!(
@@ -4147,8 +4137,9 @@ impl App {
                 dynamic_node.outcome = None;
                 dynamic_node.pause_reason = Some(pause_reason);
                 dynamic_node.runtime_error = None;
-                dynamic_node.runtime_execution_id = None;
-                dynamic_node.finished_at = Some(now_rfc3339_like());
+                let now = now_rfc3339_like();
+                dynamic_node.pause_runtime_execution(now.clone());
+                dynamic_node.finished_at = Some(now);
             }
         }
 
@@ -7031,7 +7022,7 @@ mod tests {
     }
 
     fn dynamic_pause_node(id: &str, status: DynamicNodeStatus) -> DynamicNodeState {
-        DynamicNodeState {
+        let mut node = DynamicNodeState {
             version: VERSION.to_string(),
             id: id.to_string(),
             dynamic_run_id: "dynamic-run-001".to_string(),
@@ -7043,6 +7034,9 @@ mod tests {
             pause_reason: None,
             runtime_error: None,
             runtime_execution_id: None,
+            runtime_execution_phase: None,
+            runtime_execution_revision: 0,
+            runtime_execution_updated_at: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -7060,7 +7054,18 @@ mod tests {
             started_at: Some("2026-06-16T00:00:00Z".to_string()),
             finished_at: None,
             uuid: None,
+        };
+        if status == DynamicNodeStatus::Running {
+            let execution_id = format!("execution-{id}");
+            node.begin_runtime_execution(execution_id.clone(), "2026-06-16T00:00:00Z".to_string());
+            node.transition_runtime_execution(
+                &execution_id,
+                RuntimeExecutionPhase::RunningNode,
+                "2026-06-16T00:00:01Z".to_string(),
+            )
+            .unwrap();
         }
+        node
     }
 
     fn write_dynamic_pause_fixture(app: &App, nodes: Vec<DynamicNodeState>) {
@@ -7090,7 +7095,17 @@ mod tests {
                 uuid: None,
                 last_executed_node: None,
                 worktree: None,
-                execution: Default::default(),
+                execution: crate::runtime::RuntimeExecutionState::new(
+                    RuntimeExecutionPhase::RunningNode,
+                    Some(crate::runtime::RuntimeAttemptLocator {
+                        round_id: round_id.to_string(),
+                        node_id: outer_node_id.to_string(),
+                        attempt_id: outer_attempt_id.to_string(),
+                        outer_node_id: None,
+                        outer_attempt_id: None,
+                    }),
+                    started_at.clone(),
+                ),
             },
         )
         .unwrap();
@@ -7371,6 +7386,12 @@ mod tests {
         assert_eq!(graph.run.current_node_ids, vec!["good-night".to_string()]);
         assert_eq!(target.status, DynamicNodeStatus::Paused);
         assert_eq!(target.outcome, None);
+        assert_eq!(target.runtime_execution_id, None);
+        assert_eq!(
+            target.runtime_execution_phase,
+            Some(RuntimeExecutionPhase::Paused)
+        );
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::RunningNode);
     }
 
     #[test]
@@ -7425,6 +7446,11 @@ mod tests {
             Some(PauseReason::ProcessInterrupted)
         );
         assert!(graph.run.current_node_ids.is_empty());
+        assert_eq!(
+            graph.nodes[0].runtime_execution_phase,
+            Some(RuntimeExecutionPhase::Paused)
+        );
+        assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
     }
 
     #[test]
@@ -7433,7 +7459,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let app = dynamic_pause_test_app(&temp);
         let mut first_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
-        first_execution.runtime_execution_id = Some("execution-a".to_string());
+        first_execution.begin_runtime_execution("execution-a", "2026-06-16T00:00:02Z".to_string());
         write_dynamic_pause_fixture(&app, vec![first_execution]);
 
         app.pause_dynamic_attempt_runtime_state(
@@ -7447,7 +7473,8 @@ mod tests {
         )
         .unwrap();
         let mut resumed_execution = dynamic_pause_node("good-night", DynamicNodeStatus::Running);
-        resumed_execution.runtime_execution_id = Some("execution-b".to_string());
+        resumed_execution
+            .begin_runtime_execution("execution-b", "2026-06-16T00:00:03Z".to_string());
         write_dynamic_pause_fixture(&app, vec![resumed_execution]);
         assert!(
             !app.pause_dynamic_attempt_runtime_state_if_active_execution(
@@ -7489,7 +7516,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let app = dynamic_pause_test_app(&temp);
         let mut rearmed = dynamic_pause_node("good-night", DynamicNodeStatus::Ready);
-        rearmed.runtime_execution_id = Some("execution-a".to_string());
+        rearmed.begin_runtime_execution("execution-a", "2026-06-16T00:00:02Z".to_string());
         write_dynamic_pause_fixture(&app, vec![rearmed]);
 
         assert!(

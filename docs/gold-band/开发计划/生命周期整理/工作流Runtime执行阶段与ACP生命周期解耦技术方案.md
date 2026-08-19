@@ -131,11 +131,11 @@ pub execution: RuntimeExecutionState
 | `RunState.status` | Run 的顶层 Running / Paused / Completed 状态 |
 | `RunState.pause_reason` | Run 暂停原因 |
 | `RunState.current_*` | 当前外层 attempt locator |
-| `execution.phase` | Runtime 当前执行阶段 |
-| `execution.locator` | 该阶段实际作用的精确 attempt / dynamic leaf |
+| `execution.phase` | Runtime 当前外层执行聚合阶段 |
+| `execution.locator` | 该阶段实际作用的外层 attempt；AI-DYNAMIC 不写入 inner leaf locator |
 | `execution.revision` | 每次权威 Runtime transition 单调递增的版本 |
 
-`execution.locator` 不能由页面当前选择的 session 反推。固定 workflow 指向普通 attempt；AI-DYNAMIC 指向精确 outer + inner locator。
+`execution.locator` 不能由页面当前选择的 session 反推。固定 workflow 指向普通 attempt；AI-DYNAMIC 固定指向 outer attempt。并行 leaf 的精确执行阶段和 generation 由 `DynamicNodeState.runtimeExecution*` 独立持有。
 
 ### 5.2 Runtime Control 状态
 
@@ -311,7 +311,7 @@ latestTurnStatus        = Completed
 | `artifact-emission.json(finalizing)` | `FinalizingArtifact` |
 | artifact repair 待继续 | `RepairingArtifact` |
 | AI-DYNAMIC workspace 临界区 | `PreparingWorkspace` |
-| AI-DYNAMIC 普通 leaf | `StartingNode` + 精确 inner locator |
+| AI-DYNAMIC 普通 leaf | leaf 自身 `StartingNode` + 新 execution ID；父 execution 保持 outer `RunningNode` |
 
 恢复顺序：
 
@@ -363,22 +363,21 @@ latestTurnStatus        = Completed
 
 ### 7.7 AI-DYNAMIC
 
-AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace catalog 等细节；顶层 `RunState.execution` 是 Conversation / UI 的权威执行阶段。
+AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace catalog 等细节。顶层 `RunState.execution` 只表示 outer AI-DYNAMIC attempt 的聚合阶段；每个 `DynamicNodeState` 独立持有 `runtimeExecutionId / runtimeExecutionPhase / runtimeExecutionRevision / runtimeExecutionUpdatedAt`，作为该 leaf lifecycle 的权威源。
 
-映射规则：
-
-| Dynamic 权威事实 | 顶层 execution phase |
+| Dynamic 权威事实 | 权威状态归属 |
 |---|---|
-| selected leaf prompt starting / running | `StartingNode / RunningNode` |
-| selected leaf finalize / repair | `FinalizingArtifact / RepairingArtifact` |
-| graph 正在聚合或选择后继 | `Transitioning` |
-| workspace checkpoint / fork / release | `PreparingWorkspace` |
-| 后继 leaf 已确定、尚未 active | `LaunchingNextNode` |
-| outer / selected leaf 被停止 | `Paused` |
+| leaf prompt starting / running | 对应 `DynamicNodeState = StartingNode / RunningNode` |
+| leaf finalize / repair | 对应 `DynamicNodeState = FinalizingArtifact / RepairingArtifact` |
+| leaf 暂停 / 完成 | 对应 `DynamicNodeState = Paused / Terminal`，并清空 active execution ID |
+| graph 正在调度并行 leaf | `DynamicRunState=Running`；父 `RunState.execution=RunningNode` |
+| workspace checkpoint / fork / release | `DynamicRunState.phase=PreparingWorkspace`；父 execution 暂时为 `PreparingWorkspace` |
+| 单 leaf 停止、仍有 active sibling | 仅该 leaf Paused；graph 与父 Run 保持 Running |
+| 最后 active leaf 停止或 outer 停止 | graph、父 Node/Round/Run 聚合为 Paused |
 
-顶层 phase 与 dynamic graph 的更新必须位于现有 project-scoped dynamic state lock 和 run lifecycle transition 边界内。不得由 selected leaf 的 ACP terminal 状态反推 outer graph phase。
+leaf phase 变更必须位于现有 project-scoped dynamic state lock 内，以 `nodeId + attemptId + runtimeExecutionId` 做 generation CAS，并持久化 graph 与 leaf node 文件。事件发布移到锁外，避免扩大临界区。Conversation 选择 dynamic leaf 时直接读取 leaf execution 投影；尚未建立 active execution 的 `Ready` leaf 由确定性 read-model 规则显示为 `StartingNode`。父 Run 已暂停时非终态 leaf 使用父 `Paused` 聚合，workspace 临界区使用父 `PreparingWorkspace` 聚合；leaf completed 后 graph 尚在消费 proposal、或 leaf pause 与 graph active 集合之间的提交收敛窗口使用父 graph 聚合。selected session 不是 canonical identity，不能驱动任何后端状态迁移。
 
-AI-DYNAMIC 内部 leaf locator 是同一 outer attempt 内的可变执行投影，不是 outer attempt 的 CAS identity。父级聚合写入固定以 `roundId + outerNodeId + outerAttemptId + outer runtimeExecutionId` 校验归属，同时要求提交前后的 execution locator 都属于该 outer attempt；不得因 inner leaf 推进而错误拒绝合法的父级暂停或恢复。子工作流/最后 active leaf 暂停时，先按旧 execution ID 校验当前 generation，再按 `node.json -> round.json -> run.json` 写入父级暂停聚合并清空 active execution ID；继续时复用 per-run lease，后台路径生成新 execution ID。
+父级聚合写入固定以 `roundId + outerNodeId + outerAttemptId + outer runtimeExecutionId` 校验归属，父 execution locator 始终保持 outer attempt。并行 leaf 不得写父 phase，因此一个 leaf 的 `FinalizingArtifact` 不会阻止 sibling 进入 `StartingNode`。子工作流或 leaf 暂停时先按旧 leaf execution ID 校验 generation；若仍有 active leaf，只提交 leaf pause，最后 active leaf 暂停时才按 `node.json -> round.json -> run.json` 收敛父聚合。显式继续复用 per-run lease，并为目标 leaf 生成新的 execution ID；旧 generation 的迟到回调不得覆盖新事实。
 
 ## 8. 持久化与 crash consistency
 
@@ -844,6 +843,7 @@ Conversation VM 本来就读取 `run.json`，直接从同一对象获得 executi
 - 启动恢复、停止 revision、stale progress、manual check、Direct、AI-DYNAMIC、继续窗口和旧 snapshot 竞态均已加入 Rust/Web 回归测试。
 - 2026-08-15 合并回归确认 provider 测试替身必须在模拟 prompt 接受时触发 `prompt_accepted`，保证 `StartingNode -> RunningNode -> AwaitingManualCheck` 与真实 adapter 使用同一状态机合约，不放宽生产转换。
 - 2026-08-17 修复 AI-DYNAMIC 子工作流暂停后的父级聚合收敛：outer CAS 改为校验稳定 outer attempt 归属，允许同一 attempt 内 inner locator 合法推进；父 `node/round/run` 同步暂停并清空 active execution ID，接口回归覆盖暂停后立即读取一致、显式继续完成和测试 Provider 的 accepted 合约。
+- 2026-08-19 修复 AI-DYNAMIC 并行 leaf 共享父 execution phase 的作用域缺陷：leaf execution phase/revision/generation 下沉到 `DynamicNodeState`，父 execution 固定为 outer 聚合与 workspace 阶段；Conversation dynamic leaf lifecycle 改读 leaf 权威状态。回归覆盖 finalizing leaf 与 sibling start 并行、单 leaf stop 保持父 Running、最后 active leaf stop 聚合暂停，以及旧 execution 迟到 phase/result 不能覆盖新 generation。
 
 验证与实际 UI deep-link 结果记录在本次实现验收中；若产品运行环境没有可复用测试会话，则以 production build、接口测试和浏览器可达页面验证为最低交付门槛。
 

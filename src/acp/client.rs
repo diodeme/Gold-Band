@@ -3707,6 +3707,7 @@ impl<'a> AcpRuntime<'a> {
         // Keep the pair atomic across all sessions sharing this adapter process.
         let connection = Arc::clone(&self.connection);
         let _transaction = connection.lock_session_config_transaction()?;
+        let catalog_at_start = self.config_options.clone();
         if let Some(m) = model.filter(|v| !v.trim().is_empty()) {
             self.set_session_model(m)?;
         }
@@ -3714,12 +3715,17 @@ impl<'a> AcpRuntime<'a> {
             self.apply_permission_mode(pm)?;
         }
         for (config_id, value) in config_options {
-            self.apply_generic_config_option(config_id, value)?;
+            self.apply_generic_config_option(config_id, value, catalog_at_start.as_ref())?;
         }
         Ok(())
     }
 
-    fn apply_generic_config_option(&mut self, config_id: &str, value: &str) -> Result<()> {
+    fn apply_generic_config_option(
+        &mut self,
+        config_id: &str,
+        value: &str,
+        catalog_at_start: Option<&Value>,
+    ) -> Result<()> {
         let config_id = config_id.trim();
         let value = value.trim();
         if config_id.is_empty() || value.is_empty() {
@@ -3736,8 +3742,10 @@ impl<'a> AcpRuntime<'a> {
             })
         else {
             if self.config_options.is_some() {
+                let category =
+                    config_option_category(catalog_at_start, config_id).unwrap_or("config");
                 return Err(session_config_value_unavailable_error(
-                    "config",
+                    category,
                     config_id,
                     value,
                     Vec::new(),
@@ -6993,6 +7001,21 @@ fn find_model_config_option(config_options: &Value) -> Option<&Value> {
     })
 }
 
+fn config_option_category<'a>(
+    config_options: Option<&'a Value>,
+    config_id: &str,
+) -> Option<&'a str> {
+    config_options
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("id").and_then(Value::as_str) == Some(config_id))
+        })?
+        .get("category")
+        .and_then(Value::as_str)
+}
+
 fn has_mode_config_option(config_options: Option<&Value>) -> bool {
     config_options.and_then(find_mode_config_option).is_some()
 }
@@ -9953,6 +9976,24 @@ mod tests {
         assert_eq!(
             unavailable.params["availableValues"],
             serde_json::json!(["read-only", "auto"])
+        );
+    }
+
+    #[test]
+    fn removed_config_option_error_keeps_observed_category() {
+        let catalog_at_start = json!([
+            { "id": "model", "category": "model" },
+            { "id": "reasoning_effort", "category": "thought_level" }
+        ]);
+
+        assert_eq!(
+            super::config_option_category(Some(&catalog_at_start), "reasoning_effort"),
+            Some("thought_level")
+        );
+        // An option that was never observed still falls back to the generic category.
+        assert_eq!(
+            super::config_option_category(Some(&catalog_at_start), "effort"),
+            None
         );
     }
 

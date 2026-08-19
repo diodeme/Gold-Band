@@ -3664,7 +3664,14 @@ export function ACPChatDialog(
   }
 
   if (!effective) {
-    return <AcpErrorState reason={sessionLoadError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
+    return (
+      <AcpErrorState
+        reason={
+          runtimeComposerContext?.runtimeError ?? sessionLoadError ?? t("acp.missingSessionReason")
+        }
+        transparent={wallpaperSurface}
+      />
+    );
   }
 
   // A failed provider attempt can be followed by an automatic retry. Until

@@ -2243,6 +2243,7 @@ export interface ConversationSessionLeafVm {
   finishedAt?: string | null;
   sessionId?: string | null;
   sessionEstablished?: boolean;
+  worktreePath?: string | null;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2295,8 +2296,22 @@ export interface ConversationRunVm {
   resumable: boolean;
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
+  runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface RuntimeErrorInfoVm {
+  code: {
+    domain: string;
+    code: string;
+  };
+  domain: string;
+  recovery: string;
+  retryPolicy?: unknown | null;
+  params?: Record<string, unknown> | null;
+  diagnostic: string;
+  raw?: unknown | null;
 }
 
 export interface ConversationCreateResultVm {

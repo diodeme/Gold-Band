@@ -244,12 +244,13 @@ MVP 范围：
 
 ---
 
-## 15. 2026-05-07 品牌 Logo 替换记录
+## 15. 品牌 Logo 资源
 
-本轮将桌面端品牌标识从临时菱形字形替换为用户提供的红蓝金无限环 Logo：
-- 左侧应用壳品牌区使用 `web/public/logo.svg`，保持 Gold Band 产品名和 AI Orchestrator 副标题不变。
+当前桌面端品牌标识统一使用用户提供的 `gold-band-logo-final-v6-transparent.svg` 透明矢量 Logo：
+- 左侧应用壳品牌区使用 `web/public/logo.svg`，保持 Gold Band 产品名和 AI Orchestrator 副标题不变；顶栏品牌框按正方形 Logo 使用 `24px × 24px` 尺寸，图片在可收缩内容区内保持 `contain`，品牌图形与标题共用标题栏垂直中心线。
 - 浏览器调试 favicon 与 Web 侧品牌图共用同一 SVG，减少多份前端 Logo 资源漂移。
-- Tauri 图标资源由同一 Logo 生成正方形源图与平台图标，Windows `.ico`、macOS `.icns` 和 PNG 图标使用一致品牌来源。
+- README 头标也直接引用 `web/public/logo.svg`，避免展示独立旧图标。
+- `src-tauri/icons/logo-source.svg` 是同一组矢量路径的 2048 正方形投影，Tauri 平台图标由它生成；平台 PNG 与 Windows `.ico` 的透明边缘必须保持预乘颜色正确，不得含低 Alpha 的白色 matte 污染，深色任务栏上不得出现白色晕边。macOS `.icns` 和其他平台资源继续使用同一品牌来源。
 
 ---
 

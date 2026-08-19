@@ -1,5 +1,23 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-19：品牌 Logo 统一替换
+
+- 实现：将用户提供的 `gold-band-logo-final-v6-transparent.svg` 作为唯一品牌矢量源复制到 `web/public/logo.svg`，以同一路径生成 `src-tauri/icons/logo-source.svg` 的 2048 正方形投影，并通过 Tauri 官方 icon generator 重建 Windows、macOS、PNG、Android 与 iOS 图标；README 中英文头标改为直接引用 `web/public/logo.svg`。
+- 验收：品牌资产契约测试固定 1254 正方形、6 条路径、无内嵌位图，Tauri 源与前端 Logo 使用相同 path 序列，并检查标题栏、品牌加载态、默认 Agent 图标、workspace 选择页、favicon 和 README 继续使用 canonical `/logo.svg`/`web/public/logo.svg`；相关前端测试、生产构建和浅色 / 深色浏览器视觉验证通过。
+- 性能与过度设计评审：继续复用既有单一 `/logo.svg` 消费路径，不新增运行时依赖、状态、请求或缓存；透明 SVG 由浏览器原生渲染，平台图标仍由 Tauri 官方生成器产出，避免手工维护每个尺寸。README 中已烘焙旧 Logo 的功能截图不属于本次自动同步范围。
+
+## 2026-08-19：标题栏品牌标识对齐
+
+- 根因与实现：此前标题栏沿用横向 `36px × 24px` 品牌框；新的 canonical Logo 为正方形，Grid 内 `<img>` 的 intrinsic minimum size 又阻止其缩入内容区，导致实际绘制尺寸超出品牌框而产生视觉错位。品牌框收敛为 `24px × 24px` 正方形，图片以 `size-full + min-h-0 + min-w-0 + object-contain` 约束在其可用内容区内，产品名继续由同一 flex 行的垂直中心线对齐。
+- 验收：标题栏契约测试固定正方形品牌框、canonical Logo 路径和可收缩图片约束；浏览器在浅色、深色及窄窗口下确认图形不越过边框，且与标题视觉中心一致。
+- 性能与过度设计评审：这是现有布局约束的常数级 CSS 修正，不增加 DOM、状态、依赖、请求或重渲染；不为单一资源增加位移变量或运行时测量逻辑。
+
+## 2026-08-19：Windows 任务栏图标透明边缘
+
+- 根因与实现：Tauri 的 SVG rasterizer 在小尺寸平台 PNG 的抗锯齿边缘写入了低 Alpha 的白色 RGB matte；Windows 深色任务栏进行透明合成时会把这些像素显示为白色晕边，SVG 标题栏渲染不受影响。保留同一 SVG 品牌源，并校正已生成平台 PNG 与 Windows 多尺寸 `.ico` 的透明边缘颜色，避免白色 matte 进入最终打包资源。
+- 验收：品牌资产契约测试固定任务栏 `32×32` PNG 不含低 Alpha 白色像素；重新生成后的 `.ico` 包含透明的 16、24、32、48、64、256 尺寸，Windows 任务栏深色背景不出现白色晕边。
+- 性能与过度设计评审：后处理只在开发期生成资产时执行，逐像素线性扫描有限图标文件；运行时不增加依赖、状态、I/O、缓存或渲染成本。
+
 ## 2026-08-19：workspace ProjectId 统一与一次性迁移
 
 - 根因：旧 `project_id` 只是路径 slug，存在字符折叠和路径截断碰撞；Runtime recovery 与 ACP command catalog 又以规范化路径 `workspace_key` 建立平行身份。这是 workspace canonical identity 的根本缺陷，不是调用点漏传作用域。现统一为 `{最多 70 位可读 slug}--{8 位 BLAKE3}`，完整上限 80，三项源参数只从 `configs/app-config.toml [projectIdentity]` 读取。
@@ -218,7 +236,7 @@
 - 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-07-08：会话消息流新增 runtime control JSON 展示优化。普通 worker output contract 与 AI-DYNAMIC `dynamic-node-completion` 继续复用 Rust 端既有 JSON artifact 提取和校验链路；runtime 在实际消费控制输出或将非法 JSON 控制候选送入 repair 时为对应 ACP `textDelta` 写入 `raw.runtimeControlOutputDisplay`，前端只基于该标记把自然语言和控制 JSON 拆分展示，控制 JSON 收起态只显示单行 Gold Band 工作流控制条，非法候选使用告警色和告警图标，未标记 JSON 保持普通 Markdown 消息。
 - 2026-08-01：会话 thought / reasoning 从 Streamdown Markdown 渲染切回 prompt-kit `ChainOfThoughtText` 纯文本展示，Markdown 标记按字面显示；展示层裁掉整段首尾空白并保留内部换行。assistant 正文继续使用现有流式 Markdown presentation。后端在独立完整 thought chunk 之间只补一个换行，避免多个思考粘连且不产生额外空白行，token 级 chunk 继续无缝累计。接口回归必须验证 `**...**`、列表符号和代码围栏不会生成 Markdown DOM，首尾换行不会撑高内容区，同时 active thought 收起时仍不占布局。
-- 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
+- 历史记录：桌面端品牌 Logo 曾从临时占位图替换为旧版矢量资产；该资产已由本节记录的用户提供透明 SVG 统一替换，Web、README 与 Tauri 平台图标不再保留旧品牌内容。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。
 - 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。

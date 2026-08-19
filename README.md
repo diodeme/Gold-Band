@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src-tauri/icons/icon.png" alt="Gold Band" width="128" />
+<img src="web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 

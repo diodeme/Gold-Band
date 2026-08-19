@@ -1438,6 +1438,7 @@ impl AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
+            None,
             live_update,
             &req.mcp_servers,
             session_update,

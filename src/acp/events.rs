@@ -53,8 +53,10 @@ pub struct AcpSessionMetadata {
     pub availability: AcpSessionAvailability,
     #[serde(default)]
     pub latest_turn_status: AcpLatestTurnStatus,
-    /// Monotonic revision for the ACP lifecycle facet. This is intentionally
-    /// independent from timeline item, runtime and prompt-queue revisions.
+    /// Monotonic ownership generation for the ACP lifecycle facet. This is
+    /// intentionally independent from timeline item, runtime and prompt-queue
+    /// revisions. It only advances when lifecycle ownership changes or a turn
+    /// reaches its terminal state, so an executor can use it as a CAS token.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub acp_revision: u64,
     /// Stable logical turn identity used to reject a late non-terminal update
@@ -208,6 +210,20 @@ pub enum AcpTurnAdmission {
     Started(AcpLifecycleHeader),
     ExistingActive(AcpLifecycleHeader),
     ExistingTerminal(AcpLifecycleHeader),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpLifecycleOwner {
+    pub turn_id: String,
+    pub operation_id: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpTurnExecutionClaim {
+    Claimed(AcpLifecycleOwner),
+    AlreadySettled(AcpLifecycleHeader),
+    Stale,
 }
 
 impl AcpTurnAdmission {
@@ -1807,20 +1823,49 @@ pub fn read_session_prompt_submission(
     Ok(submission.filter(|submission| submission.turn_id == turn_id))
 }
 
-pub fn session_turn_is_executable(path: &Utf8Path, turn_id: &str) -> Result<bool> {
+/// Atomically claims an admitted turn for provider execution. The admission
+/// revision and operation identity fence a delayed executor from a newer turn
+/// or a duplicate executor that has already claimed this one.
+pub fn claim_session_turn_for_execution(
+    path: &Utf8Path,
+    turn_id: &str,
+    expected_revision: u64,
+    expected_operation_id: &str,
+) -> Result<AcpTurnExecutionClaim> {
+    if expected_operation_id.trim().is_empty() {
+        return Ok(AcpTurnExecutionClaim::Stale);
+    }
     let _guard = session_metadata_lock(path).lock().unwrap();
     if !path.exists() {
-        return Ok(false);
+        return Ok(AcpTurnExecutionClaim::Stale);
     }
-    let current = lifecycle_header_from_value(&read_json::<Value>(path)?);
-    Ok(current.turn_id.as_deref() == Some(turn_id)
-        && current.latest_turn_status == AcpLatestTurnStatus::None
-        && matches!(
-            current.live_turn_activity,
-            AcpLiveTurnActivity::Starting
-                | AcpLiveTurnActivity::Accepted
-                | AcpLiveTurnActivity::Running
-        ))
+    let mut value = read_json::<Value>(path)?;
+    let current = lifecycle_header_from_value(&value);
+    if current.turn_id.as_deref() != Some(turn_id)
+        || current.revision != expected_revision
+        || current.operation_id.as_deref() != Some(expected_operation_id)
+    {
+        return Ok(AcpTurnExecutionClaim::Stale);
+    }
+    if lifecycle_is_terminal(&current) {
+        return Ok(AcpTurnExecutionClaim::AlreadySettled(current));
+    }
+    if current.latest_turn_status != AcpLatestTurnStatus::None
+        || current.live_turn_activity != AcpLiveTurnActivity::Starting
+    {
+        return Ok(AcpTurnExecutionClaim::Stale);
+    }
+    let mut accepted = current;
+    accepted.revision = accepted.revision.saturating_add(1).max(1);
+    accepted.live_turn_activity = AcpLiveTurnActivity::Accepted;
+    apply_lifecycle_header(&mut value, &accepted);
+    value["updatedAt"] = Value::String(current_timestamp());
+    write_json(path, &value)?;
+    Ok(AcpTurnExecutionClaim::Claimed(AcpLifecycleOwner {
+        turn_id: turn_id.to_string(),
+        operation_id: expected_operation_id.to_string(),
+        revision: accepted.revision,
+    }))
 }
 
 pub fn reconcile_orphaned_session_turn(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
@@ -1870,29 +1915,47 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     };
     let current_header = lifecycle_header_from_value(current);
     let mut incoming_header = lifecycle_header_from_value(incoming);
-    if incoming_header.turn_id.is_none() {
-        incoming_header.turn_id = current_header.turn_id.clone();
-    }
-    if incoming_header.prompt_event_id.is_none() {
-        incoming_header.prompt_event_id = current_header.prompt_event_id.clone();
-    }
-    if incoming_header.operation_id.is_none() {
-        incoming_header.operation_id = current_header.operation_id.clone();
-    }
-    if incoming.get("promptSubmission").is_none()
-        && let Some(prompt_submission) = current.get("promptSubmission")
-    {
+    let incoming_turn_id = incoming_header.turn_id.clone();
+    let incoming_operation_id = incoming_header.operation_id.clone();
+    let has_lifecycle_owner = incoming_turn_id.is_some() && incoming_operation_id.is_some();
+    if let Some(prompt_submission) = current.get("promptSubmission") {
         incoming["promptSubmission"] = prompt_submission.clone();
     }
-    let same_turn = incoming_header.turn_id == current_header.turn_id;
-    if same_turn
+    if has_lifecycle_owner
+        && incoming_turn_id.is_some()
+        && current_header.turn_id.is_some()
+        && incoming_turn_id != current_header.turn_id
+    {
+        // A provider object created before a later admission may finish after
+        // the newer turn is durable. Preserve the newer canonical lifecycle;
+        // its non-lifecycle fields are still allowed to merge below.
+        apply_lifecycle_header(incoming, &current_header);
+        return;
+    }
+    if has_lifecycle_owner
+        && incoming_operation_id.is_some()
+        && current_header.operation_id.is_some()
+        && incoming_operation_id != current_header.operation_id
+    {
+        apply_lifecycle_header(incoming, &current_header);
+        return;
+    }
+    if !has_lifecycle_owner {
+        // Catalog/diagnostic rewrites do not own turn lifecycle. Keep the
+        // current header verbatim instead of inferring identity from it.
+        apply_lifecycle_header(incoming, &current_header);
+        return;
+    }
+    let same_owner = incoming_header.turn_id == current_header.turn_id
+        && incoming_header.operation_id == current_header.operation_id;
+    if same_owner
         && lifecycle_is_terminal(&current_header)
         && !lifecycle_is_terminal(&incoming_header)
     {
         apply_lifecycle_header(incoming, &current_header);
         return;
     }
-    if same_turn
+    if same_owner
         && lifecycle_is_stopping(&current_header)
         && !lifecycle_is_terminal(&incoming_header)
         && !lifecycle_is_stopping(&incoming_header)
@@ -1900,7 +1963,18 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
         apply_lifecycle_header(incoming, &current_header);
         return;
     }
-    if lifecycle_fingerprint(&incoming_header) == lifecycle_fingerprint(&current_header) {
+    if same_owner {
+        // Running metadata is produced by the executor that owns this
+        // generation. Keeping its revision stable lets that executor settle a
+        // provider failure with an exact CAS check. A terminal write closes
+        // the generation and invalidates any later callback from it.
+        incoming_header.revision =
+            if lifecycle_is_terminal(&incoming_header) && !lifecycle_is_terminal(&current_header) {
+                current_header.revision.saturating_add(1).max(1)
+            } else {
+                current_header.revision
+            };
+    } else if lifecycle_fingerprint(&incoming_header) == lifecycle_fingerprint(&current_header) {
         incoming_header.revision = incoming_header.revision.max(current_header.revision);
     } else {
         incoming_header.revision = incoming_header
@@ -1924,6 +1998,43 @@ pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) ->
         clear_session_turn_active(path, header.turn_id.as_deref());
     }
     Ok(())
+}
+
+/// Writes provider-owned session metadata only while the execution claim is
+/// still the canonical lifecycle owner. A stop, terminal transition, or newer
+/// turn advances ownership and turns every delayed provider write into a
+/// stale no-op.
+pub fn write_session_metadata_owned(
+    path: &Utf8Path,
+    metadata: &AcpSessionMetadata,
+    owner: &AcpLifecycleOwner,
+) -> Result<Option<AcpLifecycleHeader>> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let current = read_json::<Value>(path)?;
+    let current_header = lifecycle_header_from_value(&current);
+    if current_header.turn_id.as_deref() != Some(owner.turn_id.as_str())
+        || current_header.operation_id.as_deref() != Some(owner.operation_id.as_str())
+        || current_header.revision != owner.revision
+    {
+        return Ok(None);
+    }
+
+    let mut incoming = serde_json::to_value(metadata)?;
+    let mut incoming_header = lifecycle_header_from_value(&incoming);
+    incoming_header.turn_id = Some(owner.turn_id.clone());
+    incoming_header.operation_id = Some(owner.operation_id.clone());
+    incoming_header.revision = owner.revision;
+    apply_lifecycle_header(&mut incoming, &incoming_header);
+    merge_session_lifecycle(Some(&current), &mut incoming);
+    write_json(path, &incoming)?;
+    let updated = lifecycle_header_from_value(&incoming);
+    if lifecycle_is_terminal(&updated) {
+        clear_session_turn_active(path, updated.turn_id.as_deref());
+    }
+    Ok(Some(updated))
 }
 
 /// Reliably accepts one logical prompt turn before provider initialization.
@@ -1973,9 +2084,11 @@ pub fn begin_session_turn(
 /// Settles a background submission only while the same logical turn still
 /// owns the lifecycle header. A late failure can therefore never terminate a
 /// newer follow-up admitted after it.
-pub fn persist_session_turn_terminal(
+pub fn persist_session_turn_terminal_owned(
     path: &Utf8Path,
     turn_id: &str,
+    operation_id: Option<&str>,
+    expected_revision: u64,
     latest_turn_status: AcpLatestTurnStatus,
     stop_reason: &str,
     decided_at: &str,
@@ -1986,7 +2099,10 @@ pub fn persist_session_turn_terminal(
     }
     let mut value = read_json::<Value>(path)?;
     let current = lifecycle_header_from_value(&value);
-    if current.turn_id.as_deref() != Some(turn_id) {
+    if current.turn_id.as_deref() != Some(turn_id)
+        || current.operation_id.as_deref() != operation_id
+        || current.revision != expected_revision
+    {
         return Ok(None);
     }
     if lifecycle_is_terminal(&current) {
@@ -2716,8 +2832,8 @@ mod tests {
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, persist_session_turn_terminal,
-        user_prompt_event, user_prompt_event_with_quotes, write_timeline_items,
+        normalize_session_update, permission_request_event, user_prompt_event,
+        user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
@@ -2729,6 +2845,7 @@ mod tests {
         let current = json!({
             "acpRevision": 8,
             "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
             "promptEventId": "prompt-event-1",
             "availability": "established",
             "liveTurnActivity": "idle",
@@ -2738,6 +2855,7 @@ mod tests {
         let mut late_accepted = json!({
             "acpRevision": 7,
             "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
             "promptEventId": "prompt-event-1",
             "availability": "closing",
             "liveTurnActivity": "cancelRequested",
@@ -2758,6 +2876,7 @@ mod tests {
         let current = json!({
             "acpRevision": 11,
             "turnId": "turn-1",
+            "lifecycleOperationId": "stop-operation-1",
             "availability": "closing",
             "liveTurnActivity": "cancelRequested",
             "latestTurnStatus": "none"
@@ -2765,6 +2884,7 @@ mod tests {
         let mut terminal = json!({
             "acpRevision": 11,
             "turnId": "turn-1",
+            "lifecycleOperationId": "stop-operation-1",
             "availability": "established",
             "liveTurnActivity": "idle",
             "latestTurnStatus": "cancelled",
@@ -2779,10 +2899,37 @@ mod tests {
     }
 
     #[test]
+    fn owned_running_metadata_keeps_the_claim_generation() {
+        let current = json!({
+            "acpRevision": 7,
+            "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
+            "availability": "established",
+            "liveTurnActivity": "accepted",
+            "latestTurnStatus": "none"
+        });
+        let mut running = json!({
+            "acpRevision": 7,
+            "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
+            "availability": "established",
+            "liveTurnActivity": "running",
+            "latestTurnStatus": "none"
+        });
+
+        super::merge_session_lifecycle(Some(&current), &mut running);
+
+        let header = super::lifecycle_header_from_value(&running);
+        assert_eq!(header.revision, 7);
+        assert_eq!(header.live_turn_activity, AcpLiveTurnActivity::Running);
+    }
+
+    #[test]
     fn cancel_requested_lifecycle_dominates_late_running_for_the_same_turn() {
         let current = json!({
             "acpRevision": 5,
             "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
             "availability": "closing",
             "liveTurnActivity": "cancelRequested",
             "latestTurnStatus": "none"
@@ -2790,6 +2937,7 @@ mod tests {
         let mut late_running = json!({
             "acpRevision": 5,
             "turnId": "turn-1",
+            "lifecycleOperationId": "operation-1",
             "availability": "established",
             "liveTurnActivity": "running",
             "latestTurnStatus": "none"
@@ -2868,9 +3016,11 @@ mod tests {
         );
 
         assert!(
-            persist_session_turn_terminal(
+            super::persist_session_turn_terminal_owned(
                 &path,
                 "turn-stale",
+                Some("operation-a"),
+                started.revision,
                 AcpLatestTurnStatus::Failed,
                 "provider-error",
                 "2026-08-19T10:00:03Z",
@@ -2879,9 +3029,11 @@ mod tests {
             .is_none()
         );
 
-        let terminal = persist_session_turn_terminal(
+        let terminal = super::persist_session_turn_terminal_owned(
             &path,
             "turn-a",
+            Some("operation-a"),
+            started.revision,
             AcpLatestTurnStatus::Cancelled,
             "cancelled",
             "2026-08-19T10:00:04Z",
@@ -2907,9 +3059,11 @@ mod tests {
         assert_eq!(next.turn_id.as_deref(), Some("turn-b"));
 
         assert!(
-            persist_session_turn_terminal(
+            super::persist_session_turn_terminal_owned(
                 &path,
                 "turn-a",
+                Some("operation-a"),
+                started.revision,
                 AcpLatestTurnStatus::Failed,
                 "late-provider-error",
                 "2026-08-19T10:00:06Z",
@@ -3095,6 +3249,245 @@ mod tests {
             AcpLiveTurnActivity::Starting
         );
         super::clear_session_turn_active(&snapshot_path, Some("turn-shared"));
+    }
+
+    #[test]
+    fn execution_claim_requires_admission_identity_and_is_single_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-claim".to_string(),
+            operation_id: "operation-claim".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "claim me".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-19T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("claim test admission must start");
+        };
+        assert!(matches!(
+            super::claim_session_turn_for_execution(&path, "turn-claim", started.revision, "",)
+                .unwrap(),
+            super::AcpTurnExecutionClaim::Stale
+        ));
+        let claimed = match super::claim_session_turn_for_execution(
+            &path,
+            "turn-claim",
+            started.revision,
+            "operation-claim",
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(header) => header,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        assert!(matches!(
+            super::claim_session_turn_for_execution(
+                &path,
+                "turn-claim",
+                started.revision,
+                "operation-claim",
+            )
+            .unwrap(),
+            super::AcpTurnExecutionClaim::Stale
+        ));
+        assert!(matches!(
+            super::persist_session_turn_terminal_owned(
+                &path,
+                "turn-claim",
+                Some("operation-claim"),
+                started.revision,
+                AcpLatestTurnStatus::Failed,
+                "provider-error",
+                "2026-08-19T10:00:01Z",
+            )
+            .unwrap(),
+            None
+        ));
+        assert!(matches!(
+            super::persist_session_turn_terminal_owned(
+                &path,
+                "turn-claim",
+                Some("operation-claim"),
+                claimed.revision,
+                AcpLatestTurnStatus::Failed,
+                "provider-error",
+                "2026-08-19T10:00:01Z",
+            )
+            .unwrap(),
+            Some(_)
+        ));
+        assert!(matches!(
+            super::persist_session_turn_terminal_owned(
+                &path,
+                "turn-claim",
+                Some("operation-claim"),
+                claimed.revision,
+                AcpLatestTurnStatus::Failed,
+                "late-provider-error",
+                "2026-08-19T10:00:02Z",
+            )
+            .unwrap(),
+            None
+        ));
+    }
+
+    #[test]
+    fn owned_metadata_write_advances_terminal_and_rejects_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-owned".to_string(),
+            operation_id: "operation-owned".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "run owned".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-19T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("owned metadata admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+
+        let mut running = load_session_metadata(&path, None).unwrap();
+        running.availability = AcpSessionAvailability::Established;
+        running.live_turn_activity = AcpLiveTurnActivity::Running;
+        running.latest_turn_status = AcpLatestTurnStatus::None;
+        let running_header = super::write_session_metadata_owned(&path, &running, &owner)
+            .unwrap()
+            .expect("owner should write running metadata");
+        assert_eq!(running_header.revision, owner.revision);
+        assert_eq!(
+            running_header.live_turn_activity,
+            AcpLiveTurnActivity::Running
+        );
+
+        let mut completed = running;
+        completed.live_turn_activity = AcpLiveTurnActivity::Idle;
+        completed.latest_turn_status = AcpLatestTurnStatus::Completed;
+        let terminal = super::write_session_metadata_owned(&path, &completed, &owner)
+            .unwrap()
+            .expect("owner should settle terminal metadata");
+        assert_eq!(terminal.revision, owner.revision + 1);
+        assert_eq!(terminal.latest_turn_status, AcpLatestTurnStatus::Completed);
+        assert!(
+            super::write_session_metadata_owned(&path, &completed, &owner)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stop_takeover_rejects_old_provider_metadata_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-stop".to_string(),
+            operation_id: "operation-provider".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "stop me".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-19T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("stop takeover admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let stopped =
+            super::request_session_stop(&path, "operation-stop", "2026-08-19T10:00:01Z").unwrap();
+
+        let mut stale = load_session_metadata(&path, None).unwrap();
+        stale.availability = AcpSessionAvailability::Established;
+        stale.live_turn_activity = AcpLiveTurnActivity::Idle;
+        stale.latest_turn_status = AcpLatestTurnStatus::Failed;
+        assert!(
+            super::write_session_metadata_owned(&path, &stale, &owner)
+                .unwrap()
+                .is_none()
+        );
+        let current = super::read_lifecycle_header(&path)
+            .unwrap()
+            .expect("stop lifecycle should remain durable");
+        assert_eq!(current.revision, stopped.revision);
+        assert_eq!(current.operation_id.as_deref(), Some("operation-stop"));
+        assert_eq!(
+            current.live_turn_activity,
+            AcpLiveTurnActivity::CancelRequested
+        );
+        assert_eq!(current.latest_turn_status, AcpLatestTurnStatus::None);
+        let terminal = super::persist_session_turn_terminal_owned(
+            &path,
+            current.turn_id.as_deref().unwrap(),
+            current.operation_id.as_deref(),
+            current.revision,
+            AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            "2026-08-19T10:00:02Z",
+        )
+        .unwrap()
+        .expect("stop owner should settle the cancelled terminal");
+        assert_eq!(terminal.revision, stopped.revision + 1);
+        assert_eq!(terminal.latest_turn_status, AcpLatestTurnStatus::Cancelled);
+    }
+
+    #[test]
+    fn metadata_without_identity_cannot_reset_new_turn_lifecycle() {
+        let current = json!({
+            "acpRevision": 4,
+            "turnId": "turn-new",
+            "lifecycleOperationId": "operation-new",
+            "liveTurnActivity": "starting",
+            "latestTurnStatus": "none"
+        });
+        let mut stale = json!({
+            "availability": "established",
+            "liveTurnActivity": "idle",
+            "latestTurnStatus": "completed"
+        });
+        super::merge_session_lifecycle(Some(&current), &mut stale);
+        let header = super::lifecycle_header_from_value(&stale);
+        assert_eq!(header.turn_id.as_deref(), Some("turn-new"));
+        assert_eq!(header.live_turn_activity, AcpLiveTurnActivity::Starting);
+        assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::None);
     }
 
     #[test]

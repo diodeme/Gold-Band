@@ -1352,3 +1352,9 @@ attempt-001/
 - 进程边界：用户级 `core.db` 与桌面 Runtime 统一为同用户、同发布渠道单实例。复用 Tauri 官方 single-instance plugin 作为第一个 plugin 建立进程互斥；第二次启动只恢复并聚焦已有主窗口，不进入 setup、恢复或 scheduler，不新增自研 lease、heartbeat 或 PID fencing。
 - 验收要求：接口测试固定跨 workspace 候选恢复、不扫描无候选历史、stale token 不能删除新 generation、已 Paused 候选只消费且下一次启动 no-op、候选登记失败不进入 active registry、未成功持久化 Running 的 provisional registration 会撤销、正常退出暂停并清理后候选表为空，以及 scheduler 只在恢复 gate 后注册。执行 core/desktop 定向测试、两个 Rust crate check、格式与 diff 检查，并以 production build 对候选为空和跨 workspace 候选场景复测 Windows 启动耗时。
 - 性能与过度设计评审：启动复杂度从无界 `O(W + Σ(tasks + runs))` 收敛为 `O(C)`，`C <= 4096` 且正常只等于可能非终态 run 数量；空候选只有一次 SQLite 小查询。只新增一张索引表、一个进程级 coordinator 和一个 token metadata，不新增轮询、历史缓存、无界队列、全量 UI refresh 或跨文件事务，复杂度与防漏恢复及 generation 竞态相匹配。
+# 2026-08-19：修复 ACP 连续发送生命周期竞态
+
+- 根因：prompt admission 引入后，迟到的上一轮 metadata 可能与新 turn 的 `starting` header 合并，执行器检查失败却静默 `Ok(())`，导致第二条 Direct 消息没有 ACP RPC 且 composer 长期禁用。该问题属于 lifecycle identity fencing 未实现完整，不通过前端解锁按钮规避。
+- 实现：新增 `turnId + lifecycleOperationId + acpRevision` 的原子 execution claim；claim 是不可变 `AcpLifecycleOwner` 的唯一创建边界，并把它贯穿到 provider runtime。`acpRevision` 定义为 ownership generation，只在 admission、claim、stop 接管或 terminal 时推进；provider 的 `Accepted/Running/terminal` lifecycle 写入及外层失败结算全部用 runtime 原始 owner 做精确 CAS，不再从当前 snapshot 反推执行身份。stop 接管后由持有新 control-plane owner 的停止控制方在 cancel dispatch 后结算 `cancelled`，不等待已失权的 provider runtime 回写。取消、完成、revision 推进或新 turn 接管时，旧 owner 写入均为 stale no-op，不升级为执行失败。
+- 回归：Rust 接口测试覆盖 claim 单次消费、空/错误身份拒绝、同一 owner 的 running 写入保留 generation、owned terminal 推进 generation 且旧 owner 不可复用、stop 接管后旧 provider running/terminal 写入不得覆盖 `CancelRequested`、stop owner 可以结算 `cancelled`，以及 execution failure 只能结算拥有者。ACP events 92 项测试、desktop crate check、Rust 格式与 diff 检查均通过。
+- 性能与过度设计评审：复用现有 attempt 文件锁、revision 和 active registry；新增操作均为 O(1) JSON header 条件写入，不扫描 timeline、不增加缓存/队列/依赖，也不扩大 provider 网络调用锁范围。

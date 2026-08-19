@@ -1444,6 +1444,7 @@ export interface AcpSessionVm {
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
+  worktreePath?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;

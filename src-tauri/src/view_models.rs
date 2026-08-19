@@ -17,7 +17,7 @@ use gold_band::config::{
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic::{DynamicGraphState, WorkspaceKind};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
@@ -756,6 +756,8 @@ pub struct AcpSessionVm {
     pub adapter_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter_icon_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -3747,6 +3749,17 @@ pub fn dynamic_acp_session_vm(
         .and_then(|value| value.as_str())
         .map(str::to_string)
         .or_else(|| Some(attempt_dir.to_string()));
+    let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
+    let dynamic_graph = dynamic_graph_state_optional(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let worktree_path =
+        session_worktree_path(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3779,6 +3792,7 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
+        worktree_path,
         cwd,
         provider_cwd,
         status,
@@ -4176,6 +4190,8 @@ pub fn acp_session_vm(
         .and_then(|value| value.as_str())
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
+    let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
+    let worktree_path = session_worktree_path(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
@@ -4200,6 +4216,7 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
+        worktree_path,
         cwd,
         provider_cwd,
         status,
@@ -6816,6 +6833,63 @@ fn session_metadata_status(session: &serde_json::Value) -> &str {
 
 fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
     gold_band::acp::events::load_session_metadata_value(path, None).ok()
+}
+
+fn run_worktree_state_optional(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+) -> Result<Option<gold_band::runtime::RunWorktreeState>> {
+    let path = app.paths.run_file(task_id, run_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(read_json::<RunState>(&path)?.worktree)
+}
+
+fn session_worktree_path(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    dynamic_graph: Option<&DynamicGraphState>,
+    dynamic_node_id: Option<&str>,
+) -> Option<String> {
+    let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
+        (None, None) => return run_worktree.map(|worktree| worktree.path.to_string()),
+        (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
+        _ => return None,
+    };
+    let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
+    workspace_worktree_path_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+}
+
+fn workspace_worktree_path_by_id(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    workspaces: &[gold_band::dynamic::WorkspaceState],
+    workspace_id: &str,
+) -> Option<String> {
+    let workspace = workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)?;
+    workspace_worktree_path(run_worktree, workspace)
+}
+
+fn workspace_worktree_path(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    workspace: &gold_band::dynamic::WorkspaceState,
+) -> Option<String> {
+    match workspace.kind {
+        WorkspaceKind::Worktree
+            if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
+        {
+            Some(workspace.path.to_string())
+        }
+        WorkspaceKind::Worktree => None,
+        WorkspaceKind::Main => run_worktree
+            .filter(|worktree| {
+                gold_band::storage::normalize_workspace_path(&worktree.path)
+                    == gold_band::storage::normalize_workspace_path(&workspace.path)
+            })
+            .map(|worktree| worktree.path.to_string()),
+    }
 }
 
 fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
@@ -10154,6 +10228,111 @@ mod tests {
         assert_eq!(elapsed, Some(11));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn session_worktree_projection_uses_the_current_physical_workspace() {
+        let outer_path = Utf8PathBuf::from("C:/GoldBand/worktrees/outer");
+        let child_path = Utf8PathBuf::from("D:/repo/.gold-band/worktrees/child");
+        let run_worktree = gold_band::runtime::RunWorktreeState {
+            path: outer_path.clone(),
+            branch: "gb-conversation-outer".to_string(),
+            fork_commit: "abc123".to_string(),
+        };
+        let workspace = |id: &str, kind, path: Utf8PathBuf| gold_band::dynamic::WorkspaceState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            dynamic_run_id: "dynamic-run-001".to_string(),
+            kind,
+            ownership: match kind {
+                WorkspaceKind::Main => gold_band::dynamic::WorkspaceOwnership::User,
+                WorkspaceKind::Worktree => gold_band::dynamic::WorkspaceOwnership::Runtime,
+            },
+            repo_root: Utf8PathBuf::from("D:/repo"),
+            path,
+            branch: (kind == WorkspaceKind::Worktree).then(|| "gb-dynamic-child".to_string()),
+            parent_workspace_id: (kind == WorkspaceKind::Worktree)
+                .then(|| "workspace-main".to_string()),
+            created_by_group_id: (kind == WorkspaceKind::Worktree).then(|| "group-001".to_string()),
+            fork_commit: "abc123".to_string(),
+            checkpoint_commit: None,
+            status: gold_band::dynamic::WorkspaceStatus::Active,
+            created_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+        };
+
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace(
+                    "workspace-child",
+                    WorkspaceKind::Worktree,
+                    child_path.clone()
+                ),
+            )
+            .as_deref(),
+            Some(child_path.as_str()),
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
+            )
+            .as_deref(),
+            Some(outer_path.as_str()),
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace(
+                    "workspace-main",
+                    WorkspaceKind::Main,
+                    Utf8PathBuf::from("D:/repo")
+                ),
+            ),
+            None,
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                None,
+                &workspace(
+                    "workspace-main",
+                    WorkspaceKind::Main,
+                    Utf8PathBuf::from("D:/repo")
+                ),
+            ),
+            None,
+        );
+        assert_eq!(
+            workspace_worktree_path_by_id(
+                Some(&run_worktree),
+                &[
+                    workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
+                    workspace(
+                        "workspace-child",
+                        WorkspaceKind::Worktree,
+                        child_path.clone()
+                    ),
+                ],
+                "workspace-child",
+            )
+            .as_deref(),
+            Some(child_path.as_str()),
+        );
+        let mut released_child = workspace(
+            "workspace-child",
+            WorkspaceKind::Worktree,
+            child_path.clone(),
+        );
+        released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
+        assert_eq!(
+            workspace_worktree_path(Some(&run_worktree), &released_child),
+            None,
+        );
+        assert_eq!(
+            session_worktree_path(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            None,
+        );
     }
 
     #[test]

@@ -63,9 +63,9 @@ use crate::prompts::{
     prompt_by_language, render as render_template,
 };
 use crate::provider::{
-    ConversationPromptInput, OutputEmissionMode, PromptBundle, PromptHiddenSection,
-    PromptOutputContract, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
-    ProviderRunStatus, RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    ConversationPromptInput, OutputEmissionMode, PromptHiddenSection, PromptOutputContract,
+    PromptRuntimeContext, PromptVisibility, ProviderRunResult, ProviderRunStatus,
+    RuntimeControlIntent, StreamMode, UserPromptRenderMode, WorkerInvocation,
     conversation_prompt_text, render_prompt_bundle, supported_models_from_capabilities,
     supported_modes_from_capabilities,
 };
@@ -95,8 +95,8 @@ use super::state_access::{
 use super::state_factory::create_node_state;
 use super::transition_context::find_latest_worker_ref_for_transition;
 use super::{
-    AcpLiveEventContext, App, AttemptRuntimePauseResult, RuntimeInterventionKind,
-    RuntimeLifecycleEvent, is_run_continuable,
+    AcpLiveEventContext, App, AttemptRuntimePauseResult, PreparedAcpPrompt,
+    RuntimeInterventionKind, RuntimeLifecycleEvent, is_run_continuable,
 };
 
 struct PreparedRunData {
@@ -10178,7 +10178,7 @@ fn dynamic_graph_completed(graph: &DynamicGraphState) -> bool {
             .all(|node| accepted_completion_exists(graph, &node.id))
 }
 
-pub(crate) fn build_dynamic_prompt_bundle(
+pub(crate) fn prepare_dynamic_acp_prompt(
     app: &App,
     task_id: &str,
     run_id: &str,
@@ -10190,7 +10190,7 @@ pub(crate) fn build_dynamic_prompt_bundle(
     prompt: String,
     prompt_id: Option<String>,
     continue_ref: Option<serde_json::Value>,
-) -> Result<PromptBundle> {
+) -> Result<PreparedAcpPrompt> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let is_follow_up = continue_ref.is_some();
     // For follow-up chats in an existing session, skip full workflow validation.
@@ -10267,7 +10267,11 @@ pub(crate) fn build_dynamic_prompt_bundle(
     invocation.turn_control_mode = TurnControlMode::NonRuntimeControlled;
     invocation.runtime_control_intent = RuntimeControlIntent::ManualFollowUp;
     invocation.extra_hidden_sections.clear();
-    render_prompt_bundle(&invocation)
+    Ok(PreparedAcpPrompt {
+        prompt: render_prompt_bundle(&invocation)?,
+        adapter_workspace_dir: invocation.adapter_workspace_dir,
+        session_workspace_dir: invocation.workspace_dir,
+    })
 }
 
 pub(crate) fn run_continue_with_prompt_input(
@@ -13843,6 +13847,27 @@ mod tests {
         .unwrap();
         assert_eq!(invocation.adapter_workspace_dir, repo_root);
         assert_eq!(invocation.workspace_dir, durable_worktree.path);
+
+        let prepared_follow_up = app
+            .prepare_acp_prompt_for_attempt(
+                &task_id,
+                &run.id,
+                &round.id,
+                &node.node_id,
+                &node.attempt_id,
+                "follow up".to_string(),
+                Some("follow-up-001".to_string()),
+                Some(serde_json::json!({
+                    "acpSessionId": "session-001",
+                    "cwd": repo_root,
+                })),
+            )
+            .unwrap();
+        assert_eq!(prepared_follow_up.adapter_workspace_dir, repo_root);
+        assert_eq!(
+            prepared_follow_up.session_workspace_dir,
+            durable_worktree.path
+        );
 
         let mut tampered = durable.clone();
         tampered.worktree.as_mut().unwrap().path = repo_root;

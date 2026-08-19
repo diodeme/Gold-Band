@@ -2018,10 +2018,19 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
     assert_eq!(run.status, RunStatus::Completed);
 
     let graph = dynamic_graph(&app, task_id);
-    assert!(graph.nodes.iter().any(|node| node.id == "branch-b"));
+    let branch_b = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "branch-b")
+        .unwrap();
+    let branch_b_workspace = graph
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == branch_b.workspace_id)
+        .unwrap();
     let continue_ref = serde_json::json!({ "sessionId": "branch-b-attempt-001" });
-    let prompt = app
-        .dynamic_acp_prompt_bundle_for_attempt(
+    let prepared_prompt = app
+        .prepare_dynamic_acp_prompt_for_attempt(
             task_id,
             "run-001",
             "round-001",
@@ -2034,6 +2043,12 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
             Some(continue_ref),
         )
         .unwrap();
+    assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
+    assert_eq!(
+        prepared_prompt.session_workspace_dir,
+        branch_b_workspace.path
+    );
+    let prompt = prepared_prompt.prompt;
 
     assert_eq!(prompt.user_prompt, "继续");
     assert!(prompt.system_prompt.contains("用户主动打断当前工作"));

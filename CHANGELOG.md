@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/diodeme/Gold-Band/compare/v0.13.0...v0.13.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **macos:** publish installer as release asset ([ab5f0e4](https://github.com/diodeme/Gold-Band/commit/ab5f0e41be8b7760ea4fa4c6a023e9a1c80d1d54))
+
 ## [0.13.0](https://github.com/diodeme/Gold-Band/compare/v0.12.4...v0.13.0) (2026-08-17)
 
 

@@ -2460,7 +2460,6 @@ export function App() {
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
           onWorkspaceChange={(projectId) => {
-            resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
@@ -2644,7 +2643,6 @@ export function App() {
         onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
-          resetConversationComposerDraft(composerDraftRef.current);
           setDraftConversationWorkspaceId(projectId);
           void loadConversationRunMode(projectId);
         }}

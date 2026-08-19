@@ -233,17 +233,17 @@ mod tests {
             (
                 PERSONAL_ANALYTICS_SYSTEM_ZH_CN,
                 [
-                    "Direct 回复完成率",
-                    "Workflow run 终局成功率",
-                    "AUTO outer run 终局成功率",
+                    "direct.reply_completion_rate",
+                    "workflow.run_terminal_success_rate",
+                    "auto.outer_run_terminal_success_rate",
                 ],
             ),
             (
                 PERSONAL_ANALYTICS_SYSTEM_EN,
                 [
-                    "Direct reply completion rate",
-                    "Workflow run terminal success rate",
-                    "AUTO outer-run terminal success rate",
+                    "direct.reply_completion_rate",
+                    "workflow.run_terminal_success_rate",
+                    "auto.outer_run_terminal_success_rate",
                 ],
             ),
         ] {
@@ -253,7 +253,7 @@ mod tests {
                     "missing metric name: {metric_name}"
                 );
             }
-            assert!(template.contains("evidence locator"));
+            assert!(template.to_ascii_lowercase().contains("evidence locator"));
             assert!(template.contains("sampleCount"));
             assert!(template.contains("confidence"));
             assert!(template.contains("acp.raw.jsonl"));

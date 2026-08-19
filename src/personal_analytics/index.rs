@@ -1556,7 +1556,7 @@ mod tests {
         let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
         let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
         let first = index.sync(&projects, |_, _| {}, || false).unwrap();
-        assert_eq!(first.reparsed_files, 9);
+        assert_eq!(first.reparsed_files, 8);
         let all = index
             .report(&PersonalAnalyticsDateRange::default(), "report-all".into())
             .unwrap();

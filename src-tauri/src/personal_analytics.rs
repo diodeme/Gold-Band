@@ -3,29 +3,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use gold_band::acp::client::{self, AcpOutputPolicy, AcpRuntimePolicy};
-use gold_band::artifacts::json_artifact_text_from_outputs;
+use gold_band::acp::client::{self, AcpRuntimePolicy};
+use gold_band::artifacts::json_artifact_text;
 use gold_band::config::ManagedAgentId;
 use gold_band::domain::{SessionMode, TurnControlMode};
 use gold_band::personal_analytics::{
+    PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION, PersonalAnalyticsError, PersonalAnalyticsNarrative,
+    PersonalAnalyticsOperation, PersonalAnalyticsOperationStatus, PersonalAnalyticsProgress,
+    PersonalAnalyticsProjection, PersonalAnalyticsSemanticBatch, PersonalAnalyticsSnapshot,
     canonicalize_personal_analytics_report, index::PersonalAnalyticsDateRange,
-    index::PersonalAnalyticsIndex, personal_analytics_narrative_schema, PersonalAnalyticsError,
-    PersonalAnalyticsNarrative, PersonalAnalyticsOperation, PersonalAnalyticsOperationStatus,
-    PersonalAnalyticsProgress, PersonalAnalyticsProjection, PersonalAnalyticsSemanticBatch,
-    PersonalAnalyticsSnapshot, PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION,
+    index::PersonalAnalyticsIndex, personal_analytics_narrative_schema,
 };
 use gold_band::prompts::{
-    prompt_by_language, render, PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN,
-    PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN, PERSONAL_ANALYTICS_REPAIR_USER_EN,
-    PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN, PERSONAL_ANALYTICS_SYSTEM_EN,
-    PERSONAL_ANALYTICS_SYSTEM_ZH_CN, PERSONAL_ANALYTICS_USER_EN, PERSONAL_ANALYTICS_USER_ZH_CN,
+    PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN, PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN,
+    PERSONAL_ANALYTICS_REPAIR_USER_EN, PERSONAL_ANALYTICS_REPAIR_USER_ZH_CN,
+    PERSONAL_ANALYTICS_SYSTEM_EN, PERSONAL_ANALYTICS_SYSTEM_ZH_CN, PERSONAL_ANALYTICS_USER_EN,
+    PERSONAL_ANALYTICS_USER_ZH_CN, prompt_by_language, render,
 };
 use gold_band::provider::{
-    resolve_attachments, PromptBundle, PromptVisibility, RuntimeControlIntent,
+    AttachmentProjectionPolicy, PromptBundle, PromptVisibility, RuntimeControlIntent,
+    resolve_attachments,
 };
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
@@ -1068,7 +1069,12 @@ fn invoke_agent(
             "analysis-attempt",
         )
     };
-    let resolved = resolve_attachments(&attachments, "analytics-inputs").map_err(|error| {
+    let resolved = resolve_attachments(
+        &attachments,
+        "analytics-inputs",
+        AttachmentProjectionPolicy::from(&app.config),
+    )
+    .map_err(|error| {
         analytics_error(
             "analytics.execution-failed",
             json!({ "reason": error.to_string() }),
@@ -1111,7 +1117,6 @@ fn invoke_agent(
         AcpRuntimePolicy::from(&app.config)
             .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
             .with_system_prompt_support(agent_config.supports_system_prompt()),
-        AcpOutputPolicy::ArtifactContract,
         None,
         &[],
         None,
@@ -1130,8 +1135,24 @@ fn invoke_agent(
             json!({ "agentCode": failure.code }),
         ));
     }
-    json_artifact_text_from_outputs(&run.output.identified_outputs, &run.output.identified_text)
+    personal_analytics_artifact_text(&run.output)
         .ok_or_else(|| analytics_error("analytics.report-invalid", json!({ "reason": "empty" })))
+}
+
+fn personal_analytics_artifact_text(output: &client::AcpPromptOutput) -> Option<String> {
+    let terminal_message = output.recent_messages.last()?;
+    if terminal_message.has_stable_id {
+        output
+            .recent_messages
+            .iter()
+            .rev()
+            .take(3)
+            .find_map(|message| json_artifact_text(&message.text))
+    } else if output.observed_stable_message {
+        None
+    } else {
+        json_artifact_text(&terminal_message.text)
+    }
 }
 
 fn content_manifest(batch: &PersonalAnalyticsSemanticBatch) -> ContentManifest {
@@ -1302,6 +1323,60 @@ fn prompt_error(error: impl std::fmt::Display) -> PersonalAnalyticsError {
 mod tests {
     use super::*;
 
+    fn message_output(text: &str, has_stable_id: bool) -> client::AcpPromptMessageOutput {
+        client::AcpPromptMessageOutput {
+            text: text.to_string(),
+            has_stable_id,
+        }
+    }
+
+    #[test]
+    fn artifact_text_scans_last_three_stable_messages_backwards() {
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                message_output("{\"result\":\"old\"}", true),
+                message_output("prose", true),
+                message_output("{\"result\":false}", true),
+                message_output("final", true),
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            personal_analytics_artifact_text(&output),
+            Some("{\"result\":false}".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_text_accepts_json_from_anonymous_only_agent_output() {
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![message_output("summary\n{\"result\":true}", false)],
+            observed_stable_message: false,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            personal_analytics_artifact_text(&output),
+            Some("{\"result\":true}".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_text_rejects_anonymous_terminal_after_stable_output() {
+        let output = client::AcpPromptOutput {
+            recent_messages: vec![
+                message_output("{\"result\":true}", true),
+                message_output("late anonymous text", false),
+            ],
+            observed_stable_message: true,
+            ..Default::default()
+        };
+
+        assert_eq!(personal_analytics_artifact_text(&output), None);
+    }
+
     fn operation(id: &str) -> PersonalAnalyticsOperation {
         PersonalAnalyticsOperation {
             operation_id: id.to_string(),
@@ -1382,12 +1457,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let revision = completed.operation.unwrap().revision;
-        assert!(runtime
-            .transition(&root, "one", |operation, _| {
-                operation.status = PersonalAnalyticsOperationStatus::Failed;
-            })
-            .unwrap()
-            .is_none());
+        assert!(
+            runtime
+                .transition(&root, "one", |operation, _| {
+                    operation.status = PersonalAnalyticsOperationStatus::Failed;
+                })
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             runtime.snapshot(&root).unwrap().operation.unwrap().revision,
             revision

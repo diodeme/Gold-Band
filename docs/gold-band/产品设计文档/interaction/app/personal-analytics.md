@@ -85,7 +85,7 @@
 
 repair user prompt 变量：`operation_id`、`invalid_report_path`、`validation_errors`、`report_schema`。
 
-Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + insights`；每条 insight 必须归入 `quality`、`efficiency`、`token-usage`、`context-and-skills` 之一。Agent 不输出确定性统计、最近任务或排行榜。首次失败使用 repair prompt 重试一次；再次失败以 `analytics.report-invalid` 结束。repair 只修字段形状、类型、枚举或额外字段，不能重新读取数据、计算指标或添加洞察。
+Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + insights`；每条 insight 必须归入 `quality`、`efficiency`、`token-usage`、`context-and-skills` 之一。Agent 不输出确定性统计、最近任务或排行榜。洞察 JSON 从最新有界 ACP 消息按稳定身份契约提取。首次失败使用 repair prompt 重试一次；再次失败以 `analytics.report-invalid` 结束。repair 只修字段形状、类型、枚举或额外字段，不能重新读取数据、计算指标或添加洞察。
 
 ## 6. 原生页面交互
 

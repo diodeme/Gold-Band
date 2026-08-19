@@ -5093,8 +5093,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             } else {
                 (SessionMode::New, None)
             };
-            let mut prompt_bundle = app
-                .dynamic_acp_prompt_bundle_for_attempt(
+            let prepared_prompt = app
+                .prepare_dynamic_acp_prompt_for_attempt(
                     &task_id,
                     &run_id,
                     &round_id,
@@ -5107,6 +5107,9 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+            let session_workspace_dir = prepared_prompt.session_workspace_dir;
+            let mut prompt_bundle = prepared_prompt.prompt;
             prompt_bundle.display_text = Some(display_text.clone());
             prompt_bundle.quotes = quotes.clone();
             if let Some(ref paths) = attachment_paths {
@@ -5159,8 +5162,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             let prompt_run = client::run_prompt(
                 provider,
                 &agent_config.adapter,
-                app.paths.repo_root.clone(),
-                app.paths.repo_root.clone(),
+                adapter_workspace_dir,
+                session_workspace_dir,
                 attempt_dir,
                 &prompt_bundle,
                 session_mode,
@@ -5259,8 +5262,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         } else {
             (SessionMode::New, None)
         };
-        let mut prompt_bundle = app
-            .acp_prompt_bundle_for_attempt(
+        let prepared_prompt = app
+            .prepare_acp_prompt_for_attempt(
                 &task_id,
                 &run_id,
                 &round_id,
@@ -5271,6 +5274,9 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+        let session_workspace_dir = prepared_prompt.session_workspace_dir;
+        let mut prompt_bundle = prepared_prompt.prompt;
         prompt_bundle.display_text = Some(display_text);
         prompt_bundle.quotes = quotes;
         if let Some(ref paths) = attachment_paths {
@@ -5322,8 +5328,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
-            app.paths.repo_root.clone(),
-            app.paths.repo_root.clone(),
+            adapter_workspace_dir,
+            session_workspace_dir,
             attempt_dir,
             &prompt_bundle,
             session_mode,

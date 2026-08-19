@@ -78,10 +78,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
-    build_dynamic_prompt_bundle, dynamic_state_lock_for,
+    dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
-    prepare_run as orchestrator_prepare_run,
+    prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
@@ -1392,6 +1392,13 @@ fn configured_permission_modes_for_node(node: &NodeDsl) -> Vec<(String, Option<S
                 .collect(),
         },
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedAcpPrompt {
+    pub prompt: PromptBundle,
+    pub adapter_workspace_dir: Utf8PathBuf,
+    pub session_workspace_dir: Utf8PathBuf,
 }
 
 impl App {
@@ -4699,7 +4706,7 @@ impl App {
             .ok_or_else(|| anyhow!("provider did not return an open-session command"))
     }
 
-    pub fn acp_prompt_bundle_for_attempt(
+    pub fn prepare_acp_prompt_for_attempt(
         &self,
         task_id: &str,
         run_id: &str,
@@ -4709,7 +4716,7 @@ impl App {
         prompt: String,
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
-    ) -> Result<PromptBundle> {
+    ) -> Result<PreparedAcpPrompt> {
         let workflow = self::state_access::load_run_workflow(self, task_id, run_id)?;
         let validated = validate_workflow_snapshot(workflow)?;
         self.validate_workflow_agents(&validated)?;
@@ -4745,10 +4752,14 @@ impl App {
         invocation.turn_control_mode = crate::domain::TurnControlMode::NonRuntimeControlled;
         invocation.runtime_control_intent = crate::provider::RuntimeControlIntent::ManualFollowUp;
         invocation.extra_hidden_sections.clear();
-        render_prompt_bundle(&invocation)
+        Ok(PreparedAcpPrompt {
+            prompt: render_prompt_bundle(&invocation)?,
+            adapter_workspace_dir: invocation.adapter_workspace_dir,
+            session_workspace_dir: invocation.workspace_dir,
+        })
     }
 
-    pub fn dynamic_acp_prompt_bundle_for_attempt(
+    pub fn prepare_dynamic_acp_prompt_for_attempt(
         &self,
         task_id: &str,
         run_id: &str,
@@ -4760,8 +4771,8 @@ impl App {
         prompt: String,
         prompt_id: Option<String>,
         continue_ref: Option<serde_json::Value>,
-    ) -> Result<PromptBundle> {
-        build_dynamic_prompt_bundle(
+    ) -> Result<PreparedAcpPrompt> {
+        prepare_dynamic_acp_prompt(
             self,
             task_id,
             run_id,

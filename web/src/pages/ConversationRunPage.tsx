@@ -549,7 +549,7 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             wallpaperSurface
-            worktreePath={run.worktree?.path}
+            worktreePath={selectedSession?.worktreePath}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

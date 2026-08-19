@@ -1401,8 +1401,8 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     )
     .unwrap();
 
-    let manual_prompt = app
-        .acp_prompt_bundle_for_attempt(
+    let prepared_prompt = app
+        .prepare_acp_prompt_for_attempt(
             task_id,
             "run-001",
             "round-001",
@@ -1413,6 +1413,9 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
             Some(serde_json::json!({"acpSessionId":"session-123"})),
         )
         .unwrap();
+    assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
+    assert_eq!(prepared_prompt.session_workspace_dir, app.paths.repo_root);
+    let manual_prompt = prepared_prompt.prompt;
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
     assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(

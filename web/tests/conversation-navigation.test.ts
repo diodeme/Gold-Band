@@ -214,4 +214,19 @@ describe('conversation sidebar navigation wiring', () => {
     expect(selectedRunRefresh).toContain('getConversationRun(');
     expect(selectedRunRefresh).not.toContain('getConversationSidebar(');
   });
+
+  it('keeps one shell-level ACP listener and clears only the matching task activity', () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const subscriptions = source.match(/void subscribeAcpSessionUpdates\(\(event\) =>/g) ?? [];
+    const globalSubscription = source.match(/void subscribeAcpSessionUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
+    const selectedRunHandler = source.match(/const refreshSelectedRunFromAcpEvent[\s\S]*?conversationAcpSessionRefreshRef\.current = refreshSelectedRunFromAcpEvent/)?.[0] ?? '';
+
+    expect(subscriptions).toHaveLength(1);
+    expect(globalSubscription).toContain('conversationTaskActivityFromUpdate(event)');
+    expect(globalSubscription).toContain('applyConversationTaskActivity(projectId, event.taskId, sidebarActivity)');
+    expect(globalSubscription).toContain('conversationAcpSessionRefreshRef.current?.(event)');
+    expect(globalSubscription).not.toContain('getConversationSidebar(');
+    expect(selectedRunHandler).not.toContain('applyConversationTaskActivity(');
+    expect(selectedRunHandler).not.toContain('applyConversationLifecycleSnapshotToSidebar(');
+  });
 });

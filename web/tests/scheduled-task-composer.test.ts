@@ -39,6 +39,18 @@ describe('scheduled task composer entry', () => {
     expect(app).toContain("initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}");
   });
 
+  it('uses the ordinary composer workspace surface without offering worktree selection', () => {
+    const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
+    expect(composer).toContain('showWorkLocation={!scheduledMode}');
+    expect(composer).toContain('const scheduledConversationInput = () => ({');
+    const scheduledInputSource = composer.slice(
+      composer.indexOf('const scheduledConversationInput = () => ({'),
+      composer.indexOf('const createScheduledTask = async () => {'),
+    );
+    expect(scheduledInputSource).not.toContain('workLocation');
+    expect(composer).not.toMatch(/\{scheduledMode \? \(\s*<ConversationWorkspaceControl/u);
+  });
+
   it('opens scheduled authoring as a right-workspace tab instead of a composer dialog', () => {
     const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
     const editor = readFileSync(fileURLToPath(new URL('../src/components/conversation/ScheduledTaskDialog.tsx', import.meta.url)), 'utf8');

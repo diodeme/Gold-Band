@@ -4,6 +4,9 @@ const openerMocks = vi.hoisted(() => ({
   openPath: vi.fn(() => Promise.resolve()),
   openUrl: vi.fn(() => Promise.resolve()),
 }));
+const dialogMocks = vi.hoisted(() => ({
+  save: vi.fn<() => Promise<string | null>>(() => Promise.resolve(null)),
+}));
 
 vi.mock('../../src/api/shared', () => ({
   invokeCommand: vi.fn(() => Promise.resolve({
@@ -13,6 +16,7 @@ vi.mock('../../src/api/shared', () => ({
   toRoundSelectionInput: vi.fn((selection) => selection),
 }));
 vi.mock('@tauri-apps/plugin-opener', () => openerMocks);
+vi.mock('@tauri-apps/plugin-dialog', () => dialogMocks);
 
 import { desktopApi } from '../../src/api/desktop';
 import { invokeCommand } from '../../src/api/shared';
@@ -21,6 +25,8 @@ describe('desktopApi', () => {
   beforeEach(() => {
     vi.mocked(invokeCommand).mockClear();
     openerMocks.openUrl.mockClear();
+    dialogMocks.save.mockReset();
+    dialogMocks.save.mockResolvedValue(null);
   });
 
   it('opens Markdown web targets with the desktop URL opener', async () => {
@@ -148,6 +154,54 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('search_conversation_tasks', {
       query: 'hello',
       limit: 20,
+    });
+  });
+
+  it('copies a path-backed image through the native clipboard command', async () => {
+    const input = {
+      source: { kind: 'path' as const, path: 'D:/images/shot.png' },
+      fileName: 'shot.png',
+      mime: 'image/png',
+    };
+
+    await desktopApi.copyImageToClipboard(input);
+
+    expect(invokeCommand).toHaveBeenCalledWith('copy_image_to_clipboard', {
+      source: input.source,
+    });
+  });
+
+  it('saves through the system dialog and treats cancellation as a normal result', async () => {
+    const input = {
+      source: { kind: 'bytes' as const, dataBase64: 'AQID' },
+      fileName: 'pasted.png',
+      mime: 'image/png',
+    };
+    dialogMocks.save.mockResolvedValueOnce('D:/exports/pasted.png');
+
+    await expect(desktopApi.saveImageAs(input)).resolves.toBe(true);
+    expect(dialogMocks.save).toHaveBeenCalledWith({
+      defaultPath: 'pasted.png',
+      filters: [{ name: 'Image', extensions: ['png'] }],
+    });
+    expect(invokeCommand).toHaveBeenCalledWith('save_image_as', {
+      input: { source: input.source, destinationPath: 'D:/exports/pasted.png' },
+    });
+
+    vi.mocked(invokeCommand).mockClear();
+    await expect(desktopApi.saveImageAs(input)).resolves.toBe(false);
+    expect(invokeCommand).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges the exact Direct terminal event through a scoped command input', async () => {
+    await desktopApi.acknowledgeConversationTerminalResult('project-1', 'task-1', 'event-1');
+
+    expect(invokeCommand).toHaveBeenCalledWith('acknowledge_conversation_terminal_result', {
+      input: {
+        projectId: 'project-1',
+        taskId: 'task-1',
+        eventId: 'event-1',
+      },
     });
   });
 

@@ -1,6 +1,6 @@
 [package]
 name = "gold-band"
-version = "0.12.4"
+version = "0.13.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -20,6 +20,7 @@ command-group = "5.0.1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
 indexmap = { version = "2", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -49,6 +50,7 @@ url = "2"
 atomic-write-file = "0.2"
 blake3 = "1"
 similar = "3.1"
+unicode-properties = { version = "0.1", features = ["general-category"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

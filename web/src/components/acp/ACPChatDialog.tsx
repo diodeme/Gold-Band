@@ -85,6 +85,7 @@ import {
   acpAttemptWorkspaceResourceKey,
   agentTranscriptResourceKey,
   conversationAssetWorkspaceResourceKey,
+  createDraftAttachmentWorkspaceResource,
   createHiddenPromptSectionWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
   useOptionalRightWorkspaceCommands,
@@ -144,7 +145,6 @@ import {
 } from "@/lib/composer-context";
 import type { ConversationPromptInput } from "@/types";
 import type { AgentMessageSelection } from "@/lib/agent-message-selection";
-import { AttachmentPreviewDialogs } from "@/components/shared/AttachmentComponents";
 import { AcpConversationComposer } from "@/components/conversation/AcpConversationComposer";
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
@@ -187,6 +187,7 @@ import {
 } from "@/lib/acp-event-reducer";
 import {
   deriveAcpRuntimeComposerState,
+  isAcceptedQueuePromptSubmitKind,
   mergeConversationAttemptLifecycle,
   shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
@@ -233,7 +234,10 @@ import {
 } from "@/api";
 import { AcpModelThoughtSelects } from '@/components/acp/AcpModelThoughtSelects';
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
-import { ACP_SESSION_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
+import {
+  ACP_SESSION_COMPOSER_BORDER_STYLE,
+  ACP_SESSION_COMPOSER_LAYOUT,
+} from '@/lib/conversation-composer-layout';
 import { getRuntimeApi } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import {
@@ -332,6 +336,7 @@ interface ACPChatDialogProps {
   directSessionHeader?: AcpDirectSessionHeaderProps;
   eventIdPrefix?: string;
   eventPageSize?: number;
+  inlineContentMaxBytes?: number;
   liveUpdatesPaused?: boolean;
   optimisticEvents?: AcpUiEventVm[];
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
@@ -341,7 +346,6 @@ interface ACPChatDialogProps {
   onAtBottomChange?: (atBottom: boolean) => void;
   onInitialSessionQueryStateChange?: (state: AcpInitialSessionQueryState) => void;
   allowEventOnlySessionShell?: boolean;
-  showInitializingSessionShell?: boolean;
   usageCompact?: boolean;
   cacheNamespace?: string;
   turnFileCardPreviewLimit?: number;
@@ -785,6 +789,7 @@ export function ACPChatDialog(
     directSessionHeader,
     eventIdPrefix,
     eventPageSize,
+    inlineContentMaxBytes,
     liveUpdatesPaused: externalLiveUpdatesPaused = false,
     optimisticEvents: controlledOptimisticEvents,
     onOptimisticEventsChange,
@@ -794,7 +799,6 @@ export function ACPChatDialog(
     onAtBottomChange,
     onInitialSessionQueryStateChange,
     allowEventOnlySessionShell = true,
-    showInitializingSessionShell = false,
     usageCompact,
     cacheNamespace,
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
@@ -959,12 +963,10 @@ export function ACPChatDialog(
     clearAttachments,
     resolveAttachmentPaths,
     dropZoneHandlers,
-    extractPasteFiles,
-    textPreview,
-    setTextPreview,
-    handlePreviewAttachment,
+    handlePaste,
   } = useAttachmentPicker({
     attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
+    inlineContentMaxBytes,
   });
   useWindowDragGuard();
   const paginationDirectionRef = useRef<"older" | "newer" | null>(null);
@@ -1204,7 +1206,18 @@ export function ACPChatDialog(
   }, [eventWindowKey]);
 
   const baseSession = currentSession ?? session;
+  const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const initializationLifecycleActive = Boolean(
+    (!runtimeStopAccepted || localRuntimeLifecycle != null)
+    && (
+      projectionLifecycle?.runtime.active
+      || (projectionLifecycle?.acp.liveTurnActivity ?? 'idle') !== 'idle'
+      || projectionLifecycle?.acp.stopping
+      || projectionLifecycle?.composer.mode === 'runtime-active'
+      || projectionLifecycle?.composer.mode === 'stopping'
+    ),
+  );
   const liveSessionShell = useMemo(
     () =>
       shouldCreateLiveAcpSessionShell({
@@ -1238,7 +1251,7 @@ export function ACPChatDialog(
   );
   const initializingSessionShell = useMemo(
     () =>
-      showInitializingSessionShell &&
+      initializationLifecycleActive &&
       !baseSession &&
       !liveSessionShell &&
       !establishedSessionShell
@@ -1253,7 +1266,7 @@ export function ACPChatDialog(
       liveSessionShell,
       loadedEvents,
       runtimeActiveFromContext,
-      showInitializingSessionShell,
+      initializationLifecycleActive,
     ],
   );
   const visibleSession = useMemo(
@@ -1333,7 +1346,6 @@ export function ACPChatDialog(
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
-  const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const projectedSessionStatus = projectionLifecycle && projectionLifecycle.acp.liveTurnActivity !== 'idle'
     ? (projectionLifecycle.acp.stopping
         ? "cancelling"
@@ -1354,8 +1366,7 @@ export function ACPChatDialog(
   const timelineSurfaceState = resolveAcpTimelineSurfaceState({
     hasTimelineItems: timeline.length > 0,
     initialSessionLoading: initialSessionQueryState === "loading",
-    runtimeActive: runtimeActiveFromContext,
-    initializationOwner: Boolean(showInitializingSessionShell),
+    runtimeActive: initializationLifecycleActive,
     sending,
   });
   const acpSessionActive = isSessionActiveStatus(effective?.status);
@@ -1417,21 +1428,13 @@ export function ACPChatDialog(
   );
 
   const handleOpenComposerAttachment = useCallback((attachment: AttachmentItem) => {
-    if (!rightWorkspace?.scopeKey || !attachment.mime.startsWith('image/') || !attachment.previewUrl) {
-      handlePreviewAttachment(attachment);
-      return;
-    }
-    void rightWorkspace.openResource({
-      kind: 'draft-attachment',
-      key: draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id),
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
       scopeKey: rightWorkspace.scopeKey,
       projectId,
-      title: attachment.name,
-      description: attachment.path,
-      attention: false,
       attachment,
-    });
-  }, [handlePreviewAttachment, projectId, rightWorkspace]);
+    }));
+  }, [projectId, rightWorkspace]);
 
   const closeComposerAttachmentPreview = useCallback((attachment: AttachmentItem) => {
     if (!rightWorkspace?.scopeKey) return;
@@ -1485,6 +1488,7 @@ export function ACPChatDialog(
     runtimeErrorMessage: runtimeComposerContext?.runtimeError,
     acpStatus: effective?.status,
     prompt,
+    hasAttachments: pendingAttachments.length > 0,
     waitingForPermission,
     sending,
     awaitingResponse: activeAwaitingResponse,
@@ -2377,11 +2381,13 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            markAcpSessionContentHydrated(eventWindowKey);
             snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(updated));
-            initialFetchSucceeded = true;
-            setInitialSessionQueryState("success");
-            break;
+            if (isAcpSessionReadyForInitialDisplay(updated)) {
+              markAcpSessionContentHydrated(eventWindowKey);
+              initialFetchSucceeded = true;
+              setInitialSessionQueryState("success");
+              break;
+            }
           }
         } catch (error) {
           logAcpSessionQueryTiming("request-error", requestTraceId, sessionIdentity, {
@@ -2858,10 +2864,11 @@ export function ACPChatDialog(
           outerAttemptId,
           attachmentPaths.length > 0 ? attachmentPaths : undefined,
         );
-        if (result.kind !== "queued") {
+        if (!isAcceptedQueuePromptSubmitKind(result.kind)) {
           throw new Error(`unexpected prompt queue response: ${result.kind}`);
         }
         submissionAccepted = true;
+        if (result.session) applySessionUpdate(result.session, "queue-prompt-submit");
         if (detachedDraft) {
           releaseSubmittedAttachments(detachedDraft.attachments);
           requestAnimationFrame(() => composerTextareaRef.current?.focus());
@@ -2894,11 +2901,16 @@ export function ACPChatDialog(
       return false;
     }
     const effectivePrompt = serializeUserPromptSubmission(submission);
+    const optimisticAttachments = optimisticAttachmentPreviews(
+      draftSnapshot?.attachments ?? [],
+      attPaths,
+    );
     const optimisticEvent = optimisticUserEvent(
       draftContent,
       undefined,
       submittedQuotes,
       latestCanonicalTimelinePosition(loadedEventsRef.current),
+      optimisticAttachments,
     );
     const promptId = promptIdFromEvent(optimisticEvent);
     const detachedDraft = draftSnapshot && composerDraft.clearIfUnchanged(draftSnapshot)
@@ -3585,11 +3597,23 @@ export function ACPChatDialog(
     initializationFailed: sessionInitializationFailed,
     initializationInterrupted: sessionInitializationInterrupted,
     runtimeActive: runtimeActiveFromContext,
-    showInitializingShell: showInitializingSessionShell,
+    showInitializingShell: initializationLifecycleActive,
   });
 
   if (sessionShellState === 'error') {
-    return <AcpErrorState reason={runtimeComposerContext?.runtimeError ?? t("acp.missingSessionReason")} transparent={wallpaperSurface} />;
+    return (
+      <AcpErrorState
+        reason={
+          acpSessionLoadErrorReason(
+            runtimeComposerContext?.runtimeError,
+            sessionLoadError,
+            baseSession,
+            t("acp.missingSessionReason"),
+          )
+        }
+        transparent={wallpaperSurface}
+      />
+    );
   }
 
   if (sessionShellState === 'interrupted') {
@@ -3792,6 +3816,7 @@ export function ACPChatDialog(
             <div
               className="relative mx-auto w-full max-w-[var(--conversation-content-rail-max-inline-size)] [filter:drop-shadow(var(--gb-material-shadow))_drop-shadow(var(--gb-material-edge-shadow))]"
               data-acp-conversation-rail="composer"
+              style={ACP_SESSION_COMPOSER_BORDER_STYLE}
             >
               <AcpUsagePanel
                 usage={effective?.usage}
@@ -3799,8 +3824,8 @@ export function ACPChatDialog(
                 sessionSeconds={composerSessionSeconds}
                 worktreePath={worktreePath}
                 className={cn(
-                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md bg-card py-0.5 pl-2.5 pr-3 !shadow-none before:pointer-events-none before:absolute before:-right-2.5 before:bottom-0 before:size-2.5 before:rounded-bl-md before:shadow-[-3px_3px_0_3px_var(--card)] before:content-['']",
                   ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+                  "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
                 )}
               />
             {!readOnly && showManualCheckActions ? (
@@ -3874,7 +3899,7 @@ export function ACPChatDialog(
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
                 onDrop={dropZoneHandlers.onDrop}
-                onPaste={extractPasteFiles}
+                onPaste={handlePaste}
                 fileInputRef={fileInputRef}
                 onFilesChange={handleFilesFromInput}
                 onPickFiles={pickFiles}
@@ -3908,10 +3933,6 @@ export function ACPChatDialog(
           </ConversationViewport>
         )}
       </div>
-      <AttachmentPreviewDialogs
-        textPreview={textPreview}
-        onCloseText={() => setTextPreview(null)}
-      />
       {!readOnly && !queueRestorePending ? <AgentSelectionQuoteButton rootRef={conversationRootRef} onQuote={addSelectedQuote} /> : null}
     </div>
     </AcpBranchLocatorContext.Provider>
@@ -3929,7 +3950,7 @@ function AcpErrorState({ reason, transparent = false }: { reason: string; transp
 }
 
 function AcpLoadingState({ label, transparent = false }: { label: string; transparent?: boolean }) {
-  return <BrandLoadingState label={label} className={transparent ? "bg-transparent" : undefined} />;
+  return <BrandLoadingState label={label} surface={transparent ? "transparent" : "background"} />;
 }
 
 function AcpInterruptedState({ label, transparent = false }: { label: string; transparent?: boolean }) {
@@ -4505,7 +4526,7 @@ export function ACPSessionHeader({
         {directSessionHeader ? (
           <EditableConversationTitle
             title={directSessionHeader.title}
-            className="mr-2 min-w-0 max-w-[40%] shrink"
+            className="mr-2 min-w-0 max-w-[40%] flex-none"
             showEditIcon={false}
             onTitleChange={directSessionHeader.onTitleChange}
           />
@@ -4874,9 +4895,9 @@ export function ACPMessageList({
 function EmptyAcpState() {
   const { t } = useTranslation();
   return (
-    <div className="rounded-2xl border border-dashed bg-muted/10 p-8 text-center text-sm text-muted-foreground">
+    <p data-acp-empty-state="true" className="py-8 text-center text-sm text-muted-foreground">
       {t("acp.noEvents")}
-    </div>
+    </p>
   );
 }
 
@@ -4884,6 +4905,7 @@ function AcpPendingTimelineState({ label }: { label: string }) {
   return (
     <BrandLoadingState
       label={label}
+      surface="transparent"
       className="min-h-[10rem]"
       logoClassName="w-14"
     />
@@ -4923,6 +4945,10 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
   nested?: boolean;
 }) {
   const branchLocator = useContext(AcpBranchLocatorContext);
+  if (
+    (event.kind === "textDelta" || event.kind === "thoughtDelta")
+    && !hasVisibleAcpTextContent(event.content)
+  ) return null;
   if (isAgentLink(event))
     return nested ? (
       <AgentLinkRow event={event} />
@@ -5523,7 +5549,7 @@ const MessageBubble = memo(function MessageBubble({
   }, [event.content?.length, event.endedSeq, event.id, event.kind, event.seq, isUser, streamingDraft, streamingMarkdownItemKey]);
   const rawAttachments = messageAttachmentPreviewsFromRaw(event.raw);
   const userQuotes = isUser ? userPromptQuotesFromRaw(event.raw) : [];
-  const hasAttachments = isUser && !event.optimistic && rawAttachments.length > 0;
+  const hasAttachments = isUser && rawAttachments.length > 0;
   const attachmentGroups = groupMessageAttachmentPreviews(rawAttachments);
   const runtimeControlParts = !isUser && !streamingDraft
     ? runtimeControlMessageParts(event)
@@ -5531,7 +5557,11 @@ const MessageBubble = memo(function MessageBubble({
   const messageText = runtimeControlParts.display
     ? runtimeControlParts.visibleText
     : (event.content ?? "");
-  const showMessageBubble = isUser || streamingDraft || messageText.trim().length > 0;
+  const showMessageBubble = streamingDraft || messageText.trim().length > 0;
+  const attachmentOnly = isUser
+    && hasAttachments
+    && userQuotes.length === 0
+    && !showMessageBubble;
   const quotableAgentMessage = !isUser && !streamingDraft && !failed && messageText.trim().length > 0;
   const openHiddenPromptSection = useCallback((request: HiddenPromptSectionOpenRequest) => {
     if (!branchLocator || !workspace?.scopeKey || event.optimistic) return;
@@ -5614,7 +5644,14 @@ const MessageBubble = memo(function MessageBubble({
           />
         ) : null}
         {hasAttachments ? (
-          <div className={cn("flex max-w-full flex-col gap-2 px-1", isUser && "items-end")}>
+          <div
+            data-acp-attachment-only={attachmentOnly ? "true" : undefined}
+            className={cn(
+              "flex max-w-full flex-col gap-2 px-1",
+              isUser && "items-end",
+              attachmentOnly && "pt-0.5",
+            )}
+          >
             {attachmentGroups.images.length > 0 ? (
               <div
                 data-acp-attachment-row="images"
@@ -5908,7 +5945,7 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="group relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="relative size-[72px] overflow-hidden rounded-lg border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:border-primary/45 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={attachment.name}
             onClick={() => onClick?.(attachment)}
           >
@@ -5925,9 +5962,6 @@ const MessageAttachmentPreviewButton = memo(function MessageAttachmentPreviewBut
                 <ImageIcon className="size-5 text-blue-400" />
               </span>
             )}
-            <span className="absolute inset-x-0 bottom-0 truncate bg-background/78 px-1.5 py-1 text-ui-micro font-medium text-foreground/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-              {attachment.name}
-            </span>
           </button>
         </TooltipTrigger>
         <TooltipContent className="max-w-[360px] break-all">{attachmentLabel}</TooltipContent>
@@ -6995,6 +7029,15 @@ export function visibleAcpBannerError(
   return runtimeError ?? visibleSessionError(session, events);
 }
 
+export function acpSessionLoadErrorReason(
+  runtimeError: string | null | undefined,
+  sessionLoadError: string | null | undefined,
+  session: AcpSessionVm | null | undefined,
+  fallback: string,
+) {
+  return runtimeError ?? sessionLoadError ?? session?.diagnostics.lastError ?? fallback;
+}
+
 function visibleSessionError(session: AcpSessionVm, events: AcpUiEventVm[]) {
   const message = session.diagnostics.lastError;
   if (!message) return null;
@@ -7215,6 +7258,7 @@ function nextLiveStreamingMarkdownTarget(
   const position = timelineEventPosition(event);
   if (event.kind === "userTextDelta") return null;
   if (event.kind === "textDelta" || event.kind === "thoughtDelta") {
+    if (!hasVisibleAcpTextContent(event.content)) return current;
     if (latestPromptPosition != null && position <= latestPromptPosition) return null;
     return { key: `${event.kind}-${event.id}`, position };
   }
@@ -7498,6 +7542,10 @@ function batchAcpActivities(
 function isRenderableEvent(event: AcpUiEventVm) {
   const raw = rawObject(event.raw);
   if (raw?.hiddenFromChat === true) return false;
+  if (
+    (event.kind === "textDelta" || event.kind === "thoughtDelta")
+    && !hasVisibleAcpTextContent(event.content)
+  ) return false;
   if (event.kind === "permissionRequest" || event.kind === "elicitationRequest" || event.kind === "elicitationResponse") return false;
   if (hiddenEventKinds.has(event.kind)) return false;
   const sessionUpdate = raw?.sessionUpdate;
@@ -8381,6 +8429,7 @@ export function optimisticUserEvent(
   promptId = createAcpPromptId(),
   quotes: import('@/types').UserPromptQuote[] = [],
   afterSeq: number | null = null,
+  attachments: MessageAttachmentPreview[] = [],
 ): AcpUiEventVm {
   const createdAt = Math.floor(Date.now() / 1000);
   return {
@@ -8396,8 +8445,36 @@ export function optimisticUserEvent(
       promptId,
       optimisticAfterSeq: afterSeq,
       ...(quotes.length > 0 ? { quotes } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     },
   };
+}
+
+const acpInvisibleTextCharacterPattern = /[\s\p{Cf}]/u;
+
+function hasVisibleAcpTextContent(content?: string | null) {
+  if (!content) return false;
+  for (const character of content) {
+    if (!acpInvisibleTextCharacterPattern.test(character)) return true;
+  }
+  return false;
+}
+
+export function optimisticAttachmentPreviews(
+  attachments: readonly AttachmentItem[],
+  paths: readonly string[],
+): MessageAttachmentPreview[] {
+  return attachments.flatMap((attachment, index) => {
+    const path = paths[index];
+    return path
+      ? [{
+          name: attachment.name,
+          path,
+          type: attachment.mime,
+          size: attachment.size,
+        }]
+      : [];
+  });
 }
 
 function optimisticPromptAfterSeq(event: AcpUiEventVm) {

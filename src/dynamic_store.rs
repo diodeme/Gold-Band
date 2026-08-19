@@ -14,7 +14,8 @@ use crate::dynamic::{
 use crate::git::{GitCommandRunner, GitRepositoryService};
 use crate::storage::{read_json, write_json};
 
-pub const CURRENT_DYNAMIC_GRAPH_VERSION: &str = "0.2";
+pub const CURRENT_DYNAMIC_GRAPH_VERSION: &str = "0.3";
+const WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION: &str = "0.2";
 const LEGACY_DYNAMIC_GRAPH_VERSION: &str = "0.1";
 const MAIN_WORKSPACE_ID: &str = "workspace-main";
 static DYNAMIC_GRAPH_LOAD_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =
@@ -31,10 +32,11 @@ struct LegacyWorkspaceDescriptor {
 
 /// Loads a dynamic graph through its versioned storage boundary.
 ///
-/// Graph v0.1 stored workspace policy and paths on nodes. The v0.2 canonical
-/// model stores workspace identity and lifecycle in a graph-owned catalog.
-/// Migration is deterministic, validated before commit, atomically persisted,
-/// and therefore becomes a no-op after the first successful load.
+/// Graph v0.1 stored workspace policy and paths on nodes. Graph v0.2 moved
+/// workspace identity and lifecycle into a graph-owned catalog. Graph v0.3
+/// adds the canonical per-leaf Runtime execution projection. Migrations are
+/// deterministic, validated before commit, atomically persisted, and therefore
+/// become a no-op after the first successful load.
 pub fn load_dynamic_graph(path: &Utf8Path, repo_root: &Utf8Path) -> Result<DynamicGraphState> {
     let lock = dynamic_graph_load_lock(path)?;
     let _guard = lock
@@ -77,12 +79,20 @@ pub fn dynamic_graph_from_value_with_migration(
             validate_dynamic_graph(&graph)?;
             Ok((graph, false))
         }
+        WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION => {
+            migrate_v02_leaf_runtime_lifecycle(&mut value)?;
+            let graph = serde_json::from_value(value)?;
+            validate_dynamic_graph(&graph)?;
+            Ok((graph, true))
+        }
         LEGACY_DYNAMIC_GRAPH_VERSION => {
             if dynamic_graph_has_workspace_catalog(&value) {
-                value["version"] = Value::String(CURRENT_DYNAMIC_GRAPH_VERSION.to_string());
+                value["version"] =
+                    Value::String(WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION.to_string());
             } else {
                 migrate_v01_workspace_policy_to_catalog(&mut value, repo_root)?;
             }
+            migrate_v02_leaf_runtime_lifecycle(&mut value)?;
             let graph: DynamicGraphState = serde_json::from_value(value)?;
             validate_dynamic_graph(&graph)?;
             Ok((graph, true))
@@ -126,6 +136,118 @@ fn dynamic_graph_has_workspace_catalog(value: &Value) -> bool {
                         && group.get("childWorkspaceIds").is_some()
                 })
             })
+}
+
+fn migrate_v02_leaf_runtime_lifecycle(value: &mut Value) -> Result<()> {
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("dynamic graph must be a JSON object"))?;
+    let run = root
+        .get("run")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("dynamic graph run is missing"))?;
+    let graph_running = optional_string(run, "status") == Some("running");
+    let graph_updated_at = required_string(run, "updatedAt")?.to_string();
+    let current_node_ids = run
+        .get("currentNodeIds")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let nodes = root
+        .get_mut("nodes")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow!("dynamic graph nodes are missing"))?;
+    for node in nodes {
+        let object = node
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("dynamic graph node must be an object"))?;
+        let node_id = required_string(object, "id")?.to_string();
+        let status = required_string(object, "status")?.to_string();
+        let has_execution_id = optional_string(object, "runtimeExecutionId").is_some();
+        let active_phase = matches!(
+            optional_string(object, "runtimeExecutionPhase"),
+            Some("starting-node" | "running-node" | "finalizing-artifact" | "repairing-artifact")
+        );
+        let graph_owns_completed_leaf = status == "completed"
+            && graph_running
+            && current_node_ids.iter().any(|current| current == &node_id)
+            && has_execution_id;
+
+        let phase = match status.as_str() {
+            "paused" => {
+                object.remove("runtimeExecutionId");
+                Some("paused")
+            }
+            "completed" if graph_owns_completed_leaf => {
+                if active_phase {
+                    optional_string(object, "runtimeExecutionPhase")
+                } else {
+                    Some("finalizing-artifact")
+                }
+            }
+            "completed" => {
+                object.remove("runtimeExecutionId");
+                Some("terminal")
+            }
+            "running" if has_execution_id => {
+                if active_phase {
+                    optional_string(object, "runtimeExecutionPhase")
+                } else {
+                    Some("running-node")
+                }
+            }
+            "ready" if has_execution_id => {
+                if active_phase {
+                    optional_string(object, "runtimeExecutionPhase")
+                } else {
+                    Some("starting-node")
+                }
+            }
+            "pending" => {
+                object.remove("runtimeExecutionId");
+                object.remove("runtimeExecutionPhase");
+                object.remove("runtimeExecutionUpdatedAt");
+                object.insert("runtimeExecutionRevision".to_string(), Value::from(0));
+                None
+            }
+            _ => optional_string(object, "runtimeExecutionPhase"),
+        }
+        .map(ToOwned::to_owned);
+
+        if let Some(phase) = phase {
+            object.insert("runtimeExecutionPhase".to_string(), Value::String(phase));
+            let revision = object
+                .get("runtimeExecutionRevision")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+                .max(1);
+            object.insert(
+                "runtimeExecutionRevision".to_string(),
+                Value::from(revision),
+            );
+            if optional_string(object, "runtimeExecutionUpdatedAt").is_none() {
+                let updated_at = optional_string(object, "finishedAt")
+                    .or_else(|| optional_string(object, "startedAt"))
+                    .unwrap_or(&graph_updated_at)
+                    .to_string();
+                object.insert(
+                    "runtimeExecutionUpdatedAt".to_string(),
+                    Value::String(updated_at),
+                );
+            }
+        }
+    }
+    root.insert(
+        "version".to_string(),
+        Value::String(CURRENT_DYNAMIC_GRAPH_VERSION.to_string()),
+    );
+    Ok(())
 }
 
 fn migrate_v01_workspace_policy_to_catalog(value: &mut Value, repo_root: &Utf8Path) -> Result<()> {
@@ -329,7 +451,7 @@ fn migrate_v01_workspace_policy_to_catalog(value: &mut Value, repo_root: &Utf8Pa
     }
     root.insert(
         "version".to_string(),
-        Value::String(CURRENT_DYNAMIC_GRAPH_VERSION.to_string()),
+        Value::String(WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION.to_string()),
     );
     root.insert("workspaces".to_string(), Value::Array(workspace_values));
     Ok(())
@@ -506,6 +628,34 @@ mod tests {
         })
     }
 
+    fn v02_graph_with_legacy_leaf_lifecycle(repo: &Utf8Path) -> Value {
+        let mut value = legacy_graph();
+        migrate_v01_workspace_policy_to_catalog(&mut value, repo).unwrap();
+        let mut bootstrap = value["nodes"][0].clone();
+        bootstrap["status"] = json!("completed");
+        bootstrap["outcome"] = json!("success");
+        bootstrap["runtimeExecutionId"] = json!("legacy-bootstrap-execution");
+        bootstrap["finishedAt"] = json!("2026-08-01T00:00:30Z");
+
+        let mut hello = bootstrap.clone();
+        hello["id"] = json!("hello-worker");
+        hello["title"] = json!("Hello");
+        hello["task"] = json!("Implement hello");
+        hello["status"] = json!("paused");
+        hello["outcome"] = Value::Null;
+        hello["pauseReason"] = json!("process-interrupted");
+        hello.as_object_mut().unwrap().remove("runtimeExecutionId");
+
+        let mut goodbye = hello.clone();
+        goodbye["id"] = json!("goodbye-worker");
+        goodbye["title"] = json!("Goodbye");
+        goodbye["task"] = json!("Implement goodbye");
+
+        value["run"]["currentNodeIds"] = json!([]);
+        value["nodes"] = json!([bootstrap, hello, goodbye]);
+        value
+    }
+
     #[test]
     fn v01_single_workspace_migrates_to_catalog_once() {
         let repo = Utf8PathBuf::from_path_buf(tempdir().unwrap().keep()).unwrap();
@@ -540,6 +690,74 @@ mod tests {
         let second_persisted = std::fs::read(graph_path.as_std_path()).unwrap();
         assert_eq!(loaded_again.version, CURRENT_DYNAMIC_GRAPH_VERSION);
         assert_eq!(second_persisted, first_persisted);
+    }
+
+    #[test]
+    fn v02_paused_siblings_and_completed_leaf_migrate_to_leaf_runtime_lifecycle_once() {
+        let repo = Utf8PathBuf::from_path_buf(tempdir().unwrap().keep()).unwrap();
+        let graph_path = repo.join("graph.json");
+        write_json(&graph_path, &v02_graph_with_legacy_leaf_lifecycle(&repo)).unwrap();
+
+        let migrated = load_dynamic_graph(&graph_path, &repo).unwrap();
+        assert_eq!(migrated.version, CURRENT_DYNAMIC_GRAPH_VERSION);
+        let bootstrap = migrated
+            .nodes
+            .iter()
+            .find(|node| node.id == "bootstrap")
+            .unwrap();
+        assert_eq!(bootstrap.runtime_execution_id, None);
+        assert_eq!(
+            bootstrap.runtime_execution_phase,
+            Some(crate::runtime::RuntimeExecutionPhase::Terminal)
+        );
+        assert_eq!(bootstrap.runtime_execution_revision, 1);
+        for node_id in ["hello-worker", "goodbye-worker"] {
+            let node = migrated
+                .nodes
+                .iter()
+                .find(|node| node.id == node_id)
+                .unwrap();
+            assert_eq!(node.runtime_execution_id, None);
+            assert_eq!(
+                node.runtime_execution_phase,
+                Some(crate::runtime::RuntimeExecutionPhase::Paused)
+            );
+            assert_eq!(node.runtime_execution_revision, 1);
+        }
+        let first_persisted = std::fs::read(graph_path.as_std_path()).unwrap();
+
+        let loaded_again = load_dynamic_graph(&graph_path, &repo).unwrap();
+        assert_eq!(loaded_again.version, CURRENT_DYNAMIC_GRAPH_VERSION);
+        assert_eq!(
+            std::fs::read(graph_path.as_std_path()).unwrap(),
+            first_persisted
+        );
+    }
+
+    #[test]
+    fn v02_completed_leaf_owned_by_running_graph_preserves_execution_generation() {
+        let repo = Utf8PathBuf::from_path_buf(tempdir().unwrap().keep()).unwrap();
+        let mut value = v02_graph_with_legacy_leaf_lifecycle(&repo);
+        value["run"]["status"] = json!("running");
+        value["run"]["pauseReason"] = Value::Null;
+        value["run"]["currentNodeIds"] = json!(["bootstrap"]);
+
+        let (graph, migrated) = dynamic_graph_from_value_with_migration(value, &repo).unwrap();
+
+        assert!(migrated);
+        let bootstrap = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "bootstrap")
+            .unwrap();
+        assert_eq!(
+            bootstrap.runtime_execution_id.as_deref(),
+            Some("legacy-bootstrap-execution")
+        );
+        assert_eq!(
+            bootstrap.runtime_execution_phase,
+            Some(crate::runtime::RuntimeExecutionPhase::FinalizingArtifact)
+        );
     }
 
     #[test]

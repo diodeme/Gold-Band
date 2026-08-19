@@ -12,12 +12,14 @@ import type {
   AutoTemplateStore,
   ContentVm,
   ConversationAutoConfigVm,
+  ConversationCreateResultVm,
   ConversationCreateInput,
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationSearchResultVm,
   ConversationSessionSwitchVm,
   ConversationSidebarVm,
+  ConversationTaskRowVm,
   ConversationValidationResultVm,
   ConversationWorkspaceVm,
   InterventionNavigateEventVm,
@@ -148,6 +150,22 @@ export interface ConversationRunStateUpdatedEventVm {
   outcome?: string | null;
 }
 
+export interface ConversationTerminalResultUpdatedEventVm {
+  projectId: string;
+  taskId: string;
+  unreadTerminalResult: import('../types').ConversationTerminalResultVm;
+}
+
+export type ImageActionSourceInput =
+  | { kind: 'path'; path: string }
+  | { kind: 'bytes'; dataBase64: string };
+
+export interface ImageActionInput {
+  source: ImageActionSourceInput;
+  fileName: string;
+  mime: string;
+}
+
 export interface ScheduledTaskUpdatedEventVm {
   projectId: string;
   scheduledTaskId: string;
@@ -187,12 +205,12 @@ export interface AttachmentFileRef {
   name: string;
   size: number;
   previewUrl?: string | null;
+  contentUrl?: string | null;
 }
 
 export interface MaterializeAttachmentFileInput {
   name: string;
   mime?: string | null;
-  size: number;
   dataBase64: string;
 }
 
@@ -285,6 +303,7 @@ export interface RuntimeApi {
   renewAcpSessionLease?(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<number>;
   subscribeAcpSessionUpdates?(listener: (event: AcpSessionUpdatedEventVm) => void): Promise<() => void>;
   subscribeConversationRunStateUpdates?(listener: (event: ConversationRunStateUpdatedEventVm) => void): Promise<() => void>;
+  subscribeConversationTerminalResultUpdates?(listener: (event: ConversationTerminalResultUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledTaskUpdates?(listener: (event: ScheduledTaskUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledOccurrenceUpdates?(listener: (event: ScheduledOccurrenceUpdatedEventVm) => void): Promise<() => void>;
   subscribeScheduledNotifications?(listener: (event: ScheduledNotificationEventVm) => void): Promise<() => void>;
@@ -326,6 +345,7 @@ export interface RuntimeApi {
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
+  recordActivity(): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
@@ -335,6 +355,7 @@ export interface RuntimeApi {
   // ── Conversation UI ──
   saveDesktopUiMode(mode: 'conversation' | 'workbench'): Promise<void>;
   getConversationSidebar(): Promise<ConversationSidebarVm>;
+  acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string): Promise<import('../types').ConversationTerminalResultAcknowledgementVm>;
   listScheduledTasks(projectId?: string | null): Promise<import('../types').ScheduledTaskVm[]>;
   setScheduledTaskEnabled(projectId: string | null | undefined, scheduledTaskId: string, enabled: boolean): Promise<import('../types').ScheduledTaskVm>;
   createScheduledTask(input: import('../types').CreateScheduledTaskInput): Promise<import('../types').ScheduledTaskVm>;
@@ -348,9 +369,9 @@ export interface RuntimeApi {
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
   switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
-  createConversationRun(input: ConversationCreateInput): Promise<ConversationRunVm>;
+  createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;
-  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<void>;
+  updateTaskMetadata(projectId: string, taskId: string, title: string, description?: string | null): Promise<ConversationTaskRowVm>;
   deleteConversationTask(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   pinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
   unpinConversation(projectId: string, taskId: string): Promise<ConversationSidebarVm>;
@@ -383,6 +404,8 @@ export interface RuntimeApi {
   workspaceFilePreviewUrl(token: string, staticFrame?: boolean): string;
   openExternalUrl(url: string): Promise<void>;
   openFileWithSystemApp(path: string): Promise<void>;
+  copyImageToClipboard(input: ImageActionInput): Promise<void>;
+  saveImageAs(input: ImageActionInput): Promise<boolean>;
   pickAttachmentFiles(): Promise<AttachmentFileRef[]>;
   statAttachmentFiles(paths: string[]): Promise<AttachmentFileRef[]>;
   materializeConversationAttachments(files: MaterializeAttachmentFileInput[]): Promise<AttachmentFileRef[]>;

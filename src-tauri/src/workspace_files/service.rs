@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use atomic_write_file::AtomicWriteFile;
+use gold_band::storage::atomic_write_file;
 use ignore::WalkBuilder;
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -402,14 +402,12 @@ pub(crate) fn write_file(
     let permissions = std::fs::metadata(path)
         .map_err(|io_error| io_path_error(io_error, path, "write"))?
         .permissions();
-    let mut file =
-        AtomicWriteFile::open(path).map_err(|io_error| io_path_error(io_error, path, "write"))?;
-    file.write_all(&bytes)
-        .map_err(|io_error| io_path_error(io_error, path, "write"))?;
-    file.set_permissions(permissions.clone())
-        .map_err(|io_error| io_path_error(io_error, path, "write"))?;
-    file.commit()
-        .map_err(|io_error| io_path_error(io_error, path, "write"))?;
+    atomic_write_file(path, |file| -> std::io::Result<()> {
+        file.write_all(&bytes)?;
+        file.set_permissions(permissions.clone())?;
+        Ok(())
+    })
+    .map_err(|io_error| io_path_error(io_error, path, "write"))?;
     let _ = std::fs::set_permissions(path, permissions);
     let revision = revision_for_path(path)?;
     runtime.record_write(

@@ -438,6 +438,34 @@ fn built_in_workflow_templates_include_lightweight_topology_and_are_idempotent()
 }
 
 #[test]
+fn built_in_workflow_entry_nodes_require_manual_check() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let app = App::new(repo_root);
+    let store = app.workflow_templates().unwrap();
+
+    for (template_id, node_id) in [("default", "interview"), ("default-lightweight", "grill")] {
+        let template = store
+            .templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap();
+        let node = template
+            .workflow
+            .nodes
+            .iter()
+            .find(|node| node.id() == node_id)
+            .unwrap();
+        let gold_band::dsl::NodeDsl::Worker(worker) = node else {
+            panic!("{template_id}/{node_id} should be a worker node");
+        };
+        assert_eq!(worker.manual_check, Some(true));
+        assert!(worker.output.is_none());
+        assert!(worker.success_condition.is_none());
+    }
+}
+
+#[test]
 fn optional_entry_preference_trims_only_built_in_optional_entry() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -618,6 +646,46 @@ fn built_in_review_profile_scopes_review_to_current_changes() {
     );
     assert!(review.content.contains("当前 git 工作区 diff"));
     assert!(review.content.contains("不得因此 REJECT"));
+}
+
+#[test]
+fn built_in_validation_profiles_do_not_block_on_missing_external_evidence() {
+    for (language, test_rule, review_rule) in [
+        (
+            DesktopLanguage::ZhCn,
+            "环境问题或需要人工验收导致当前验证无法继续时，应如实记录未执行项和证据缺口，但不构成阻塞条件",
+            "前序存在开发节点但没有产出 `dev-report.md`，不构成阻塞条件",
+        ),
+        (
+            DesktopLanguage::En,
+            "Environment issues or required manual acceptance may prevent validation from continuing, but do not constitute blocking conditions",
+            "If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition",
+        ),
+    ] {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let mut config = RuntimeConfig::default();
+        config.desktop_language = language;
+        let app = App::with_config(repo_root, config);
+        let profiles = app.profiles().unwrap();
+
+        let test = profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "pf-builtin-test")
+            .unwrap();
+        assert!(test.content.contains(test_rule));
+
+        let review = profiles
+            .profiles
+            .iter()
+            .find(|profile| profile.id == "pf-builtin-review")
+            .unwrap();
+        assert!(review.content.contains(review_rule));
+        assert!(
+            review.content.contains("git working tree") || review.content.contains("git 工作区")
+        );
+    }
 }
 
 #[test]

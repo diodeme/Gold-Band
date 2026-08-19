@@ -181,7 +181,8 @@ impl ProviderAdapter for DynamicProvider {
                 .emission_mode = OutputEmissionMode::InlineControl;
             finalize_req.session_mode = SessionMode::Continue;
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-            finalize_req.input_attachment_paths.clear();
+            finalize_req.task_input_attachment_paths.clear();
+            finalize_req.user_input_attachment_paths.clear();
             if !resumed_control_turn {
                 finalize_req.resume_prompt = Some("finalize artifact".to_string());
                 finalize_req.resume_prompt_id = Some(format!(
@@ -906,7 +907,9 @@ fn write_task_input_image(app: &App, task_id: &str, name: &str) -> Utf8PathBuf {
     let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
     let path = inputs_dir.join(name);
-    std::fs::write(path.as_std_path(), b"\x89PNG\r\n\x1a\nimage").unwrap();
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]))
+        .save(path.as_std_path())
+        .unwrap();
     path
 }
 
@@ -1216,10 +1219,11 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
         UserPromptRenderMode::UserMessage
     );
     let resume_prompt = merge_continue.resume_prompt.as_deref().unwrap_or_default();
-    assert!(resume_prompt.starts_with("继续\n"));
+    assert_eq!(resume_prompt.lines().next(), Some("继续"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
-    assert!(resume_prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(!resume_prompt.contains("artifact 输出约束"));
+    assert!(!resume_prompt.contains("后续独立 turn"));
     assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
     assert_eq!(
         merge_continue.resume_prompt_id.as_deref(),
@@ -1227,7 +1231,7 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
     );
 
     let prompt = render_prompt_bundle(merge_continue).unwrap();
-    assert!(prompt.user_prompt.starts_with("继续\n"));
+    assert_eq!(prompt.user_prompt.lines().next(), Some("继续"));
     assert!(prompt.user_prompt.contains("data-gold-band-hidden"));
     assert_eq!(prompt.display_text.as_deref(), Some("继续"));
     assert!(!prompt.user_prompt.contains("# 目标"));
@@ -1407,7 +1411,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         invocations
             .iter()
             .filter(|invocation| is_business_invocation(invocation))
-            .all(|invocation| invocation.input_attachment_paths == vec![image_path_string.clone()])
+            .all(|invocation| {
+                invocation.task_input_attachment_paths == vec![image_path_string.clone()]
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(
         invocations
@@ -1415,7 +1422,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .filter(|invocation| {
                 invocation.user_prompt_render_mode == UserPromptRenderMode::RuntimeFinalize
             })
-            .all(|invocation| invocation.input_attachment_paths.is_empty())
+            .all(|invocation| {
+                invocation.task_input_attachment_paths.is_empty()
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(invocations.iter().all(|invocation| {
         invocation
@@ -1426,7 +1436,11 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .unwrap_or(false)
     }));
 
-    let prompt = render_prompt_bundle(&invocations[0]).unwrap();
+    let business_invocation = invocations
+        .iter()
+        .find(|invocation| is_business_invocation(invocation))
+        .expect("expected a business invocation");
+    let prompt = render_prompt_bundle(business_invocation).unwrap();
     assert_eq!(prompt.attachment_metas.len(), 1);
     assert_eq!(prompt.attachment_metas[0].name, "image.png");
     assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
@@ -1434,7 +1448,7 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         Some(AcpContentBlock::Image(block)) => {
             let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
             assert_eq!(block.mime_type, "image/png");
-            assert_eq!(block.uri.as_deref(), Some(expected_uri.as_str()));
+            assert_eq!(block.link.uri, expected_uri);
         }
         _ => panic!("expected image content block"),
     }
@@ -2010,10 +2024,19 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
     assert_eq!(run.status, RunStatus::Completed);
 
     let graph = dynamic_graph(&app, task_id);
-    assert!(graph.nodes.iter().any(|node| node.id == "branch-b"));
+    let branch_b = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "branch-b")
+        .unwrap();
+    let branch_b_workspace = graph
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == branch_b.workspace_id)
+        .unwrap();
     let continue_ref = serde_json::json!({ "sessionId": "branch-b-attempt-001" });
-    let prompt = app
-        .dynamic_acp_prompt_bundle_for_attempt(
+    let prepared_prompt = app
+        .prepare_dynamic_acp_prompt_for_attempt(
             task_id,
             "run-001",
             "round-001",
@@ -2026,6 +2049,12 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
             Some(continue_ref),
         )
         .unwrap();
+    assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
+    assert_eq!(
+        prepared_prompt.session_workspace_dir,
+        branch_b_workspace.path
+    );
+    let prompt = prepared_prompt.prompt;
 
     assert_eq!(prompt.user_prompt, "继续");
     assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
@@ -2156,9 +2185,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         gold_band::runtime::RuntimeExecutionPhase::Paused
     );
     let locator = durable_parent.execution.locator.as_ref().unwrap();
-    assert_eq!(locator.node_id, "child-flow-node");
-    assert_eq!(locator.outer_node_id.as_deref(), Some("router"));
-    assert_eq!(locator.outer_attempt_id.as_deref(), Some("attempt-001"));
+    assert_eq!(locator.node_id, "router");
+    assert_eq!(locator.attempt_id, "attempt-001");
+    assert_eq!(locator.outer_node_id, None);
+    assert_eq!(locator.outer_attempt_id, None);
 
     let resumed = app.run_continue(task_id, "run-001", None, None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);
@@ -2259,10 +2289,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
         child_continue.user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
-    assert_eq!(
-        child_continue.resume_prompt.as_deref(),
-        Some("请继续检查这个会话")
-    );
+    let resume_prompt = child_continue.resume_prompt.as_deref().unwrap_or_default();
+    assert_eq!(resume_prompt.lines().next(), Some("请继续检查这个会话"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
     assert_eq!(
         child_continue.resume_prompt_id.as_deref(),
         Some("prompt-continue-001")

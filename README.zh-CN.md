@@ -68,6 +68,9 @@ Gold Band 希望提供一个统一的桌面入口：
    - `AUTO`：让 AI-DYNAMIC 动态拆分和调度，适合开放或复杂目标。
 5. 输入需求，并在会话详情中查看输出、交互请求、附件、产物和运行状态。
 
+> [!IMPORTANT]
+> 项目目前尚未取得 Apple Developer Program 开发者帐号，因此 macOS Release 尚未使用 Developer ID 签名和 Apple 公证。安装方式与 Gatekeeper 排错请参考 [macOS 安装与排错指南](docs/guide/macos-install.zh-CN.md)。
+
 ## 运行模式
 
 ### DIRECT

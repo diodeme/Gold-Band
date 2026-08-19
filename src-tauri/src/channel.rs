@@ -40,14 +40,6 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         silent_update_enabled: option_env!("GOLD_BAND_SILENT_UPDATE_ENABLED") == Some("true"),
         builtin_mcp_servers_json: option_env!("GOLD_BAND_BUILTIN_MCP_SERVERS").unwrap_or("[]"),
     };
-    eprintln!(
-        "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} base_url={} apikey_set={}",
-        config.channel,
-        config.metrics_enabled,
-        config.metrics_toggle_locked,
-        config.metrics_base_url,
-        !config.metrics_api_key.is_empty(),
-    );
     config
 }
 

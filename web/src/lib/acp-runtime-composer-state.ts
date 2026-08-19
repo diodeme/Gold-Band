@@ -42,6 +42,7 @@ export interface AcpRuntimeComposerStateInput {
   runtimeErrorMessage?: string | null;
   acpStatus?: string | null;
   prompt: string;
+  hasAttachments?: boolean;
   waitingForPermission: boolean;
   sending: boolean;
   awaitingResponse: boolean;
@@ -156,7 +157,7 @@ export function deriveAcpRuntimeComposerState(
       ? directInputDisabled
       : composerLocked || backendInputLocked || activePromptLocked || mode === 'invalid-workflow' || mode === 'runtime-error'
   );
-  const canSubmit = Boolean(input.prompt.trim())
+  const canSubmit = (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments))
     && submitTarget !== 'none'
     && !queueAtCapacity
     && !(input.sending && submitTarget !== 'queue-prompt')
@@ -239,6 +240,10 @@ export function shouldSettleRuntimeContinueSubmission(
   return submitting && !showRuntimeContinueAction;
 }
 
+export function isAcceptedQueuePromptSubmitKind(kind: string) {
+  return kind === 'queued' || kind === 'acp-session';
+}
+
 function shouldRouteDirectSubmissionToQueue(input: {
   input: AcpRuntimeComposerStateInput;
   mode: AcpComposerMode;
@@ -265,12 +270,48 @@ export function mergeConversationAttemptLifecycle(
   local: ConversationAttemptLifecycleVm | null | undefined,
   incoming: ConversationAttemptLifecycleVm,
 ): ConversationAttemptLifecycleVm {
+  const localAcpRevision = local?.acp.revision ?? 0;
+  const incomingAcpRevision = incoming.acp.revision ?? 0;
+  let acp = incoming.acp;
+  let acpFromLocal = false;
+  if (local && localAcpRevision > incomingAcpRevision) {
+    acp = local.acp;
+    acpFromLocal = true;
+  } else if (
+    local &&
+    localAcpRevision === incomingAcpRevision &&
+    local.acp.turnId === incoming.acp.turnId &&
+    isTerminalAcpFacet(local.acp) &&
+    !isTerminalAcpFacet(incoming.acp)
+  ) {
+    acp = local.acp;
+    acpFromLocal = true;
+  }
+
+  const localRuntimeRevision = local?.runtime.revision ?? 0;
+  const incomingRuntimeRevision = incoming.runtime.revision ?? 0;
+  const runtime = local && localRuntimeRevision > incomingRuntimeRevision
+    ? local.runtime
+    : incoming.runtime;
   const localQueue = local?.promptQueue;
   const incomingQueue = incoming.promptQueue;
+  const promptQueue = localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)
+    ? localQueue
+    : incomingQueue;
+  if (local && acpFromLocal && localRuntimeRevision >= incomingRuntimeRevision) {
+    return { ...local, promptQueue };
+  }
+  if (acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
+    return { ...incoming, acp, runtime, promptQueue };
+  }
   if (localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)) {
     return { ...incoming, promptQueue: localQueue };
   }
   return incoming;
+}
+
+function isTerminalAcpFacet(acp: ConversationAttemptLifecycleVm['acp']) {
+  return acp.liveTurnActivity === 'idle' && acp.latestTurnStatus !== 'none' && !acp.stopping;
 }
 
 export function isSessionActiveStatus(status?: string | null) {
@@ -361,7 +402,16 @@ function processingKindForInput(
   if (backendProcessingKind === 'preparing-workspace') return 'preparing-workspace';
   if (backendProcessingKind === 'launching-next-node') return 'launching-next-node';
   if (awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
-  if (!input.hasTimelineItems) return input.hasEffectiveEvents ? 'processing' : 'launching';
+  if (!input.hasTimelineItems) {
+    if (input.hasEffectiveEvents) return 'processing';
+    const lifecycleLaunching = Boolean(
+      input.initialTimelinePending
+      || input.lifecycle?.runtime.active
+      || (input.lifecycle?.acp.liveTurnActivity ?? 'idle') !== 'idle'
+      || input.lifecycle?.acp.stopping,
+    );
+    return lifecycleLaunching ? 'launching' : backendProcessingKind;
+  }
   if (backendProcessingKind !== 'processing') return backendProcessingKind;
   return input.timelineProcessingKind;
 }

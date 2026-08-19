@@ -5,11 +5,13 @@ mod builtin_mcp;
 mod channel;
 mod commands;
 mod commands_conversation;
+mod conversation_attention;
 mod conversation_workspace;
 mod desktop_lifecycle;
 mod feedback;
 mod git_state_monitor;
 mod i18n;
+mod image_actions;
 mod metrics;
 mod notifications;
 mod personal_analytics;
@@ -35,40 +37,39 @@ use commands::{
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
     download_and_install_update, execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames,
     get_acp_session, get_acp_tool_detail, get_agent_binding_usage, get_agent_command_catalog,
-    get_agent_registry,
-    get_app_bootstrap, get_auto_templates, get_file_comparison, get_git_capability,
-    get_git_commit_detail, get_git_commit_reachability, get_git_commit_review, get_git_comparison,
-    get_git_history, get_git_operation, get_github_capability, get_github_issue,
-    get_github_operation, get_github_pull_request, get_log_page, get_metrics_settings, get_profile,
-    get_profiles, get_round_detail, get_run_detail, get_skill_sync_status,
-    get_source_control_snapshot, get_system_fonts, get_task_detail, get_task_list,
-    get_turn_file_change_set, get_update_status, get_workflow, get_workflow_templates,
-    import_desktop_wallpaper, import_profiles_from_folder, initialize_git_repository,
-    list_conversation_directory, list_github_issues, list_github_pull_requests, list_mcp_servers,
-    list_mcp_tools, list_project_skills, list_skills, mark_settings_advanced_update_seen,
-    mark_settings_update_seen, open_conversation_directory_path_in_file_manager,
-    open_in_file_manager, pause_run, preflight_github_pull_request,
-    read_conversation_directory_file, read_skill, recover_conversation_runtime,
-    remove_recent_workspace, renew_acp_session_lease, reorder_conversation_queued_prompts,
-    replace_auto_templates, respond_acp_permission, respond_elicitation,
-    restore_conversation_queued_prompt, restore_theme_desktop_wallpaper, retry_run,
-    save_auto_template, save_desktop_avatar, save_desktop_avatar_shape, save_desktop_preferences,
-    save_desktop_wallpaper_opacity, save_metrics_settings, save_task_workflow,
-    save_updater_settings, save_workflow_template, search_acp_prompts, search_acp_sessions,
-    search_tasks, select_recent_desktop_avatar, select_recent_desktop_wallpaper,
-    select_recent_workspace, send_acp_prompt, set_acp_session_config_option, set_acp_session_model,
-    set_acp_session_permission_mode, show_artifact, show_attachment, show_worker_ref,
-    start_git_operation, start_git_state_monitor, start_github_login,
-    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
-    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
-    update_auto_template, update_conversation_queued_prompt, update_mcp_server,
-    update_notification_attention, update_profile,
-    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
-    write_skill,
+    get_agent_registry, get_app_bootstrap, get_auto_templates, get_file_comparison,
+    get_git_capability, get_git_commit_detail, get_git_commit_reachability, get_git_commit_review,
+    get_git_comparison, get_git_history, get_git_operation, get_github_capability,
+    get_github_issue, get_github_operation, get_github_pull_request, get_log_page,
+    get_metrics_settings, get_profile, get_profiles, get_round_detail, get_run_detail,
+    get_skill_sync_status, get_source_control_snapshot, get_system_fonts, get_task_detail,
+    get_task_list, get_turn_file_change_set, get_update_status, get_workflow,
+    get_workflow_templates, import_desktop_wallpaper, import_profiles_from_folder,
+    initialize_git_repository, list_conversation_directory, list_github_issues,
+    list_github_pull_requests, list_mcp_servers, list_mcp_tools, list_project_skills, list_skills,
+    mark_settings_advanced_update_seen, mark_settings_update_seen,
+    open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
+    preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
+    recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
+    reorder_conversation_queued_prompts, replace_auto_templates, respond_acp_permission,
+    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
+    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
+    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
+    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
+    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    select_recent_desktop_wallpaper, select_recent_workspace, send_acp_prompt,
+    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
+    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
+    start_github_login, start_github_pull_request_create, start_run, stop_active_session,
+    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
+    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
+    update_profile, update_skill_sync_targets, update_workflow_template,
+    use_conversation_queued_prompt, write_skill,
 };
 use commands_conversation::{
-    add_conversation_workspace, choose_conversation_workspace, create_conversation_run,
-    create_scheduled_task, delete_conversation_task, delete_scheduled_task, get_conversation_run,
+    acknowledge_conversation_terminal_result, add_conversation_workspace,
+    choose_conversation_workspace, create_conversation_run, create_scheduled_task,
+    delete_conversation_task, delete_scheduled_task, get_conversation_run,
     get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
@@ -83,7 +84,8 @@ use commands_conversation::{
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
 use gold_band::storage::{GoldBandPaths, configure_storage_paths};
-use metrics::start_heartbeat_polling;
+// Heartbeat signals are projected by the RuntimeLifecycleBus metrics subscriber.
+use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
@@ -141,6 +143,16 @@ fn run() -> anyhow::Result<()> {
         window.hidden_title = true;
     }
     let builder = tauri::Builder::default()
+        // Keep this first: a secondary process must exit before setup can read recovery
+        // candidates or start the scheduler for the user-level core state database.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Err(error) = desktop_lifecycle::ensure_main_window(app) {
+                warn!(
+                    ?error,
+                    "failed to restore the primary window for a second launch"
+                );
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -193,33 +205,75 @@ fn run() -> anyhow::Result<()> {
             state.install_scheduled_service(std::sync::Arc::new(
                 scheduled_service::ScheduledTaskService::desktop(app.handle().clone()),
             ))?;
-            scheduled_runtime::start(app.handle().clone())?;
             if let Ok(runtime_app) = state.app() {
                 commands::register_lifecycle_subscribers(&runtime_app, app.handle());
             }
-            match state.recover_interrupted_conversation_workspaces() {
-                Ok(report) => {
-                    info!(
-                        workspace_count = report.workspace_count,
-                        recovered_run_count = report.recovered_run_count,
-                        skipped_workspace_count = report.skipped_workspace_count,
-                        failure_count = report.failures.len(),
-                        "conversation workspace startup recovery completed"
-                    );
-                    for failure in report.failures {
-                        warn!(
-                            workspace_path = %failure.workspace_path,
-                            error_code = failure.code,
-                            error = %failure.message,
-                            "conversation workspace startup recovery failed"
+            let recovery_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let blocking_handle = recovery_handle.clone();
+                let recovery = tauri::async_runtime::spawn_blocking(move || {
+                    blocking_handle
+                        .state::<DesktopState>()
+                        .recover_interrupted_conversation_workspaces()
+                })
+                .await;
+                match recovery {
+                    Ok(Ok(report)) => {
+                        let blocked_project_ids = report
+                            .blocked_project_ids
+                            .iter()
+                            .cloned()
+                            .collect::<std::collections::HashSet<_>>();
+                        let state = recovery_handle.state::<DesktopState>();
+                        if let Err(error) = state
+                            .runtime_recovery()
+                            .complete_startup_recovery(blocked_project_ids.clone())
+                        {
+                            warn!(
+                                error = %error,
+                                "runtime recovery startup gate could not be completed"
+                            );
+                            return;
+                        }
+                        for recovered in &report.recovered_runs {
+                            commands::emit_recovered_conversation_run_state(
+                                &recovery_handle,
+                                recovered,
+                            );
+                        }
+                        if let Err(error) =
+                            scheduled_runtime::start(recovery_handle.clone(), &blocked_project_ids)
+                        {
+                            warn!(error = %error, "scheduled task scheduler failed to start");
+                        }
+                        info!(
+                            workspace_count = report.workspace_count,
+                            candidate_count = report.candidate_count,
+                            recovered_run_count = report.recovered_run_count,
+                            consumed_candidate_count = report.consumed_candidate_count,
+                            blocked_workspace_count = report.blocked_project_ids.len(),
+                            failure_count = report.failures.len(),
+                            "conversation workspace startup recovery completed"
                         );
+                        for failure in report.failures {
+                            warn!(
+                                workspace_path = %failure.workspace_path,
+                                error_code = failure.code,
+                                error = %failure.message,
+                                "conversation workspace startup recovery failed"
+                            );
+                        }
                     }
+                    Ok(Err(error)) => warn!(
+                        error = %error,
+                        "failed to read runtime recovery candidates"
+                    ),
+                    Err(error) => warn!(
+                        error = %error,
+                        "runtime recovery blocking task failed"
+                    ),
                 }
-                Err(error) => warn!(
-                    error = %error,
-                    "failed to load conversation workspaces for startup recovery"
-                ),
-            }
+            });
             // Initialize SQLite search index (best-effort; failures are non-fatal).
             // On first run (empty DB), a background thread backfills existing tasks/sessions.
             if let Ok(ctx) = state.context() {
@@ -261,7 +315,7 @@ fn run() -> anyhow::Result<()> {
             });
             retry_pending_startup_install(&app.handle().clone());
             start_update_polling(app.handle().clone());
-            start_heartbeat_polling(app.handle().clone());
+            let _ = app.state::<DesktopState>().reevaluate_heartbeat_config();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -269,6 +323,9 @@ fn run() -> anyhow::Result<()> {
             desktop_lifecycle::complete_main_window_close,
             desktop_lifecycle::resolve_app_exit,
             notifications::take_pending_intervention_navigations,
+            copy_image_to_clipboard,
+            save_image_as,
+            acknowledge_conversation_terminal_result,
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
@@ -317,7 +374,6 @@ fn run() -> anyhow::Result<()> {
             get_acp_tool_detail,
             renew_acp_session_lease,
             submit_conversation_prompt,
-            update_conversation_queued_prompt,
             reorder_conversation_queued_prompts,
             restore_conversation_queued_prompt,
             delete_conversation_queued_prompt,
@@ -379,6 +435,7 @@ fn run() -> anyhow::Result<()> {
             update_notification_attention,
             send_scheduled_native_notification,
             save_metrics_settings,
+            record_activity,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,

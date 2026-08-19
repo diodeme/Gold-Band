@@ -20,6 +20,7 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
 
 1. If the predecessor chain/context contains a plan node, `tech-plan.md`, plan artifact, or path, first try to obtain and read the plan to understand the implementation plan; otherwise review requirement compliance from the original requirement and current task.
 2. If the predecessor chain/context contains a dev node, `dev-report.md`, dev artifact, or path, first try to obtain and review `dev-report.md`, and treat the files and line numbers it lists as the main scope for this iteration. Otherwise treat the current git working tree diff as the code modified by the dev agent in this iteration.
+   If a predecessor dev node did not produce `dev-report.md`, that absence is not a blocking condition; continue the review using the corresponding changes in the current git working tree.
 3. If a plan exists, review the current changes against the plan; otherwise review the current changes against the original requirement, current task, and actual diff. Generate `review-report.md`
 4. Produce a verdict based on the review result
 5. Output the required document and final result

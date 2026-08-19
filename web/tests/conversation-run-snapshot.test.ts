@@ -82,8 +82,6 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
     projectId: 'default',
     taskId: 'task-001',
     runId: 'run-001',
-    title: 'Task',
-    autoTitle: true,
     runMode: 'workflow',
     workflowTemplateId: null,
     runStatus: 'running',

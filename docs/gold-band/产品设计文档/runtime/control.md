@@ -18,7 +18,7 @@ provider/auth/quota/rate-limit/model/catalog/transport/IO 等异常必须先归�
 
 `output_contract` 统一表示 runtime 控制产物，不拆分业务产物与控制产物；它额外声明控制产物在本次执行中的发射模式：
 
-- `PostTurnProjection`：用于普通 workflow worker，以及 AI-DYNAMIC 中实际执行工作或验收的 worker / workflow invocation / acceptance。provider 首先以 `Conversation` 策略完成可见业务 turn；该 turn 的 system prompt 只说明 runtime 会后置归一化，不包含 artifact 名称、schema 或输出协议。业务 turn 正常结束后，runtime 读取同一 attempt 的 durable worker ref，以 `session=continue` 发起隐藏 `RuntimeFinalize` turn，只允许 agent 根据已完成的会话内容生成 canonical artifact，不得继续执行任务或调用工具。只有该隐藏 turn 使用 `ArtifactContract` 策略并提取控制产物。
+- `PostTurnProjection`：用于普通 workflow worker，以及 AI-DYNAMIC 中实际执行工作或验收的 worker / workflow invocation / acceptance。provider 首先完成可见业务 turn；该 turn 的 system prompt 只说明 runtime 会后置归一化，不包含 artifact 名称、schema 或输出协议。业务 turn 正常结束后，runtime 读取同一 attempt 的 durable worker ref，以 `session=continue` 发起隐藏 `RuntimeFinalize` turn，只允许 agent 根据已完成的会话内容生成 canonical artifact，不得继续执行任务或调用工具。Runtime 在该隐藏 turn 维护最近最多 3 条 Agent message：最后一条有稳定 ID 时按倒序提取第一个可解析 JSON 并交给 schema validator；全 turn 都无稳定 ID 时只校验最后一条；出现过稳定 ID、但最后一条无 ID 时以 `provider.acp-terminal-message-unidentified + Manual recovery` 直接暂停为 `RuntimeAbnormal`，不回扫、不发 repair。任一 RuntimeControlled 业务、finalize 或 repair turn 一旦收到结构化 terminal failure 或 `session/prompt` JSON-RPC error，必须优先于 `end_turn`、文本和 artifact 候选结算为 `Manual` 运行异常；业务 turn 不写入 `finalizing` checkpoint，finalize/repair turn 不再发送后续 repair。
 - `InlineControl`：用于职责本身就是控制分发的节点。当前 AI-DYNAMIC bootstrap dispatcher 使用此模式，在首个 turn 直接获得完整 `dynamic-node-completion` 协议并输出控制 artifact。
 
 AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是 AI-DYNAMIC”或某个 node id 的单一特判：bootstrap 必须同时满足根层级、无 group、无前序、bootstrap chain 与 worker 控制角色；其余声明 completion contract 的动态节点统一后置投影。Direct 使用 `RawAgent` envelope，不注入 output contract，也不进入上述两阶段流程。
@@ -57,7 +57,7 @@ Workflow/AUTO 的中英文基础 runtime system prompt 预先说明：用户主�
 通用“继续工作流”动作只允许恢复 `Paused + ProcessInterrupted` 与 `Paused + RuntimeAbnormal`。`WaitingForUserInput`、`PermissionRequested` 和 `ErrorBlocked` 都是结构化干预态，不能通过通用 continue 绕过：manual check 等待期间仍是 `NonRuntimeControlled`，只由成功/失败判定按钮提交 `NodeOutcome`；permission 与 elicitation 只接受各自响应接口；`ErrorBlocked` 必须先修复阻断原因。固定 workflow 与 AI-DYNAMIC leaf 共同调用 `PauseReason::allows_explicit_runtime_continue`，不得各自维护条件表。
 
 continue command 只有在目标 run/round/node（或 dynamic leaf）的 `Running` 事实已经持久化后才能返回 `runtime-continue-started`。后台执行使用一次性启动握手，不增加轮询；启动前校验或初始化失败同步返回结构化 `runtime.continue-launch-failed`，前端不得建立 optimistic Running。握手后发生的意外失败只在原 attempt 仍为当前 active 状态时收敛为 `Paused + RuntimeAbnormal`，并立即发布权威 session/lifecycle 刷新；若用户已停止、目标已完成或 current attempt 已变化，迟到失败不得覆盖新事实。AI-DYNAMIC 在启动失败时还必须清理 starting/pending resume 窗口并回收 re-arm 后的 `Ready | Running` leaf，不能留下没有执行线程的 active 状态。
-- finalize 输出不合法：repair 继续复用同一 session，只修复控制产物；`invalidOutputRepair` 与 `artifactFinalize` 在 timeline 中使用不同 hidden reason。
+- finalize 输出不合法：repair 继续复用同一 session，只修复控制产物；`invalidOutputRepair` 与 `artifactFinalize` 在 timeline 中使用不同 hidden reason。同一 drive 最多自动发送三次 repair；仍不合法时将当前 node、round、run 收敛为非终态 `Paused + RuntimeAbnormal`，清除已结束的 active runtime execution ID，保留 current attempt 与 ACP continue reference。composer 投影为普通可输入的 `continue-current-attempt + acp-prompt`，用户补充修复指令后继续当前 attempt。
 - emission state 损坏或版本不支持：按 runtime 状态错误阻断，不能静默忽略后重新执行业务 turn。
 
 ## 3. 控制决策
@@ -66,12 +66,24 @@ continue command 只有在目标 run/round/node（或 dynamic leaf）的 `Runnin
 
 Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立领域：
 
-- `run.json.execution` 是 Workflow/AUTO 执行阶段的唯一权威源，包含单调 `revision`、精确 attempt locator 与 `StartingNode / RunningNode / FinalizingArtifact / RepairingArtifact / AwaitingManualCheck / Transitioning / LaunchingNextNode / PreparingWorkspace / Paused / Terminal`。
+- `run.json.execution` 是 Workflow/AUTO 外层执行聚合阶段的唯一权威源，包含单调 `revision`、外层 attempt locator 与 `StartingNode / RunningNode / FinalizingArtifact / RepairingArtifact / AwaitingManualCheck / Transitioning / LaunchingNextNode / PreparingWorkspace / Paused / Terminal`。普通 workflow attempt 直接使用该阶段；AI-DYNAMIC 的并行 leaf 另由各自 `DynamicNodeState.runtimeExecution*` 管理，不能把任一 leaf 的阶段写回父聚合。
 - `RuntimeControlled / NonRuntimeControlled` 只决定当前 turn 是否交由 Runtime 消费。
 - 当前进程 prompt registry 只决定 Agent 是否正在 `Starting / Accepted / Running / CancelRequested`；客户端重启后 registry 为空，磁盘 session status 不能重建 live turn。
 - ACP session metadata 只决定 session 可用性与最近一轮历史结果；`completed/cancelled/failed` 不代表节点完成，也不代表 Runtime 正在跳转。
 
+ACP session lifecycle 自身使用 attempt 级单调 `acpRevision`，与 `run.json.execution.revision` 和 prompt queue revision 分离。一次停止至少产生两个不同 revision：accepted 提交 `stopping / cancel-requested`，terminal 提交 `idle / cancelled`。后端 terminal 更新只发布 locator、branch、operation、turn identity、availability、activity、status 与 stop reason 等轻量 patch，不为状态通知读取会话正文；前端按 facet revision 合并，同 revision 下 terminal 优先，旧 accepted、旧 snapshot 或旧 live event 不能覆盖终态。AUTO 并行 sibling 各自按完整 leaf locator 和自己的 ACP revision 收敛，父 runtime revision 不替代 leaf lifecycle。
+
+停止控制面与 timeline 数据面严格分离：stop accepted 不等待 timeline index 迁移、checkpoint、session VM 或 diagnostics；provider cancel notification、response、route watermark 与 quiet drain 共用从 runtime 首次观察取消开始的 10 秒 deadline。retry backoff、permission、elicitation 和无 active provider 的停止收尾按 snapshot/signal 中的 canonical timeline identity 做 index locator + revision/status CAS，重复停止幂等。deadline 到期只表示 provider route 未在边界内收敛，仍必须提交 terminal lifecycle 并隔离不可安全复用的 session，不能继续永久保持 stopping。
+
 Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回调把权威 execution phase 从 `StartingNode` 推进为 `RunningNode`；provider 返回 success 不能补做或绕过该转换，后续 finalize、manual check 与 edge transition 只接受已进入 `RunningNode` 的 attempt。
+
+AI-DYNAMIC 的状态归属必须按聚合边界拆分：
+
+- 父 `Run.status` 与 `run.json.execution` 只描述外层 AI-DYNAMIC attempt；父 locator 始终是 `roundId + outerNodeId + outerAttemptId`。
+- `DynamicRunState` 描述 graph 调度聚合；workspace checkpoint / fork / release 可以把父 execution 暂时推进到 `PreparingWorkspace`，结束后恢复外层 `RunningNode`。
+- 每个 `DynamicNodeState` 持有自己的 `runtimeExecutionId / runtimeExecutionPhase / runtimeExecutionRevision / runtimeExecutionUpdatedAt`。leaf 的 prompt accepted、finalize、repair、pause 和 terminal 只更新该 leaf，并用 `nodeId + attemptId + runtimeExecutionId` 做 generation CAS。
+- Conversation 选中 dynamic leaf 时，从该 `DynamicNodeState` 投影 leaf lifecycle；尚未创建 active execution 的 `Ready` leaf 由明确的 read-model 规则投影为 `StartingNode`。父 Run 已暂停时，非终态 leaf 服从父 `Paused` 聚合；workspace 临界区服从父 `PreparingWorkspace` 聚合；leaf 已完成但 graph 尚在消费 proposal，或 leaf pause 已落盘但 graph active 集合尚未收敛的提交窗口，服从父 graph 聚合。页面选择不参与后端 identity，也不能改变父 execution。
+- 停止一个 leaf 后若仍有 `Ready | Running` sibling，`DynamicRunState` 与父 Run 保持 Running；最后一个 active leaf 停止时，才把 graph、父 Node/Round/Run 聚合为 Paused。旧 execution 的迟到回调必须被忽略或拒绝。
 
 `LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。
 
@@ -81,7 +93,7 @@ Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回
 | --- | --- |
 | `success` | 查找 `on=success` edge；无 edge 则等价于隐式 `success -> $end`，run success |
 | `failure` | 查找 `on=failure` edge；无 edge 则等价于隐式 `failure -> $end`，run failure |
-| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则在同 attempt 的 artifact finalize 会话中隐藏追问修复，最多 3 次；修复耗尽后 run failure |
+| `invalid` | 不查找 edge；若来自 `output.schema` 不合法则在同 attempt 的 artifact finalize 会话中隐藏追问修复，最多 3 次；修复耗尽后进入 `Paused + RuntimeAbnormal` |
 | `killed` | run 完成 killed |
 | `None` | run 暂停，保留当前节点与 attempt |
 
@@ -165,7 +177,7 @@ ACP 会话传输与 Runtime 控制权转换必须正交建模。`SessionMode` �
 
 runtime 写入 `Paused + ProcessInterrupted` 后，自动重试控制器必须在错误分类前、backoff 期间、runtime 重建前和再次发送 prompt 前重新读取当前 attempt 事实；只要 attempt 已停止，就不得写入新的 `runtime_auto_retry` 或再次调用 provider。停止后的 provider 输出不再进入当前 turn；晚到 provider/transport 错误只进入取消收尾诊断，不能覆盖用户停止终态，也不能重新触发自动重试。
 
-`provider.server-unavailable` 等 `RecoveryMode::Auto` 错误使用共享的 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
+只有尚未形成 provider terminal verdict 的 transport interruption、临时本地资源等 `RecoveryMode::Auto` 错误使用共享 `RetryPolicy`，默认在初次调用后最多自动重试 3 次。明确的 `session/prompt` JSON-RPC error、`willRetry=false` 或 `threadStatus=systemError` 已经终结当前业务 turn，统一映射为 `RecoveryMode::Manual`，不得进入自动重试；否则重放业务 prompt 可能重复部分副作用。AI-DYNAMIC 自动重试必须保持原 attempt、logical prompt 与 session mode，不生成 proposal repair prompt；预算耗尽后才收敛为 `Paused + RuntimeAbnormal`。运行时自动恢复与输出协议 repair 是两套独立状态机，调用次数和验收必须从共享 retry policy 推导，不能在测试或实现中另行硬编码。
 
 `session/cancel` 后仍需有界等待原 `session/prompt` terminal。若 deadline 到期，记录结构化 `acp.cancel-drain-timeout`，用户可见 attempt 仍保持 `Paused + ProcessInterrupted`，ACP turn 结算为 cancelled；该未收尾 session 必须从 attempt route、attached runtime registry 和 worker continue ref 中移除，后续继续使用新 session。adapter process 仍按 `provider_id + workspace_root` 复用，不因单个 session 收尾超时被 kill，也不得影响同 process 上的其他 session。
 
@@ -188,8 +200,7 @@ AI-DYNAMIC 的 `DynamicRunState.phase` 统一管理 Graph + Git 一致性阶段�
 以下情况进入 `paused + error-blocked`：
 
 - workflow / DSL 无效或 workflow snapshot 与 runtime 状态不一致。
-- AI-DYNAMIC proposal repair 耗尽后仍不合法。
-- AI 输出验证声明了产物但产物缺失，且 repair 机制耗尽。
+- 输出修复所需的 session / continue identity 缺失，无法安全恢复当前 attempt。
 - dynamic 控制约束或 runtime invariant 被破坏，无法确定安全恢复点。
 
 `error-blocked` 表示当前 runtime 路径不可直接恢复；UI 可以展示错误详情和按错误类型派生的处理入口，但不能把它当成普通 runtime continue 输入。处理入口不等于继续，只有后端验证存在安全恢复点并生成明确恢复计划时，才允许恢复；否则只能重新运行、从节点重新开始或进入诊断流程。

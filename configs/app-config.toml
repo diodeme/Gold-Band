@@ -11,8 +11,16 @@ acpMaxIdleAdapterConnections = 4
 acpTimelineCompactMaxSizeBytes = 8388608
 acpTimelineCompactPatchRatio = 4
 conversationAutoTitleMaxChars = 18
+conversationInlineContentMaxBytes = 64000
+conversationInlineImageMaxBytes = 4194304
+conversationInlineImageMaxDimension = 2560
 notificationAutoDismissTargetSecs = 20
 requireLocalClaudeExecutable = false
+
+[projectIdentity]
+maxLength = 80
+hashHexLength = 8
+separator = "--"
 
 [workspaceLayout]
 shellMinWidth = 480

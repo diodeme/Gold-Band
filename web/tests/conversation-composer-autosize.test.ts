@@ -8,7 +8,8 @@ describe('conversation composer autosize contract', () => {
     expect(CONVERSATION_HOME_COMPOSER_LAYOUT).toMatchObject({
       contentMaxWidthClassName: 'max-w-3xl',
       opticalBottomPaddingClassName: 'pb-[clamp(4rem,8vh,5rem)]',
-      textareaMinHeightClassName: 'min-h-14',
+      promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm',
+      textareaClassName: 'min-h-12 py-2 text-sm leading-6 text-foreground placeholder:text-muted-foreground w-full overflow-y-hidden px-0',
       textareaMaxHeightPx: 320,
     });
   });
@@ -22,9 +23,4 @@ describe('conversation composer autosize contract', () => {
     expect(promptInputTextareaSize(480, 320)).toEqual({ height: '320px', overflowY: 'auto' });
   });
 
-  it('keeps a user-resized minimum while still growing with content', () => {
-    expect(promptInputTextareaSize(56, 320, 180)).toEqual({ height: '180px', overflowY: 'hidden' });
-    expect(promptInputTextareaSize(216, 320, 180)).toEqual({ height: '216px', overflowY: 'hidden' });
-    expect(promptInputTextareaSize(480, 320, 180)).toEqual({ height: '320px', overflowY: 'auto' });
-  });
 });

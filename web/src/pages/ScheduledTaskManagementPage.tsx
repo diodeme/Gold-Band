@@ -237,7 +237,7 @@ export function ScheduledTaskManagementPage({ projectId: _projectId, onCreate, o
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-foreground/10 text-foreground"><AlarmClock className="size-4" /></span>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{task.title || t('scheduled.unnamed')}</div>
-                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span></div>
+                    <div className="mt-1 truncate text-xs text-muted-foreground">{modeLabels[task.mode] ?? task.mode}{task.mode === 'direct' ? ` · ${t(`scheduled.session.${task.sessionPolicy}`)}` : ''}<span className="md:hidden"> · {formatScheduledSchedule(t, task.schedule)}</span> · {task.workspaceName}</div>
                   </div>
                 </div>
                 <div className="hidden min-w-0 text-xs md:block">

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveAcpRuntimeComposerState,
+  isAcceptedQueuePromptSubmitKind,
   mergeConversationAttemptLifecycle,
   shouldKeepLocalRuntimeLifecycleOverride,
   shouldSettleRuntimeContinueSubmission,
@@ -146,6 +147,20 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
 }
 
 describe('deriveAcpRuntimeComposerState', () => {
+  it('allows an attachment-only prompt while keeping a completely empty prompt disabled', () => {
+    const attachmentOnly = deriveAcpRuntimeComposerState(baseInput({
+      prompt: '',
+      hasAttachments: true,
+    }));
+    const empty = deriveAcpRuntimeComposerState(baseInput({
+      prompt: '',
+      hasAttachments: false,
+    }));
+
+    expect(attachmentOnly.canSubmit).toBe(true);
+    expect(empty.canSubmit).toBe(false);
+  });
+
   it('keeps a new-session composer locked while its first timeline item catches up', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       promptQueueEnabled: true,
@@ -161,6 +176,37 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.showStatus).toBe(true);
     expect(state.processingKind).toBe('launching');
     expect(state.placeholderKind).toBe('runtime-controlled');
+  });
+
+  it('restores a normal composer after an empty current Direct attempt settles as cancelled', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      promptQueueEnabled: true,
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'paused',
+          active: false,
+          current: true,
+          phase: 'paused',
+          pauseReason: 'process-interrupted',
+        },
+        acp: {
+          sessionAvailability: 'established',
+          liveTurnActivity: 'idle',
+          latestTurnStatus: 'cancelled',
+          stopping: false,
+        },
+      }),
+      acpStatus: 'cancelled',
+      hasTimelineItems: false,
+      hasEffectiveEvents: false,
+      initialTimelinePending: false,
+    }));
+
+    expect(state.mode).toBe('normal');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+    expect(state.showStatus).toBe(false);
+    expect(state.processingKind).toBe('processing');
   });
 
   it('keeps the Direct composer editable and queues submissions while a turn is active', () => {
@@ -428,7 +474,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
-  it('keeps runtime-abnormal stopped input as a non-runtime ACP prompt', () => {
+  it('keeps repair-exhausted runtime-abnormal input open for user-guided continue', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         runtime: {
@@ -942,6 +988,58 @@ describe('deriveAcpRuntimeComposerState', () => {
 });
 
 describe('mergeConversationAttemptLifecycle', () => {
+  it('rejects a late stopping facet after the same turn already became terminal', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+    const lateAccepted = lifecycle({
+      acp: {
+        revision: 41,
+        turnId: 'turn-1',
+        sessionAvailability: 'closing',
+        liveTurnActivity: 'cancel-requested',
+        latestTurnStatus: 'none',
+        stopping: true,
+      },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(terminal, lateAccepted);
+
+    expect(merged.acp).toBe(terminal.acp);
+    expect(merged.acp.latestTurnStatus).toBe('cancelled');
+    expect(merged.acp.stopping).toBe(false);
+    expect(merged.composer.mode).toBe('normal');
+  });
+
+  it('keeps terminal dominance when duplicate revisions arrive out of order', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+    const staleRunning = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+    });
+
+    expect(mergeConversationAttemptLifecycle(terminal, staleRunning).acp).toBe(terminal.acp);
+  });
+
   it('keeps a newer Direct queue when a stale lifecycle snapshot arrives after stop', () => {
     const local = lifecycle({
       promptQueue: {
@@ -991,6 +1089,18 @@ describe('shouldSettleRuntimeContinueSubmission', () => {
     expect(shouldSettleRuntimeContinueSubmission(true, true)).toBe(false);
     expect(shouldSettleRuntimeContinueSubmission(true, false)).toBe(true);
     expect(shouldSettleRuntimeContinueSubmission(false, false)).toBe(false);
+  });
+});
+
+describe('isAcceptedQueuePromptSubmitKind', () => {
+  it('accepts both a durable enqueue and an idle-boundary direct ACP send', () => {
+    expect(isAcceptedQueuePromptSubmitKind('queued')).toBe(true);
+    expect(isAcceptedQueuePromptSubmitKind('acp-session')).toBe(true);
+  });
+
+  it('keeps unrelated or rejected command outcomes on the failure path', () => {
+    expect(isAcceptedQueuePromptSubmitKind('rejected')).toBe(false);
+    expect(isAcceptedQueuePromptSubmitKind('runtime-continue-started')).toBe(false);
   });
 });
 

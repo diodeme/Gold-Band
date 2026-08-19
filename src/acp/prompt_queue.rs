@@ -6,7 +6,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::acp::events::load_timeline_items;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::storage::{read_json, write_json};
 
@@ -113,7 +112,7 @@ pub fn enqueue_prompt(
     attachment_paths: Vec<String>,
 ) -> Result<QueuedPrompt, PromptQueueError> {
     let input = input.into();
-    if input.display_text.trim().is_empty() {
+    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
         return Err(PromptQueueError::Empty);
     }
     with_typed_queue_lock(attempt_dir, || {
@@ -509,18 +508,7 @@ fn accepted_prompt_ids(attempt_dir: &Utf8Path) -> HashSet<String> {
     if !timeline_path.exists() {
         return HashSet::new();
     }
-    load_timeline_items(&timeline_path)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|event| {
-            event
-                .raw
-                .as_ref()
-                .and_then(|raw| raw.get("promptId"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .collect()
+    crate::acp::timeline::read_indexed_accepted_prompt_ids(&timeline_path).unwrap_or_default()
 }
 
 fn mark_dispatch_active(attempt_dir: &Utf8Path, item: &QueuedPrompt) -> Result<()> {
@@ -626,6 +614,28 @@ mod tests {
         assert_eq!(
             enqueue_prompt(&dir, "overflow".to_string(), Vec::new()),
             Err(PromptQueueError::Full)
+        );
+    }
+
+    #[test]
+    fn queue_accepts_attachment_only_payloads_and_rejects_a_fully_empty_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let queued = enqueue_prompt(
+            &dir,
+            ConversationPromptInput {
+                display_text: String::new(),
+                quotes: Vec::new(),
+            },
+            vec!["C:/temp/context.txt".to_string()],
+        )
+        .unwrap();
+
+        assert!(queued.content.is_empty());
+        assert_eq!(queued.attachment_paths, vec!["C:/temp/context.txt"]);
+        assert_eq!(
+            enqueue_prompt(&dir, String::new(), Vec::new()),
+            Err(PromptQueueError::Empty)
         );
     }
 

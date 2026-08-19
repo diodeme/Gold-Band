@@ -180,6 +180,7 @@ export function AcpConversationComposer({
           className={cn(
             'bg-card !shadow-none transition-colors',
             ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
+            ACP_SESSION_COMPOSER_LAYOUT.promptInputClassName,
             attachedPanelVisible ? 'rounded-t-none rounded-b-2xl' : 'rounded-2xl',
             integratedInfoTab && !attachedPanelVisible && 'rounded-tl-none',
           )}
@@ -225,8 +226,7 @@ export function AcpConversationComposer({
           ) : (
             <PromptInputTextarea
               ref={textareaRef}
-              className="min-h-12 text-sm leading-6 text-foreground placeholder:text-muted-foreground"
-              userResizable
+              className={ACP_SESSION_COMPOSER_LAYOUT.textareaClassName}
               valuePrefix={committedSlashCommand?.prefix}
               leadingAdornment={committedSlashCommand ? (
                 <SlashCommandInputTag

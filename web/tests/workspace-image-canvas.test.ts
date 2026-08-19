@@ -17,7 +17,8 @@ describe('WorkspaceImageCanvas interaction contract', () => {
     expect(source).toContain('maxScale={MAX_IMAGE_SCALE}');
     expect(source).toContain('wheel={{ disabled: true }}');
     expect(source).toContain('trackPadPanning={{ disabled: true }}');
-    expect(source).toContain('panning={{ allowLeftClickPan: true');
+    expect(source).toContain('allowLeftClickPan: true');
+    expect(source).toContain('allowRightClickPan: false');
     expect(source).toContain('pinch={{ disabled: false }}');
     expect(source).toContain("addEventListener('wheel', handleCtrlWheelZoom, { passive: false })");
     expect(source).toContain("removeEventListener('wheel', handleCtrlWheelZoom)");

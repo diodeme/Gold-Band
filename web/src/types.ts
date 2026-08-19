@@ -152,6 +152,9 @@ export interface AppBootstrapVm {
 export interface AppConfigVm {
   acpSessionTitleRefreshEnabled: boolean;
   acpChatEventPageSize: number;
+  conversationInlineContentMaxBytes: number;
+  conversationInlineImageMaxBytes: number;
+  conversationInlineImageMaxDimension: number;
   turnFiles: TurnFilesVm;
   workspaceLayout: WorkspaceLayoutVm;
   workspaceFiles: WorkspaceFilesVm;
@@ -412,7 +415,7 @@ export interface AcpCommandItemVm {
 
 export interface AcpCommandCatalogVm {
   agentType: string;
-  workspaceKey: string;
+  projectId: string;
   commands: AcpCommandItemVm[];
   updatedAt: string;
 }
@@ -1597,6 +1600,7 @@ export interface AcpSessionVm {
   adapterId?: string | null;
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
+  worktreePath?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -2188,6 +2192,7 @@ export interface ConversationTaskRowVm {
   agentIdentity?: ConversationAgentIdentityVm | null;
   lastActivityAt?: string | null;
   activity?: ConversationTaskActivityVm | null;
+  unreadTerminalResult?: ConversationTerminalResultVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
   pinned: boolean;
@@ -2244,6 +2249,18 @@ export interface ConversationTaskActivityVm {
   stopping: boolean;
 }
 
+export interface ConversationTerminalResultVm {
+  eventId: string;
+  runId: string;
+  kind: 'completed' | 'stopped' | 'failed';
+  occurredAt: string;
+}
+
+export interface ConversationTerminalResultAcknowledgementVm {
+  acknowledged: boolean;
+  unreadTerminalResult?: ConversationTerminalResultVm | null;
+}
+
 export interface ConversationRunSummaryVm {
   runId: string;
   status: string;
@@ -2285,10 +2302,15 @@ export interface ConversationControlFacetVm {
 }
 
 export interface ConversationAcpFacetVm {
+  revision?: number;
+  turnId?: string | null;
+  promptEventId?: string | null;
   sessionAvailability: 'established' | 'restorable' | 'unavailable' | 'closing';
   liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested';
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
+  stopReason?: string | null;
+  operationId?: string | null;
 }
 
 export interface ConversationComposerVm {
@@ -2407,8 +2429,6 @@ export interface ConversationRunVm {
   taskId: string;
   taskUuid?: string | null;
   runId: string;
-  title: string;
-  autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';
   workflowTemplateId?: string | null;
   directConfig?: ConversationDirectConfigVm | null;
@@ -2430,6 +2450,11 @@ export interface ConversationRunVm {
   runtimeErrorMessage?: string | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ConversationCreateResultVm {
+  task: ConversationTaskRowVm;
+  run: ConversationRunVm;
 }
 
 export interface ConversationQueuedPromptDraftVm {

@@ -13,6 +13,7 @@
 ## 2. 稳定身份与完整作用域
 
 - 实体关联必须使用稳定 ID，禁止使用名称、显示文本、数组位置、当前选中项或模糊路径反查。
+- `project_id` 是 Gold Band workspace 的唯一业务身份标识符；跨层关联、路由、持久化主键、缓存、事件和去重作用域必须使用 `project_id`。`workspace_path` 只表示当前位置，`name` 只用于展示，规范化路径只用于生成、比较和归属校验；不得再引入 `workspace_key` 或其他平行业务身份。修改 workspace 展示名称不得改变既有 `project_id`。
 - 标识必须覆盖完整作用域；会话、通知、缓存、路由和去重 key 至少包含其所属 workspace/project 及业务 locator。
 - Task、Run、Attempt、Session 和 Branch 等层级对象必须使用完整 locator，不得只传末级 ID 后依赖全局搜索。
 - Windows 路径大小写、分隔符、相对段和软链接必须先规范化，再参与相等判断、缓存 key 或资源身份生成。

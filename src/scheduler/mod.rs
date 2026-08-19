@@ -13,7 +13,6 @@ pub mod db;
 pub mod fingerprint;
 pub mod occurrence;
 pub mod queue;
-pub mod store;
 
 pub use fingerprint::{
     AutoAuthoringIdentity, ScheduledTaskContentInput, ScheduledTaskContentSnapshot,

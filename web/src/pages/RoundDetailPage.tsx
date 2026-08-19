@@ -532,6 +532,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           systemPromptOptions={systemPromptOptions}
           eventIdPrefix={selectedConversation ? attemptId : undefined}
           eventPageSize={appConfig.acpChatEventPageSize}
+          inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
           taskId={vm.run.taskId}
           runId={vm.run.id}

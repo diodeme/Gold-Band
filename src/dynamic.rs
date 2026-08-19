@@ -1,5 +1,6 @@
 use crate::domain::{NodeOutcome, PauseReason, RunOutcome, SessionMode, VERSION};
 use crate::dsl::{DynamicControlDsl, WorkflowDsl};
+use crate::runtime::{RuntimeExecutionPhase, runtime_execution_transition_allowed};
 use crate::runtime_error::RuntimeErrorInfo;
 use anyhow::{Result, ensure};
 use camino::Utf8PathBuf;
@@ -154,6 +155,14 @@ pub struct DynamicNodeState {
     /// It changes on every explicit continue and is cleared when the leaf pauses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_execution_id: Option<String>,
+    /// Canonical lifecycle phase for this leaf attempt. Parallel leaves update
+    /// only their own phase; the outer Run execution remains a graph aggregate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_phase: Option<RuntimeExecutionPhase>,
+    #[serde(default)]
+    pub runtime_execution_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_execution_updated_at: Option<String>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
@@ -175,6 +184,65 @@ pub struct DynamicNodeState {
     /// Hidden UUID used for metrics reporting (see docs/gold-band/observability-bus-design.md).
     #[serde(default)]
     pub uuid: Option<String>,
+}
+
+impl DynamicNodeState {
+    pub fn begin_runtime_execution(
+        &mut self,
+        execution_id: impl Into<String>,
+        updated_at: impl Into<String>,
+    ) {
+        self.runtime_execution_id = Some(execution_id.into());
+        self.runtime_execution_phase = Some(RuntimeExecutionPhase::StartingNode);
+        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
+        self.runtime_execution_updated_at = Some(updated_at.into());
+    }
+
+    pub fn transition_runtime_execution(
+        &mut self,
+        expected_execution_id: &str,
+        requested_phase: RuntimeExecutionPhase,
+        updated_at: impl Into<String>,
+    ) -> Result<bool> {
+        if self.runtime_execution_id.as_deref() != Some(expected_execution_id) {
+            return Ok(false);
+        }
+        let current_phase = self
+            .runtime_execution_phase
+            .unwrap_or(RuntimeExecutionPhase::StartingNode);
+        let phase = if requested_phase == RuntimeExecutionPhase::RunningNode
+            && matches!(
+                current_phase,
+                RuntimeExecutionPhase::FinalizingArtifact
+                    | RuntimeExecutionPhase::RepairingArtifact
+            ) {
+            current_phase
+        } else {
+            requested_phase
+        };
+        ensure!(
+            runtime_execution_transition_allowed(current_phase, phase),
+            "dynamic leaf runtime execution cannot transition from {current_phase:?} to {phase:?}"
+        );
+        self.runtime_execution_phase = Some(phase);
+        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
+        self.runtime_execution_updated_at = Some(updated_at.into());
+        Ok(true)
+    }
+
+    pub fn pause_runtime_execution(&mut self, updated_at: impl Into<String>) {
+        self.runtime_execution_id = None;
+        self.runtime_execution_phase = Some(RuntimeExecutionPhase::Paused);
+        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
+        self.runtime_execution_updated_at = Some(updated_at.into());
+    }
+
+    pub fn complete_runtime_execution(&mut self, updated_at: impl Into<String>) {
+        self.runtime_execution_id = None;
+        self.runtime_execution_phase = Some(RuntimeExecutionPhase::Terminal);
+        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
+        self.runtime_execution_updated_at = Some(updated_at.into());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -750,6 +818,26 @@ pub fn validate_dynamic_node_state(state: &DynamicNodeState) -> Result<()> {
     ensure!(
         state.runtime_error.is_none() || state.pause_reason.is_some(),
         "dynamic node runtimeError requires pauseReason"
+    );
+    ensure!(
+        state.runtime_execution_id.is_none()
+            || matches!(
+                state.runtime_execution_phase,
+                Some(
+                    RuntimeExecutionPhase::StartingNode
+                        | RuntimeExecutionPhase::RunningNode
+                        | RuntimeExecutionPhase::FinalizingArtifact
+                        | RuntimeExecutionPhase::RepairingArtifact
+                )
+            ),
+        "active dynamic leaf execution requires an active phase"
+    );
+    ensure!(
+        !matches!(
+            state.runtime_execution_phase,
+            Some(RuntimeExecutionPhase::Paused | RuntimeExecutionPhase::Terminal)
+        ) || state.runtime_execution_id.is_none(),
+        "inactive dynamic leaf execution phase cannot retain an execution id"
     );
     Ok(())
 }

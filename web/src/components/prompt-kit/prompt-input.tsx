@@ -13,7 +13,6 @@ import React, {
   useCallback,
   createContext,
   useContext,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -46,18 +45,16 @@ function usePromptInput() {
 export function promptInputTextareaSize(
   scrollHeight: number,
   maxHeight: number | string,
-  userMinHeight = 0,
 ): { height: string; overflowY: "auto" | "hidden" } {
-  const requestedHeight = Math.max(scrollHeight, userMinHeight)
   if (typeof maxHeight === "number") {
     return {
-      height: `${Math.min(requestedHeight, maxHeight)}px`,
+      height: `${Math.min(scrollHeight, maxHeight)}px`,
       overflowY: scrollHeight > maxHeight ? "auto" : "hidden",
     }
   }
 
   return {
-    height: `min(${requestedHeight}px, ${maxHeight})`,
+    height: `min(${scrollHeight}px, ${maxHeight})`,
     overflowY: "auto",
   }
 }
@@ -161,7 +158,6 @@ export type PromptInputTextareaProps = {
   valuePrefix?: string
   leadingAdornment?: React.ReactNode
   containerClassName?: string
-  userResizable?: boolean
 } & React.ComponentProps<typeof Textarea>
 
 function PromptInputTextarea({
@@ -173,9 +169,7 @@ function PromptInputTextarea({
   valuePrefix = "",
   leadingAdornment,
   containerClassName,
-  userResizable = false,
   style,
-  onPointerDown,
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
@@ -185,57 +179,15 @@ function PromptInputTextarea({
   const textareaValue = effectiveValuePrefix ? value.slice(effectiveValuePrefix.length) : value
   const hasLeadingAdornment = Boolean(leadingAdornment && effectiveValuePrefix)
   const leadingAdornmentLayout = useLeadingAdornmentTextIndent(hasLeadingAdornment)
-  const userMinHeightRef = useRef(0)
-  const resizeStartHeightRef = useRef<number | null>(null)
-  const resizeListenerCleanupRef = useRef<(() => void) | null>(null)
 
   const adjustHeight = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el || disableAutosize) return
 
     el.style.height = "auto"
-    const size = promptInputTextareaSize(
-      el.scrollHeight,
-      maxHeight,
-      userResizable ? userMinHeightRef.current : 0,
-    )
+    const size = promptInputTextareaSize(el.scrollHeight, maxHeight)
     el.style.height = size.height
     el.style.overflowY = size.overflowY
-  }, [disableAutosize, maxHeight, userResizable])
-
-  const finishUserResize = useCallback(() => {
-    resizeListenerCleanupRef.current?.()
-    resizeListenerCleanupRef.current = null
-    const el = textareaRef.current
-    const startHeight = resizeStartHeightRef.current
-    resizeStartHeightRef.current = null
-    if (!userResizable || !el || startHeight == null) return
-
-    const nextHeight = el.getBoundingClientRect().height
-    if (Math.abs(nextHeight - startHeight) < 1) return
-    userMinHeightRef.current = nextHeight
-    adjustHeight(el)
-  }, [adjustHeight, textareaRef, userResizable])
-
-  const handlePointerDown = useCallback((event: React.PointerEvent<HTMLTextAreaElement>) => {
-    onPointerDown?.(event)
-    if (!userResizable || event.defaultPrevented) return
-
-    const el = textareaRef.current
-    if (!el) return
-    resizeListenerCleanupRef.current?.()
-    resizeStartHeightRef.current = el.getBoundingClientRect().height
-    const cleanup = () => {
-      window.removeEventListener("pointerup", finishUserResize)
-      window.removeEventListener("pointercancel", finishUserResize)
-    }
-    resizeListenerCleanupRef.current = cleanup
-    window.addEventListener("pointerup", finishUserResize, { once: true })
-    window.addEventListener("pointercancel", finishUserResize, { once: true })
-  }, [finishUserResize, onPointerDown, textareaRef, userResizable])
-
-  useEffect(() => () => {
-    resizeListenerCleanupRef.current?.()
-  }, [])
+  }, [disableAutosize, maxHeight])
 
   const handleRef = useCallback((el: HTMLTextAreaElement | null) => {
     textareaRef.current = el
@@ -270,17 +222,14 @@ function PromptInputTextarea({
       value={textareaValue}
       style={{
         ...style,
-        ...(userResizable ? { maxHeight } : null),
         ...leadingAdornmentLayout.textareaStyle,
       }}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
-      onPointerDown={handlePointerDown}
       className={cn(
         "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-        userResizable && "resize-y",
-        hasLeadingAdornment && "px-0 py-0",
-        className
+        className,
+        hasLeadingAdornment && "px-0"
       )}
       rows={1}
       disabled={effectiveDisabled}
@@ -293,11 +242,11 @@ function PromptInputTextarea({
   return (
     <div
       data-slot="prompt-input-textarea-with-adornment"
-      className={cn("relative min-w-0 px-3 py-2", containerClassName)}
+      className={cn("relative min-w-0 px-2.5", containerClassName)}
     >
       <span
         ref={leadingAdornmentLayout.adornmentRef}
-        className="absolute left-3 top-2 z-10 inline-flex"
+        className="absolute left-2.5 top-2 z-10 inline-flex"
       >
         {leadingAdornment}
       </span>

@@ -1,6 +1,6 @@
 [package]
 name = "gold-band-desktop"
-version = "0.12.4"
+version = "0.13.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -12,7 +12,7 @@ url = "2"
 
 [dependencies]
 anyhow = "1"
-atomic-write-file = "0.2"
+arboard = "3.6.1"
 blake3 = "1"
 camino = { version = "1", features = ["serde1"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -31,6 +31,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 open = "5"
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "test-util", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -41,6 +42,7 @@ tracing = "0.1"
 base64 = "0.22"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+whoami = "1"
 walkdir = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "ico"] }
 notify = "8"
@@ -52,10 +54,13 @@ resvg = "0.45"
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
+rusqlite = { version = "0.34", features = ["bundled"] }
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
+clipboard-win = "5.4.1"
 # Windows Toast 涓€绛夊叕姘戯細骞查閫氱煡 + 缁撴瀯鍖?action锛堟煡鐪嬭鎯?蹇界暐锛夈€?
 tauri-winrt-notification = "0.7"
 # 使用 RtlGetVersion 提供未受应用 manifest 影响的真实 Windows build，

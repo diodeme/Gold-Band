@@ -3,8 +3,9 @@ import type {
   ConversationSidebarVm,
   ConversationTaskActivityVm,
   ConversationTaskRowVm,
+  ConversationTerminalResultVm,
 } from '@/types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm } from '@/api/client';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm } from '@/api/client';
 
 function isTerminalConversationRunStatus(status: string) {
   return ['completed', 'failed', 'cancelled', 'killed'].includes(status.trim().toLowerCase());
@@ -43,19 +44,103 @@ export function applyConversationSidebarTaskActivity(
   taskId: string,
   activity: ConversationTaskActivityVm | null,
 ): ConversationSidebarVm {
-  const updateTask = (task: ConversationTaskRowVm) => (
-    task.projectId === projectId && task.taskId === taskId
-      ? { ...task, activity }
-      : task
-  );
+  const updateTask = (task: ConversationTaskRowVm) => {
+    if (task.projectId !== projectId || task.taskId !== taskId) return task;
+    const currentActivity = task.activity ?? null;
+    if (
+      currentActivity === activity
+      || (
+        currentActivity !== null
+        && activity !== null
+        && currentActivity.phase === activity.phase
+        && currentActivity.stopping === activity.stopping
+      )
+    ) {
+      return task;
+    }
+    return { ...task, activity };
+  };
+
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const workspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
+  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
+  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
+  if (!pinnedChanged && !workspaceChanged) return sidebar;
+
   return {
     ...sidebar,
-    pinnedTasks: sidebar.pinnedTasks.map(updateTask),
-    tasksByWorkspace: {
-      ...sidebar.tasksByWorkspace,
-      [projectId]: (sidebar.tasksByWorkspace[projectId] ?? []).map(updateTask),
-    },
+    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    tasksByWorkspace: workspaceChanged
+      ? {
+          ...sidebar.tasksByWorkspace,
+          [projectId]: nextWorkspaceTasks,
+        }
+      : sidebar.tasksByWorkspace,
   };
+}
+
+function sameTerminalResult(
+  left: ConversationTerminalResultVm | null | undefined,
+  right: ConversationTerminalResultVm | null | undefined,
+) {
+  if (!left || !right) return !left && !right;
+  return left.eventId === right.eventId
+    && left.runId === right.runId
+    && left.kind === right.kind
+    && left.occurredAt === right.occurredAt;
+}
+
+function applyConversationSidebarTaskTerminalResult(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  taskId: string,
+  update: (current: ConversationTerminalResultVm | null) => ConversationTerminalResultVm | null,
+): ConversationSidebarVm {
+  const updateTask = (task: ConversationTaskRowVm) => {
+    if (task.projectId !== projectId || task.taskId !== taskId) return task;
+    const current = task.unreadTerminalResult ?? null;
+    const next = update(current);
+    return sameTerminalResult(current, next) ? task : { ...task, unreadTerminalResult: next };
+  };
+  const pinnedTasks = sidebar.pinnedTasks.map(updateTask);
+  const workspaceTasks = sidebar.tasksByWorkspace[projectId] ?? [];
+  const nextWorkspaceTasks = workspaceTasks.map(updateTask);
+  const pinnedChanged = pinnedTasks.some((task, index) => task !== sidebar.pinnedTasks[index]);
+  const workspaceChanged = nextWorkspaceTasks.some((task, index) => task !== workspaceTasks[index]);
+  if (!pinnedChanged && !workspaceChanged) return sidebar;
+  return {
+    ...sidebar,
+    pinnedTasks: pinnedChanged ? pinnedTasks : sidebar.pinnedTasks,
+    tasksByWorkspace: workspaceChanged
+      ? { ...sidebar.tasksByWorkspace, [projectId]: nextWorkspaceTasks }
+      : sidebar.tasksByWorkspace,
+  };
+}
+
+export function applyConversationSidebarTerminalResultUpdate(
+  sidebar: ConversationSidebarVm,
+  event: ConversationTerminalResultUpdatedEventVm,
+): ConversationSidebarVm {
+  return applyConversationSidebarTaskTerminalResult(
+    sidebar,
+    event.projectId,
+    event.taskId,
+    () => event.unreadTerminalResult,
+  );
+}
+
+export function applyConversationSidebarTerminalResultAcknowledgement(
+  sidebar: ConversationSidebarVm,
+  projectId: string,
+  taskId: string,
+  requestedEventId: string,
+  unreadTerminalResult: ConversationTerminalResultVm | null | undefined,
+): ConversationSidebarVm {
+  return applyConversationSidebarTaskTerminalResult(sidebar, projectId, taskId, (current) => {
+    if (current?.eventId !== requestedEventId) return current;
+    return unreadTerminalResult ?? null;
+  });
 }
 
 export function applyConversationSidebarRunLifecycle(

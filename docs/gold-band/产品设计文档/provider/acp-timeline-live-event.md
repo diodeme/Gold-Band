@@ -39,6 +39,17 @@ Gold Band 的 ACP 会话同时服务两类读取路径：
 - 完整 `AcpSessionVm` 快照到达后，`systemPromptAppend`、`config/models/modes/configOptions` 和 snapshot 中的 timeline events 是当前会话展示的事实来源；实时 `loadedEvents` 只能与 snapshot events 合并，不能覆盖或清空 snapshot events。`createLiveAcpSessionShell` 只允许作为没有 base session 时的临时壳。
 - Gold Band synthetic user prompt 允许由 session-ready snapshot 送达而不单独发送 live event。前端可见事件窗口必须合并 snapshot prompt 与后续 live event，避免实时阶段缺用户消息、停止/刷新后才补齐。
 
+## Snapshot / live revision 交接
+
+- timeline patch revision 是持久正文的 commit 水位，event `seq/endedSeq` 只是展示顺序，二者不得互相代替。
+- durable live envelope 携带对应 branch 已持久化事件的 `timelineGeneration + timelineRevision`；尚未 flush 的累计流和不落盘的 `timingUpdate` 使用空水位，不能制造可查询的持久化承诺。generation 变化时旧 revision 不得与新 generation 直接比较。
+- durable watermark 直接来自同一次 TimelineStore append/index mutation 的 locator；live 发布不得重新 externalize、序列化或哈希大 raw payload 来猜测持久化状态。延迟到达的旧 generation live event 必须丢弃，不能让前端水位回退。
+- session page 返回 index `generation / coveredRevision` 和当前页 `newestRevision`。`afterRevision` 依据语义块 `lastRevision` 查询；同 revision 块同页返回。
+- 有界 replay 只在 durable event 真正被淘汰时记录 `lossWatermarkRevision`。重进捕获一次固定 loss watermark，先合并 retained live，再用 revision delta 覆盖缺口；新到 live 不延长该目标。
+- 新 generation 的 current-page snapshot 可以覆盖旧 generation 的 loss watermark；确认要求 snapshot generation 不早于缺口 generation，且 `coveredRevision` 已覆盖缺口 revision。generation 前进后旧缺口必须清除，避免每次重进重复刷新。
+- 停止 accepted 与 terminal 只发布 lifecycle/control patch，不附带正文 session，也不触发终态补拉；尾部正文通过同一 live/revision delta 数据面自然收敛。
+- 停止控制面不保留返回完整 `AcpSessionVm` 的旧取消 IPC；所有停止调用都必须经过轻量 accepted/lifecycle 入口。
+
 ## 验收标准
 
 - 实时流式会话中，文本气泡和 thought 内容持续补齐。

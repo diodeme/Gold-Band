@@ -25,6 +25,8 @@ let starting: Promise<void> | null = null;
 
 interface RetainedConversationEvent {
   event: AcpUiEventVm;
+  timelineGeneration: number | null;
+  timelineRevision: number | null;
   generation: number;
   estimatedBytes: number;
 }
@@ -32,7 +34,10 @@ interface RetainedConversationEvent {
 interface ConversationBranchReplayBuffer {
   generation: number;
   headSeq: number;
-  requiresCatchUp: boolean;
+  timelineGeneration: number;
+  headRevision: number;
+  lossWatermarkGeneration: number;
+  lossWatermarkRevision: number;
   retainedBytes: number;
   events: Map<string, RetainedConversationEvent>;
   order: string[];
@@ -41,6 +46,10 @@ interface ConversationBranchReplayBuffer {
 export interface ConversationBranchReplaySnapshot {
   generation: number;
   headSeq: number;
+  timelineGeneration: number;
+  headRevision: number;
+  lossWatermarkGeneration: number;
+  lossWatermarkRevision: number;
   requiresCatchUp: boolean;
   retainedBytes: number;
   events: AcpUiEventVm[];
@@ -115,7 +124,13 @@ export function conversationBranchStoreKey(locator: Parameters<typeof attemptKey
 export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
   if (event.event) {
     const key = conversationBranchStoreKey(event, conversationEventBranchId(event));
-    retainConversationEvent(key, event.event);
+    const accepted = retainConversationEvent(
+      key,
+      event.event,
+      event.timelineGeneration ?? null,
+      event.timelineRevision ?? null,
+    );
+    if (!accepted) return;
     const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
     if (isSyntheticAgentPrompt(event.event)) {
       updateBranchSnapshot(key, current.status, current.attention, true);
@@ -211,17 +226,44 @@ function storeBranchSnapshot(key: string, snapshot: ConversationBranchLiveSnapsh
   }
 }
 
-function retainConversationEvent(key: string, event: AcpUiEventVm) {
+function retainConversationEvent(
+  key: string,
+  event: AcpUiEventVm,
+  timelineGeneration: number | null,
+  timelineRevision: number | null,
+) {
   const buffer = branchReplayBuffers.get(key) ?? {
     generation: 0,
     headSeq: 0,
-    requiresCatchUp: false,
+    timelineGeneration: 0,
+    headRevision: 0,
+    lossWatermarkGeneration: 0,
+    lossWatermarkRevision: 0,
     retainedBytes: 0,
     events: new Map<string, RetainedConversationEvent>(),
     order: [],
   };
+  if (
+    timelineGeneration != null
+    && buffer.timelineGeneration !== 0
+    && timelineGeneration < buffer.timelineGeneration
+  ) {
+    return false;
+  }
   buffer.generation += 1;
   buffer.headSeq = Math.max(buffer.headSeq, conversationEventPosition(event));
+  if (
+    timelineGeneration != null
+    && buffer.timelineGeneration !== 0
+    && timelineGeneration > buffer.timelineGeneration
+  ) {
+    clearRetainedEvents(buffer);
+    buffer.headRevision = 0;
+    buffer.lossWatermarkGeneration = 0;
+    buffer.lossWatermarkRevision = 0;
+  }
+  if (timelineGeneration != null) buffer.timelineGeneration = timelineGeneration;
+  buffer.headRevision = Math.max(buffer.headRevision, timelineRevision ?? 0);
 
   const replayKey = conversationReplayEventKey(event);
   const previous = buffer.events.get(replayKey);
@@ -229,12 +271,18 @@ function retainConversationEvent(key: string, event: AcpUiEventVm) {
 
   const estimatedBytes = estimateConversationEventBytes(event);
   if (estimatedBytes > MAX_REPLAY_EVENT_BYTES) {
-    buffer.requiresCatchUp = true;
+    recordReplayLoss(buffer, timelineGeneration, timelineRevision);
     branchReplayBuffers.set(key, buffer);
-    return;
+    return true;
   }
 
-  const retained = { event, generation: buffer.generation, estimatedBytes };
+  const retained = {
+    event,
+    timelineGeneration,
+    timelineRevision,
+    generation: buffer.generation,
+    estimatedBytes,
+  };
   buffer.events.set(replayKey, retained);
   buffer.order.push(replayKey);
   buffer.retainedBytes += estimatedBytes;
@@ -242,6 +290,7 @@ function retainConversationEvent(key: string, event: AcpUiEventVm) {
   trimBranchReplayBuffer(buffer);
   branchReplayBuffers.set(key, buffer);
   trimGlobalReplayBuffer(key);
+  return true;
 }
 
 function trimBranchReplayBuffer(buffer: ConversationBranchReplayBuffer) {
@@ -257,7 +306,7 @@ function trimBranchReplayBuffer(buffer: ConversationBranchReplayBuffer) {
       continue;
     }
     removeRetainedEvent(buffer, oldestKey, oldest);
-    buffer.requiresCatchUp = true;
+    recordReplayLoss(buffer, oldest.timelineGeneration, oldest.timelineRevision);
   }
 }
 
@@ -268,8 +317,7 @@ function trimGlobalReplayBuffer(currentKey: string) {
     if (key === currentKey) continue;
     const buffer = branchReplayBuffers.get(key);
     if (!buffer || buffer.retainedBytes === 0) continue;
-    clearRetainedEvents(buffer);
-    buffer.requiresCatchUp = true;
+    clearRetainedEvents(buffer, true);
   }
 }
 
@@ -285,7 +333,34 @@ function removeRetainedEvent(
   retainedReplayBytes = Math.max(0, retainedReplayBytes - retained.estimatedBytes);
 }
 
-function clearRetainedEvents(buffer: ConversationBranchReplayBuffer) {
+function recordReplayLoss(
+  buffer: ConversationBranchReplayBuffer,
+  timelineGeneration: number | null,
+  timelineRevision: number | null,
+) {
+  if (timelineGeneration != null && timelineGeneration !== buffer.lossWatermarkGeneration) {
+    buffer.lossWatermarkGeneration = timelineGeneration;
+    buffer.lossWatermarkRevision = 0;
+  }
+  buffer.lossWatermarkRevision = Math.max(
+    buffer.lossWatermarkRevision,
+    timelineRevision ?? 0,
+  );
+}
+
+function clearRetainedEvents(
+  buffer: ConversationBranchReplayBuffer,
+  recordLoss = false,
+) {
+  if (recordLoss) {
+    for (const retained of buffer.events.values()) {
+      recordReplayLoss(
+        buffer,
+        retained.timelineGeneration,
+        retained.timelineRevision,
+      );
+    }
+  }
   retainedReplayBytes = Math.max(0, retainedReplayBytes - buffer.retainedBytes);
   buffer.retainedBytes = 0;
   buffer.events.clear();
@@ -408,6 +483,10 @@ export function readConversationBranchReplaySnapshot(
     return {
       generation: 0,
       headSeq: 0,
+      timelineGeneration: 0,
+      headRevision: 0,
+      lossWatermarkGeneration: 0,
+      lossWatermarkRevision: 0,
       requiresCatchUp: false,
       retainedBytes: 0,
       events: [],
@@ -416,7 +495,11 @@ export function readConversationBranchReplaySnapshot(
   return {
     generation: buffer.generation,
     headSeq: buffer.headSeq,
-    requiresCatchUp: buffer.requiresCatchUp,
+    timelineGeneration: buffer.timelineGeneration,
+    headRevision: buffer.headRevision,
+    lossWatermarkGeneration: buffer.lossWatermarkGeneration,
+    lossWatermarkRevision: buffer.lossWatermarkRevision,
+    requiresCatchUp: buffer.lossWatermarkRevision > 0,
     retainedBytes: buffer.retainedBytes,
     events: [...buffer.events.values()]
       .sort((left, right) => (
@@ -430,19 +513,25 @@ export function readConversationBranchReplaySnapshot(
 export function acknowledgeConversationBranchReplay(
   locator: Parameters<typeof attemptKey>[0],
   branchId: string,
-  snapshotHeadSeq: number,
+  timelineGeneration: number,
+  coveredRevision: number,
   observedGeneration: number,
 ) {
   const buffer = branchReplayBuffers.get(conversationBranchStoreKey(locator, branchId));
   if (!buffer) return true;
   if (
     buffer.generation !== observedGeneration
-    || snapshotHeadSeq < buffer.headSeq
+    || (
+      buffer.lossWatermarkRevision > 0
+      && timelineGeneration < buffer.lossWatermarkGeneration
+    )
+    || coveredRevision < buffer.lossWatermarkRevision
   ) {
     return false;
   }
   clearRetainedEvents(buffer);
-  buffer.requiresCatchUp = false;
+  buffer.lossWatermarkRevision = 0;
+  buffer.lossWatermarkGeneration = 0;
   return true;
 }
 

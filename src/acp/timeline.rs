@@ -26,7 +26,7 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V3 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 3;
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 4;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 const TIMELINE_BLOB_REF_KEY: &str = "$goldBandBlob";
@@ -110,6 +110,7 @@ struct TimelineSemanticBlockIndex {
     item_ids: Vec<String>,
     oldest_seq: u64,
     newest_seq: u64,
+    last_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     summary: Option<AcpUiEvent>,
 }
@@ -186,6 +187,7 @@ impl Default for TimelineMaterializedIndex {
 pub struct TimelineIndexedPage {
     pub generation: u64,
     pub covered_revision: u64,
+    pub newest_revision: Option<u64>,
     pub processed_tail_records: usize,
     pub events: Vec<AcpUiEvent>,
     pub loaded_semantic_blocks: usize,
@@ -206,6 +208,7 @@ pub struct TimelineIndexedPage {
 #[derive(Debug, Clone)]
 pub struct TimelineIndexedItem {
     pub event: AcpUiEvent,
+    pub generation: u64,
     pub revision: u64,
 }
 
@@ -287,6 +290,13 @@ struct TimelineFileSignature {
 }
 
 impl TimelineStore {
+    pub fn durable_watermark_for_item_id(&self, item_id: &str) -> Option<(u64, u64)> {
+        self.index
+            .item_locators
+            .get(item_id)
+            .map(|locator| (self.index.generation, locator.revision))
+    }
+
     pub fn open(path: Utf8PathBuf, policy: TimelineCompactionPolicy) -> Result<Self> {
         let checkpoint_policy = TimelineCheckpointPolicy::default();
         let index_path = timeline_index_path(&path);
@@ -1074,6 +1084,7 @@ fn rebuild_semantic_blocks(index: &mut TimelineMaterializedIndex) {
                 item_ids: vec![item_id.clone()],
                 oldest_seq: locator.started_seq,
                 newest_seq: locator.ended_seq,
+                last_revision: locator.revision,
                 summary: None,
             }),
             TimelineSemanticKind::Activity => {
@@ -1081,12 +1092,14 @@ fn rebuild_semantic_blocks(index: &mut TimelineMaterializedIndex) {
                     block.item_ids.push(item_id.clone());
                     block.oldest_seq = block.oldest_seq.min(locator.started_seq);
                     block.newest_seq = block.newest_seq.max(locator.ended_seq);
+                    block.last_revision = block.last_revision.max(locator.revision);
                 } else {
                     blocks.push(TimelineSemanticBlockIndex {
                         activity: true,
                         item_ids: vec![item_id.clone()],
                         oldest_seq: locator.started_seq,
                         newest_seq: locator.ended_seq,
+                        last_revision: locator.revision,
                         summary: None,
                     });
                 }
@@ -1181,6 +1194,7 @@ pub fn read_indexed_timeline_page(
     path: &Utf8Path,
     before_seq: Option<u64>,
     after_seq: Option<u64>,
+    after_revision: Option<u64>,
     limit: usize,
 ) -> Result<TimelineIndexedPage> {
     let started_at = Instant::now();
@@ -1190,7 +1204,23 @@ pub fn read_indexed_timeline_page(
         load_or_rebuild_index_unlocked(path, &index_path, policy)
     })?;
     let total = index.semantic_blocks.len();
-    let selected = if let Some(cursor) = after_seq {
+    let selected = if let Some(cursor) = after_revision {
+        let mut changed = index
+            .semantic_blocks
+            .iter()
+            .filter(|block| block.last_revision > cursor)
+            .collect::<Vec<_>>();
+        changed.sort_by_key(|block| (block.last_revision, block.oldest_seq));
+        let boundary_revision = changed
+            .get(limit.saturating_sub(1))
+            .map(|block| block.last_revision);
+        changed
+            .into_iter()
+            .take_while(|block| {
+                boundary_revision.is_none_or(|boundary| block.last_revision <= boundary)
+            })
+            .collect::<Vec<_>>()
+    } else if let Some(cursor) = after_seq {
         let mut changed = index
             .semantic_blocks
             .iter()
@@ -1230,6 +1260,7 @@ pub fn read_indexed_timeline_page(
     }
     let oldest_seq = selected.first().map(|block| block.oldest_seq);
     let newest_seq = selected.last().map(|block| block.newest_seq);
+    let newest_revision = selected.iter().map(|block| block.last_revision).max();
     let first_ordinal = selected.first().and_then(|selected| {
         index
             .semantic_blocks
@@ -1254,6 +1285,7 @@ pub fn read_indexed_timeline_page(
     Ok(TimelineIndexedPage {
         generation: index.generation,
         covered_revision: index.covered_revision,
+        newest_revision,
         processed_tail_records,
         events,
         loaded_semantic_blocks: selected.len(),
@@ -1303,6 +1335,7 @@ pub fn read_indexed_timeline_item(
         };
         Ok(Some(TimelineIndexedItem {
             event: read_event_at_locator(path, locator)?,
+            generation: index.generation,
             revision: locator.revision,
         }))
     })
@@ -1344,6 +1377,7 @@ fn read_indexed_pending_interaction(
         };
         Ok(Some(TimelineIndexedItem {
             event: read_event_at_locator(path, locator)?,
+            generation: index.generation,
             revision: locator.revision,
         }))
     })
@@ -1936,12 +1970,71 @@ mod tests {
         };
         let mut store = TimelineStore::open(path.clone(), policy).unwrap();
         store.upsert(1, &event("message-1", 1, "hel")).unwrap();
+        assert_eq!(
+            store.durable_watermark_for_item_id("message-1"),
+            Some((1, 1))
+        );
         store.upsert(2, &event("message-1", 2, "hello")).unwrap();
+        assert_eq!(
+            store.durable_watermark_for_item_id("message-1"),
+            Some((1, 2)),
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
         assert_eq!(
             load_timeline_items(&path).unwrap()[0].content.as_deref(),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn revision_delta_returns_only_blocks_changed_after_snapshot_watermark() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &event("message-1", 1, "one")).unwrap();
+        store.upsert(2, &event("message-2", 2, "two")).unwrap();
+        store
+            .upsert(3, &event("message-1", 1, "one updated"))
+            .unwrap();
+        store.force_checkpoint().unwrap();
+
+        let page = read_indexed_timeline_page(&path, None, None, Some(2), 30).unwrap();
+
+        assert_eq!(page.covered_revision, 3);
+        assert_eq!(page.newest_revision, Some(3));
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].id, "message-1");
+        assert_eq!(page.events[0].content.as_deref(), Some("one updated"));
+    }
+
+    #[test]
+    fn revision_delta_does_not_split_blocks_with_the_same_revision() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &event("seed", 0, "seed")).unwrap();
+        store.force_checkpoint().unwrap();
+        drop(store);
+        for item in [event("message-1", 1, "one"), event("message-2", 2, "two")] {
+            crate::storage::append_jsonl(
+                &path,
+                &AcpTimelinePatch {
+                    patch_type: "timelinePatch".to_string(),
+                    item_id: item.id.clone(),
+                    revision: 2,
+                    op: "upsert".to_string(),
+                    item,
+                },
+            )
+            .unwrap();
+        }
+
+        let page = read_indexed_timeline_page(&path, None, None, Some(1), 1).unwrap();
+
+        assert_eq!(page.newest_revision, Some(2));
+        assert_eq!(page.events.len(), 2);
     }
 
     #[test]
@@ -1969,10 +2062,10 @@ mod tests {
         )
         .unwrap();
 
-        let recovered = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let recovered = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         assert_eq!(recovered.processed_tail_records, 1);
         assert_eq!(recovered.events.len(), 2);
-        let reopened = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let reopened = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         assert_eq!(reopened.processed_tail_records, 0);
     }
 
@@ -2013,7 +2106,7 @@ mod tests {
             TimelineSettleOutcome::AlreadyTerminal,
         );
         assert_eq!(
-            read_indexed_timeline_page(&path, None, None, 30)
+            read_indexed_timeline_page(&path, None, None, None, 30)
                 .unwrap()
                 .events[0]
                 .status
@@ -2045,7 +2138,7 @@ mod tests {
             TimelineSettleOutcome::Applied,
         );
         assert_eq!(
-            read_indexed_timeline_page(&path, None, None, 30)
+            read_indexed_timeline_page(&path, None, None, None, 30)
                 .unwrap()
                 .events
                 .into_iter()
@@ -2080,9 +2173,9 @@ mod tests {
         }
         writer.flush().unwrap();
 
-        let migrated = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let migrated = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         assert_eq!(migrated.events.len(), 1);
-        let page = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         assert_eq!(page.processed_tail_records, 0);
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.events[0].content.as_deref(), Some("revision-10000"));
@@ -2248,7 +2341,7 @@ mod tests {
         second.upsert(2, &event("message-2", 2, "second")).unwrap();
         first.force_checkpoint().unwrap();
 
-        let page = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         let ids = page
             .events
             .iter()
@@ -2364,10 +2457,10 @@ mod tests {
         std::fs::copy(source.as_std_path(), path.as_std_path()).unwrap();
 
         let first_started = Instant::now();
-        let first = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let first = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         let first_elapsed = first_started.elapsed();
         let second_started = Instant::now();
-        let second = read_indexed_timeline_page(&path, None, None, 30).unwrap();
+        let second = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
         let second_elapsed = second_started.elapsed();
         let index_bytes = timeline_index_path(&path)
             .metadata()

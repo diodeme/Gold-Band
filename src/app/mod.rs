@@ -22,8 +22,6 @@ pub use self::runtime_recovery::{
 
 use crate::acp::client as acp_client;
 use crate::acp::commands::AcpCommandItem;
-use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::{
     AppearancePreference, ConsoleThemeName, ConversationAutoConfig, DesktopAvailableUpdate,
     DesktopLanguage, DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerConfig,
@@ -1161,7 +1159,13 @@ pub struct App {
         Option<Arc<dyn Fn() -> Result<BTreeMap<String, ProviderDiagnosticSnapshot>> + Send + Sync>>,
     acp_live_update: Option<
         Arc<
-            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+            dyn Fn(
+                    AcpLiveEventContext,
+                    crate::acp::events::AcpUiEvent,
+                    Option<(u64, u64)>,
+                ) -> Result<()>
+                + Send
+                + Sync,
         >,
     >,
     acp_session_update: Option<Arc<dyn Fn(AcpLiveEventContext) -> Result<()> + Send + Sync>>,
@@ -1575,7 +1579,13 @@ impl App {
     pub fn with_acp_live_update(
         mut self,
         live_update: Arc<
-            dyn Fn(AcpLiveEventContext, crate::acp::events::AcpUiEvent) -> Result<()> + Send + Sync,
+            dyn Fn(
+                    AcpLiveEventContext,
+                    crate::acp::events::AcpUiEvent,
+                    Option<(u64, u64)>,
+                ) -> Result<()>
+                + Send
+                + Sync,
         >,
     ) -> Self {
         self.acp_live_update = Some(live_update);
@@ -1669,11 +1679,15 @@ impl App {
     pub fn acp_live_update_for<'a>(
         &'a self,
         context: AcpLiveEventContext,
-    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent) -> Result<()> + 'a> {
+    ) -> Option<impl Fn(&crate::acp::events::AcpUiEvent, Option<(u64, u64)>) -> Result<()> + 'a>
+    {
         let live_update = self.acp_live_update.as_ref()?.clone();
-        Some(move |event: &crate::acp::events::AcpUiEvent| {
-            live_update(context.clone(), event.clone())
-        })
+        Some(
+            move |event: &crate::acp::events::AcpUiEvent,
+                  timeline_watermark: Option<(u64, u64)>| {
+                live_update(context.clone(), event.clone(), timeline_watermark)
+            },
+        )
     }
 
     pub fn acp_session_update_for<'a>(
@@ -4088,7 +4102,6 @@ impl App {
         let attempt_dir = self
             .paths
             .attempt_dir(task_id, run_id, round_id, node_id, attempt_id);
-        self.cancel_attempt_dir_best_effort(&attempt_dir);
         self.request_attempt_prompt_cancel_best_effort(&attempt_dir);
         self.persist_cancelled_session_snapshot_best_effort(&attempt_dir);
     }
@@ -4190,7 +4203,6 @@ impl App {
                         let Ok(attempt_dir) = Utf8PathBuf::from_path_buf(attempt_path) else {
                             continue;
                         };
-                        self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
                         self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
                         self.persist_cancelled_session_snapshot_best_effort(attempt_dir.as_path());
                     }
@@ -4534,12 +4546,6 @@ impl App {
         )
     }
 
-    pub fn cancel_attempt_dir_best_effort(&self, attempt_dir: &Utf8Path) {
-        let decided_at = now_rfc3339_like();
-        let _ = cancel_pending_permission_requests(attempt_dir, decided_at.clone());
-        let _ = cancel_pending_elicitation_requests(attempt_dir, decided_at);
-    }
-
     pub fn request_attempt_prompt_cancel_best_effort(&self, attempt_dir: &Utf8Path) {
         let _ = acp_client::cancel_attempt_prompt(attempt_dir);
     }
@@ -4631,7 +4637,6 @@ impl App {
                             {
                                 continue;
                             }
-                            self.cancel_attempt_dir_best_effort(attempt_dir.as_path());
                             self.request_attempt_prompt_cancel_best_effort(attempt_dir.as_path());
                             self.persist_cancelled_session_snapshot_best_effort(
                                 attempt_dir.as_path(),

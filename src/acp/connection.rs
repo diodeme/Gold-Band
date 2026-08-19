@@ -1823,11 +1823,14 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
-        settle_attempt_for_session_close(attempt_dir);
-        if connection.active_prompt_count_for_session(&session.session_id) > 0 {
+        let has_active_prompt = connection.active_prompt_count_for_session(&session.session_id) > 0;
+        if has_active_prompt {
             if let Err(error) = connection.send_cancel_notification(&session.session_id) {
                 warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
             }
+        }
+        settle_attempt_for_session_close(attempt_dir);
+        if has_active_prompt {
             let drained = connection
                 .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
             if !drained {
@@ -1927,13 +1930,15 @@ impl AdapterConnectionManager {
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
         for (attempt_dir, session_id) in &sessions {
-            let attempt_path = Utf8PathBuf::from(&attempt_dir);
-            settle_attempt_for_session_close(attempt_path.as_path());
             if connection.active_prompt_count_for_session(session_id) > 0
                 && let Err(error) = connection.send_cancel_notification(session_id)
             {
                 warn!(%attempt_dir, %session_id, %error, "failed to cancel ACP prompt while draining connection");
             }
+        }
+        for (attempt_dir, _) in &sessions {
+            let attempt_path = Utf8PathBuf::from(attempt_dir);
+            settle_attempt_for_session_close(attempt_path.as_path());
         }
         if !connection.wait_for_prompt_drain(&session_ids, timeout)? {
             warn!(

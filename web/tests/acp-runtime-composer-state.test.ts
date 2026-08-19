@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveAcpRuntimeComposerState,
   isAcceptedQueuePromptSubmitKind,
+  isAcceptedAcpPromptSubmitKind,
+  isTerminalAcpLifecycle,
+  isTerminalLifecycleForTurn,
   mergeConversationAttemptLifecycle,
+  shouldSettleAcpComposerTransientState,
   shouldKeepLocalRuntimeLifecycleOverride,
   shouldSettleRuntimeContinueSubmission,
   type AcpRuntimeComposerStateInput,
@@ -324,7 +328,6 @@ describe('deriveAcpRuntimeComposerState', () => {
         },
       }),
       acpStatus: 'running',
-      localTurnInFlight: true,
     }));
 
     expect(state.mode).toBe('session-superseded');
@@ -379,7 +382,6 @@ describe('deriveAcpRuntimeComposerState', () => {
         },
       }),
       acpStatus: 'completed',
-      localTurnInFlight: true,
       awaitingResponse: false,
       sending: false,
       waitingForOptimisticPrompt: false,
@@ -799,10 +801,11 @@ describe('deriveAcpRuntimeComposerState', () => {
 
   it('shows local turn submission over a terminal ACP snapshot', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({ acp: { turnId: 'turn-a' } }),
       sending: true,
       awaitingResponse: true,
       waitingForOptimisticPrompt: true,
-      localTurnInFlight: true,
+      localTurnId: 'turn-b',
       turnAccepted: false,
       hasResponseAfterTurn: false,
       acpStatus: 'completed',
@@ -822,8 +825,9 @@ describe('deriveAcpRuntimeComposerState', () => {
 
   it('shows local turn processing after a terminal ACP snapshot accepts the prompt', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({ acp: { turnId: 'turn-a' } }),
       awaitingResponse: true,
-      localTurnInFlight: true,
+      localTurnId: 'turn-b',
       turnAccepted: true,
       hasResponseAfterTurn: false,
       acpStatus: 'completed',
@@ -837,6 +841,25 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.processingKind).toBe('processing');
     expect(state.inputDisabled).toBe(true);
     expect(state.canStop).toBe(true);
+  });
+
+  it('settles local sending immediately when canonical terminal belongs to the same turn', () => {
+    const matchingTerminal = lifecycle({
+      acp: { turnId: 'turn-b', revision: 4, liveTurnActivity: 'idle', latestTurnStatus: 'cancelled' },
+    });
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: matchingTerminal,
+      sending: true,
+      awaitingResponse: true,
+      waitingForOptimisticPrompt: true,
+      localTurnId: 'turn-b',
+    }));
+
+    expect(isTerminalLifecycleForTurn(matchingTerminal, 'turn-b')).toBe(true);
+    expect(state.statusActive).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canStop).toBe(false);
+    expect(state.canSubmit).toBe(true);
   });
 
   it('ignores stale ACP running when lifecycle is terminal', () => {
@@ -1096,11 +1119,89 @@ describe('isAcceptedQueuePromptSubmitKind', () => {
   it('accepts both a durable enqueue and an idle-boundary direct ACP send', () => {
     expect(isAcceptedQueuePromptSubmitKind('queued')).toBe(true);
     expect(isAcceptedQueuePromptSubmitKind('acp-session')).toBe(true);
+    expect(isAcceptedQueuePromptSubmitKind('acp-session-started')).toBe(true);
   });
 
   it('keeps unrelated or rejected command outcomes on the failure path', () => {
     expect(isAcceptedQueuePromptSubmitKind('rejected')).toBe(false);
     expect(isAcceptedQueuePromptSubmitKind('runtime-continue-started')).toBe(false);
+  });
+});
+
+describe('isAcceptedAcpPromptSubmitKind', () => {
+  it('accepts both legacy completed replies and durable started replies', () => {
+    expect(isAcceptedAcpPromptSubmitKind('acp-session')).toBe(true);
+    expect(isAcceptedAcpPromptSubmitKind('acp-session-started')).toBe(true);
+    expect(isAcceptedAcpPromptSubmitKind('queued')).toBe(false);
+  });
+});
+
+describe('isTerminalAcpLifecycle', () => {
+  it('recognizes a lifecycle-only terminal without a session snapshot', () => {
+    const terminal = lifecycle({
+      acp: {
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+
+    expect(isTerminalAcpLifecycle(terminal)).toBe(true);
+  });
+
+  it('does not treat stopping or active lifecycle patches as terminal', () => {
+    expect(isTerminalAcpLifecycle(lifecycle({ acp: { stopping: true } }))).toBe(false);
+    expect(isTerminalAcpLifecycle(lifecycle({ acp: { liveTurnActivity: 'running' } }))).toBe(false);
+  });
+});
+
+describe('lifecycle-only terminal composer recovery', () => {
+  it('releases a stop window when the session snapshot is still cancelling', () => {
+    const terminal = lifecycle({
+      acp: {
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: terminal,
+      acpStatus: 'cancelling',
+      awaitingResponse: true,
+      cancelling: true,
+      localTurnId: null,
+    }));
+
+    expect(state.mode).toBe('normal');
+    expect(state.stopInProgress).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
+  it('settles local transient state from a lifecycle-only terminal patch', () => {
+    const terminal = lifecycle({
+      acp: {
+        turnId: 'turn-a',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+
+    expect(shouldSettleAcpComposerTransientState(terminal, 'cancelling', null)).toBe(true);
+  });
+
+  it('does not let an old terminal session snapshot settle a newly admitted turn', () => {
+    const nextTurn = lifecycle({
+      acp: {
+        turnId: 'turn-b',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+      },
+    });
+
+    expect(shouldSettleAcpComposerTransientState(nextTurn, 'completed', 'turn-b')).toBe(false);
+    expect(shouldSettleAcpComposerTransientState(null, 'completed', null)).toBe(true);
   });
 });
 

@@ -149,7 +149,7 @@ outerNodeId? / outerAttemptId? / nodeId / attemptId / branchId
 
 ### 4.2 Index/checkpoint 结构
 
-新增 `acp.timeline.index.json`，当前 V3 结构如下：
+新增 `acp.timeline.index.json`，当前 V4 结构如下：
 
 ```json
 {
@@ -319,7 +319,9 @@ index 必须校验 format version、generation、covered offset、文件长度/�
   -> 持久化 pause、auto-dispatch suspension 和 cancel latch
   -> 分配 ACP stopping revision
   -> 返回轻量 accepted lifecycle patch
-  -> 后台派发 provider cancel
+  -> 后台派发 provider cancel（不读取 timeline）
+  -> 无活动 provider 时立即发布该 turn 的 terminal lifecycle
+  -> 最后按 identity 结算 retry / permission / elicitation
 ```
 
 accepted 热路径禁止：
@@ -331,6 +333,8 @@ accepted 热路径禁止：
 - 等待 provider terminal。
 
 如果是没有 index 的旧会话，accepted 仍立即返回。所需迁移/结算进入 blocking pool，不能把 legacy full scan 带回停止命令。
+
+`dispatch_attempt_prompt_cancel()` 与 `settle_attempt_prompt_interactions()` 是分离的两个阶段。前者只操作 provider control/connection；后者才可能通过 checkpoint/index 回放尾部或执行旧会话迁移。不得用一个“取消”辅助函数把两者重新包回“先结算、后发送”的顺序。若 dispatch 判定没有活动 provider，必须在 settlement 前按当前 `turnId` 提交并发布 terminal lifecycle，避免旧会话 migration 让 UI 长时间保留 `stopping`。
 
 ### 6.2 按稳定 identity 精确结算
 
@@ -479,7 +483,7 @@ AUTO 停止父 runtime 时可以同时取消多个 sibling，但每个 leaf life
 
 - 首次打开发现 index 缺失时，返回明确的 migration/recovery 状态，由 blocking pool 完整扫描一次。
 - 重建期间同 attempt 只允许一个 owner；其他请求等待同一结果或返回可重试的结构化状态，不并发重复扫描。
-- 成功后原子写 V3 index 和迁移完成水位；之后正常查询不得再走 full scan。V2 相比 V1 增加 Agent launch/prompt/result locator 语义，V3 增加 processing retry identity；V1/V2 都必须整体重建，不能依赖 serde 默认值继续使用。
+- 成功后原子写 V4 index 和迁移完成水位；之后正常查询不得再走 full scan。V2 相比 V1 增加 Agent launch/prompt/result locator 语义，V3 增加 processing retry identity，V4 增加语义块 `lastRevision`；旧版本必须整体重建，不能依赖 serde 默认值继续使用。
 - 停止 accepted 不等待迁移；后台 terminal settlement 可等待同一重建 owner。
 
 ### 8.3 Index 损坏或版本变化
@@ -702,7 +706,7 @@ M1 是最终架构的控制面基础，不是针对当前页面增加局部 if�
 
 ### 14.1 实际落点
 
-- `acp.timeline.index.json` 使用 format V3；V2 已保存 Agent launch/prompt/result 角色、已接受 prompt ID 与最新 runtime control output candidate，V3 继续增加可由 timeline 重建的 retry-prompt role 与当前 processing retry ID。旧 V1/V2 不兼容，打开时完整重建并把 generation 从旧值单调加一，避免旧 checkpoint 因 serde 默认值静默缺少停止所需身份。
+- `acp.timeline.index.json` 使用 format V4；V2 已保存 Agent launch/prompt/result 角色、已接受 prompt ID 与最新 runtime control output candidate，V3 增加可由 timeline 重建的 retry-prompt role 与当前 processing retry ID，V4 增加语义块 `lastRevision` 以支持 revision delta。旧版本不兼容，打开时完整重建并把 generation 从旧值单调加一，避免旧 checkpoint 因 serde 默认值静默缺少停止或分页所需身份。
 - TimelineStore 默认每 256 个 patch checkpoint，tail replay hard limit 同为 256；terminal 与正常 session 写回强制 checkpoint。timeline patch 在文件锁内 append + flush，index 使用原子替换。compaction 在锁内重新读取最新 checkpoint 后才判断与分配 generation，多个 writer 不会用陈旧 generation 覆盖彼此。
 - JSONL 健康 append 的尾部完整性检查从“每次读取整文件”收敛为只读取最后 1 字节；只有末行缺失换行时才进入恢复扫描，消除了长流式会话写入的 O(N²) 放大。
 - `scan_acp_timeline()` 正常路径只调用 indexed current-page query；旧 parser、semantic pagination、diagnostics scan 和 Agent rebuild 均限制为 `#[cfg(test)]` oracle。旧会话首次迁移在 Tauri blocking pool 中执行。
@@ -723,7 +727,7 @@ M1 是最终架构的控制面基础，不是针对当前页面增加局部 if�
 ### 14.3 自评审结论
 
 - 根因修复：控制面不再依赖正文，正文查询不再从头投影；没有用超时、后台全量扫描或缓存掩盖设计缺口。
-- 过度设计：复用 TimelineStore、文件锁、Serde、原子写和既有 lifecycle；没有新增数据库、依赖、全局 registry 或第二状态机。V3 新增的 pending retry ID 由同一 timeline 事件增量物化且可删除重建，只封闭已证实的跨文件落盘窗口，不复制 canonical 业务事实。
+- 过度设计：复用 TimelineStore、文件锁、Serde、原子写和既有 lifecycle；没有新增数据库、依赖、全局 registry 或第二状态机。pending retry ID 与 V4 `lastRevision` 都由同一 timeline 事件增量物化且可删除重建，只封闭已证实的跨文件落盘窗口与 revision 分页边界，不复制 canonical 业务事实。
 - 性能：正常查询读取当前页与有界 tail；terminal payload 为常量大小；checkpoint 从每 patch 重写改为 256 patch 批次；健康 append 不再全文件扫描。代价是一次性 V1/legacy rebuild 与 index 文件磁盘空间，均有明确恢复边界和真实基线。
 - 正确性：timeline 先提交、index 可重建；CAS settlement 幂等；schema/compaction 都推进 generation；ACP revision 单调且 terminal dominance；多个 TimelineStore writer 在同一文件锁内刷新 projection 后写入。
 
@@ -736,3 +740,48 @@ M1 是最终架构的控制面基础，不是针对当前页面增加局部 if�
 - permission、elicitation、retry backoff、terminal event 丢失恢复需要协议态或故障注入，不在本轮桌面手工造假；这些路径由接口级回归固定 stable identity/CAS、revision 单调、terminal dominance 和重进恢复契约。桌面验收结论只覆盖 Direct 与 AUTO 的真实 active prompt 主路径。
 
 最终验收表明：控制面 accepted 延迟与 timeline 大小无关；provider 取消可提前完成，最慢受统一 10 秒 deadline 约束；终态发布、AUTO leaf 聚合和会话重进均不再依赖完整 timeline 重建。
+
+### 14.5 长会话重进补充修复（2026-08-19）
+
+task-284 现场日志确认 checkpoint-backed 当前页查询约 388ms，但页面重进仍以 `headSeq` 追逐持续到达的 live head，并按 40ms 至 2s 指数退避重复查询；停止终态后还存在正文 session 构建和前端补拉。这不是 index 失效，而是 snapshot/live 交接仍使用展示序号、控制面仍残留正文消费。
+
+本轮完成以下收口：
+
+- index 升级到 V4，语义块维护 `lastRevision`；查询增加 `afterRevision`，页面返回 `generation / coveredRevision / newestRevision`，同 revision 作为原子分页组。
+- live envelope 增加可空 `timelineGeneration + timelineRevision`。只有与 TimelineStore 中语义指纹一致、已经 durable 的事件获得水位；transient timing 和尚未 flush 的累计流不承诺持久水位。terminal/normal flush 顺序调整为 timeline patch 先于 live flush；compaction 后旧 generation 的 revision 不与新 generation 混合比较。
+- replay buffer 用 `lossWatermarkRevision` 取代移动的 `headSeq + requiresCatchUp`。只有 durable payload 淘汰才推进水位；重进捕获固定目标，用 revision delta 有界追平，删除指数退避轮询。
+- prompt finalizer 不再构建/发布完整 `AcpSessionVm`，停止完成后前端不再补拉正文；`get_conversation_run` 始终只返回 tree/lifecycle shell，ACPChatDialog 成为正文唯一查询边界。
+
+接口回归覆盖 revision delta、10,000 revision checkpoint、transient event 不推进缺口、durable 淘汰固定水位、单次 revision catch-up 与 lifecycle-only terminal。复杂度保持 `O(P + Δ)`；未新增依赖、数据库、全局缓存或第二状态机。
+
+task-284 原 timeline 副本的 V4 Release 复测：一次性 V3→V4 migration 2,979ms；随后 checkpoint-backed 当前页 297ms，30 个语义块、tail 0、index 839,075B，低于 1 秒目标。原会话文件未被修改。
+
+自评审：该改动补齐既有 append log + materialized projection 设计的水位契约，属于根因修复。新增字段均来自现有 timeline revision/semantic block，可删除重建；固定 loss watermark 的内存量为每 branch 一个整数，和历史长度无关，因此不存在过度设计或无界内存风险。停止控制面不再执行正文 I/O，重进不再因持续 live 到达而延长等待。
+
+### 14.6 实现后代码审查收口（2026-08-19）
+
+实现完成后的 identity、compaction、并发与 I/O 审查发现并修复四项边界：
+
+- `submit_conversation_prompt` admission 后，后台 helper 曾再次调用 `begin_session_turn()`；虽因相同 turnId 未重复 revision，但新 operationId 会被静默忽略。现已拆分为 `admit_conversation_prompt_turn` 与 `execute_admitted_acp_prompt_with_configured_app`，前端提交只 admission 一次，scheduled/queue 入口仍由公共 helper admission 后执行。
+- prompt admission 进一步把完整 `promptSubmission` 与 lifecycle 原子写入同一 attempt metadata，并返回 `Started / ExistingActive / ExistingTerminal`。只有 `Started` 启动后台 Provider；相同 turn 的请求重试返回既有 revision，不同 payload 结构化冲突。后台只从 durable submission 读取正文、引用和附件，发送前及初始化阶段继续检查同 turn terminal/cancel；进程重启后的 orphan `Starting/Accepted/Running` submission 收敛为 `failed + process-interrupted`，已 durable `CancelRequested` 收敛为 `cancelled`。
+- 手动 queue use 删除命令成功快速返回后的即时 `settle_dispatching_prompts`；admission 前同步拒绝时按 item identity 立即恢复，成功 admission 后只由 Provider accepted callback 删除，或在后台 terminal/failure 后恢复。这样既不会在 `acp-session-started` 与 canonical prompt 之间把同一项错误放回队列，也不会让同步拒绝的项目永久停在 `Dispatching`。进程重启后的旧 `Dispatching` 若对应 turn 已 terminal，则只结算该 item：timeline 已有 accepted prompt 时删除；否则保留 payload 并换发新的 turn ID 后再次 admission，避免旧 terminal identity 让队列永久无法重试，也不影响同 attempt 的其他 dispatch。
+- 旧 `switch_conversation_session` 会与 ACPChatDialog 并发读取同一正文，`send_acp_prompt` 又保留已失效的完整 session 返回语义。两条旧 IPC 与前端封装已删除；run aggregate、选择操作只维护 locator/lifecycle，ACPChatDialog 是正文唯一查询者。
+- 代码审查又移除了未被前端消费、但仍会在停止时构建完整 `AcpSessionVm` 的旧 `cancel_acp_session` IPC；停止控制面现在只保留 accepted/lifecycle 入口，避免任何遗留调用绕过轻量停止契约。
+- compaction 后 snapshot generation 大于旧 loss watermark generation 时，旧严格相等条件会使缺口永久无法确认；迟到的旧 generation live 也可能回退 router 水位。现改为 generation 单调合并：旧 event 丢弃，新 generation 清理旧 retained window，新 snapshot 可确认更早 generation 的缺口。
+- durable watermark 曾对 live item 再次执行 blob externalize 与 semantic fingerprint，大 raw payload 会重复 BLAKE3/Serde 工作。现由 TimelineStore 同一次 upsert 的 index locator 直接返回 generation/revision，并随 pending live item保存；没有新增缓存或第二事实源。
+
+同时删除 Agent branch 对纯 lifecycle patch 的正文补查。新增回归覆盖：新 generation 确认旧缺口、迟到旧 generation 丢弃、compaction 后重进不重复刷新、Agent branch lifecycle-only 不查询正文，以及同 turn admission identity。正常重进仍为 `O(P + Δ)`，live 每次写入后的 watermark 获取为 O(1) locator 查询；删除两个重复正文入口后，同一次会话选择只发起一次正文请求。
+
+复核发现停止 accepted 后前端会先清空本地 turn identity，而 terminal 可能只以 lifecycle patch 到达；composer 的 `sending / awaitingResponse / cancelling` 清理必须同时接受无正文的 ACP lifecycle terminal（`idle + latestTurnStatus != none + stopping=false`），不能只等待完整 session status。存在 ACP facet 后，session status 只保留为 lifecycle 缺失时的冷启动 fallback，防止旧 `completed/cancelled` snapshot 在新 turn 已 admission/running 时提前清理 local transient。该收口不增加正文查询，且保留 turn identity 匹配用于仍持有本地 turn 的路径。
+
+自评审结论：改动收紧既有边界，没有新增 aggregate、状态机、依赖或持久事实；删除的旧接口属于开发阶段被明确替代的路径。内存仍受每 branch 64 事件/512 KiB、全局 4 MiB 上限约束；锁范围没有扩大，provider 调用仍不在 timeline/lifecycle 锁内。
+
+### 14.7 三类并发边界补强（2026-08-19）
+
+本轮针对实现审查发现的三个真实竞态完成收口：
+
+- `ACPChatDialog` 的 revision catch-up 在查询异常时保留 replay watermark，不再跳出后无条件标记 ready；补偿查询复用已有有界退避，只有 ACK 成功才打开 live animation gate。失败达到上限时仍保持未确认，后续重进可继续补拉，避免丢弃的 live event 永久丢失。
+- prompt queue 新增按 `promptId` 定位的单项 settlement。Direct drain、queued dispatch 和后台失败回收都只结算自己的 dispatch；全量 settlement 只保留给重启/孤儿恢复，避免一个 turn 的完成或失败释放同 attempt 其他正在 admission 的队列项。
+- `spawn_blocking`/Provider 初始化等外层失败路径先按同一 turn ID 持久化 failed terminal，再发布 `turn-finished`。若 durable 写入失败或该 turn 已被更晚 terminal 覆盖，则不发布迟到的失败终态，保持 lifecycle canonical state 的单调性。
+
+接口回归新增单项 queue settlement 隔离测试，以及 replay delta 临时失败后保持静态、按退避重试并在 ACK 后收敛的前端测试。新增逻辑只读取单个 queue item、单页 delta 和固定大小 lifecycle header；没有全量 timeline 扫描、无界重试、额外缓存或第二状态机。

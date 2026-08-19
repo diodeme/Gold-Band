@@ -1,23 +1,18 @@
 use gold_band::acp::client;
 use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
-use gold_band::acp::elicitation::{
-    ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
-};
+use gold_band::acp::elicitation::{ElicitationAction, write_elicitation_response};
 use gold_band::acp::events::{
     AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
 };
-use gold_band::acp::permission::{
-    PendingPermissionState, cancel_pending_permission_requests,
-    write_permission_response_if_pending,
-};
+use gold_band::acp::permission::{PendingPermissionState, write_permission_response_if_pending};
 use gold_band::acp::prompt_queue::{
     AUTO_DISPATCH_USER_PRIORITY_GRACE_MS, AutoClaimResult, PromptQueueError,
-    auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
-    clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension, complete_accepted_prompt,
-    delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
-    record_auto_dispatch_reply_completion, release_queued_prompt, reorder_queued_prompts,
-    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
-    take_queued_prompt,
+    TerminalDispatchRecovery, auto_dispatch_is_suspended, claim_next_for_auto_dispatch,
+    claim_queued_prompt, clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension,
+    complete_accepted_prompt, delete_queued_prompt, enqueue_prompt, load_prompt_queue,
+    mark_user_priority, record_auto_dispatch_reply_completion, recover_terminal_dispatch,
+    release_queued_prompt, reorder_queued_prompts, request_auto_dispatch_suspension,
+    settle_dispatching_prompt, suspend_auto_dispatch, take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
@@ -461,6 +456,137 @@ fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> 
     Ok(())
 }
 
+fn acp_lifecycle_path(attempt_dir: &camino::Utf8Path) -> Utf8PathBuf {
+    // New lifecycle writes always converge on the runtime snapshot. Admission
+    // seeds it from a legacy session file when needed, avoiding a turn whose
+    // stop and terminal transitions are split across two metadata files.
+    attempt_dir.join("acp.snapshot.json")
+}
+
+fn prompt_submission_admission_error(error: anyhow::Error) -> CommandErrorVm {
+    if error.to_string().starts_with("acp.prompt-session-busy") {
+        CommandErrorVm::new("conversation.prompt-session-busy", serde_json::json!({}))
+    } else if error
+        .to_string()
+        .starts_with("acp.prompt-submission-conflict")
+    {
+        CommandErrorVm::new(
+            "conversation.prompt-submission-conflict",
+            serde_json::json!({}),
+        )
+    } else {
+        command_error(error)
+    }
+}
+
+fn settle_failed_prompt_submission(app: &App, locator: &AttemptLocator, turn_id: &str) -> bool {
+    let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
+    match gold_band::acp::events::persist_session_turn_terminal(
+        &lifecycle_path,
+        turn_id,
+        gold_band::acp::events::AcpLatestTurnStatus::Failed,
+        "provider-error",
+        &gold_band::acp::events::current_timestamp(),
+    ) {
+        Ok(Some(header)) => {
+            header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed
+        }
+        Ok(None) => {
+            tracing::debug!(%turn_id, "skipping stale ACP prompt terminal notification");
+            false
+        }
+        Err(error) => {
+            warn!(%error, %turn_id, "failed to settle rejected background ACP prompt");
+            false
+        }
+    }
+}
+
+fn conversation_prompt_submission(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: String,
+    input: &ConversationPromptInput,
+    attachment_paths: &[String],
+) -> gold_band::acp::events::AcpPromptSubmission {
+    let attempt_dir = locator.attempt_dir(app);
+    gold_band::acp::events::AcpPromptSubmission {
+        turn_id,
+        operation_id: format!("prompt:{}", uuid::Uuid::new_v4().simple()),
+        adapter_id: acp_turn_provider_id(app, locator).unwrap_or_else(|| "unknown".to_string()),
+        adapter_display_name: acp_turn_agent_label(app, locator),
+        cwd: attempt_dir.to_string(),
+        input: input.clone(),
+        attachment_paths: attachment_paths.to_vec(),
+        admitted_at: gold_band::acp::events::current_timestamp(),
+    }
+}
+
+fn existing_conversation_prompt_turn(
+    app: &App,
+    locator: &AttemptLocator,
+    prompt_id: Option<&str>,
+    input: &ConversationPromptInput,
+    attachment_paths: &[String],
+) -> CommandResult<Option<gold_band::acp::events::AcpTurnAdmission>> {
+    let Some(turn_id) = prompt_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let submission =
+        conversation_prompt_submission(app, locator, turn_id.to_string(), input, attachment_paths);
+    gold_band::acp::events::inspect_session_turn(
+        &acp_lifecycle_path(&locator.attempt_dir(app)),
+        &submission,
+    )
+    .map_err(prompt_submission_admission_error)
+}
+
+fn admit_conversation_prompt_turn(
+    app_handle: &AppHandle,
+    app: &App,
+    project_id: Option<String>,
+    locator: &AttemptLocator,
+    prompt_id: Option<String>,
+    input: &ConversationPromptInput,
+    attachment_paths: &[String],
+) -> CommandResult<gold_band::acp::events::AcpTurnAdmission> {
+    let turn_id = prompt_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
+    let attempt_dir = locator.attempt_dir(app);
+    let agent_label = acp_turn_agent_label(app, locator);
+    let submission =
+        conversation_prompt_submission(app, locator, turn_id.clone(), input, attachment_paths);
+    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+    if let Some(existing) =
+        gold_band::acp::events::inspect_session_turn(&lifecycle_path, &submission)
+            .map_err(prompt_submission_admission_error)?
+    {
+        return Ok(existing);
+    }
+    let preflight = ensure_conversation_prompt_available(app, locator);
+    finish_acp_prompt_preflight(app, locator, &turn_id, &agent_label, preflight)?;
+    let admission = gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission)
+        .map_err(prompt_submission_admission_error)?;
+    if admission.started() {
+        emit_direct_turn_started(app, locator);
+        emit_acp_session_update(
+            app_handle,
+            app,
+            project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+    }
+    Ok(admission)
+}
+
 fn acp_turn_outcome(run: &client::AcpPromptRun) -> AcpTurnOutcome {
     acp_turn_outcome_for_stop_reason(run.stop_reason.as_deref())
 }
@@ -891,6 +1017,8 @@ fn emit_deferred_turn_completion(
 #[serde(rename_all = "camelCase")]
 struct AcpSessionUpdatedEventVm {
     branch_id: Option<String>,
+    timeline_generation: Option<u64>,
+    timeline_revision: Option<u64>,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
@@ -1193,8 +1321,15 @@ pub(crate) fn acp_live_update_emitter_for_app(
     app: &App,
     app_handle: AppHandle,
     project_id: Option<String>,
-) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
-{
+) -> Arc<
+    dyn Fn(
+            gold_band::app::AcpLiveEventContext,
+            AcpUiEvent,
+            Option<(u64, u64)>,
+        ) -> anyhow::Result<()>
+        + Send
+        + Sync,
+> {
     acp_live_update_emitter(
         app_handle,
         project_id,
@@ -1330,7 +1465,10 @@ fn schedule_direct_prompt_queue_drain(
         return;
     }
     let attempt_dir = locator.attempt_dir(&app);
-    let queue = match settle_dispatching_prompts(&attempt_dir) {
+    if let Some(completion) = completed_turn.as_ref() {
+        let _ = settle_dispatching_prompt(&attempt_dir, &completion.turn_id);
+    }
+    let queue = match load_prompt_queue(&attempt_dir) {
         Ok(queue) => queue,
         Err(_) => {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -1427,7 +1565,7 @@ fn schedule_direct_prompt_queue_drain(
             (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
         )
         .await;
-        let _ = settle_dispatching_prompts(&attempt_dir);
+        let _ = settle_dispatching_prompt(&attempt_dir, &claimed.prompt_id);
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -1478,9 +1616,14 @@ impl AppExitPreparationVm {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPromptSubmitVm {
     pub kind: String,
+    pub turn_id: Option<String>,
+    pub revision: Option<u64>,
+    pub operation_id: Option<String>,
     pub session: Option<AcpSessionVm>,
     pub run: Option<RunSummaryVm>,
     pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+    #[serde(skip)]
+    admission_was_terminal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3302,9 +3445,13 @@ pub async fn continue_conversation_runtime(
         .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-continue-started".to_string(),
+            turn_id: None,
+            revision: None,
+            operation_id: None,
             session: None,
             run: Some(run),
             lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+            admission_was_terminal: false,
         })
     })
     .await
@@ -3340,9 +3487,13 @@ pub async fn recover_conversation_runtime(
             .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-recovery-started".to_string(),
+            turn_id: None,
+            revision: None,
+            operation_id: None,
             session: None,
             run: Some(run),
             lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+            admission_was_terminal: false,
         })
     })
     .await
@@ -3393,7 +3544,7 @@ pub async fn stop_active_session(
     let control_operation_id = operation_id.clone();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
-    let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
+    let (attempt_dir, stop_turn_id, current_run, lifecycle) = spawn_blocking_command(move || {
         if direct_mode {
             let queue_attempt_dir = control_locator.attempt_dir(&control_app);
             let queue = load_prompt_queue(&queue_attempt_dir).map_err(command_error)?;
@@ -3401,13 +3552,13 @@ pub async fn stop_active_session(
                 suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
             }
         }
-        let attempt_dir =
+        let (attempt_dir, stop_turn_id) =
             persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
         let current_run = control_app
             .run_status(&control_locator.task_id, &control_locator.run_id)
             .map_err(command_error)?;
         let lifecycle = lifecycle_for_locator(&control_app, &control_locator);
-        Ok((attempt_dir, current_run, lifecycle))
+        Ok((attempt_dir, stop_turn_id, current_run, lifecycle))
     })
     .await?;
 
@@ -3417,6 +3568,7 @@ pub async fn stop_active_session(
         project_id,
         locator.clone(),
         attempt_dir,
+        stop_turn_id,
     );
     spawn_index_attempt(
         state.inner(),
@@ -3618,9 +3770,16 @@ pub(crate) fn acp_live_update_emitter(
     project_id: Option<String>,
     notification_app: Option<App>,
     lifecycle_bus: Option<gold_band::app::observability::RuntimeLifecycleBus>,
-) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext, AcpUiEvent) -> anyhow::Result<()> + Send + Sync>
-{
-    Arc::new(move |context, mut event| {
+) -> Arc<
+    dyn Fn(
+            gold_band::app::AcpLiveEventContext,
+            AcpUiEvent,
+            Option<(u64, u64)>,
+        ) -> anyhow::Result<()>
+        + Send
+        + Sync,
+> {
+    Arc::new(move |context, mut event, timeline_watermark| {
         let refresh_agent_attention = matches!(
             event.kind.as_str(),
             "permissionRequest" | "elicitationRequest"
@@ -3667,6 +3826,7 @@ pub(crate) fn acp_live_update_emitter(
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
             event,
+            timeline_watermark,
         );
         if refresh_agent_attention && let Some(app) = notification_app.as_ref() {
             let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
@@ -4195,6 +4355,7 @@ fn emit_acp_session_update(
         outer_attempt_id,
         session,
         None,
+        None,
         activity,
     );
 }
@@ -4211,6 +4372,7 @@ fn emit_acp_event_update(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
+    timeline_watermark: Option<(u64, u64)>,
 ) {
     let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
@@ -4226,6 +4388,7 @@ fn emit_acp_event_update(
         outer_attempt_id,
         None,
         Some(event),
+        timeline_watermark,
         activity,
     );
 }
@@ -4252,11 +4415,15 @@ fn emit_acp_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
     event: Option<AcpUiEvent>,
+    timeline_watermark: Option<(u64, u64)>,
     activity: Option<ConversationTaskActivityVm>,
 ) {
     let branch_id = event
         .as_ref()
         .map(gold_band::acp::branches::event_branch_id);
+    let (timeline_generation, timeline_revision) = timeline_watermark
+        .map(|(generation, revision)| (Some(generation), Some(revision)))
+        .unwrap_or((None, None));
     let lifecycle = app.and_then(|app| {
         conversation_attempt_lifecycle_vm(
             app,
@@ -4274,6 +4441,8 @@ fn emit_acp_update(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
             branch_id,
+            timeline_generation,
+            timeline_revision,
             project_id,
             task_id: task_id.to_string(),
             run_id: run_id.to_string(),
@@ -4811,9 +4980,9 @@ pub async fn use_conversation_queued_prompt(
     let claimed =
         claim_queued_prompt(&attempt_dir, &item_id).map_err(prompt_queue_command_error)?;
     emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
-    let result = submit_conversation_prompt(
+    let mut result = submit_conversation_prompt(
         app_handle.clone(),
-        state,
+        state.clone(),
         project_id.clone(),
         locator.task_id.clone(),
         locator.run_id.clone(),
@@ -4830,8 +4999,50 @@ pub async fn use_conversation_queued_prompt(
         (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
     )
     .await;
-    let _ = settle_dispatching_prompts(&attempt_dir);
-    emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
+    if result
+        .as_ref()
+        .is_ok_and(|response| response.admission_was_terminal)
+    {
+        match recover_terminal_dispatch(&attempt_dir, &claimed.id) {
+            Ok(TerminalDispatchRecovery::Reclaimed(reclaimed)) => {
+                // The prior turn ended before its user prompt reached the
+                // canonical timeline. Keep the queue item but use a new turn
+                // identity for this explicit retry.
+                result = submit_conversation_prompt(
+                    app_handle.clone(),
+                    state,
+                    project_id.clone(),
+                    locator.task_id.clone(),
+                    locator.run_id.clone(),
+                    locator.round_id.clone(),
+                    locator.node_id.clone(),
+                    locator.attempt_id.clone(),
+                    ConversationPromptInput {
+                        display_text: reclaimed.content,
+                        quotes: reclaimed.quotes,
+                    },
+                    Some(reclaimed.prompt_id),
+                    locator.outer_node_id.clone(),
+                    locator.outer_attempt_id.clone(),
+                    (!reclaimed.attachment_paths.is_empty()).then_some(reclaimed.attachment_paths),
+                )
+                .await;
+            }
+            Ok(TerminalDispatchRecovery::AlreadyAccepted | TerminalDispatchRecovery::Missing) => {
+                emit_prompt_queue_lifecycle(&app_handle, &app, project_id.clone(), &locator);
+            }
+            Err(error) => {
+                warn!(%error, item_id = %claimed.id, "failed to recover terminal queued prompt dispatch");
+                result = Err(command_error(error));
+            }
+        }
+    }
+    if result.is_err() {
+        if let Err(error) = release_queued_prompt(&attempt_dir, &claimed.id) {
+            warn!(%error, item_id = %claimed.id, "failed to restore queued prompt after submission rejection");
+        }
+        emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator);
+    }
     result
 }
 
@@ -4871,6 +5082,29 @@ pub async fn submit_conversation_prompt(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let attempt_dir = locator.attempt_dir(&app);
+    if let Some(existing) = existing_conversation_prompt_turn(
+        &app,
+        &locator,
+        prompt_id.as_deref(),
+        &input,
+        attachment_paths.as_deref().unwrap_or_default(),
+    )? {
+        let admission_was_terminal = matches!(
+            &existing,
+            gold_band::acp::events::AcpTurnAdmission::ExistingTerminal(_)
+        );
+        let header = existing.into_header();
+        return Ok(ConversationPromptSubmitVm {
+            kind: "acp-session-started".to_string(),
+            turn_id: header.turn_id,
+            revision: Some(header.revision),
+            operation_id: header.operation_id,
+            session: None,
+            run: None,
+            lifecycle: lifecycle_for_locator(&app, &locator),
+            admission_was_terminal,
+        });
+    }
     let live_prompt_active = matches!(
         client::prompt_activity(&attempt_dir),
         Some(
@@ -4917,9 +5151,13 @@ pub async fn submit_conversation_prompt(
         }
         return Ok(ConversationPromptSubmitVm {
             kind: "queued".to_string(),
+            turn_id: None,
+            revision: None,
+            operation_id: None,
             session: None,
             run: None,
             lifecycle,
+            admission_was_terminal: false,
         });
     }
     if direct_mode {
@@ -4930,67 +5168,69 @@ pub async fn submit_conversation_prompt(
             mark_user_priority(&attempt_dir).map_err(command_error)?;
         }
     }
-    ensure_conversation_prompt_available(&app, &locator)?;
-
-    let session = send_acp_prompt(
-        app_handle,
-        state,
-        project_id,
-        locator.task_id.clone(),
-        locator.run_id.clone(),
-        locator.round_id.clone(),
-        locator.node_id.clone(),
-        locator.attempt_id.clone(),
-        input,
+    let admission = admit_conversation_prompt_turn(
+        &app_handle,
+        &app,
+        project_id.clone(),
+        &locator,
         prompt_id,
-        locator.outer_node_id.clone(),
-        locator.outer_attempt_id.clone(),
-        attachment_paths,
-    )
-    .await?;
+        &input,
+        attachment_paths.as_deref().unwrap_or_default(),
+    )?;
+    let header = admission.header().clone();
+    let turn_id = header
+        .turn_id
+        .clone()
+        .expect("admitted ACP turn must carry its stable turn identity");
+    let lifecycle = lifecycle_for_locator(&app, &locator);
+    if admission.started() {
+        let background_app = app.clone_for_background();
+        let background_app_handle = app_handle.clone();
+        let background_project_id = project_id.clone();
+        let background_locator = locator.clone();
+        let failure_turn_id = turn_id.clone();
+        let background = execute_admitted_acp_prompt_with_configured_app(
+            app_handle,
+            app,
+            project_id,
+            locator.task_id.clone(),
+            locator.run_id.clone(),
+            locator.round_id.clone(),
+            locator.node_id.clone(),
+            locator.attempt_id.clone(),
+            turn_id.clone(),
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+        );
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = background.await {
+                warn!(code = %error.code, turn_id = %failure_turn_id, "accepted ACP prompt failed in background");
+            }
+            let _ = settle_dispatching_prompt(
+                &background_locator.attempt_dir(&background_app),
+                &failure_turn_id,
+            );
+            emit_prompt_queue_lifecycle(
+                &background_app_handle,
+                &background_app,
+                background_project_id,
+                &background_locator,
+            );
+        });
+    }
     Ok(ConversationPromptSubmitVm {
-        kind: "acp-session".to_string(),
-        session,
+        kind: "acp-session-started".to_string(),
+        turn_id: header.turn_id,
+        revision: Some(header.revision),
+        operation_id: header.operation_id,
+        session: None,
         run: None,
-        lifecycle: lifecycle_for_locator(&app, &locator),
+        lifecycle,
+        admission_was_terminal: matches!(
+            admission,
+            gold_band::acp::events::AcpTurnAdmission::ExistingTerminal(_)
+        ),
     })
-}
-
-#[tauri::command]
-pub async fn send_acp_prompt(
-    app_handle: AppHandle,
-    state: State<'_, DesktopState>,
-    project_id: Option<String>,
-    task_id: String,
-    run_id: String,
-    round_id: String,
-    node_id: String,
-    attempt_id: String,
-    input: ConversationPromptInput,
-    prompt_id: Option<String>,
-    outer_node_id: Option<String>,
-    outer_attempt_id: Option<String>,
-    attachment_paths: Option<Vec<String>>,
-) -> CommandResult<Option<AcpSessionVm>> {
-    let _ = state.record_heartbeat_activity();
-    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
-    send_acp_prompt_with_configured_app(
-        app_handle,
-        app,
-        project_id,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        input,
-        prompt_id,
-        outer_node_id,
-        outer_attempt_id,
-        attachment_paths,
-    )
-    .await
 }
 
 pub(crate) async fn send_acp_prompt_with_configured_app(
@@ -5007,7 +5247,63 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
-) -> CommandResult<Option<AcpSessionVm>> {
+) -> CommandResult<()> {
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
+    let admission = admit_conversation_prompt_turn(
+        &app_handle,
+        &app,
+        project_id.clone(),
+        &locator,
+        prompt_id,
+        &input,
+        attachment_paths.as_deref().unwrap_or_default(),
+    )?;
+    if !admission.started() {
+        return Ok(());
+    }
+    let turn_id = admission
+        .header()
+        .turn_id
+        .clone()
+        .expect("admitted ACP turn must carry its stable turn identity");
+    execute_admitted_acp_prompt_with_configured_app(
+        app_handle,
+        app,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        turn_id,
+        outer_node_id,
+        outer_attempt_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_admitted_acp_prompt_with_configured_app(
+    app_handle: AppHandle,
+    app: ConfiguredConversationApp,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    turn_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<()> {
     let app = app.into_inner();
     let locator = AttemptLocator::new(
         task_id.clone(),
@@ -5018,17 +5314,29 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         outer_node_id.clone(),
         outer_attempt_id.clone(),
     );
-    let turn_id = prompt_id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("turn-{}", uuid::Uuid::new_v4().simple()));
+    let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(&app));
+    let submission =
+        gold_band::acp::events::read_session_prompt_submission(&lifecycle_path, &turn_id)
+            .map_err(command_error)?
+            .ok_or_else(|| {
+                CommandErrorVm::new(
+                    "conversation.prompt-submission-missing",
+                    serde_json::json!({ "turnId": turn_id }),
+                )
+            })?;
+    if !gold_band::acp::events::session_turn_is_executable(&lifecycle_path, &turn_id)
+        .map_err(command_error)?
+    {
+        return Ok(());
+    }
+    let input = submission.input;
+    let attachment_paths =
+        (!submission.attachment_paths.is_empty()).then_some(submission.attachment_paths);
     let prompt_id = Some(turn_id.clone());
     let queued_dispatch = turn_id.starts_with(QUEUED_PROMPT_ID_PREFIX);
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
-    emit_direct_turn_started(&app, &locator);
-    let preflight = ensure_conversation_prompt_available(&app, &locator);
-    finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
     let project_id_for_spawn = project_id_for_emit.clone();
     let task_id_for_emit = task_id.clone();
@@ -5040,6 +5348,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
     let outer_attempt_id_for_emit = outer_attempt_id.clone();
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
+    let lifecycle_path_for_stop = lifecycle_path.clone();
+    let turn_id_for_stop = turn_id.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
         let ConversationPromptInput {
             display_text,
@@ -5184,7 +5494,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
-                Some(&|event| {
+                Some(&|event, timeline_revision| {
                     live_update(
                         acp_live_event_context(
                             &task_id_for_live,
@@ -5196,6 +5506,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                             outer_attempt_id_for_live.clone(),
                         ),
                         event.clone(),
+                        timeline_revision,
                     )
                 }),
                 &app.acp_mcp_servers().unwrap_or_else(|e| {
@@ -5218,24 +5529,13 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                         &node_id,
                     )),
                     turn_control_mode: prompt_bundle.turn_control_mode,
+                    lifecycle_file: Some(lifecycle_path_for_stop.clone()),
+                    turn_id: Some(turn_id_for_stop.clone()),
                 }),
             )
             .map_err(command_error)?;
             let outcome = acp_turn_outcome(&prompt_run);
-            let session = dynamic_acp_session_vm(
-                &app,
-                &task_id,
-                &run_id,
-                &round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &node_id,
-                &attempt_id,
-                None,
-                None,
-            )
-            .map_err(command_error)?;
-            return Ok((session, outcome));
+            return Ok(outcome);
         }
         let attempt_dir =
             app.paths
@@ -5350,7 +5650,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
-            Some(&|event| {
+            Some(&|event, timeline_revision| {
                 live_update(
                     acp_live_event_context(
                         &task_id_for_live,
@@ -5362,6 +5662,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                         None,
                     ),
                     event.clone(),
+                    timeline_revision,
                 )
             }),
             &app.acp_mcp_servers().unwrap_or_else(|e| {
@@ -5383,47 +5684,70 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                     &attempt_id,
                 )),
                 turn_control_mode: prompt_bundle.turn_control_mode,
+                lifecycle_file: Some(lifecycle_path_for_stop),
+                turn_id: Some(turn_id_for_stop),
             }),
         )
         .map_err(command_error)?;
         let outcome = acp_turn_outcome(&prompt_run);
-        let session = acp_session_vm(
-            &app,
-            &task_id,
-            &run_id,
-            &round_id,
-            &node_id,
-            &attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?;
-        Ok((session, outcome))
+        Ok(outcome)
     })
     .await;
-    let (session, outcome) = match execution {
+    let outcome = match execution {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => {
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
-            emit_acp_turn_finished(
+            let settled = settle_failed_prompt_submission(&app_for_emit, &locator, &turn_id);
+            if settled {
+                emit_acp_turn_finished(
+                    &app_for_emit,
+                    &locator,
+                    &turn_id,
+                    &agent_label,
+                    AcpTurnOutcome::Failed,
+                    AcpTurnBatchProgress::terminal(1),
+                );
+            }
+            emit_acp_session_update(
+                &app_handle,
                 &app_for_emit,
-                &locator,
-                &turn_id,
-                &agent_label,
-                AcpTurnOutcome::Failed,
-                AcpTurnBatchProgress::terminal(1),
+                project_id_for_emit,
+                &task_id_for_emit,
+                &run_id_for_emit,
+                &round_id_for_emit,
+                &node_id_for_emit,
+                &attempt_id_for_emit,
+                outer_node_id_for_emit.clone(),
+                outer_attempt_id_for_emit.clone(),
+                None,
             );
             return Err(error);
         }
         Err(_) => {
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
-            emit_acp_turn_finished(
+            let settled = settle_failed_prompt_submission(&app_for_emit, &locator, &turn_id);
+            if settled {
+                emit_acp_turn_finished(
+                    &app_for_emit,
+                    &locator,
+                    &turn_id,
+                    &agent_label,
+                    AcpTurnOutcome::Failed,
+                    AcpTurnBatchProgress::terminal(1),
+                );
+            }
+            emit_acp_session_update(
+                &app_handle,
                 &app_for_emit,
-                &locator,
-                &turn_id,
-                &agent_label,
-                AcpTurnOutcome::Failed,
-                AcpTurnBatchProgress::terminal(1),
+                project_id_for_emit,
+                &task_id_for_emit,
+                &run_id_for_emit,
+                &round_id_for_emit,
+                &node_id_for_emit,
+                &attempt_id_for_emit,
+                outer_node_id_for_emit.clone(),
+                outer_attempt_id_for_emit.clone(),
+                None,
             );
             return Err(CommandErrorVm::new(
                 "app.task-join-failed",
@@ -5442,7 +5766,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         &attempt_id_for_emit,
         outer_node_id_for_emit.clone(),
         outer_attempt_id_for_emit.clone(),
-        session.clone(),
+        None,
     );
     if !direct_mode || outcome != AcpTurnOutcome::Completed {
         if outcome != AcpTurnOutcome::Completed {
@@ -5483,7 +5807,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         outer_attempt_id_for_emit.as_deref(),
     );
 
-    Ok(session)
+    Ok(())
 }
 
 #[tauri::command]
@@ -5583,119 +5907,11 @@ pub fn respond_acp_permission(
     Ok(session)
 }
 
-fn stop_acp_session(
-    app_handle: AppHandle,
-    state: &DesktopState,
-    project_id: Option<String>,
-    locator: AttemptLocator,
-) -> CommandResult<Option<AcpSessionVm>> {
-    let app = resolve_command_app(state, project_id.as_deref())?;
-    let runtime_was_controlled = attempt_is_runtime_controlled(&app, &locator)?;
-    let requested_at = current_timestamp();
-    let attempt_dir = resolve_acp_attempt_dir(
-        &app,
-        &locator.task_id,
-        &locator.run_id,
-        &locator.round_id,
-        &locator.node_id,
-        &locator.attempt_id,
-        locator.outer_node_id(),
-        locator.outer_attempt_id(),
-    );
-    cancel_pending_permission_requests(&attempt_dir, requested_at.clone())
-        .map_err(command_error)?;
-    cancel_pending_elicitation_requests(&attempt_dir, requested_at).map_err(command_error)?;
-
-    if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (locator.outer_node_id(), locator.outer_attempt_id())
-    {
-        app.pause_dynamic_attempt_runtime_state(
-            &locator.task_id,
-            &locator.run_id,
-            &locator.round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &locator.node_id,
-            PauseReason::ProcessInterrupted,
-        )
-        .map_err(command_error)?;
-    } else {
-        app.pause_attempt_runtime_state(
-            &locator.task_id,
-            &locator.run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-            PauseReason::ProcessInterrupted,
-        )
-        .map_err(command_error)?;
-    }
-
-    request_acp_cancel_and_persist_interrupted_snapshot(&app, &attempt_dir);
-    if runtime_was_controlled {
-        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
-    }
-
-    let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
-        (locator.outer_node_id(), locator.outer_attempt_id())
-    {
-        dynamic_acp_session_vm(
-            &app,
-            &locator.task_id,
-            &locator.run_id,
-            &locator.round_id,
-            outer_node_id,
-            outer_attempt_id,
-            &locator.node_id,
-            &locator.attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    } else {
-        acp_session_vm(
-            &app,
-            &locator.task_id,
-            &locator.run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-            None,
-            None,
-        )
-        .map_err(command_error)?
-    };
-    emit_acp_session_update(
-        &app_handle,
-        &app,
-        project_id,
-        &locator.task_id,
-        &locator.run_id,
-        &locator.round_id,
-        &locator.node_id,
-        &locator.attempt_id,
-        locator.outer_node_id.clone(),
-        locator.outer_attempt_id.clone(),
-        session.clone(),
-    );
-    spawn_index_attempt(
-        state,
-        &locator.task_id,
-        &locator.run_id,
-        &locator.round_id,
-        &locator.node_id,
-        &locator.attempt_id,
-        locator.outer_node_id(),
-        locator.outer_attempt_id(),
-    );
-    Ok(session)
-}
-
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
     operation_id: &str,
-) -> CommandResult<Utf8PathBuf> {
+) -> CommandResult<(Utf8PathBuf, Option<String>)> {
     let attempt_dir = locator.attempt_dir(app);
     let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -5726,20 +5942,14 @@ fn persist_active_session_stop(
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
     client::request_prompt_cancel(&attempt_dir);
-    let snapshot_path = attempt_dir.join("acp.snapshot.json");
-    let session_path = attempt_dir.join("acp.session.json");
-    let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
-        snapshot_path
-    } else {
-        session_path
-    };
-    gold_band::acp::events::request_session_stop(
+    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+    let lifecycle = gold_band::acp::events::request_session_stop(
         &lifecycle_path,
         operation_id,
         &gold_band::acp::events::current_timestamp(),
     )
     .map_err(command_error)?;
-    Ok(attempt_dir)
+    Ok((attempt_dir, lifecycle.turn_id))
 }
 
 fn spawn_active_session_stop_cleanup(
@@ -5748,55 +5958,65 @@ fn spawn_active_session_stop_cleanup(
     project_id: Option<String>,
     locator: AttemptLocator,
     attempt_dir: Utf8PathBuf,
+    stop_turn_id: Option<String>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        app.cancel_attempt_dir_best_effort(&attempt_dir);
-        match client::cancel_attempt_prompt(&attempt_dir) {
+        let terminal_without_provider = match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
             Ok(false) => {
-                let snapshot_path = attempt_dir.join("acp.snapshot.json");
-                let session_path = attempt_dir.join("acp.session.json");
-                let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
-                    snapshot_path
-                } else {
-                    session_path
-                };
-                if let Err(error) = gold_band::acp::events::persist_session_terminal(
-                    &lifecycle_path,
-                    gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-                    "cancelled",
-                    &gold_band::acp::events::current_timestamp(),
-                ) {
-                    warn!(%error, %attempt_dir, "failed to settle accepted ACP stop without an active provider");
+                let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+                if let Some(turn_id) = stop_turn_id.as_deref()
+                    && let Err(error) = gold_band::acp::events::persist_session_turn_terminal(
+                        &lifecycle_path,
+                        turn_id,
+                        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                        "cancelled",
+                        &gold_band::acp::events::current_timestamp(),
+                    )
+                {
+                    warn!(%error, %attempt_dir, %turn_id, "failed to settle accepted ACP stop without an active provider");
                 }
+                true
             }
-            Ok(true) => {}
+            Ok(true) => false,
             Err(error) => {
                 warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+                false
             }
+        };
+        if terminal_without_provider {
+            emit_acp_session_update(
+                &app_handle,
+                &app,
+                project_id.clone(),
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+                None,
+            );
         }
-        emit_acp_session_update(
-            &app_handle,
-            &app,
-            project_id,
-            &locator.task_id,
-            &locator.run_id,
-            &locator.round_id,
-            &locator.node_id,
-            &locator.attempt_id,
-            locator.outer_node_id.clone(),
-            locator.outer_attempt_id.clone(),
-            None,
-        );
+        if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
+            warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
+        }
+        if !terminal_without_provider {
+            emit_acp_session_update(
+                &app_handle,
+                &app,
+                project_id,
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+                None,
+            );
+        }
     });
-}
-
-fn request_acp_cancel_and_persist_interrupted_snapshot(
-    app: &gold_band::app::App,
-    attempt_dir: &camino::Utf8Path,
-) {
-    app.cancel_attempt_dir_best_effort(attempt_dir);
-    app.request_attempt_prompt_cancel_best_effort(attempt_dir);
-    app.persist_cancelled_session_snapshot_best_effort(attempt_dir);
 }
 
 fn spawn_index_attempt(
@@ -5889,31 +6109,6 @@ fn write_acp_permission_response_signal(
         false,
         current_timestamp(),
     )
-}
-
-#[tauri::command]
-pub fn cancel_acp_session(
-    app_handle: AppHandle,
-    state: State<'_, DesktopState>,
-    project_id: Option<String>,
-    task_id: String,
-    run_id: String,
-    round_id: String,
-    node_id: String,
-    attempt_id: String,
-    outer_node_id: Option<String>,
-    outer_attempt_id: Option<String>,
-) -> CommandResult<Option<AcpSessionVm>> {
-    let locator = AttemptLocator::new(
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    );
-    stop_acp_session(app_handle, state.inner(), project_id, locator)
 }
 
 #[tauri::command]
@@ -8625,6 +8820,28 @@ mod tests {
     }
 
     #[test]
+    fn prompt_submission_started_response_exposes_durable_turn_identity() {
+        let response = ConversationPromptSubmitVm {
+            kind: "acp-session-started".to_string(),
+            turn_id: Some("turn-001".to_string()),
+            revision: Some(7),
+            operation_id: Some("prompt:operation-001".to_string()),
+            session: None,
+            run: None,
+            lifecycle: None,
+            admission_was_terminal: false,
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["kind"], "acp-session-started");
+        assert_eq!(value["turnId"], "turn-001");
+        assert_eq!(value["revision"], 7);
+        assert_eq!(value["operationId"], "prompt:operation-001");
+        assert!(value["session"].is_null());
+        assert!(value.get("admissionWasTerminal").is_none());
+    }
+
+    #[test]
     fn direct_terminal_result_projection_waits_for_the_terminal_reply_batch() {
         assert!(
             conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Success))
@@ -9395,6 +9612,8 @@ mod tests {
     fn acp_session_update_serializes_lightweight_prompt_activity_and_terminal_clear() {
         let active = AcpSessionUpdatedEventVm {
             branch_id: None,
+            timeline_generation: None,
+            timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
             run_id: "run-001".to_string(),
@@ -9419,6 +9638,8 @@ mod tests {
 
         let terminal = AcpSessionUpdatedEventVm {
             branch_id: None,
+            timeline_generation: None,
+            timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
             run_id: "run-001".to_string(),
@@ -9520,7 +9741,8 @@ mod tests {
         std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
 
         let started = std::time::Instant::now();
-        let attempt_dir = persist_active_session_stop(&app, &locator, "operation-001").unwrap();
+        let (attempt_dir, _) =
+            persist_active_session_stop(&app, &locator, "operation-001").unwrap();
 
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();

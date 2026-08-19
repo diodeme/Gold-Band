@@ -340,7 +340,8 @@ use crate::acp::events::{
     append_diagnostic, append_raw_frame, append_structured_diagnostic,
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     latest_timeline_source_seq, load_session_metadata, normalize_session_update,
-    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
+    permission_request_event, read_lifecycle_header, user_prompt_event_with_quotes,
+    write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -873,7 +874,10 @@ pub fn prompt_activity_under(root: &Utf8Path) -> Option<PromptActivity> {
         })
 }
 
-pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+/// Delivers the cancellation control signal without inspecting conversation
+/// history. Callers that need timeline bookkeeping must invoke
+/// [`settle_attempt_prompt_interactions`] after this returns.
+pub fn dispatch_attempt_prompt_cancel(attempt_dir: &Utf8Path) -> Result<bool> {
     let key = attempt_control_key(attempt_dir);
     let control = PROVIDER_CONTROLS
         .lock()
@@ -893,11 +897,20 @@ pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
     } else {
         manager.cancel_attempt_prompt(attempt_dir)
     };
-    // Timeline settlement is bookkeeping: report its failure only after the
-    // lifecycle latch and live ACP cancel have had a chance to be delivered.
-    let interaction_result = cancel_pending_prompt_interactions(attempt_dir, current_timestamp());
-    let cancelled = cancel_result?;
-    interaction_result?;
+    cancel_result
+}
+
+/// Settles retry and pending interaction timeline items after the provider
+/// cancellation signal has already been dispatched.
+pub fn settle_attempt_prompt_interactions(attempt_dir: &Utf8Path) -> Result<()> {
+    cancel_pending_prompt_interactions(attempt_dir, current_timestamp())
+}
+
+pub fn cancel_attempt_prompt(attempt_dir: &Utf8Path) -> Result<bool> {
+    let cancelled = dispatch_attempt_prompt_cancel(attempt_dir)?;
+    // Timeline settlement is bookkeeping. It must remain after the lifecycle
+    // latch and live ACP cancel notification so it cannot delay cancellation.
+    settle_attempt_prompt_interactions(attempt_dir)?;
     Ok(cancelled)
 }
 
@@ -962,10 +975,15 @@ pub struct RuntimeStopProbe {
     pub attempt_id: String,
     pub attempt_state_file: Option<Utf8PathBuf>,
     pub turn_control_mode: TurnControlMode,
+    pub lifecycle_file: Option<Utf8PathBuf>,
+    pub turn_id: Option<String>,
 }
 
 impl RuntimeStopProbe {
     fn is_stopped(&self) -> bool {
+        if self.lifecycle_turn_is_stopped() {
+            return true;
+        }
         if self.turn_control_mode == TurnControlMode::NonRuntimeControlled {
             return false;
         }
@@ -973,6 +991,21 @@ impl RuntimeStopProbe {
             .as_ref()
             .is_some_and(|path| self.attempt_state_is_stopped(path))
             || self.run_state_is_stopped()
+    }
+
+    fn lifecycle_turn_is_stopped(&self) -> bool {
+        let (Some(path), Some(turn_id)) = (&self.lifecycle_file, self.turn_id.as_deref()) else {
+            return false;
+        };
+        read_lifecycle_header(path)
+            .ok()
+            .flatten()
+            .is_some_and(|header| {
+                header.turn_id.as_deref() == Some(turn_id)
+                    && (header.live_turn_activity == AcpLiveTurnActivity::CancelRequested
+                        || (header.live_turn_activity == AcpLiveTurnActivity::Idle
+                            && header.latest_turn_status != AcpLatestTurnStatus::None))
+            })
     }
 
     fn attempt_state_is_stopped(&self, path: &Utf8PathBuf) -> bool {
@@ -1730,8 +1763,8 @@ struct AcpRuntime<'a> {
     usage: AcpUsageState,
     active_timeline_streams: HashMap<String, AcpBranchTimelineStreams>,
     timing_state: AcpTimingState,
-    live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
-    pending_live_update: Option<AcpUiEvent>,
+    live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
+    pending_live_update: Option<PendingAcpLiveUpdate>,
     last_live_update_at: Option<Instant>,
     last_live_timing_update_at: Option<Instant>,
     last_live_timing: Option<crate::acp::events::AcpTimingPatch>,
@@ -1759,6 +1792,13 @@ struct AcpBranchTimelineStreams {
 struct AcpTimelineStreamSlot {
     current: Option<AcpTimelineStreamState>,
     suspended_stable: Option<AcpTimelineStreamState>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingAcpLiveUpdate {
+    revision: u64,
+    item: AcpUiEvent,
+    durable_watermark: Option<(u64, u64)>,
 }
 
 impl AcpTimelineStreamSlot {
@@ -2027,7 +2067,7 @@ pub fn run_prompt(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: AcpRuntimePolicy,
-    live_update: Option<&dyn Fn(&AcpUiEvent) -> Result<()>>,
+    live_update: Option<&dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
     prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
@@ -2822,19 +2862,21 @@ impl<'a> AcpRuntime<'a> {
             let settled = match item.kind.as_str() {
                 "permissionRequest" => {
                     crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &item.id)?
-                        .map(|indexed| indexed.event)
                 }
                 "elicitationRequest" => crate::acp::timeline::read_indexed_timeline_item(
                     &timeline_path,
                     &format!("{}-response", item.id),
-                )?
-                .map(|indexed| indexed.event),
+                )?,
                 _ => None,
             };
             if let Some(settled) = settled {
-                self.timing_state.observe_event(&settled);
-                update_runtime_hot_timeline_items(&mut self.timeline_items, &settled);
-                self.emit_timeline_live_update(settled)?;
+                self.timing_state.observe_event(&settled.event);
+                update_runtime_hot_timeline_items(&mut self.timeline_items, &settled.event);
+                self.emit_timeline_live_update(
+                    settled.revision,
+                    settled.event,
+                    Some((settled.generation, settled.revision)),
+                )?;
             }
         }
         Ok(())
@@ -2859,7 +2901,7 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -2936,7 +2978,7 @@ impl<'a> AcpRuntime<'a> {
         require_local_claude_executable: bool,
         raw_max_size: u64,
         raw_target_size: u64,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
@@ -2988,7 +3030,7 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
-        live_update: Option<&'a dyn Fn(&AcpUiEvent) -> Result<()>>,
+        live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
         ensure_parent_dir(&paths.provider_pid)?;
@@ -3209,9 +3251,10 @@ impl<'a> AcpRuntime<'a> {
         self.seq = self.seq.saturating_add(1);
         let event = settle_prompt_event(event, "cancelled", self.seq, None);
         self.timeline_revision = self.timeline_revision.saturating_add(1);
-        self.persist_timeline_update(event.clone())?;
+        let revision = self.timeline_revision;
+        let durable_watermark = self.persist_timeline_update(event.clone())?;
         update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
-        self.emit_timeline_live_update(event)
+        self.emit_timeline_live_update(revision, event, durable_watermark)
     }
 
     fn initialize_with_timeout(&mut self, timeout: Option<Duration>) -> Result<Value> {
@@ -4212,17 +4255,19 @@ impl<'a> AcpRuntime<'a> {
         let event =
             settle_prompt_event(prompt_turn.event.clone(), "failed", self.seq, Some(failure));
         self.timeline_revision = self.timeline_revision.saturating_add(1);
-        self.persist_timeline_update(event.clone())?;
+        let revision = self.timeline_revision;
+        let durable_watermark = self.persist_timeline_update(event.clone())?;
         update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
-        self.emit_timeline_live_update(event)
+        self.emit_timeline_live_update(revision, event, durable_watermark)
     }
 
     fn mark_prompt_cancelled(&mut self, prompt_turn: &AcpPromptTurnIdentity) -> Result<()> {
         let event = settle_prompt_event(prompt_turn.event.clone(), "cancelled", self.seq, None);
         self.timeline_revision = self.timeline_revision.saturating_add(1);
-        self.persist_timeline_update(event.clone())?;
+        let revision = self.timeline_revision;
+        let durable_watermark = self.persist_timeline_update(event.clone())?;
         update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
-        self.emit_timeline_live_update(event)
+        self.emit_timeline_live_update(revision, event, durable_watermark)
     }
 
     fn mark_prompt_completed(&mut self, prompt_turn: &AcpPromptTurnIdentity) -> Result<()> {
@@ -4236,9 +4281,10 @@ impl<'a> AcpRuntime<'a> {
             raw.remove("terminalFailure");
         }
         self.timeline_revision = self.timeline_revision.saturating_add(1);
-        self.persist_timeline_update(event.clone())?;
+        let revision = self.timeline_revision;
+        let durable_watermark = self.persist_timeline_update(event.clone())?;
         update_runtime_hot_timeline_items(&mut self.timeline_items, &event);
-        self.emit_timeline_live_update(event)
+        self.emit_timeline_live_update(revision, event, durable_watermark)
     }
 
     fn prompt(
@@ -5082,7 +5128,11 @@ impl<'a> AcpRuntime<'a> {
         if let Some(settled) = settled {
             self.timing_state.observe_event(&settled.event);
             update_runtime_hot_timeline_items(&mut self.timeline_items, &settled.event);
-            self.emit_timeline_live_update(settled.event)?;
+            self.emit_timeline_live_update(
+                settled.revision,
+                settled.event,
+                Some((settled.generation, settled.revision)),
+            )?;
         } else {
             self.seq += 1;
             let decision_event = permission_decision_timeline_event(
@@ -5497,8 +5547,8 @@ impl<'a> AcpRuntime<'a> {
         stop_reason: Option<String>,
         capabilities: Value,
     ) -> Result<()> {
-        self.flush_pending_live_update()?;
         self.flush_pending_timeline_patch()?;
+        self.flush_pending_live_update()?;
         self.timeline_store.force_checkpoint()?;
         for store in self.branch_timeline_stores.values_mut() {
             store.force_checkpoint()?;
@@ -5678,31 +5728,37 @@ impl<'a> AcpRuntime<'a> {
                 .patch_at(timestamp, timing_patch_reason(&timeline_item));
         }
         self.timeline_revision = self.timeline_revision.saturating_add(1);
-        self.persist_timeline_update(timeline_item.clone())?;
+        let timeline_revision = self.timeline_revision;
+        let durable_watermark = self.persist_timeline_update(timeline_item.clone())?;
         update_runtime_hot_timeline_items(&mut self.timeline_items, &timeline_item);
         if emit_live_update {
-            self.emit_timeline_live_update(timeline_item)?;
+            self.emit_timeline_live_update(timeline_revision, timeline_item, durable_watermark)?;
         }
         if let Some(agent_prompt) = agent_prompt {
             self.timeline_revision = self.timeline_revision.saturating_add(1);
-            self.persist_timeline_update(agent_prompt.clone())?;
+            let timeline_revision = self.timeline_revision;
+            let durable_watermark = self.persist_timeline_update(agent_prompt.clone())?;
             update_runtime_hot_timeline_items(&mut self.timeline_items, &agent_prompt);
             if emit_live_update {
-                self.emit_timeline_live_update(agent_prompt)?;
+                self.emit_timeline_live_update(timeline_revision, agent_prompt, durable_watermark)?;
             }
         }
         if let Some(agent_result) = agent_result {
             self.timeline_revision = self.timeline_revision.saturating_add(1);
-            self.persist_timeline_update(agent_result.clone())?;
+            let timeline_revision = self.timeline_revision;
+            let durable_watermark = self.persist_timeline_update(agent_result.clone())?;
             update_runtime_hot_timeline_items(&mut self.timeline_items, &agent_result);
             if emit_live_update {
-                self.emit_timeline_live_update(agent_result)?;
+                self.emit_timeline_live_update(timeline_revision, agent_result, durable_watermark)?;
             }
         }
         Ok(())
     }
 
-    fn persist_timeline_update(&mut self, item: crate::acp::events::AcpUiEvent) -> Result<()> {
+    fn persist_timeline_update(
+        &mut self,
+        item: crate::acp::events::AcpUiEvent,
+    ) -> Result<Option<(u64, u64)>> {
         if is_streaming_timeline_update(&item) {
             let now = Instant::now();
             let should_write = self
@@ -5720,7 +5776,7 @@ impl<'a> AcpRuntime<'a> {
                 } else {
                     self.pending_timeline_patch = None;
                 }
-                self.persist_timeline_item_patch_now(self.timeline_revision, &item, now)?;
+                return self.persist_timeline_item_patch_now(self.timeline_revision, &item, now);
             } else {
                 if self
                     .pending_timeline_patch
@@ -5732,7 +5788,7 @@ impl<'a> AcpRuntime<'a> {
                 }
                 self.pending_timeline_patch = Some((self.timeline_revision, item));
             }
-            return Ok(());
+            return Ok(None);
         }
 
         self.flush_pending_timeline_patch()?;
@@ -5741,7 +5797,14 @@ impl<'a> AcpRuntime<'a> {
 
     fn flush_pending_timeline_patch(&mut self) -> Result<()> {
         if let Some((revision, item)) = self.pending_timeline_patch.take() {
-            self.persist_timeline_item_patch_now(revision, &item, Instant::now())?;
+            let durable_watermark =
+                self.persist_timeline_item_patch_now(revision, &item, Instant::now())?;
+            if let Some(pending_live) = self.pending_live_update.as_mut()
+                && pending_live.revision == revision
+                && pending_live.item.id == item.id
+            {
+                pending_live.durable_watermark = durable_watermark;
+            }
         }
         Ok(())
     }
@@ -5751,20 +5814,25 @@ impl<'a> AcpRuntime<'a> {
         revision: u64,
         item: &crate::acp::events::AcpUiEvent,
         now: Instant,
-    ) -> Result<()> {
+    ) -> Result<Option<(u64, u64)>> {
         let branch_id = event_branch_id(item);
-        let outcome = if branch_id == ROOT_BRANCH_ID {
-            self.timeline_store.upsert(revision, item)?
+        let (outcome, durable_watermark) = if branch_id == ROOT_BRANCH_ID {
+            let outcome = self.timeline_store.upsert(revision, item)?;
+            let watermark = self.timeline_store.durable_watermark_for_item_id(&item.id);
+            (outcome, watermark)
         } else {
             let policy = self.runtime_policy.timeline_compaction;
             let attempt_dir = self.paths.attempt_dir.clone();
-            self.branch_timeline_stores
+            let store = self
+                .branch_timeline_stores
                 .entry(branch_id.clone())
                 .or_insert(TimelineStore::open(
                     branch_timeline_path(&attempt_dir, &branch_id),
                     policy,
-                )?)
-                .upsert(revision, item)?
+                )?);
+            let outcome = store.upsert(revision, item)?;
+            let watermark = store.durable_watermark_for_item_id(&item.id);
+            (outcome, watermark)
         };
         if !matches!(
             outcome,
@@ -5772,10 +5840,15 @@ impl<'a> AcpRuntime<'a> {
         ) {
             self.last_timeline_patch_at = Some(now);
         }
-        Ok(())
+        Ok(durable_watermark)
     }
 
-    fn emit_timeline_live_update(&mut self, item: crate::acp::events::AcpUiEvent) -> Result<()> {
+    fn emit_timeline_live_update(
+        &mut self,
+        revision: u64,
+        item: crate::acp::events::AcpUiEvent,
+        durable_watermark: Option<(u64, u64)>,
+    ) -> Result<()> {
         if self.live_update.is_none() {
             return Ok(());
         }
@@ -5783,7 +5856,11 @@ impl<'a> AcpRuntime<'a> {
             if let Some(pending) =
                 take_pending_live_update_for_stream_switch(&mut self.pending_live_update, &item)
             {
-                self.emit_live_update_now(&pending, Instant::now())?;
+                self.emit_live_update_now(
+                    &pending.item,
+                    pending.durable_watermark,
+                    Instant::now(),
+                )?;
             }
             let now = Instant::now();
             let should_emit = self
@@ -5792,19 +5869,23 @@ impl<'a> AcpRuntime<'a> {
                 .unwrap_or(true);
             if should_emit {
                 self.pending_live_update = None;
-                self.emit_live_update_now(&item, now)?;
+                self.emit_live_update_now(&item, durable_watermark, now)?;
             } else {
-                self.pending_live_update = Some(item);
+                self.pending_live_update = Some(PendingAcpLiveUpdate {
+                    revision,
+                    item,
+                    durable_watermark,
+                });
             }
             return Ok(());
         }
         self.flush_pending_live_update()?;
-        self.emit_live_update_now(&item, Instant::now())
+        self.emit_live_update_now(&item, durable_watermark, Instant::now())
     }
 
     fn flush_pending_live_update(&mut self) -> Result<()> {
-        if let Some(item) = self.pending_live_update.take() {
-            self.emit_live_update_now(&item, Instant::now())?;
+        if let Some(pending) = self.pending_live_update.take() {
+            self.emit_live_update_now(&pending.item, pending.durable_watermark, Instant::now())?;
         }
         Ok(())
     }
@@ -5860,16 +5941,17 @@ impl<'a> AcpRuntime<'a> {
             })),
         };
         self.flush_pending_live_update()?;
-        self.emit_live_update_now(&event, now)
+        self.emit_live_update_now(&event, None, now)
     }
 
     fn emit_live_update_now(
         &mut self,
         item: &crate::acp::events::AcpUiEvent,
+        timeline_watermark: Option<(u64, u64)>,
         now: Instant,
     ) -> Result<()> {
         if let Some(live_update) = self.live_update {
-            live_update(item)?;
+            live_update(item, timeline_watermark)?;
             self.last_live_update_at = Some(now);
             if let Some(timing) = item.timing.as_ref() {
                 self.last_live_timing_update_at = Some(now);
@@ -6232,8 +6314,8 @@ impl<'a> AcpRuntime<'a> {
 
     fn shutdown(mut self) {
         debug!(adapter = %self.connection.adapter().adapter_id, "releasing ACP runtime session");
-        let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
+        let _ = self.flush_pending_live_update();
         if self.connection_key.is_some() {
             AcpSessionRuntimeRegistry::shared().invalidate(&self.paths.attempt_dir);
         }
@@ -6248,8 +6330,8 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn release_managed_session(mut self) {
-        let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
+        let _ = self.flush_pending_live_update();
         if self.connection_key.is_none() {
             self.shutdown();
             return;
@@ -6302,8 +6384,8 @@ impl<'a> AcpRuntime<'a> {
 
 impl Drop for AcpRuntime<'_> {
     fn drop(&mut self) {
-        let _ = self.flush_pending_live_update();
         let _ = self.flush_pending_timeline_patch();
+        let _ = self.flush_pending_live_update();
         if !self.retain_session_route
             && let Some(session_id) = self.session_id.as_deref()
         {
@@ -6565,12 +6647,12 @@ fn is_terminal_tool_status(status: Option<&str>) -> bool {
 }
 
 fn take_pending_live_update_for_stream_switch(
-    pending: &mut Option<crate::acp::events::AcpUiEvent>,
+    pending: &mut Option<PendingAcpLiveUpdate>,
     item: &crate::acp::events::AcpUiEvent,
-) -> Option<crate::acp::events::AcpUiEvent> {
+) -> Option<PendingAcpLiveUpdate> {
     if pending
         .as_ref()
-        .is_some_and(|pending| pending.id != item.id)
+        .is_some_and(|pending| pending.item.id != item.id)
     {
         return pending.take();
     }
@@ -6969,15 +7051,16 @@ mod tests {
         AcpPromptRouteUnavailable, AcpPromptTerminalState, AcpPromptTokenUsage, AcpRuntime,
         AcpRuntimePolicy, AcpUsageState, AttachedSessionReusePlan, CancelNotificationPhase,
         DOCTOR_DIAGNOSTIC_TARGET_SIZE, NESTED_AGENT_TRANSCRIPT_CAPABILITY,
-        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PriorAttemptMetrics,
-        PromptActivity, PromptBundle, PromptVisibility, ProviderFreshnessBaseline,
-        RuntimeStopProbe, SessionModelResolution, SessionRestoreCapabilities, SessionRestoreIntent,
-        SessionRestoreMethod, SessionRestorePlan, SessionRestorePlanError, SessionUpdatePhase,
-        acp_prompt_rpc_failure, active_context_compaction, active_timeline_streams,
-        active_timeline_streams_by_branch, append_bounded, attached_sync_required,
-        cancel_attempt_prompt, canonical_prompt_event_identity, catalog_observation_is_newer,
+        PROMPT_CANCEL_DRAIN_FRAME_BUDGET, PROMPT_CANCEL_TIMEOUT, PendingAcpLiveUpdate,
+        PriorAttemptMetrics, PromptActivity, PromptBundle, PromptVisibility,
+        ProviderFreshnessBaseline, RuntimeStopProbe, SessionModelResolution,
+        SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
+        SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
+        active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
+        append_bounded, attached_sync_required, cancel_attempt_prompt,
+        canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
-        drain_available_frames_bounded, drain_frames_until_quiet,
+        dispatch_attempt_prompt_cancel, drain_available_frames_bounded, drain_frames_until_quiet,
         drain_frames_until_quiet_with_timeout_error, drain_frames_until_route_watermark,
         evaluate_provider_revision, initialize_params, is_pending_retry_prompt_event,
         is_transport_interruption, latest_visible_turn_id, map_prompt_terminal_drain_error,
@@ -6989,8 +7072,9 @@ mod tests {
         resolve_session_model, retain_bounded_doctor_acp_failure_bundle,
         runtime_hot_timeline_items, session_config_fingerprint, session_load_params,
         session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
+        settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
+        stable_message_item_id, take_pending_live_update_for_stream_switch,
+        unregister_provider_control,
     };
 
     fn non_runtime_control_test_prompt(prompt_id: &str) -> PromptBundle {
@@ -7298,6 +7382,45 @@ mod tests {
         assert_eq!(settled.ended_seq, Some(23));
         assert_eq!(settled.raw.as_ref().unwrap()["retry"]["attempt"], 2);
         assert_eq!(settled.raw.as_ref().unwrap()["cancelled"], true);
+    }
+
+    #[test]
+    fn dispatch_cancel_does_not_settle_timeline_until_explicit_bookkeeping() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8Path::from_path(dir.path()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.to_path_buf());
+        let mut prompt = user_prompt_event(
+            1,
+            "session-1".to_string(),
+            "hi".to_string(),
+            Some("prompt-1".to_string()),
+            false,
+            Vec::new(),
+        );
+        prompt.status = Some("processing".to_string());
+        prompt.started_seq = Some(1);
+        prompt.ended_seq = Some(2);
+        prompt.raw.as_mut().unwrap()["retry"] = json!({
+            "attempt": 1,
+            "maxAttempts": 3,
+        });
+        append_timeline_patch(&paths.timeline, prompt.id.clone(), 2, &prompt).unwrap();
+
+        assert!(!dispatch_attempt_prompt_cancel(attempt_dir).unwrap());
+        let dispatched = load_timeline_items(&paths.timeline)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.id == prompt.id)
+            .expect("prompt remains queryable after control dispatch");
+        assert_eq!(dispatched.status.as_deref(), Some("processing"));
+
+        settle_attempt_prompt_interactions(attempt_dir).unwrap();
+        let settled = load_timeline_items(&paths.timeline)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.id == prompt.id)
+            .expect("prompt settles in the explicit bookkeeping phase");
+        assert_eq!(settled.status.as_deref(), Some("cancelled"));
     }
 
     #[test]
@@ -9096,22 +9219,26 @@ mod tests {
 
     #[test]
     fn stream_switch_takes_pending_live_update_before_overwrite() {
-        let mut pending = Some(AcpUiEvent {
-            id: "assistant-message-1".to_string(),
-            seq: 20,
-            timestamp: "20Z".to_string(),
-            kind: "textDelta".to_string(),
-            session_id: Some("session-1".to_string()),
-            content: Some("完整文本快照".to_string()),
-            title: None,
-            tool_call_id: None,
-            status: None,
-            started_seq: Some(10),
-            ended_seq: Some(20),
-            started_at: Some("10Z".to_string()),
-            ended_at: Some("20Z".to_string()),
-            timing: None,
-            raw: None,
+        let mut pending = Some(PendingAcpLiveUpdate {
+            revision: 20,
+            durable_watermark: Some((1, 20)),
+            item: AcpUiEvent {
+                id: "assistant-message-1".to_string(),
+                seq: 20,
+                timestamp: "20Z".to_string(),
+                kind: "textDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some("完整文本快照".to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: Some(10),
+                ended_seq: Some(20),
+                started_at: Some("10Z".to_string()),
+                ended_at: Some("20Z".to_string()),
+                timing: None,
+                raw: None,
+            },
         });
         let next_stream = AcpUiEvent {
             id: "session-plan-1".to_string(),
@@ -9134,37 +9261,42 @@ mod tests {
         let flushed =
             take_pending_live_update_for_stream_switch(&mut pending, &next_stream).unwrap();
 
-        assert_eq!(flushed.id, "assistant-message-1");
-        assert_eq!(flushed.content.as_deref(), Some("完整文本快照"));
+        assert_eq!(flushed.item.id, "assistant-message-1");
+        assert_eq!(flushed.item.content.as_deref(), Some("完整文本快照"));
+        assert_eq!(flushed.durable_watermark, Some((1, 20)));
         assert!(pending.is_none());
     }
 
     #[test]
     fn same_stream_keeps_pending_live_update_buffered() {
-        let mut pending = Some(AcpUiEvent {
-            id: "assistant-message-1".to_string(),
-            seq: 20,
-            timestamp: "20Z".to_string(),
-            kind: "textDelta".to_string(),
-            session_id: Some("session-1".to_string()),
-            content: Some("partial".to_string()),
-            title: None,
-            tool_call_id: None,
-            status: None,
-            started_seq: Some(10),
-            ended_seq: Some(20),
-            started_at: Some("10Z".to_string()),
-            ended_at: Some("20Z".to_string()),
-            timing: None,
-            raw: None,
+        let mut pending = Some(PendingAcpLiveUpdate {
+            revision: 20,
+            durable_watermark: None,
+            item: AcpUiEvent {
+                id: "assistant-message-1".to_string(),
+                seq: 20,
+                timestamp: "20Z".to_string(),
+                kind: "textDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some("partial".to_string()),
+                title: None,
+                tool_call_id: None,
+                status: None,
+                started_seq: Some(10),
+                ended_seq: Some(20),
+                started_at: Some("10Z".to_string()),
+                ended_at: Some("20Z".to_string()),
+                timing: None,
+                raw: None,
+            },
         });
-        let same_stream = pending.as_ref().unwrap().clone();
+        let same_stream = pending.as_ref().unwrap().item.clone();
 
         let flushed = take_pending_live_update_for_stream_switch(&mut pending, &same_stream);
 
         assert!(flushed.is_none());
         assert_eq!(
-            pending.and_then(|event| event.content),
+            pending.and_then(|event| event.item.content),
             Some("partial".to_string())
         );
     }
@@ -9878,6 +10010,8 @@ mod tests {
             node_id: "ai-dynamic1".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: None,
+            lifecycle_file: None,
+            turn_id: None,
         };
         let inner_probe = RuntimeStopProbe {
             turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -9886,6 +10020,8 @@ mod tests {
             node_id: "bootstrap".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: None,
+            lifecycle_file: None,
+            turn_id: None,
         };
 
         assert!(outer_probe.is_stopped());
@@ -9937,6 +10073,8 @@ mod tests {
             node_id: "ai-dynamic".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: Some(own_state),
+            lifecycle_file: None,
+            turn_id: None,
         };
         let paused_leaf_probe = RuntimeStopProbe {
             turn_control_mode: TurnControlMode::RuntimeControlled,
@@ -9945,6 +10083,8 @@ mod tests {
             node_id: "ai-dynamic".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: Some(sibling_state),
+            lifecycle_file: None,
+            turn_id: None,
         };
 
         assert!(!running_leaf_probe.is_stopped());
@@ -9986,6 +10126,8 @@ mod tests {
             node_id: "plan".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: Some(manual_check_state),
+            lifecycle_file: None,
+            turn_id: None,
         };
 
         assert!(!probe.is_stopped());
@@ -10015,9 +10157,42 @@ mod tests {
             node_id: "dev".to_string(),
             attempt_id: "attempt-001".to_string(),
             attempt_state_file: None,
+            lifecycle_file: None,
+            turn_id: None,
         };
 
         assert!(!probe.is_stopped());
+    }
+
+    #[test]
+    fn runtime_stop_probe_observes_durable_turn_cancel_before_provider_control_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = camino::Utf8PathBuf::from_path_buf(dir.path().join("run.json")).unwrap();
+        let lifecycle_file =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.snapshot.json")).unwrap();
+        crate::storage::write_json(
+            &lifecycle_file,
+            &json!({
+                "turnId": "turn-001",
+                "availability": "closing",
+                "liveTurnActivity": "cancelRequested",
+                "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+
+        let probe = RuntimeStopProbe {
+            turn_control_mode: TurnControlMode::NonRuntimeControlled,
+            run_file,
+            round_id: "round-001".to_string(),
+            node_id: "dev".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            attempt_state_file: None,
+            lifecycle_file: Some(lifecycle_file),
+            turn_id: Some("turn-001".to_string()),
+        };
+
+        assert!(probe.is_stopped());
     }
 
     #[test]

@@ -541,12 +541,6 @@ pub struct ConversationRunWorktreeVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ConversationSessionSwitchVm {
-    pub selected_session: Option<crate::view_models::AcpSessionVm>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ConversationSessionTreeVm {
     pub rounds: Vec<ConversationRoundNodeVm>,
     pub selected_session_key: Option<String>,
@@ -3398,45 +3392,9 @@ pub fn conversation_run_vm(
 
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
 
-    // Load the selected ACP session
-    let selected_session = if selected_session_key.is_some()
-        && let Some(ref leaf) = selected_leaf
-    {
-        if let (Some(outer_id), Some(outer_attempt)) = (
-            leaf.outer_node_id.as_deref(),
-            leaf.outer_attempt_id.as_deref(),
-        ) {
-            crate::view_models::dynamic_acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                &leaf.round_id,
-                outer_id,
-                outer_attempt,
-                &leaf.node_id,
-                &leaf.attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            crate::view_models::acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                &leaf.round_id,
-                &leaf.node_id,
-                &leaf.attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        }
-    } else {
-        None
-    };
+    // The run aggregate owns navigation and lifecycle only. ACPChatDialog is
+    // the single bounded正文 query boundary for the selected branch.
+    let selected_session: Option<crate::view_models::AcpSessionVm> = None;
 
     let input_attachments = input_attachments_vm(app, task_id);
 
@@ -4374,44 +4332,6 @@ fn conversation_run_worktree_vm(
     })
 }
 
-pub fn switch_conversation_session_vm(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    outer_node_id: Option<&str>,
-    outer_attempt_id: Option<&str>,
-) -> anyhow::Result<ConversationSessionSwitchVm> {
-    let selected_session =
-        if let (Some(outer_id), Some(outer_attempt)) = (outer_node_id, outer_attempt_id) {
-            crate::view_models::dynamic_acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                round_id,
-                outer_id,
-                outer_attempt,
-                node_id,
-                attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            crate::view_models::acp_session_vm(
-                app, task_id, run_id, round_id, node_id, attempt_id, None, None,
-            )
-            .ok()
-            .flatten()
-        };
-
-    let result = ConversationSessionSwitchVm { selected_session };
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -4431,9 +4351,8 @@ mod tests {
         create_conversation_run_vm, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
         find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
-        scheduled_content_snapshot, scheduled_task_vms_from_sources,
-        switch_conversation_session_vm, update_task_metadata_vm, validate_conversation_create_vm,
-        workflow_binding_missing_item,
+        scheduled_content_snapshot, scheduled_task_vms_from_sources, update_task_metadata_vm,
+        validate_conversation_create_vm, workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -6512,6 +6431,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        assert!(
+            vm.selected_session.is_none(),
+            "run aggregate must not query selected ACP正文"
+        );
         let serialized = serde_json::to_value(&vm).unwrap();
         assert!(serialized.get("title").is_none());
         assert!(serialized.get("autoTitle").is_none());
@@ -6789,31 +6712,6 @@ mod tests {
                 .iter()
                 .any(|session| session.node_id == "测试" && session.manual_check_pending)
         );
-    }
-
-    #[test]
-    fn switch_conversation_session_vm_returns_only_the_selected_session() {
-        let repo_root = temp_repo_root();
-        let app = App::new(repo_root);
-        write_conversation_assets_fixture(&app);
-
-        let switched = switch_conversation_session_vm(
-            &app,
-            "task-046",
-            "run-060",
-            "round-001",
-            "测试",
-            "attempt-002",
-            None,
-            None,
-        )
-        .unwrap();
-
-        assert!(switched.selected_session.is_none());
-        let serialized = serde_json::to_value(switched).unwrap();
-        assert!(serialized.get("selectedSession").is_some());
-        assert!(serialized.get("artifacts").is_none());
-        assert!(serialized.get("attachments").is_none());
     }
 
     fn temp_repo_root() -> Utf8PathBuf {

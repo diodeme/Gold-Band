@@ -104,6 +104,9 @@ function session(events: AcpUiEventVm[], status = 'running'): AcpSessionVm {
     restored: false,
     events,
     eventPage: {
+      generation: 1,
+      coveredRevision: newestSeq ?? 0,
+      newestRevision: newestSeq,
       loadedCount: events.length,
       total: events.length,
       oldestSeq,
@@ -119,10 +122,16 @@ function session(events: AcpUiEventVm[], status = 'running'): AcpSessionVm {
 }
 
 function update(eventUpdate: AcpUiEventVm): AcpSessionUpdatedEventVm {
-  return { ...locator, branchId: 'root', event: eventUpdate };
+  return {
+    ...locator,
+    branchId: 'root',
+    timelineGeneration: 1,
+    timelineRevision: eventUpdate.endedSeq ?? eventUpdate.seq,
+    event: eventUpdate,
+  };
 }
 
-async function renderDialog(acpSession: AcpSessionVm) {
+async function renderDialog(acpSession: AcpSessionVm, branchId = 'root') {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -132,6 +141,7 @@ async function renderDialog(acpSession: AcpSessionVm) {
         <ACPChatDialog
           session={acpSession}
           {...locator}
+          branchId={branchId}
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
@@ -233,7 +243,7 @@ describe('ACP session re-entry reconciliation', () => {
     }
   });
 
-  it('keeps reconciling a watermark-only gap after the initial retry window', async () => {
+  it('reconciles a watermark-only gap with one revision delta query', async () => {
     const prompt = event('prompt-gap', 1, 'userTextDelta', '检查项目', {
       raw: { source: 'goldBandPrompt', promptId: 'prompt-gap' },
     });
@@ -243,10 +253,6 @@ describe('ACP session re-entry reconciliation', () => {
       event('answer-gap', 9, 'textDelta', '延迟追平后的完整回答', { startedSeq: 2 }),
     ]);
     vi.mocked(getAcpSession)
-      .mockResolvedValueOnce(stale)
-      .mockResolvedValueOnce(stale)
-      .mockResolvedValueOnce(stale)
-      .mockResolvedValueOnce(stale)
       .mockResolvedValueOnce(stale)
       .mockResolvedValue(complete);
 
@@ -263,14 +269,107 @@ describe('ACP session re-entry reconciliation', () => {
 
     const { container, root } = await renderDialog(stale);
     try {
-      expect(container.textContent).not.toContain('延迟追平后的完整回答');
       await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 850));
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
       });
-      expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(6);
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(getAcpSession).mock.calls[1]?.[6]).toMatchObject({
+        afterRevision: 2,
+      });
       expect(container.textContent).toContain('延迟追平后的完整回答');
       expect([...container.querySelectorAll('[data-testid="markdown"]')]
         .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('keeps the animation gate closed and retries a failed replay delta', async () => {
+    const prompt = event('prompt-retry-gap', 1, 'userTextDelta', '检查项目', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-retry-gap' },
+    });
+    const stale = session([prompt, event('answer-retry-gap', 2, 'textDelta', '延迟')]);
+    const complete = session([
+      prompt,
+      event('answer-retry-gap', 9, 'textDelta', '重试后补齐的回答', { startedSeq: 2 }),
+    ]);
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(stale)
+      .mockRejectedValueOnce(new Error('temporary replay read failure'))
+      .mockResolvedValue(complete);
+
+    applyConversationEventToBranchSnapshots(update(event(
+      'answer-retry-gap',
+      9,
+      'textDelta',
+      '重试后补齐的回答',
+      {
+        startedSeq: 2,
+        raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) },
+      },
+    )));
+
+    const { container, root } = await renderDialog(stale);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 40));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(2);
+      expect([...container.querySelectorAll('[data-testid="markdown"]')]
+        .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 140));
+      });
+      expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(container.textContent).toContain('重试后补齐的回答');
+      expect([...container.querySelectorAll('[data-testid="markdown"]')]
+        .every((node) => node.getAttribute('data-streaming') === 'false')).toBe(true);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('accepts a newer compacted snapshot without repeatedly refreshing an older loss generation', async () => {
+    const compacted = session([
+      event('prompt-compacted', 1, 'userTextDelta', '检查压缩后的会话'),
+      event('answer-compacted', 9, 'textDelta', '当前页已经覆盖缺口'),
+    ]);
+    compacted.eventPage.generation = 2;
+    compacted.eventPage.coveredRevision = 9;
+    vi.mocked(getAcpSession).mockResolvedValue(compacted);
+
+    applyConversationEventToBranchSnapshots(update(event(
+      'answer-before-compaction',
+      4,
+      'textDelta',
+      '旧 generation 的大事件',
+      { raw: { oversized: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes) } },
+    )));
+
+    const { root } = await renderDialog(compacted);
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('does not query Agent branch content for a lifecycle-only notification', async () => {
+    const branch = { ...session([]), branchId: 'agent-a' };
+    vi.mocked(getAcpSession).mockResolvedValue(branch);
+
+    const { root } = await renderDialog(branch, 'agent-a');
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        runtime.listener?.({ ...locator, branchId: null });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(root);
     }

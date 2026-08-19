@@ -1025,7 +1025,7 @@ impl Default for PromptVisibility {
     }
 }
 
-pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent) -> Result<()>;
+pub type AcpLiveUpdate<'a> = &'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>;
 pub type AcpSessionUpdate<'a> = &'a dyn Fn() -> Result<()>;
 pub type AcpPromptAccepted<'a> = &'a dyn Fn(&str) -> Result<()>;
 
@@ -1457,6 +1457,8 @@ impl AcpProvider {
                     .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
                 turn_control_mode: req.turn_control_mode,
+                lifecycle_file: None,
+                turn_id: None,
             }),
         )?;
         let mut terminal = classify_acp_prompt_run(&run);

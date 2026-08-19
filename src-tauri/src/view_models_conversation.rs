@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use camino::Utf8Path;
@@ -22,9 +23,7 @@ use gold_band::app::{
 };
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
-use gold_band::domain::NodeType;
-use gold_band::domain::RunStatus;
-use gold_band::domain::{SessionMode, TurnControlMode};
+use gold_band::domain::{NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
@@ -34,6 +33,7 @@ use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
+use gold_band::runtime_error::RuntimeErrorInfo;
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
@@ -520,6 +520,7 @@ pub struct ConversationRunVm {
     pub resumable: bool,
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
+    pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
 }
@@ -1687,12 +1688,20 @@ fn runtime_error_message(
     run_id: &str,
     pause_reason: Option<&str>,
     run_outcome: Option<&str>,
+    paused_runtime_error: Option<&RuntimeErrorInfo>,
 ) -> Option<String> {
     if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("error-blocked") {
         return latest_control_failure_vm(app, task_id, run_id)
             .ok()
             .flatten()
             .map(|failure| failure.message);
+    }
+
+    if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("runtime-abnormal") {
+        return paused_runtime_error
+            .map(|error| error.diagnostic.trim())
+            .filter(|diagnostic| !diagnostic.is_empty())
+            .map(str::to_string);
     }
 
     if !matches!(
@@ -1712,6 +1721,73 @@ fn runtime_error_message(
                 format!("{}：{}", failure.title, failure.message)
             }
         })
+}
+
+const RUN_PAUSED_EVENT_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Reads a bounded tail of an append-only JSONL event file.
+///
+/// The leading partial line is discarded so JSON parsing never consumes a
+/// truncated event. An individual event larger than the bound is omitted
+/// instead of forcing the conversation summary path to load the whole log.
+fn run_event_tail(path: &Utf8Path) -> Option<String> {
+    let mut file = fs::File::open(path.as_std_path()).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let start = file_len.saturating_sub(RUN_PAUSED_EVENT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((file_len - start) as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    if start > 0 {
+        let newline = bytes.iter().position(|byte| *byte == b'\n')?;
+        bytes.drain(..=newline);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Reads the structured error for the current `runtime-abnormal` pause only.
+///
+/// `run.json` is the lifecycle authority. Events remain audit records, and can
+/// provide diagnostics only after their pause timestamp matches that authority.
+fn current_run_paused_runtime_error(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+) -> Option<RuntimeErrorInfo> {
+    if run.status != RunStatus::Paused || run.pause_reason != Some(PauseReason::RuntimeAbnormal) {
+        return None;
+    }
+
+    let events = run_event_tail(&app.paths.run_events_file(task_id, &run.id))?;
+    for line in events.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if event.get("type").and_then(|value| value.as_str()) != Some("run_paused") {
+            continue;
+        }
+        if event.get("timestamp").and_then(|value| value.as_str()) != Some(&run.updated_at)
+            || event
+                .pointer("/data/pauseReason")
+                .or_else(|| event.pointer("/data/pause_reason"))
+                .and_then(|value| value.as_str())
+                .map(normalize_lifecycle_code)
+                .as_deref()
+                != Some("runtime-abnormal")
+        {
+            return None;
+        }
+        let runtime_error = event
+            .pointer("/data/controlFailure/runtimeError")
+            .cloned()
+            .or_else(|| {
+                event
+                    .pointer("/data/control_failure/runtime_error")
+                    .cloned()
+            });
+        return runtime_error
+            .and_then(|value| serde_json::from_value::<RuntimeErrorInfo>(value).ok());
+    }
+    None
 }
 
 fn dynamic_leaf_runtime_error_message(
@@ -3401,6 +3477,7 @@ pub fn conversation_run_vm(
     let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
+    let paused_runtime_error = current_run_paused_runtime_error(app, task_id, &run);
     let runtime_error_message = selected_leaf
         .as_ref()
         .and_then(|leaf| dynamic_leaf_runtime_error_message(app, task_id, run_id, leaf))
@@ -3411,6 +3488,7 @@ pub fn conversation_run_vm(
                 run_id,
                 run_pause_reason.as_deref(),
                 run_outcome.as_deref(),
+                paused_runtime_error.as_ref(),
             )
         });
 
@@ -3490,6 +3568,7 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
+        runtime_error: paused_runtime_error,
         scheduled_task_id: conversation_metadata
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
@@ -4218,6 +4297,7 @@ pub fn create_conversation_run_vm(
                 resumable: false,
                 pause_reason: None,
                 runtime_error_message: None,
+                runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
             }
@@ -4299,6 +4379,7 @@ pub fn rerun_conversation_task_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
@@ -6679,6 +6760,179 @@ mod tests {
             vm.runtime_error_message.as_deref(),
             Some("Round 数已达上限：max rounds exceeded for $new-round: 2 > 1")
         );
+    }
+
+    #[test]
+    fn conversation_run_vm_exposes_runtime_abnormal_pause_error() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"run_started","timestamp":"2026-07-08T00:00:00Z","data":{"taskId":"task-trace","runId":"run-001"}}
+{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"config","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("ACP session config value `high` is unavailable for `reasoning_effort`")
+        );
+        let runtime_error = vm.runtime_error.as_ref().unwrap();
+        assert_eq!(
+            runtime_error.code.code,
+            "acp.session-config-value-unavailable"
+        );
+        assert_eq!(
+            runtime_error
+                .params
+                .get("configId")
+                .and_then(serde_json::Value::as_str),
+            Some("reasoning_effort")
+        );
+        assert_eq!(
+            runtime_error
+                .params
+                .get("availableValues")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_project_runtime_error_after_resume() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.run_events_file("task-trace", "run-001").as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_fall_back_past_current_pause_event() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        let historical_pause = r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#;
+        let current_pause = r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:04Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal"}}"#;
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            format!("{historical_pause}\n{current_pause}"),
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_project_runtime_error_for_other_pause_reason() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "process-interrupted"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.run_events_file("task-trace", "run-001").as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
     }
 
     #[test]

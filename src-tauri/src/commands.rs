@@ -3390,6 +3390,7 @@ pub async fn stop_active_session(
         request_auto_dispatch_suspension(&locator.attempt_dir(&app)).map_err(command_error)?;
     }
     let operation_id = Uuid::new_v4().to_string();
+    let control_operation_id = operation_id.clone();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
     let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
@@ -3400,7 +3401,8 @@ pub async fn stop_active_session(
                 suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
             }
         }
-        let attempt_dir = persist_active_session_stop(&control_app, &control_locator)?;
+        let attempt_dir =
+            persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
         let current_run = control_app
             .run_status(&control_locator.task_id, &control_locator.run_id)
             .map_err(command_error)?;
@@ -4146,34 +4148,9 @@ pub(crate) fn acp_session_update_emitter(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
-        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
-            context.outer_node_id.as_deref(),
-            context.outer_attempt_id.as_deref(),
-        ) {
-            dynamic_acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        } else {
-            acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        };
+        // Session lifecycle is a control-plane event. Publishing it must not
+        // rebuild or serialize timeline正文; page data is fetched only by the
+        // explicit session query/pagination path.
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -4185,7 +4162,7 @@ pub(crate) fn acp_session_update_emitter(
             &context.attempt_id,
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
-            session,
+            None,
         );
         Ok(())
     })
@@ -4334,9 +4311,38 @@ fn acp_live_event_context(
 }
 
 #[tauri::command]
-pub fn get_acp_session(
+pub async fn get_acp_session(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: Option<AcpSessionQueryInput>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    spawn_blocking_command(move || {
+        get_acp_session_from_app(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            query,
+            outer_node_id,
+            outer_attempt_id,
+        )
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn get_acp_session_from_app(
+    app: App,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -4364,7 +4370,6 @@ pub fn get_acp_session(
         "command-received",
         trace_started_at,
     );
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     log_acp_session_command_stage(
         trace_id.as_deref(),
         &branch_id,
@@ -5689,6 +5694,7 @@ fn stop_acp_session(
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
+    operation_id: &str,
 ) -> CommandResult<Utf8PathBuf> {
     let attempt_dir = locator.attempt_dir(app);
     let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
@@ -5720,6 +5726,19 @@ fn persist_active_session_stop(
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
     client::request_prompt_cancel(&attempt_dir);
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+        snapshot_path
+    } else {
+        session_path
+    };
+    gold_band::acp::events::request_session_stop(
+        &lifecycle_path,
+        operation_id,
+        &gold_band::acp::events::current_timestamp(),
+    )
+    .map_err(command_error)?;
     Ok(attempt_dir)
 }
 
@@ -5732,8 +5751,28 @@ fn spawn_active_session_stop_cleanup(
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         app.cancel_attempt_dir_best_effort(&attempt_dir);
-        if let Err(error) = client::cancel_attempt_prompt(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+        match client::cancel_attempt_prompt(&attempt_dir) {
+            Ok(false) => {
+                let snapshot_path = attempt_dir.join("acp.snapshot.json");
+                let session_path = attempt_dir.join("acp.session.json");
+                let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+                    snapshot_path
+                } else {
+                    session_path
+                };
+                if let Err(error) = gold_band::acp::events::persist_session_terminal(
+                    &lifecycle_path,
+                    gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                    "cancelled",
+                    &gold_band::acp::events::current_timestamp(),
+                ) {
+                    warn!(%error, %attempt_dir, "failed to settle accepted ACP stop without an active provider");
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            }
         }
         emit_acp_session_update(
             &app_handle,
@@ -9481,7 +9520,7 @@ mod tests {
         std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
 
         let started = std::time::Instant::now();
-        let attempt_dir = persist_active_session_stop(&app, &locator).unwrap();
+        let attempt_dir = persist_active_session_stop(&app, &locator, "operation-001").unwrap();
 
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();

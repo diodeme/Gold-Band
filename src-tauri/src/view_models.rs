@@ -1,10 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     str::FromStr,
-    sync::{LazyLock, Mutex},
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 
 use anyhow::Result;
@@ -3589,7 +3588,6 @@ pub fn dynamic_acp_session_vm(
     let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
-    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
     let has_preloaded = preloaded_session_json.is_some();
     if !has_preloaded
@@ -3602,7 +3600,7 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let mut session = if let Some(json) = preloaded_session_json {
+    let session = if let Some(json) = preloaded_session_json {
         normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
         load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
@@ -3620,14 +3618,6 @@ pub fn dynamic_acp_session_vm(
         node_id,
         attempt_id,
     );
-    let node_path = app.paths.dynamic_node_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        node_id,
-    );
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -3636,22 +3626,17 @@ pub fn dynamic_acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
-        &snapshot_path,
-        &timeline_path,
-        &raw_path,
-        &prompt_usage_path,
-        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
-    )?;
+    let diagnostics = AcpDiagnosticsScan {
+        error_count: 0,
+        last_error: None,
+        last_error_timestamp: None,
+    };
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
+        .map(str::to_string);
     let config = acp_session_config_vm(&session);
     let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
@@ -3664,7 +3649,12 @@ pub fn dynamic_acp_session_vm(
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    gold_band::acp::branches::prepare_agent_timeline_storage(&attempt_dir)?;
+    let agent_index = if gold_band::acp::timeline::timeline_has_agent_launches(&timeline_path)? {
+        gold_band::acp::branches::indexed_agent_index(&attempt_dir, &root_status)?
+    } else {
+        Vec::new()
+    };
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
     let stopping = is_acp_session_stopping_status(&status);
@@ -3847,7 +3837,6 @@ pub fn dynamic_acp_session_vm(
                 u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
             apply_persisted_attempt_token_totals(&mut u, &session);
-            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -3931,7 +3920,6 @@ pub fn acp_session_vm(
     let raw_path = app
         .paths
         .acp_raw_file(task_id, run_id, round_id, node_id, attempt_id);
-    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3956,7 +3944,7 @@ pub fn acp_session_vm(
         return Ok(None);
     }
 
-    let mut session = if let Some(json) = preloaded_session_json {
+    let session = if let Some(json) = preloaded_session_json {
         normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
         load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
@@ -4003,49 +3991,27 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let node_path = app
-        .paths
-        .node_file(task_id, run_id, round_id, node_id, attempt_id);
-    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    let diagnostics = AcpDiagnosticsScan {
+        error_count: 0,
+        last_error: None,
+        last_error_timestamp: None,
+    };
     trace_acp_session_query(
         &mut query_trace,
         "diagnostics",
         serde_json::json!({ "diagnosticBytes": diagnostics_path.metadata().ok().map(|metadata| metadata.len()) }),
-    );
-    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
-        &snapshot_path,
-        &timeline_path,
-        &raw_path,
-        &prompt_usage_path,
-        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
-    )?;
-    trace_acp_session_query(
-        &mut query_trace,
-        "attempt-usage-repair",
-        serde_json::json!({ "promptUsageBytes": prompt_usage_path.metadata().ok().map(|metadata| metadata.len()) }),
     );
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| extract_system_prompt_append(&raw_path));
+        .map(str::to_string);
     trace_acp_session_query(
         &mut query_trace,
         "system-prompt",
         serde_json::json!({ "found": system_prompt_append.is_some() }),
     );
-    apply_stale_session_completion_fuse(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        &node_path,
-        &mut session,
-    )?;
     trace_acp_session_query(
         &mut query_trace,
         "lifecycle-fuse",
@@ -4062,7 +4028,12 @@ pub fn acp_session_vm(
     );
     let default_event_limit = app.config.acp_chat_event_page_size;
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    gold_band::acp::branches::prepare_agent_timeline_storage(&attempt_dir)?;
+    let agent_index = if gold_band::acp::timeline::timeline_has_agent_launches(&timeline_path)? {
+        gold_band::acp::branches::indexed_agent_index(&attempt_dir, &root_status)?
+    } else {
+        Vec::new()
+    };
     trace_acp_session_query(
         &mut query_trace,
         "agent-index",
@@ -4270,7 +4241,6 @@ pub fn acp_session_vm(
             // Token breakdown shown in conversation UI is always the cumulative
             // ACP-attempt total, never the latest prompt response or timeline sample.
             apply_persisted_attempt_token_totals(&mut u, &session);
-            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -4506,70 +4476,6 @@ struct AcpActivityDetailCandidateVm {
     started_seq: u64,
 }
 
-// --- timeline scan cache ---
-
-const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
-
-struct CachedTimeline {
-    file_signature: Option<TimelineFileSignature>,
-    all_events: Vec<AcpUiEventVm>,
-    event_count: usize,
-    session_elapsed_seconds: Option<u64>,
-    latest_permission_events: HashMap<String, AcpUiEventVm>,
-    available_commands: Option<Vec<serde_json::Value>>,
-    usage: Option<AcpUsageVm>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TimelineFileSignature {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-struct TimelineCache {
-    entries: HashMap<String, CachedTimeline>,
-    order: VecDeque<String>,
-}
-
-static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
-    Mutex::new(TimelineCache {
-        entries: HashMap::new(),
-        order: VecDeque::new(),
-    })
-});
-
-fn timeline_cache_key(path: &camino::Utf8Path) -> String {
-    path.as_str().to_string()
-}
-
-fn timeline_file_signature(path: &camino::Utf8Path) -> Result<Option<TimelineFileSignature>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let metadata = fs::metadata(path.as_std_path())?;
-    Ok(Some(TimelineFileSignature {
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-    }))
-}
-
-fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
-    if let Some(pos) = cache.order.iter().position(|k| k == key) {
-        cache.order.remove(pos);
-    }
-    cache.order.push_back(key.to_string());
-}
-
-fn evict_timeline_cache(cache: &mut TimelineCache) {
-    while cache.order.len() > TIMELINE_CACHE_MAX_ENTRIES {
-        if let Some(oldest) = cache.order.pop_front() {
-            cache.entries.remove(&oldest);
-        }
-    }
-}
-
-// --- end timeline scan cache ---
-
 fn scan_acp_timeline(
     path: &camino::Utf8Path,
     query: Option<AcpSessionQueryInput>,
@@ -4604,83 +4510,99 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let file_signature = timeline_file_signature(path)?;
-
-    // Completed sessions may still receive a final timeline flush shortly after
-    // the snapshot flips terminal, so cache only while the file signature matches.
-    let cache_key = timeline_cache_key(path);
-    let (
-        all_events,
-        event_count,
-        session_elapsed_seconds,
-        latest_permission_events,
-        available_commands,
-        usage,
-    ) = if !session_active {
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache
-            .entries
-            .get(&cache_key)
-            .filter(|cached| cached.file_signature == file_signature)
-        {
-            let all_events = cached.all_events.clone();
-            let event_count = cached.event_count;
-            let session_elapsed_seconds = cached.session_elapsed_seconds;
-            let latest_permission_events = cached.latest_permission_events.clone();
-            let available_commands = cached.available_commands.clone();
-            let usage = cached.usage.clone();
-            touch_timeline_cache(&mut cache, &cache_key);
-            return paginate_timeline(
-                path,
-                &all_events,
-                event_count,
-                session_elapsed_seconds,
-                &latest_permission_events,
-                available_commands.as_ref(),
-                usage.as_ref(),
-                session_active,
-                after_seq,
-                before_seq,
-                limit,
-            );
-        }
-        drop(cache);
-        let result = parse_timeline_file(path, session_active)?;
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        cache.entries.insert(
-            cache_key.clone(),
-            CachedTimeline {
-                file_signature,
-                all_events: result.0.clone(),
-                event_count: result.1,
-                session_elapsed_seconds: result.2,
-                latest_permission_events: result.3.clone(),
-                available_commands: result.4.clone(),
-                usage: result.5.clone(),
-            },
-        );
-        touch_timeline_cache(&mut cache, &cache_key);
-        evict_timeline_cache(&mut cache);
-        result
-    } else {
-        parse_timeline_file(path, session_active)?
-    };
-
-    paginate_timeline(
-        path,
-        &all_events,
-        event_count,
-        session_elapsed_seconds,
-        &latest_permission_events,
-        available_commands.as_ref(),
-        usage.as_ref(),
-        session_active,
-        after_seq,
-        before_seq,
-        limit,
-    )
+    let indexed =
+        gold_band::acp::timeline::read_indexed_timeline_page(path, before_seq, after_seq, limit)?;
+    indexed_timeline_page_to_scan(path, indexed, session_active)
 }
 
+fn indexed_timeline_page_to_scan(
+    timeline_path: &camino::Utf8Path,
+    indexed: gold_band::acp::timeline::TimelineIndexedPage,
+    session_active: bool,
+) -> Result<AcpEventScan> {
+    let mut events = indexed
+        .events
+        .into_iter()
+        .map(|event| serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for event in &mut events {
+        normalize_turn_file_change_set_position(event);
+        if event.kind != "permissionRequest" && event.kind != "activitySummary" {
+            *event = compact_event_for_session(event.clone());
+        }
+    }
+    let latest_permission_events = indexed
+        .pending_permissions
+        .into_iter()
+        .map(|event| {
+            let event = serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)?;
+            Ok((permission_request_id_from_event(&event), event))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    include_latest_permission_events(&mut events, &latest_permission_events);
+    order_provider_history_by_prompt_anchors_vm(&mut events);
+    hydrate_timeline_events(timeline_path, &mut events)?;
+
+    let pending_elicitations = if session_active {
+        indexed
+            .pending_elicitations
+            .into_iter()
+            .map(|event| {
+                serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
+                    .map(|event| elicitation_vm_from_event(&event))
+                    .map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let projection_events = indexed
+        .latest_plan
+        .into_iter()
+        .map(|event| serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let timeline_projection = build_acp_timeline_projection(
+        &projection_events,
+        &latest_permission_events,
+        session_active,
+    );
+    let session_timing = indexed
+        .timing
+        .map(|timing| serde_json::from_value::<AcpSessionTimingVm>(serde_json::to_value(timing)?))
+        .transpose()?;
+    let session_elapsed_seconds = session_timing
+        .as_ref()
+        .map(|timing| timing.session_elapsed_seconds);
+    let usage = indexed.usage.map(|usage| AcpUsageVm {
+        used: usage.used,
+        size: usage.size,
+        cost_amount_usd: usage.cost_amount_usd,
+        ..AcpUsageVm::default()
+    });
+    Ok(AcpEventScan {
+        events,
+        event_page: AcpEventPageVm {
+            loaded_count: indexed.loaded_semantic_blocks,
+            total: indexed.total_semantic_blocks,
+            oldest_seq: indexed.oldest_seq,
+            newest_seq: indexed.newest_seq,
+            has_older: indexed.has_older,
+            has_newer: indexed.has_newer,
+            oldest_cursor: indexed.oldest_seq.map(format_timeline_cursor),
+            newest_cursor: indexed.newest_seq.map(format_timeline_cursor),
+        },
+        timeline_projection,
+        event_count: indexed.event_count,
+        session_elapsed_seconds,
+        session_timing,
+        latest_permission_events,
+        pending_elicitations,
+        available_commands: indexed.available_commands,
+        usage,
+    })
+}
+
+#[cfg(test)]
 fn merge_confirmed_usage_observation(
     usage: &mut Option<AcpUsageVm>,
     used: Option<u64>,
@@ -4717,6 +4639,7 @@ fn apply_persisted_attempt_token_totals(usage: &mut AcpUsageVm, session: &serde_
         .and_then(|value| value.as_u64());
 }
 
+#[cfg(test)]
 fn apply_recovered_attempt_token_totals(
     usage: &mut AcpUsageVm,
     recovery: &gold_band::acp::usage::AcpAttemptUsageRecovery,
@@ -4731,6 +4654,7 @@ fn apply_recovered_attempt_token_totals(
     usage.total_tokens = recovery.totals.total_tokens;
 }
 
+#[cfg(test)]
 fn parse_timeline_file(
     path: &camino::Utf8Path,
     session_active: bool,
@@ -4925,6 +4849,7 @@ fn raw_equal_ignoring_history_placement_vm(
     without_placement(existing) == without_placement(incoming)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProviderHistoryTurnKeyVm {
     session_id: Option<String>,
@@ -4951,6 +4876,7 @@ struct PlacedProviderHistoryGroupVm {
     items: Vec<AcpUiEventVm>,
 }
 
+#[cfg(test)]
 fn remove_reclassified_local_provider_history_vm(items: &mut Vec<AcpUiEventVm>) {
     let mut local_prompts = HashMap::<Option<String>, Vec<String>>::new();
     for item in items
@@ -5003,6 +4929,7 @@ fn remove_reclassified_local_provider_history_vm(items: &mut Vec<AcpUiEventVm>) 
     });
 }
 
+#[cfg(test)]
 fn has_provider_history_placement_vm(raw: Option<&Value>) -> bool {
     raw.and_then(|raw| raw.get("historyPlacement"))
         .and_then(Value::as_object)
@@ -5020,6 +4947,7 @@ fn is_provider_history_event_vm(event: &AcpUiEventVm) -> bool {
         == Some("providerHistory")
 }
 
+#[cfg(test)]
 fn provider_history_turn_key_vm(event: &AcpUiEventVm) -> Option<ProviderHistoryTurnKeyVm> {
     let raw = event.raw.as_ref()?;
     if raw.get("source").and_then(|value| value.as_str()) != Some("providerHistory") {
@@ -5038,6 +4966,7 @@ fn provider_history_turn_key_vm(event: &AcpUiEventVm) -> Option<ProviderHistoryT
     })
 }
 
+#[cfg(test)]
 fn normalize_provider_history_prompt(value: &str) -> String {
     value
         .replace("\r\n", "\n")
@@ -5220,6 +5149,7 @@ fn provider_history_item_index_vm(event: &AcpUiEventVm) -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn paginate_timeline(
     timeline_path: &camino::Utf8Path,
     all_events: &[AcpUiEventVm],
@@ -5348,6 +5278,7 @@ fn hydrate_timeline_events(
     Ok(())
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct ConversationSemanticBlockRange {
     start: usize,
@@ -5356,6 +5287,7 @@ struct ConversationSemanticBlockRange {
     newest_seq: u64,
 }
 
+#[cfg(test)]
 fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSemanticBlockRange> {
     let mut blocks = Vec::<ConversationSemanticBlockRange>::new();
     let mut activity_start: Option<usize> = None;
@@ -5393,6 +5325,7 @@ fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSema
 
 const ACTIVITY_DETAIL_INITIAL_LIMIT: usize = 40;
 
+#[cfg(test)]
 fn compact_selected_semantic_blocks(
     events: &[AcpUiEventVm],
     blocks: &[ConversationSemanticBlockRange],
@@ -5416,6 +5349,7 @@ fn compact_selected_semantic_blocks(
     selected
 }
 
+#[cfg(test)]
 fn activity_summary_event(
     block: &ConversationSemanticBlockRange,
     audit_events: &[&AcpUiEventVm],
@@ -5757,6 +5691,7 @@ pub fn acp_tool_detail_vm_for_attempt(
     Ok(AcpToolDetailVm { event: detail })
 }
 
+#[cfg(test)]
 fn semantic_block_range(
     events: &[AcpUiEventVm],
     start: usize,
@@ -5779,6 +5714,7 @@ fn semantic_block_range(
     }
 }
 
+#[cfg(test)]
 fn is_conversation_semantic_event(
     event: &AcpUiEventVm,
     resolved_elicitation_ids: &HashSet<String>,
@@ -5805,6 +5741,7 @@ fn is_conversation_semantic_event(
     )
 }
 
+#[cfg(test)]
 fn elicitation_id_from_event(event: &AcpUiEventVm) -> Option<String> {
     event
         .raw
@@ -5832,6 +5769,7 @@ fn is_conversation_activity_event(event: &AcpUiEventVm) -> bool {
 #[derive(Debug, Clone, Default)]
 struct AgentEventMetaVm {
     agent_launch: bool,
+    #[cfg(test)]
     tool_name: Option<String>,
 }
 
@@ -5848,6 +5786,7 @@ fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
             .get("launchedAgentExecutionId")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| !value.is_empty()),
+        #[cfg(test)]
         tool_name: conversation
             .get("toolName")
             .and_then(serde_json::Value::as_str)
@@ -5974,6 +5913,7 @@ fn build_acp_timeline_projection(
     }
 }
 
+#[cfg(test)]
 fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde_json::Value>> {
     let raw = event.raw.as_ref()?.as_object()?;
     let container = raw
@@ -5987,6 +5927,7 @@ fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde
         .or_else(|| raw.get("rawInput").and_then(serde_json::Value::as_object))
 }
 
+#[cfg(test)]
 fn structured_tool_paths(event: &AcpUiEventVm) -> Vec<String> {
     let mut paths = Vec::<String>::new();
     if let Some(input) = tool_raw_input(event) {
@@ -6013,6 +5954,7 @@ fn structured_tool_paths(event: &AcpUiEventVm) -> Vec<String> {
     paths
 }
 
+#[cfg(test)]
 fn normalize_metric_path(path: &str) -> String {
     path.trim()
         .replace('\\', "/")
@@ -6020,6 +5962,7 @@ fn normalize_metric_path(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
     all_events.iter().rev().find_map(|event| {
         event.timing.as_ref().map(|timing| AcpSessionTimingVm {
@@ -6290,6 +6233,7 @@ fn parse_epoch_timestamp(value: &str) -> Option<u64> {
     value.trim_end_matches('Z').parse::<u64>().ok()
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct AcpSessionElapsedState {
     elapsed_seconds: u64,
@@ -6302,6 +6246,7 @@ struct AcpSessionElapsedState {
     user_wait_seconds: u64,
 }
 
+#[cfg(test)]
 impl AcpSessionElapsedState {
     fn observe_event(&mut self, event: &AcpUiEventVm) {
         if is_gold_band_user_prompt_event(event) {
@@ -6457,6 +6402,7 @@ impl AcpSessionElapsedState {
     }
 }
 
+#[cfg(test)]
 fn compacted_wait_started_at(event: &AcpUiEventVm, ended_at: u64) -> Option<u64> {
     let started_at = event
         .started_at
@@ -6475,6 +6421,7 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
             == Some("goldBandPrompt")
 }
 
+#[cfg(test)]
 fn is_session_elapsed_progress_event(event: &AcpUiEventVm) -> bool {
     let session_update = event
         .raw
@@ -6554,6 +6501,7 @@ fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
     )
 }
 
+#[cfg(test)]
 fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
     let mut error_count = 0usize;
     let mut last_error = None;
@@ -6594,6 +6542,7 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
 
 /// Extract system prompt append from the beginning of the raw ACP frame file.
 /// Only reads the first 500 lines — system prompt is carried by the first session lifecycle frame.
+#[cfg(test)]
 fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -7082,6 +7031,7 @@ fn mode_display_name(modes: Option<&serde_json::Value>, mode_id: &str) -> Option
         .map(str::to_string)
 }
 
+#[cfg(test)]
 fn is_session_update(event: &AcpUiEventVm, session_update: &str) -> bool {
     event
         .raw
@@ -7110,6 +7060,7 @@ fn canonical_permission_request_id(value: &str) -> String {
     current.to_string()
 }
 
+#[cfg(test)]
 fn insert_latest_permission_event(
     latest_permission_events: &mut HashMap<String, AcpUiEventVm>,
     event: &AcpUiEventVm,
@@ -7177,6 +7128,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
     }
 }
 
+#[cfg(test)]
 fn pending_elicitation_vms(
     events: &[AcpUiEventVm],
     session_active: bool,

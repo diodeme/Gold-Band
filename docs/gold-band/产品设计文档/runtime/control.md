@@ -71,6 +71,10 @@ Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立�
 - 当前进程 prompt registry 只决定 Agent 是否正在 `Starting / Accepted / Running / CancelRequested`；客户端重启后 registry 为空，磁盘 session status 不能重建 live turn。
 - ACP session metadata 只决定 session 可用性与最近一轮历史结果；`completed/cancelled/failed` 不代表节点完成，也不代表 Runtime 正在跳转。
 
+ACP session lifecycle 自身使用 attempt 级单调 `acpRevision`，与 `run.json.execution.revision` 和 prompt queue revision 分离。一次停止至少产生两个不同 revision：accepted 提交 `stopping / cancel-requested`，terminal 提交 `idle / cancelled`。后端 terminal 更新只发布 locator、branch、operation、turn identity、availability、activity、status 与 stop reason 等轻量 patch，不为状态通知读取会话正文；前端按 facet revision 合并，同 revision 下 terminal 优先，旧 accepted、旧 snapshot 或旧 live event 不能覆盖终态。AUTO 并行 sibling 各自按完整 leaf locator 和自己的 ACP revision 收敛，父 runtime revision 不替代 leaf lifecycle。
+
+停止控制面与 timeline 数据面严格分离：stop accepted 不等待 timeline index 迁移、checkpoint、session VM 或 diagnostics；provider cancel notification、response、route watermark 与 quiet drain 共用从 runtime 首次观察取消开始的 10 秒 deadline。retry backoff、permission、elicitation 和无 active provider 的停止收尾按 snapshot/signal 中的 canonical timeline identity 做 index locator + revision/status CAS，重复停止幂等。deadline 到期只表示 provider route 未在边界内收敛，仍必须提交 terminal lifecycle 并隔离不可安全复用的 session，不能继续永久保持 stopping。
+
 Provider adapter 只能在 prompt 被可靠接受后通过 `prompt_accepted` 回调把权威 execution phase 从 `StartingNode` 推进为 `RunningNode`；provider 返回 success 不能补做或绕过该转换，后续 finalize、manual check 与 edge transition 只接受已进入 `RunningNode` 的 attempt。
 
 AI-DYNAMIC 的状态归属必须按聚合边界拆分：

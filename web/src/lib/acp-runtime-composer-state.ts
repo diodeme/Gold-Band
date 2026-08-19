@@ -270,12 +270,48 @@ export function mergeConversationAttemptLifecycle(
   local: ConversationAttemptLifecycleVm | null | undefined,
   incoming: ConversationAttemptLifecycleVm,
 ): ConversationAttemptLifecycleVm {
+  const localAcpRevision = local?.acp.revision ?? 0;
+  const incomingAcpRevision = incoming.acp.revision ?? 0;
+  let acp = incoming.acp;
+  let acpFromLocal = false;
+  if (local && localAcpRevision > incomingAcpRevision) {
+    acp = local.acp;
+    acpFromLocal = true;
+  } else if (
+    local &&
+    localAcpRevision === incomingAcpRevision &&
+    local.acp.turnId === incoming.acp.turnId &&
+    isTerminalAcpFacet(local.acp) &&
+    !isTerminalAcpFacet(incoming.acp)
+  ) {
+    acp = local.acp;
+    acpFromLocal = true;
+  }
+
+  const localRuntimeRevision = local?.runtime.revision ?? 0;
+  const incomingRuntimeRevision = incoming.runtime.revision ?? 0;
+  const runtime = local && localRuntimeRevision > incomingRuntimeRevision
+    ? local.runtime
+    : incoming.runtime;
   const localQueue = local?.promptQueue;
   const incomingQueue = incoming.promptQueue;
+  const promptQueue = localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)
+    ? localQueue
+    : incomingQueue;
+  if (local && acpFromLocal && localRuntimeRevision >= incomingRuntimeRevision) {
+    return { ...local, promptQueue };
+  }
+  if (acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
+    return { ...incoming, acp, runtime, promptQueue };
+  }
   if (localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)) {
     return { ...incoming, promptQueue: localQueue };
   }
   return incoming;
+}
+
+function isTerminalAcpFacet(acp: ConversationAttemptLifecycleVm['acp']) {
+  return acp.liveTurnActivity === 'idle' && acp.latestTurnStatus !== 'none' && !acp.stopping;
 }
 
 export function isSessionActiveStatus(status?: string | null) {

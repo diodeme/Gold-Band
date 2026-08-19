@@ -2338,6 +2338,7 @@ mod tests {
                 }))
                 .unwrap(),
                 created_at: "1Z".to_string(),
+                timeline_identity: None,
             },
         )
         .unwrap();

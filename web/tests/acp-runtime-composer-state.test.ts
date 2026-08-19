@@ -988,6 +988,58 @@ describe('deriveAcpRuntimeComposerState', () => {
 });
 
 describe('mergeConversationAttemptLifecycle', () => {
+  it('rejects a late stopping facet after the same turn already became terminal', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+    const lateAccepted = lifecycle({
+      acp: {
+        revision: 41,
+        turnId: 'turn-1',
+        sessionAvailability: 'closing',
+        liveTurnActivity: 'cancel-requested',
+        latestTurnStatus: 'none',
+        stopping: true,
+      },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(terminal, lateAccepted);
+
+    expect(merged.acp).toBe(terminal.acp);
+    expect(merged.acp.latestTurnStatus).toBe('cancelled');
+    expect(merged.acp.stopping).toBe(false);
+    expect(merged.composer.mode).toBe('normal');
+  });
+
+  it('keeps terminal dominance when duplicate revisions arrive out of order', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+    const staleRunning = lifecycle({
+      acp: {
+        revision: 42,
+        turnId: 'turn-1',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+    });
+
+    expect(mergeConversationAttemptLifecycle(terminal, staleRunning).acp).toBe(terminal.acp);
+  });
+
   it('keeps a newer Direct queue when a stale lifecycle snapshot arrives after stop', () => {
     const local = lifecycle({
       promptQueue: {

@@ -321,7 +321,7 @@ impl AcpUsageState {
 use crate::acp::branches::{
     ROOT_BRANCH_ID, agent_prompt_event, agent_result_event, annotate_event_branch,
     branch_route_for_event, branch_timeline_path, event_branch_id, load_all_branch_events,
-    migrate_legacy_agent_timeline,
+    prepare_agent_timeline_storage,
 };
 use crate::acp::commands::{AcpCommandItem, parse_available_commands};
 use crate::acp::connection::{
@@ -330,21 +330,22 @@ use crate::acp::connection::{
 };
 use crate::acp::elicitation::{
     ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
-    cancel_pending_elicitation_requests, elicitation_response_result,
-    remove_elicitation_signal_files, upsert_elicitation_response_event,
+    bind_pending_elicitation_timeline_identity, cancel_pending_elicitation_requests,
+    elicitation_response_result, remove_elicitation_signal_files,
     wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpLatestTurnStatus, AcpPromptRetryState, AcpSessionAvailability,
-    AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic,
-    append_raw_frame, append_structured_diagnostic, cancel_latest_processing_prompt_retry,
-    current_timestamp, is_semantically_empty_agent_content, latest_timeline_source_seq,
-    load_session_metadata, normalize_session_update, permission_request_event,
-    user_prompt_event_with_quotes, write_session_metadata,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptRetryState,
+    AcpSessionAvailability, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
+    append_diagnostic, append_raw_frame, append_structured_diagnostic,
+    cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
+    latest_timeline_source_seq, load_session_metadata, normalize_session_update,
+    permission_request_event, user_prompt_event_with_quotes, write_session_metadata,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
-    PermissionResponseState, acp_permission_response_result, cancel_pending_permission_requests,
+    PermissionResponseState, acp_permission_response_result,
+    bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
     permission_response_file, remove_permission_signal_files,
     wait_for_permission_response_until_cancelled, write_pending_permission,
 };
@@ -1780,6 +1781,7 @@ impl AcpTimelineStreamSlot {
         self.suspended_stable = None;
     }
 
+    #[cfg(test)]
     fn latest(&self) -> Option<&AcpTimelineStreamState> {
         self.current.as_ref().or(self.suspended_stable.as_ref())
     }
@@ -2812,11 +2814,29 @@ fn read_prior_attempt_metrics(snapshot_path: &Utf8Path) -> PriorAttemptMetrics {
 
 impl<'a> AcpRuntime<'a> {
     fn cancel_pending_prompt_interactions(&mut self, decided_at: String) -> Result<()> {
+        let pending = self.timeline_items.values().cloned().collect::<Vec<_>>();
         cancel_pending_prompt_interactions(&self.paths.attempt_dir, decided_at)?;
-        let timeline_items = load_all_branch_events(&self.paths.attempt_dir)?;
-        self.timing_state = AcpTimingState::from_timeline_item_refs(&timeline_items);
-        self.active_timeline_streams = active_timeline_streams_by_branch(&timeline_items);
-        self.timeline_items = runtime_hot_timeline_items(timeline_items);
+        for item in pending {
+            let branch_id = event_branch_id(&item);
+            let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
+            let settled = match item.kind.as_str() {
+                "permissionRequest" => {
+                    crate::acp::timeline::read_indexed_timeline_item(&timeline_path, &item.id)?
+                        .map(|indexed| indexed.event)
+                }
+                "elicitationRequest" => crate::acp::timeline::read_indexed_timeline_item(
+                    &timeline_path,
+                    &format!("{}-response", item.id),
+                )?
+                .map(|indexed| indexed.event),
+                _ => None,
+            };
+            if let Some(settled) = settled {
+                self.timing_state.observe_event(&settled);
+                update_runtime_hot_timeline_items(&mut self.timeline_items, &settled);
+                self.emit_timeline_live_update(settled)?;
+            }
+        }
         Ok(())
     }
 
@@ -2976,7 +2996,7 @@ impl<'a> AcpRuntime<'a> {
             paths.provider_pid.as_std_path(),
             connection.pid().to_string(),
         )?;
-        migrate_legacy_agent_timeline(&paths.attempt_dir)?;
+        prepare_agent_timeline_storage(&paths.attempt_dir)?;
         let timeline_store =
             TimelineStore::open(paths.timeline.clone(), runtime_policy.timeline_compaction)?;
         let loaded_timeline_items = load_all_branch_events(&paths.attempt_dir)?;
@@ -5033,20 +5053,46 @@ impl<'a> AcpRuntime<'a> {
             event.status = Some("cancelled".to_string());
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
+        let branch_id = event_branch_id(&event);
         self.persist_event(&event)?;
+        let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
+        if let Some(indexed) =
+            crate::acp::timeline::read_indexed_pending_permission(&timeline_path, &request_id)?
+        {
+            bind_pending_permission_timeline_identity(
+                &self.paths.attempt_dir,
+                &request_id,
+                crate::acp::timeline::TimelineItemIdentity {
+                    branch_id: branch_id.clone(),
+                    item_id: indexed.event.id,
+                    revision: indexed.revision,
+                },
+            )?;
+        }
         let response = wait_for_permission_response_until_cancelled(
             &self.paths.attempt_dir,
             &request_id,
             || self.is_prompt_cancel_requested(),
         )?;
-        self.seq += 1;
-        let decision_event = permission_decision_timeline_event(
-            self.seq,
-            &request_id,
-            &response,
-            self.timeline_items.get(&format!("permission-{request_id}")),
-        );
-        self.persist_event(&decision_event)?;
+        let settled = crate::acp::timeline::read_indexed_timeline_item(
+            &timeline_path,
+            &format!("permission-{request_id}"),
+        )?
+        .filter(|indexed| indexed.event.status.as_deref() != Some("pending"));
+        if let Some(settled) = settled {
+            self.timing_state.observe_event(&settled.event);
+            update_runtime_hot_timeline_items(&mut self.timeline_items, &settled.event);
+            self.emit_timeline_live_update(settled.event)?;
+        } else {
+            self.seq += 1;
+            let decision_event = permission_decision_timeline_event(
+                self.seq,
+                &request_id,
+                &response,
+                self.timeline_items.get(&format!("permission-{request_id}")),
+            );
+            self.persist_event(&decision_event)?;
+        }
         let _ = remove_permission_signal_files(&self.paths.attempt_dir, &request_id);
         let result = acp_permission_response_result(response)?;
         let frame = json!({
@@ -5158,6 +5204,7 @@ impl<'a> AcpRuntime<'a> {
                 jsonrpc_id: rpc_id.clone(),
                 request: request.clone(),
                 created_at: current_timestamp(),
+                timeline_identity: None,
             },
         )?;
 
@@ -5168,7 +5215,22 @@ impl<'a> AcpRuntime<'a> {
             elicitation_id.clone(),
             &request,
         );
+        let branch_id = event_branch_id(&event);
         self.persist_event(&event)?;
+        let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
+        if let Some(indexed) =
+            crate::acp::timeline::read_indexed_pending_elicitation(&timeline_path, &elicitation_id)?
+        {
+            bind_pending_elicitation_timeline_identity(
+                &self.paths.attempt_dir,
+                &elicitation_id,
+                crate::acp::timeline::TimelineItemIdentity {
+                    branch_id: branch_id.clone(),
+                    item_id: indexed.event.id,
+                    revision: indexed.revision,
+                },
+            )?;
+        }
 
         // 3. 同步阻塞等待用户响应（含超时保护）
         let response = wait_for_elicitation_response_until_cancelled(
@@ -5177,13 +5239,6 @@ impl<'a> AcpRuntime<'a> {
             ELICITATION_DEFAULT_TIMEOUT,
             || self.is_prompt_cancel_requested(),
         )?;
-        upsert_elicitation_response_event(
-            &self.paths.attempt_dir,
-            &elicitation_id,
-            &response.action,
-            response.content.clone(),
-        )?;
-
         // 4. 构造 JSON-RPC response 并发送
         let result = elicitation_response_result(&response);
         let response_frame = json!({
@@ -5194,17 +5249,24 @@ impl<'a> AcpRuntime<'a> {
         self.append_outbound_frame(&response_frame)?;
         self.connection.send_response(rpc_id, result)?;
 
-        self.seq += 1;
-        let response_event = crate::acp::events::elicitation_response_event(
-            self.seq,
-            elicitation_id.clone(),
-            match response.action {
-                crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
-                crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
-            },
-            response.content.clone(),
-        );
-        self.persist_event(&response_event)?;
+        if crate::acp::timeline::read_indexed_timeline_item(
+            &timeline_path,
+            &format!("{elicitation_id}-response"),
+        )?
+        .is_none()
+        {
+            self.seq += 1;
+            let response_event = crate::acp::events::elicitation_response_event(
+                self.seq,
+                elicitation_id.clone(),
+                match response.action {
+                    crate::acp::elicitation::ElicitationAction::Accept => "accept".to_string(),
+                    crate::acp::elicitation::ElicitationAction::Decline => "decline".to_string(),
+                },
+                response.content.clone(),
+            );
+            self.persist_event(&response_event)?;
+        }
         let _ = remove_elicitation_signal_files(&self.paths.attempt_dir, &elicitation_id);
 
         Ok(())
@@ -5437,6 +5499,10 @@ impl<'a> AcpRuntime<'a> {
     ) -> Result<()> {
         self.flush_pending_live_update()?;
         self.flush_pending_timeline_patch()?;
+        self.timeline_store.force_checkpoint()?;
+        for store in self.branch_timeline_stores.values_mut() {
+            store.force_checkpoint()?;
+        }
         let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
         write_session_metadata(&self.paths.snapshot, &metadata)
     }
@@ -5466,6 +5532,24 @@ impl<'a> AcpRuntime<'a> {
         let runtime_control_timeline_scan_complete = previous_metadata
             .as_ref()
             .is_some_and(|session| session.runtime_control_timeline_scan_complete);
+        let turn_id = self
+            .prompt_retry
+            .as_ref()
+            .map(|retry| retry.prompt_id.clone())
+            .or_else(|| {
+                previous_metadata
+                    .as_ref()
+                    .and_then(|session| session.turn_id.clone())
+            });
+        let prompt_event_id = self
+            .prompt_retry
+            .as_ref()
+            .and_then(|retry| retry.prompt_event_id.clone())
+            .or_else(|| {
+                previous_metadata
+                    .as_ref()
+                    .and_then(|session| session.prompt_event_id.clone())
+            });
         AcpSessionMetadata {
             adapter_id: self.connection.adapter().adapter_id.clone(),
             adapter_display_name: self.connection.adapter().display_name.clone(),
@@ -5482,11 +5566,31 @@ impl<'a> AcpRuntime<'a> {
                 "completed" => AcpLatestTurnStatus::Completed,
                 "cancelled" | "canceled" => AcpLatestTurnStatus::Cancelled,
                 "failed" => AcpLatestTurnStatus::Failed,
+                "pending" | "accepted" | "running" | "cancelling" | "cancel-requested"
+                | "closing" => AcpLatestTurnStatus::None,
                 _ => previous_metadata
                     .as_ref()
                     .map(|metadata| metadata.latest_turn_status)
                     .unwrap_or_default(),
             },
+            acp_revision: previous_metadata
+                .as_ref()
+                .map(|metadata| metadata.acp_revision)
+                .unwrap_or_default(),
+            turn_id,
+            prompt_event_id,
+            live_turn_activity: match status {
+                "pending" => AcpLiveTurnActivity::Starting,
+                "accepted" => AcpLiveTurnActivity::Accepted,
+                "running" => AcpLiveTurnActivity::Running,
+                "cancelling" | "cancel-requested" | "closing" => {
+                    AcpLiveTurnActivity::CancelRequested
+                }
+                _ => AcpLiveTurnActivity::Idle,
+            },
+            lifecycle_operation_id: previous_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.lifecycle_operation_id.clone()),
             restored,
             stop_reason,
             capabilities,

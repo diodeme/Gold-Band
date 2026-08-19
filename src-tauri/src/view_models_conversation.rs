@@ -652,10 +652,15 @@ pub struct ConversationControlFacetVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAcpFacetVm {
+    pub revision: u64,
+    pub turn_id: Option<String>,
+    pub prompt_event_id: Option<String>,
     pub session_availability: String,
     pub live_turn_activity: String,
     pub latest_turn_status: String,
     pub stopping: bool,
+    pub stop_reason: Option<String>,
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2209,6 +2214,9 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             .to_string(),
         },
         acp: ConversationAcpFacetVm {
+            revision: 0,
+            turn_id: None,
+            prompt_event_id: None,
             session_availability: acp_session_availability(
                 session_status.as_deref(),
                 session_established,
@@ -2216,6 +2224,8 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             live_turn_activity: live_phase.unwrap_or("idle").to_string(),
             latest_turn_status: acp_latest_turn_status(session_status.as_deref()),
             stopping: acp_stopping,
+            stop_reason: None,
+            operation_id: None,
         },
         display_status,
         runtime_display,
@@ -2384,6 +2394,7 @@ pub fn conversation_attempt_lifecycle_vm(
             attempt_control_mode(&attempt_dir, is_orchestrated),
             session_presence.established,
         );
+        attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
         return Ok(lifecycle);
     }
@@ -2434,8 +2445,63 @@ pub fn conversation_attempt_lifecycle_vm(
         attempt_control_mode(&attempt_dir, is_orchestrated),
         session_presence.established,
     );
+    attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
     Ok(lifecycle)
+}
+
+fn attach_acp_lifecycle_header(
+    attempt_dir: &Utf8Path,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    let snapshot = attempt_dir.join("acp.snapshot.json");
+    let session = attempt_dir.join("acp.session.json");
+    let header = [snapshot.as_path(), session.as_path()]
+        .into_iter()
+        .find_map(|path| {
+            gold_band::acp::events::read_lifecycle_header(path)
+                .ok()
+                .flatten()
+        });
+    let Some(header) = header else { return };
+    lifecycle.acp.revision = header.revision;
+    lifecycle.acp.turn_id = header.turn_id;
+    lifecycle.acp.prompt_event_id = header.prompt_event_id;
+    lifecycle.acp.session_availability = match header.availability {
+        gold_band::acp::events::AcpSessionAvailability::Established => "established",
+        gold_band::acp::events::AcpSessionAvailability::Restorable => "restorable",
+        gold_band::acp::events::AcpSessionAvailability::Unavailable => "unavailable",
+        gold_band::acp::events::AcpSessionAvailability::Closing => "closing",
+    }
+    .to_string();
+    lifecycle.acp.live_turn_activity = match header.live_turn_activity {
+        gold_band::acp::events::AcpLiveTurnActivity::Idle => "idle",
+        gold_band::acp::events::AcpLiveTurnActivity::Starting => "starting",
+        gold_band::acp::events::AcpLiveTurnActivity::Accepted => "accepted",
+        gold_band::acp::events::AcpLiveTurnActivity::Running => "running",
+        gold_band::acp::events::AcpLiveTurnActivity::CancelRequested => "cancel-requested",
+    }
+    .to_string();
+    lifecycle.acp.latest_turn_status = match header.latest_turn_status {
+        gold_band::acp::events::AcpLatestTurnStatus::None => "none",
+        gold_band::acp::events::AcpLatestTurnStatus::Completed => "completed",
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled => "cancelled",
+        gold_band::acp::events::AcpLatestTurnStatus::Failed => "failed",
+    }
+    .to_string();
+    lifecycle.acp.stopping =
+        header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
+    lifecycle.acp.stop_reason = header.stop_reason;
+    lifecycle.acp.operation_id = header.operation_id;
+    if lifecycle.acp.stopping {
+        lifecycle.display_status = "cancelling".to_string();
+        lifecycle.composer.mode = "stopping".to_string();
+        lifecycle.composer.submit_target = "none".to_string();
+        lifecycle.composer.processing_kind = "stopping".to_string();
+        lifecycle.composer.status_key = Some("acp.stopping".to_string());
+        lifecycle.composer.can_stop = true;
+        lifecycle.composer.lock_input = true;
+    }
 }
 
 #[cfg(test)]

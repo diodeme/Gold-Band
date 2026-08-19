@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
+use std::sync::{LazyLock, Mutex};
 
 use agent_client_protocol_schema::v1::{CreateElicitationRequest, ElicitationScope};
 use anyhow::Result;
@@ -9,7 +11,6 @@ use serde_json::Value;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::acp::control::AcpRuntimeControlCursor;
-use crate::artifacts::json_artifact_display_span;
 use crate::provider::UserPromptQuote;
 use crate::storage::{
     append_jsonl, append_jsonl_unlocked, atomic_write_file, ensure_parent_dir, read_json,
@@ -22,6 +23,10 @@ const CLAUDE_AGENT_TOOL_NAMES: [&str; 2] = ["agent", "task"];
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +53,20 @@ pub struct AcpSessionMetadata {
     pub availability: AcpSessionAvailability,
     #[serde(default)]
     pub latest_turn_status: AcpLatestTurnStatus,
+    /// Monotonic revision for the ACP lifecycle facet. This is intentionally
+    /// independent from timeline item, runtime and prompt-queue revisions.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub acp_revision: u64,
+    /// Stable logical turn identity used to reject a late non-terminal update
+    /// for a turn that has already reached a terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_id: Option<String>,
+    #[serde(default)]
+    pub live_turn_activity: AcpLiveTurnActivity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_operation_id: Option<String>,
     pub restored: bool,
     pub stop_reason: Option<String>,
     pub capabilities: Value,
@@ -140,6 +159,34 @@ pub enum AcpLatestTurnStatus {
     Completed,
     Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AcpLiveTurnActivity {
+    #[default]
+    Idle,
+    Starting,
+    Accepted,
+    Running,
+    CancelRequested,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpLifecycleHeader {
+    pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_event_id: Option<String>,
+    pub availability: AcpSessionAvailability,
+    pub live_turn_activity: AcpLiveTurnActivity,
+    pub latest_turn_status: AcpLatestTurnStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
 }
 
 /// Durable retry identity for the latest logical prompt turn.
@@ -1168,47 +1215,28 @@ pub fn append_timeline_patch(
 /// arrive while no ACP runtime owns an active prompt (for example during
 /// retry backoff), so cancellation cannot depend on runtime-local state.
 pub fn cancel_latest_processing_prompt_retry(path: &Utf8Path, decided_at: String) -> Result<bool> {
-    with_jsonl_file_lock(path, || {
-        let mut items = load_timeline_items_unlocked(path)?;
-        let Some(event) = items
-            .iter_mut()
-            .filter(|event| {
-                is_gold_band_user_prompt_event(event)
-                    && event.status.as_deref() == Some("processing")
-                    && event
-                        .raw
-                        .as_ref()
-                        .and_then(|raw| raw.pointer("/retry/attempt"))
-                        .and_then(Value::as_u64)
-                        .is_some_and(|attempt| attempt > 0)
+    let attempt_dir = path.parent().unwrap_or(path);
+    let snapshot = attempt_dir.join("acp.snapshot.json");
+    let session = attempt_dir.join("acp.session.json");
+    let prompt_event_id = [snapshot.as_path(), session.as_path()]
+        .into_iter()
+        .find_map(|metadata_path| {
+            read_json::<Value>(metadata_path).ok().and_then(|metadata| {
+                metadata
+                    .get("promptEventId")
+                    .or_else(|| metadata.pointer("/promptRetry/promptEventId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             })
-            .max_by_key(|event| event.ended_seq.unwrap_or(event.seq))
-        else {
-            return Ok(false);
-        };
-        let revision = latest_timeline_source_seq_unlocked(path)?.saturating_add(1);
-        event.status = Some("cancelled".to_string());
-        event.ended_seq = Some(revision);
-        event.ended_at = Some(decided_at);
-        let raw = event.raw.get_or_insert_with(|| serde_json::json!({}));
-        if !raw.is_object() {
-            *raw = serde_json::json!({});
-        }
-        raw["cancelled"] = Value::Bool(true);
-        let mut storage_event = event.clone();
-        crate::acp::timeline::externalize_timeline_event_for_storage(path, &mut storage_event)?;
-        append_jsonl_unlocked(
+        });
+    Ok(matches!(
+        crate::acp::timeline::settle_latest_processing_retry_prompt(
             path,
-            &AcpTimelinePatch {
-                patch_type: "timelinePatch".to_string(),
-                item_id: storage_event.id.clone(),
-                revision,
-                op: "upsert".to_string(),
-                item: storage_event,
-            },
-        )?;
-        Ok(true)
-    })
+            prompt_event_id.as_deref(),
+            decided_at,
+        )?,
+        crate::acp::timeline::TimelineSettleOutcome::Applied
+    ))
 }
 
 pub fn load_timeline_items(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -1220,54 +1248,7 @@ pub fn annotate_latest_runtime_control_output(
     artifact_name: &str,
     kind: &str,
 ) -> Result<bool> {
-    let mut items = load_timeline_items(path)?;
-    let Some(index) = items
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, item)| {
-            if item.kind != "textDelta" {
-                return None;
-            }
-            let content = item.content.as_deref()?;
-            json_artifact_display_span(content).map(|span| (index, span))
-        })
-        .map(|(index, _)| index)
-    else {
-        return Ok(false);
-    };
-
-    let content = items[index].content.as_deref().unwrap_or_default();
-    let Some(span) = json_artifact_display_span(content) else {
-        return Ok(false);
-    };
-    let display = serde_json::json!({
-        "artifactName": artifact_name,
-        "kind": kind,
-        "jsonText": span.json_text,
-        "start": utf16_index(content, span.start),
-        "end": utf16_index(content, span.end),
-        "jsonStart": utf16_index(content, span.json_start),
-        "jsonEnd": utf16_index(content, span.json_end),
-        "fenced": span.fenced,
-        "parseStatus": span.parse_status,
-    });
-
-    let item = &mut items[index];
-    let raw = item.raw.get_or_insert_with(|| serde_json::json!({}));
-    if !raw.is_object() {
-        *raw = serde_json::json!({});
-    }
-    if let Some(object) = raw.as_object_mut() {
-        object.insert("runtimeControlOutputDisplay".to_string(), display);
-    }
-    let revision = latest_timeline_source_seq(path).saturating_add(1);
-    append_timeline_patch(path, item.id.clone(), revision, item)?;
-    Ok(true)
-}
-
-fn utf16_index(content: &str, byte_index: usize) -> usize {
-    content[..byte_index].encode_utf16().count()
+    crate::acp::timeline::annotate_latest_runtime_control_output(path, artifact_name, kind)
 }
 
 pub(crate) fn load_timeline_items_unlocked(path: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -1554,8 +1535,260 @@ fn latest_timeline_source_seq_unlocked(path: &Utf8Path) -> Result<u64> {
     Ok(latest)
 }
 
+const SESSION_METADATA_LOCK_STRIPES: usize = 64;
+static SESSION_METADATA_LOCKS: LazyLock<Vec<Mutex<()>>> = LazyLock::new(|| {
+    (0..SESSION_METADATA_LOCK_STRIPES)
+        .map(|_| Mutex::new(()))
+        .collect()
+});
+
+fn session_metadata_lock(path: &Utf8Path) -> &Mutex<()> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    &SESSION_METADATA_LOCKS[(hasher.finish() as usize) % SESSION_METADATA_LOCK_STRIPES]
+}
+
+fn lifecycle_header_from_value(value: &Value) -> AcpLifecycleHeader {
+    let availability = value
+        .get("availability")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let latest_turn_status = value
+        .get("latestTurnStatus")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    let live_turn_activity = value
+        .get("liveTurnActivity")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_else(|| {
+            if availability == AcpSessionAvailability::Closing {
+                AcpLiveTurnActivity::CancelRequested
+            } else {
+                AcpLiveTurnActivity::Idle
+            }
+        });
+    AcpLifecycleHeader {
+        revision: value
+            .get("acpRevision")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        turn_id: value
+            .get("turnId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                value
+                    .pointer("/promptRetry/promptId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+        prompt_event_id: value
+            .get("promptEventId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                value
+                    .pointer("/promptRetry/promptEventId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+        availability,
+        live_turn_activity,
+        latest_turn_status,
+        stop_reason: value
+            .get("stopReason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        operation_id: value
+            .get("lifecycleOperationId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+}
+
+fn lifecycle_is_terminal(header: &AcpLifecycleHeader) -> bool {
+    header.live_turn_activity == AcpLiveTurnActivity::Idle
+        && header.latest_turn_status != AcpLatestTurnStatus::None
+}
+
+fn lifecycle_fingerprint(
+    header: &AcpLifecycleHeader,
+) -> (
+    Option<&str>,
+    Option<&str>,
+    AcpSessionAvailability,
+    AcpLiveTurnActivity,
+    AcpLatestTurnStatus,
+    Option<&str>,
+) {
+    (
+        header.turn_id.as_deref(),
+        header.prompt_event_id.as_deref(),
+        header.availability,
+        header.live_turn_activity,
+        header.latest_turn_status,
+        header.stop_reason.as_deref(),
+    )
+}
+
+fn apply_lifecycle_header(value: &mut Value, header: &AcpLifecycleHeader) {
+    value["acpRevision"] = serde_json::json!(header.revision);
+    value["availability"] = serde_json::to_value(header.availability).unwrap_or(Value::Null);
+    value["liveTurnActivity"] =
+        serde_json::to_value(header.live_turn_activity).unwrap_or(Value::Null);
+    value["latestTurnStatus"] =
+        serde_json::to_value(header.latest_turn_status).unwrap_or(Value::Null);
+    for (key, field) in [
+        ("turnId", header.turn_id.as_ref()),
+        ("promptEventId", header.prompt_event_id.as_ref()),
+        ("stopReason", header.stop_reason.as_ref()),
+        ("lifecycleOperationId", header.operation_id.as_ref()),
+    ] {
+        if let Some(field) = field {
+            value[key] = Value::String(field.clone());
+        } else if let Some(object) = value.as_object_mut() {
+            object.remove(key);
+        }
+    }
+}
+
+/// Merge a metadata rewrite with the durable ACP lifecycle header. A late
+/// accepted/running write for the same logical turn can never overwrite an
+/// already committed terminal state.
+fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
+    let Some(current) = current else {
+        let mut header = lifecycle_header_from_value(incoming);
+        header.revision = header.revision.max(1);
+        apply_lifecycle_header(incoming, &header);
+        return;
+    };
+    let current_header = lifecycle_header_from_value(current);
+    let mut incoming_header = lifecycle_header_from_value(incoming);
+    if incoming_header.turn_id.is_none() {
+        incoming_header.turn_id = current_header.turn_id.clone();
+    }
+    if incoming_header.prompt_event_id.is_none() {
+        incoming_header.prompt_event_id = current_header.prompt_event_id.clone();
+    }
+    if incoming_header.operation_id.is_none() {
+        incoming_header.operation_id = current_header.operation_id.clone();
+    }
+    let same_turn = incoming_header.turn_id == current_header.turn_id;
+    if same_turn
+        && lifecycle_is_terminal(&current_header)
+        && !lifecycle_is_terminal(&incoming_header)
+    {
+        apply_lifecycle_header(incoming, &current_header);
+        return;
+    }
+    if lifecycle_fingerprint(&incoming_header) == lifecycle_fingerprint(&current_header) {
+        incoming_header.revision = incoming_header.revision.max(current_header.revision);
+    } else {
+        incoming_header.revision = incoming_header
+            .revision
+            .max(current_header.revision.saturating_add(1));
+    }
+    apply_lifecycle_header(incoming, &incoming_header);
+}
+
 pub fn write_session_metadata(path: &Utf8Path, metadata: &AcpSessionMetadata) -> Result<()> {
-    write_json(path, metadata)
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    let current = path
+        .exists()
+        .then(|| read_json::<Value>(path))
+        .transpose()?;
+    let mut incoming = serde_json::to_value(metadata)?;
+    merge_session_lifecycle(current.as_ref(), &mut incoming);
+    write_json(path, &incoming)
+}
+
+/// Persist the stop-accepted control fact without opening timeline, raw or
+/// diagnostics files. The provider finalizer later advances this same header
+/// to an idle terminal revision.
+pub fn request_session_stop(
+    path: &Utf8Path,
+    operation_id: &str,
+    decided_at: &str,
+) -> Result<AcpLifecycleHeader> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    let mut value = if path.exists() {
+        read_json::<Value>(path)?
+    } else {
+        serde_json::json!({
+            "availability": "unavailable",
+            "latestTurnStatus": "none",
+            "createdAt": decided_at,
+        })
+    };
+    let current = lifecycle_header_from_value(&value);
+    if lifecycle_is_terminal(&current) {
+        return Ok(current);
+    }
+    let mut accepted = current;
+    accepted.revision = accepted.revision.saturating_add(1).max(1);
+    accepted.availability = AcpSessionAvailability::Closing;
+    accepted.live_turn_activity = AcpLiveTurnActivity::CancelRequested;
+    accepted.operation_id = Some(operation_id.to_string());
+    if accepted.turn_id.is_none() {
+        accepted.turn_id = Some(format!("stop:{operation_id}"));
+    }
+    apply_lifecycle_header(&mut value, &accepted);
+    value["updatedAt"] = Value::String(decided_at.to_string());
+    write_json(path, &value)?;
+    Ok(accepted)
+}
+
+pub fn persist_session_terminal(
+    path: &Utf8Path,
+    latest_turn_status: AcpLatestTurnStatus,
+    stop_reason: &str,
+    decided_at: &str,
+) -> Result<AcpLifecycleHeader> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    let mut value = if path.exists() {
+        read_json::<Value>(path)?
+    } else {
+        serde_json::json!({
+            "availability": "unavailable",
+            "latestTurnStatus": "none",
+            "createdAt": decided_at,
+        })
+    };
+    let current = lifecycle_header_from_value(&value);
+    if lifecycle_is_terminal(&current) && current.latest_turn_status == latest_turn_status {
+        return Ok(current);
+    }
+    let mut terminal = current;
+    terminal.revision = terminal.revision.saturating_add(1).max(1);
+    terminal.availability = if value
+        .get("sessionId")
+        .or_else(|| value.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        AcpSessionAvailability::Established
+    } else {
+        AcpSessionAvailability::Unavailable
+    };
+    terminal.live_turn_activity = AcpLiveTurnActivity::Idle;
+    terminal.latest_turn_status = latest_turn_status;
+    terminal.stop_reason = Some(stop_reason.to_string());
+    apply_lifecycle_header(&mut value, &terminal);
+    value["updatedAt"] = Value::String(decided_at.to_string());
+    write_json(path, &value)?;
+    Ok(terminal)
+}
+
+pub fn read_lifecycle_header(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(lifecycle_header_from_value(&read_json::<Value>(
+        path,
+    )?)))
 }
 
 /// Loads ACP metadata and performs the development-stage, one-time migration
@@ -2173,13 +2406,13 @@ fn extract_status(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpLatestTurnStatus, AcpSessionAvailability, AcpSessionMetadata, AcpTimingState,
-        AcpUiEvent, agent_transcript_tool_output, annotate_latest_runtime_control_output,
-        append_raw_frame, append_structured_diagnostic, append_timeline_patch,
-        cancel_latest_processing_prompt_retry, compact_live_conversation_event,
-        context_compaction_phase, elicitation_request_event, elicitation_response_event,
-        extract_usage_fields, is_semantically_empty_agent_content, kind_to_ui_kind,
-        latest_timeline_source_seq, load_session_metadata, load_timeline_items,
+        AcpLatestTurnStatus, AcpLiveTurnActivity, AcpSessionAvailability, AcpSessionMetadata,
+        AcpTimingState, AcpUiEvent, agent_transcript_tool_output,
+        annotate_latest_runtime_control_output, append_raw_frame, append_structured_diagnostic,
+        append_timeline_patch, cancel_latest_processing_prompt_retry,
+        compact_live_conversation_event, context_compaction_phase, elicitation_request_event,
+        elicitation_response_event, extract_usage_fields, is_semantically_empty_agent_content,
+        kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
         normalize_session_update, permission_request_event, user_prompt_event,
         user_prompt_event_with_quotes, write_timeline_items,
     };
@@ -2187,6 +2420,60 @@ mod tests {
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    #[test]
+    fn terminal_lifecycle_dominates_a_late_stop_accepted_write_for_the_same_turn() {
+        let current = json!({
+            "acpRevision": 8,
+            "turnId": "turn-1",
+            "promptEventId": "prompt-event-1",
+            "availability": "established",
+            "liveTurnActivity": "idle",
+            "latestTurnStatus": "cancelled",
+            "stopReason": "cancelled"
+        });
+        let mut late_accepted = json!({
+            "acpRevision": 7,
+            "turnId": "turn-1",
+            "promptEventId": "prompt-event-1",
+            "availability": "closing",
+            "liveTurnActivity": "cancelRequested",
+            "latestTurnStatus": "none"
+        });
+
+        super::merge_session_lifecycle(Some(&current), &mut late_accepted);
+
+        let header = super::lifecycle_header_from_value(&late_accepted);
+        assert_eq!(header.revision, 8);
+        assert_eq!(header.live_turn_activity, AcpLiveTurnActivity::Idle);
+        assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Cancelled);
+        assert_eq!(header.stop_reason.as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn terminal_lifecycle_advances_the_stop_accepted_revision() {
+        let current = json!({
+            "acpRevision": 11,
+            "turnId": "turn-1",
+            "availability": "closing",
+            "liveTurnActivity": "cancelRequested",
+            "latestTurnStatus": "none"
+        });
+        let mut terminal = json!({
+            "acpRevision": 11,
+            "turnId": "turn-1",
+            "availability": "established",
+            "liveTurnActivity": "idle",
+            "latestTurnStatus": "cancelled",
+            "stopReason": "cancelled"
+        });
+
+        super::merge_session_lifecycle(Some(&current), &mut terminal);
+
+        let header = super::lifecycle_header_from_value(&terminal);
+        assert_eq!(header.revision, 12);
+        assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::Cancelled);
+    }
 
     #[test]
     fn live_tool_event_keeps_input_but_defers_output_and_provider_metadata() {

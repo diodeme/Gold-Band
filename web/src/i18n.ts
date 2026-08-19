@@ -483,6 +483,9 @@ const resources = {
           "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
           "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
           "prompt-queue-session-busy": "当前会话仍在运行，请停止后再手动使用。",
+          "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
+          "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
+          "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
           "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
         },
         workflow: {
@@ -2644,6 +2647,9 @@ const resources = {
           "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
           "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
           "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+          "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
+          "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
+          "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
           "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
         },
         workflow: {

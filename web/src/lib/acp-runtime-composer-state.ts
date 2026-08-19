@@ -47,7 +47,7 @@ export interface AcpRuntimeComposerStateInput {
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
-  localTurnInFlight?: boolean;
+  localTurnId?: string | null;
   cancelling: boolean;
   stopCommandPending: boolean;
   turnAccepted: boolean;
@@ -87,24 +87,33 @@ export function deriveAcpRuntimeComposerState(
   const backendWorkspacePreparing = backend?.mode === 'runtime-active'
     && backendProcessingKind === 'preparing-workspace';
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
-  const localTurnInFlight = Boolean(input.localTurnInFlight);
   const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
     input.lifecycle?.acp.liveTurnActivity ?? 'idle',
   );
-  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
-    (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none'
-      || (!input.lifecycle && isSessionTerminalStatus(input.acpStatus))
+  const lifecycleTerminal = !lifecycleAcpRunning
+    && (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none';
+  const lifecycleMatchesLocalTurn = Boolean(
+    input.localTurnId
+      && input.lifecycle?.acp.turnId
+      && input.lifecycle.acp.turnId === input.localTurnId,
   );
+  const acpTerminal = lifecycleTerminal
+    ? (!input.localTurnId || lifecycleMatchesLocalTurn)
+    : (!input.lifecycle && !input.localTurnId && isSessionTerminalStatus(input.acpStatus));
+  const localTurnInFlight = !acpTerminal && Boolean(input.localTurnId) && (
+    input.sending || input.awaitingResponse || input.waitingForOptimisticPrompt
+  );
+  const sending = input.sending && !acpTerminal;
   const acpActive = !acpTerminal && lifecycleAcpRunning;
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
   const waitingForPermission = input.waitingForPermission;
   const initialTimelinePending = Boolean(input.initialTimelinePending);
-  const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
+  const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
   const stopInProgress = cancelling || stopCommandPending || backendStopping;
   const waitingForOptimisticPrompt = !staleTerminalSnapshot && input.waitingForOptimisticPrompt;
-  const turnSubmitting = (input.sending || waitingForOptimisticPrompt) && !input.turnAccepted;
+  const turnSubmitting = (sending || waitingForOptimisticPrompt) && !input.turnAccepted;
   const awaitingResponse = !staleTerminalSnapshot && input.awaitingResponse;
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = false;
@@ -137,7 +146,7 @@ export function deriveAcpRuntimeComposerState(
   );
   const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
   const activePromptLocked =
-    input.sending ||
+    sending ||
     waitingForOptimisticPrompt ||
     awaitingResponse ||
     initialTimelinePending ||
@@ -160,10 +169,10 @@ export function deriveAcpRuntimeComposerState(
   const canSubmit = (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments))
     && submitTarget !== 'none'
     && !queueAtCapacity
-    && !(input.sending && submitTarget !== 'queue-prompt')
+    && !(sending && submitTarget !== 'queue-prompt')
     && !inputDisabled;
   const processingKind = processingKindForInput(
-    input,
+    { ...input, sending },
     stopInProgress,
     turnSubmitting,
     awaitingResponse,
@@ -191,7 +200,7 @@ export function deriveAcpRuntimeComposerState(
       (backendWorkspacePreparing && Boolean(backend?.canStop)) ||
       sessionActive ||
       awaitingResponse ||
-      input.sending ||
+      sending ||
       waitingForOptimisticPrompt ||
       localTurnInFlight ||
       cancelling
@@ -241,7 +250,44 @@ export function shouldSettleRuntimeContinueSubmission(
 }
 
 export function isAcceptedQueuePromptSubmitKind(kind: string) {
-  return kind === 'queued' || kind === 'acp-session';
+  return kind === 'queued' || kind === 'acp-session' || kind === 'acp-session-started';
+}
+
+export function isAcceptedAcpPromptSubmitKind(kind: string) {
+  return kind === 'acp-session' || kind === 'acp-session-started';
+}
+
+export function isTerminalLifecycleForTurn(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  turnId: string | null | undefined,
+) {
+  return Boolean(
+    turnId
+      && lifecycle?.acp.turnId === turnId
+      && isTerminalAcpFacet(lifecycle.acp),
+  );
+}
+
+/** Lifecycle-only terminal patches settle transient composer state. */
+export function isTerminalAcpLifecycle(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+) {
+  return Boolean(lifecycle && isTerminalAcpFacet(lifecycle.acp));
+}
+
+/**
+ * Once an ACP lifecycle facet is available, it is authoritative over a
+ * session snapshot. A terminal snapshot may belong to the previous turn
+ * while the lifecycle has already admitted the next one.
+ */
+export function shouldSettleAcpComposerTransientState(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  sessionStatus: string | null | undefined,
+  localTurnId: string | null | undefined,
+) {
+  if (!lifecycle) return isSessionTerminalStatus(sessionStatus);
+  return isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle.acp.turnId === localTurnId);
 }
 
 function shouldRouteDirectSubmissionToQueue(input: {

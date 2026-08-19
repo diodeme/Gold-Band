@@ -811,6 +811,7 @@ pub struct AcpSessionQueryInput {
     pub branch_id: Option<String>,
     pub before_seq: Option<u64>,
     pub after_seq: Option<u64>,
+    pub after_revision: Option<u64>,
     pub before_cursor: Option<String>,
     pub after_cursor: Option<String>,
     pub event_limit: Option<usize>,
@@ -875,6 +876,9 @@ fn trace_acp_session_query(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpEventPageVm {
+    pub generation: u64,
+    pub covered_revision: u64,
+    pub newest_revision: Option<u64>,
     pub loaded_count: usize,
     pub total: usize,
     pub oldest_seq: Option<u64>,
@@ -4490,6 +4494,7 @@ fn scan_acp_timeline(
         branch_id: None,
         before_seq: None,
         after_seq: None,
+        after_revision: None,
         before_cursor: None,
         after_cursor: None,
         event_limit: None,
@@ -4510,8 +4515,13 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let indexed =
-        gold_band::acp::timeline::read_indexed_timeline_page(path, before_seq, after_seq, limit)?;
+    let indexed = gold_band::acp::timeline::read_indexed_timeline_page(
+        path,
+        before_seq,
+        after_seq,
+        query.after_revision,
+        limit,
+    )?;
     indexed_timeline_page_to_scan(path, indexed, session_active)
 }
 
@@ -4582,6 +4592,9 @@ fn indexed_timeline_page_to_scan(
     Ok(AcpEventScan {
         events,
         event_page: AcpEventPageVm {
+            generation: indexed.generation,
+            covered_revision: indexed.covered_revision,
+            newest_revision: indexed.newest_revision,
             loaded_count: indexed.loaded_semantic_blocks,
             total: indexed.total_semantic_blocks,
             oldest_seq: indexed.oldest_seq,
@@ -5238,6 +5251,9 @@ fn paginate_timeline(
             .rposition(|block| block.newest_seq == selected.newest_seq)
     });
     let event_page = AcpEventPageVm {
+        generation: 0,
+        covered_revision: newest_seq.unwrap_or_default(),
+        newest_revision: newest_seq,
         loaded_count: loaded_semantic_count,
         total,
         oldest_seq,

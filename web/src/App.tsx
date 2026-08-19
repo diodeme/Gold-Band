@@ -18,7 +18,6 @@ import {
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
-  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -1637,33 +1636,6 @@ export function App() {
       conversationRunRef.current = next;
       return next;
     });
-    try {
-      const switched = await switchConversationSession(
-        targetProjectId,
-        event.taskId,
-        event.runId,
-        leaf.roundId,
-        leaf.nodeId,
-        leaf.attemptId,
-        leaf.outerNodeId,
-        leaf.outerAttemptId,
-      );
-      if (conversationSelectedSessionKeyRef.current !== key) return;
-      startTransition(() => {
-        setConversationRun((prev) => {
-          if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-          const next: ConversationRunVm = {
-            ...prev,
-            selectedSession: switched.selectedSession,
-            sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-          };
-          conversationRunRef.current = next;
-          return next;
-        });
-      });
-    } catch {
-      // 切换 session 失败时静默：用户已在 run 页面，可手动选择。
-    }
   }, [
     uiMode,
     taskPage,
@@ -2627,43 +2599,6 @@ export function App() {
               conversationRunRef.current = next;
               return next;
             });
-            switchConversationSession(
-              conversationPage.projectId,
-              conversationPage.taskId,
-              conversationPage.runId,
-              leaf.roundId,
-              leaf.nodeId,
-              leaf.attemptId,
-              leaf.outerNodeId,
-              leaf.outerAttemptId,
-            ).then((switched) => {
-              if (conversationSelectedSessionKeyRef.current !== key) {
-                return;
-              }
-              startTransition(() => {
-                setConversationRun((prev) => {
-                  if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-                  const next = {
-                    ...prev,
-                    selectedSession: switched.selectedSession,
-                    sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-                  };
-                  conversationRunRef.current = next;
-                  conversationSelectedSessionKeyRef.current = key;
-                  return next;
-                });
-              });
-              if (conversationRunRef.current && conversationSelectedSessionKeyRef.current === key) {
-                conversationRunRef.current = {
-                  ...conversationRunRef.current,
-                  selectedSession: switched.selectedSession,
-                  sessionTree: {
-                    ...conversationRunRef.current.sessionTree,
-                    selectedSessionKey: key,
-                  },
-                };
-              }
-            }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
             applyConversationLifecycleSnapshotToSidebar(

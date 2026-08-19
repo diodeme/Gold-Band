@@ -187,8 +187,11 @@ import {
 } from "@/lib/acp-event-reducer";
 import {
   deriveAcpRuntimeComposerState,
+  isAcceptedAcpPromptSubmitKind,
   isAcceptedQueuePromptSubmitKind,
+  isTerminalLifecycleForTurn,
   mergeConversationAttemptLifecycle,
+  shouldSettleAcpComposerTransientState,
   shouldSettleRuntimeContinueSubmission,
   isRuntimeActiveStatus,
   isSessionActiveStatus,
@@ -464,8 +467,6 @@ const MIN_LOADED_EVENT_BUFFER_LIMIT = 30;
 const HISTORY_LOAD_THRESHOLD_PX = 240;
 const NEWER_PAGE_LOAD_THRESHOLD_PX = 240;
 const LIVE_EVENT_FLUSH_MS = 125;
-const ACP_REPLAY_CATCH_UP_INITIAL_DELAY_MS = 40;
-const ACP_REPLAY_CATCH_UP_MAX_DELAY_MS = 2_000;
 const LIVE_EVENT_INTERACTION_QUIET_MS = 180;
 const LIVE_EVENT_MAX_DEFER_MS = 250;
 const ACP_SESSION_LEASE_RETRY_MS = 30_000;
@@ -1320,9 +1321,10 @@ export function ACPChatDialog(
   );
   const effectiveEvents = effective?.events ?? [];
   const effectiveSessionTerminal = isSessionTerminalStatus(effective?.status);
+  const localLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const hasResponseAfterActiveTurn = hasResponseAfterTurn(effectiveEvents, activeTurnStartedAt);
-  const localTurnInFlight = promptCommandPending || sending || Boolean(pendingOptimisticPrompt) || (awaitingResponse && Boolean(activeTurnPrompt || activeTurnPromptId));
-  const activeAwaitingResponse = awaitingResponse && (!effectiveSessionTerminal || localTurnInFlight);
+  const activeTurnTerminal = isTerminalLifecycleForTurn(localLifecycle, activeTurnPromptId);
+  const activeAwaitingResponse = awaitingResponse && !activeTurnTerminal;
   const waitingForOptimisticPrompt =
     Boolean(pendingOptimisticPrompt) &&
     !hasResponseAfterActiveTurn;
@@ -1418,7 +1420,6 @@ export function ACPChatDialog(
 
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
-  const localLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const showRuntimeContinueAction = Boolean(
     localLifecycle?.continueKind
       && (localLifecycle.continueKind !== 'recover-completed-attempt' || localLifecycle.runtime.revision != null)
@@ -1493,7 +1494,7 @@ export function ACPChatDialog(
     sending,
     awaitingResponse: activeAwaitingResponse,
     waitingForOptimisticPrompt,
-    localTurnInFlight,
+    localTurnId: activeTurnPromptId,
     cancelling,
     stopCommandPending,
     turnAccepted,
@@ -2205,7 +2206,6 @@ export function ACPChatDialog(
     setInitialSessionQueryState(restoredHydratedContent ? "success" : "loading");
     setSessionLoadError(null);
     let active = true;
-    const replayCatchUpAbortController = new AbortController();
     let stopListening: (() => void) | null = null;
     const refreshSeq = sessionRefreshSeqRef.current + 1;
     sessionRefreshSeqRef.current = refreshSeq;
@@ -2281,6 +2281,7 @@ export function ACPChatDialog(
           enqueueLiveEventUpdate(event.event);
         } else {
           flushOrSchedulePendingLiveEvents(true);
+          if (!event.session) return;
           if (branchId !== 'root') {
             void getAcpSession(
               projectId,
@@ -2305,7 +2306,6 @@ export function ACPChatDialog(
           logAcpSessionReady("subscription-session:incoming", componentInstanceId, sessionIdentity, incoming ?? null, {
             hasPendingLocalConfigChange: configGenerationRef.current > 0,
           });
-          if (!incoming) return;
           if (configGenerationRef.current > 0 && latestSessionRef.current?.config) {
             const cfg = latestSessionRef.current.config;
             if (incoming.config) {
@@ -2335,7 +2335,8 @@ export function ACPChatDialog(
       let retryAttempt = 0;
       let lastLoadError: unknown = null;
       let initialFetchSucceeded = false;
-      let snapshotHeadSeq = 0;
+      let snapshotGeneration = 0;
+      let snapshotCoveredRevision = 0;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
         const requestTraceId = `${effectTraceId}:request-${retryAttempt + 1}`;
         const requestStartedAt = performance.now();
@@ -2381,7 +2382,11 @@ export function ACPChatDialog(
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(updated));
+            snapshotGeneration = updated.eventPage.generation ?? 0;
+            snapshotCoveredRevision = Math.max(
+              snapshotCoveredRevision,
+              updated.eventPage.coveredRevision ?? 0,
+            );
             if (isAcpSessionReadyForInitialDisplay(updated)) {
               markAcpSessionContentHydrated(eventWindowKey);
               initialFetchSucceeded = true;
@@ -2420,118 +2425,133 @@ export function ACPChatDialog(
           return;
         }
         let replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-        let appliedReplayGeneration = -1;
-        let catchUpRetryAttempt = 0;
-        let requiredCatchUpHeadSeq = replay.requiresCatchUp ? replay.headSeq : 0;
-        if (requiredCatchUpHeadSeq === 0) {
-          liveAnimationReadyRef.current = true;
+        let requiredLossWatermarkGeneration = replay.lossWatermarkGeneration;
+        let requiredLossWatermarkRevision = replay.lossWatermarkRevision;
+        let replayRetryAttempt = 0;
+        let replayAcknowledged = requiredLossWatermarkRevision === 0;
+        if (replay.events.length > 0) applyEventUpdates(replay.events);
+
+        while (
+          active
+          && sessionRefreshSeqRef.current === refreshSeq
+          && !replayAcknowledged
+        ) {
+          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+          if (replay.events.length > 0) applyEventUpdates(replay.events);
+          requiredLossWatermarkGeneration = replay.lossWatermarkGeneration;
+          requiredLossWatermarkRevision = replay.lossWatermarkRevision;
+          let retryNeeded = false;
+
+          if (snapshotGeneration < requiredLossWatermarkGeneration) {
+            const refreshed = await getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              {
+                branchId,
+                pageSize: effectiveEventPageSize,
+                eventLimit: effectiveEventPageSize,
+              },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            ).catch(() => null);
+            if (!refreshed || !active || sessionRefreshSeqRef.current !== refreshSeq) {
+              retryNeeded = true;
+            } else {
+              applySessionUpdate(refreshed, "replay-generation-refresh");
+              snapshotGeneration = refreshed.eventPage.generation ?? snapshotGeneration;
+              snapshotCoveredRevision = refreshed.eventPage.coveredRevision ?? 0;
+            }
+          }
+
+          while (
+            !retryNeeded
+            && active
+            && sessionRefreshSeqRef.current === refreshSeq
+            && snapshotGeneration === requiredLossWatermarkGeneration
+            && snapshotCoveredRevision < requiredLossWatermarkRevision
+          ) {
+            const delta = await getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              {
+                branchId,
+                afterRevision: snapshotCoveredRevision,
+                pageSize: effectiveEventPageSize,
+                eventLimit: effectiveEventPageSize,
+              },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            ).catch(() => null);
+            if (!delta || !active || sessionRefreshSeqRef.current !== refreshSeq) {
+              retryNeeded = true;
+              break;
+            }
+            const deltaGeneration = delta.eventPage.generation ?? snapshotGeneration;
+            if (deltaGeneration !== snapshotGeneration) {
+              retryNeeded = true;
+              break;
+            }
+            applySessionUpdate(delta, "replay-gap-catch-up", "append-newer");
+            const nextRevision = delta.eventPage.newestRevision ?? snapshotCoveredRevision;
+            if (nextRevision <= snapshotCoveredRevision) {
+              retryNeeded = true;
+              break;
+            }
+            snapshotCoveredRevision = nextRevision;
+          }
+
+          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
+          if (replay.events.length > 0) applyEventUpdates(replay.events);
+          replayAcknowledged = acknowledgeConversationBranchReplay(
+            branchLocator,
+            branchId,
+            snapshotGeneration,
+            snapshotCoveredRevision,
+            replay.generation,
+          );
+          if (replayAcknowledged) break;
+          const delay = missingAcpSessionRetryDelay(replayRetryAttempt);
+          if (delay === null) break;
+          replayRetryAttempt += 1;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+
+        if (!replayAcknowledged) {
           recordAcpStreamingDiagnostic("animation-readiness", () => ({
             componentInstanceId,
             sessionIdentity,
-            ready: true,
-            reason: "no-catch-up-required",
-            snapshotHeadSeq,
-            replayHeadSeq: replay.headSeq,
+            ready: false,
+            reason: "replay-catch-up-pending",
+            snapshotCoveredRevision,
+            snapshotGeneration,
+            requiredLossWatermarkGeneration,
+            requiredLossWatermarkRevision,
             replayGeneration: replay.generation,
           }));
+          return;
         }
-        while (active && sessionRefreshSeqRef.current === refreshSeq) {
-          replay = readConversationBranchReplaySnapshot(branchLocator, branchId);
-          recordAcpStreamingDiagnostic("replay-catch-up", () => ({
-            componentInstanceId,
-            sessionIdentity,
-            ready: liveAnimationReadyRef.current,
-            snapshotHeadSeq,
-            replayHeadSeq: replay.headSeq,
-            replayGeneration: replay.generation,
-            replayEventCount: replay.events.length,
-            replayRetainedBytes: replay.retainedBytes,
-            requiresCatchUp: replay.requiresCatchUp,
-            requiredCatchUpHeadSeq,
-            catchUpRetryAttempt,
-          }));
-          if (replay.generation !== appliedReplayGeneration) {
-            if (replay.events.length > 0) applyEventUpdates(replay.events);
-            appliedReplayGeneration = replay.generation;
-          }
-          if (!liveAnimationReadyRef.current && replay.requiresCatchUp) {
-            requiredCatchUpHeadSeq = Math.max(requiredCatchUpHeadSeq, replay.headSeq);
-          }
-          if (
-            !liveAnimationReadyRef.current
-            && snapshotHeadSeq >= requiredCatchUpHeadSeq
-          ) {
-            liveAnimationReadyRef.current = true;
-            recordAcpStreamingDiagnostic("animation-readiness", () => ({
-              componentInstanceId,
-              sessionIdentity,
-              ready: true,
-              reason: "required-watermark-covered",
-              snapshotHeadSeq,
-              requiredCatchUpHeadSeq,
-              replayHeadSeq: replay.headSeq,
-            }));
-          }
-          if (
-            snapshotHeadSeq >= replay.headSeq
-            && acknowledgeConversationBranchReplay(
-              branchLocator,
-              branchId,
-              snapshotHeadSeq,
-              replay.generation,
-            )
-          ) {
-            liveAnimationReadyRef.current = true;
-            recordAcpStreamingDiagnostic("animation-readiness", () => ({
-              componentInstanceId,
-              sessionIdentity,
-              ready: true,
-              reason: "replay-acknowledged",
-              snapshotHeadSeq,
-              replayHeadSeq: replay.headSeq,
-              replayGeneration: replay.generation,
-            }));
-            break;
-          }
-
-          const delayMs = acpReplayCatchUpDelayMs(catchUpRetryAttempt);
-          if (delayMs > 0) {
-            await waitForAcpReplayCatchUp(delayMs, replayCatchUpAbortController.signal);
-          }
-          if (
-            replayCatchUpAbortController.signal.aborted
-            || !active
-            || sessionRefreshSeqRef.current !== refreshSeq
-          ) {
-            break;
-          }
-          const previousHeadSeq = snapshotHeadSeq;
-          const delta = await getAcpSession(
-            projectId,
-            taskId,
-            runId,
-            roundId,
-            nodeId,
-            attemptId,
-            {
-              branchId,
-              afterSeq: snapshotHeadSeq,
-              pageSize: effectiveEventPageSize,
-              eventLimit: effectiveEventPageSize,
-            },
-            latestSessionRef.current,
-            outerNodeId,
-            outerAttemptId,
-          ).catch(() => null);
-          if (!active || sessionRefreshSeqRef.current !== refreshSeq) break;
-          if (delta) {
-            applySessionUpdate(delta, "replay-gap-catch-up", "append-newer");
-            snapshotHeadSeq = Math.max(snapshotHeadSeq, acpSessionSnapshotHeadSeq(delta));
-          }
-          catchUpRetryAttempt = snapshotHeadSeq > previousHeadSeq
-            ? 0
-            : catchUpRetryAttempt + 1;
-        }
+        liveAnimationReadyRef.current = true;
+        recordAcpStreamingDiagnostic("animation-readiness", () => ({
+          componentInstanceId,
+          sessionIdentity,
+          ready: true,
+          reason: "fixed-loss-watermark-covered",
+          snapshotCoveredRevision,
+          snapshotGeneration,
+          requiredLossWatermarkGeneration,
+          requiredLossWatermarkRevision,
+          replayGeneration: replay.generation,
+        }));
       }
     })();
     return () => {
@@ -2544,7 +2564,6 @@ export function ACPChatDialog(
       });
       flushPendingLiveEvents();
       active = false;
-      replayCatchUpAbortController.abort();
       stopListening?.();
       if (liveEventFlushTimerRef.current !== null) {
         window.clearTimeout(liveEventFlushTimerRef.current);
@@ -2583,7 +2602,30 @@ export function ACPChatDialog(
   }, [runtimeComposerContext?.lifecycle?.runtime.active, runtimeComposerContext?.runtimeStatus, runtimeStopAccepted]);
 
   useEffect(() => {
-    const terminalSession = isSessionTerminalStatus(effective?.status);
+    if (!activeTurnTerminal || !activeTurnPromptId) return;
+    const terminalTurnId = activeTurnPromptId;
+    setSending(false);
+    setPromptCommandPending(false);
+    setAwaitingResponse(false);
+    setCancelling(false);
+    setActiveTurnPrompt(null);
+    setActiveTurnPromptId(null);
+    setActiveTurnStartedAt(null);
+    awaitTerminalStopRef.current = false;
+    updateOptimisticEvents((current) => current.filter(
+      (event) => promptIdFromEvent(event) !== terminalTurnId,
+    ));
+    const shouldNotifyStopped = cancelRequestedRef.current;
+    cancelRequestedRef.current = false;
+    if (shouldNotifyStopped) onSessionStopped?.();
+  }, [activeTurnPromptId, activeTurnTerminal, onSessionStopped]);
+
+  useEffect(() => {
+    const terminalSession = shouldSettleAcpComposerTransientState(
+      localLifecycle,
+      effective?.status,
+      activeTurnPromptId,
+    );
     if (stopCommandPending || sending || waitingForOptimisticPrompt) {
       return;
     }
@@ -2610,9 +2652,11 @@ export function ACPChatDialog(
     if (shouldNotifyStopped) onSessionStopped?.();
   }, [
     acpSessionActive,
+    activeTurnPromptId,
     awaitingResponse,
     cancelling,
     effective?.status,
+    localLifecycle,
     onSessionStopped,
     promptCommandPending,
     sending,
@@ -2983,6 +3027,16 @@ export function ACPChatDialog(
               : event,
           ),
         );
+      } else if (!updated && isAcceptedAcpPromptSubmitKind(result.kind)) {
+        submissionAccepted = true;
+        setActiveTurnStartedAt(optimisticEvent.timestamp);
+        updateOptimisticEvents((current) =>
+          current.map((event) =>
+            event.id === optimisticEvent.id
+              ? { ...event, status: "processing" }
+              : event,
+          ),
+        );
       } else if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
@@ -3259,26 +3313,6 @@ export function ACPChatDialog(
         cancelRequestedRef.current = false;
         onSessionStopped?.();
       }
-      void getAcpSession(
-        projectId,
-        taskId,
-        runId,
-        roundId,
-        nodeId,
-        attemptId,
-        {
-          branchId,
-          pageSize: effectiveEventPageSize,
-          eventLimit: effectiveEventPageSize,
-        },
-        result.session ?? effective ?? null,
-        outerNodeId,
-        outerAttemptId,
-      ).then((finalSession) => {
-        applySessionUpdate(finalSession);
-      }).catch(() => {
-        // stop_active_session 已返回持久化终态；补拉仅用于后台校准。
-      });
       updateOptimisticEvents(clearPendingOptimisticPromptsAfterStop);
     } catch (error) {
       setCancelError(displayAppError(t, error));
@@ -7209,35 +7243,6 @@ function timelineEventPosition(event: Pick<AcpUiEventVm, "seq" | "endedSeq">) {
 
 function timelineRenderKey(eventWindowKey: string, event: AcpTimelineItem) {
   return `${eventWindowKey}:${timelineEventKey(event)}`;
-}
-
-function acpSessionSnapshotHeadSeq(session: AcpSessionVm) {
-  let headSeq = session.eventPage.newestSeq ?? 0;
-  for (const event of session.events) {
-    headSeq = Math.max(headSeq, timelineEventPosition(event));
-  }
-  return headSeq;
-}
-
-export function acpReplayCatchUpDelayMs(retryAttempt: number) {
-  if (retryAttempt <= 0) return 0;
-  return Math.min(
-    ACP_REPLAY_CATCH_UP_MAX_DELAY_MS,
-    ACP_REPLAY_CATCH_UP_INITIAL_DELAY_MS * 2 ** Math.min(retryAttempt - 1, 8),
-  );
-}
-
-function waitForAcpReplayCatchUp(delayMs: number, signal: AbortSignal) {
-  if (delayMs <= 0 || signal.aborted) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const finish = () => {
-      window.clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      resolve();
-    };
-    const timer = window.setTimeout(finish, delayMs);
-    signal.addEventListener('abort', finish, { once: true });
-  });
 }
 
 function latestUserPromptPosition(events: AcpUiEventVm[]) {

@@ -1480,6 +1480,7 @@ export interface AcpSessionQueryInput {
   branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
+  afterRevision?: number;
   beforeCursor?: string;
   afterCursor?: string;
   eventLimit?: number;
@@ -1487,6 +1488,9 @@ export interface AcpSessionQueryInput {
 }
 
 export interface AcpEventPageVm {
+  generation?: number;
+  coveredRevision?: number;
+  newestRevision?: number | null;
   loadedCount: number;
   total: number;
   oldestSeq?: number | null;
@@ -2310,10 +2314,6 @@ export interface ConversationRunWorktreeVm {
   path: string;
   branch: string;
   forkCommit: string;
-}
-
-export interface ConversationSessionSwitchVm {
-  selectedSession?: AcpSessionVm | null;
 }
 
 export interface ConversationActiveSessionVm {

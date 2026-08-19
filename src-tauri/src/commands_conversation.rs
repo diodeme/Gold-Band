@@ -726,41 +726,6 @@ pub fn rerun_conversation_task(
 }
 
 #[tauri::command]
-pub fn switch_conversation_session(
-    state: State<'_, DesktopState>,
-    project_id: String,
-    task_id: String,
-    run_id: String,
-    round_id: String,
-    node_id: String,
-    attempt_id: String,
-    outer_node_id: Option<String>,
-    outer_attempt_id: Option<String>,
-) -> CommandResult<crate::view_models_conversation::ConversationSessionSwitchVm> {
-    let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, _)) = workspace_entry_for_project(&app_state, &project_id) else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    crate::view_models_conversation::switch_conversation_session_vm(
-        &workspace_app,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    )
-    .map_err(command_error)
-}
-
-#[tauri::command]
 pub async fn update_task_metadata(
     state: State<'_, DesktopState>,
     project_id: String,

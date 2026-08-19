@@ -55,6 +55,7 @@
 4. 初始化归属尚未交出且 timeline 为空时，composer 保持运行态占位并禁止提交，不能因 runtime 已快速终止而提前恢复。
 5. sessionId 尚未建立属于正常初始化事实，标题栏不展示“无 session id”占位。
 6. “暂无 ACP 事件”仅用于非初始化归属、初始查询已完成、runtime 不活跃且确认为空的既有会话。
+7. 品牌加载组件区分页面背景 surface 与消息区透明 surface；新会话首条消息前的内嵌 Logo 不得绘制独立背景块，浅色与深色主题保持相同层级关系。
 
 该契约只收口既有 lifecycle、session query 和 timeline 的消费边界，不新增延时、轮询、缓存或平行状态机。
 

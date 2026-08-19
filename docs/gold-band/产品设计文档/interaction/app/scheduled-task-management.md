@@ -29,7 +29,7 @@ ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建�
 
 - 主按钮保存定时任务定义并清空 composer。
 - 定时创建按钮必须带同款 ChevronDown；菜单可切回普通发送，切换时不提交正文，并清理未确认的定时配置草稿。
-- 齿轮只打开定时配置，不重复显示 Agent、workspace、model、thought level、permission 等已有控制。
+- 齿轮只打开定时配置，不重复显示 Agent、workspace、model、thought level、permission 等已有控制。定时创建态的 workspace 选择复用普通快速对话输入框上方的 80% 宽顶部信息栏，不在底栏保留独立胶囊；该模式固定使用主工作区，暂不展示工作位置或新工作树入口。
 - 新建定时任务的配置不使用模态弹窗：点击配置入口后，在当前会话草稿作用域的右侧工作区打开唯一 `scheduled-task-config` Tab。重复打开只激活同一 Tab；完成、取消、退出定时模式或创建成功时按对应语义关闭该 Tab。配置草稿仍由 composer 生命周期统一持有，Tab 只是编辑视图。
 - 管理页“创建定时任务”不得只跳转普通会话主页；它导航到类型化的 `scheduled-task-create` 页面状态和 `/chat/scheduled-tasks/new` deep link。该页面复用会话主页 Composer，但初始即进入定时创建态并打开右侧配置 Tab；退出定时模式或创建成功后回到普通 `/chat`，直接打开普通主页不得被影响。
 - 进入 `scheduled-task-create` 后，左侧主导航必须从“定时任务”切换为选中“快速对话”，表达当前承载页面已进入会话主页 Composer；定时任务列表和详情继续选中“定时任务”。
@@ -95,7 +95,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 - 管理页使用全局扁平列表，默认展示所有已登记工作区的定时任务。
 - 管理页直接复用 Agent、上下文、运行模式页相同的 `Page + PageHeader(integrated)` 页面壳；Header 只展示 `AlarmClock` 图标、标题与任务数量，不显示解释性副标题，顶部与水平内边距、图标标题视觉中心及响应式操作区均由共享组件保证；图标使用 `text-foreground` 随明暗主题自动反色。宽屏标题组与操作区按顶部对齐，右侧控件高度不得改变标题纵坐标。
-- 顶部提供“全部工作区”和具体工作区筛选；工作区筛选复用 shadcn/ui Select，并使用固定宽度 token，异步加入工作区选项时不得改变工具栏宽度；任务行显示工作区名称，不展示 `scheduled-UUID`。
+- 顶部提供“全部工作区”和具体工作区筛选；工作区筛选复用 shadcn/ui Select，并使用固定宽度 token，异步加入工作区选项时不得改变工具栏宽度；任务行标题下的副信息按“模式 · Direct 会话策略（仅 Direct）· 窄屏计划摘要（仅窄屏）· 工作空间”排列，工作空间始终位于末尾，整行与标题一样单行截断，不展示 `scheduled-UUID`。
 - 定时任务的 `AlarmClock / CalendarClock / ListChecks` 等静态功能标识统一使用主题 `foreground`，任务行图标底色使用 `foreground/10`；该规则覆盖管理列表、会话侧栏与标题、创建摘要、配置面板及执行历史，保证明暗主题下均有稳定对比度。运行中、失败、启停和选中态仍使用各自语义色，不得通过全局替换抹平状态层级。
 - 管理页不因调度事件自动重新加载列表；手动刷新和 CRUD 成功后只更新必要行。启停操作按任务行携带的 `projectId` 执行。
 - 后台创建 Task 或新 Run 后，App 根层刷新左侧会话列表，无需手动切换页面。

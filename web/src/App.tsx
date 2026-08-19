@@ -15,6 +15,7 @@ import {
   getConversationRun,
   getConversationRunMode,
   getConversationSidebar,
+  acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
   switchConversationSession,
@@ -53,15 +54,20 @@ import {
   getGitCapability,
   subscribeAcpSessionUpdates,
   subscribeConversationRunStateUpdates,
+  subscribeConversationTerminalResultUpdates,
   subscribeScheduledTaskUpdates,
   updateNotificationAttention,
+  recordActivity,
 } from './api';
 import { isTauriRuntime } from './api/shared';
+import { registerHeartbeatActivityListeners } from './lib/heartbeat-activity';
 import { prefetchScheduledRuntimeSettings } from '@/components/scheduled-tasks/useScheduledRuntimeSettings';
 import {
   applyConversationSidebarRunLifecycle,
   applyConversationSidebarRunStateUpdate,
   applyConversationSidebarTaskActivity,
+  applyConversationSidebarTerminalResultAcknowledgement,
+  applyConversationSidebarTerminalResultUpdate,
   conversationTaskActivityFromLifecycle,
   conversationTaskActivityFromUpdate,
 } from './lib/conversation-sidebar-activity';
@@ -163,6 +169,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
@@ -170,6 +177,10 @@ import {
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
+import {
+  applyConversationTaskSnapshot,
+  findConversationTask,
+} from '@/lib/conversation-task-state';
 import {
   INITIAL_DESKTOP_WINDOW_MINIMUM_SYNC_STATE,
   syncDesktopWindowMinimum,
@@ -187,6 +198,7 @@ import type {
   AppInfoVm,
   ConversationAttemptLifecycleVm,
   ConversationTaskActivityVm,
+  ConversationTaskRowVm,
   ConversationPage,
   ConversationRunModeVm,
   ConversationWorkLocation,
@@ -300,6 +312,9 @@ const defaultAppInfo: AppInfoVm = {
 const defaultAppConfig: AppConfigVm = {
   acpSessionTitleRefreshEnabled: false,
   acpChatEventPageSize: 360,
+  conversationInlineContentMaxBytes: 64_000,
+  conversationInlineImageMaxBytes: 4 * 1024 * 1024,
+  conversationInlineImageMaxDimension: 2_560,
   turnFiles: { cardPreviewLimit: 3 },
   workspaceLayout: FALLBACK_WORKSPACE_LAYOUT,
   workspaceFiles: FALLBACK_WORKSPACE_FILES,
@@ -388,6 +403,8 @@ export function App() {
   const [conversationSidebar, setConversationSidebar] = useState<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationSidebarRef = useRef<ConversationSidebarVm>({ workspaces: [], pinnedTasks: [], tasksByWorkspace: {} });
   const conversationRunStateRefreshRef = useRef<Parameters<typeof subscribeConversationRunStateUpdates>[0] | null>(null);
+  const conversationAcpSessionRefreshRef = useRef<Parameters<typeof subscribeAcpSessionUpdates>[0] | null>(null);
+  const conversationTerminalAcknowledgementsInFlightRef = useRef(new Set<string>());
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationRunModesByWorkspace, setConversationRunModesByWorkspace] = useState<ConversationRunModesByWorkspace>({});
   const conversationRunModesRef = useRef<ConversationRunModesByWorkspace>({});
@@ -483,6 +500,14 @@ export function App() {
     const nextSidebar = prioritizeConversationSidebarWorkspace(sidebar, activeProjectId);
     conversationSidebarRef.current = nextSidebar;
     setConversationSidebar(nextSidebar);
+  }, []);
+
+  const applyConversationTask = useCallback((task: ConversationTaskRowVm) => {
+    setConversationSidebar((current) => {
+      const next = applyConversationTaskSnapshot(current, task);
+      conversationSidebarRef.current = next;
+      return next;
+    });
   }, []);
 
   const applyConversationTaskActivity = useCallback((
@@ -678,6 +703,12 @@ export function App() {
     const mode: ConversationSessionFollowMode = enabled ? 'auto' : 'manual';
     updateConversationSessionFollow(mode, conversationSelectedSessionKeyRef.current);
   }, [conversationPage, updateConversationSessionFollow]);
+
+  useEffect(() => {
+    return registerHeartbeatActivityListeners(() => {
+      recordActivity().catch(() => {});
+    });
+  }, []);
 
   const loadProfiles = useCallback(async () => {
     const result = await getProfiles();
@@ -923,6 +954,93 @@ export function App() {
   }, [bootstrap, uiMode]);
 
   useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeConversationTerminalResultUpdates((event) => {
+      if (!active) return;
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarTerminalResultUpdate(current, event);
+        if (next !== current) conversationSidebarRef.current = next;
+        return next;
+      });
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [bootstrap, uiMode]);
+
+  useEffect(() => {
+    if (uiMode !== 'conversation') return;
+    const acknowledgementTarget = conversationTerminalResultAcknowledgementTarget(
+      conversationSidebar,
+      conversationPage,
+      conversationRun,
+    );
+    if (!acknowledgementTarget) return;
+    const acknowledgementKey = `${acknowledgementTarget.projectId}:${acknowledgementTarget.taskId}:${acknowledgementTarget.eventId}`;
+    if (conversationTerminalAcknowledgementsInFlightRef.current.has(acknowledgementKey)) return;
+    conversationTerminalAcknowledgementsInFlightRef.current.add(acknowledgementKey);
+    void acknowledgeConversationTerminalResult(
+      acknowledgementTarget.projectId,
+      acknowledgementTarget.taskId,
+      acknowledgementTarget.eventId,
+    ).then((acknowledgement) => {
+      setConversationSidebar((current) => {
+        const next = applyConversationSidebarTerminalResultAcknowledgement(
+          current,
+          acknowledgementTarget.projectId,
+          acknowledgementTarget.taskId,
+          acknowledgementTarget.eventId,
+          acknowledgement.unreadTerminalResult,
+        );
+        if (next !== current) conversationSidebarRef.current = next;
+        return next;
+      });
+    }).catch(() => {}).finally(() => {
+      conversationTerminalAcknowledgementsInFlightRef.current.delete(acknowledgementKey);
+    });
+  }, [conversationPage, conversationRun, conversationSidebar, uiMode]);
+
+  useEffect(() => {
+    if (!bootstrap || uiMode !== 'conversation') return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void subscribeAcpSessionUpdates((event) => {
+      if (!active) return;
+      const projectId = event.projectId?.trim();
+      if (projectId) {
+        const sidebarActivity = conversationTaskActivityFromUpdate(event);
+        if (event.lifecycle) {
+          applyConversationLifecycleSnapshotToSidebar(
+            projectId,
+            event.taskId,
+            event.runId,
+            event.lifecycle,
+            sidebarActivity === undefined
+              ? conversationTaskActivityFromLifecycle(event.lifecycle)
+              : sidebarActivity,
+          );
+        } else if (sidebarActivity !== undefined) {
+          applyConversationTaskActivity(projectId, event.taskId, sidebarActivity);
+        }
+      }
+      conversationAcpSessionRefreshRef.current?.(event);
+    }).then((unlisten) => {
+      if (active) dispose = unlisten;
+      else unlisten();
+    }).catch(() => {});
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationTaskActivity, bootstrap, uiMode]);
+
+  useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation') return;
     let active = true;
     let dispose: (() => void) | undefined;
@@ -1056,7 +1174,6 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
-    let stopListeningAcp: (() => void) | null = null;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1153,23 +1270,9 @@ export function App() {
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
 
-    void subscribeAcpSessionUpdates((event) => {
+    const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeAcpSessionUpdates>[0] = (event) => {
       if (!active) return;
       if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
-      const sidebarActivity = conversationTaskActivityFromUpdate(event);
-      if (event.lifecycle) {
-        applyConversationLifecycleSnapshotToSidebar(
-          projectId,
-          taskId,
-          runId,
-          event.lifecycle,
-          sidebarActivity === undefined
-            ? conversationTaskActivityFromLifecycle(event.lifecycle)
-            : sidebarActivity,
-        );
-      } else if (sidebarActivity !== undefined) {
-        applyConversationTaskActivity(projectId, taskId, sidebarActivity);
-      }
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -1240,15 +1343,8 @@ export function App() {
         currentSelectedRuntimeControlled,
         incomingRuntimeControlled,
       }), incomingRuntimeControlled);
-    })
-      .then((dispose) => {
-        if (active) {
-          stopListeningAcp = dispose;
-        } else {
-          dispose();
-        }
-      })
-      .catch(() => {});
+    };
+    conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 
     return () => {
       active = false;
@@ -1256,9 +1352,11 @@ export function App() {
       if (conversationRunStateRefreshRef.current === refreshSelectedRunFromStateEvent) {
         conversationRunStateRefreshRef.current = null;
       }
-      stopListeningAcp?.();
+      if (conversationAcpSessionRefreshRef.current === refreshSelectedRunFromAcpEvent) {
+        conversationAcpSessionRefreshRef.current = null;
+      }
     };
-  }, [applyConversationLifecycleSnapshotToSidebar, applyConversationRunSnapshot, applyConversationTaskActivity, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -2138,13 +2236,10 @@ export function App() {
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
+        setError(null);
         updateTaskMetadata(projectId, taskId, title)
-          .then(() => getConversationSidebar())
-          .then((sidebar) => applyConversationSidebar(sidebar))
-          .catch(() => {});
-        if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
-          setConversationRun((prev) => prev ? { ...prev, title } : prev);
-        }
+          .then(applyConversationTask)
+          .catch((err) => setError(displayAppError(t, err)));
       }}
       onConversationDeleteTask={(projectId, taskId) => {
         deleteConversationTask(projectId, taskId)
@@ -2324,6 +2419,7 @@ export function App() {
           workflowTemplates={conversationWorkflowTemplates}
           profiles={profiles}
           busy={busy}
+          inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
@@ -2356,7 +2452,8 @@ export function App() {
                 return validation.missingItems.map((m) => t(`conversation.validation.${m.code}`, { defaultValue: m.label || m.code })).join('\n');
               }
               setWorkflowRepairTarget(null);
-              const run = await createConversationRun(input);
+              const { task, run } = await createConversationRun(input);
+              applyConversationTask(task);
               conversationWorkspaceStore.promoteDraft(
                 createDraftConversationWorkspaceScope(input.projectId),
                 createConversationWorkspaceScope({
@@ -2376,7 +2473,6 @@ export function App() {
                 taskId: run.taskId,
                 runId: run.runId,
               });
-              getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
               pushRoute('task-orchestration', taskListPage, {
                 kind: 'conversation-run',
                 projectId: run.projectId,
@@ -2482,12 +2578,22 @@ export function App() {
           <BrandLoadingState label={t('conversation.runtime.loadingSession')} />
         );
       }
+      const taskTitle = findConversationTask(
+        conversationSidebar,
+        conversationPage.projectId,
+        conversationPage.taskId,
+      )?.title ?? conversationPage.taskId;
       return (
         <ConversationRunPage
           run={conversationRun}
+          taskTitle={taskTitle}
           appConfig={appConfig}
           agentRegistry={agentRegistry}
           followMode={conversationSessionFollowRef.current.mode}
+          initialSessionTreeExpansion={conversationRunCache.peekViewState(conversationRun)?.sessionTreeExpansion ?? {}}
+          onSessionTreeExpansionChange={(sessionTreeExpansion) => {
+            conversationRunCache.updateViewState(conversationRun, { sessionTreeExpansion });
+          }}
           onRerun={() => {
             if (!conversationRun) return;
             rerunConversationTask(conversationRun.projectId, conversationRun.taskId)
@@ -2596,11 +2702,10 @@ export function App() {
           }}
           onAutoFollowChange={handleConversationAutoFollowChange}
           onTitleChange={(title) => {
-            setConversationRun((prev) => prev ? { ...prev, title } : prev);
+            setError(null);
             updateTaskMetadata(conversationPage.projectId, conversationPage.taskId, title)
-              .then(() => getConversationSidebar())
-              .then((sidebar) => applyConversationSidebar(sidebar))
-              .catch(() => {});
+              .then(applyConversationTask)
+              .catch((err) => setError(displayAppError(t, err)));
           }}
         />
       );
@@ -2615,6 +2720,7 @@ export function App() {
         workflowTemplates={conversationWorkflowTemplates}
         profiles={profiles}
         busy={busy}
+        inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
         workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}

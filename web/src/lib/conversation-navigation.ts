@@ -2,11 +2,13 @@ import { conversationSessionKeyFromParts, findConversationLeafByKey } from '@/li
 import type {
   ConversationPage,
   ConversationRunVm,
+  ConversationSidebarVm,
   ConversationSessionLeafVm,
   ConversationSessionTargetVm,
   ConversationSessionTreeVm,
   InterventionNavigateEventVm,
 } from '@/types';
+import { findConversationTask } from '@/lib/conversation-task-state';
 
 type ConversationSessionLocator = Pick<
   ConversationSessionTargetVm,
@@ -129,4 +131,26 @@ export function shouldCommitConversationNavigation(
   run: ConversationRunVm,
 ) {
   return requestId === currentRequestId && conversationPageMatchesRun(requested, run);
+}
+
+export function conversationTerminalResultAcknowledgementTarget(
+  sidebar: ConversationSidebarVm,
+  page: ConversationPage,
+  loadedRun: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'runId'> | null | undefined,
+) {
+  if (page.kind !== 'conversation-run'
+    || !loadedRun
+    || page.projectId !== loadedRun.projectId
+    || page.taskId !== loadedRun.taskId
+    || page.runId !== loadedRun.runId) {
+    return null;
+  }
+  const unread = findConversationTask(sidebar, page.projectId, page.taskId)?.unreadTerminalResult;
+  if (!unread || unread.runId !== page.runId) return null;
+  return {
+    projectId: page.projectId,
+    taskId: page.taskId,
+    runId: page.runId,
+    eventId: unread.eventId,
+  };
 }

@@ -97,6 +97,30 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(nextLiveStreamingMarkdownTarget(target, tool, 10)).toBeNull();
   });
 
+  it('does not start Markdown playback for semantically empty Agent chunks', () => {
+    const placeholder = event({
+      id: 'placeholder',
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'textDelta',
+      content: '\u200b',
+    });
+
+    expect(nextLiveStreamingMarkdownTarget(null, placeholder, 10)).toBeNull();
+  });
+
+  it('omits empty and format-control-only Agent events without stripping visible text', () => {
+    const timeline = buildAcpTimeline([
+      event({ id: 'zero-width', seq: 1, timestamp: '1Z', kind: 'textDelta', content: '\u200b' }),
+      event({ id: 'empty-thought', seq: 2, timestamp: '2Z', kind: 'thoughtDelta', content: '' }),
+      event({ id: 'answer', seq: 3, timestamp: '3Z', kind: 'textDelta', content: 'he\u200bllo' }),
+    ]);
+
+    expect(timeline.map(timelineEventKey)).toEqual(['textDelta-answer']);
+    const answer = timeline[0];
+    expect(answer && !('events' in answer) ? answer.content : null).toBe('he\u200bllo');
+  });
+
   it('uses the semantic activity start cursor as the stable activity key', () => {
     const timeline = buildAcpTimeline([
       event({ id: 'tool-raw', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'call-1' }),

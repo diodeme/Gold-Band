@@ -217,7 +217,7 @@ describe('turn file changes card', () => {
       expect(compaction?.parentElement?.className).toContain('max-w-[82%]');
       expect(fileCard?.parentElement?.className).toContain('max-w-[82%]');
       expect(fileCard?.getAttribute('data-theme-role')).toBe('card');
-      expect(fileCard?.className).toContain('mb-2');
+      expect(fileCard?.className).toContain('mb-3');
       expect(compaction?.className).not.toContain('pl-10');
       expect(fileCard?.className).not.toContain('ml-10');
       expect(fileCard?.className).not.toContain('calc(100%');

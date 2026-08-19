@@ -170,6 +170,35 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('keeps retrying when the first response is an unmaterialized control placeholder', async () => {
+    const placeholder = {
+      ...session([], 'pending'),
+      sessionId: null,
+    };
+    const prompt = event('prompt-ready', 1, 'userTextDelta', '会话已经就绪', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-ready' },
+    });
+    const ready = session([prompt]);
+    vi.mocked(getAcpSession)
+      .mockResolvedValueOnce(placeholder)
+      .mockResolvedValue(ready);
+
+    const { container, root } = await renderDialog(placeholder);
+    try {
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+      expect(container.textContent).not.toContain('会话已经就绪');
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 160));
+      });
+
+      expect(vi.mocked(getAcpSession).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(container.textContent).toContain('会话已经就绪');
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('replays the latest background text and tool event over a stale snapshot on the first entry', async () => {
     const prompt = event('prompt-1', 1, 'userTextDelta', '检查项目', {
       raw: { source: 'goldBandPrompt', promptId: 'prompt-1' },

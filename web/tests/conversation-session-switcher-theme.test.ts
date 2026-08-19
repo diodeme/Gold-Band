@@ -7,7 +7,11 @@ import { createRoot } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ConversationSessionSwitcher } from '@/components/conversation/ConversationSessionSwitcher';
+import {
+  CONVERSATION_SESSION_TREE_SCROLL_MAX_HEIGHT,
+  ConversationSessionSwitcher,
+  conversationSessionTreeBranchKey,
+} from '@/components/conversation/ConversationSessionSwitcher';
 import type { ConversationSessionLeafVm, ConversationSessionTreeVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -71,13 +75,34 @@ afterEach(() => {
 });
 
 describe('conversation session switcher theme surface', () => {
-  it('delegates transparency and blur to the theme popover recipe', () => {
-    expect(switcherSource).toContain('data-theme-role="popover"');
-    expect(switcherSource).toContain('className="w-64 p-2"');
-    expect(switcherSource).not.toContain('bg-popover');
-    expect(switcherSource).not.toContain('border-border/60 bg-popover');
-    expect(switcherSource).not.toContain('shadow-sm');
+  it('uses the shared popover and a viewport-bounded shadcn scroll area', async () => {
+    expect(headerSource).toContain('<Popover open={sessionSwitcherOpen}');
+    expect(headerSource).toContain('<PopoverContent');
+    expect(switcherSource).toContain('<ScrollArea');
+    expect(switcherSource).toContain('data-conversation-session-tree-scroll="true"');
     expect(headerSource).toContain('aria-expanded={sessionSwitcherOpen}');
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(React.createElement(ConversationSessionSwitcher, {
+          tree: tree(),
+          selectedKey: 'round-001/dev/attempt-001',
+          expansion: {},
+          onExpansionChange: vi.fn(),
+          onSelectSession: vi.fn(),
+        }));
+      });
+
+      const scrollArea = container.querySelector<HTMLElement>('[data-conversation-session-tree-scroll="true"]');
+      expect(scrollArea?.className).toContain('overflow-hidden');
+      expect(scrollArea?.className).toContain('[&_[data-slot=scroll-area-viewport]]:max-h-[inherit]');
+      expect(scrollArea?.style.maxHeight).toBe(CONVERSATION_SESSION_TREE_SCROLL_MAX_HEIGHT);
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it('keeps hover, selected, and current-session semantics distinct', async () => {
@@ -91,6 +116,8 @@ describe('conversation session switcher theme surface', () => {
         root.render(React.createElement(ConversationSessionSwitcher, {
           tree: tree(),
           selectedKey: 'round-001/dev/attempt-001',
+          expansion: {},
+          onExpansionChange: vi.fn(),
           onSelectSession,
         }));
       });
@@ -113,6 +140,49 @@ describe('conversation session switcher theme surface', () => {
 
       await act(async () => selected?.click());
       expect(onSelectSession).toHaveBeenCalledWith(expect.objectContaining({ attemptId: 'attempt-001' }));
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('controls each branch by its stable tree path so remounts can restore the run view state', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onExpansionChange = vi.fn();
+    const roundBranchKey = conversationSessionTreeBranchKey(['round', 'round-001']);
+
+    try {
+      await act(async () => {
+        root.render(React.createElement(ConversationSessionSwitcher, {
+          tree: tree(),
+          selectedKey: 'round-001/dev/attempt-001',
+          expansion: { [roundBranchKey]: false },
+          onExpansionChange,
+          onSelectSession: vi.fn(),
+        }));
+      });
+
+      const round = [...container.querySelectorAll('button')]
+        .find((button) => button.textContent?.trim() === 'round-001');
+      expect(round?.getAttribute('aria-expanded')).toBe('false');
+      expect([...container.querySelectorAll('button')]
+        .some((button) => button.textContent?.trim() === '开发')).toBe(false);
+
+      await act(async () => round?.click());
+      expect(onExpansionChange).toHaveBeenCalledWith(roundBranchKey, true);
+
+      await act(async () => {
+        root.render(React.createElement(ConversationSessionSwitcher, {
+          tree: tree(),
+          selectedKey: 'round-001/dev/attempt-001',
+          expansion: { [roundBranchKey]: true },
+          onExpansionChange,
+          onSelectSession: vi.fn(),
+        }));
+      });
+      expect([...container.querySelectorAll('button')]
+        .some((button) => button.textContent?.trim() === '开发')).toBe(true);
     } finally {
       await act(async () => root.unmount());
     }

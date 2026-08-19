@@ -456,6 +456,32 @@ mod tests {
     }
 
     #[test]
+    fn attachment_picker_text_content_uses_the_revision_bound_protocol() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("selected.md");
+        std::fs::write(&path, "# Selected\n").unwrap();
+        let runtime = WorkspaceFileRuntime::default();
+        let revision = super::super::service::revision_for_path(&path).unwrap();
+        let preview = runtime
+            .issue_attachment_preview(
+                "attachment-picker".to_string(),
+                path,
+                revision,
+                "text/markdown".to_string(),
+                30,
+            )
+            .unwrap();
+
+        let response = runtime.preview_protocol_response(&preview.token, false);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/markdown"
+        );
+        assert_eq!(response.body(), b"# Selected\n");
+    }
+
+    #[test]
     fn static_gif_preview_is_returned_as_png() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("animated.gif");

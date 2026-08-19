@@ -32,6 +32,7 @@ preset -> task -> run -> round/attempt
 - runtime 自身的修复提示也统一放在 `src/prompts/<lang>/runtime/`，例如节点输出不满足 output DSL 时使用 `src/prompts/<lang>/runtime/invalid_output_repair.md` 生成隐藏 repair prompt
 
 ## 4. 子文档结构
+- [用户级核心状态与 Runtime 恢复](core-state-and-recovery.md)
 - [定时任务运行时设计](scheduled-task.md)
 - [控制层](control.md)
 - [目录布局](layout.md)

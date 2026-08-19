@@ -232,29 +232,26 @@ describe('resolveAcpTimelineSurfaceState', () => {
       hasTimelineItems: true,
       initialSessionLoading: true,
       runtimeActive: true,
-      initializationOwner: true,
       sending: true,
     })).toBe('timeline');
   });
 
-  it('keeps a current new session pending while its persisted timeline catches up', () => {
+  it('does not keep an inactive current attempt pending after its query settles', () => {
     expect(resolveAcpTimelineSurfaceState({
       hasTimelineItems: false,
       initialSessionLoading: false,
       runtimeActive: false,
-      initializationOwner: true,
-      sending: false,
-    })).toBe('pending');
-  });
-
-  it('shows empty only after a non-initializing inactive query confirms no timeline', () => {
-    expect(resolveAcpTimelineSurfaceState({
-      hasTimelineItems: false,
-      initialSessionLoading: false,
-      runtimeActive: false,
-      initializationOwner: false,
       sending: false,
     })).toBe('empty');
+  });
+
+  it('keeps an empty timeline pending only while its detail query is loading', () => {
+    expect(resolveAcpTimelineSurfaceState({
+      hasTimelineItems: false,
+      initialSessionLoading: true,
+      runtimeActive: false,
+      sending: false,
+    })).toBe('pending');
   });
 });
 

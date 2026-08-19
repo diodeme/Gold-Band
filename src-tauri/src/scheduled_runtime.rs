@@ -18,7 +18,6 @@ use gold_band::scheduler::queue::{
     ActiveExecution, DEFAULT_OCCURRENCE_RETENTION_DAYS, LATE_FIRE_GRACE,
     MISSED_RECONCILE_BATCH_SIZE, QueueDecision, RETENTION_DELETE_BATCH_SIZE, decide_queue,
 };
-use gold_band::scheduler::store::ScheduledTaskStore;
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
 use gold_band::workflow_model_binding::{
@@ -34,7 +33,7 @@ use uuid::Uuid;
 
 use crate::commands::configure_conversation_runtime_callbacks;
 use crate::scheduled_service::{ManualRunResult, ScheduledServiceError, ScheduledServiceResult};
-use crate::state::DesktopState;
+use crate::state::{DesktopState, provision_project_manifest_for_desktop};
 use crate::view_models_conversation::ConversationCreateInputVm;
 
 mod execution;
@@ -437,13 +436,28 @@ struct ActiveOccurrence {
     guard: OccurrenceExecutionGuard,
 }
 
-type ActiveOccurrenceRegistry = Arc<Mutex<HashMap<String, ActiveOccurrence>>>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ActiveOccurrenceKey {
+    project_id: String,
+    occurrence_id: String,
+}
+
+impl ActiveOccurrenceKey {
+    fn new(project_id: impl Into<String>, occurrence_id: impl Into<String>) -> Self {
+        Self {
+            project_id: project_id.into(),
+            occurrence_id: occurrence_id.into(),
+        }
+    }
+}
+
+type ActiveOccurrenceRegistry = Arc<Mutex<HashMap<ActiveOccurrenceKey, ActiveOccurrence>>>;
 type PendingGuardJoins = Arc<Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
 
 struct ClaimToHandoffGuard {
     active: ActiveOccurrenceRegistry,
     pending_stops: PendingGuardJoins,
-    occurrence_id: String,
+    key: ActiveOccurrenceKey,
     lease: ActiveOccurrenceMetadata,
     armed: bool,
 }
@@ -455,31 +469,37 @@ impl ClaimToHandoffGuard {
         occurrence_id: String,
         lease: ActiveOccurrenceMetadata,
     ) -> anyhow::Result<Self> {
+        let key = ActiveOccurrenceKey::new(lease.project_id.clone(), occurrence_id);
         {
             let active_state = active
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scheduler active state lock poisoned"))?;
-            if active_state.contains_key(&occurrence_id) {
-                anyhow::bail!("scheduled occurrence is already active: {occurrence_id}");
+            if active_state.contains_key(&key) {
+                anyhow::bail!(
+                    "scheduled occurrence is already active: {}/{}",
+                    key.project_id,
+                    key.occurrence_id
+                );
             }
         }
         let callback_active = active.clone();
-        let callback_occurrence_id = occurrence_id.clone();
+        let callback_key = key.clone();
         let execution_guard = OccurrenceExecutionGuard::start(
             lease.database.clone(),
-            occurrence_id.clone(),
+            lease.project_id.clone(),
+            key.occurrence_id.clone(),
             lease.owner_id.clone(),
             LeaseConfig::default(),
             move || {
                 // The guard task owns the callback. Detach the registry entry here and let
                 // the guard task finish naturally; joining from this callback would deadlock.
-                detach_active_occurrence(&callback_active, &callback_occurrence_id);
+                detach_active_occurrence(&callback_active, &callback_key);
             },
         );
         let guard = Self {
             active,
             pending_stops,
-            occurrence_id,
+            key,
             lease,
             armed: true,
         };
@@ -491,25 +511,26 @@ impl ClaimToHandoffGuard {
             .active
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler active state lock poisoned"))?
-            .insert(guard.occurrence_id.clone(), entry);
+            .insert(guard.key.clone(), entry);
         if let Some(previous) = previous {
             let previous_lease = previous.metadata.clone();
             schedule_claim_cleanup(
                 Some(previous),
                 previous_lease,
-                guard.occurrence_id.clone(),
+                guard.key.occurrence_id.clone(),
                 &guard.pending_stops,
             );
             anyhow::bail!(
-                "scheduled occurrence is already active: {}",
-                guard.occurrence_id
+                "scheduled occurrence is already active: {}/{}",
+                guard.key.project_id,
+                guard.key.occurrence_id
             );
         }
         Ok(guard)
     }
 
     async fn stop(&mut self) {
-        if let Some(entry) = take_active_occurrence(&self.active, &self.occurrence_id) {
+        if let Some(entry) = take_active_occurrence(&self.active, &self.key) {
             entry.guard.stop().await;
         }
     }
@@ -528,27 +549,27 @@ impl Drop for ClaimToHandoffGuard {
         if !self.armed {
             return;
         }
-        let entry = take_active_occurrence(&self.active, &self.occurrence_id);
+        let entry = take_active_occurrence(&self.active, &self.key);
         schedule_claim_cleanup(
             entry,
             self.lease.clone(),
-            self.occurrence_id.clone(),
+            self.key.occurrence_id.clone(),
             &self.pending_stops,
         );
     }
 }
 
-fn detach_active_occurrence(active: &ActiveOccurrenceRegistry, occurrence_id: &str) {
+fn detach_active_occurrence(active: &ActiveOccurrenceRegistry, key: &ActiveOccurrenceKey) {
     if let Ok(mut active) = active.lock() {
-        active.remove(occurrence_id);
+        active.remove(key);
     }
 }
 
 fn take_active_occurrence(
     active: &ActiveOccurrenceRegistry,
-    occurrence_id: &str,
+    key: &ActiveOccurrenceKey,
 ) -> Option<ActiveOccurrence> {
-    active.lock().ok()?.remove(occurrence_id)
+    active.lock().ok()?.remove(key)
 }
 
 fn schedule_claim_cleanup(
@@ -564,8 +585,14 @@ fn schedule_claim_cleanup(
         }
         let database = lease.database;
         let owner_id = lease.owner_id;
+        let project_id = lease.project_id;
         let release = tokio::task::spawn_blocking(move || {
-            database.release_owned_occurrence_for_retry(&occurrence_id, &owner_id, Utc::now())
+            database.release_owned_occurrence_for_retry(
+                &project_id,
+                &occurrence_id,
+                &owner_id,
+                Utc::now(),
+            )
         })
         .await;
         match release {
@@ -597,9 +624,9 @@ async fn shutdown_active_occurrences(
     // Calling stop() synchronously publishes cancellation before any future is awaited.
     let mut release_inputs = Vec::with_capacity(active.len());
     let mut stops = Vec::with_capacity(active.len());
-    for (occurrence_id, entry) in active {
+    for (key, entry) in active {
         release_inputs.push((
-            occurrence_id,
+            key,
             entry.metadata.database.clone(),
             entry.metadata.owner_id.clone(),
         ));
@@ -621,11 +648,14 @@ async fn shutdown_active_occurrences(
 
     let failures = tokio::task::spawn_blocking(move || {
         let mut failures = Vec::new();
-        for (occurrence_id, database, owner_id) in release_inputs {
-            if let Err(error) =
-                database.release_owned_occurrence_for_retry(&occurrence_id, &owner_id, now)
-            {
-                failures.push(format!("{occurrence_id}: {error}"));
+        for (key, database, owner_id) in release_inputs {
+            if let Err(error) = database.release_owned_occurrence_for_retry(
+                &key.project_id,
+                &key.occurrence_id,
+                &owner_id,
+                now,
+            ) {
+                failures.push(format!("{}/{}: {error}", key.project_id, key.occurrence_id));
             }
         }
         failures
@@ -660,8 +690,9 @@ struct SchedulerCoordinator<R = ScheduledRuntime> {
     timer_drift_reconcile_pending: bool,
 }
 
-pub fn start(app_handle: AppHandle) -> anyhow::Result<()> {
+pub fn start(app_handle: AppHandle, blocked_project_ids: &HashSet<String>) -> anyhow::Result<()> {
     let state = app_handle.state::<DesktopState>();
+    state.runtime_recovery().ensure_scheduler_start_allowed()?;
     let runtime_app = state.app()?;
     let runtime = Arc::new(ScheduledRuntime {
         app_handle: app_handle.clone(),
@@ -698,6 +729,23 @@ pub fn start(app_handle: AppHandle) -> anyhow::Result<()> {
             .map(|workspace| Utf8PathBuf::from(workspace.workspace_path)),
     );
     for workspace_path in workspaces {
+        let paths = GoldBandPaths::new(workspace_path.clone());
+        if blocked_project_ids.contains(&paths.project_id) {
+            warn!(
+                workspace_path = %workspace_path,
+                "scheduled task workspace remains blocked by runtime recovery"
+            );
+            continue;
+        }
+        if let Err(error) = provision_project_manifest_for_desktop(&paths) {
+            warn!(
+                workspace_path = %workspace_path,
+                project_id = %paths.project_id,
+                error = %error,
+                "scheduled task workspace manifest validation failed"
+            );
+            continue;
+        }
         handle.send(SchedulerCommand::RegisterWorkspace { workspace_path })?;
     }
     info!("scheduled task scheduler started");
@@ -718,6 +766,7 @@ impl ScheduledRuntime {
             create_manual_occurrence(&database, &definition.project_id, definition.id())?;
         let now = Utc::now();
         let claim = database.claim_occurrence(
+            &definition.project_id,
             &occurrence.id,
             &self.owner_id,
             now,
@@ -761,8 +810,14 @@ impl ScheduledRuntime {
         };
         if let Some((status, error)) = terminal_queue_result {
             handoff.stop().await;
-            let finished =
-                database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)?;
+            let finished = database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )?;
             if !finished {
                 anyhow::bail!("failed to finish busy manual occurrence");
             }
@@ -780,7 +835,7 @@ impl ScheduledRuntime {
             }
             return Ok(ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&claimed.id)?
+                    .get_occurrence(&definition.project_id, &claimed.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             });
@@ -797,7 +852,7 @@ impl ScheduledRuntime {
             .await?;
             return Ok(ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&claimed.id)?
+                    .get_occurrence(&definition.project_id, &claimed.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             });
@@ -829,7 +884,7 @@ impl ScheduledRuntime {
         }
         Ok(ManualRunResult {
             occurrence: database
-                .get_occurrence(&claimed.id)?
+                .get_occurrence(&definition.project_id, &claimed.id)?
                 .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
             immediate_links: execution.immediate_links,
         })
@@ -852,7 +907,13 @@ impl ScheduledRuntime {
         }
         let scheduled_at = occurrence.scheduled_at;
         let lease_until = LeaseConfig::default().lease_until(now);
-        let claim = database.claim_occurrence(&occurrence.id, &self.owner_id, now, lease_until)?;
+        let claim = database.claim_occurrence(
+            &definition.project_id,
+            &occurrence.id,
+            &self.owner_id,
+            now,
+            lease_until,
+        )?;
         let claimed = match claim {
             ClaimResult::Claimed(value) => value,
             ClaimResult::AlreadyOwned => return Ok(()),
@@ -874,12 +935,19 @@ impl ScheduledRuntime {
 
         if let Some((status, error)) = recovery_outcome_for_accepted_occurrence(app, &claimed)? {
             handoff.stop().await;
-            if !database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)? {
+            if !database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )? {
                 anyhow::bail!("failed to finish recovered accepted scheduled occurrence");
             }
             handoff.disarm();
             let recovered = database
-                .get_occurrence(&claimed.id)?
+                .get_occurrence(&definition.project_id, &claimed.id)?
                 .ok_or_else(|| anyhow::anyhow!("recovered scheduled occurrence disappeared"))?;
             definition.last_trigger_at = Some(recovered.scheduled_at);
             definition.last_trigger_status = Some(recovered.status.to_string());
@@ -926,8 +994,14 @@ impl ScheduledRuntime {
                 }
             };
             handoff.stop().await;
-            let finished =
-                database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)?;
+            let finished = database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )?;
             if !finished {
                 anyhow::bail!("failed to finish busy scheduled occurrence");
             }
@@ -1005,7 +1079,8 @@ impl ScheduledRuntime {
         app: &App,
         job: &ScheduledJobRecord,
     ) -> anyhow::Result<()> {
-        let occurrences = database.list_running_occurrences_for_job(&job.definition.id())?;
+        let occurrences = database
+            .list_running_occurrences_for_job(&job.definition.project_id, job.definition.id())?;
         for occurrence in occurrences {
             let Some((status, error)) = reconcile_running_occurrence_outcome(app, &occurrence)?
             else {
@@ -1014,6 +1089,7 @@ impl ScheduledRuntime {
             let Some(finished) = finish_reconciled_occurrence(
                 database,
                 &self.active,
+                &job.definition.project_id,
                 &occurrence.id,
                 &self.owner_id,
                 status,
@@ -1059,6 +1135,7 @@ impl ScheduledRuntime {
         let error_code = error.code;
         handoff.stop().await;
         let finished = database.finish_occurrence(
+            &definition.project_id,
             &occurrence.id,
             &self.owner_id,
             OccurrenceStatus::Failed,
@@ -1084,7 +1161,9 @@ impl ScheduledRuntime {
         execution_error: &anyhow::Error,
     ) -> anyhow::Result<()> {
         handoff.stop().await;
+        let project_id = handoff.lease.project_id.clone();
         let finished = database.finish_occurrence(
+            &project_id,
             &occurrence.id,
             &self.owner_id,
             OccurrenceStatus::Failed,
@@ -1144,8 +1223,9 @@ impl ScheduledRuntime {
             }
             None => *expected_revision = None,
         }
+        let key = ActiveOccurrenceKey::new(&definition.project_id, occurrence_id);
         if let Ok(mut active) = self.active.lock()
-            && let Some(active) = active.get_mut(occurrence_id)
+            && let Some(active) = active.get_mut(&key)
         {
             active.metadata.expected_revision = *expected_revision;
         }
@@ -1165,15 +1245,23 @@ impl ScheduledRuntime {
         round_id: &str,
         attempt_id: &str,
     ) -> anyhow::Result<Option<String>> {
-        let Some(attention) =
-            database.find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)?
+        let Some(attention) = database.find_attention_occurrence_by_links(
+            &app.paths.project_id,
+            task_id,
+            run_id,
+            round_id,
+            attempt_id,
+        )?
         else {
             return Ok(None);
         };
-        let Some(mut job) = database.get_job_definition_by_id(&attention.job_id)? else {
+        let Some(mut job) =
+            database.get_job_definition(&app.paths.project_id, &attention.job_id)?
+        else {
             anyhow::bail!("scheduled attention definition was not found");
         };
         let claim = database.resume_attention_occurrence(
+            &app.paths.project_id,
             &attention.id,
             &self.owner_id,
             Utc::now(),
@@ -1213,7 +1301,7 @@ impl ScheduledRuntime {
     }
 
     fn handle_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
-        let Some(occurrence_id) = scheduled_occurrence_id(&event) else {
+        let Some(key) = scheduled_occurrence_key(&event) else {
             // 终止事件未携带 occurrence_id（orchestrator 硬编码 None，依赖 App 注入）。
             // 若这是某条 scheduled run 的完成事件，对应 occurrence 会因收不到事件卡 running，
             // 只能靠主动对账收尾。这里记录便于定位。
@@ -1228,13 +1316,15 @@ impl ScheduledRuntime {
         if !event_finishes_occurrence(&event) {
             return;
         }
-        let Some(entry) = take_active_occurrence(&self.active, &occurrence_id) else {
+        let Some(entry) = take_active_occurrence(&self.active, &key) else {
             warn!(
-                %occurrence_id,
+                project_id = %key.project_id,
+                occurrence_id = %key.occurrence_id,
                 "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
             );
             return;
         };
+        let occurrence_id = key.occurrence_id;
         let app_handle = self.app_handle.clone();
         let pending_guard_joins = self.pending_guard_joins.clone();
         let join = tauri::async_runtime::spawn(async move {
@@ -1253,7 +1343,13 @@ fn finish_lifecycle_occurrence(
     active: ActiveOccurrenceMetadata,
     event: RuntimeLifecycleEvent,
 ) {
-    match finish_occurrence_for_event(&active.database, &occurrence_id, &active.owner_id, &event) {
+    match finish_occurrence_for_event(
+        &active.database,
+        &active.project_id,
+        &occurrence_id,
+        &active.owner_id,
+        &event,
+    ) {
         Ok(Some(occurrence)) => {
             apply_terminal_occurrence_side_effects(&app_handle, active, &occurrence);
         }
@@ -1731,10 +1827,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         let app = self.runtime.app_for_workspace(&workspace_path)?;
         let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path())?;
         let now = self.runtime.now();
-        migrate_legacy_scheduler_database(&app.paths, &database, now)?;
-        let legacy_store = ScheduledTaskStore::new(app.paths.clone());
-        database.import_legacy_store(&legacy_store)?;
-        database.recover_expired(now)?;
+        database.recover_expired(&app.paths.project_id, now)?;
         let candidate = WorkspaceRegistration {
             app: Arc::new(app),
             database,
@@ -1799,7 +1892,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .try_fold(0usize, |count, registration| {
                 registration
                     .database
-                    .enabled_job_count()
+                    .enabled_job_count(&registration.app.paths.project_id)
                     .map(|workspace_count| count.saturating_add(workspace_count))
             });
         match enabled_job_count {
@@ -1830,6 +1923,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             ));
         loop {
             let result = registration.database.cleanup_terminal_occurrences(
+                &registration.app.paths.project_id,
                 cutoff,
                 RETENTION_DELETE_BATCH_SIZE,
                 &protected_run_ids,
@@ -1857,7 +1951,10 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         registration: &WorkspaceRegistration,
         occurrence_id: &str,
     ) {
-        match registration.database.get_occurrence(occurrence_id) {
+        match registration
+            .database
+            .get_occurrence(&registration.app.paths.project_id, occurrence_id)
+        {
             Ok(Some(occurrence)) => self
                 .runtime
                 .notify_occurrence(&registration.app.paths.project_id, &occurrence),
@@ -1898,7 +1995,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         _reason: ReconcileReason,
     ) -> anyhow::Result<()> {
         let now = self.runtime.now();
-        registration.database.recover_expired(now)?;
+        registration
+            .database
+            .recover_expired(&registration.app.paths.project_id, now)?;
         let recoverable = registration
             .database
             .list_recoverable_jobs_for_project(&registration.app.paths.project_id)?;
@@ -1932,7 +2031,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             };
             if recovery.has_runnable_occurrence
                 && let Some(occurrence) =
-                    next_runnable_occurrence(&registration.database, &key.job_id)?
+                    next_runnable_occurrence(&registration.database, &key.project_id, &key.job_id)?
             {
                 if recovery
                     .job
@@ -1992,7 +2091,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("scheduled workspace is not registered"))?;
         let now = self.runtime.now();
-        registration.database.recover_expired(now)?;
+        registration
+            .database
+            .recover_expired(&registration.app.paths.project_id, now)?;
         let Some(recovery) = registration
             .database
             .get_recoverable_job_for_project(&key.project_id, &key.job_id)?
@@ -2021,7 +2122,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             );
         }
         if recovery.has_runnable_occurrence
-            && let Some(occurrence) = next_runnable_occurrence(&registration.database, &key.job_id)?
+            && let Some(occurrence) =
+                next_runnable_occurrence(&registration.database, &key.project_id, &key.job_id)?
         {
             if recovery
                 .job
@@ -2279,9 +2381,10 @@ fn coordinator_error(operation: &'static str) -> ScheduledServiceError {
 
 fn next_runnable_occurrence(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     job_id: &str,
 ) -> anyhow::Result<Option<ScheduledOccurrence>> {
-    Ok(database.oldest_runnable_occurrence(job_id)?)
+    Ok(database.oldest_runnable_occurrence(project_id, job_id)?)
 }
 
 fn runtime_app_for_workspace(
@@ -2291,19 +2394,6 @@ fn runtime_app_for_workspace(
 ) -> anyhow::Result<App> {
     let base = state.app()?;
     Ok(base.with_repo_root(Utf8PathBuf::from(workspace), context.config.clone()))
-}
-
-fn migrate_legacy_scheduler_database(
-    paths: &GoldBandPaths,
-    destination: &ScheduledTaskDatabase,
-    applied_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let legacy_path = paths.legacy_scheduler_db_path();
-    if legacy_path == paths.scheduler_db_path() {
-        return Ok(());
-    }
-    destination.import_legacy_database_path_once(legacy_path, &paths.project_id, applied_at)?;
-    Ok(())
 }
 
 fn ensure_definition_workspace(
@@ -2574,27 +2664,37 @@ fn is_full_auto_mode(value: &str) -> bool {
     )
 }
 
-fn scheduled_occurrence_id(event: &RuntimeLifecycleEvent) -> Option<String> {
+fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccurrenceKey> {
     match event {
         RuntimeLifecycleEvent::RunPaused {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::InterventionRequested {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::RunCompleted {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::AcpTurnFinished {
+            project_id,
             scheduled_occurrence_id,
             ..
-        } => scheduled_occurrence_id.clone(),
-        RuntimeLifecycleEvent::NodeStarted { .. } | RuntimeLifecycleEvent::NodeCompleted { .. } => {
-            None
-        }
+        } => scheduled_occurrence_id
+            .as_ref()
+            .map(|occurrence_id| ActiveOccurrenceKey::new(project_id, occurrence_id)),
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::NodeStarted { .. }
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => None,
     }
 }
 
@@ -2610,22 +2710,25 @@ fn event_finishes_occurrence(event: &RuntimeLifecycleEvent) -> bool {
 async fn finish_reconciled_occurrence(
     database: &ScheduledTaskDatabase,
     active: &ActiveOccurrenceRegistry,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     status: OccurrenceStatus,
     error: Option<ScheduledError>,
 ) -> anyhow::Result<Option<ScheduledOccurrence>> {
-    if let Some(entry) = take_active_occurrence(active, occurrence_id) {
+    let key = ActiveOccurrenceKey::new(project_id, occurrence_id);
+    if let Some(entry) = take_active_occurrence(active, &key) {
         entry.guard.stop().await;
     }
-    if !database.finish_occurrence(occurrence_id, owner_id, status, None, error)? {
+    if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, None, error)? {
         return Ok(None);
     }
-    Ok(database.get_occurrence(occurrence_id)?)
+    Ok(database.get_occurrence(project_id, occurrence_id)?)
 }
 
 pub(crate) fn finish_occurrence_for_event(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     event: &RuntimeLifecycleEvent,
@@ -2706,14 +2809,19 @@ pub(crate) fn finish_occurrence_for_event(
                 Some(ScheduledError::new(code)),
             )
         }
-        RuntimeLifecycleEvent::RunPaused { .. }
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
-        | RuntimeLifecycleEvent::NodeCompleted { .. } => return Ok(None),
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
     };
-    if !database.finish_occurrence(occurrence_id, owner_id, status, links, error)? {
+    if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, links, error)? {
         return Ok(None);
     }
-    Ok(database.get_occurrence(occurrence_id)?)
+    Ok(database.get_occurrence(project_id, occurrence_id)?)
 }
 
 fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
@@ -2743,6 +2851,7 @@ pub(super) struct ExecutionResult {
 #[cfg(test)]
 fn accept_occurrence_links_then<T, F>(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     now: DateTime<Utc>,
@@ -2752,13 +2861,14 @@ fn accept_occurrence_links_then<T, F>(
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(occurrence_id, owner_id, now, links)? {
+    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
         anyhow::bail!("scheduled occurrence execution links were not accepted");
     }
     match launch() {
         Ok(result) => Ok(result),
         Err(launch_error) => {
             let finish_result = database.finish_occurrence(
+                project_id,
                 occurrence_id,
                 owner_id,
                 OccurrenceStatus::Failed,
@@ -2783,6 +2893,7 @@ where
 
 fn accept_occurrence_links_then_deferred<T, F>(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     now: DateTime<Utc>,
@@ -2792,7 +2903,7 @@ fn accept_occurrence_links_then_deferred<T, F>(
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(occurrence_id, owner_id, now, links)? {
+    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
         anyhow::bail!("scheduled occurrence execution links were not accepted");
     }
     launch()
@@ -2808,10 +2919,17 @@ fn recover_accepted_occurrence(
     let Some((status, error)) = recovery_outcome_for_accepted_occurrence(app, occurrence)? else {
         return Ok(None);
     };
-    if !database.finish_occurrence(&occurrence.id, owner_id, status, None, error)? {
+    if !database.finish_occurrence(
+        &app.paths.project_id,
+        &occurrence.id,
+        owner_id,
+        status,
+        None,
+        error,
+    )? {
         anyhow::bail!("failed to finish recovered accepted scheduled occurrence");
     }
-    Ok(database.get_occurrence(&occurrence.id)?)
+    Ok(database.get_occurrence(&app.paths.project_id, &occurrence.id)?)
 }
 
 fn recovery_outcome_for_accepted_occurrence(
@@ -3165,6 +3283,7 @@ pub(super) fn execute_definition_with_action(
                 };
                 accept_occurrence_links_then_deferred(
                     database,
+                    &definition.project_id,
                     occurrence_id,
                     owner_id,
                     Utc::now(),
@@ -3237,6 +3356,7 @@ pub(super) fn execute_definition_with_action(
             };
             accept_occurrence_links_then_deferred(
                 database,
+                &definition.project_id,
                 occurrence_id,
                 owner_id,
                 Utc::now(),
@@ -3281,6 +3401,7 @@ pub(super) fn execute_definition_with_action(
     };
     accept_occurrence_links_then_deferred(
         database,
+        &definition.project_id,
         occurrence_id,
         owner_id,
         Utc::now(),
@@ -3409,16 +3530,16 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::{
-        ActiveOccurrenceMetadata, CLOCK_DRIFT_CHECK_INTERVAL, ClaimToHandoffGuard,
-        ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE, OccurrenceExecutionGuard,
-        PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction, SchedulerCommand,
-        SchedulerCoordinator, SchedulerCoordinatorHandle, WORKSPACE_REGISTRATION_RETRY_DELAY,
-        WorkspaceRegistration, accept_occurrence_links_then, active_execution_for_run,
-        attempt_tree_has_active_prompt, create_manual_occurrence, ensure_definition_workspace,
-        finish_occurrence_for_event, finish_reconciled_occurrence, mark_past_points_missed,
-        materialize_registered_deadline, migrate_legacy_scheduler_database,
-        persist_runtime_projection, project_resumed_attention, reconcile_missed_deadlines,
-        recover_accepted_occurrence, scheduled_agent_unattended_error, scheduled_execution_action,
+        ActiveOccurrenceKey, ActiveOccurrenceMetadata, CLOCK_DRIFT_CHECK_INTERVAL,
+        ClaimToHandoffGuard, ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE,
+        OccurrenceExecutionGuard, PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction,
+        SchedulerCommand, SchedulerCoordinator, SchedulerCoordinatorHandle,
+        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration, accept_occurrence_links_then,
+        active_execution_for_run, attempt_tree_has_active_prompt, create_manual_occurrence,
+        ensure_definition_workspace, finish_occurrence_for_event, finish_reconciled_occurrence,
+        mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
+        project_resumed_attention, reconcile_missed_deadlines, recover_accepted_occurrence,
+        scheduled_agent_unattended_error, scheduled_execution_action,
         scheduled_execution_action_for_fingerprint, scheduled_occurrence_updated_event,
         shutdown_active_occurrences, task_has_active_execution,
         task_has_active_execution_with_prompt_probe,
@@ -3463,8 +3584,15 @@ mod tests {
             )?;
             let now = Utc::now();
             let owner_id = "test-coordinator";
-            database.claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(1))?;
+            database.claim_occurrence(
+                &job.definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(1),
+            )?;
             database.finish_occurrence(
+                &job.definition.project_id,
                 &occurrence.id,
                 owner_id,
                 OccurrenceStatus::Succeeded,
@@ -3473,7 +3601,7 @@ mod tests {
             )?;
             Ok(crate::scheduled_service::ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&occurrence.id)?
+                    .get_occurrence(&job.definition.project_id, &occurrence.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             })
@@ -3482,14 +3610,20 @@ mod tests {
         async fn resume_attention(
             &self,
             database: &ScheduledTaskDatabase,
-            _app: &gold_band::app::App,
+            app: &gold_band::app::App,
             task_id: &str,
             run_id: &str,
             round_id: &str,
             attempt_id: &str,
         ) -> anyhow::Result<Option<String>> {
             Ok(database
-                .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)?
+                .find_attention_occurrence_by_links(
+                    &app.paths.project_id,
+                    task_id,
+                    run_id,
+                    round_id,
+                    attempt_id,
+                )?
                 .map(|occurrence| occurrence.id))
         }
     }
@@ -3587,7 +3721,7 @@ mod tests {
             &self,
             database: &ScheduledTaskDatabase,
             _app: &gold_band::app::App,
-            _job: gold_band::scheduler::db::ScheduledJobRecord,
+            job: gold_band::scheduler::db::ScheduledJobRecord,
             occurrence: gold_band::scheduler::occurrence::ScheduledOccurrence,
             now: chrono::DateTime<Utc>,
         ) -> anyhow::Result<()> {
@@ -3602,6 +3736,7 @@ mod tests {
             }
             let owner_id = "loop-runtime";
             let claim = database.claim_occurrence(
+                &job.definition.project_id,
                 &occurrence.id,
                 owner_id,
                 now,
@@ -3610,6 +3745,7 @@ mod tests {
             if let gold_band::scheduler::occurrence::ClaimResult::Claimed(_) = claim {
                 self.processed_occurrences.fetch_add(1, Ordering::SeqCst);
                 database.finish_occurrence(
+                    &job.definition.project_id,
                     &occurrence.id,
                     owner_id,
                     OccurrenceStatus::Succeeded,
@@ -3834,6 +3970,7 @@ mod tests {
             .unwrap();
         database
             .claim_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "retention-owner",
                 finished_at,
@@ -3842,6 +3979,7 @@ mod tests {
             .unwrap();
         database
             .finish_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "retention-owner",
                 OccurrenceStatus::Succeeded,
@@ -3860,7 +3998,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(database.get_occurrence(&occurrence.id).unwrap().is_none());
+        assert!(
+            database
+                .get_occurrence(&definition.project_id, &occurrence.id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     async fn drain_pending_guard_joins(pending: &PendingGuardJoins) {
@@ -3933,6 +4076,7 @@ mod tests {
             .unwrap();
         database
             .claim_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "test-owner",
                 now,
@@ -3941,6 +4085,7 @@ mod tests {
             .unwrap();
         database
             .finish_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "test-owner",
                 OccurrenceStatus::AttentionRequired,
@@ -4006,6 +4151,7 @@ mod tests {
         assert!(
             database
                 .claim_occurrence(
+                    &definition.project_id,
                     &occurrence.id,
                     &owner_id,
                     scheduled_at,
@@ -4031,6 +4177,7 @@ mod tests {
         assert!(
             accept_occurrence_links_then(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 Utc::now() + Duration::minutes(10),
@@ -4046,7 +4193,7 @@ mod tests {
         assert_eq!(launches.load(Ordering::SeqCst), 0);
         assert_eq!(
             database
-                .get_occurrence(&occurrence_id)
+                .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
                 .unwrap()
                 .links(),
@@ -4084,6 +4231,7 @@ mod tests {
         assert!(
             accept_occurrence_links_then(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 Utc::now(),
@@ -4094,14 +4242,22 @@ mod tests {
         );
         guard.disarm();
 
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::Failed);
         assert_eq!(
             occurrence.error_code,
             Some(ScheduledErrorCode::ExecutionFailed)
         );
         assert_eq!(occurrence.links(), links);
-        assert!(!active.lock().unwrap().contains_key(&occurrence_id));
+        assert!(
+            !active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
     }
 
     #[test]
@@ -4133,7 +4289,13 @@ mod tests {
             .unwrap();
         let owner_id = "recovery-owner";
         let claimed = match database
-            .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(5))
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(5),
+            )
             .unwrap()
         {
             ClaimResult::Claimed(claimed) => claimed,
@@ -4147,7 +4309,13 @@ mod tests {
         };
         assert!(
             database
-                .accept_occurrence_links(&claimed.id, owner_id, now, &links)
+                .accept_occurrence_links(
+                    &definition.project_id,
+                    &claimed.id,
+                    owner_id,
+                    now,
+                    &links,
+                )
                 .unwrap()
         );
         let run = RunState {
@@ -4172,7 +4340,10 @@ mod tests {
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
 
-        let accepted = database.get_occurrence(&claimed.id).unwrap().unwrap();
+        let accepted = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
         let recovered = recover_accepted_occurrence(&database, &app, &accepted, owner_id)
             .unwrap()
             .unwrap();
@@ -4211,7 +4382,13 @@ mod tests {
             .unwrap();
         let owner_id = "recovery-owner";
         let claimed = match database
-            .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(5))
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(5),
+            )
             .unwrap()
         {
             ClaimResult::Claimed(claimed) => claimed,
@@ -4225,7 +4402,13 @@ mod tests {
         };
         assert!(
             database
-                .accept_occurrence_links(&claimed.id, owner_id, now, &links)
+                .accept_occurrence_links(
+                    &definition.project_id,
+                    &claimed.id,
+                    owner_id,
+                    now,
+                    &links,
+                )
                 .unwrap()
         );
         let run = RunState {
@@ -4249,7 +4432,10 @@ mod tests {
             execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
-        let accepted = database.get_occurrence(&claimed.id).unwrap().unwrap();
+        let accepted = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
 
         let recovered = recover_accepted_occurrence(&database, &app, &accepted, owner_id)
             .unwrap()
@@ -4310,7 +4496,13 @@ mod tests {
                 .unwrap();
             let owner_id = format!("claim-owner-{offset}");
             let claimed = match database
-                .claim_occurrence(&occurrence.id, &owner_id, now, now + Duration::minutes(1))
+                .claim_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    &owner_id,
+                    now,
+                    now + Duration::minutes(1),
+                )
                 .unwrap()
             {
                 ClaimResult::Claimed(claimed) => claimed,
@@ -4338,11 +4530,22 @@ mod tests {
 
             drain_pending_guard_joins(&pending_stops).await;
 
-            let released = database.get_occurrence(&claimed.id).unwrap().unwrap();
+            let released = database
+                .get_occurrence(&definition.project_id, &claimed.id)
+                .unwrap()
+                .unwrap();
             assert_eq!(released.status, OccurrenceStatus::Retrying);
             assert_eq!(released.owner_id, None);
             assert_eq!(released.lease_until, None);
-            assert!(!active.lock().unwrap().contains_key(&claimed.id));
+            assert!(
+                !active
+                    .lock()
+                    .unwrap()
+                    .contains_key(&ActiveOccurrenceKey::new(
+                        &definition.project_id,
+                        &claimed.id,
+                    ))
+            );
         }
     }
 
@@ -4371,12 +4574,27 @@ mod tests {
 
         {
             let active_state = active.lock().unwrap();
-            assert!(active_state.contains_key(&occurrence_id));
-            assert!(active_state.get(&occurrence_id).unwrap().guard.is_running());
+            let key = ActiveOccurrenceKey::new("project-1", &occurrence_id);
+            assert!(active_state.contains_key(&key));
+            assert!(active_state.get(&key).unwrap().guard.is_running());
         }
         shutdown_active_occurrences(&active, &pending_stops, Utc::now())
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn active_occurrence_registry_key_is_project_scoped() {
+        let first = ActiveOccurrenceKey::new("project-a", "occurrence-shared");
+        let second = ActiveOccurrenceKey::new("project-b", "occurrence-shared");
+        let mut entries = HashMap::new();
+
+        entries.insert(first.clone(), "first");
+        entries.insert(second.clone(), "second");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.get(&first), Some(&"first"));
+        assert_eq!(entries.get(&second), Some(&"second"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4405,7 +4623,10 @@ mod tests {
             .await
             .unwrap();
 
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert!(active.lock().unwrap().is_empty());
         assert!(pending_stops.lock().unwrap().is_empty());
         assert_eq!(occurrence.status, OccurrenceStatus::Retrying);
@@ -4441,7 +4662,13 @@ mod tests {
         let owner_id = "lease-guard-owner";
         assert!(matches!(
             database
-                .claim_occurrence(&occurrence.id, owner_id, now, now - Duration::seconds(1),)
+                .claim_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    owner_id,
+                    now,
+                    now - Duration::seconds(1),
+                )
                 .unwrap(),
             ClaimResult::Claimed(_)
         ));
@@ -4453,6 +4680,7 @@ mod tests {
         tokio::pin!(lost_notification);
         let _guard = OccurrenceExecutionGuard::start(
             database.clone(),
+            definition.project_id.clone(),
             occurrence.id.clone(),
             owner_id.to_string(),
             LeaseConfig {
@@ -4468,7 +4696,10 @@ mod tests {
         tokio::time::advance(StdDuration::from_secs(1)).await;
         lost_notification.await;
 
-        let occurrence = database.get_occurrence(&occurrence.id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence(&definition.project_id, &occurrence.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(lost.load(Ordering::SeqCst), 1);
         assert_eq!(occurrence.status, OccurrenceStatus::Retrying);
         assert_eq!(occurrence.error_code, Some(ScheduledErrorCode::LeaseLost));
@@ -4519,7 +4750,9 @@ mod tests {
         advance_command_loop(&runtime, StdDuration::from_secs(1)).await;
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
 
-        let history = database.list_occurrences(definition.id(), 10).unwrap();
+        let history = database
+            .list_occurrences(&definition.project_id, definition.id(), 10)
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].status, OccurrenceStatus::Succeeded);
         handle.shutdown().await.unwrap();
@@ -4602,7 +4835,7 @@ mod tests {
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
         assert_eq!(
             database
-                .list_occurrences(definition.id(), 10)
+                .list_occurrences(&definition.project_id, definition.id(), 10)
                 .unwrap()
                 .first()
                 .unwrap()
@@ -4643,6 +4876,7 @@ mod tests {
             .unwrap();
         database
             .claim_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "crashed-owner",
                 base,
@@ -4664,7 +4898,7 @@ mod tests {
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
         assert_eq!(
             database
-                .get_occurrence(&occurrence.id)
+                .get_occurrence(&definition.project_id, &occurrence.id)
                 .unwrap()
                 .unwrap()
                 .status,
@@ -5109,7 +5343,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, DueMaterialization::Stale);
-        assert!(database.list_occurrences("job-a", 10).unwrap().is_empty());
+        assert!(
+            database
+                .list_occurrences("project-a", "job-a", 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -5248,28 +5487,10 @@ mod tests {
         );
         assert!(
             database
-                .list_occurrences(definition.id(), 10)
+                .list_occurrences(&definition.project_id, definition.id(), 10)
                 .unwrap()
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn completed_shared_database_marker_skips_corrupt_source_during_workspace_migration() {
-        let directory = tempdir().unwrap();
-        let workspace_path =
-            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
-        let paths = gold_band::storage::GoldBandPaths::new(workspace_path);
-        let database = ScheduledTaskDatabase::open(paths.scheduler_db_path()).unwrap();
-        let source = ScheduledTaskDatabase::open(paths.legacy_scheduler_db_path()).unwrap();
-
-        database
-            .import_legacy_database_once(&source, &paths.project_id, Utc::now())
-            .unwrap();
-        drop(source);
-        std::fs::write(paths.legacy_scheduler_db_path(), b"not sqlite").unwrap();
-
-        migrate_legacy_scheduler_database(&paths, &database, Utc::now()).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -5390,7 +5611,7 @@ mod tests {
         let reconciled = reconciled.record.unwrap();
 
         assert_eq!(reconciled.next_run_at, Some(near_late_deadline));
-        let occurrences = database.list_occurrences("job-a", 10).unwrap();
+        let occurrences = database.list_occurrences("project-a", "job-a", 10).unwrap();
         assert_eq!(occurrences.len(), 1);
         assert_eq!(occurrences[0].scheduled_at, old_deadline);
         assert_eq!(occurrences[0].status, OccurrenceStatus::Missed);
@@ -5440,7 +5661,9 @@ mod tests {
         .unwrap();
         assert_eq!(reconciled.missed_count, MISSED_RECONCILE_BATCH_SIZE as u32);
         let reconciled = reconciled.record.unwrap();
-        let occurrences = database.list_occurrences(definition.id(), 1_000).unwrap();
+        let occurrences = database
+            .list_occurrences(&definition.project_id, definition.id(), 1_000)
+            .unwrap();
 
         assert!(!occurrences.is_empty());
         assert!(occurrences.len() < BACKLOG_POINTS as usize);
@@ -5452,6 +5675,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::RunCompleted {
@@ -5471,7 +5695,10 @@ mod tests {
             },
         )
         .unwrap();
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::Succeeded);
         assert_eq!(occurrence.task_id.as_deref(), Some("task-1"));
         assert_eq!(occurrence.run_id.as_deref(), Some("run-1"));
@@ -5482,6 +5709,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::AcpTurnFinished {
@@ -5504,7 +5732,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             database
-                .get_occurrence(&occurrence_id)
+                .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
                 .unwrap()
                 .status,
@@ -5518,6 +5746,7 @@ mod tests {
         assert!(
             finish_occurrence_for_event(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 &RuntimeLifecycleEvent::RunPaused {
@@ -5538,7 +5767,10 @@ mod tests {
             .unwrap()
             .is_none()
         );
-        let paused_occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let paused_occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(paused_occurrence.status, OccurrenceStatus::Running);
         assert_eq!(
             paused_occurrence.owner_id.as_deref(),
@@ -5547,6 +5779,7 @@ mod tests {
 
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::InterventionRequested {
@@ -5565,7 +5798,10 @@ mod tests {
             },
         )
         .unwrap();
-        let finished_occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let finished_occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(finished_occurrence.status, OccurrenceStatus::Failed);
         assert!(finished_occurrence.owner_id.is_none());
     }
@@ -5663,6 +5899,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::InterventionRequested {
@@ -5681,7 +5918,10 @@ mod tests {
             },
         )
         .unwrap();
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::AttentionRequired);
         assert_eq!(
             occurrence.error_code,
@@ -5697,6 +5937,7 @@ mod tests {
         let now = Utc::now();
         database
             .finish_occurrence(
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 OccurrenceStatus::AttentionRequired,
@@ -5713,6 +5954,7 @@ mod tests {
             .unwrap();
         let resumed = match database
             .resume_attention_occurrence(
+                "project-1",
                 &occurrence_id,
                 "resume-owner",
                 now,
@@ -5739,6 +5981,7 @@ mod tests {
         let now = Utc::now();
         database
             .finish_occurrence(
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 OccurrenceStatus::AttentionRequired,
@@ -5755,6 +5998,7 @@ mod tests {
             .unwrap();
         let resumed = match database
             .resume_attention_occurrence(
+                "project-1",
                 &occurrence_id,
                 "resume-owner",
                 now,
@@ -5804,7 +6048,9 @@ mod tests {
         let now = past + Duration::hours(1);
         database.create_job(&definition, Some(past)).unwrap();
         mark_past_points_missed(&database, &mut definition, now).unwrap();
-        let history = database.list_occurrences("job-1", 10).unwrap();
+        let history = database
+            .list_occurrences(&definition.project_id, definition.id(), 10)
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].status, OccurrenceStatus::Missed);
         assert_eq!(definition.last_trigger_at, Some(past));
@@ -6006,7 +6252,9 @@ mod tests {
         assert!(updated.is_some());
         assert_eq!(notified_task_id.as_deref(), Some("task-1"));
         assert_eq!(
-            database.list_job_definitions().unwrap()[0]
+            database
+                .list_job_definitions_for_project("project-1")
+                .unwrap()[0]
                 .task_id
                 .as_deref(),
             Some("task-1")
@@ -6248,7 +6496,13 @@ mod tests {
             .unwrap();
         let owner = "reconcile-owner";
         let claimed = match database
-            .claim_occurrence(&occurrence.id, owner, now, now + Duration::minutes(5))
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner,
+                now,
+                now + Duration::minutes(5),
+            )
             .unwrap()
         {
             ClaimResult::Claimed(claimed) => claimed,
@@ -6262,13 +6516,16 @@ mod tests {
         };
         assert!(
             database
-                .accept_occurrence_links(&claimed.id, owner, now, &links)
+                .accept_occurrence_links(&definition.project_id, &claimed.id, owner, now, &links)
                 .unwrap()
         );
         if let Some(run) = run {
             write_json(&app.paths.run_file("task-reconcile", "run-reconcile"), &run).unwrap();
         }
-        let occurrence = database.get_occurrence(&claimed.id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
         (app, occurrence, directory)
     }
 
@@ -6291,6 +6548,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::Terminal,
                 None,
@@ -6341,6 +6599,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 None,
@@ -6376,6 +6635,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::Terminal,
                 None,
@@ -6400,6 +6660,7 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
             execution: RuntimeExecutionState::new(
                 RuntimeExecutionPhase::RunningNode,
                 None,
@@ -6442,12 +6703,18 @@ mod tests {
         )
         .unwrap();
         guard.handoff();
-        assert!(active.lock().unwrap().contains_key(&occurrence_id));
+        assert!(
+            active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
 
         assert!(
             finish_reconciled_occurrence(
                 &database,
                 &active,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 OccurrenceStatus::Succeeded,
@@ -6458,10 +6725,15 @@ mod tests {
             .is_some()
         );
 
-        assert!(!active.lock().unwrap().contains_key(&occurrence_id));
+        assert!(
+            !active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
         assert_eq!(
             database
-                .get_occurrence(&occurrence_id)
+                .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
                 .unwrap()
                 .status,

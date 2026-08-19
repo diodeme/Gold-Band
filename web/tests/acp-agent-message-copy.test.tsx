@@ -121,6 +121,20 @@ describe('completed Agent message Markdown copy action', () => {
     }
   });
 
+  it('does not render rows or avatars for empty Agent text and thought events', async () => {
+    const { container, root } = await renderTimeline([
+      event({ id: 'zero-width', seq: 1, content: '\u200b' }),
+      event({ id: 'empty-thought', seq: 2, kind: 'thoughtDelta', content: '' }),
+      event({ id: 'visible', seq: 3, content: 'hi' }),
+    ]);
+    try {
+      expect(container.querySelectorAll('[data-acp-message-row="assistant"]')).toHaveLength(1);
+      expect(container.textContent).toContain('hi');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('does not expose the action while the Agent message is still streaming', async () => {
     const streamingEvent = event({ id: 'streaming', content: '仍在输出' });
     const { container, root } = await renderTimeline([streamingEvent], 'textDelta-streaming');

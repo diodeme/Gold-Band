@@ -572,9 +572,9 @@ pub(crate) fn build_worker_invocation(
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
         build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let input_attachment_paths = match session_mode {
-        SessionMode::New => super::task_input_attachment_paths(app, task_id),
-        SessionMode::Continue => resume_input_attachment_paths,
+    let (task_input_attachment_paths, user_input_attachment_paths) = match session_mode {
+        SessionMode::New => (super::task_input_attachment_paths(app, task_id), Vec::new()),
+        SessionMode::Continue => (Vec::new(), resume_input_attachment_paths),
     };
 
     let mcp_resolution_started_at = Instant::now();
@@ -654,7 +654,11 @@ pub(crate) fn build_worker_invocation(
         }),
         cold_artifacts,
         cold_attachments,
-        input_attachment_paths,
+        task_input_attachment_paths,
+        user_input_attachment_paths,
+        attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
+            &app.config,
+        ),
         mcp_servers,
         scheduled_context: app.scheduled_task_context().cloned(),
     })
@@ -754,7 +758,6 @@ pub(crate) fn execute_ai_node(
             round_id,
             node_id,
             attempt_id,
-            None,
             crate::runtime::RuntimeExecutionPhase::RunningNode,
         )?;
         if let Some(callback) = prompt_accepted.as_ref() {
@@ -1616,13 +1619,14 @@ mod tests {
         )
         .expect("invocation should build");
 
-        assert_eq!(invocation.input_attachment_paths, vec![resume_input]);
+        assert_eq!(invocation.user_input_attachment_paths, vec![resume_input]);
         assert!(
             !invocation
-                .input_attachment_paths
+                .user_input_attachment_paths
                 .iter()
                 .any(|path| path.ends_with("original.txt"))
         );
+        assert!(invocation.task_input_attachment_paths.is_empty());
     }
 
     #[test]
@@ -1660,9 +1664,10 @@ mod tests {
         .expect("invocation should build");
 
         assert_eq!(
-            invocation.input_attachment_paths,
+            invocation.task_input_attachment_paths,
             vec![original_input.to_string()]
         );
+        assert!(invocation.user_input_attachment_paths.is_empty());
         assert_eq!(
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled

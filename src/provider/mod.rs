@@ -1,5 +1,5 @@
 use crate::acp::{client, events::AcpUiEvent};
-use crate::artifacts::{artifact_uses_json_output, json_artifact_text_from_outputs};
+use crate::artifacts::{artifact_uses_json_output, json_artifact_text};
 use crate::config::{
     AcpAdapterConfig, ManagedAgentConfig, ManagedAgentId, catalog_agent_default_config,
 };
@@ -19,13 +19,17 @@ use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
     normalize_provider_runtime_failure, runtime_error,
 };
-use crate::storage::{active_storage_path_config, read_json, write_json};
+use crate::storage::{active_storage_path_config, atomic_write_file, read_json, write_json};
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageReader, Limits};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::io::{Cursor, Read};
 use std::str::FromStr;
 use tracing::debug;
 
@@ -81,34 +85,59 @@ pub fn conversation_prompt_text(display_text: &str, quotes: &[UserPromptQuote]) 
     format!("{quote_blocks}\n\n{display_text}")
 }
 
-/// Content block types for ACP session/prompt requests.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// Attachment content awaiting projection into an ACP session/prompt content block.
+///
+/// The live ACP connection capabilities decide whether this becomes visual/embedded
+/// content or the protocol-baseline resource link at the outbound request boundary.
+#[derive(Debug, Clone)]
 pub enum AcpContentBlock {
     Image(AcpImageBlock),
     Resource(AcpResourceBlock),
+    ResourceLink(AcpResourceLinkBlock),
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpImageBlock {
     pub data: String,
     pub mime_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub uri: Option<String>,
+    pub link: AcpResourceLinkBlock,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpResourceBlock {
     pub resource: AcpTextResourceContents,
+    pub link: AcpResourceLinkBlock,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct AcpTextResourceContents {
     pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcpResourceLinkBlock {
+    pub name: String,
     pub uri: String,
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentProjectionPolicy {
+    pub inline_content_max_bytes: u64,
+    pub inline_image_max_bytes: u64,
+    pub inline_image_max_dimension: u32,
+}
+
+impl From<&crate::config::RuntimeConfig> for AttachmentProjectionPolicy {
+    fn from(config: &crate::config::RuntimeConfig) -> Self {
+        Self {
+            inline_content_max_bytes: config.conversation_inline_content_max_bytes,
+            inline_image_max_bytes: config.conversation_inline_image_max_bytes,
+            inline_image_max_dimension: config.conversation_inline_image_max_dimension,
+        }
+    }
 }
 
 /// Resolved attachment ready to be sent to ACP.
@@ -117,6 +146,9 @@ pub struct ResolvedAttachment {
     pub meta: AttachmentMeta,
     pub block: AcpContentBlock,
 }
+
+pub const TASK_INPUT_ATTACHMENT_PREFIX: &str = "task-inputs";
+pub const USER_INPUT_ATTACHMENT_PREFIX: &str = "user-inputs";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -263,8 +295,15 @@ pub struct WorkerInvocation {
     pub attachments_dir: Option<Utf8PathBuf>,
     pub cold_artifacts: Vec<ColdFileRef>,
     pub cold_attachments: Vec<ColdFileRef>,
+    /// Task-owned requirement inputs remain canonical under authoring/inputs
+    /// and are referenced from the first user message as task-inputs/*.
     #[serde(default)]
-    pub input_attachment_paths: Vec<String>,
+    pub task_input_attachment_paths: Vec<String>,
+    /// Attachments explicitly added by a later user turn belong to this
+    /// attempt and are materialized under user-inputs/* before prompting.
+    #[serde(default)]
+    pub user_input_attachment_paths: Vec<String>,
+    pub attachment_projection_policy: AttachmentProjectionPolicy,
     #[serde(default)]
     pub mcp_servers: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -539,6 +578,11 @@ struct AttachmentFormat {
     content_kind: AttachmentContentKind,
 }
 
+const INLINE_IMAGE_DECODE_MAX_DIMENSION: u32 = 8_192;
+const INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 128 * 1024 * 1024;
+const INLINE_IMAGE_JPEG_QUALITY: u8 = 92;
+const INLINE_IMAGE_RESIZE_ATTEMPTS: usize = 10;
+
 const ATTACHMENT_FORMATS: &[AttachmentFormat] = &[
     AttachmentFormat {
         extensions: &["png"],
@@ -705,43 +749,239 @@ pub enum PromptVisibility {
     Hidden,
 }
 
-/// Resolve file paths into ResolvedAttachment structs.
-/// For images: base64-encode and produce an AcpContentBlock::Image.
-/// For text files: read as UTF-8 and produce an AcpContentBlock::Resource.
-/// Other files are skipped.
+/// Resolve file paths into attachment intents without exceeding the configured inline budgets.
+/// Text over the content budget is projected metadata-first as a resource link and is never read.
+/// Images are inspected metadata/header-first. Those outside the byte or dimension budget are
+/// streamed through a bounded decoder to create an in-memory WebP/JPEG derivative; the original
+/// path remains canonical and is used whenever the live Agent only supports links.
 pub fn resolve_attachments(
     paths: &[String],
     storage_prefix: &str,
+    policy: AttachmentProjectionPolicy,
 ) -> Result<Vec<ResolvedAttachment>> {
     let mut resolved = Vec::new();
     for path_str in paths {
         let std_path = std::path::Path::new(path_str);
-        let Some(meta) = attachment_meta_for_path(std_path, storage_prefix)? else {
-            continue;
-        };
         let extension = std_path
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        let format = attachment_format(&extension)
-            .expect("attachment metadata is only created for a supported format");
-        let data = std::fs::read(std_path)?;
-        let uri = format!("file://{}", path_str.replace('\\', "/"));
-        let block = match format.content_kind {
-            AttachmentContentKind::Image => AcpContentBlock::Image(AcpImageBlock {
-                data: base64_encode(&data),
-                mime_type: format.mime_type.to_string(),
-                uri: Some(uri),
-            }),
-            AttachmentContentKind::Text => AcpContentBlock::Resource(AcpResourceBlock {
-                resource: AcpTextResourceContents {
-                    text: String::from_utf8(data).unwrap_or_else(|_| "[binary file]".to_string()),
-                    uri,
-                },
-            }),
-        };
-        resolved.push(ResolvedAttachment { meta, block });
+        if attachment_format(&extension).is_none() {
+            continue;
+        }
+        if let Some(attachment) = resolved_attachment(std_path, storage_prefix, policy)? {
+            resolved.push(attachment);
+        }
+    }
+    Ok(resolved)
+}
+
+fn resolved_attachment(
+    path: &std::path::Path,
+    storage_prefix: &str,
+    policy: AttachmentProjectionPolicy,
+) -> Result<Option<ResolvedAttachment>> {
+    let Some(meta) = attachment_meta_for_path(path, storage_prefix)? else {
+        return Ok(None);
+    };
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let format = attachment_format(&extension)
+        .expect("attachment metadata is only created for a supported format");
+    let uri = format!("file://{}", path.to_string_lossy().replace('\\', "/"));
+    let link = AcpResourceLinkBlock {
+        name: meta.name.clone(),
+        uri,
+        mime_type: meta.mime_type.clone(),
+        size: meta.size,
+    };
+    let block = match format.content_kind {
+        AttachmentContentKind::Image => {
+            project_image_attachment(path, format.mime_type, &link, policy)
+        }
+        AttachmentContentKind::Text if meta.size > policy.inline_content_max_bytes => {
+            AcpContentBlock::ResourceLink(link)
+        }
+        AttachmentContentKind::Text => {
+            let data = std::fs::read(path)?;
+            if data.len() as u64 > policy.inline_content_max_bytes {
+                AcpContentBlock::ResourceLink(link)
+            } else {
+                AcpContentBlock::Resource(AcpResourceBlock {
+                    resource: AcpTextResourceContents {
+                        text: String::from_utf8(data)
+                            .unwrap_or_else(|_| "[binary file]".to_string()),
+                    },
+                    link,
+                })
+            }
+        }
+    };
+    Ok(Some(ResolvedAttachment { meta, block }))
+}
+
+fn project_image_attachment(
+    path: &std::path::Path,
+    original_mime_type: &str,
+    link: &AcpResourceLinkBlock,
+    policy: AttachmentProjectionPolicy,
+) -> AcpContentBlock {
+    let Some((bytes, mime_type)) =
+        inline_image_derivative(path, original_mime_type, link.size, policy)
+    else {
+        return AcpContentBlock::ResourceLink(link.clone());
+    };
+    AcpContentBlock::Image(AcpImageBlock {
+        data: base64_encode(&bytes),
+        mime_type,
+        link: link.clone(),
+    })
+}
+
+fn inline_image_derivative(
+    path: &std::path::Path,
+    original_mime_type: &str,
+    source_size: u64,
+    policy: AttachmentProjectionPolicy,
+) -> Option<(Vec<u8>, String)> {
+    if policy.inline_image_max_bytes == 0 || policy.inline_image_max_dimension == 0 {
+        return None;
+    }
+    let dimensions = ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
+    let within_dimension_budget = dimensions.0 <= policy.inline_image_max_dimension
+        && dimensions.1 <= policy.inline_image_max_dimension;
+    if source_size <= policy.inline_image_max_bytes && within_dimension_budget {
+        if let Some(data) = read_file_with_limit(path, policy.inline_image_max_bytes) {
+            return Some((data, original_mime_type.to_string()));
+        }
+    }
+    if dimensions.0 > INLINE_IMAGE_DECODE_MAX_DIMENSION
+        || dimensions.1 > INLINE_IMAGE_DECODE_MAX_DIMENSION
+    {
+        return None;
+    }
+
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(INLINE_IMAGE_DECODE_MAX_DIMENSION);
+    limits.max_image_height = Some(INLINE_IMAGE_DECODE_MAX_DIMENSION);
+    limits.max_alloc = Some(INLINE_IMAGE_DECODE_MAX_ALLOC_BYTES);
+    let mut reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    reader.limits(limits);
+    let decoded = reader.decode().ok()?;
+    let mut image = resize_image_to_dimension_budget(decoded, policy.inline_image_max_dimension);
+
+    if let Some(lossless) = encode_inline_webp(&image) {
+        if lossless.len() as u64 <= policy.inline_image_max_bytes {
+            return Some((lossless, "image/webp".to_string()));
+        }
+    }
+
+    for _ in 0..INLINE_IMAGE_RESIZE_ATTEMPTS {
+        let encoded = encode_inline_jpeg(&image)?;
+        if encoded.len() as u64 <= policy.inline_image_max_bytes {
+            return Some((encoded, "image/jpeg".to_string()));
+        }
+        let ratio = ((policy.inline_image_max_bytes as f64 / encoded.len() as f64).sqrt() * 0.94)
+            .clamp(0.25, 0.9);
+        let next_width = ((image.width() as f64 * ratio).floor() as u32).max(1);
+        let next_height = ((image.height() as f64 * ratio).floor() as u32).max(1);
+        if next_width == image.width() && next_height == image.height() {
+            break;
+        }
+        image = image.resize(next_width, next_height, FilterType::Triangle);
+    }
+    None
+}
+
+fn read_file_with_limit(path: &std::path::Path, max_bytes: u64) -> Option<Vec<u8>> {
+    let mut data = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut data)
+        .ok()?;
+    (data.len() as u64 <= max_bytes).then_some(data)
+}
+
+fn resize_image_to_dimension_budget(image: DynamicImage, max_dimension: u32) -> DynamicImage {
+    if image.width() <= max_dimension && image.height() <= max_dimension {
+        return image;
+    }
+    image.resize(max_dimension, max_dimension, FilterType::Triangle)
+}
+
+fn encode_inline_webp(image: &DynamicImage) -> Option<Vec<u8>> {
+    let mut output = Cursor::new(Vec::new());
+    image.write_to(&mut output, image::ImageFormat::WebP).ok()?;
+    Some(output.into_inner())
+}
+
+fn encode_inline_jpeg(image: &DynamicImage) -> Option<Vec<u8>> {
+    let mut encoded = Vec::new();
+    let rgb = DynamicImage::ImageRgb8(image.to_rgb8());
+    JpegEncoder::new_with_quality(&mut encoded, INLINE_IMAGE_JPEG_QUALITY)
+        .encode_image(&rgb)
+        .ok()?;
+    Some(encoded)
+}
+
+/// Persists attachments added by a user turn into the owning attempt before
+/// projecting them into ACP content blocks and timeline metadata.
+pub fn resolve_user_input_attachments(
+    paths: &[String],
+    attempt_dir: &Utf8Path,
+    policy: AttachmentProjectionPolicy,
+) -> Result<Vec<ResolvedAttachment>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let user_inputs_dir = attempt_dir.join(USER_INPUT_ATTACHMENT_PREFIX);
+    std::fs::create_dir_all(user_inputs_dir.as_std_path())?;
+    let mut resolved = Vec::with_capacity(paths.len());
+    for path in paths {
+        let source = std::path::Path::new(path);
+        let extension = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if attachment_format(&extension).is_none() {
+            continue;
+        }
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("user input attachment requires a UTF-8 file name")?;
+        let destination = user_inputs_dir.join(name);
+        let same_file = destination.exists()
+            && std::fs::canonicalize(source)
+                .ok()
+                .zip(std::fs::canonicalize(destination.as_std_path()).ok())
+                .is_some_and(|(source, destination)| source == destination);
+        if !same_file {
+            let mut source_file = std::fs::File::open(source)?;
+            atomic_write_file(destination.as_std_path(), |file| -> Result<()> {
+                std::io::copy(&mut source_file, file)?;
+                Ok(())
+            })?;
+        }
+        if let Some(attachment) = resolved_attachment(
+            destination.as_std_path(),
+            USER_INPUT_ATTACHMENT_PREFIX,
+            policy,
+        )? {
+            resolved.push(attachment);
+        }
     }
     Ok(resolved)
 }
@@ -1198,7 +1438,6 @@ impl AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
-            acp_output_policy(req.turn_control_mode, req.output_contract.as_ref()),
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1220,25 +1459,28 @@ impl AcpProvider {
                 turn_control_mode: req.turn_control_mode,
             }),
         )?;
-        let terminal = classify_acp_prompt_run(&run);
-        let result_payload = (req.turn_control_mode == TurnControlMode::RuntimeControlled
+        let mut terminal = classify_acp_prompt_run(&run);
+        let artifact_result = if req.turn_control_mode == TurnControlMode::RuntimeControlled
             && matches!(
                 terminal.status,
                 ProviderRunStatus::Success | ProviderRunStatus::Interrupted
-            ))
-        .then(|| {
+            ) {
             req.output_contract
                 .as_ref()
                 .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .and_then(|contract| {
-                    output_artifact_payload_from_run(
-                        contract,
-                        &run.output.identified_outputs,
-                        &run.output.identified_text,
-                    )
-                })
-        })
-        .flatten();
+                .map(|contract| output_artifact_payload_from_run(contract, &run.output))
+                .unwrap_or(Ok(None))
+        } else {
+            Ok(None)
+        };
+        let result_payload = match artifact_result {
+            Ok(payload) => payload,
+            Err(error) => {
+                terminal.status = ProviderRunStatus::Failure;
+                terminal.runtime_error = Some(error);
+                None
+            }
+        };
         Ok(ProviderRunResult {
             status: terminal.status,
             exit_code: None,
@@ -1306,7 +1548,8 @@ impl AcpProvider {
         finalize_req.session_mode = SessionMode::Continue;
         finalize_req.continue_ref = Some(continue_ref);
         finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-        finalize_req.input_attachment_paths.clear();
+        finalize_req.task_input_attachment_paths.clear();
+        finalize_req.user_input_attachment_paths.clear();
         if !preserve_control_prompt {
             finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
                 finalize_req.runtime_context.language,
@@ -1443,20 +1686,6 @@ impl ProviderAdapter for AcpProvider {
     }
 }
 
-fn acp_output_policy(
-    turn_control_mode: TurnControlMode,
-    contract: Option<&PromptOutputContract>,
-) -> client::AcpOutputPolicy {
-    if turn_control_mode == TurnControlMode::RuntimeControlled
-        && contract
-            .is_some_and(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-    {
-        client::AcpOutputPolicy::ArtifactContract
-    } else {
-        client::AcpOutputPolicy::Conversation
-    }
-}
-
 fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcome {
     if let Some(failure) = &run.terminal_failure {
         let raw = Some(serde_json::json!({
@@ -1465,25 +1694,16 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
             "stopReason": run.stop_reason,
             "terminalFailure": failure,
         }));
-        let runtime_error = if failure.code == client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE {
-            RuntimeErrorInfo::new(
-                RuntimeErrorDomain::Provider,
-                "provider.acp-unidentified-agent-output",
-                RecoveryMode::Manual,
-                failure.diagnostic(),
-                serde_json::json!({
-                    "acpCode": failure.code,
-                    "anonymousChunkCount": run.output.anonymous_chunk_count,
-                }),
-                raw,
-            )
-        } else {
-            normalize_provider_runtime_failure(
-                run.stop_reason.as_deref(),
-                failure.diagnostic(),
-                raw,
-            )
-        };
+        let mut runtime_error = normalize_provider_runtime_failure(
+            run.stop_reason.as_deref(),
+            failure.diagnostic(),
+            raw,
+        );
+        // A structured terminal failure proves that the current prompt has
+        // ended abnormally. Replaying a business prompt could duplicate
+        // partial side effects, so recovery is always an explicit user action.
+        runtime_error.recovery = RecoveryMode::Manual;
+        runtime_error.retry_policy = None;
         return ProviderTerminalOutcome {
             status: ProviderRunStatus::Failure,
             runtime_error: Some(runtime_error),
@@ -1552,22 +1772,45 @@ fn classify_acp_prompt_run(run: &client::AcpPromptRun) -> ProviderTerminalOutcom
 
 fn output_artifact_payload_from_run(
     contract: &PromptOutputContract,
-    final_outputs: &[String],
-    final_text: &str,
-) -> Option<ProviderResultPayload> {
+    output: &client::AcpPromptOutput,
+) -> std::result::Result<Option<ProviderResultPayload>, RuntimeErrorInfo> {
+    let Some(terminal_message) = output.recent_messages.last() else {
+        return Ok(None);
+    };
+    if !terminal_message.has_stable_id && output.observed_stable_message {
+        return Err(crate::runtime_error::manual_runtime_error_info(
+            RuntimeErrorDomain::Provider,
+            "provider.acp-terminal-message-unidentified",
+            "ACP prompt ended with anonymous Agent text after producing a stable Agent message",
+            serde_json::json!({
+                "observedStableMessage": true,
+                "terminalMessageHasStableId": false,
+            }),
+        ));
+    }
+
     let uses_json_output = contract.kind == "json" || artifact_uses_json_output(&contract.artifact);
     let content = if uses_json_output {
-        json_artifact_text_from_outputs(final_outputs, final_text)
+        if terminal_message.has_stable_id {
+            output
+                .recent_messages
+                .iter()
+                .rev()
+                .take(3)
+                .find_map(|message| json_artifact_text(&message.text))
+        } else {
+            json_artifact_text(&terminal_message.text)
+        }
     } else {
-        non_empty_artifact_text(final_text)
-    }?;
+        non_empty_artifact_text(&terminal_message.text)
+    };
 
-    Some(ProviderResultPayload {
+    Ok(content.map(|content| ProviderResultPayload {
         output_artifact: Some(OutputArtifactPayload {
             name: contract.artifact.clone(),
             content,
         }),
-    })
+    }))
 }
 
 fn non_empty_artifact_text(value: &str) -> Option<String> {
@@ -1616,16 +1859,21 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
     }
     let is_continue = matches!(req.session_mode, SessionMode::Continue);
 
-    // Resolve task input attachments
     let mut attachment_metas = Vec::new();
     let mut content_blocks = Vec::new();
-    if !req.input_attachment_paths.is_empty() {
-        if let Ok(resolved) = resolve_attachments(&req.input_attachment_paths, "task-inputs") {
-            for r in resolved {
-                attachment_metas.push(r.meta);
-                content_blocks.push(r.block);
-            }
-        }
+    let task_inputs = resolve_attachments(
+        &req.task_input_attachment_paths,
+        TASK_INPUT_ATTACHMENT_PREFIX,
+        req.attachment_projection_policy,
+    )?;
+    let user_inputs = resolve_user_input_attachments(
+        &req.user_input_attachment_paths,
+        &req.attempt_dir,
+        req.attachment_projection_policy,
+    )?;
+    for resolved in task_inputs.into_iter().chain(user_inputs) {
+        attachment_metas.push(resolved.meta);
+        content_blocks.push(resolved.block);
     }
 
     Ok(PromptBundle {
@@ -2331,6 +2579,25 @@ mod tests {
     use crate::acp::client::AcpPromptFailure;
     use crate::runtime_error::RecoveryMode;
 
+    fn test_attachment_projection_policy() -> AttachmentProjectionPolicy {
+        AttachmentProjectionPolicy::from(&crate::config::RuntimeConfig::default())
+    }
+
+    fn test_png(width: u32, height: u32) -> Vec<u8> {
+        let raster = image::ImageBuffer::from_fn(width, height, |x, y| {
+            image::Rgb([
+                ((x * 31 + y * 17) % 255) as u8,
+                ((x * 13 + y * 47) % 255) as u8,
+                ((x * 53 + y * 7) % 255) as u8,
+            ])
+        });
+        let mut output = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(raster)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        output.into_inner()
+    }
+
     fn test_worker_invocation(attempt_dir: Utf8PathBuf) -> WorkerInvocation {
         let runtime_context = PromptRuntimeContext {
             project_id: "project-001".to_string(),
@@ -2389,7 +2656,11 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
-            input_attachment_paths: Vec::new(),
+            task_input_attachment_paths: Vec::new(),
+            user_input_attachment_paths: Vec::new(),
+            attachment_projection_policy: AttachmentProjectionPolicy::from(
+                &crate::config::RuntimeConfig::default(),
+            ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
         }
@@ -2422,7 +2693,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let resolved = resolve_attachments(&paths, "task-inputs").unwrap();
+        let resolved =
+            resolve_attachments(&paths, "task-inputs", test_attachment_projection_policy())
+                .unwrap();
 
         assert_eq!(resolved.len(), paths.len());
         assert!(resolved.iter().all(|attachment| {
@@ -2437,8 +2710,12 @@ mod tests {
         let path = dir.path().join("acp.raw.jsonl");
         std::fs::write(&path, b"{\"event\":1}\n{\"event\":2}\n").unwrap();
 
-        let resolved =
-            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs").unwrap();
+        let resolved = resolve_attachments(
+            &[path.to_string_lossy().to_string()],
+            "task-inputs",
+            test_attachment_projection_policy(),
+        )
+        .unwrap();
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].meta.name, "acp.raw.jsonl");
@@ -2448,6 +2725,144 @@ mod tests {
             &resolved[0].block,
             AcpContentBlock::Resource(resource)
                 if resource.resource.text.contains("{\"event\":2}")
+        ));
+    }
+
+    #[test]
+    fn text_attachment_uses_utf8_byte_boundary_before_reading_inline_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let at_limit = dir.path().join("at-limit.md");
+        let over_limit = dir.path().join("over-limit.md");
+        std::fs::write(&at_limit, vec![b'a'; 64_000]).unwrap();
+        std::fs::write(&over_limit, vec![b'b'; 64_001]).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 4 * 1024 * 1024,
+            inline_image_max_dimension: 2_560,
+        };
+
+        let resolved = resolve_attachments(
+            &[
+                at_limit.to_string_lossy().to_string(),
+                over_limit.to_string_lossy().to_string(),
+            ],
+            "task-inputs",
+            policy,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Resource(resource) if resource.resource.text.len() == 64_000
+        ));
+        assert!(matches!(
+            &resolved[1].block,
+            AcpContentBlock::ResourceLink(link) if link.size == 64_001
+        ));
+    }
+
+    #[test]
+    fn oversized_image_is_bounded_by_bytes_and_dimensions_before_inline_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.png");
+        let bytes = test_png(256, 256);
+        std::fs::write(&path, &bytes).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 8 * 1024,
+            inline_image_max_dimension: 64,
+        };
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs", policy)
+                .unwrap();
+
+        assert!(bytes.len() > policy.inline_image_max_bytes as usize);
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::Image(image)
+                if matches!(image.mime_type.as_str(), "image/webp" | "image/jpeg")
+                    && image.data.len()
+                        <= ((policy.inline_image_max_bytes as usize + 2) / 3) * 4
+                    && image.link.mime_type == "image/png"
+        ));
+    }
+
+    #[test]
+    fn undecodable_oversized_image_falls_back_to_original_resource_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.png");
+        std::fs::write(&path, vec![0_u8; 8 * 1024]).unwrap();
+        let policy = AttachmentProjectionPolicy {
+            inline_content_max_bytes: 64_000,
+            inline_image_max_bytes: 4 * 1024,
+            inline_image_max_dimension: 64,
+        };
+
+        let resolved =
+            resolve_attachments(&[path.to_string_lossy().to_string()], "task-inputs", policy)
+                .unwrap();
+
+        assert!(matches!(
+            &resolved[0].block,
+            AcpContentBlock::ResourceLink(link)
+                if link.uri.ends_with("/broken.png") && link.size == 8 * 1024
+        ));
+    }
+
+    #[test]
+    fn prompt_bundle_preserves_task_inputs_and_persists_user_inputs_by_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let task_image = root.join("task-image.png");
+        let follow_up_image = root.join("follow-up.png");
+        let follow_up_text = root.join("notes.txt");
+        let task_image_bytes = test_png(2, 2);
+        let follow_up_image_bytes = test_png(3, 2);
+        std::fs::write(task_image.as_std_path(), &task_image_bytes).unwrap();
+        std::fs::write(follow_up_image.as_std_path(), &follow_up_image_bytes).unwrap();
+        std::fs::write(follow_up_text.as_std_path(), "runtime notes").unwrap();
+        let attempt_dir = root.join("attempt-001");
+        let mut invocation = test_worker_invocation(attempt_dir.clone());
+        invocation.task_input_attachment_paths = vec![task_image.to_string()];
+        invocation.user_input_attachment_paths =
+            vec![follow_up_image.to_string(), follow_up_text.to_string()];
+
+        let prompt = render_prompt_bundle(&invocation).unwrap();
+
+        let paths = prompt
+            .attachment_metas
+            .iter()
+            .map(|attachment| attachment.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "task-inputs/task-image.png",
+                "user-inputs/follow-up.png",
+                "user-inputs/notes.txt",
+            ]
+        );
+        assert!(!attempt_dir.join("user-inputs/task-image.png").exists());
+        assert_eq!(
+            std::fs::read(attempt_dir.join("user-inputs/follow-up.png").as_std_path()).unwrap(),
+            follow_up_image_bytes
+        );
+        assert_eq!(
+            std::fs::read_to_string(attempt_dir.join("user-inputs/notes.txt").as_std_path())
+                .unwrap(),
+            "runtime notes"
+        );
+        assert!(matches!(
+            &prompt.content_blocks[1],
+            AcpContentBlock::Image(image)
+                if image.link.uri.contains("/attempt-001/user-inputs/follow-up.png")
+        ));
+        assert!(matches!(
+            &prompt.content_blocks[2],
+            AcpContentBlock::Resource(resource)
+                if resource.resource.text == "runtime notes"
+                    && resource.link.uri.contains("/attempt-001/user-inputs/notes.txt")
         ));
     }
 
@@ -2550,7 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn fatal_session_error_overrides_end_turn_success_reason() {
+    fn terminal_session_error_overrides_end_turn_without_auto_retry() {
         let run = acp_prompt_run(
             Some("end_turn"),
             Some(AcpPromptFailure {
@@ -2570,7 +2985,8 @@ mod tests {
             .runtime_error
             .expect("fatal error must be preserved");
         assert_eq!(error.code_str(), "provider.server-unavailable");
-        assert_eq!(error.recovery, RecoveryMode::Auto);
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
     }
 
     #[test]
@@ -2579,29 +2995,6 @@ mod tests {
 
         assert_eq!(outcome.status, ProviderRunStatus::Success);
         assert!(outcome.runtime_error.is_none());
-    }
-
-    #[test]
-    fn output_emission_mode_selects_acp_output_policy() {
-        let inline = test_output_contract(OutputEmissionMode::InlineControl);
-        let deferred = test_output_contract(OutputEmissionMode::PostTurnProjection);
-
-        assert_eq!(
-            acp_output_policy(TurnControlMode::RuntimeControlled, None),
-            client::AcpOutputPolicy::Conversation
-        );
-        assert_eq!(
-            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&deferred)),
-            client::AcpOutputPolicy::Conversation
-        );
-        assert_eq!(
-            acp_output_policy(TurnControlMode::RuntimeControlled, Some(&inline)),
-            client::AcpOutputPolicy::ArtifactContract
-        );
-        assert_eq!(
-            acp_output_policy(TurnControlMode::NonRuntimeControlled, Some(&inline)),
-            client::AcpOutputPolicy::Conversation
-        );
     }
 
     #[test]
@@ -2788,29 +3181,18 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_only_artifact_failure_is_manual_and_never_auto_retried() {
-        let mut run = acp_prompt_run(
-            Some("end_turn"),
-            Some(AcpPromptFailure {
-                code: client::ACP_UNIDENTIFIED_AGENT_OUTPUT_CODE.to_string(),
-                message: "ACP artifact prompt produced only anonymous output".to_string(),
-                details: Some("unexpected status 502 Bad Gateway".to_string()),
-                raw: serde_json::json!({ "anonymousChunkCount": 1 }),
-            }),
-        );
-        run.output.anonymous_text = "unexpected status 502 Bad Gateway".to_string();
-        run.output.visible_text = run.output.anonymous_text.clone();
-        run.output.anonymous_chunk_count = 1;
+    fn anonymous_only_end_turn_remains_provider_success() {
+        let mut run = acp_prompt_run(Some("end_turn"), None);
+        run.output.visible_text = "unexpected status 502 Bad Gateway".to_string();
+        run.output.recent_messages = vec![client::AcpPromptMessageOutput {
+            text: run.output.visible_text.clone(),
+            has_stable_id: false,
+        }];
 
         let outcome = classify_acp_prompt_run(&run);
 
-        assert_eq!(outcome.status, ProviderRunStatus::Failure);
-        let error = outcome
-            .runtime_error
-            .expect("strict anonymous output failure");
-        assert_eq!(error.code_str(), "provider.acp-unidentified-agent-output");
-        assert_eq!(error.recovery, RecoveryMode::Manual);
-        assert!(error.retry_policy.is_none());
+        assert_eq!(outcome.status, ProviderRunStatus::Success);
+        assert!(outcome.runtime_error.is_none());
     }
 
     #[test]
@@ -2923,7 +3305,11 @@ mod tests {
             attachments_dir: None,
             cold_artifacts: Vec::new(),
             cold_attachments: Vec::new(),
-            input_attachment_paths: Vec::new(),
+            task_input_attachment_paths: Vec::new(),
+            user_input_attachment_paths: Vec::new(),
+            attachment_projection_policy: AttachmentProjectionPolicy::from(
+                &crate::config::RuntimeConfig::default(),
+            ),
             mcp_servers: Vec::new(),
             scheduled_context: None,
         };
@@ -2970,13 +3356,14 @@ mod tests {
             emission_mode: OutputEmissionMode::InlineControl,
         };
 
-        let payload = output_artifact_payload_from_run(&contract, &[], "");
+        let payload =
+            output_artifact_payload_from_run(&contract, &client::AcpPromptOutput::default());
 
-        assert!(payload.is_none());
+        assert!(payload.unwrap().is_none());
     }
 
     #[test]
-    fn output_contract_with_json_final_output_creates_artifact_payload() {
+    fn output_contract_uses_stable_terminal_message() {
         let contract = PromptOutputContract {
             artifact: "dynamic-node-completion".to_string(),
             kind: "json".to_string(),
@@ -2986,12 +3373,19 @@ mod tests {
             finalize_context: None,
             emission_mode: OutputEmissionMode::InlineControl,
         };
-        let outputs = vec![
-            "planning text".to_string(),
-            r#"{"kind":"dynamic-node-completion","status":"success"}"#.to_string(),
-        ];
+        let json = r#"{"kind":"dynamic-node-completion","status":"success"}"#;
+        let output = client::AcpPromptOutput {
+            visible_text: format!("planning text{json}"),
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: json.to_string(),
+                has_stable_id: true,
+            }],
+            observed_stable_message: true,
+        };
 
-        let payload = output_artifact_payload_from_run(&contract, &outputs, "").unwrap();
+        let payload = output_artifact_payload_from_run(&contract, &output)
+            .unwrap()
+            .unwrap();
 
         let artifact = payload.output_artifact.unwrap();
         assert_eq!(artifact.name, "dynamic-node-completion");
@@ -3002,7 +3396,123 @@ mod tests {
     }
 
     #[test]
-    fn json_output_contract_without_json_does_not_fallback_to_text_artifact() {
+    fn output_contract_without_message_id_uses_visible_json_candidate() {
+        let contract = PromptOutputContract {
+            artifact: "accept-result".to_string(),
+            kind: "json".to_string(),
+            schema: None,
+            schema_text: None,
+            success_condition: None,
+            finalize_context: None,
+            emission_mode: OutputEmissionMode::InlineControl,
+        };
+        let json = r#"{"reason":"验收通过","result":true}"#;
+        let output = client::AcpPromptOutput {
+            visible_text: json.to_string(),
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: json.to_string(),
+                has_stable_id: false,
+            }],
+            ..Default::default()
+        };
+
+        let payload = output_artifact_payload_from_run(&contract, &output)
+            .expect("anonymous ACP text is delegated to Runtime artifact validation")
+            .expect("valid anonymous JSON creates an artifact candidate");
+
+        assert_eq!(payload.output_artifact.unwrap().content, json);
+    }
+
+    #[test]
+    fn anonymous_terminal_message_after_stable_output_is_manual_runtime_error() {
+        let contract = test_output_contract(OutputEmissionMode::InlineControl);
+        let output = client::AcpPromptOutput {
+            visible_text: r#"{"status":"success"}unexpected status 502 Bad Gateway"#.to_string(),
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"success"}"#.to_string(),
+                    has_stable_id: false,
+                },
+                client::AcpPromptMessageOutput {
+                    text: "unexpected status 502 Bad Gateway".to_string(),
+                    has_stable_id: false,
+                },
+            ],
+            observed_stable_message: true,
+        };
+
+        let error = output_artifact_payload_from_run(&contract, &output)
+            .expect_err("anonymous terminal message must not trigger artifact repair");
+
+        assert_eq!(
+            error.code_str(),
+            "provider.acp-terminal-message-unidentified"
+        );
+        assert_eq!(error.recovery, RecoveryMode::Manual);
+        assert!(error.retry_policy.is_none());
+    }
+
+    #[test]
+    fn stable_terminal_message_scans_backward_into_anonymous_message() {
+        let contract = test_output_contract(OutputEmissionMode::InlineControl);
+        let output = client::AcpPromptOutput {
+            visible_text: r#"{"status":"success"}final explanation without JSON"#.to_string(),
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"success"}"#.to_string(),
+                    has_stable_id: true,
+                },
+                client::AcpPromptMessageOutput {
+                    text: "final explanation without JSON".to_string(),
+                    has_stable_id: true,
+                },
+            ],
+            observed_stable_message: true,
+        };
+
+        let payload = output_artifact_payload_from_run(&contract, &output)
+            .unwrap()
+            .expect("earlier stable message is inside the three-message search window");
+
+        assert_eq!(
+            payload.output_artifact.unwrap().content,
+            r#"{"status":"success"}"#
+        );
+    }
+
+    #[test]
+    fn stable_terminal_message_scans_at_most_three_messages() {
+        let contract = test_output_contract(OutputEmissionMode::InlineControl);
+        let output = client::AcpPromptOutput {
+            visible_text: String::new(),
+            recent_messages: vec![
+                client::AcpPromptMessageOutput {
+                    text: r#"{"status":"success"}"#.to_string(),
+                    has_stable_id: true,
+                },
+                client::AcpPromptMessageOutput {
+                    text: "one".to_string(),
+                    has_stable_id: true,
+                },
+                client::AcpPromptMessageOutput {
+                    text: "two".to_string(),
+                    has_stable_id: true,
+                },
+                client::AcpPromptMessageOutput {
+                    text: "three".to_string(),
+                    has_stable_id: true,
+                },
+            ],
+            observed_stable_message: true,
+        };
+
+        let payload = output_artifact_payload_from_run(&contract, &output).unwrap();
+
+        assert!(payload.is_none());
+    }
+
+    #[test]
+    fn json_output_contract_without_json_does_not_promote_text_artifact() {
         let contract = PromptOutputContract {
             artifact: "accept-result".to_string(),
             kind: "json".to_string(),
@@ -3013,11 +3523,16 @@ mod tests {
             emission_mode: OutputEmissionMode::InlineControl,
         };
 
-        let payload = output_artifact_payload_from_run(
-            &contract,
-            &["I can see the requirement.".to_string()],
-            "I can see the requirement.",
-        );
+        let text = "I can see the requirement.";
+        let output = client::AcpPromptOutput {
+            visible_text: text.to_string(),
+            recent_messages: vec![client::AcpPromptMessageOutput {
+                text: text.to_string(),
+                has_stable_id: false,
+            }],
+            ..Default::default()
+        };
+        let payload = output_artifact_payload_from_run(&contract, &output).unwrap();
 
         assert!(payload.is_none());
     }

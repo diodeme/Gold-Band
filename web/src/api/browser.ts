@@ -1,6 +1,6 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
-import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
 import { browserPreviewState } from './browserState';
 import { localTimestamp, toRoundSelectionInput } from './shared';
@@ -15,7 +15,18 @@ const browserFontCandidates = [
 type LocalFontData = { family: string };
 type LocalFontWindow = Window & { queryLocalFonts?: () => Promise<LocalFontData[]> };
 
+function imageActionBlob(input: ImageActionInput): Blob {
+  if (input.source.kind !== 'bytes') {
+    throw { code: 'image-action.source-unreadable', params: {} };
+  }
+  const binary = atob(input.source.dataBase64);
+  const bytes = Uint8Array.from(binary, (value) => value.charCodeAt(0));
+  const mime = input.mime.startsWith('image/') ? input.mime : 'application/octet-stream';
+  return new Blob([bytes], { type: mime });
+}
+
 const browserConversationRuns = new Map<string, ConversationRunVm>();
+const browserConversationTasks = new Map<string, ConversationTaskRowVm>();
 const browserConversationRunModes = new Map<string, ConversationRunModeVm>();
 const browserScheduledTasks: ScheduledTaskVm[] = [];
 const browserScheduledTaskDefinitions = new Map<string, ScheduledTaskEditVm>();
@@ -269,7 +280,6 @@ function browserAgentIdentity(agentType: string) {
 function browserCompletedConversationRun(): ConversationRunVm {
   const run = structuredClone(mockErrorBlockedConversationRun);
   run.runId = 'run-052';
-  run.title = '斜杠命令预览';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
   run.agentIdentity = browserAgentIdentity('claude-acp');
@@ -516,7 +526,6 @@ const browserQueuedPromptDrafts = [
 function browserQueuedConversationRun(): ConversationRunVm {
   const run = browserCompletedConversationRun();
   run.runId = 'run-053';
-  run.title = 'Direct 待发送队列预览';
   run.runStatus = 'running';
   run.runOutcome = null;
   if (run.selectedSession) {
@@ -1125,7 +1134,7 @@ export const browserApi: RuntimeApi = {
       ];
     return Promise.resolve({
       agentType,
-      workspaceKey: workspacePath,
+      projectId: workspacePath === '/default' ? 'default' : 'browser-preview',
       updatedAt: localTimestamp(),
       commands,
     });
@@ -1439,6 +1448,9 @@ export const browserApi: RuntimeApi = {
   subscribeConversationRunStateUpdates() {
     return Promise.resolve(() => {});
   },
+  subscribeConversationTerminalResultUpdates() {
+    return Promise.resolve(() => {});
+  },
   subscribeInterventionNavigate() {
     return Promise.resolve(() => {});
   },
@@ -1735,6 +1747,9 @@ export const browserApi: RuntimeApi = {
       apiKeySet: false,
     });
   },
+  recordActivity() {
+    return Promise.resolve();
+  },
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },
@@ -1770,12 +1785,35 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve();
   },
   getConversationSidebar() {
+    const previewTask: ConversationTaskRowVm = {
+      projectId: 'default',
+      taskId: 'mock-task',
+      title: '错误阻塞预览',
+      autoTitle: true,
+      runMode: 'workflow',
+      lastActivityAt: '2026-05-02T16:08:00Z',
+      runs: [],
+      pinned: false,
+      pinnedOrder: null,
+    };
     const sidebar: ConversationSidebarVm = {
       workspaces: [{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }],
       pinnedTasks: [],
-      tasksByWorkspace: { default: [] },
+      tasksByWorkspace: { default: [previewTask, ...browserConversationTasks.values()] },
     };
     return Promise.resolve(sidebar);
+  },
+  acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
+    const task = browserConversationTasks.get(taskId);
+    if (task?.projectId !== projectId) {
+      return Promise.resolve({ acknowledged: false, unreadTerminalResult: null });
+    }
+    const current = task?.unreadTerminalResult ?? null;
+    if (task && current?.eventId === eventId) {
+      task.unreadTerminalResult = null;
+      return Promise.resolve({ acknowledged: true, unreadTerminalResult: null });
+    }
+    return Promise.resolve({ acknowledged: false, unreadTerminalResult: current });
   },
   listScheduledTasks(projectId) {
     return Promise.resolve(browserScheduledTasks
@@ -1952,8 +1990,6 @@ export const browserApi: RuntimeApi = {
       projectId: 'default',
       taskId: 'mock-task',
       runId,
-      title: 'Mock Task',
-      autoTitle: true,
       runMode: 'auto',
       runStatus: 'completed',
       sessionTree: { rounds: [], selectedSessionKey: null },
@@ -1979,16 +2015,15 @@ export const browserApi: RuntimeApi = {
     return Promise.resolve({ valid: true, missingItems: [] });
   },
   createConversationRun(input) {
+    const timestamp = new Date().toISOString();
     const run: ConversationRunVm = {
       projectId: input.projectId,
       taskId: `task-${Date.now()}`,
       runId: `run-${Date.now()}`,
-      title: input.content.slice(0, 12) || 'New Task',
-      autoTitle: true,
       runMode: input.runMode,
       directConfig: input.directConfig,
       agentIdentity: input.directConfig ? browserAgentIdentity(input.directConfig.agentType) : null,
-      lastActivityAt: new Date().toISOString(),
+      lastActivityAt: timestamp,
       runStatus: 'running',
       sessionTree: { rounds: [], selectedSessionKey: null },
       selectedSession: null,
@@ -2007,14 +2042,53 @@ export const browserApi: RuntimeApi = {
         }
         : null,
     };
+    const task: ConversationTaskRowVm = {
+      projectId: run.projectId,
+      taskId: run.taskId,
+      title: input.content.slice(0, 12) || 'New Task',
+      autoTitle: true,
+      runMode: input.runMode,
+      agentIdentity: run.agentIdentity,
+      lastActivityAt: timestamp,
+      latestRun: {
+        runId: run.runId,
+        status: run.runStatus,
+        outcome: null,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+        resumable: false,
+      },
+      runs: [],
+      pinned: false,
+      pinnedOrder: null,
+    };
     browserConversationRuns.set(run.runId, run);
-    return Promise.resolve(run);
+    browserConversationTasks.set(task.taskId, task);
+    return Promise.resolve({ task, run });
   },
   rerunConversationTask(_projectId, _taskId) {
-    return this.createConversationRun({ projectId: _projectId, content: 'Rerun', runMode: 'auto' });
+    return this.createConversationRun({ projectId: _projectId, content: 'Rerun', runMode: 'auto' })
+      .then(({ task, run }) => {
+        browserConversationTasks.delete(task.taskId);
+        const rerun = { ...run, taskId: _taskId };
+        browserConversationRuns.set(rerun.runId, rerun);
+        return rerun;
+      });
   },
-  updateTaskMetadata() {
-    return Promise.resolve();
+  updateTaskMetadata(projectId, taskId, title) {
+    const current = browserConversationTasks.get(taskId) ?? {
+      projectId,
+      taskId,
+      title,
+      autoTitle: false,
+      runMode: 'workflow' as const,
+      runs: [],
+      pinned: false,
+      pinnedOrder: null,
+    };
+    const task = { ...current, title, autoTitle: false };
+    browserConversationTasks.set(taskId, task);
+    return Promise.resolve(task);
   },
   deleteConversationTask(_projectId, _taskId) {
     return this.getConversationSidebar();
@@ -2244,6 +2318,26 @@ export const browserApi: RuntimeApi = {
   openFileWithSystemApp(_path) {
     return Promise.resolve();
   },
+  async copyImageToClipboard(input) {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      return Promise.reject({ code: 'image-action.clipboard-unavailable', params: {} });
+    }
+    const blob = imageActionBlob(input);
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+  },
+  async saveImageAs(input) {
+    const blob = imageActionBlob(input);
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = input.fileName;
+      anchor.click();
+      return true;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  },
   pickAttachmentFiles() {
     return Promise.resolve([]);
   },
@@ -2253,13 +2347,14 @@ export const browserApi: RuntimeApi = {
       name: path.split(/[\\/]/).at(-1) ?? path,
       size: 0,
       previewUrl: null,
+      contentUrl: null,
     })));
   },
   materializeConversationAttachments(files) {
     return Promise.resolve(files.map((file, index) => ({
       path: `browser-memory://attachments/${Date.now()}-${index}-${encodeURIComponent(file.name)}`,
       name: file.name,
-      size: file.size,
+      size: atob(file.dataBase64).length,
     })));
   },
   getSupportedAttachmentExtensions() {

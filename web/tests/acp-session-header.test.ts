@@ -153,19 +153,20 @@ describe('ACPSessionHeader', () => {
       rawLoading: false,
       showSystemPromptAction: false,
       directSessionHeader: {
-        title: 'Direct title',
+        title: 'hi',
       },
       onToggleRaw: () => undefined,
       onOpenSystemPrompt: () => undefined,
     });
 
-    expect(html).toContain('Direct title');
+    expect(html).toContain('hi');
     expect(html).toContain('Claude');
     expect(html).toContain('session-1');
     expect(html).toContain('原始帧');
     expect(html).toContain('bg-content-header px-5 py-1.5');
     expect(html).toContain('gap-1');
-    expect(html).toContain('mr-2 min-w-0 max-w-[40%] shrink');
+    expect(html).toContain('mr-2 min-w-0 max-w-[40%] flex-none');
+    expect(html).not.toContain('mr-2 min-w-0 max-w-[40%] shrink');
     expect(html).not.toContain('lucide-pencil');
     expect(html).toContain('data-slot="tooltip-trigger"');
     expect(html).not.toContain('title="修改标题"');

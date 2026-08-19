@@ -113,6 +113,25 @@ function runningLifecycle(): ConversationAttemptLifecycleVm {
   };
 }
 
+function activeDirectLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    ...runningLifecycle(),
+    composer: {
+      mode: 'runtime-active',
+      submitTarget: 'queue-prompt',
+      processingKind: 'processing',
+      statusKey: 'conversation.runtime.runtimeActive',
+      canStop: true,
+      lockInput: false,
+    },
+    promptQueue: {
+      revision: 0,
+      items: [],
+      maxItems: 10,
+    },
+  };
+}
+
 function cancelledSession(id: string): AcpSessionVm {
   return {
     branchId: 'root',
@@ -174,6 +193,66 @@ async function renderPausedDialog(options: {
           showRawFramesAction={false}
           usageCompact
           onOptimisticEventsChange={options.onOptimisticEventsChange}
+        />
+      </TooltipProvider>,
+    );
+  });
+  return { container, id, root, session };
+}
+
+async function renderActiveDirectDialog() {
+  fixtureIndex += 1;
+  const id = String(fixtureIndex);
+  const readyEvent = {
+    id: `ready-${id}`,
+    seq: 1,
+    timestamp: '1786980000Z',
+    kind: 'textDelta',
+    sessionId: id,
+    content: 'ready',
+    status: 'completed',
+    startedSeq: 1,
+    endedSeq: 1,
+  } satisfies AcpUiEventVm;
+  const session = {
+    ...cancelledSession(id),
+    title: 'Direct queue boundary',
+    status: 'running',
+    events: [readyEvent],
+    eventPage: {
+      loadedCount: 1,
+      total: 1,
+      oldestSeq: 1,
+      newestSeq: 1,
+      hasOlder: false,
+      hasNewer: false,
+      oldestCursor: null,
+      newestCursor: null,
+    },
+  } satisfies AcpSessionVm;
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <ACPChatDialog
+          session={session}
+          projectId={`project-${id}`}
+          taskId={`task-${id}`}
+          runId={`run-${id}`}
+          roundId={session.roundId}
+          nodeId={session.nodeId}
+          attemptId={session.attemptId}
+          runtimeComposerContext={{
+            isOrchestrated: false,
+            lifecycle: activeDirectLifecycle(),
+            promptQueueEnabled: true,
+            workflowValid: true,
+          }}
+          showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
         />
       </TooltipProvider>,
     );
@@ -321,6 +400,47 @@ describe('ACP runtime continue submission', () => {
       expect(apiMocks.continueConversationRuntime).toHaveBeenCalledTimes(1);
       expect(textarea?.value).toBe('失败后保留');
       expect(container.textContent).toContain('continue failed');
+    } finally {
+      await unmount(root);
+    }
+  });
+});
+
+describe('ACP Direct queue submission', () => {
+  it('settles a queue-targeted submission when the backend starts it directly at the idle boundary', async () => {
+    const { container, id, root, session } = await renderActiveDirectDialog();
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session',
+      session: { ...session, status: 'completed' },
+      run: null,
+      lifecycle: activeDirectLifecycle(),
+    });
+    try {
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      await setTextareaValue(textarea!, '边界消息只发送一次');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => {
+        sendButton?.click();
+      });
+
+      expect(apiMocks.submitConversationPrompt).toHaveBeenCalledWith(
+        `project-${id}`,
+        `task-${id}`,
+        `run-${id}`,
+        session.roundId,
+        session.nodeId,
+        session.attemptId,
+        { displayText: '边界消息只发送一次', quotes: [] },
+        null,
+        expect.any(Object),
+        undefined,
+        undefined,
+        undefined,
+      );
+      expect(textarea?.value).toBe('');
+      expect(container.textContent).not.toContain('unexpected prompt queue response');
     } finally {
       await unmount(root);
     }

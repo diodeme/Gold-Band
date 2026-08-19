@@ -32,12 +32,14 @@ use gold_band::dsl::{
 use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
-    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, WorkerRefState,
+    RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
 };
+
+use crate::conversation_attention::{ConversationTerminalResultVm, unread_terminal_results};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -443,6 +445,7 @@ pub struct ConversationTaskRowVm {
     pub agent_identity: Option<ConversationAgentIdentityVm>,
     pub last_activity_at: Option<String>,
     pub activity: Option<ConversationTaskActivityVm>,
+    pub unread_terminal_result: Option<ConversationTerminalResultVm>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
     pub pinned: bool,
@@ -498,8 +501,6 @@ pub struct ConversationRunVm {
     pub task_id: String,
     pub task_uuid: Option<String>,
     pub run_id: String,
-    pub title: String,
-    pub auto_title: bool,
     pub run_mode: String,
     pub workflow_template_id: Option<String>,
     pub direct_config: Option<ConversationDirectConfigVm>,
@@ -521,6 +522,13 @@ pub struct ConversationRunVm {
     pub runtime_error_message: Option<String>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCreateResultVm {
+    pub task: ConversationTaskRowVm,
+    pub run: ConversationRunVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -644,10 +652,15 @@ pub struct ConversationControlFacetVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationAcpFacetVm {
+    pub revision: u64,
+    pub turn_id: Option<String>,
+    pub prompt_event_id: Option<String>,
     pub session_availability: String,
     pub live_turn_activity: String,
     pub latest_turn_status: String,
     pub stopping: bool,
+    pub stop_reason: Option<String>,
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1127,6 +1140,81 @@ pub(crate) fn conversation_task_activity_from_prompt(
 
 // ── Builder functions (stubs — full implementation in later phases) ──
 
+fn conversation_task_row_vm_from_task(
+    app: &App,
+    project_id: &str,
+    task: &TaskState,
+    pinned: bool,
+    pin_order: Option<usize>,
+    unread_terminal_result: Option<&ConversationTerminalResultVm>,
+) -> ConversationTaskRowVm {
+    let task_id = &task.id;
+    let metadata = read_conversation_metadata(app, task_id);
+    let run_mode = metadata
+        .as_ref()
+        .map(|metadata| metadata.run_mode.clone())
+        .unwrap_or_else(|| "workflow".to_string());
+    let run_list = app.run_list(task_id).unwrap_or_default();
+    let mut runs: Vec<ConversationRunSummaryVm> =
+        run_list.iter().map(conversation_run_summary_vm).collect();
+    runs.sort_by(|left, right| {
+        compare_conversation_timestamps(&right.updated_at, &left.updated_at)
+            .then_with(|| compare_conversation_timestamps(&right.started_at, &left.started_at))
+            .then_with(|| right.run_id.cmp(&left.run_id))
+    });
+    let latest_run = runs.first().cloned();
+    let last_activity_at = latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
+    let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
+    let unread_terminal_result = (run_mode == "direct")
+        .then(|| unread_terminal_result.cloned())
+        .flatten();
+
+    ConversationTaskRowVm {
+        project_id: project_id.to_string(),
+        task_id: task_id.clone(),
+        title: task.title.clone().unwrap_or_else(|| task_id.clone()),
+        auto_title: metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.title_auto_generated),
+        run_mode,
+        workflow_template_id: None,
+        agent_identity: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_identity.clone()),
+        last_activity_at,
+        activity,
+        unread_terminal_result,
+        latest_run,
+        runs,
+        pinned,
+        pinned_order: pin_order,
+        scheduled_task_id: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
+    }
+}
+
+pub fn conversation_task_row_vm(
+    app: &App,
+    project_id: &str,
+    task_id: &str,
+    pinned: bool,
+    pin_order: Option<usize>,
+) -> anyhow::Result<ConversationTaskRowVm> {
+    let task = app
+        .task_show(task_id)
+        .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
+    let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
+    Ok(conversation_task_row_vm_from_task(
+        app,
+        project_id,
+        &task,
+        pinned,
+        pin_order,
+        unread_terminal_results.get(task_id),
+    ))
+}
+
 pub fn conversation_sidebar_vm_from_sources(
     state: &StateConfig,
     sources: &[ConversationWorkspaceSource],
@@ -1151,6 +1239,7 @@ pub fn conversation_sidebar_vm_from_sources(
     }
 
     for source in sources {
+        let unread_terminal_results = unread_terminal_results(&source.app).unwrap_or_default();
         if let Ok(tasks) = source.app.task_list() {
             for task in tasks {
                 let task_id = &task.id;
@@ -1162,52 +1251,14 @@ pub fn conversation_sidebar_vm_from_sources(
                     .find(|p| p.project_id == *project_id && p.task_id == *task_id)
                     .map(|p| p.order);
 
-                let metadata = read_conversation_metadata(&source.app, task_id);
-                let run_mode = metadata
-                    .as_ref()
-                    .map(|metadata| metadata.run_mode.clone())
-                    .unwrap_or_else(|| "workflow".to_string());
-
-                let run_list = source.app.run_list(task_id).unwrap_or_default();
-                let mut runs: Vec<ConversationRunSummaryVm> =
-                    run_list.iter().map(conversation_run_summary_vm).collect();
-                runs.sort_by(|left, right| {
-                    compare_conversation_timestamps(&right.updated_at, &left.updated_at)
-                        .then_with(|| {
-                            compare_conversation_timestamps(&right.started_at, &left.started_at)
-                        })
-                        .then_with(|| right.run_id.cmp(&left.run_id))
-                });
-                let latest_run = runs.first().cloned();
-                let last_activity_at =
-                    latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
-                let activity = conversation_task_activity(
-                    &source.app.paths.task_dir(task_id),
-                    latest_run.as_ref(),
-                );
-
-                let row = ConversationTaskRowVm {
-                    project_id: project_id.clone(),
-                    task_id: task_id.clone(),
-                    title: task.title.clone().unwrap_or_else(|| task_id.clone()),
-                    auto_title: metadata
-                        .as_ref()
-                        .is_some_and(|metadata| metadata.title_auto_generated),
-                    run_mode,
-                    workflow_template_id: None,
-                    agent_identity: metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.agent_identity.clone()),
-                    last_activity_at,
-                    activity,
-                    latest_run,
-                    runs,
+                let row = conversation_task_row_vm_from_task(
+                    &source.app,
+                    project_id,
+                    &task,
                     pinned,
-                    pinned_order: pin_order,
-                    scheduled_task_id: metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.scheduled_task_id.clone()),
-                };
+                    pin_order,
+                    unread_terminal_results.get(task_id),
+                );
 
                 if pinned {
                     pinned_tasks.push(row.clone());
@@ -1853,6 +1904,58 @@ fn runtime_execution_applies_to_attempt(
     })
 }
 
+fn dynamic_node_runtime_execution(
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<RuntimeExecutionState> {
+    node.runtime_execution_phase
+        .map(|phase| RuntimeExecutionState {
+            revision: node.runtime_execution_revision,
+            phase,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: node
+                .runtime_execution_updated_at
+                .clone()
+                .unwrap_or_default(),
+        })
+}
+
+fn dynamic_attempt_runtime_execution(
+    run: &gold_band::runtime::RunState,
+    graph: &gold_band::dynamic::DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<RuntimeExecutionState> {
+    let graph_owns_transitional_leaf = graph.run.status == DynamicRunStatus::Running
+        && (dynamic_runtime_owns_completed_leaf(graph, &node.id)
+            || (node.status == gold_band::dynamic::DynamicNodeStatus::Paused
+                && graph
+                    .run
+                    .current_node_ids
+                    .iter()
+                    .any(|node_id| node_id == &node.id)));
+    if (run.status == RunStatus::Paused && node.outcome.is_none())
+        || (graph.run.phase == gold_band::dynamic::DynamicRunPhase::PreparingWorkspace
+            && run.execution.phase == RuntimeExecutionPhase::PreparingWorkspace)
+        || graph_owns_transitional_leaf
+    {
+        return Some(run.execution.clone());
+    }
+    dynamic_node_runtime_execution(node).or_else(|| {
+        (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
+            RuntimeExecutionState {
+                revision: node.runtime_execution_revision,
+                phase: RuntimeExecutionPhase::StartingNode,
+                locator: None,
+                recovery_candidate_token: None,
+                updated_at: node
+                    .runtime_execution_updated_at
+                    .clone()
+                    .unwrap_or_else(|| graph.run.updated_at.clone()),
+            }
+        })
+    })
+}
+
 fn acp_session_availability(session_status: Option<&str>, established: bool) -> String {
     let normalized = session_status.map(normalize_lifecycle_code);
     if matches!(normalized.as_deref(), Some("closing")) {
@@ -2111,6 +2214,9 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             .to_string(),
         },
         acp: ConversationAcpFacetVm {
+            revision: 0,
+            turn_id: None,
+            prompt_event_id: None,
             session_availability: acp_session_availability(
                 session_status.as_deref(),
                 session_established,
@@ -2118,6 +2224,8 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             live_turn_activity: live_phase.unwrap_or("idle").to_string(),
             latest_turn_status: acp_latest_turn_status(session_status.as_deref()),
             stopping: acp_stopping,
+            stop_reason: None,
+            operation_id: None,
         },
         display_status,
         runtime_display,
@@ -2150,6 +2258,7 @@ fn derive_conversation_attempt_lifecycle(
         revision: 1,
         phase: execution_phase,
         locator: None,
+        recovery_candidate_token: None,
         updated_at: String::new(),
     };
     derive_conversation_attempt_lifecycle_with_facets(
@@ -2269,6 +2378,7 @@ pub fn conversation_attempt_lifecycle_vm(
             attempt_id,
         );
         let session_presence = acp_session_presence(&attempt_dir);
+        let leaf_execution = dynamic_attempt_runtime_execution(&run, &dynamic_graph, dynamic_node);
         let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
             session_status.as_deref(),
             prompt_activity(&attempt_dir),
@@ -2279,18 +2389,12 @@ pub fn conversation_attempt_lifecycle_vm(
             leaf_resumable,
             false,
             is_orchestrated,
-            is_orchestrated.then_some(&run.execution),
-            runtime_execution_applies_to_attempt(
-                &run.execution,
-                round_id,
-                node_id,
-                attempt_id,
-                Some(outer_node_id),
-                Some(outer_attempt_id),
-            ),
+            leaf_execution.as_ref(),
+            leaf_execution.is_some(),
             attempt_control_mode(&attempt_dir, is_orchestrated),
             session_presence.established,
         );
+        attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
         return Ok(lifecycle);
     }
@@ -2341,8 +2445,63 @@ pub fn conversation_attempt_lifecycle_vm(
         attempt_control_mode(&attempt_dir, is_orchestrated),
         session_presence.established,
     );
+    attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
     attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
     Ok(lifecycle)
+}
+
+fn attach_acp_lifecycle_header(
+    attempt_dir: &Utf8Path,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    let snapshot = attempt_dir.join("acp.snapshot.json");
+    let session = attempt_dir.join("acp.session.json");
+    let header = [snapshot.as_path(), session.as_path()]
+        .into_iter()
+        .find_map(|path| {
+            gold_band::acp::events::read_lifecycle_header(path)
+                .ok()
+                .flatten()
+        });
+    let Some(header) = header else { return };
+    lifecycle.acp.revision = header.revision;
+    lifecycle.acp.turn_id = header.turn_id;
+    lifecycle.acp.prompt_event_id = header.prompt_event_id;
+    lifecycle.acp.session_availability = match header.availability {
+        gold_band::acp::events::AcpSessionAvailability::Established => "established",
+        gold_band::acp::events::AcpSessionAvailability::Restorable => "restorable",
+        gold_band::acp::events::AcpSessionAvailability::Unavailable => "unavailable",
+        gold_band::acp::events::AcpSessionAvailability::Closing => "closing",
+    }
+    .to_string();
+    lifecycle.acp.live_turn_activity = match header.live_turn_activity {
+        gold_band::acp::events::AcpLiveTurnActivity::Idle => "idle",
+        gold_band::acp::events::AcpLiveTurnActivity::Starting => "starting",
+        gold_band::acp::events::AcpLiveTurnActivity::Accepted => "accepted",
+        gold_band::acp::events::AcpLiveTurnActivity::Running => "running",
+        gold_band::acp::events::AcpLiveTurnActivity::CancelRequested => "cancel-requested",
+    }
+    .to_string();
+    lifecycle.acp.latest_turn_status = match header.latest_turn_status {
+        gold_band::acp::events::AcpLatestTurnStatus::None => "none",
+        gold_band::acp::events::AcpLatestTurnStatus::Completed => "completed",
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled => "cancelled",
+        gold_band::acp::events::AcpLatestTurnStatus::Failed => "failed",
+    }
+    .to_string();
+    lifecycle.acp.stopping =
+        header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
+    lifecycle.acp.stop_reason = header.stop_reason;
+    lifecycle.acp.operation_id = header.operation_id;
+    if lifecycle.acp.stopping {
+        lifecycle.display_status = "cancelling".to_string();
+        lifecycle.composer.mode = "stopping".to_string();
+        lifecycle.composer.submit_target = "none".to_string();
+        lifecycle.composer.processing_kind = "stopping".to_string();
+        lifecycle.composer.status_key = Some("acp.stopping".to_string());
+        lifecycle.composer.can_stop = true;
+        lifecycle.composer.lock_input = true;
+    }
 }
 
 #[cfg(test)]
@@ -2718,7 +2877,7 @@ pub fn conversation_run_vm(
         }
     };
 
-    // Read the task state for title
+    // Read the task state for stable task identity.
     let task_state = app
         .task_show(task_id)
         .map_err(|e| anyhow::anyhow!("task not found: {task_id}: {e}"))?;
@@ -2726,14 +2885,13 @@ pub fn conversation_run_vm(
         .uuid
         .clone()
         .or_else(|| Some(task_id.to_string()));
-    let title = task_state.title.unwrap_or_else(|| task_id.to_string());
 
     // Read conversation metadata if exists
     let conversation_metadata = read_conversation_metadata(app, task_id);
-    let (run_mode, auto_title) = conversation_metadata
+    let run_mode = conversation_metadata
         .as_ref()
-        .map(|metadata| (metadata.run_mode.clone(), metadata.title_auto_generated))
-        .unwrap_or_else(|| ("workflow".to_string(), false));
+        .map(|metadata| metadata.run_mode.clone())
+        .unwrap_or_else(|| "workflow".to_string());
     let is_orchestrated = conversation_run_mode_from_label(&run_mode)
         .unwrap_or(ConversationRunMode::Workflow)
         .is_orchestrated();
@@ -2925,6 +3083,11 @@ pub fn conversation_run_vm(
                                     dyn_attempt_id,
                                 );
                                 let session_presence = acp_session_presence(&dyn_attempt_dir);
+                                let leaf_execution = dynamic_attempt_runtime_execution(
+                                    &run,
+                                    &dynamic_graph,
+                                    dyn_node,
+                                );
                                 let mut lifecycle =
                                     derive_conversation_attempt_lifecycle_with_facets(
                                         dyn_session_status.as_deref(),
@@ -2936,15 +3099,8 @@ pub fn conversation_run_vm(
                                         dyn_leaf_resumable,
                                         false,
                                         is_orchestrated,
-                                        is_orchestrated.then_some(&run.execution),
-                                        runtime_execution_applies_to_attempt(
-                                            &run.execution,
-                                            &round.id,
-                                            &dyn_node.id,
-                                            dyn_attempt_id,
-                                            Some(&node.node_id),
-                                            Some(&latest_attempt.attempt_id),
-                                        ),
+                                        leaf_execution.as_ref(),
+                                        leaf_execution.is_some(),
                                         attempt_control_mode(&dyn_attempt_dir, is_orchestrated),
                                         session_presence.established,
                                     );
@@ -3346,8 +3502,6 @@ pub fn conversation_run_vm(
         task_id: task_id.to_string(),
         task_uuid,
         run_id: run_id.to_string(),
-        title,
-        auto_title,
         run_mode,
         workflow_template_id: None,
         direct_config: conversation_metadata
@@ -3513,12 +3667,12 @@ pub fn validate_conversation_create_vm(
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationValidationResultVm> {
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     let mut missing: Vec<ConversationMissingItemVm> = Vec::new();
 
-    if input.content.trim().is_empty() {
+    let attachment_paths = input.attachment_paths.as_deref().unwrap_or_default();
+    if input.content.trim().is_empty() && attachment_paths.is_empty() {
         missing.push(missing_item(
             "content.required",
             "Content is required",
@@ -3869,10 +4023,6 @@ impl PreparedConversationTask {
         self.task_uuid.as_deref()
     }
 
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-
     pub fn accept(mut self) -> (String, Option<String>, String) {
         self.armed = false;
         (
@@ -3895,6 +4045,14 @@ pub fn prepare_conversation_task_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<PreparedConversationTask> {
+    anyhow::ensure!(
+        !input.content.trim().is_empty()
+            || input
+                .attachment_paths
+                .as_ref()
+                .is_some_and(|paths| !paths.is_empty()),
+        "conversation payload cannot be empty"
+    );
     let title =
         conversation_auto_title(&input.content, app.config.conversation_auto_title_max_chars);
 
@@ -3952,8 +4110,7 @@ pub fn prepare_conversation_task_vm(
         gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     if input.work_location == ConversationWorkLocationVm::Worktree {
-        gold_band::git::GitRepositoryService::default()
-            .require_worktree(&app.paths.repo_root)?;
+        gold_band::git::GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
 
     // Create task
@@ -3965,8 +4122,11 @@ pub fn prepare_conversation_task_vm(
         workflow: workflow.clone(),
         workflow_template_id: input.workflow_template_id.clone(),
     };
-    let summary =
-        app.create_task_from_requirement_with_bindings(task_input, workflow, model_bindings)?;
+    let summary = app.create_conversation_task_from_payload_with_bindings(
+        task_input,
+        workflow,
+        model_bindings,
+    )?;
 
     let task_id = summary.task.id.clone();
     let task_uuid = summary.task.uuid.clone().or_else(|| Some(task_id.clone()));
@@ -4048,11 +4208,10 @@ pub fn create_conversation_task_vm(
 pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
-) -> anyhow::Result<ConversationRunVm> {
+) -> anyhow::Result<ConversationCreateResultVm> {
     let prepared_task = prepare_conversation_task_vm(app, input)?;
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
-    let title = prepared_task.title().to_string();
 
     let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
         app.prepare_run_in_worktree(&task_id, None)?
@@ -4061,48 +4220,52 @@ pub fn create_conversation_run_vm(
     };
     let run = app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
     prepared_task.accept();
+    if let Some(run_mode) = conversation_run_mode_from_label(&input.run_mode) {
+        emit_conversation_run_started(app, &input.project_id, &task_id, &run.id, run_mode);
+    }
 
-    // Return early VM from the run
-    conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).or_else(|_| {
-        Ok(ConversationRunVm {
-            project_id: input.project_id.clone(),
-            task_id: task_id.clone(),
-            task_uuid: task_uuid.clone(),
-            run_id: run.id,
-            title,
-            auto_title: true,
-            run_mode: input.run_mode.clone(),
-            workflow_template_id: input.workflow_template_id.clone(),
-            direct_config: input.direct_config.clone(),
-            agent_identity: input
-                .direct_config
-                .as_ref()
-                .and_then(|config| direct_agent_identity(app, &config.agent_type)),
-            last_activity_at: Some(chrono::Utc::now().to_rfc3339()),
-            run_status: enum_label(&run.status),
-            run_outcome: None,
-            session_tree: ConversationSessionTreeVm {
-                rounds: Vec::new(),
-                selected_session_key: None,
-            },
-            selected_session: None,
-            active_sessions: Vec::new(),
-            input_attachments: Vec::new(),
-            workflow_status: "valid".to_string(),
-            workflow_valid: true,
-            workflow_error: None,
-            workflow_json: None,
-            workflow_graph: GraphVm {
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            },
-            resumable: false,
-            pause_reason: None,
-            runtime_error_message: None,
-            scheduled_task_id: input.scheduled_task_id.clone(),
-            worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
-        })
-    })
+    // Return an early run snapshot together with the canonical task projection.
+    let run =
+        conversation_run_vm(app, &input.project_id, &task_id, &run.id, None).unwrap_or_else(|_| {
+            ConversationRunVm {
+                project_id: input.project_id.clone(),
+                task_id: task_id.clone(),
+                task_uuid: task_uuid.clone(),
+                run_id: run.id,
+                run_mode: input.run_mode.clone(),
+                workflow_template_id: input.workflow_template_id.clone(),
+                direct_config: input.direct_config.clone(),
+                agent_identity: input
+                    .direct_config
+                    .as_ref()
+                    .and_then(|config| direct_agent_identity(app, &config.agent_type)),
+                last_activity_at: Some(chrono::Utc::now().to_rfc3339()),
+                run_status: enum_label(&run.status),
+                run_outcome: None,
+                session_tree: ConversationSessionTreeVm {
+                    rounds: Vec::new(),
+                    selected_session_key: None,
+                },
+                selected_session: None,
+                active_sessions: Vec::new(),
+                input_attachments: Vec::new(),
+                workflow_status: "valid".to_string(),
+                workflow_valid: true,
+                workflow_error: None,
+                workflow_json: None,
+                workflow_graph: GraphVm {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                },
+                resumable: false,
+                pause_reason: None,
+                runtime_error_message: None,
+                scheduled_task_id: input.scheduled_task_id.clone(),
+                worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
+            }
+        });
+    let task = conversation_task_row_vm(app, &input.project_id, &task_id, false, None)?;
+    Ok(ConversationCreateResultVm { task, run })
 }
 
 pub fn rerun_conversation_task_vm(
@@ -4110,6 +4273,7 @@ pub fn rerun_conversation_task_vm(
     project_id: &str,
     task_id: &str,
 ) -> anyhow::Result<ConversationRunVm> {
+    let run_mode = conversation_run_mode(app, task_id);
     // Pause running run if any
     if let Ok(summaries) = app.task_summaries() {
         if let Some(ts) = summaries.iter().find(|s| s.task.id == task_id) {
@@ -4133,6 +4297,9 @@ pub fn rerun_conversation_task_vm(
         app.prepare_run(task_id, None)?
     };
     let run = app.launch_prepared_run_background(task_id, prepared_run.accept())?;
+    if let Some(run_mode) = run_mode {
+        emit_conversation_run_started(app, project_id, task_id, &run.id, run_mode);
+    }
     conversation_run_vm(app, project_id, task_id, &run.id, None).or_else(|_| {
         Ok(ConversationRunVm {
             project_id: project_id.to_string(),
@@ -4143,8 +4310,6 @@ pub fn rerun_conversation_task_vm(
                 .and_then(|task| task.uuid)
                 .or_else(|| Some(task_id.to_string())),
             run_id: run.id,
-            title: String::new(),
-            auto_title: false,
             run_mode: "workflow".to_string(),
             workflow_template_id: None,
             direct_config: read_conversation_metadata(app, task_id)
@@ -4180,6 +4345,23 @@ pub fn rerun_conversation_task_vm(
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
     })
+}
+
+fn emit_conversation_run_started(
+    app: &App,
+    project_id: &str,
+    task_id: &str,
+    run_id: &str,
+    run_mode: ConversationRunMode,
+) {
+    app.emit_lifecycle_event(
+        gold_band::app::RuntimeLifecycleEvent::ConversationRunStarted {
+            project_id: project_id.to_string(),
+            task_id: task_id.to_string(),
+            run_id: run_id.to_string(),
+            run_mode,
+        },
+    );
 }
 
 fn conversation_run_worktree_vm(
@@ -4232,26 +4414,34 @@ pub fn switch_conversation_session_vm(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
+
     use super::{
         ConversationAutoConfigVm, ConversationCreateInputVm, ConversationDirectConfigVm,
         ConversationDynamicAgentRefVm, ConversationRunSummaryVm, ConversationSessionLocator,
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
-        ConversationWorkspaceVm,
-        PromptActivity, apply_workflow_interview_preference, attempt_control_mode,
-        build_auto_workflow, build_direct_workflow, conversation_attempt_lifecycle_vm,
-        conversation_auto_title, conversation_run_vm, conversation_session_successors_from_state,
+        ConversationWorkspaceVm, PromptActivity, attempt_control_mode, build_auto_workflow,
+        build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
+        conversation_run_vm, conversation_session_successors_from_state,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_workspace_vms, create_conversation_task_vm,
+        conversation_task_activity, conversation_task_row_vm, conversation_workspace_vms,
+        create_conversation_run_vm, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
-        find_leaf_by_key, lifecycle_is_active, scheduled_content_snapshot,
-        scheduled_task_vms_from_sources, switch_conversation_session_vm,
-        validate_conversation_create_vm, workflow_binding_missing_item,
+        find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
+        scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        switch_conversation_session_vm, update_task_metadata_vm, validate_conversation_create_vm,
+        workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
     use gold_band::acp::prompt_queue::enqueue_prompt;
-    use gold_band::app::{App, CreateTaskInput, OptionalEntryStage, WorkflowTemplate};
-    use gold_band::config::ConversationRunMode;
+    use gold_band::app::{
+        App, CreateTaskInput, OptionalEntryStage, RuntimeLifecycleEvent, WorkflowTemplate,
+    };
+    use gold_band::config::{ConversationRunMode, ProviderDiagnosticSnapshot};
     use gold_band::domain::TurnControlMode;
     use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, PromptEnvelopeMode};
     use gold_band::runtime::{RoundState, RuntimeExecutionPhase, RuntimeExecutionState};
@@ -4636,6 +4826,7 @@ mod tests {
             revision: 7,
             phase: RuntimeExecutionPhase::LaunchingNextNode,
             locator: None,
+            recovery_candidate_token: None,
             updated_at: "t1".to_string(),
         };
         let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
@@ -4666,6 +4857,7 @@ mod tests {
             revision: 4,
             phase: RuntimeExecutionPhase::AwaitingManualCheck,
             locator: None,
+            recovery_candidate_token: None,
             updated_at: "t1".to_string(),
         };
         let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
@@ -4878,6 +5070,41 @@ mod tests {
         assert_eq!(lifecycle.acp.live_turn_activity, "cancel-requested");
         assert!(lifecycle.acp.stopping);
         assert_eq!(lifecycle.composer.mode, "stopping");
+    }
+
+    #[test]
+    fn initialization_cancel_converges_from_stopping_to_idle_without_navigation() {
+        let stopping = derive_conversation_attempt_lifecycle(
+            None,
+            Some(PromptActivity::CancelRequested),
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(stopping.acp.live_turn_activity, "cancel-requested");
+        assert!(stopping.acp.stopping);
+        assert_eq!(stopping.composer.mode, "stopping");
+
+        let settled = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            true,
+            Some("process-interrupted"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(settled.acp.live_turn_activity, "idle");
+        assert_eq!(settled.acp.latest_turn_status, "cancelled");
+        assert!(!settled.acp.stopping);
+        assert_eq!(settled.composer.mode, "normal");
+        assert!(!settled.composer.lock_input);
     }
 
     #[test]
@@ -5723,6 +5950,7 @@ mod tests {
                 active_template_name: None,
             }),
             attachment_paths: None,
+            work_location: Default::default(),
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -5787,6 +6015,72 @@ mod tests {
     }
 
     #[test]
+    fn conversation_new_run_and_rerun_publish_canonical_started_facts() {
+        let app = App::new(temp_repo_root()).with_provider_diagnostics_source(Arc::new(|| {
+            Ok(std::collections::BTreeMap::from([(
+                "claude-acp".to_string(),
+                ProviderDiagnosticSnapshot {
+                    available: true,
+                    reason: None,
+                    checked_at: "2026-08-18T00:00:00Z".to_string(),
+                    capabilities: None,
+                },
+            )]))
+        }));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_for_subscriber = events.clone();
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::ConversationRunStarted {
+                project_id,
+                task_id,
+                run_id,
+                run_mode,
+            } = event
+            {
+                events_for_subscriber
+                    .lock()
+                    .unwrap()
+                    .push((project_id, task_id, run_id, run_mode));
+            }
+        }));
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "start a direct conversation".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let created = create_conversation_run_vm(&app, &input).unwrap();
+        let rerun =
+            rerun_conversation_task_vm(&app, &input.project_id, &created.task.task_id).unwrap();
+
+        assert_ne!(created.run.run_id, rerun.run_id);
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, input.project_id);
+        assert_eq!(events[0].1, created.task.task_id);
+        assert_eq!(events[0].2, created.run.run_id);
+        assert_eq!(events[0].3, ConversationRunMode::Direct);
+        assert_eq!(events[1].0, input.project_id);
+        assert_eq!(events[1].1, rerun.task_id);
+        assert_eq!(events[1].2, rerun.run_id);
+        assert_eq!(events[1].3, ConversationRunMode::Direct);
+    }
+
+    #[test]
     fn worktree_validation_preserves_the_non_git_preflight_error_code() {
         let app = App::new(temp_repo_root());
         let input = ConversationCreateInputVm {
@@ -5794,13 +6088,14 @@ mod tests {
             content: "run in an isolated worktree".to_string(),
             run_mode: ConversationRunMode::Direct.as_str().to_string(),
             workflow_template_id: None,
-            include_interview: None,
+            include_optional_entry: None,
             direct_config: None,
             auto_config: None,
             attachment_paths: None,
             work_location: ConversationWorkLocationVm::Worktree,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
+            workflow_authoring: None,
         };
 
         let error = validate_conversation_create_vm(&app, &input).unwrap_err();
@@ -5834,6 +6129,85 @@ mod tests {
         let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
         assert!(app.paths.task_file(&task_id).exists());
         assert!(!app.paths.runs_dir(&task_id).exists());
+    }
+
+    #[test]
+    fn task_metadata_update_returns_the_authoritative_task_projection() {
+        let app = App::new(temp_repo_root());
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: "h".to_string(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: None,
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+
+        let task = update_task_metadata_vm(&app, "project-a", &task_id, "hi", None, true, Some(2))
+            .unwrap();
+
+        assert_eq!(task.project_id, "project-a");
+        assert_eq!(task.task_id, task_id);
+        assert_eq!(task.title, "hi");
+        assert!(task.pinned);
+        assert_eq!(task.pinned_order, Some(2));
+        assert_eq!(
+            app.task_show(&task.task_id).unwrap().title.as_deref(),
+            Some("hi")
+        );
+    }
+
+    #[test]
+    fn conversation_task_creation_accepts_an_attachment_only_payload() {
+        let app = App::new(temp_repo_root());
+        let attachment = app.paths.repo_root.join("context.txt");
+        fs::write(attachment.as_std_path(), "attachment content").unwrap();
+        let input = ConversationCreateInputVm {
+            project_id: app.paths.project_id.clone(),
+            content: String::new(),
+            run_mode: ConversationRunMode::Direct.as_str().to_string(),
+            workflow_template_id: None,
+            include_optional_entry: None,
+            direct_config: Some(ConversationDirectConfigVm {
+                agent_type: "claude-acp".to_string(),
+                model_id: None,
+                permission_mode: None,
+                config_options: Default::default(),
+            }),
+            auto_config: None,
+            attachment_paths: Some(vec![attachment.to_string()]),
+            work_location: Default::default(),
+            scheduled_task_id: None,
+            scheduled_content_fingerprint: None,
+            workflow_authoring: None,
+        };
+
+        let (task_id, _, _) = create_conversation_task_vm(&app, &input).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(app.paths.requirement_file(&task_id).as_std_path()).unwrap(),
+            ""
+        );
+        assert!(
+            app.paths
+                .task_dir(&task_id)
+                .join("authoring")
+                .join("inputs")
+                .join("context.txt")
+                .exists()
+        );
     }
 
     #[test]
@@ -6138,6 +6512,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        let serialized = serde_json::to_value(&vm).unwrap();
+        assert!(serialized.get("title").is_none());
+        assert!(serialized.get("autoTitle").is_none());
+        let task = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
+        assert_eq!(task.title, "中文节点资源回归");
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
             .attempts
@@ -6673,6 +7052,15 @@ mod tests {
             "task": "Say good morning",
             "status": dynamic_node_status,
             "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
+            "runtimeExecutionId": if run_status == "running" && dynamic_node_status == "running" { json!("execution-good-morning") } else { json!(null) },
+            "runtimeExecutionPhase": match dynamic_node_status {
+                "paused" => json!("paused"),
+                "completed" => json!("terminal"),
+                "ready" => json!(null),
+                _ => json!("starting-node"),
+            },
+            "runtimeExecutionRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
+            "runtimeExecutionUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,
@@ -7188,10 +7576,13 @@ mod tests {
 
 pub fn update_task_metadata_vm(
     app: &App,
-    _project_id: &str,
+    project_id: &str,
     task_id: &str,
     title: &str,
     description: Option<&str>,
-) -> anyhow::Result<()> {
-    app.update_task_metadata(task_id, title, description)
+    pinned: bool,
+    pin_order: Option<usize>,
+) -> anyhow::Result<ConversationTaskRowVm> {
+    app.update_task_metadata(task_id, title, description)?;
+    conversation_task_row_vm(app, project_id, task_id, pinned, pin_order)
 }

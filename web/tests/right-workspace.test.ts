@@ -8,6 +8,7 @@ import {
   conversationDirectoryWorkspaceResourceKey,
   conversationRunWorkspaceResourceKey,
   createHiddenPromptSectionWorkspaceResource,
+  createDraftAttachmentWorkspaceResource,
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   createInitialRightWorkspaceState,
@@ -175,6 +176,33 @@ describe('right workspace resource model', () => {
     expect(draftAttachmentWorkspaceResourceKey('draft:project-2', 'attachment-1')).not.toBe(
       draftAttachmentWorkspaceResourceKey('draft:project-1', 'attachment-1'),
     );
+  });
+
+  it('maps every draft attachment type to the same workspace resource contract', () => {
+    const attachment = {
+      id: 'attachment-1',
+      name: 'notes.md',
+      size: 128,
+      mime: 'text/markdown',
+      path: 'D:/notes.md',
+      contentUrl: 'asset://notes',
+      source: 'dialog' as const,
+    };
+
+    expect(createDraftAttachmentWorkspaceResource({
+      scopeKey: 'draft:project-1',
+      projectId: 'project-1',
+      attachment,
+    })).toEqual({
+      kind: 'draft-attachment',
+      key: 'draft-attachment:draft:project-1:attachment-1',
+      scopeKey: 'draft:project-1',
+      projectId: 'project-1',
+      title: 'notes.md',
+      description: 'D:/notes.md',
+      attention: false,
+      attachment,
+    });
   });
 
   it('closes the active tab to its adjacent tab and collapses after the last tab closes', () => {

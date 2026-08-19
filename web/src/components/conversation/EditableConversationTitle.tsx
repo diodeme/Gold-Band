@@ -71,7 +71,7 @@ export function EditableConversationTitle({
         <TooltipTrigger asChild>
           <button
             type="button"
-            className="group -ml-1 inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted/50"
+            className="group inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted/50"
             onClick={startEditing}
           >
             <h1 className="min-w-0 truncate text-sm font-semibold leading-5 text-foreground">{title}</h1>

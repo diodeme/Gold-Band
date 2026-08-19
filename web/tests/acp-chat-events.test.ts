@@ -24,6 +24,7 @@ import {
   stabilizeAcpSessionTimingForDisplay,
   stabilizeAcpSessionTimingPatchForDisplay,
   useSessionTimingSeconds,
+  acpSessionLoadErrorReason,
   visibleAcpBannerError,
 } from '../src/components/acp/ACPChatDialog';
 import type { AcpSessionVm, AcpUiEventVm } from '../src/types';
@@ -136,6 +137,22 @@ describe('ACP chat event handling', () => {
         [],
       ),
     ).toBe('Round 数已达上限：max rounds exceeded for $new-round: 2 > 1');
+  });
+
+  it('keeps the structured provider detail instead of replacing it with a generic adapter hint', () => {
+    const providerError = 'ACP `initialize` failed: Already initialized (Internal error)';
+    const acpSession = session({
+      diagnostics: {
+        rawFrameCount: 2,
+        eventCount: 0,
+        errorCount: 1,
+        lastError: providerError,
+      },
+    });
+
+    expect(
+      acpSessionLoadErrorReason(null, null, acpSession, 'Generic missing session'),
+    ).toBe(providerError);
   });
 
   it('uses raw permission request id instead of display id', () => {

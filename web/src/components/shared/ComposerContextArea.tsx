@@ -1,13 +1,27 @@
-import { FileText, Image as ImageIcon, MessageSquareQuote, X } from 'lucide-react';
+import { Copy, Download, FileText, Image as ImageIcon, LoaderCircle, MessageSquareQuote, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { isImageMime } from '@/lib/attachments';
 import type { AttachmentItem } from '@/lib/attachment-service';
 import type { ComposerQuote } from '@/lib/composer-context';
 import { formatSize } from '@/lib/attachment-service';
+import {
+  copyAttachmentImage,
+  IMAGE_ACTION_FEEDBACK_DURATION_MS,
+  saveAttachmentImageAs,
+} from '@/lib/image-actions';
 import { cn } from '@/lib/utils';
+
+type ImageActionState = 'idle' | 'copying' | 'saving' | 'copied' | 'saved' | 'failed';
 
 export interface ComposerContextAreaProps {
   quotes?: readonly ComposerQuote[];
@@ -85,6 +99,81 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
   const { t } = useTranslation();
   const image = isImageMime(item.mime);
   const details = `${item.name} · ${formatSize(item.size)}`;
+  const [imageAction, setImageAction] = useState<ImageActionState>('idle');
+  const pendingImageAction = imageAction === 'copying' || imageAction === 'saving';
+
+  useEffect(() => {
+    if (imageAction !== 'copied' && imageAction !== 'saved') return;
+    const completedState = imageAction;
+    const timeout = window.setTimeout(() => {
+      setImageAction((current) => current === completedState ? 'idle' : current);
+    }, IMAGE_ACTION_FEEDBACK_DURATION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [imageAction]);
+
+  const imageActionMessage = imageAction === 'copying'
+    ? t('workspace.filesPanel.copyingImage')
+    : imageAction === 'saving'
+      ? t('workspace.filesPanel.savingImage')
+      : imageAction === 'copied'
+        ? t('workspace.filesPanel.imageCopied')
+        : imageAction === 'saved'
+          ? t('workspace.filesPanel.imageSaved')
+          : imageAction === 'failed'
+            ? t('workspace.filesPanel.imageActionFailed')
+            : null;
+
+  const copyImage = async () => {
+    if (pendingImageAction) return;
+    setImageAction('copying');
+    try {
+      await copyAttachmentImage(item);
+      setImageAction('copied');
+    } catch {
+      setImageAction('failed');
+    }
+  };
+
+  const saveImage = async () => {
+    if (pendingImageAction) return;
+    setImageAction('saving');
+    try {
+      setImageAction(await saveAttachmentImageAs(item) ? 'saved' : 'idle');
+    } catch {
+      setImageAction('failed');
+    }
+  };
+
+  const previewButton = (
+    <button
+      type="button"
+      className={cn(
+        'relative flex h-full min-w-0 items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
+        image ? 'w-full justify-center' : 'gap-1.5 py-1 pl-2',
+        imageAction === 'failed' && 'ring-1 ring-destructive/70',
+      )}
+      onClick={onPreview}
+      aria-label={details}
+      aria-busy={pendingImageAction || undefined}
+    >
+      {image && item.previewUrl ? (
+        <img src={item.previewUrl} alt="" className="size-7 rounded-md border border-border object-cover" />
+      ) : image ? (
+        <ImageIcon className="size-4 text-muted-foreground" />
+      ) : (
+        <>
+          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate">{item.name}</span>
+        </>
+      )}
+      {image && pendingImageAction ? (
+        <span className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/65">
+          <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+        </span>
+      ) : null}
+    </button>
+  );
+
   return (
     <Tooltip>
       <div
@@ -95,28 +184,25 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
         data-composer-attachment-chip="true"
         data-prompt-input-interactive="true"
       >
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              'flex h-full min-w-0 items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30',
-              image ? 'w-full justify-center' : 'gap-1.5 py-1 pl-2',
-            )}
-            onClick={onPreview}
-            aria-label={details}
-          >
-          {image && item.previewUrl ? (
-            <img src={item.previewUrl} alt="" className="size-7 rounded-md object-cover" />
-          ) : image ? (
-            <ImageIcon className="size-4 text-muted-foreground" />
-          ) : (
-            <>
-              <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">{item.name}</span>
-            </>
-          )}
-          </button>
-        </TooltipTrigger>
+        {image ? (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
+              <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="w-40 min-w-40 p-1">
+              <ContextMenuItem disabled={pendingImageAction} onSelect={() => void copyImage()}>
+                <Copy className="size-4" />
+                {t('workspace.filesPanel.copyImage')}
+              </ContextMenuItem>
+              <ContextMenuItem disabled={pendingImageAction} onSelect={() => void saveImage()}>
+                <Download className="size-4" />
+                {t('workspace.filesPanel.saveImageAs')}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        ) : (
+          <TooltipTrigger asChild>{previewButton}</TooltipTrigger>
+        )}
         <Button
           type="button"
           variant="ghost"
@@ -132,7 +218,10 @@ function ComposerAttachmentItem({ item, onPreview, onRemove }: {
           <X className="size-2.5" />
         </Button>
       </div>
-      <TooltipContent side="top" sideOffset={8}>{details}</TooltipContent>
+      <TooltipContent side="top" sideOffset={8}>{imageActionMessage ?? details}</TooltipContent>
+      {imageActionMessage ? (
+        <span className="sr-only" aria-live="polite">{imageActionMessage}</span>
+      ) : null}
     </Tooltip>
   );
 }

@@ -66,6 +66,11 @@ describe('AcpConversationComposer', () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
     host = document.createElement('div');
     document.body.appendChild(host);
     root = createRoot(host);
@@ -74,6 +79,7 @@ describe('AcpConversationComposer', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     host.remove();
+    vi.unstubAllGlobals();
   });
 
   async function renderComposer(props: Partial<ComposerProps> = {}) {
@@ -133,7 +139,7 @@ describe('AcpConversationComposer', () => {
     expect(sendButton?.getAttribute('aria-label')).toBe('发送消息');
   });
 
-  it('places the localized attachment action before config and keeps the textarea user-resizable', async () => {
+  it('places the localized attachment action before config and keeps the textarea autosize-only', async () => {
     await renderComposer({ configBar: <span data-test-config="true">config</span> });
 
     const commandBar = host.querySelector('[data-acp-composer-command-bar="true"]');
@@ -144,9 +150,29 @@ describe('AcpConversationComposer', () => {
     expect(config).toBeTruthy();
     expect(commandBar?.contains(attachmentButton)).toBe(true);
     expect(attachmentButton?.compareDocumentPosition(config as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(textarea?.className).toContain('resize-y');
+    expect(textarea?.className).toContain('resize-none');
+    expect(textarea?.className).not.toContain('resize-y');
     expect(textarea?.className).toContain('min-h-12');
-    expect(textarea?.style.maxHeight).toBe('320px');
+    expect(textarea?.className).toContain('py-2');
+    expect(textarea?.style.maxHeight).toBe('');
+  });
+
+  it('keeps command adornment horizontal-only while the textarea owns vertical inset', async () => {
+    await renderComposer({
+      prompt: '/review continue',
+      committedSlashCommand: { prefix: '/review', description: 'Review' },
+    });
+
+    const wrapper = host.querySelector('[data-slot="prompt-input-textarea-with-adornment"]');
+    const textarea = wrapper?.querySelector('textarea');
+    const adornment = wrapper?.querySelector(':scope > span');
+    expect(wrapper?.className).toContain('px-2.5');
+    expect(wrapper?.className).not.toContain('py-2');
+    expect(textarea?.className).toContain('px-0');
+    expect(textarea?.className).not.toContain('px-2.5');
+    expect(textarea?.className).toContain('py-2');
+    expect(adornment?.className).toContain('top-2');
+    expect(adornment?.className).toContain('left-2.5');
   });
 
   it('does not reserve a standalone keyboard-hint row', async () => {
@@ -154,33 +180,6 @@ describe('AcpConversationComposer', () => {
 
     expect(host.textContent).not.toContain('Enter 发送');
     expect(host.textContent).not.toContain('Shift+Enter');
-  });
-
-  it('keeps a drag-selected height as the local autosize minimum', async () => {
-    await renderComposer();
-
-    const textarea = host.querySelector<HTMLTextAreaElement>('textarea');
-    expect(textarea).toBeTruthy();
-    let height = 48;
-    vi.spyOn(textarea as HTMLTextAreaElement, 'getBoundingClientRect').mockImplementation(() => ({
-      x: 0,
-      y: 0,
-      width: 320,
-      height,
-      top: 0,
-      right: 320,
-      bottom: height,
-      left: 0,
-      toJSON: () => ({}),
-    }));
-
-    await act(async () => {
-      textarea?.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      height = 180;
-      window.dispatchEvent(new Event('pointerup'));
-    });
-
-    expect(textarea?.style.height).toBe('180px');
   });
 
   it('renders quotes and attachments inside the prompt input context area', async () => {
@@ -191,8 +190,10 @@ describe('AcpConversationComposer', () => {
 
     const contextArea = host.querySelector('[data-composer-context-area="true"]');
     const promptInput = host.querySelector('[data-slot="prompt-input"]');
-    expect(promptInput?.classList.contains('border-0')).toBe(true);
-    expect(promptInput?.classList.contains('border')).toBe(false);
+    expect(promptInput?.classList.contains('border')).toBe(true);
+    expect(promptInput?.classList.contains('border-border')).toBe(true);
+    expect(promptInput?.classList.contains('border-border/60')).toBe(false);
+    expect(promptInput?.classList.contains('border-0')).toBe(false);
     const textarea = host.querySelector('textarea');
     expect(contextArea).toBeTruthy();
     expect(promptInput).toBeTruthy();
@@ -200,7 +201,11 @@ describe('AcpConversationComposer', () => {
     expect(promptInput?.contains(textarea)).toBe(true);
     expect(contextArea?.querySelector('[data-composer-quote-chip="true"]')).toBeTruthy();
     const imageChip = contextArea?.querySelector('[data-composer-attachment-chip="true"]');
-    expect(imageChip?.querySelector('img')).toBeTruthy();
+    const imagePreview = imageChip?.querySelector('img');
+    expect(imagePreview).toBeTruthy();
+    expect(imagePreview?.classList.contains('border')).toBe(true);
+    expect(imagePreview?.classList.contains('border-border')).toBe(true);
+    expect(imagePreview?.classList.contains('border-border/60')).toBe(false);
     expect(imageChip?.textContent).not.toContain('image.png');
   });
 

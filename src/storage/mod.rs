@@ -1,14 +1,18 @@
+pub mod core_state;
 pub mod sqlite;
 
-use crate::config::{ManagedAgentId, SettingsConfig};
+use crate::config::{
+    ManagedAgentId, ProjectIdentityConfig, SettingsConfig, project_identity_config,
+};
 use crate::domain::VERSION;
 use anyhow::{Result, anyhow};
 use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -56,7 +60,7 @@ pub struct GoldBandPaths {
     path_config: StoragePathConfig,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectManifest {
     pub version: String,
@@ -65,18 +69,88 @@ pub struct ProjectManifest {
     pub normalized_repo_root: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectManifestError {
+    #[error("project manifest is missing for existing runtime directory {path}")]
+    Missing { path: Utf8PathBuf },
+    #[error("project manifest is invalid at {path}")]
+    Invalid { path: Utf8PathBuf },
+    #[error(
+        "project manifest at {path} belongs to project {found_project_id} ({found_normalized_repo_root}), expected {expected_project_id} ({expected_normalized_repo_root})"
+    )]
+    Mismatch {
+        path: Utf8PathBuf,
+        found_project_id: String,
+        found_normalized_repo_root: String,
+        expected_project_id: String,
+        expected_normalized_repo_root: String,
+    },
+}
+
+impl ProjectManifestError {
+    pub fn code(&self) -> &'static str {
+        "workspace.manifest-mismatch"
+    }
+
+    pub fn params(&self) -> serde_json::Value {
+        match self {
+            Self::Missing { path } | Self::Invalid { path } => {
+                serde_json::json!({ "path": path })
+            }
+            Self::Mismatch {
+                path,
+                found_project_id,
+                found_normalized_repo_root,
+                expected_project_id,
+                expected_normalized_repo_root,
+            } => serde_json::json!({
+                "path": path,
+                "foundProjectId": found_project_id,
+                "foundNormalizedWorkspacePath": found_normalized_repo_root,
+                "expectedProjectId": expected_project_id,
+                "expectedNormalizedWorkspacePath": expected_normalized_repo_root,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectManifestProvision {
+    Unchanged,
+    Written,
+}
+
 impl GoldBandPaths {
+    pub fn storage_path_config(&self) -> StoragePathConfig {
+        self.path_config
+    }
+
     pub fn new(repo_root: impl Into<Utf8PathBuf>) -> Self {
-        Self::new_with_path_config(repo_root, active_storage_path_config())
+        Self::new_with_path_and_identity_config(
+            repo_root,
+            active_storage_path_config(),
+            project_identity_config(),
+        )
     }
 
     pub fn new_with_path_config(
         repo_root: impl Into<Utf8PathBuf>,
         path_config: StoragePathConfig,
     ) -> Self {
+        Self::new_with_path_and_identity_config(repo_root, path_config, project_identity_config())
+    }
+
+    pub fn new_with_path_and_identity_config(
+        repo_root: impl Into<Utf8PathBuf>,
+        path_config: StoragePathConfig,
+        identity_config: &ProjectIdentityConfig,
+    ) -> Self {
+        identity_config
+            .validate()
+            .expect("project identity config must be valid");
         let repo_root = repo_root.into();
-        let normalized_repo_root = normalized_repo_root(&repo_root);
-        let project_id = project_id(&repo_root);
+        let normalized_repo_root = normalize_workspace_path(&repo_root);
+        let project_id = project_id_from_normalized(&normalized_repo_root, identity_config);
         let repo_gold_band_root = repo_root.join(path_config.config_dir_name);
         let user_gold_band_root = user_gold_band_root(&repo_root, path_config);
         let runtime_root = user_gold_band_root.join("projects").join(&project_id);
@@ -95,16 +169,67 @@ impl GoldBandPaths {
         self.runtime_root.join("project.json")
     }
 
-    pub fn write_project_manifest(&self) -> Result<()> {
+    pub fn provision_project_manifest(&self) -> Result<ProjectManifestProvision> {
+        let path = self.project_manifest_file();
+        let expected = self.expected_project_manifest();
+        if self.runtime_root.exists() {
+            if path.is_file() {
+                let found = self.read_validated_project_manifest()?;
+                if found == expected {
+                    return Ok(ProjectManifestProvision::Unchanged);
+                }
+            } else if std::fs::read_dir(self.runtime_root.as_std_path())
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(true)
+            {
+                return Err(ProjectManifestError::Missing { path }.into());
+            }
+        }
+        write_json(&path, &expected)?;
+        Ok(ProjectManifestProvision::Written)
+    }
+
+    pub fn validate_project_manifest(&self) -> Result<()> {
+        self.read_validated_project_manifest().map(|_| ())
+    }
+
+    pub fn replace_project_manifest_for_migration(&self) -> Result<()> {
         write_json(
             &self.project_manifest_file(),
-            &ProjectManifest {
-                version: VERSION.to_string(),
-                project_id: self.project_id.clone(),
-                repo_root: self.repo_root.to_string(),
-                normalized_repo_root: self.normalized_repo_root.clone(),
-            },
+            &self.expected_project_manifest(),
         )
+    }
+
+    fn expected_project_manifest(&self) -> ProjectManifest {
+        ProjectManifest {
+            version: VERSION.to_string(),
+            project_id: self.project_id.clone(),
+            repo_root: self.repo_root.to_string(),
+            normalized_repo_root: self.normalized_repo_root.clone(),
+        }
+    }
+
+    fn read_validated_project_manifest(&self) -> Result<ProjectManifest> {
+        let path = self.project_manifest_file();
+        if !path.is_file() {
+            return Err(ProjectManifestError::Missing { path }.into());
+        }
+        let found = read_json::<ProjectManifest>(&path)
+            .map_err(|_| ProjectManifestError::Invalid { path: path.clone() })?;
+        let expected = self.expected_project_manifest();
+        if found.project_id != expected.project_id
+            || found.normalized_repo_root != expected.normalized_repo_root
+        {
+            return Err(ProjectManifestError::Mismatch {
+                path,
+                found_project_id: found.project_id,
+                found_normalized_repo_root: found.normalized_repo_root,
+                expected_project_id: expected.project_id,
+                expected_normalized_repo_root: expected.normalized_repo_root,
+            }
+            .into());
+        }
+        Ok(found)
     }
 
     pub fn repo_presets_dir(&self) -> Utf8PathBuf {
@@ -216,12 +341,12 @@ impl GoldBandPaths {
         self.user_gold_band_root.join("gold-band.db")
     }
 
-    pub fn scheduler_db_path(&self) -> Utf8PathBuf {
-        self.runtime_root.join("scheduled-tasks.db")
+    pub fn core_db_path(&self) -> Utf8PathBuf {
+        self.user_gold_band_root.join("core.db")
     }
 
-    pub fn legacy_scheduler_db_path(&self) -> Utf8PathBuf {
-        self.user_gold_band_root.join("scheduled-tasks.db")
+    pub fn scheduler_db_path(&self) -> Utf8PathBuf {
+        self.core_db_path()
     }
 
     // ── SKILL paths ──
@@ -280,6 +405,10 @@ impl GoldBandPaths {
 
     pub fn task_file(&self, task_id: &str) -> Utf8PathBuf {
         self.task_dir(task_id).join("task.json")
+    }
+
+    pub fn conversation_attention_file(&self) -> Utf8PathBuf {
+        self.runtime_root.join("conversation-attention.json")
     }
 
     pub fn requirement_file(&self, task_id: &str) -> Utf8PathBuf {
@@ -778,15 +907,15 @@ fn user_gold_band_root(repo_root: &Utf8Path, path_config: StoragePathConfig) -> 
 }
 
 fn is_under_system_temp(path: &Utf8Path) -> bool {
-    let path = normalized_repo_root(path);
+    let path = normalize_workspace_path(path);
     std::env::temp_dir()
         .to_str()
         .map(Utf8Path::new)
-        .map(normalized_repo_root)
+        .map(normalize_workspace_path)
         .is_some_and(|temp| path.starts_with(&temp))
 }
 
-fn normalized_repo_root(repo_root: &Utf8Path) -> String {
+pub fn normalize_workspace_path(repo_root: &Utf8Path) -> String {
     let canonical = std::fs::canonicalize(repo_root.as_std_path())
         .ok()
         .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
@@ -803,7 +932,12 @@ fn normalized_repo_root(repo_root: &Utf8Path) -> String {
     }
 }
 
-fn project_id(repo_root: &Utf8Path) -> String {
+pub fn project_id_for_workspace(repo_root: &Utf8Path) -> String {
+    let normalized = normalize_workspace_path(repo_root);
+    project_id_from_normalized(&normalized, project_identity_config())
+}
+
+pub fn legacy_project_id_for_workspace(repo_root: &Utf8Path) -> String {
     let canonical = std::fs::canonicalize(repo_root.as_std_path())
         .ok()
         .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
@@ -824,6 +958,37 @@ fn project_id(repo_root: &Utf8Path) -> String {
     }
 }
 
+fn project_id_from_normalized(
+    normalized_repo_root: &str,
+    identity_config: &ProjectIdentityConfig,
+) -> String {
+    let mut slug = String::new();
+    for character in normalized_repo_root.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '.' | '_') {
+            slug.push(character);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let mut slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        slug.push_str("root");
+    }
+    let slug_max_length = identity_config.slug_max_length();
+    if slug.len() > slug_max_length {
+        slug = slug[slug.len() - slug_max_length..]
+            .trim_start_matches('-')
+            .to_string();
+    }
+    if slug.is_empty() {
+        slug.push_str("root");
+    }
+
+    let encoded = blake3::hash(normalized_repo_root.as_bytes()).to_hex();
+    let hash = &encoded.as_str()[..identity_config.hash_hex_length];
+    format!("{}{}{}", slug, identity_config.separator, hash)
+}
+
 pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -831,13 +996,26 @@ pub fn ensure_parent_dir(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
+pub fn atomic_write_file<T, E>(
+    path: &Path,
+    write: impl FnOnce(&mut AtomicWriteFile) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E>
+where
+    E: From<std::io::Error>,
+{
+    let mut file = AtomicWriteFile::open(path).map_err(E::from)?;
+    let value = write(&mut file)?;
+    file.commit().map_err(E::from)?;
+    Ok(value)
+}
+
 pub fn write_json<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
     ensure_parent_dir(path)?;
     let content = serde_json::to_vec_pretty(value)?;
-    let mut file = AtomicWriteFile::open(path.as_std_path())?;
-    file.write_all(&content)?;
-    file.commit()?;
-    Ok(())
+    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        file.write_all(&content)?;
+        Ok(())
+    })
 }
 
 pub fn read_json<T: serde::de::DeserializeOwned>(path: &Utf8Path) -> Result<T> {
@@ -949,6 +1127,23 @@ pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result
     append_jsonl_line_unlocked(path, &line)
 }
 
+/// Append one JSONL record and flush it to the operating-system file boundary.
+/// This is the appropriate commit point for high-frequency append logs that
+/// need process-crash recovery without forcing a physical disk sync per frame.
+pub fn append_jsonl_flushed_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    ensure_parent_dir(path)?;
+    repair_jsonl_tail_unlocked(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.as_std_path())?;
+    file.write_all(&line)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
 fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
     ensure_parent_dir(path)?;
     let mut file = OpenOptions::new()
@@ -961,12 +1156,30 @@ fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
 }
 
 fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
-    let Ok(content) = std::fs::read(path.as_std_path()) else {
+    let Ok(mut file) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.as_std_path())
+    else {
         return Ok(());
     };
-    if content.is_empty() || content.last() == Some(&b'\n') {
+    let len = file.metadata()?.len();
+    if len == 0 {
         return Ok(());
     }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+
+    // A missing newline is exceptional (usually an interrupted append). Only
+    // pay for reading the file on that recovery path; healthy appends inspect
+    // one byte instead of re-reading the complete, ever-growing journal.
+    file.seek(SeekFrom::Start(0))?;
+    let mut content = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut content)?;
 
     let tail_start = content
         .iter()
@@ -974,15 +1187,12 @@ fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
         .map_or(0, |index| index.saturating_add(1));
     let tail = &content[tail_start..];
     if serde_json::from_slice::<serde_json::Value>(tail).is_ok() {
-        let mut file = OpenOptions::new().append(true).open(path.as_std_path())?;
+        file.seek(SeekFrom::End(0))?;
         file.write_all(b"\n")?;
         return Ok(());
     }
 
-    OpenOptions::new()
-        .write(true)
-        .open(path.as_std_path())?
-        .set_len(tail_start as u64)?;
+    file.set_len(tail_start as u64)?;
     Ok(())
 }
 
@@ -1046,7 +1256,7 @@ mod tests {
                 .task_file("task-001")
                 .to_string()
                 .replace('\\', "/")
-                .contains("/.gold-band/projects/D--Projects-Example-App/")
+                .contains(&format!("/.gold-band/projects/{}/", paths.project_id))
         );
         assert!(
             paths
@@ -1069,6 +1279,52 @@ mod tests {
         );
 
         assert_eq!(first.project_id, second.project_id);
+        assert_eq!(first.project_id.len(), first.project_id.as_bytes().len());
+        assert!(first.project_id.ends_with(&format!(
+            "--{}",
+            &blake3::hash(first.normalized_repo_root.as_bytes()).to_hex().as_str()[..8]
+        )));
+        assert!(first.project_id.len() <= 80);
+    }
+
+    #[test]
+    fn project_id_uses_configured_length_and_preserves_slug_tail() {
+        let identity = ProjectIdentityConfig {
+            max_length: 24,
+            hash_hex_length: 8,
+            separator: "--".to_string(),
+        };
+        let id = project_id_from_normalized("d:/very/long/parent/path/final-repository", &identity);
+
+        assert_eq!(id.len(), 24);
+        assert!(id.starts_with("nal-repository"));
+        assert_eq!(id.matches("--").count(), 1);
+    }
+
+    #[test]
+    fn project_id_blake3_contract_uses_a_fixed_vector() {
+        assert_eq!(
+            project_id_from_normalized(
+                "d:/projects/example-app",
+                &ProjectIdentityConfig::default(),
+            ),
+            "d-projects-example-app--3d4964d2"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn project_id_normalizes_windows_case_and_separators() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(directory.path().join("Mixed-Case")).unwrap();
+        std::fs::create_dir_all(workspace.as_std_path()).unwrap();
+        let uppercase_backslashes =
+            Utf8PathBuf::from(workspace.as_str().replace('/', "\\").to_ascii_uppercase());
+
+        assert_eq!(
+            project_id_for_workspace(&workspace),
+            project_id_for_workspace(&uppercase_backslashes)
+        );
     }
 
     #[test]
@@ -1091,7 +1347,7 @@ mod tests {
                 .task_file("task-001")
                 .to_string()
                 .replace('\\', "/")
-                .contains("/.maling/projects/D--Projects-Example-App/")
+                .contains(&format!("/.maling/projects/{}/", paths.project_id))
         );
     }
 
@@ -1164,6 +1420,85 @@ mod tests {
                 .replace('\\', "/")
                 .contains("gold-band-test")
         );
+    }
+
+    #[test]
+    fn project_manifest_provision_writes_only_when_content_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(dir.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new_with_path_config(repo_root, DEFAULT_STORAGE_PATH_CONFIG);
+
+        assert_eq!(
+            paths.provision_project_manifest().unwrap(),
+            ProjectManifestProvision::Written
+        );
+        let manifest_path = paths.project_manifest_file();
+        let first_modified = std::fs::metadata(manifest_path.as_std_path())
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        assert_eq!(
+            paths.provision_project_manifest().unwrap(),
+            ProjectManifestProvision::Unchanged
+        );
+        assert_eq!(
+            std::fs::metadata(manifest_path.as_std_path())
+                .unwrap()
+                .modified()
+                .unwrap(),
+            first_modified
+        );
+
+        let mut stale: ProjectManifest = read_json(&manifest_path).unwrap();
+        stale.version = "0.12.4".to_string();
+        stale.repo_root = "D:/moved-workspace".to_string();
+        write_json(&manifest_path, &stale).unwrap();
+        paths.validate_project_manifest().unwrap();
+        assert_eq!(read_json::<ProjectManifest>(&manifest_path).unwrap(), stale);
+        assert_eq!(
+            paths.provision_project_manifest().unwrap(),
+            ProjectManifestProvision::Written
+        );
+        let current: ProjectManifest = read_json(&manifest_path).unwrap();
+        assert_eq!(current.version, VERSION);
+        assert_eq!(current.repo_root, paths.repo_root.as_str());
+    }
+
+    #[test]
+    fn project_manifest_rejects_a_different_workspace_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(dir.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let paths = GoldBandPaths::new_with_path_config(repo_root, DEFAULT_STORAGE_PATH_CONFIG);
+        paths.provision_project_manifest().unwrap();
+        let manifest_path = paths.project_manifest_file();
+        let mut foreign: ProjectManifest = read_json(&manifest_path).unwrap();
+        foreign.project_id = "foreign-project--00000000".to_string();
+        foreign.normalized_repo_root = "d:/foreign/workspace".to_string();
+        write_json(&manifest_path, &foreign).unwrap();
+
+        let error = paths.provision_project_manifest().unwrap_err();
+
+        assert!(error.downcast_ref::<ProjectManifestError>().is_some());
+        assert_eq!(
+            read_json::<ProjectManifest>(&manifest_path).unwrap(),
+            foreign
+        );
+    }
+
+    #[test]
+    fn atomic_write_file_returns_open_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("not-a-directory");
+        std::fs::write(&parent, "blocking file").unwrap();
+        let target = parent.join("state.json");
+
+        let result: std::io::Result<()> = atomic_write_file(&target, |_file| Ok(()));
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1468,7 +1803,8 @@ mod tests {
         let paths = GoldBandPaths::new_with_path_config(Utf8PathBuf::from("/"), path_config);
         unsafe { std::env::remove_var(path_config.home_env_var) };
 
-        assert_eq!(paths.project_id, "root");
+        assert!(paths.project_id.starts_with("root--"));
+        assert_eq!(paths.project_id.len(), 14);
         assert!(
             paths
                 .runtime_log_file()
@@ -1479,32 +1815,14 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_db_path_is_separate_from_search_database_path() {
+    fn scheduler_db_path_reuses_global_core_state() {
         let temp = tempfile::tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
         std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
         let paths = GoldBandPaths::new(repo_root);
 
         assert_ne!(paths.scheduler_db_path(), paths.sqlite_db_path());
-        assert!(
-            paths
-                .scheduler_db_path()
-                .to_string()
-                .replace('\\', "/")
-                .ends_with("/scheduled-tasks.db")
-        );
-    }
-
-    #[test]
-    fn scheduler_db_path_is_scoped_to_project_runtime() {
-        let temp = tempfile::tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
-        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
-        let paths = GoldBandPaths::new(repo_root);
-
-        assert_eq!(
-            paths.scheduler_db_path(),
-            paths.runtime_root.join("scheduled-tasks.db")
-        );
+        assert_eq!(paths.scheduler_db_path(), paths.core_db_path());
+        assert_eq!(paths.scheduler_db_path().file_name(), Some("core.db"));
     }
 }

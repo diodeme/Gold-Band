@@ -11,7 +11,6 @@ function run(partial: Partial<ConversationRunVm> = {}): ConversationRunVm {
     projectId: 'default',
     taskId: 'task-081',
     runId: 'run-001',
-    title: 'Run',
     runStatus: 'running',
     runMode: 'workflow',
     sessionTree: { rounds: [], selectedSessionKey: null },

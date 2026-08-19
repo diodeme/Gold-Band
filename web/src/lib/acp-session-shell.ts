@@ -45,7 +45,6 @@ export interface AcpTimelineSurfaceStateInput {
   hasTimelineItems: boolean;
   initialSessionLoading: boolean;
   runtimeActive: boolean;
-  initializationOwner: boolean;
   sending: boolean;
 }
 
@@ -104,7 +103,6 @@ export function resolveAcpTimelineSurfaceState(
 ): AcpTimelineSurfaceState {
   if (input.hasTimelineItems) return 'timeline';
   if (
-    input.initializationOwner ||
     input.initialSessionLoading ||
     input.runtimeActive ||
     input.sending

@@ -52,7 +52,7 @@ use gold_band::config::{
     ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
     FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
     MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
-    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference, ResolvedColorScheme,
+    ManagedAgentId, PersonalizationAvatarShape, PersonalizationPreference,
     WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
@@ -72,10 +72,15 @@ use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
     load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
+use crate::conversation_attention::{
+    ConversationTerminalResultKind, ConversationTerminalResultVm, record_terminal_result,
+};
 use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
-use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
+use crate::state::{
+    DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
+};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, install_pending_file,
@@ -109,6 +114,7 @@ const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
 const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
+const CONVERSATION_TERMINAL_RESULT_EVENT: &str = "gold-band://conversation-terminal-result-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
 const QUEUED_PROMPT_ID_PREFIX: &str = "turn-queued-";
@@ -513,6 +519,94 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .unwrap_or_else(|| locator.node_id.clone())
 }
 
+// ── Direct metrics background worker ──────────────────────────────────
+// The command thread must never block on file I/O or mutex operations.
+// These lightweight jobs carry only String data; the worker thread does
+// all heavy lifting (task_show, observability snapshot, ACP session read).
+
+#[derive(Debug, Clone)]
+enum DirectMetricsJob {
+    TurnStarted {
+        locator: AttemptLocator,
+        repo_root: String,
+    },
+    TurnFinished {
+        locator: AttemptLocator,
+        turn_id: String,
+        agent_label: String,
+        outcome: AcpTurnOutcome,
+        repo_root: String,
+    },
+    InterventionRequested {
+        context: gold_band::app::AcpLiveEventContext,
+        request_id: String,
+        kind: RuntimeInterventionKind,
+        repo_root: String,
+    },
+}
+
+const DIRECT_METRICS_QUEUE_CAPACITY: usize = 512;
+
+static DIRECT_METRICS_SENDER: std::sync::OnceLock<std::sync::mpsc::SyncSender<DirectMetricsJob>> =
+    std::sync::OnceLock::new();
+
+fn direct_metrics_sender() -> Option<std::sync::mpsc::SyncSender<DirectMetricsJob>> {
+    DIRECT_METRICS_SENDER.get().cloned()
+}
+
+fn init_direct_metrics_worker(app: App) {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<DirectMetricsJob>(DIRECT_METRICS_QUEUE_CAPACITY);
+    if DIRECT_METRICS_SENDER.set(sender).is_err() {
+        return; // already initialised
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("direct-metrics-worker".into())
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut scoped_app = app.clone_for_background();
+                    match &job {
+                        DirectMetricsJob::TurnStarted { locator, repo_root } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, None);
+                        }
+                        DirectMetricsJob::TurnFinished {
+                            locator,
+                            outcome,
+                            repo_root,
+                            ..
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, Some(*outcome));
+                        }
+                        DirectMetricsJob::InterventionRequested {
+                            context,
+                            request_id,
+                            kind,
+                            repo_root,
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_request_intervention_metrics(
+                                &scoped_app,
+                                context,
+                                request_id,
+                                *kind,
+                            );
+                        }
+                    }
+                }));
+            }
+        });
+}
+
 fn emit_acp_turn_finished(
     app: &App,
     locator: &AttemptLocator,
@@ -547,6 +641,198 @@ fn emit_acp_turn_finished(
             .ok()
             .and_then(|task| task.title),
     });
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnFinished {
+            locator: locator.clone(),
+            turn_id: turn_id.to_string(),
+            agent_label: agent_label.to_string(),
+            outcome,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnStarted {
+            locator: locator.clone(),
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_direct_turn_metrics_fact(
+    app: &App,
+    locator: &AttemptLocator,
+    outcome: Option<AcpTurnOutcome>,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    if gold_band::app::direct_conversation_agent_label(app, &locator.task_id).is_none() {
+        return;
+    }
+    let Ok(task) = app.task_show(&locator.task_id) else {
+        return;
+    };
+    let Some(task_uuid) = task.uuid else { return };
+    let attempt_dir = locator.attempt_dir(app);
+    let occurred_at = current_timestamp();
+    let execution_id = task_uuid.clone();
+    let attempt_key = format!("direct:{task_uuid}");
+    let attempt_path = app
+        .paths
+        .run_dir(&locator.task_id, &locator.run_id)
+        .join("observability")
+        .join(&execution_id)
+        .join(&execution_id)
+        .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+    let is_follow_up = if outcome.is_none() {
+        app.direct_metrics_is_follow_up(&attempt_key, Some(attempt_dir.as_path()), &attempt_path)
+    } else {
+        false
+    };
+    let active_turn = if outcome.is_none() {
+        match app.active_metrics_turn(&attempt_key) {
+            Some(turn) => turn,
+            None => {
+                let usage_baseline =
+                    gold_band::app::App::direct_usage_baseline(Some(attempt_dir.as_path()));
+                let turn = gold_band::app::ActiveMetricTurn::new(
+                    execution_id.clone(),
+                    execution_id.clone(),
+                    1,
+                    usage_baseline,
+                );
+                app.begin_metrics_turn(attempt_key.clone(), turn.clone());
+                turn
+            }
+        }
+    } else {
+        let Some(turn) = app.active_metrics_turn(&attempt_key) else {
+            return;
+        };
+        turn
+    };
+    let provider = acp_turn_provider_id(app, locator);
+    let model = current_acp_session_model_name(&attempt_dir);
+    let attempt_state =
+        app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+            if outcome.is_none() {
+                state.record_started_at(occurred_at.clone());
+                if is_follow_up {
+                    state.record_follow_up();
+                }
+            }
+            if outcome.is_some() {
+                let segments = gold_band::app::App::direct_usage_segments_after(
+                    Some(attempt_dir.as_path()),
+                    active_turn.usage_baseline_turn_seq,
+                );
+                let usages = gold_band::app::App::direct_model_usages_from_segments(
+                    &segments,
+                    provider.as_deref(),
+                    model.as_deref(),
+                );
+                for usage in usages {
+                    state.record_model_usage(usage);
+                }
+                if segments.is_empty()
+                    && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
+                {
+                    let usage = gold_band::acp::events::read_attempt_metrics(
+                        &attempt_dir.join("acp.session.json"),
+                    );
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        gold_band::app::observability::TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            }
+            state.next_revision();
+        });
+    let direct_revision = attempt_state.event_revision;
+    let event_type = if outcome.is_some() {
+        gold_band::app::observability::LifecycleEventType::ExecutionCompleted
+    } else {
+        gold_band::app::observability::LifecycleEventType::ExecutionStarted
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        event_type,
+        direct_revision,
+        occurred_at.clone(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        gold_band::app::observability::MetricsSessionMode::Direct,
+        task_uuid,
+        gold_band::app::observability::ExecutionKind::Turn,
+        active_turn.execution_id.clone(),
+    );
+    fact.task_title = task.title.clone();
+    fact.attempt_id = Some(active_turn.attempt_id.clone());
+    fact.attempt_index = Some(active_turn.attempt_index);
+    fact.provider = provider;
+    fact.model = model;
+    fact.collection_state_recovered = attempt_state.collection_state_recovered;
+    if let Some(outcome) = outcome {
+        fact.outcome = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::ExecutionOutcome::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::ExecutionOutcome::Failed,
+            AcpTurnOutcome::Cancelled => gold_band::app::observability::ExecutionOutcome::Cancelled,
+        });
+        fact.terminal_reason = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::TerminalReason::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::TerminalReason::ProviderError,
+            AcpTurnOutcome::Cancelled => {
+                gold_band::app::observability::TerminalReason::UserCancelled
+            }
+        });
+        let usages = attempt_state.model_usages();
+        let elapsed_sum = usages
+            .iter()
+            .filter_map(|usage| usage.acp_session_elapsed_ms)
+            .fold(None, |total, value| {
+                Some(total.unwrap_or(0u64).saturating_add(value))
+            });
+        let sum = |get: fn(&gold_band::app::observability::TokenUsage) -> Option<u64>| {
+            usages
+                .iter()
+                .filter_map(|usage| get(&usage.usage))
+                .fold(None, |total, value| {
+                    Some(total.unwrap_or(0u64).saturating_add(value))
+                })
+        };
+        if !usages.is_empty() {
+            fact.usage = Some(gold_band::app::observability::TokenUsage {
+                input_tokens: sum(|u| u.input_tokens),
+                output_tokens: sum(|u| u.output_tokens),
+                cache_read_tokens: sum(|u| u.cache_read_tokens),
+                total_tokens: sum(|u| u.total_tokens),
+            });
+            fact.model_usages = Some(usages);
+        }
+        fact.timing = Some(gold_band::app::observability::LifecycleTiming {
+            started_at: attempt_state
+                .started_at
+                .clone()
+                .unwrap_or_else(|| occurred_at.clone()),
+            ended_at: Some(occurred_at),
+            acp_session_elapsed_ms: elapsed_sum,
+        });
+        fact.counters = Some(attempt_state.counters.clone());
+    }
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+    if outcome.is_some() {
+        app.release_observability_state(&active_turn.execution_id);
+        app.end_metrics_turn(&attempt_key);
+    }
 }
 
 fn finish_acp_prompt_preflight<T>(
@@ -632,6 +918,25 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
+pub(crate) fn emit_recovered_conversation_run_state(
+    app_handle: &AppHandle,
+    recovered: &RecoveredConversationRun,
+) {
+    let _ = app_handle.emit(
+        CONVERSATION_RUN_STATE_EVENT,
+        ConversationRunStateUpdatedEventVm {
+            project_id: recovered.project_id.clone(),
+            task_id: recovered.task_id.clone(),
+            run_id: recovered.run_id.clone(),
+            round_id: recovered.round_id.clone(),
+            node_id: recovered.node_id.clone(),
+            attempt_id: recovered.attempt_id.clone(),
+            status: recovered.status,
+            outcome: recovered.outcome,
+        },
+    );
+}
+
 pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
@@ -655,10 +960,21 @@ pub(crate) fn resolve_command_app(
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
-    app.lifecycle_bus.subscribe_named(
-        "desktop.metrics",
-        crate::metrics::create_metrics_subscriber(app_handle.clone()),
-    );
+    if crate::channel::current_channel_config().channel == "wb"
+        && crate::metrics::metrics_settings(&app.config).enabled
+        && crate::metrics::get_api_key(&app.config).is_some()
+    {
+        app.lifecycle_bus.subscribe_named_with_mode(
+            "core.metrics-producer",
+            gold_band::app::observability::SubscriberMode::Inline,
+            app.create_metrics_fact_producer(),
+        );
+        app.lifecycle_bus.subscribe_named(
+            "desktop.metrics",
+            crate::metrics::create_metrics_subscriber(app_handle.clone()),
+        );
+        init_direct_metrics_worker(app.clone_for_background());
+    }
     app.lifecycle_bus.subscribe_named(
         "desktop.notifications",
         crate::notifications::create_intervention_notification_subscriber(
@@ -670,6 +986,152 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
         "desktop.conversation-run-state",
         create_conversation_run_state_subscriber(app_handle.clone()),
     );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.conversation-terminal-result",
+        create_conversation_terminal_result_subscriber(app_handle.clone()),
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTerminalResultCandidate {
+    project_id: String,
+    task_id: String,
+    result: ConversationTerminalResultVm,
+    requires_direct_mode_check: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTerminalResultUpdatedEventVm {
+    project_id: String,
+    task_id: String,
+    unread_terminal_result: ConversationTerminalResultVm,
+}
+
+fn conversation_terminal_result_candidate(
+    event: &RuntimeLifecycleEvent,
+) -> Option<ConversationTerminalResultCandidate> {
+    match event {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            completion_agent_label,
+            ..
+        } if completion_agent_label.is_some() && *outcome != RunOutcome::Success => {
+            Some(ConversationTerminalResultCandidate {
+                project_id: project_id.clone(),
+                task_id: task_id.clone(),
+                result: ConversationTerminalResultVm {
+                    event_id: event_id.clone(),
+                    run_id: run_id.clone(),
+                    kind: match outcome {
+                        RunOutcome::Killed => ConversationTerminalResultKind::Stopped,
+                        RunOutcome::Failure => ConversationTerminalResultKind::Failed,
+                        RunOutcome::Success => return None,
+                    },
+                    occurred_at: occurred_at.clone(),
+                },
+                requires_direct_mode_check: false,
+            })
+        }
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            batch_progress,
+            ..
+        } if !batch_progress.continues => Some(ConversationTerminalResultCandidate {
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            result: ConversationTerminalResultVm {
+                event_id: event_id.clone(),
+                run_id: run_id.clone(),
+                kind: match outcome {
+                    AcpTurnOutcome::Completed => ConversationTerminalResultKind::Completed,
+                    AcpTurnOutcome::Cancelled => ConversationTerminalResultKind::Stopped,
+                    AcpTurnOutcome::Failed => ConversationTerminalResultKind::Failed,
+                },
+                occurred_at: occurred_at.clone(),
+            },
+            requires_direct_mode_check: true,
+        }),
+        _ => None,
+    }
+}
+
+fn create_conversation_terminal_result_subscriber(
+    app_handle: AppHandle,
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        let Some(candidate) = conversation_terminal_result_candidate(&event) else {
+            return;
+        };
+        let Some(desktop_state) = app_handle.try_state::<DesktopState>() else {
+            warn!("desktop state unavailable while recording Direct terminal result");
+            return;
+        };
+        let app = match resolve_command_app(&desktop_state, Some(&candidate.project_id)) {
+            Ok(app) => app,
+            Err(error) => {
+                warn!(
+                    code = %error.code,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result workspace resolution failed"
+                );
+                return;
+            }
+        };
+        if candidate.requires_direct_mode_check
+            && conversation_run_mode(&app, &candidate.task_id)
+                != Some(gold_band::config::ConversationRunMode::Direct)
+        {
+            return;
+        }
+        let write_guard = match desktop_state.conversation_attention_write_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(?error, "Direct terminal result write lock failed");
+                return;
+            }
+        };
+        if app.task_show(&candidate.task_id).is_err() {
+            return;
+        }
+        let recorded = match record_terminal_result(&app, &candidate.task_id, candidate.result) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result persistence failed"
+                );
+                return;
+            }
+        };
+        drop(write_guard);
+        if !recorded.changed {
+            return;
+        }
+        if let Some(unread_terminal_result) = recorded.unread_terminal_result {
+            let _ = app_handle.emit(
+                CONVERSATION_TERMINAL_RESULT_EVENT,
+                ConversationTerminalResultUpdatedEventVm {
+                    project_id: candidate.project_id,
+                    task_id: candidate.task_id,
+                    unread_terminal_result,
+                },
+            );
+        }
+    })
 }
 
 fn create_conversation_run_state_subscriber(
@@ -1068,6 +1530,17 @@ pub(crate) async fn prepare_app_exit_inner(
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
 
+    // Close the process-wide admission gate before scheduler shutdown. A run
+    // start either appears in this snapshot or observes ShuttingDown; no
+    // registry lock is held while scheduler, file, provider, or SQLite work runs.
+    let active_runtime_candidates = match state.runtime_recovery().begin_shutdown() {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            result.record_warning("app-exit.runtime-gate-failed", &error);
+            Vec::new()
+        }
+    };
+
     // Stop the scheduler before stopping ACP/runtime sessions so no new
     // occurrence can acquire a lease while desktop cleanup is in progress.
     // `shutdown` waits for both the coordinator acknowledgement and task join.
@@ -1079,8 +1552,57 @@ pub(crate) async fn prepare_app_exit_inner(
 
     match state.app() {
         Ok(runtime_app) => {
+            let runtime_recovery = state.runtime_recovery();
             match tauri::async_runtime::spawn_blocking(move || {
-                runtime_app.stop_all_running_sessions().map(|_| ())
+                let mut failure_count = 0usize;
+                for candidate in active_runtime_candidates {
+                    let workspace_root = camino::Utf8PathBuf::from(&candidate.workspace_path);
+                    let paths = gold_band::storage::GoldBandPaths::new(workspace_root.clone());
+                    if paths.project_id != candidate.project_id
+                        || paths.validate_project_manifest().is_err()
+                    {
+                        failure_count += 1;
+                        warn!(
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate workspace identity changed during exit"
+                        );
+                        continue;
+                    }
+                    let workspace_app =
+                        runtime_app.with_repo_root(workspace_root, runtime_app.config.clone());
+                    if let Err(error) = workspace_app.run_pause(
+                        &candidate.task_id,
+                        &candidate.run_id,
+                        PauseReason::ProcessInterrupted,
+                    ) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime pause failed during exit"
+                        );
+                        continue;
+                    }
+                    if let Err(error) = runtime_recovery.consume_persisted_candidate(&candidate) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate cleanup failed during exit"
+                        );
+                    }
+                }
+                runtime_app.close_active_runtime_connections()?;
+                if failure_count > 0 {
+                    anyhow::bail!("{failure_count} active runtime exit operations failed");
+                }
+                Ok(())
             })
             .await
             {
@@ -1543,7 +2065,8 @@ fn collect_agent_binding_usage(
         if !scheduler_db_path.exists() {
             continue;
         }
-        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?.scan_job_definitions()?;
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?
+            .scan_job_definitions(&app.paths.project_id)?;
         unknown_scheduled_task_count += scan.invalid_count;
         for definition in scan.definitions {
             match scheduled_task_references_agent(&definition, agent_id) {
@@ -2080,6 +2603,7 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_start_background(&task_id, None)
@@ -2671,10 +3195,22 @@ pub fn continue_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    app.run_continue_background(&task_id, &run_id, None, None)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    app.record_metrics_resume_cause(
+        &task_id,
+        &run_id,
+        gold_band::app::observability::ResumeCause::ManualContinue,
+    );
+    let result = app.run_continue_background(&task_id, &run_id, None, None);
+    if result.is_err() {
+        app.clear_metrics_resume_cause(
+            &task_id,
+            &run_id,
+            gold_band::app::observability::ResumeCause::ManualContinue,
+        );
+    }
+    result.map(run_summary_vm).map_err(command_error)
 }
 
 #[tauri::command]
@@ -2704,7 +3240,7 @@ pub async fn continue_conversation_runtime(
         outer_attempt_id,
     );
     if let Some(input) = input.as_ref() {
-        validate_conversation_prompt_input(input)?;
+        validate_conversation_prompt_input(input, attachment_paths.as_deref())?;
     }
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
@@ -2854,6 +3390,7 @@ pub async fn stop_active_session(
         request_auto_dispatch_suspension(&locator.attempt_dir(&app)).map_err(command_error)?;
     }
     let operation_id = Uuid::new_v4().to_string();
+    let control_operation_id = operation_id.clone();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
     let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
@@ -2864,7 +3401,8 @@ pub async fn stop_active_session(
                 suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
             }
         }
-        let attempt_dir = persist_active_session_stop(&control_app, &control_locator)?;
+        let attempt_dir =
+            persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
         let current_run = control_app
             .run_status(&control_locator.task_id, &control_locator.run_id)
             .map_err(command_error)?;
@@ -2912,6 +3450,7 @@ pub async fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
@@ -2958,6 +3497,7 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_retry(&task_id, &run_id)
@@ -3043,6 +3583,12 @@ pub fn update_notification_attention(
         .map_err(command_error)
 }
 
+/// Frontend activity signal: pointerdown, keydown, or business command.
+#[tauri::command]
+pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
+    state.record_heartbeat_activity().map_err(command_error)
+}
+
 #[tauri::command]
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
@@ -3063,6 +3609,7 @@ pub fn save_metrics_settings(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
+    let _ = state.reevaluate_heartbeat_config();
     Ok(metrics_settings(&updated_context.config))
 }
 
@@ -3227,13 +3774,14 @@ fn maybe_emit_permission_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        PERMISSION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            PERMISSION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -3247,6 +3795,14 @@ fn maybe_emit_permission_intervention(
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::PermissionRequested,
+        );
+    }
 }
 
 fn maybe_emit_elicitation_intervention(
@@ -3267,13 +3823,14 @@ fn maybe_emit_elicitation_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        ELICITATION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            ELICITATION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -3287,6 +3844,254 @@ fn maybe_emit_elicitation_intervention(
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+    }
+}
+
+fn emit_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::InterventionRequested {
+            context: context.clone(),
+            request_id: request_id.to_string(),
+            kind,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    let Ok(run) = app.run_status(&context.task_id, &context.run_id) else {
+        return;
+    };
+    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+        return;
+    };
+    let is_direct =
+        gold_band::app::direct_conversation_agent_label(app, &context.task_id).is_some();
+    let is_auto = !is_direct && context.outer_node_id.is_some();
+    let active_turn = if is_direct {
+        app.active_metrics_turn(&format!("direct:{task_uuid}"))
+    } else {
+        None
+    };
+    let execution_id = active_turn
+        .as_ref()
+        .map(|turn| turn.execution_id.clone())
+        .unwrap_or_else(|| task_uuid.clone());
+    let event_revision;
+    let collection_state_recovered;
+    let _state = if let Some(active_turn) = active_turn.as_ref() {
+        let attempt_path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(&active_turn.attempt_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let attempt_state =
+            app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+                match kind {
+                    RuntimeInterventionKind::PermissionRequested => {
+                        state.record_permission(request_id)
+                    }
+                    RuntimeInterventionKind::ElicitationRequested => {
+                        state.record_elicitation(request_id)
+                    }
+                    _ => {}
+                }
+                state.next_revision();
+            });
+        event_revision = attempt_state.event_revision;
+        collection_state_recovered = attempt_state.collection_state_recovered;
+        attempt_state
+    } else {
+        let path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let state = app.update_observability_state(&execution_id, path, |state| {
+            match kind {
+                RuntimeInterventionKind::PermissionRequested => state.record_permission(request_id),
+                RuntimeInterventionKind::ElicitationRequested => {
+                    state.record_elicitation(request_id)
+                }
+                _ => {}
+            }
+            state.next_revision();
+        });
+        event_revision = state.event_revision;
+        collection_state_recovered = state.collection_state_recovered;
+        state
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        gold_band::app::observability::LifecycleEventType::InterventionRequested,
+        event_revision,
+        current_timestamp(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        if is_direct {
+            gold_band::app::observability::MetricsSessionMode::Direct
+        } else if is_auto {
+            gold_band::app::observability::MetricsSessionMode::Auto
+        } else {
+            gold_band::app::observability::MetricsSessionMode::Workflow
+        },
+        task_uuid,
+        if is_direct {
+            gold_band::app::observability::ExecutionKind::Turn
+        } else if is_auto {
+            gold_band::app::observability::ExecutionKind::OuterRun
+        } else {
+            gold_band::app::observability::ExecutionKind::Run
+        },
+        execution_id.clone(),
+    );
+    fact.task_title = app.task_show(&context.task_id).ok().and_then(|t| t.title);
+    fact.intervention_kind = Some(match kind {
+        RuntimeInterventionKind::PermissionRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Permission
+        }
+        RuntimeInterventionKind::ElicitationRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Elicitation
+        }
+        RuntimeInterventionKind::ManualDecisionRequired => {
+            gold_band::app::observability::MetricsInterventionKind::ManualDecision
+        }
+        RuntimeInterventionKind::RuntimeAbnormal => {
+            gold_band::app::observability::MetricsInterventionKind::RuntimeAbnormal
+        }
+        RuntimeInterventionKind::ErrorBlocked => {
+            gold_band::app::observability::MetricsInterventionKind::ErrorBlocked
+        }
+        RuntimeInterventionKind::ProcessInterrupted => {
+            gold_band::app::observability::MetricsInterventionKind::ProcessInterrupted
+        }
+    });
+    if is_direct {
+        if let Some(turn) = active_turn {
+            fact.attempt_id = Some(turn.attempt_id.clone());
+            fact.attempt_index = Some(turn.attempt_index);
+        }
+    } else {
+        apply_intervention_node_context(app, context, &run_uuid, &mut fact, is_auto);
+    }
+    fact.collection_state_recovered = collection_state_recovered;
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+}
+
+fn apply_intervention_node_context(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    run_uuid: &str,
+    fact: &mut gold_band::app::observability::MetricsLifecycleFact,
+    is_auto: bool,
+) {
+    let round_index = read_json::<gold_band::runtime::RoundState>(&app.paths.round_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+    ))
+    .ok()
+    .map(|round| round.index);
+    fact.round_index = round_index;
+
+    if is_auto {
+        let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) else {
+            return;
+        };
+        let Ok(graph) =
+            read_json::<gold_band::dynamic::DynamicGraphState>(&app.paths.dynamic_graph_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ))
+        else {
+            return;
+        };
+        let Some(dynamic_node) = graph.nodes.iter().find(|node| node.id == context.node_id) else {
+            return;
+        };
+        fact.attempt_index =
+            gold_band::app::observability::attempt_index_from_local_id(&context.attempt_id);
+        fact.role_name = Some(dynamic_node.title.clone());
+        if let Some(node_uuid) = dynamic_node.uuid.as_deref() {
+            fact.node_id = Some(node_uuid.to_string());
+            fact.attempt_id =
+                gold_band::app::observability::derive_attempt_id(node_uuid, &context.attempt_id);
+        }
+        return;
+    }
+
+    let Ok(node) = read_json::<NodeState>(&app.paths.node_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+    )) else {
+        return;
+    };
+    fact.attempt_index =
+        gold_band::app::observability::attempt_index_from_local_id(&node.attempt_id);
+    fact.role_name = Some(node_intervention_role_name(&node));
+    let Some(node_uuid) = node.uuid.as_deref() else {
+        return;
+    };
+    let logical = round_index
+        .and_then(|round_index| {
+            gold_band::app::observability::derive_execution_id(
+                run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+        })
+        .unwrap_or_else(|| node_uuid.to_string());
+    fact.node_id = Some(logical);
+    fact.attempt_id = Some(node_uuid.to_string());
+}
+
+fn node_intervention_role_name(node: &NodeState) -> String {
+    node.resolved_config
+        .get("profileName")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            node.resolved_config
+                .get("profile")
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or_else(|| node.node_id.as_str())
+        .to_string()
 }
 
 fn acp_intervention_node_label(
@@ -3343,34 +4148,9 @@ pub(crate) fn acp_session_update_emitter(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
-        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
-            context.outer_node_id.as_deref(),
-            context.outer_attempt_id.as_deref(),
-        ) {
-            dynamic_acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        } else {
-            acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        };
+        // Session lifecycle is a control-plane event. Publishing it must not
+        // rebuild or serialize timeline正文; page data is fetched only by the
+        // explicit session query/pagination path.
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -3382,7 +4162,7 @@ pub(crate) fn acp_session_update_emitter(
             &context.attempt_id,
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
-            session,
+            None,
         );
         Ok(())
     })
@@ -3401,16 +4181,7 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
-    let activity = conversation_prompt_activity_vm(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
+    let activity = conversation_task_prompt_activity_vm(app, task_id);
     emit_acp_update(
         app_handle,
         Some(app),
@@ -3441,18 +4212,7 @@ fn emit_acp_event_update(
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
 ) {
-    let activity = activity_app.and_then(|app| {
-        conversation_prompt_activity_vm(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            outer_node_id.as_deref(),
-            outer_attempt_id.as_deref(),
-        )
-    });
+    let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
         app_handle,
         None,
@@ -3470,28 +4230,12 @@ fn emit_acp_event_update(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn conversation_prompt_activity_vm(
+fn conversation_task_prompt_activity_vm(
     app: &App,
     task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    outer_node_id: Option<&str>,
-    outer_attempt_id: Option<&str>,
 ) -> Option<ConversationTaskActivityVm> {
-    let attempt_dir = resolve_acp_attempt_dir(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    );
-    client::prompt_activity(&attempt_dir).map(conversation_task_activity_from_prompt)
+    client::prompt_activity_under(&app.paths.task_dir(task_id))
+        .map(conversation_task_activity_from_prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3567,9 +4311,38 @@ fn acp_live_event_context(
 }
 
 #[tauri::command]
-pub fn get_acp_session(
+pub async fn get_acp_session(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: Option<AcpSessionQueryInput>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    spawn_blocking_command(move || {
+        get_acp_session_from_app(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            query,
+            outer_node_id,
+            outer_attempt_id,
+        )
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn get_acp_session_from_app(
+    app: App,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -3597,7 +4370,6 @@ pub fn get_acp_session(
         "command-received",
         trace_started_at,
     );
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     log_acp_session_command_stage(
         trace_id.as_deref(),
         &branch_id,
@@ -4079,6 +4851,7 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -4089,7 +4862,7 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    validate_conversation_prompt_input(&input)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
@@ -4199,8 +4972,9 @@ pub async fn send_acp_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    validate_conversation_prompt_input(&input)?;
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     send_acp_prompt_with_configured_app(
         app_handle,
         app,
@@ -4252,6 +5026,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
+    emit_direct_turn_started(&app, &locator);
     let preflight = ensure_conversation_prompt_available(&app, &locator);
     finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
@@ -4323,8 +5098,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             } else {
                 (SessionMode::New, None)
             };
-            let mut prompt_bundle = app
-                .dynamic_acp_prompt_bundle_for_attempt(
+            let prepared_prompt = app
+                .prepare_dynamic_acp_prompt_for_attempt(
                     &task_id,
                     &run_id,
                     &round_id,
@@ -4337,26 +5112,22 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
+            let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+            let session_workspace_dir = prepared_prompt.session_workspace_dir;
+            let mut prompt_bundle = prepared_prompt.prompt;
             prompt_bundle.display_text = Some(display_text.clone());
             prompt_bundle.quotes = quotes.clone();
-            // Resolve attachments
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
-                    let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                    let _ = std::fs::create_dir_all(&user_inputs_dir);
-                    if let Ok(resolved) =
-                        gold_band::provider::resolve_attachments(paths, "user-inputs")
-                    {
-                        // Copy files to user-inputs/
-                        for (r, src) in resolved.iter().zip(paths.iter()) {
-                            let src_path = std::path::Path::new(src);
-                            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                                let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                                let _ = std::fs::copy(src_path, &dest);
-                            }
-                            prompt_bundle.attachment_metas.push(r.meta.clone());
-                            prompt_bundle.content_blocks.push(r.block.clone());
-                        }
+                    let resolved = gold_band::provider::resolve_user_input_attachments(
+                        paths,
+                        &attempt_dir,
+                        gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                    )
+                    .map_err(command_error)?;
+                    for attachment in resolved {
+                        prompt_bundle.attachment_metas.push(attachment.meta);
+                        prompt_bundle.content_blocks.push(attachment.block);
                     }
                 }
             }
@@ -4396,8 +5167,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             let prompt_run = client::run_prompt(
                 provider,
                 &agent_config.adapter,
-                app.paths.repo_root.clone(),
-                app.paths.repo_root.clone(),
+                adapter_workspace_dir,
+                session_workspace_dir,
                 attempt_dir,
                 &prompt_bundle,
                 session_mode,
@@ -4413,7 +5184,6 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
-                client::AcpOutputPolicy::Conversation,
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -4497,8 +5267,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         } else {
             (SessionMode::New, None)
         };
-        let mut prompt_bundle = app
-            .acp_prompt_bundle_for_attempt(
+        let prepared_prompt = app
+            .prepare_acp_prompt_for_attempt(
                 &task_id,
                 &run_id,
                 &round_id,
@@ -4509,24 +5279,22 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
+        let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+        let session_workspace_dir = prepared_prompt.session_workspace_dir;
+        let mut prompt_bundle = prepared_prompt.prompt;
         prompt_bundle.display_text = Some(display_text);
         prompt_bundle.quotes = quotes;
-        // Resolve attachments
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
-                let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                let _ = std::fs::create_dir_all(&user_inputs_dir);
-                if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs")
-                {
-                    for (r, src) in resolved.iter().zip(paths.iter()) {
-                        let src_path = std::path::Path::new(src);
-                        if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                            let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                            let _ = std::fs::copy(src_path, &dest);
-                        }
-                        prompt_bundle.attachment_metas.push(r.meta.clone());
-                        prompt_bundle.content_blocks.push(r.block.clone());
-                    }
+                let resolved = gold_band::provider::resolve_user_input_attachments(
+                    paths,
+                    &attempt_dir,
+                    gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                )
+                .map_err(command_error)?;
+                for attachment in resolved {
+                    prompt_bundle.attachment_metas.push(attachment.meta);
+                    prompt_bundle.content_blocks.push(attachment.block);
                 }
             }
         }
@@ -4565,8 +5333,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
-            app.paths.repo_root.clone(),
-            app.paths.repo_root.clone(),
+            adapter_workspace_dir,
+            session_workspace_dir,
             attempt_dir,
             &prompt_bundle,
             session_mode,
@@ -4582,7 +5350,6 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
-            client::AcpOutputPolicy::Conversation,
             Some(&|event| {
                 live_update(
                     acp_live_event_context(
@@ -4735,6 +5502,8 @@ pub fn respond_acp_permission(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let resume_cause = gold_band::app::observability::ResumeCause::PermissionResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -4747,8 +5516,12 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -4766,8 +5539,12 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         acp_session_vm(
             &app,
             &task_id,
@@ -4917,6 +5694,7 @@ fn stop_acp_session(
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
+    operation_id: &str,
 ) -> CommandResult<Utf8PathBuf> {
     let attempt_dir = locator.attempt_dir(app);
     let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
@@ -4948,6 +5726,19 @@ fn persist_active_session_stop(
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
     client::request_prompt_cancel(&attempt_dir);
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+        snapshot_path
+    } else {
+        session_path
+    };
+    gold_band::acp::events::request_session_stop(
+        &lifecycle_path,
+        operation_id,
+        &gold_band::acp::events::current_timestamp(),
+    )
+    .map_err(command_error)?;
     Ok(attempt_dir)
 }
 
@@ -4960,8 +5751,28 @@ fn spawn_active_session_stop_cleanup(
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         app.cancel_attempt_dir_best_effort(&attempt_dir);
-        if let Err(error) = client::cancel_attempt_prompt(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+        match client::cancel_attempt_prompt(&attempt_dir) {
+            Ok(false) => {
+                let snapshot_path = attempt_dir.join("acp.snapshot.json");
+                let session_path = attempt_dir.join("acp.session.json");
+                let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+                    snapshot_path
+                } else {
+                    session_path
+                };
+                if let Err(error) = gold_band::acp::events::persist_session_terminal(
+                    &lifecycle_path,
+                    gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                    "cancelled",
+                    &gold_band::acp::events::current_timestamp(),
+                ) {
+                    warn!(%error, %attempt_dir, "failed to settle accepted ACP stop without an active provider");
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            }
         }
         emit_acp_session_update(
             &app_handle,
@@ -5784,6 +6595,15 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
+    if let Some(error) = error.downcast_ref::<gold_band::app::RuntimeRecoveryError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::core_state::CoreStateError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::ProjectManifestError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
@@ -5824,12 +6644,22 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
     CommandErrorVm::new(code, serde_json::json!({}))
 }
 
-fn validate_conversation_prompt_input(input: &ConversationPromptInput) -> CommandResult<()> {
-    if input.display_text.trim().is_empty() {
+fn validate_conversation_prompt_input(
+    input: &ConversationPromptInput,
+    attachment_paths: Option<&[String]>,
+) -> CommandResult<()> {
+    let attachment_paths = attachment_paths.unwrap_or_default();
+    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
         return Err(CommandErrorVm::new(
             "conversation.prompt-empty",
             serde_json::json!({}),
         ));
+    }
+    if let Some(code) = crate::view_models_conversation::validate_attachment_paths(attachment_paths)
+        .into_iter()
+        .next()
+    {
+        return Err(CommandErrorVm::new(code, serde_json::json!({})));
     }
     if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
         return Err(CommandErrorVm::new(
@@ -6043,7 +6873,11 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
 }
 
 fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
-    current_acp_session_override(attempt_dir, "modelOverride")
+    gold_band::acp::events::read_attempt_session_model(&attempt_dir.join("acp.session.json"))
+}
+
+fn current_acp_session_model_name(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    gold_band::acp::events::read_attempt_session_model_name(&attempt_dir.join("acp.session.json"))
 }
 
 fn current_acp_session_permission_mode_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
@@ -7070,6 +7904,7 @@ pub async fn respond_elicitation(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
 
     // Reclaim the durable scheduled occurrence before writing the response file.
@@ -7105,14 +7940,18 @@ pub async fn respond_elicitation(
         app.paths
             .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
     };
-    write_elicitation_response(
+    let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+    if let Err(error) = write_elicitation_response(
         &attempt_dir,
         &elicitation_id,
         action.clone(),
         content.clone(),
         current_timestamp(),
-    )
-    .map_err(command_error)?;
+    ) {
+        app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+        return Err(command_error(error));
+    }
 
     // Emit session update so the frontend can refresh the timeline
     // immediately. The runtime owns consumption and cleanup of the durable
@@ -7179,7 +8018,13 @@ fn scheduled_attention_requires_coordinator(
     let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
         .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
     Ok(database
-        .find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)
+        .find_attention_occurrence_by_links(
+            &app.paths.project_id,
+            task_id,
+            run_id,
+            round_id,
+            attempt_id,
+        )
         .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
         .is_some())
 }
@@ -7727,9 +8572,10 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
-    use gold_band::config::{ConversationWorkspaceEntry, RuntimeConfig};
+    use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::dynamic::DynamicGraphState;
+    use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
     use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
@@ -7737,6 +8583,88 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use std::collections::BTreeMap;
+
+    fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "Claude".to_string(),
+            outcome,
+            task_title: None,
+            completion_agent_label: Some("Claude".to_string()),
+        }
+    }
+
+    fn acp_turn_finished(outcome: AcpTurnOutcome, continues: bool) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id: "turn-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:01Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            turn_id: "turn-001".to_string(),
+            agent_label: "Claude".to_string(),
+            outcome,
+            batch_progress: AcpTurnBatchProgress {
+                completed_reply_count: 1,
+                continues,
+            },
+            task_title: None,
+        }
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_waits_for_the_terminal_reply_batch() {
+        assert!(
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Success))
+                .is_none()
+        );
+        assert!(
+            conversation_terminal_result_candidate(&acp_turn_finished(
+                AcpTurnOutcome::Completed,
+                true
+            ))
+            .is_none()
+        );
+
+        let completed = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Completed,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(
+            completed.result.kind,
+            ConversationTerminalResultKind::Completed
+        );
+        assert!(completed.requires_direct_mode_check);
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_maps_failure_and_stop_semantics() {
+        let failed =
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Failure))
+                .unwrap();
+        assert_eq!(failed.result.kind, ConversationTerminalResultKind::Failed);
+        assert!(!failed.requires_direct_mode_check);
+
+        let stopped = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Cancelled,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(stopped.result.kind, ConversationTerminalResultKind::Stopped);
+    }
 
     #[test]
     fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
@@ -7894,12 +8822,12 @@ mod tests {
     #[test]
     fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
         let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
-        assert!(validate_conversation_prompt_input(&valid).is_ok());
+        assert!(validate_conversation_prompt_input(&valid, None).is_ok());
 
         let mut duplicate = valid.clone();
         duplicate.quotes.push(duplicate.quotes[0].clone());
         assert_eq!(
-            validate_conversation_prompt_input(&duplicate)
+            validate_conversation_prompt_input(&duplicate, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-invalid"
@@ -7910,7 +8838,7 @@ mod tests {
             &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
         );
         assert_eq!(
-            validate_conversation_prompt_input(&over_limit)
+            validate_conversation_prompt_input(&over_limit, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-limit-exceeded"
@@ -7924,7 +8852,7 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            validate_conversation_prompt_input(&too_many)
+            validate_conversation_prompt_input(&too_many, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-count-exceeded"
@@ -7939,18 +8867,41 @@ mod tests {
             }],
         };
         assert_eq!(
-            validate_conversation_prompt_input(&too_long_id)
+            validate_conversation_prompt_input(&too_long_id, None)
                 .unwrap_err()
                 .code,
             "conversation.prompt-quote-metadata-too-long"
         );
 
         assert!(
-            validate_conversation_prompt_input(&prompt_with_quote(
-                "code-selection:anywhere",
-                "引用不需要在消息时间线中存在",
-            ))
+            validate_conversation_prompt_input(
+                &prompt_with_quote("code-selection:anywhere", "引用不需要在消息时间线中存在",),
+                None,
+            )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn prompt_payload_validation_accepts_attachment_only_and_rejects_fully_empty_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let attachment = temp.path().join("context.txt");
+        std::fs::write(&attachment, "attachment content").unwrap();
+        let attachment = attachment.to_string_lossy().to_string();
+        let input = ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+        };
+
+        assert_eq!(
+            validate_conversation_prompt_input(&input, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-empty"
+        );
+        assert!(
+            validate_conversation_prompt_input(&input, Some(std::slice::from_ref(&attachment)))
+                .is_ok()
         );
     }
 
@@ -8195,6 +9146,7 @@ mod tests {
         let owner_id = "owner-1";
         database
             .claim_occurrence(
+                &app.paths.project_id,
                 &occurrence.id,
                 owner_id,
                 now,
@@ -8203,6 +9155,7 @@ mod tests {
             .unwrap();
         database
             .finish_occurrence(
+                &app.paths.project_id,
                 &occurrence.id,
                 owner_id,
                 gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
@@ -8567,7 +9520,7 @@ mod tests {
         std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
 
         let started = std::time::Instant::now();
-        let attempt_dir = persist_active_session_stop(&app, &locator).unwrap();
+        let attempt_dir = persist_active_session_stop(&app, &locator, "operation-001").unwrap();
 
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
@@ -8758,7 +9711,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_follow_up_uses_only_gold_band_model_override() {
+    fn current_acp_session_model_override_prefers_explicit_override() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-model-override-test-{}",
             uuid::Uuid::new_v4()
@@ -8769,26 +9722,93 @@ mod tests {
         write_json(
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
-                "models": { "currentModelId": "default" },
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "models": { "currentModelId": "agent-default" },
                 "configOptions": [
-                    { "id": "model", "currentValue": "default" }
+                    { "id": "model", "currentValue": "agent-default" }
                 ]
-            }),
-        )
-        .unwrap();
-        assert_eq!(current_acp_session_model_override(&attempt_dir), None);
-
-        write_json(
-            &attempt_dir.join("acp.snapshot.json"),
-            &serde_json::json!({
-                "modelOverride": "default",
-                "models": { "currentModelId": "default" }
             }),
         )
         .unwrap();
         assert_eq!(
             current_acp_session_model_override(&attempt_dir).as_deref(),
-            Some("default")
+            Some("agent-default")
+        );
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "override-default",
+                "models": { "currentModelId": "agent-default" },
+                "configOptions": [
+                    { "id": "model", "currentValue": "agent-default" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("override-default")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_acp_session_model_name_resolves_display_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-model-name-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "opus",
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "currentValue": "opus",
+                        "options": [
+                            { "value": "opus", "name": "glm-5.2" }
+                        ]
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("opus")
+        );
+        assert_eq!(
+            current_acp_session_model_name(&attempt_dir).as_deref(),
+            Some("glm-5.2")
         );
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -10333,5 +11353,317 @@ mod tests {
         );
 
         assert_eq!(*seen.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn workflow_intervention_metrics_carry_current_node_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-workflow-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some("plan".to_string()),
+                current_attempt: Some("attempt-001".to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid.clone()),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let mut node = NodeState {
+            version: gold_band::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            node_type: gold_band::domain::NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: gold_band::domain::RunStatus::Running,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: Default::default(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("Planner"));
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "plan", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            "elicit-1",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.event_type,
+            gold_band::app::observability::LifecycleEventType::InterventionRequested
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+        assert_eq!(
+            fact.node_id.as_deref(),
+            gold_band::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn auto_intervention_metrics_carry_current_dynamic_unit_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-auto-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let dynamic_node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(outer_node_id.to_string()),
+                current_attempt: Some(outer_attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let dynamic_node = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "bootstrap",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Bootstrap",
+            "task": "Bootstrap",
+            "status": "running",
+            "outcome": null,
+            "groupId": null,
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "provider": "codex-acp",
+            "profile": null,
+            "permissionMode": null,
+            "model": null,
+            "sessionMode": "new",
+            "continueFromNodeId": null,
+            "workflowId": null,
+            "workflowSnapshotId": null,
+            "childRunId": null,
+            "startedAt": started_at,
+            "finishedAt": null,
+            "uuid": dynamic_node_uuid
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": {
+                    "version": gold_band::domain::VERSION,
+                    "id": "dynamic-run-001",
+                    "parentRunId": run_id,
+                    "parentRoundId": round_id,
+                    "parentNodeId": outer_node_id,
+                    "parentAttemptId": outer_attempt_id,
+                    "status": "running",
+                    "outcome": null,
+                    "pauseReason": null,
+                    "startedAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:01Z",
+                    "control": {},
+                    "allowedWorkflowSnapshots": [],
+                    "currentNodeIds": ["bootstrap"]
+                },
+                "nodes": [dynamic_node],
+                "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:00Z"
+                }],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            "permission-1",
+            RuntimeInterventionKind::PermissionRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.session_mode,
+            gold_band::app::observability::MetricsSessionMode::Auto
+        );
+        assert_eq!(
+            fact.execution_kind,
+            gold_band::app::observability::ExecutionKind::OuterRun
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.node_id.as_deref(), Some(dynamic_node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Bootstrap"));
+        assert_eq!(
+            fact.attempt_id.as_deref(),
+            gold_band::app::observability::derive_attempt_id(&dynamic_node_uuid, "attempt-001")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
     }
 }

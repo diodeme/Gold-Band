@@ -35,7 +35,7 @@ describe('api facade', () => {
       { path: 'C:/tmp/shot.png', name: 'shot.png', size: 4 },
     ]);
     vi.mocked(getRuntimeApi).mockReturnValue({ materializeConversationAttachments: materializeImpl } as never);
-    const files = [{ name: 'shot.png', mime: 'image/png', size: 4, dataBase64: 'AQIDBA==' }];
+    const files = [{ name: 'shot.png', mime: 'image/png', dataBase64: 'AQIDBA==' }];
 
     const result = await materializeConversationAttachments(files);
 

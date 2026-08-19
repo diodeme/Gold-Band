@@ -43,7 +43,7 @@ impl RuntimeLifecycleStore {
     }
 }
 
-fn runtime_execution_transition_allowed(
+pub(crate) fn runtime_execution_transition_allowed(
     from: RuntimeExecutionPhase,
     to: RuntimeExecutionPhase,
 ) -> bool {
@@ -140,6 +140,10 @@ pub struct RuntimeExecutionState {
     pub phase: RuntimeExecutionPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locator: Option<RuntimeAttemptLocator>,
+    /// Fencing token for the current persisted runtime recovery candidate.
+    /// It does not express lifecycle state; `run.status` remains canonical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_candidate_token: Option<String>,
     pub updated_at: String,
 }
 
@@ -149,6 +153,7 @@ impl Default for RuntimeExecutionState {
             revision: 0,
             phase: RuntimeExecutionPhase::StartingNode,
             locator: None,
+            recovery_candidate_token: None,
             updated_at: String::new(),
         }
     }
@@ -164,6 +169,7 @@ impl RuntimeExecutionState {
             revision: 1,
             phase,
             locator,
+            recovery_candidate_token: None,
             updated_at: updated_at.into(),
         }
     }
@@ -385,6 +391,14 @@ pub fn validate_run_state(state: &RunState) -> Result<()> {
     ensure!(
         !(state.current_attempt.is_some() && state.current_node.is_none()),
         "currentAttempt requires currentNode"
+    );
+    ensure!(
+        state
+            .execution
+            .recovery_candidate_token
+            .as_deref()
+            .is_none_or(|token| !token.trim().is_empty()),
+        "runtime recovery candidate token cannot be empty"
     );
     if let Some(worktree) = state.worktree.as_ref() {
         ensure!(
@@ -615,5 +629,22 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("worktree");
         let restored_legacy: RunState = serde_json::from_value(legacy).unwrap();
         assert!(restored_legacy.worktree.is_none());
+    }
+
+    #[test]
+    fn runtime_recovery_candidate_token_is_optional_but_never_empty() {
+        let mut run = test_run(RunStatus::Running, RuntimeExecutionPhase::RunningNode);
+        assert!(validate_run_state(&run).is_ok());
+
+        run.execution.recovery_candidate_token = Some("candidate-001".to_string());
+        assert!(validate_run_state(&run).is_ok());
+        let serialized = serde_json::to_value(&run).unwrap();
+        assert_eq!(
+            serialized["execution"]["recoveryCandidateToken"],
+            "candidate-001"
+        );
+
+        run.execution.recovery_candidate_token = Some("  ".to_string());
+        assert!(validate_run_state(&run).is_err());
     }
 }

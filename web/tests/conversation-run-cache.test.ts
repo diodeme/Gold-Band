@@ -11,7 +11,6 @@ function run(index: number): ConversationRunVm {
     projectId: 'project-1',
     taskId: `task-${index}`,
     runId: `run-${index}`,
-    title: `Run ${index}`,
     sessionTree: { rounds: [], selectedSessionKey: null },
   } as ConversationRunVm;
 }
@@ -26,7 +25,7 @@ describe('ConversationRunCache', () => {
       projectId: 'project-1',
       taskId: 'task-1',
       runId: 'run-1',
-    })?.title).toBe('Run 1');
+    })?.runId).toBe('run-1');
     expect(cache.restore({
       kind: 'conversation-run',
       projectId: 'project-2',
@@ -50,6 +49,7 @@ describe('ConversationRunCache', () => {
     expect(cache.restoreEntry(cachedRun)?.viewState).toEqual({
       followMode: 'manual',
       selectedSessionKey,
+      sessionTreeExpansion: {},
     });
   });
 
@@ -60,14 +60,36 @@ describe('ConversationRunCache', () => {
       followMode: 'manual',
       selectedSessionKey,
     });
-    cache.store({ ...run(1), title: 'Refreshed run' });
+    cache.store({
+      ...run(1),
+      title: 'Legacy stale title',
+      autoTitle: true,
+    } as ConversationRunVm & { title: string; autoTitle: boolean });
 
     const restored = cache.restoreEntry(run(1));
-    expect(restored?.run.title).toBe('Refreshed run');
+    expect(restored?.run).not.toHaveProperty('title');
+    expect(restored?.run).not.toHaveProperty('autoTitle');
     expect(restored?.viewState).toEqual({
       followMode: 'manual',
       selectedSessionKey,
+      sessionTreeExpansion: {},
     });
+  });
+
+  it('keeps session-tree expansion in the bounded in-memory run view state', () => {
+    const cache = new ConversationRunCache();
+    const cachedRun = run(1);
+    const roundBranchKey = '["round","round-001"]';
+    cache.store(cachedRun);
+    cache.updateViewState(cachedRun, {
+      sessionTreeExpansion: { [roundBranchKey]: false },
+    });
+    cache.store({ ...cachedRun, runStatus: 'running' } as ConversationRunVm);
+
+    expect(cache.restoreEntry(cachedRun)?.viewState.sessionTreeExpansion).toEqual({
+      [roundBranchKey]: false,
+    });
+    expect(cache.peekViewState(run(2))).toBeNull();
   });
 
   it('evicts the least recently used run at the shared finite limit', () => {

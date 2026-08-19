@@ -2,7 +2,8 @@ use gold_band::acp::client;
 use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{ElicitationAction, write_elicitation_response};
 use gold_band::acp::events::{
-    AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
+    AcpTurnExecutionClaim, AcpUiEvent, compact_live_conversation_event, current_timestamp,
+    load_session_metadata,
 };
 use gold_band::acp::permission::{PendingPermissionState, write_permission_response_if_pending};
 use gold_band::acp::prompt_queue::{
@@ -479,11 +480,19 @@ fn prompt_submission_admission_error(error: anyhow::Error) -> CommandErrorVm {
     }
 }
 
-fn settle_failed_prompt_submission(app: &App, locator: &AttemptLocator, turn_id: &str) -> bool {
+fn settle_failed_prompt_submission(
+    app: &App,
+    locator: &AttemptLocator,
+    turn_id: &str,
+    operation_id: Option<&str>,
+    expected_revision: u64,
+) -> bool {
     let lifecycle_path = acp_lifecycle_path(&locator.attempt_dir(app));
-    match gold_band::acp::events::persist_session_turn_terminal(
+    match gold_band::acp::events::persist_session_turn_terminal_owned(
         &lifecycle_path,
         turn_id,
+        operation_id,
+        expected_revision,
         gold_band::acp::events::AcpLatestTurnStatus::Failed,
         "provider-error",
         &gold_band::acp::events::current_timestamp(),
@@ -5189,6 +5198,8 @@ pub async fn submit_conversation_prompt(
         let background_project_id = project_id.clone();
         let background_locator = locator.clone();
         let failure_turn_id = turn_id.clone();
+        let failure_revision = header.revision;
+        let failure_operation_id = header.operation_id.clone();
         let background = execute_admitted_acp_prompt_with_configured_app(
             app_handle,
             app,
@@ -5199,6 +5210,8 @@ pub async fn submit_conversation_prompt(
             locator.node_id.clone(),
             locator.attempt_id.clone(),
             turn_id.clone(),
+            failure_revision,
+            failure_operation_id,
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
         );
@@ -5284,6 +5297,8 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
         node_id,
         attempt_id,
         turn_id,
+        admission.header().revision,
+        admission.header().operation_id.clone(),
         outer_node_id,
         outer_attempt_id,
     )
@@ -5301,6 +5316,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     node_id: String,
     attempt_id: String,
     turn_id: String,
+    expected_revision: u64,
+    expected_operation_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
@@ -5324,11 +5341,44 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     serde_json::json!({ "turnId": turn_id }),
                 )
             })?;
-    if !gold_band::acp::events::session_turn_is_executable(&lifecycle_path, &turn_id)
-        .map_err(command_error)?
+    let claim = match expected_operation_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
     {
-        return Ok(());
-    }
+        Some(operation_id) => gold_band::acp::events::claim_session_turn_for_execution(
+            &lifecycle_path,
+            &turn_id,
+            expected_revision,
+            operation_id,
+        )
+        .map_err(command_error)?,
+        None => AcpTurnExecutionClaim::Stale,
+    };
+    let claimed_owner = match claim {
+        AcpTurnExecutionClaim::Claimed(owner) => owner,
+        AcpTurnExecutionClaim::AlreadySettled(_) => return Ok(()),
+        AcpTurnExecutionClaim::Stale => {
+            emit_acp_session_update(
+                &app_handle,
+                &app,
+                project_id.clone(),
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+                None,
+            );
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-execution-claim-lost",
+                serde_json::json!({ "turnId": turn_id }),
+            ));
+        }
+    };
+    let claimed_revision = claimed_owner.revision;
+    let claimed_operation_id = claimed_owner.operation_id.clone();
     let input = submission.input;
     let attachment_paths =
         (!submission.attachment_paths.is_empty()).then_some(submission.attachment_paths);
@@ -5494,6 +5544,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
+                Some(claimed_owner.clone()),
                 Some(&|event, timeline_revision| {
                     live_update(
                         acp_live_event_context(
@@ -5650,6 +5701,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
+            Some(claimed_owner.clone()),
             Some(&|event, timeline_revision| {
                 live_update(
                     acp_live_event_context(
@@ -5697,7 +5749,13 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         Ok(Ok(value)) => value,
         Ok(Err(error)) => {
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
-            let settled = settle_failed_prompt_submission(&app_for_emit, &locator, &turn_id);
+            let settled = settle_failed_prompt_submission(
+                &app_for_emit,
+                &locator,
+                &turn_id,
+                Some(&claimed_operation_id),
+                claimed_revision,
+            );
             if settled {
                 emit_acp_turn_finished(
                     &app_for_emit,
@@ -5725,7 +5783,13 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         }
         Err(_) => {
             let _ = clear_auto_dispatch_reply_batch(&locator.attempt_dir(&app_for_emit));
-            let settled = settle_failed_prompt_submission(&app_for_emit, &locator, &turn_id);
+            let settled = settle_failed_prompt_submission(
+                &app_for_emit,
+                &locator,
+                &turn_id,
+                Some(&claimed_operation_id),
+                claimed_revision,
+            );
             if settled {
                 emit_acp_turn_finished(
                     &app_for_emit,
@@ -5911,7 +5975,7 @@ fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
     operation_id: &str,
-) -> CommandResult<(Utf8PathBuf, Option<String>)> {
+) -> CommandResult<(Utf8PathBuf, Option<(String, String, u64)>)> {
     let attempt_dir = locator.attempt_dir(app);
     let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
     if let (Some(outer_node_id), Some(outer_attempt_id)) =
@@ -5949,7 +6013,12 @@ fn persist_active_session_stop(
         &gold_band::acp::events::current_timestamp(),
     )
     .map_err(command_error)?;
-    Ok((attempt_dir, lifecycle.turn_id))
+    let stop_owner = lifecycle
+        .turn_id
+        .clone()
+        .zip(lifecycle.operation_id.clone())
+        .map(|(turn_id, operation_id)| (turn_id, operation_id, lifecycle.revision));
+    Ok((attempt_dir, stop_owner))
 }
 
 fn spawn_active_session_stop_cleanup(
@@ -5958,64 +6027,48 @@ fn spawn_active_session_stop_cleanup(
     project_id: Option<String>,
     locator: AttemptLocator,
     attempt_dir: Utf8PathBuf,
-    stop_turn_id: Option<String>,
+    stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let terminal_without_provider = match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
-            Ok(false) => {
-                let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-                if let Some(turn_id) = stop_turn_id.as_deref()
-                    && let Err(error) = gold_band::acp::events::persist_session_turn_terminal(
-                        &lifecycle_path,
-                        turn_id,
-                        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-                        "cancelled",
-                        &gold_band::acp::events::current_timestamp(),
-                    )
-                {
-                    warn!(%error, %attempt_dir, %turn_id, "failed to settle accepted ACP stop without an active provider");
-                }
-                true
-            }
-            Ok(true) => false,
+        match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
+            Ok(_) => {}
             Err(error) => {
                 warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-                false
             }
-        };
-        if terminal_without_provider {
-            emit_acp_session_update(
-                &app_handle,
-                &app,
-                project_id.clone(),
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                locator.outer_node_id.clone(),
-                locator.outer_attempt_id.clone(),
-                None,
-            );
+        }
+        // request_session_stop transferred lifecycle ownership away from the
+        // provider runtime. The stop controller therefore owns terminal
+        // settlement after dispatch; the old provider owner can only no-op.
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        if let Some((turn_id, operation_id, revision)) = stop_owner.as_ref()
+            && let Err(error) = gold_band::acp::events::persist_session_turn_terminal_owned(
+                &lifecycle_path,
+                turn_id,
+                Some(operation_id),
+                *revision,
+                gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                "cancelled",
+                &gold_band::acp::events::current_timestamp(),
+            )
+        {
+            warn!(%error, %attempt_dir, %turn_id, "failed to settle accepted ACP stop ownership");
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
             warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
         }
-        if !terminal_without_provider {
-            emit_acp_session_update(
-                &app_handle,
-                &app,
-                project_id,
-                &locator.task_id,
-                &locator.run_id,
-                &locator.round_id,
-                &locator.node_id,
-                &locator.attempt_id,
-                locator.outer_node_id.clone(),
-                locator.outer_attempt_id.clone(),
-                None,
-            );
-        }
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id,
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
     });
 }
 

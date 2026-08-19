@@ -335,13 +335,13 @@ use crate::acp::elicitation::{
     wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptRetryState,
-    AcpSessionAvailability, AcpSessionMetadata, AcpSessionTiming, AcpTimingState, AcpUiEvent,
-    append_diagnostic, append_raw_frame, append_structured_diagnostic,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpLifecycleOwner, AcpLiveTurnActivity,
+    AcpPromptRetryState, AcpSessionAvailability, AcpSessionMetadata, AcpSessionTiming,
+    AcpTimingState, AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     latest_timeline_source_seq, load_session_metadata, normalize_session_update,
     permission_request_event, read_lifecycle_header, user_prompt_event_with_quotes,
-    write_session_metadata,
+    write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -1730,6 +1730,7 @@ fn evict_attached_session(entry: AttachedSessionRuntime) {
 
 struct AcpRuntime<'a> {
     paths: AcpAttemptPaths,
+    lifecycle_owner: Option<AcpLifecycleOwner>,
     connection_key: Option<AdapterConnectionKey>,
     connection: Arc<AdapterConnection>,
     rx: Option<Arc<SessionEventPump>>,
@@ -2067,6 +2068,7 @@ pub fn run_prompt(
     acp_raw_max_size_bytes: u64,
     acp_raw_target_size_bytes: u64,
     runtime_policy: AcpRuntimePolicy,
+    lifecycle_owner: Option<AcpLifecycleOwner>,
     live_update: Option<&dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
     mcp_servers: &[Value],
     session_update: Option<&dyn Fn() -> Result<()>>,
@@ -2096,6 +2098,7 @@ pub fn run_prompt(
         acp_raw_max_size_bytes,
         acp_raw_target_size_bytes,
         runtime_policy,
+        lifecycle_owner,
         live_update,
         stop_probe,
     )?;
@@ -2901,6 +2904,7 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
+        lifecycle_owner: Option<AcpLifecycleOwner>,
         live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
@@ -2964,6 +2968,7 @@ impl<'a> AcpRuntime<'a> {
             raw_max_size,
             raw_target_size,
             runtime_policy,
+            lifecycle_owner,
             live_update,
             stop_probe,
         )
@@ -3015,6 +3020,7 @@ impl<'a> AcpRuntime<'a> {
             raw_max_size,
             raw_target_size,
             AcpRuntimePolicy::default(),
+            None,
             live_update,
             stop_probe,
         )
@@ -3030,6 +3036,7 @@ impl<'a> AcpRuntime<'a> {
         raw_max_size: u64,
         raw_target_size: u64,
         runtime_policy: AcpRuntimePolicy,
+        lifecycle_owner: Option<AcpLifecycleOwner>,
         live_update: Option<&'a dyn Fn(&AcpUiEvent, Option<(u64, u64)>) -> Result<()>>,
         stop_probe: Option<RuntimeStopProbe>,
     ) -> Result<Self> {
@@ -3087,6 +3094,7 @@ impl<'a> AcpRuntime<'a> {
         usage.apply_recovered_attempt_usage(recovered_usage);
         Ok(Self {
             paths,
+            lifecycle_owner,
             connection_key,
             connection,
             rx: None,
@@ -5554,7 +5562,14 @@ impl<'a> AcpRuntime<'a> {
             store.force_checkpoint()?;
         }
         let metadata = self.session_metadata(status, restored, stop_reason, capabilities);
-        write_session_metadata(&self.paths.snapshot, &metadata)
+        if let Some(owner) = self.lifecycle_owner.as_ref() {
+            // Losing the exact claim means this runtime is stale, not that the
+            // currently canonical turn failed.
+            let _ = write_session_metadata_owned(&self.paths.snapshot, &metadata, owner)?;
+            Ok(())
+        } else {
+            write_session_metadata(&self.paths.snapshot, &metadata)
+        }
     }
 
     fn session_metadata(
@@ -5583,13 +5598,18 @@ impl<'a> AcpRuntime<'a> {
             .as_ref()
             .is_some_and(|session| session.runtime_control_timeline_scan_complete);
         let turn_id = self
-            .prompt_retry
+            .lifecycle_owner
             .as_ref()
-            .map(|retry| retry.prompt_id.clone())
+            .map(|owner| owner.turn_id.clone())
             .or_else(|| {
-                previous_metadata
+                self.prompt_retry
                     .as_ref()
-                    .and_then(|session| session.turn_id.clone())
+                    .map(|retry| retry.prompt_id.clone())
+                    .or_else(|| {
+                        previous_metadata
+                            .as_ref()
+                            .and_then(|session| session.turn_id.clone())
+                    })
             });
         let prompt_event_id = self
             .prompt_retry
@@ -5623,9 +5643,15 @@ impl<'a> AcpRuntime<'a> {
                     .map(|metadata| metadata.latest_turn_status)
                     .unwrap_or_default(),
             },
-            acp_revision: previous_metadata
+            acp_revision: self
+                .lifecycle_owner
                 .as_ref()
-                .map(|metadata| metadata.acp_revision)
+                .map(|owner| owner.revision)
+                .or_else(|| {
+                    previous_metadata
+                        .as_ref()
+                        .map(|metadata| metadata.acp_revision)
+                })
                 .unwrap_or_default(),
             turn_id,
             prompt_event_id,
@@ -5638,9 +5664,15 @@ impl<'a> AcpRuntime<'a> {
                 }
                 _ => AcpLiveTurnActivity::Idle,
             },
-            lifecycle_operation_id: previous_metadata
+            lifecycle_operation_id: self
+                .lifecycle_owner
                 .as_ref()
-                .and_then(|metadata| metadata.lifecycle_operation_id.clone()),
+                .map(|owner| owner.operation_id.clone())
+                .or_else(|| {
+                    previous_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.lifecycle_operation_id.clone())
+                }),
             restored,
             stop_reason,
             capabilities,

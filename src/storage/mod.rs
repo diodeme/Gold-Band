@@ -11,7 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
@@ -1127,6 +1127,23 @@ pub fn append_jsonl_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result
     append_jsonl_line_unlocked(path, &line)
 }
 
+/// Append one JSONL record and flush it to the operating-system file boundary.
+/// This is the appropriate commit point for high-frequency append logs that
+/// need process-crash recovery without forcing a physical disk sync per frame.
+pub fn append_jsonl_flushed_unlocked<T: Serialize>(path: &Utf8Path, value: &T) -> Result<()> {
+    let line = serde_json::to_vec(value)?;
+    ensure_parent_dir(path)?;
+    repair_jsonl_tail_unlocked(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.as_std_path())?;
+    file.write_all(&line)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
 fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
     ensure_parent_dir(path)?;
     let mut file = OpenOptions::new()
@@ -1139,12 +1156,30 @@ fn append_jsonl_line_unlocked(path: &Utf8Path, line: &[u8]) -> Result<()> {
 }
 
 fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
-    let Ok(content) = std::fs::read(path.as_std_path()) else {
+    let Ok(mut file) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.as_std_path())
+    else {
         return Ok(());
     };
-    if content.is_empty() || content.last() == Some(&b'\n') {
+    let len = file.metadata()?.len();
+    if len == 0 {
         return Ok(());
     }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last)?;
+    if last[0] == b'\n' {
+        return Ok(());
+    }
+
+    // A missing newline is exceptional (usually an interrupted append). Only
+    // pay for reading the file on that recovery path; healthy appends inspect
+    // one byte instead of re-reading the complete, ever-growing journal.
+    file.seek(SeekFrom::Start(0))?;
+    let mut content = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut content)?;
 
     let tail_start = content
         .iter()
@@ -1152,15 +1187,12 @@ fn repair_jsonl_tail_unlocked(path: &Utf8Path) -> Result<()> {
         .map_or(0, |index| index.saturating_add(1));
     let tail = &content[tail_start..];
     if serde_json::from_slice::<serde_json::Value>(tail).is_ok() {
-        let mut file = OpenOptions::new().append(true).open(path.as_std_path())?;
+        file.seek(SeekFrom::End(0))?;
         file.write_all(b"\n")?;
         return Ok(());
     }
 
-    OpenOptions::new()
-        .write(true)
-        .open(path.as_std_path())?
-        .set_len(tail_start as u64)?;
+    file.set_len(tail_start as u64)?;
     Ok(())
 }
 

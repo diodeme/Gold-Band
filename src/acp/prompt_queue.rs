@@ -6,7 +6,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::acp::events::load_timeline_items;
 use crate::provider::{ConversationPromptInput, UserPromptQuote};
 use crate::storage::{read_json, write_json};
 
@@ -509,18 +508,7 @@ fn accepted_prompt_ids(attempt_dir: &Utf8Path) -> HashSet<String> {
     if !timeline_path.exists() {
         return HashSet::new();
     }
-    load_timeline_items(&timeline_path)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|event| {
-            event
-                .raw
-                .as_ref()
-                .and_then(|raw| raw.get("promptId"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .collect()
+    crate::acp::timeline::read_indexed_accepted_prompt_ids(&timeline_path).unwrap_or_default()
 }
 
 fn mark_dispatch_active(attempt_dir: &Utf8Path, item: &QueuedPrompt) -> Result<()> {

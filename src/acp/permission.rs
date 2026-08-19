@@ -6,7 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    acp::events::{AcpUiEvent, current_timestamp, load_timeline_items, write_timeline_items},
+    acp::{
+        events::current_timestamp,
+        timeline::{
+            TimelineIndexedItem, TimelineItemIdentity, TimelineSettleOutcome,
+            read_indexed_pending_permission, read_indexed_timeline_item, settle_permission_item,
+        },
+    },
     storage::{ensure_parent_dir, read_json, write_json},
 };
 
@@ -16,6 +22,8 @@ pub struct PendingPermissionState {
     pub request_id: String,
     pub params: Value,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_identity: Option<TimelineItemIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +54,6 @@ pub fn cancel_pending_permission_requests(
     attempt_dir: &Utf8Path,
     decided_at: String,
 ) -> Result<()> {
-    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    let mut cancelled_request_ids = Vec::new();
     let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
         return Ok(());
     };
@@ -66,34 +72,37 @@ pub fn cancel_pending_permission_requests(
         let Ok(pending) = read_json::<PendingPermissionState>(&path) else {
             continue;
         };
-        if latest_permission_status(attempt_dir, &pending.request_id)
-            .as_deref()
-            .is_some_and(|status| status != "pending")
-        {
-            continue;
-        }
         let response_path = permission_response_file(attempt_dir, &pending.request_id);
         if response_path.exists() {
-            if read_json::<PermissionResponseState>(&response_path)
-                .ok()
-                .is_some_and(|response| response.cancelled)
-            {
-                cancelled_request_ids.push(pending.request_id);
-            }
             continue;
         }
-        write_permission_response(
-            attempt_dir,
+        let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
+            continue;
+        };
+        if indexed.event.status.as_deref() != Some("pending") {
+            continue;
+        }
+        let timeline_path =
+            crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+        if settle_permission_item(
+            &timeline_path,
+            &identity.item_id,
+            Some(indexed.revision),
             &pending.request_id,
             None,
             true,
             decided_at.clone(),
-        )?;
-        cancelled_request_ids.push(pending.request_id);
-    }
-    for request_id in cancelled_request_ids {
-        upsert_cancelled_permission_event(attempt_dir, &request_id)?;
-        remove_file_if_exists(&pending_permission_file(attempt_dir, &request_id))?;
+        )? == TimelineSettleOutcome::Applied
+        {
+            write_permission_response(
+                attempt_dir,
+                &pending.request_id,
+                None,
+                true,
+                decided_at.clone(),
+            )?;
+            remove_file_if_exists(&pending_permission_file(attempt_dir, &pending.request_id))?;
+        }
     }
     Ok(())
 }
@@ -111,8 +120,20 @@ pub fn write_pending_permission(
             request_id: request_id.to_string(),
             params,
             created_at,
+            timeline_identity: None,
         },
     )
+}
+
+pub fn bind_pending_permission_timeline_identity(
+    attempt_dir: &Utf8Path,
+    request_id: &str,
+    identity: TimelineItemIdentity,
+) -> Result<()> {
+    let path = pending_permission_file(attempt_dir, request_id);
+    let mut pending: PendingPermissionState = read_json(&path)?;
+    pending.timeline_identity = Some(identity);
+    write_json(&path, &pending)
 }
 
 pub fn write_permission_response(
@@ -142,17 +163,32 @@ pub fn write_permission_response_if_pending(
     cancelled: bool,
     decided_at: String,
 ) -> Result<bool> {
-    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    if !pending_permission_file(attempt_dir, request_id).exists() {
+    let pending_path = pending_permission_file(attempt_dir, request_id);
+    if !pending_path.exists() {
         return Ok(false);
     }
     if permission_response_file(attempt_dir, request_id).exists() {
         return Ok(false);
     }
-    if latest_permission_status(attempt_dir, request_id)
-        .as_deref()
-        .is_some_and(|status| status != "pending")
-    {
+    let pending: PendingPermissionState = read_json(&pending_path)?;
+    let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
+        return Ok(false);
+    };
+    if indexed.event.status.as_deref() != Some("pending") {
+        return Ok(false);
+    }
+    let timeline_path =
+        crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+    let outcome = settle_permission_item(
+        &timeline_path,
+        &identity.item_id,
+        Some(indexed.revision),
+        request_id,
+        option_id.clone(),
+        cancelled,
+        decided_at.clone(),
+    )?;
+    if outcome != TimelineSettleOutcome::Applied {
         return Ok(false);
     }
     write_permission_response(
@@ -162,7 +198,6 @@ pub fn write_permission_response_if_pending(
         cancelled,
         decided_at,
     )?;
-    upsert_permission_decision_event(attempt_dir, request_id, option_id, cancelled)?;
     Ok(true)
 }
 
@@ -223,57 +258,29 @@ pub fn upsert_permission_decision_event(
     option_id: Option<String>,
     cancelled: bool,
 ) -> Result<()> {
-    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
-    let source_seq = all_timeline_events
-        .iter()
-        .map(|event| event.ended_seq.unwrap_or(event.seq))
-        .max()
-        .unwrap_or_default()
-        + 1;
-    let existing = latest_permission_event(attempt_dir, request_id);
-    let branch_id = existing
-        .as_ref()
-        .map(crate::acp::branches::event_branch_id)
-        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
-    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
-    let mut event = if cancelled {
-        cancelled_permission_event(source_seq, request_id.to_string(), existing.as_ref())
-    } else {
-        selected_permission_event(
-            source_seq,
-            request_id.to_string(),
-            option_id,
-            existing.as_ref(),
-        )
+    let pending =
+        read_json::<PendingPermissionState>(&pending_permission_file(attempt_dir, request_id))
+            .unwrap_or(PendingPermissionState {
+                request_id: request_id.to_string(),
+                params: Value::Null,
+                created_at: current_timestamp(),
+                timeline_identity: None,
+            });
+    let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
+        return Ok(());
     };
-    event.id = format!("permission-{request_id}");
-    event.started_seq = Some(
-        existing
-            .as_ref()
-            .and_then(|event| event.started_seq)
-            .unwrap_or(source_seq),
-    );
-    event.ended_seq = Some(source_seq);
-    event.started_at = Some(
-        existing
-            .as_ref()
-            .and_then(|event| event.started_at.clone())
-            .unwrap_or_else(|| event.timestamp.clone()),
-    );
-    event.ended_at = Some(event.timestamp.clone());
-
-    let mut items = load_timeline_items(&timeline_path)?;
-    if let Some(existing) = items
-        .iter_mut()
-        .find(|item| permission_event_matches(item, request_id))
-    {
-        *existing = event;
-    } else {
-        items.push(event);
-    }
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items)
+    let timeline_path =
+        crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+    let _ = settle_permission_item(
+        &timeline_path,
+        &identity.item_id,
+        Some(indexed.revision),
+        request_id,
+        option_id,
+        cancelled,
+        current_timestamp(),
+    )?;
+    Ok(())
 }
 
 fn sanitize_id(id: &str) -> String {
@@ -288,126 +295,41 @@ fn sanitize_id(id: &str) -> String {
         .collect()
 }
 
-fn upsert_cancelled_permission_event(attempt_dir: &Utf8Path, request_id: &str) -> Result<()> {
-    upsert_permission_decision_event(attempt_dir, request_id, None, true)
-}
-
-fn cancelled_permission_event(
-    seq: u64,
-    request_id: String,
-    existing: Option<&AcpUiEvent>,
-) -> AcpUiEvent {
-    let mut raw = existing
-        .and_then(|event| event.raw.clone())
-        .unwrap_or_default();
-    if !raw.is_object() {
-        raw = serde_json::json!({});
+fn resolve_permission_identity(
+    attempt_dir: &Utf8Path,
+    pending: &PendingPermissionState,
+) -> Result<Option<(TimelineItemIdentity, TimelineIndexedItem)>> {
+    crate::acp::branches::prepare_agent_timeline_storage(attempt_dir)?;
+    if let Some(identity) = pending.timeline_identity.as_ref() {
+        let path = crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+        if let Some(indexed) = read_indexed_timeline_item(&path, &identity.item_id)? {
+            return Ok(Some((identity.clone(), indexed)));
+        }
     }
-    if let Some(object) = raw.as_object_mut() {
-        object.insert(
-            "requestId".to_string(),
-            serde_json::json!(request_id.clone()),
-        );
-        object.insert("cancelled".to_string(), serde_json::json!(true));
+    for (branch_id, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
+        if let Some(indexed) = read_indexed_pending_permission(&path, &pending.request_id)? {
+            return Ok(Some((
+                TimelineItemIdentity {
+                    branch_id,
+                    item_id: indexed.event.id.clone(),
+                    revision: indexed.revision,
+                },
+                indexed,
+            )));
+        }
+        let item_id = format!("permission-{}", pending.request_id);
+        if let Some(indexed) = read_indexed_timeline_item(&path, &item_id)? {
+            return Ok(Some((
+                TimelineItemIdentity {
+                    branch_id,
+                    item_id,
+                    revision: indexed.revision,
+                },
+                indexed,
+            )));
+        }
     }
-    AcpUiEvent {
-        id: request_id.clone(),
-        seq,
-        timestamp: current_timestamp(),
-        kind: "permissionRequest".to_string(),
-        session_id: existing.and_then(|event| event.session_id.clone()),
-        content: None,
-        title: existing
-            .and_then(|event| event.title.clone())
-            .or_else(|| Some("Permission cancelled".to_string())),
-        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
-        status: Some("cancelled".to_string()),
-        started_seq: None,
-        ended_seq: None,
-        started_at: None,
-        ended_at: None,
-        timing: None,
-        raw: Some(raw),
-    }
-}
-
-fn selected_permission_event(
-    seq: u64,
-    request_id: String,
-    option_id: Option<String>,
-    existing: Option<&AcpUiEvent>,
-) -> AcpUiEvent {
-    let mut raw = existing
-        .and_then(|event| event.raw.clone())
-        .unwrap_or_default();
-    if !raw.is_object() {
-        raw = serde_json::json!({});
-    }
-    if let Some(object) = raw.as_object_mut() {
-        object.insert(
-            "requestId".to_string(),
-            serde_json::json!(request_id.clone()),
-        );
-        object.insert("optionId".to_string(), serde_json::json!(option_id));
-        object.remove("cancelled");
-    }
-    AcpUiEvent {
-        id: request_id.clone(),
-        seq,
-        timestamp: current_timestamp(),
-        kind: "permissionRequest".to_string(),
-        session_id: existing.and_then(|event| event.session_id.clone()),
-        content: None,
-        title: existing
-            .and_then(|event| event.title.clone())
-            .or_else(|| Some("Permission answered".to_string())),
-        tool_call_id: existing.and_then(|event| event.tool_call_id.clone()),
-        status: Some("selected".to_string()),
-        started_seq: None,
-        ended_seq: None,
-        started_at: None,
-        ended_at: None,
-        timing: None,
-        raw: Some(raw),
-    }
-}
-
-fn latest_permission_status(attempt_dir: &Utf8Path, request_id: &str) -> Option<String> {
-    latest_permission_event(attempt_dir, request_id).and_then(|event| event.status)
-}
-
-fn latest_permission_event(attempt_dir: &Utf8Path, request_id: &str) -> Option<AcpUiEvent> {
-    crate::acp::branches::load_all_branch_events(attempt_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter(|event| permission_event_matches(event, request_id))
-        .max_by_key(|event| event.ended_seq.or(event.started_seq).unwrap_or(event.seq))
-}
-
-fn permission_event_matches(event: &AcpUiEvent, request_id: &str) -> bool {
-    if event.kind != "permissionRequest" {
-        return false;
-    }
-    let event_id = strip_permission_prefix(&event.id);
-    if event_id == request_id {
-        return true;
-    }
-    event
-        .raw
-        .as_ref()
-        .and_then(|raw| raw.get("requestId"))
-        .and_then(|value| value.as_str())
-        .map(strip_permission_prefix)
-        .is_some_and(|raw_id| raw_id == request_id)
-}
-
-fn strip_permission_prefix(value: &str) -> String {
-    let mut current = value;
-    while let Some(next) = current.strip_prefix("permission-") {
-        current = next;
-    }
-    current.to_string()
+    Ok(None)
 }
 
 fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
@@ -422,7 +344,7 @@ fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{
-        acp::events::{permission_request_event, write_timeline_items},
+        acp::events::{load_timeline_items, permission_request_event, write_timeline_items},
         storage::append_jsonl,
     };
     use tempfile::tempdir;

@@ -7,8 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    acp::events::{
-        current_timestamp, elicitation_response_event, load_timeline_items, write_timeline_items,
+    acp::{
+        events::current_timestamp,
+        timeline::{
+            TimelineIndexedItem, TimelineItemIdentity, append_elicitation_response_item,
+            read_indexed_pending_elicitation, read_indexed_timeline_item,
+        },
     },
     storage::{ensure_parent_dir, read_json, write_json},
 };
@@ -33,6 +37,8 @@ pub struct PendingElicitationState {
     pub jsonrpc_id: Value,
     pub request: CreateElicitationRequest,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_identity: Option<TimelineItemIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +77,17 @@ pub fn write_pending_elicitation(
     write_json(&path, state)
 }
 
+pub fn bind_pending_elicitation_timeline_identity(
+    attempt_dir: &Utf8Path,
+    elicitation_id: &str,
+    identity: TimelineItemIdentity,
+) -> Result<()> {
+    let path = pending_elicitation_file(attempt_dir, elicitation_id);
+    let mut pending: PendingElicitationState = read_json(&path)?;
+    pending.timeline_identity = Some(identity);
+    write_json(&path, &pending)
+}
+
 // ── 前端写入响应（由 Tauri command 调用）──
 
 pub fn write_elicitation_response(
@@ -80,6 +97,7 @@ pub fn write_elicitation_response(
     content: Option<Value>,
     decided_at: String,
 ) -> Result<()> {
+    upsert_elicitation_response_event(attempt_dir, elicitation_id, &action, content.clone())?;
     let path = elicitation_response_file(attempt_dir, elicitation_id);
     ensure_parent_dir(&path)?;
     write_json(
@@ -90,8 +108,7 @@ pub fn write_elicitation_response(
             content: content.clone(),
             decided_at,
         },
-    )?;
-    upsert_elicitation_response_event(attempt_dir, elicitation_id, &action, content)
+    )
 }
 
 pub fn remove_elicitation_signal_files(attempt_dir: &Utf8Path, elicitation_id: &str) -> Result<()> {
@@ -149,7 +166,6 @@ pub fn cancel_pending_elicitation_requests(
     attempt_dir: &Utf8Path,
     decided_at: String,
 ) -> Result<()> {
-    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
     let Ok(entries) = fs::read_dir(attempt_dir.as_std_path()) else {
         return Ok(());
     };
@@ -197,59 +213,67 @@ pub fn upsert_elicitation_response_event(
     action: &ElicitationAction,
     content: Option<Value>,
 ) -> Result<()> {
-    crate::acp::branches::migrate_legacy_agent_timeline(attempt_dir)?;
-    let all_timeline_events = crate::acp::branches::load_all_branch_events(attempt_dir)?;
-    let source_seq = all_timeline_events
-        .iter()
-        .map(|event| event.ended_seq.unwrap_or(event.seq))
-        .max()
-        .unwrap_or_default()
-        + 1;
-    let request = all_timeline_events.iter().find(|event| {
-        event.kind == "elicitationRequest"
-            && (event.id == elicitation_id
-                || event
-                    .raw
-                    .as_ref()
-                    .and_then(|raw| raw.get("elicitationId"))
-                    .and_then(Value::as_str)
-                    == Some(elicitation_id))
-    });
-    let branch_id = request
-        .map(crate::acp::branches::event_branch_id)
-        .unwrap_or_else(|| crate::acp::branches::ROOT_BRANCH_ID.to_string());
-    let timeline_path = crate::acp::branches::branch_timeline_path(attempt_dir, &branch_id);
+    let Ok(pending) = read_json::<PendingElicitationState>(&pending_elicitation_file(
+        attempt_dir,
+        elicitation_id,
+    )) else {
+        return Ok(());
+    };
+    let Some((identity, indexed)) = resolve_elicitation_identity(attempt_dir, &pending)? else {
+        return Ok(());
+    };
+    let timeline_path =
+        crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
     let action_value = match action {
         ElicitationAction::Accept => "accept",
         ElicitationAction::Decline => "decline",
     };
-    let mut event = elicitation_response_event(
-        source_seq,
-        elicitation_id.to_string(),
-        action_value.to_string(),
+    let _ = append_elicitation_response_item(
+        &timeline_path,
+        &identity.item_id,
+        Some(indexed.revision),
+        elicitation_id,
+        action_value,
         content,
-    );
-    if let (Some(request_meta), Some(event_raw)) = (
-        request
-            .and_then(|request| request.raw.as_ref())
-            .and_then(|raw| raw.get("_meta")),
-        event.raw.as_mut(),
-    ) {
-        event_raw["_meta"] = request_meta.clone();
-    }
-    event.started_seq = Some(source_seq);
-    event.ended_seq = Some(source_seq);
-    event.started_at = Some(event.timestamp.clone());
-    event.ended_at = Some(event.timestamp.clone());
+        current_timestamp(),
+    )?;
+    Ok(())
+}
 
-    let mut items = load_timeline_items(&timeline_path)?;
-    if let Some(existing) = items.iter_mut().find(|item| item.id == event.id) {
-        *existing = event;
-    } else {
-        items.push(event);
+fn resolve_elicitation_identity(
+    attempt_dir: &Utf8Path,
+    pending: &PendingElicitationState,
+) -> Result<Option<(TimelineItemIdentity, TimelineIndexedItem)>> {
+    crate::acp::branches::prepare_agent_timeline_storage(attempt_dir)?;
+    if let Some(identity) = pending.timeline_identity.as_ref() {
+        let path = crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+        if let Some(indexed) = read_indexed_timeline_item(&path, &identity.item_id)? {
+            return Ok(Some((identity.clone(), indexed)));
+        }
     }
-    items.sort_by_key(|item| item.started_seq.unwrap_or(item.seq));
-    write_timeline_items(&timeline_path, &items)
+    for (branch_id, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
+        if let Some(indexed) = read_indexed_pending_elicitation(&path, &pending.elicitation_id)? {
+            return Ok(Some((
+                TimelineItemIdentity {
+                    branch_id,
+                    item_id: indexed.event.id.clone(),
+                    revision: indexed.revision,
+                },
+                indexed,
+            )));
+        }
+        if let Some(indexed) = read_indexed_timeline_item(&path, &pending.elicitation_id)? {
+            return Ok(Some((
+                TimelineItemIdentity {
+                    branch_id,
+                    item_id: pending.elicitation_id.clone(),
+                    revision: indexed.revision,
+                },
+                indexed,
+            )));
+        }
+    }
+    Ok(None)
 }
 /// 根据 elicitation 响应构造 JSON-RPC result
 pub fn elicitation_response_result(response: &ElicitationResponseState) -> Value {
@@ -287,6 +311,9 @@ fn remove_file_if_exists(path: &Utf8Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::events::{
+        elicitation_request_event, load_timeline_items, write_timeline_items,
+    };
     use tempfile::TempDir;
 
     fn dummy_attempt_dir() -> (TempDir, Utf8PathBuf) {
@@ -366,6 +393,7 @@ mod tests {
             jsonrpc_id: serde_json::json!(42),
             request: test_elicitation_request("请选择数据库"),
             created_at: "2026-01-01T00:00:00Z".to_string(),
+            timeline_identity: None,
         };
         write_pending_elicitation(&attempt_dir, &state).unwrap();
         let path = pending_elicitation_file(&attempt_dir, "elicit-abc123");
@@ -421,6 +449,7 @@ mod tests {
                 jsonrpc_id: serde_json::json!(42),
                 request: test_elicitation_request("Continue the completed session"),
                 created_at: "1Z".to_string(),
+                timeline_identity: None,
             },
         )
         .unwrap();
@@ -535,6 +564,27 @@ mod tests {
     #[test]
     fn write_elicitation_response_persists_timeline_response() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
+        let request = test_elicitation_request("Choose a database");
+        write_pending_elicitation(
+            &attempt_dir,
+            &PendingElicitationState {
+                elicitation_id: "elicit-answered".to_string(),
+                jsonrpc_id: serde_json::json!(1),
+                request: request.clone(),
+                created_at: "1Z".to_string(),
+                timeline_identity: None,
+            },
+        )
+        .unwrap();
+        write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[elicitation_request_event(
+                1,
+                "elicit-answered".to_string(),
+                &request,
+            )],
+        )
+        .unwrap();
         write_elicitation_response(
             &attempt_dir,
             "elicit-answered",
@@ -581,7 +631,17 @@ mod tests {
                 jsonrpc_id: serde_json::json!(1),
                 request: test_elicitation_request("test"),
                 created_at: "t".to_string(),
+                timeline_identity: None,
             },
+        )
+        .unwrap();
+        write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[elicitation_request_event(
+                1,
+                "elicit-cancel-me".to_string(),
+                &test_elicitation_request("test"),
+            )],
         )
         .unwrap();
         // 取消所有
@@ -618,6 +678,7 @@ mod tests {
                 jsonrpc_id: serde_json::json!(1),
                 request: test_elicitation_request("Question"),
                 created_at: "1Z".to_string(),
+                timeline_identity: None,
             },
         )
         .unwrap();

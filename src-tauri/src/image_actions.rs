@@ -16,7 +16,9 @@ const MAX_IMAGE_ACTION_BASE64_CHARS: usize = ((MAX_IMAGE_ACTION_BYTES as usize +
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ImageActionSourceInput {
-    Path { path: String },
+    Path {
+        path: String,
+    },
     Bytes {
         #[serde(rename = "dataBase64")]
         data_base64: String,
@@ -175,19 +177,17 @@ fn write_decoded_image_to_clipboard(
 }
 
 #[cfg(windows)]
-fn encode_windows_dibv5(
-    width: usize,
-    height: usize,
-    mut rgba: Vec<u8>,
-) -> CommandResult<Vec<u8>> {
+fn encode_windows_dibv5(width: usize, height: usize, mut rgba: Vec<u8>) -> CommandResult<Vec<u8>> {
     const HEADER_SIZE: usize = 124;
     let width_i32 = i32::try_from(width)
         .map_err(|_| image_action_error("image-action.source-invalid", serde_json::json!({})))?;
     let height_i32 = i32::try_from(height)
         .map_err(|_| image_action_error("image-action.source-invalid", serde_json::json!({})))?;
-    let row_bytes = width.checked_mul(4)
+    let row_bytes = width
+        .checked_mul(4)
         .ok_or_else(|| image_action_error("image-action.source-invalid", serde_json::json!({})))?;
-    let pixel_bytes = row_bytes.checked_mul(height)
+    let pixel_bytes = row_bytes
+        .checked_mul(height)
         .ok_or_else(|| image_action_error("image-action.source-invalid", serde_json::json!({})))?;
     if rgba.len() != pixel_bytes || pixel_bytes > u32::MAX as usize {
         return Err(image_action_error(
@@ -333,10 +333,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_dibv5_projection_uses_bgra_bottom_up_pixels() {
-        let rgba = vec![
-            1, 2, 3, 4, 5, 6, 7, 8,
-            9, 10, 11, 12, 13, 14, 15, 16,
-        ];
+        let rgba = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
         let dibv5 = encode_windows_dibv5(2, 2, rgba).unwrap();
 

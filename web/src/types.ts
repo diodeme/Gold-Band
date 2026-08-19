@@ -2145,10 +2145,15 @@ export interface ConversationControlFacetVm {
 }
 
 export interface ConversationAcpFacetVm {
+  revision?: number;
+  turnId?: string | null;
+  promptEventId?: string | null;
   sessionAvailability: 'established' | 'restorable' | 'unavailable' | 'closing';
   liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested';
   latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed';
   stopping: boolean;
+  stopReason?: string | null;
+  operationId?: string | null;
 }
 
 export interface ConversationComposerVm {

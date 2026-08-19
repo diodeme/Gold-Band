@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   conversationComposerDraftReducer,
   createConversationComposerDraftBoundaryHandle,
@@ -104,10 +106,16 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(revokeSpy).toHaveBeenCalledWith('blob:img');
   });
 
-  it('reset clears content and attachments (used on successful create / workspace switch)', () => {
+  it('reset clears content and attachments (used after successful create)', () => {
     let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')] };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
     expect(state).toEqual({ content: '', attachments: [] });
+  });
+
+  it('does not reset the shared draft from either workspace selector path', () => {
+    const appSource = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
+    expect(appSource.match(/onWorkspaceChange=\{\(projectId\) => \{/g)).toHaveLength(2);
+    expect(appSource.match(/onWorkspaceChange=\{\(projectId\) => \{[^}]*resetConversationComposerDraft/g)).toBeNull();
   });
 
   it('exposes only reset to the App boundary handle', () => {

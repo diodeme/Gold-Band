@@ -102,6 +102,7 @@
 
 - 根因：运行中追问的正文与附件此前由 `ACPChatDialog` 本地 state 持有，而会话/节点切换会按 session key 重建组件；状态生命周期短于业务草稿生命周期，导致未发送内容丢失。
 - 数据与接口：新增进程内 ACP composer draft store，以完整 session/event-window locator 为键统一保存正文与附件；React hook 只暴露当前 locator 的 `draft / setContent / setAttachments`，现有 prompt-kit composer 和附件选择器继续消费该接口。
+- 快速对话 composer 的 workspace 切换沿用 App 层草稿边界：composer 选择器与左侧 workspace“新会话”入口都只切换 workspace 上下文，不清空未提交正文或附件；仅创建成功或用户明确清空/放弃时 reset，并以 Vitest 契约固定两条入口一致。
 - 生命周期：普通切换保留，发送或明确清空删除对应内容，应用 `pagehide` 统一释放；不接入任何 durable storage，因此重启不恢复。store 限制 64 个草稿和 100 MiB 附件总量，LRU 淘汰同步释放 object URL。
 - 验收：单元测试固定跨会话恢复与隔离、发送清空、容量淘汰和退出释放；执行定向 Web 测试、TypeScript/生产构建，并以 `/chat` deep link 验证文字和附件切换恢复。
 - 性能评审：正文输入只更新当前 composer hook 与 O(1) Map 条目，不进入页面壳或历史消息订阅；附件总量有界，无全量历史扫描、I/O、请求、持久化、队列或后台轮询。容量检查最多扫描 64 个小草稿元数据，且只在草稿写入时发生。

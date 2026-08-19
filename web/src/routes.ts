@@ -19,6 +19,7 @@ export function routeFromPath(pathname: string): AppRoute {
 
   // ── Conversation paths ──
   if (segments[0] === 'chat') {
+    if (segments[1] === 'personal-analytics') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'personal-analytics' } };
     if (segments[1] === 'agents') return { uiMode: 'conversation', module: 'agent-management', taskPage: taskListPage, conversationPage: { kind: 'agents' } };
     if (segments[1] === 'contexts') return { uiMode: 'conversation', module: 'knowledge-base', taskPage: taskListPage, conversationPage: { kind: 'contexts' } };
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
@@ -73,6 +74,7 @@ export function routeFromPath(pathname: string): AppRoute {
 export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, conversationPage?: ConversationPage) {
   // ── Conversation paths ──
   if (conversationPage) {
+    if (conversationPage.kind === 'personal-analytics') return '/chat/personal-analytics';
     if (conversationPage.kind === 'agents') return '/chat/agents';
     if (conversationPage.kind === 'contexts') return '/chat/contexts';
     if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';

@@ -16,6 +16,7 @@ pub mod git;
 pub mod inspect;
 pub mod mcp;
 pub mod observability;
+pub mod personal_analytics;
 pub mod process;
 pub mod prompts;
 pub mod provider;

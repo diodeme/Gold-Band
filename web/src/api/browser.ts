@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -34,6 +34,118 @@ let browserScheduledRuntimeSettings = {
   enabledJobCount: 0,
   occurrenceRetentionDays: 30,
   powerErrorCode: null,
+};
+
+const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
+  operation: {
+    operationId: 'browser-preview',
+    agentType: 'codex-acp',
+    status: 'completed',
+    revision: 6,
+    progress: { stage: 'completed', processedUnits: 3334, totalUnits: 3334 },
+    sourceWatermark: '2026-08-17T12:00:00Z',
+    reportId: 'preview-report',
+    error: null,
+    createdAt: '2026-08-17T12:00:00Z',
+    updatedAt: '2026-08-17T12:02:18Z',
+    completedAt: '2026-08-17T12:02:18Z',
+  },
+  insightOperation: null,
+  latestReport: {
+    schemaVersion: '2.1.0',
+    reportId: 'preview-report',
+    generatedAt: '2026-08-17T12:02:18Z',
+    sourceWatermark: '2026-08-17T12:00:00Z',
+    indexRevision: 6,
+    range: { start: null, end: null },
+    sourceCoverage: {
+      discoveredFiles: 3334,
+      eligibleFiles: 1310,
+      parsedFiles: 1304,
+      skippedFiles: 2024,
+      corruptFiles: 3,
+      unknownVersionFiles: 3,
+      discoveredBytes: 374080616,
+      semanticEligibleItems: 246,
+      semanticSampledItems: 120,
+    },
+    overview: {
+      projectCount: 4,
+      taskCount: 72,
+      conversationCount: 72,
+      runCount: 101,
+      turnCount: 2,
+      attemptCount: 263,
+      earliestAt: '2026-04-12T08:30:00Z',
+      latestAt: '2026-08-17T11:51:00Z',
+    },
+    recentTasks: [{
+      taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+      agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+      terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+    }],
+    reliability: {
+      directReplyCompletionRate: { metricId: 'direct.reply_completion_rate', numerator: 2, denominator: 2, unknownCount: 24, rate: 1, evidenceLocators: ['project-a/task-a/turn-1'] },
+      workflowRunTerminalSuccessRate: { metricId: 'workflow.run_terminal_success_rate', numerator: 17, denominator: 19, unknownCount: 0, rate: 0.8947, evidenceLocators: ['project-a/task-b/run-1'] },
+      autoOuterRunTerminalSuccessRate: { metricId: 'auto.outer_run_terminal_success_rate', numerator: 21, denominator: 27, unknownCount: 1, rate: 0.7778, evidenceLocators: ['project-b/task-c/run-1'] },
+      failedCount: 7,
+      cancelledCount: 2,
+      nonTerminalCount: 22,
+    },
+    quality: {
+      retryReentryRate: { metricId: 'node.retry_reentry_rate', numerator: 14, denominator: 87, unknownCount: 0, rate: 0.1609, evidenceLocators: ['project-a/task-b/node-1'] },
+      recoveredAfterRetryCount: 10,
+      terminalSignals: [{ name: 'status.paused', count: 21 }, { name: 'outcome.failure', count: 7 }],
+    },
+    efficiency: {
+      observedTerminalRunActiveSeconds: 148230,
+      averageTerminalRunActiveSeconds: 1842.6,
+      terminalRunSampleCount: 79,
+      activeDurationZeroFilledCount: 2,
+      pauseCount: 21,
+      resumeCount: 18,
+      manualContinueCount: 11,
+      topDurationTasks: [{
+        taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+        terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+      }],
+      nodeAggregates: [{ nodeId: 'dev', callCount: 31, retryCount: 4, totalActiveDurationSeconds: 6820, averageActiveDurationSeconds: 220, activeDurationShare: 0.46, activeDurationZeroFilledCount: 0 }],
+    },
+    tokenUsage: {
+      inputTokens: 1842521,
+      outputTokens: 386244,
+      cacheReadTokens: 964120,
+      cacheWriteTokens: 48211,
+      totalTokens: 3241096,
+      observedPromptCount: 238,
+      topTokenTasks: [{
+        taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
+        terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
+      }],
+    },
+    contextAndTools: {
+      toolCallCount: 1294,
+      permissionRequestCount: 18,
+      elicitationRequestCount: 4,
+      topTools: [{ name: 'exec_command', count: 382 }, { name: 'apply_patch', count: 164 }, { name: 'read_file', count: 143 }],
+      topAgents: [{ name: 'codex-acp', count: 96 }],
+      verifiedSkillCallCount: 0,
+      topSkills: [],
+      eventKinds: [{ name: 'tool-call', count: 1294 }, { name: 'agent-message', count: 621 }, { name: 'permission', count: 18 }],
+    },
+    insights: [{
+      section: 'efficiency',
+      title: '长流程更容易进入暂停状态',
+      summary: '在可观察的终局 run 中，持续时间较长的流程更常出现暂停与恢复事件。',
+      recommendation: '将长流程拆成带明确验收点的阶段，并在每个阶段结束时固化产物。',
+      confidence: 'medium',
+      sampleCount: 79,
+      evidenceLocators: ['project-a/task-b/run-1', 'project-b/task-c/run-1'],
+    }],
+    warnings: [{ code: 'analytics.active-duration-zero-filled', params: { count: 2 } }],
+  },
 };
 
 function resolveBrowserOptionalEntry(
@@ -967,6 +1079,27 @@ export const browserApi: RuntimeApi = {
   },
   getAgentRegistry() {
     return Promise.resolve(mockAgentRegistry);
+  },
+  getPersonalAnalytics() {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  syncPersonalAnalytics() {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  queryPersonalAnalyticsReport(_range: { start?: string | null; end?: string | null }) {
+    return Promise.resolve(browserPersonalAnalytics.latestReport!);
+  },
+  startPersonalAnalyticsInsights(_agentType: string, _range: { start?: string | null; end?: string | null }) {
+    return Promise.resolve(browserPersonalAnalytics.operation!);
+  },
+  cancelPersonalAnalyticsInsights(_operationId: string) {
+    return Promise.resolve(browserPersonalAnalytics.operation!);
+  },
+  cancelPersonalAnalytics(_operationId: string) {
+    return Promise.resolve(browserPersonalAnalytics);
+  },
+  subscribePersonalAnalyticsUpdates(_listener) {
+    return Promise.resolve(() => {});
   },
   getAgentCommandCatalog(agentType: string, workspacePath: string) {
     const commands = agentType === 'codex-acp'

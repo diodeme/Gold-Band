@@ -12,6 +12,7 @@ mod git_state_monitor;
 mod i18n;
 mod metrics;
 mod notifications;
+mod personal_analytics;
 mod scheduled_runtime;
 mod scheduled_service;
 mod state;
@@ -147,6 +148,8 @@ fn run() -> anyhow::Result<()> {
         .manage(desktop_lifecycle::DesktopLifecycleCoordinator::default())
         .manage(notifications::PendingInterventionNavigations::default())
         .manage(git_state_monitor::GitStateMonitorRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsRuntime::default())
+        .manage(personal_analytics::PersonalAnalyticsInsightRuntime::default())
         .manage(WorkspaceFileRuntime::default())
         .manage(WorkspaceFileWatchRuntime::default())
         .manage(wallpaper_runtime);
@@ -269,6 +272,12 @@ fn run() -> anyhow::Result<()> {
             get_system_fonts,
             check_local_claude,
             get_agent_registry,
+            personal_analytics::get_personal_analytics,
+            personal_analytics::sync_personal_analytics,
+            personal_analytics::query_personal_analytics_report,
+            personal_analytics::start_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics_insights,
+            personal_analytics::cancel_personal_analytics,
             get_agent_binding_usage,
             get_agent_command_catalog,
             create_agent,

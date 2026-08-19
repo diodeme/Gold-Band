@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
+import { BarChart3, Copy, MessageSquareWarning, Minus, PanelLeft, PanelRight, Square, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
 import type { DesktopPlatform } from '../types';
@@ -19,6 +19,7 @@ interface AppTitleBarProps {
   onToggleSidebar: () => void;
   rightWorkspaceOpen?: boolean;
   onToggleRightWorkspace?: () => void;
+  onOpenPersonalAnalytics?: () => void;
 }
 
 export const APP_TITLE_BAR_LAYOUT = {
@@ -36,6 +37,7 @@ export function AppTitleBar({
   onToggleSidebar,
   rightWorkspaceOpen = false,
   onToggleRightWorkspace,
+  onOpenPersonalAnalytics,
 }: AppTitleBarProps) {
   const { t } = useTranslation();
   const [isMaximized, setIsMaximized] = useState(false);
@@ -136,7 +138,7 @@ export function AppTitleBar({
         className="min-w-0 flex-1 self-stretch"
       />
 
-      {feedbackEnabled || onToggleRightWorkspace ? (
+      {feedbackEnabled || onOpenPersonalAnalytics || onToggleRightWorkspace ? (
         <div
           className={cn(
             'app-titlebar-no-drag flex h-full flex-none items-center gap-0.5',
@@ -145,7 +147,7 @@ export function AppTitleBar({
           data-titlebar-no-drag="true"
           data-titlebar-trailing-actions="true"
         >
-          {feedbackEnabled ? (
+          {feedbackEnabled || onOpenPersonalAnalytics ? (
             <DropdownMenu open={helpMenuOpen} onOpenChange={setHelpMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -162,6 +164,19 @@ export function AppTitleBar({
                 <TooltipContent>{t('common.help')}</TooltipContent>
               </Tooltip>
               <DropdownMenuContent align="end" className="min-w-40">
+                {onOpenPersonalAnalytics ? (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      setHelpMenuOpen(false);
+                      requestAnimationFrame(onOpenPersonalAnalytics);
+                    }}
+                    className="gap-2"
+                  >
+                    <BarChart3 className="size-4" />
+                    {t('common.personalAnalytics')}
+                  </DropdownMenuItem>
+                ) : null}
+                {feedbackEnabled ? (
                 <DropdownMenuItem
                   onSelect={() => {
                     setHelpMenuOpen(false);
@@ -172,6 +187,7 @@ export function AppTitleBar({
                   <MessageSquareWarning className="size-4" />
                   {t('common.userFeedback')}
                 </DropdownMenuItem>
+                ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}

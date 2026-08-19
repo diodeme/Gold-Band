@@ -28,6 +28,7 @@ interface ShellProps {
   onSelect: (module: PrimaryModule) => void;
   onSelectConversation: (page: ConversationPage) => void;
   onToggleSidebar: () => void;
+  onOpenPersonalAnalytics: () => void;
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
   onConversationSearch: () => void;
@@ -49,7 +50,7 @@ interface ShellProps {
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onOpenPersonalAnalytics, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -64,6 +65,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         sidebarCollapsed={sidebarCollapsed}
         onSelect={onSelectConversation}
         onToggleSidebar={onToggleSidebar}
+        onOpenPersonalAnalytics={onOpenPersonalAnalytics}
         onNewConversation={onConversationNew}
         onSearch={onConversationSearch}
         onSelectTask={onConversationSelectTask}
@@ -99,6 +101,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
       sidebarCollapsed={sidebarCollapsed}
       onSelect={onSelect}
       onToggleSidebar={onToggleSidebar}
+      onOpenPersonalAnalytics={onOpenPersonalAnalytics}
       onChooseWorkspace={onChooseWorkspace}
     >
       {children}
@@ -120,11 +123,12 @@ interface WorkbenchShellProps {
   sidebarCollapsed: boolean;
   onSelect: (module: PrimaryModule) => void;
   onToggleSidebar: () => void;
+  onOpenPersonalAnalytics: () => void;
   onChooseWorkspace: () => void;
   children: React.ReactNode;
 }
 
-function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar }: WorkbenchShellProps) {
+function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFrameStyle, repoRoot, needsWorkspace, showSettingsUpdateDot = false, onSelect, onChooseWorkspace, children, sidebarCollapsed, onToggleSidebar, onOpenPersonalAnalytics }: WorkbenchShellProps) {
   const { t } = useTranslation();
   return (
     <TooltipProvider>
@@ -141,6 +145,7 @@ function WorkbenchShell({ active, appName, feedbackEnabled, platform, windowFram
           platform={platform}
           sidebarCollapsed={sidebarCollapsed}
           onToggleSidebar={onToggleSidebar}
+          onOpenPersonalAnalytics={onOpenPersonalAnalytics}
         />
         <div className="flex min-h-0 flex-1 bg-sidebar">
           <div

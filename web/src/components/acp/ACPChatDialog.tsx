@@ -186,6 +186,7 @@ import {
   projectLatestAcpUsageUpdate,
 } from "@/lib/acp-event-reducer";
 import {
+  activityProjectionStatus,
   deriveAcpRuntimeComposerState,
   isAcceptedAcpPromptSubmitKind,
   isAcceptedQueuePromptSubmitKind,
@@ -1348,13 +1349,12 @@ export function ACPChatDialog(
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
-  const projectedSessionStatus = projectionLifecycle && projectionLifecycle.acp.liveTurnActivity !== 'idle'
-    ? (projectionLifecycle.acp.stopping
-        ? "cancelling"
-        : projectionLifecycle.acp.liveTurnActivity)
-    : promptCommandPending
-      ? "running"
-      : effective?.status;
+  const projectedSessionStatus = activityProjectionStatus(
+    projectionLifecycle,
+    effective?.status,
+    localSubmissionPending,
+    activeTurnPromptId,
+  );
   const timelineProjection = useMemo(
     () => buildAcpTimelineProjection(
       effectiveEvents,

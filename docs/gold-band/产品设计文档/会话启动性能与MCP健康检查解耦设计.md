@@ -59,6 +59,12 @@
 
 该契约只收口既有 lifecycle、session query 和 timeline 的消费边界，不新增延时、轮询、缓存或平行状态机。
 
+## 生命周期与正文投影边界
+
+ACP 停止完成后，控制面只发送带单调 `revision` 与 `turnId` 的轻量 lifecycle patch；该 patch 不携带或触发完整 timeline 正文刷新。前端活动摘要使用同一 lifecycle 投影有效会话状态：`idle + latestTurnStatus != none + !stopping` 是权威终态，必须立即将当前 Activity 归档，即使已加载正文快照仍暂时为 `running`。`stopping` 与 `starting / accepted / running` 继续投影为活动态；没有 lifecycle 时才回退正文 snapshot。
+
+本规则只改变展示投影，不回写 session canonical state、不触发 timeline 查询。前端以 lifecycle revision 合并迟到事件；本地下一轮 prompt 尚在接纳时保持运行投影，待同一 turn 的较新 lifecycle 到达后再收敛，避免上一轮终态遮蔽新一轮。
+
 ## 可观测性
 
 统一使用 `gold_band::perf` tracing target 记录：

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activityProjectionStatus,
   deriveAcpRuntimeComposerState,
   isAcceptedQueuePromptSubmitKind,
   isAcceptedAcpPromptSubmitKind,
@@ -1152,6 +1153,50 @@ describe('isTerminalAcpLifecycle', () => {
   it('does not treat stopping or active lifecycle patches as terminal', () => {
     expect(isTerminalAcpLifecycle(lifecycle({ acp: { stopping: true } }))).toBe(false);
     expect(isTerminalAcpLifecycle(lifecycle({ acp: { liveTurnActivity: 'running' } }))).toBe(false);
+  });
+});
+
+describe('activityProjectionStatus', () => {
+  it('archives activity on a lifecycle-only terminal patch when the body snapshot is stale', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 18,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+
+    expect(activityProjectionStatus(terminal, 'running', false, 'turn-1')).toBe('cancelled');
+  });
+
+  it('does not let a prior terminal lifecycle mask a locally admitted next prompt', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 18,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+
+    expect(activityProjectionStatus(terminal, 'cancelled', true, 'turn-2')).toBe('running');
+  });
+
+  it('lets a matching terminal lifecycle win over stale local admission flags', () => {
+    const terminal = lifecycle({
+      acp: {
+        revision: 18,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+    });
+
+    expect(activityProjectionStatus(terminal, 'running', true, 'turn-1')).toBe('cancelled');
   });
 });
 

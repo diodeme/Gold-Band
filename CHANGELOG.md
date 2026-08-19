@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.2](https://github.com/diodeme/Gold-Band/compare/v0.13.1...v0.13.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **acp:** bound cancellation and placeholder hydration ([1bfb03b](https://github.com/diodeme/Gold-Band/commit/1bfb03b8447b03cef1960d75fea33c8cf21741f4))
+* **acp:** decouple stop lifecycle from timeline replay ([0cd94d3](https://github.com/diodeme/Gold-Band/commit/0cd94d3fd6a816e2afc2dcf06210130a6c54e491))
+* **acp:** preserve message streams and hide empty chunks ([3755e31](https://github.com/diodeme/Gold-Band/commit/3755e31144798faba9f1c92e94a8efd866611fb9))
+* **attachments:** bound inline content and snapshot actual bytes ([49da1eb](https://github.com/diodeme/Gold-Band/commit/49da1eb481b5a5e59cde942aca62a68609e3893e))
+* **conversation:** bound session tree and remember expansion ([742e997](https://github.com/diodeme/Gold-Band/commit/742e997a021e635b2995e586fbceba6a72e996c3))
+* **conversation:** persist terminal attention and image actions ([15fe537](https://github.com/diodeme/Gold-Band/commit/15fe537986ffe4aa6f34d9163c3b459557cb7f3a))
+* **conversation:** preserve worktree session workspace ([828a1f7](https://github.com/diodeme/Gold-Band/commit/828a1f7e742061232de745f4957d83bcff6d7e4c))
+* **conversation:** unify composer borders and connector ([416bc5a](https://github.com/diodeme/Gold-Band/commit/416bc5af92a5cc1b51d2f725774b1d0577bdea04))
+* **image-actions:** reset completed feedback ([ecce5ea](https://github.com/diodeme/Gold-Band/commit/ecce5ea35d2ef89e8d2955c4e11e2e42c861f633))
+* **runtime:** isolate parallel dynamic leaf execution ([a150d9f](https://github.com/diodeme/Gold-Band/commit/a150d9fad02a870095c41c479b5602deb169389f))
+* **state:** unify project identity and bounded recovery ([31ada89](https://github.com/diodeme/Gold-Band/commit/31ada89e993414ab51c198f3b8fbfb09aeb0c1a2))
+* **storage:** correct SQLite session identity indexing ([b8d6fc1](https://github.com/diodeme/Gold-Band/commit/b8d6fc10b4d9385c479d49959e646f11895c645e))
+
 ## [0.13.1](https://github.com/diodeme/Gold-Band/compare/v0.13.0...v0.13.1) (2026-08-18)
 
 

@@ -276,6 +276,27 @@ export function isTerminalAcpLifecycle(
 }
 
 /**
+ * Selects the session status used by timeline activity presentation.
+ * A lifecycle-only terminal patch is authoritative over a stale body snapshot,
+ * except while a new local prompt is still being admitted.
+ */
+export function activityProjectionStatus(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  sessionStatus: string | null | undefined,
+  localPromptAdmissionPending: boolean,
+  localTurnId?: string | null,
+) {
+  const terminalLifecycleMatchesTurn = isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
+  if (terminalLifecycleMatchesTurn) return lifecycle!.acp.latestTurnStatus;
+  if (localPromptAdmissionPending) return 'running';
+  if (lifecycle && lifecycle.acp.liveTurnActivity !== 'idle') {
+    return lifecycle.acp.stopping ? 'cancelling' : lifecycle.acp.liveTurnActivity;
+  }
+  return sessionStatus;
+}
+
+/**
  * Once an ACP lifecycle facet is available, it is authoritative over a
  * session snapshot. A terminal snapshot may belong to the previous turn
  * while the lifecycle has already admitted the next one.

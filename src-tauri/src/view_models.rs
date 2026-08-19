@@ -6812,7 +6812,7 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-fn session_worktree_path(
+pub(crate) fn session_worktree_path(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,

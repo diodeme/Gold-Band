@@ -2075,6 +2075,14 @@ const resources = {
           runtimeErrorBlocked: "当前运行因错误阻塞，请查看错误原因",
           pauseReasonWaitingForUserInput: "等待用户输入",
           pauseReasonFallback: "已暂停",
+          sessionConfigThoughtLevelUnsupported:
+            "当前选择的模型不支持思考强度，请清除思考强度或更换模型后重试",
+          sessionConfigThoughtLevelValueUnavailable:
+            "思考强度 {{value}} 不可用，可选：{{values}}",
+          sessionConfigValueUnavailable:
+            "配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
           launchingNextNode: "拉起下一节点中",
           preparingDevelopmentEnvironment: "正在准备开发环境…",
           worktree: "工作树",
@@ -4287,6 +4295,14 @@ const resources = {
             "The current run is blocked by an error. Review the reason.",
           pauseReasonWaitingForUserInput: "Waiting for user input",
           pauseReasonFallback: "Paused",
+          sessionConfigThoughtLevelUnsupported:
+            "The selected model does not support reasoning effort. Clear the reasoning effort or switch models, then retry.",
+          sessionConfigThoughtLevelValueUnavailable:
+            "Reasoning effort {{value}} is unavailable. Available: {{values}}",
+          sessionConfigValueUnavailable:
+            "Config option {{configId}} does not support value {{value}}. Available: {{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
           launchingNextNode: "Launching next node",
           preparingDevelopmentEnvironment: "Preparing development environment…",
           worktree: "worktree",

@@ -12,7 +12,7 @@ use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError,
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    workflow_graph_vm,
+    session_worktree_path, workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
@@ -589,6 +589,7 @@ pub struct ConversationSessionLeafVm {
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
     pub session_established: bool,
+    pub worktree_path: Option<String>,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -2997,6 +2998,7 @@ pub fn conversation_run_vm(
     };
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
+    let run_worktree = run.worktree.as_ref();
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
     let runtime_resumable = is_run_continuable(&run);
 
@@ -3212,6 +3214,11 @@ pub fn conversation_run_vm(
                                     finished_at: dyn_node.finished_at.clone(),
                                     session_id: session_presence.session_id.clone(),
                                     session_established: session_presence.established,
+                                    worktree_path: session_worktree_path(
+                                        run_worktree,
+                                        Some(&dynamic_graph),
+                                        Some(&dyn_node.id),
+                                    ),
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -3358,6 +3365,7 @@ pub fn conversation_run_vm(
                         finished_at: attempt.finished_at.clone(),
                         session_id: session_presence.session_id.clone(),
                         session_established: session_presence.established,
+                        worktree_path: session_worktree_path(run_worktree, None, None),
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -5803,6 +5811,43 @@ mod tests {
         );
         assert_eq!(persisted["nodes"][0]["workspaceId"], "workspace-main");
         assert!(persisted["workspaces"].is_array());
+    }
+
+    #[test]
+    fn conversation_run_vm_projects_worktree_on_leaf_without_selected_session_payload() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "completed",
+            Vec::new(),
+            true,
+        );
+
+        let run_path = app.paths.run_file("task-dyn", "run-dyn");
+        let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
+        run["worktree"] = json!({
+            "path": app.paths.repo_root,
+            "branch": "gb-conversation-test",
+            "forkCommit": "test-head"
+        });
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let leaf = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()[0]
+            .attempts[0]
+            .clone();
+
+        assert!(vm.selected_session.is_none());
+        assert_eq!(
+            leaf.worktree_path.as_deref(),
+            Some(app.paths.repo_root.as_str())
+        );
     }
 
     #[test]

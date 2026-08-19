@@ -877,7 +877,9 @@ fn finalize_projection(
     let mut terminal_signals = BTreeMap::<String, u64>::new();
     let mut run_active_durations = BTreeMap::<String, (u64, u64, u64)>::new();
     for node in &accumulator.nodes {
-        let entry = run_active_durations.entry(node.run_key.clone()).or_default();
+        let entry = run_active_durations
+            .entry(node.run_key.clone())
+            .or_default();
         entry.2 += 1;
         if let Some(duration) = accumulator
             .session_duration_seconds_by_attempt
@@ -1486,9 +1488,9 @@ fn task_summary(
         .filter(|node| node.task_key == task_key)
         .collect::<Vec<_>>();
     let active_duration_zero_filled = task_nodes.is_empty()
-        || task_nodes.iter().any(|node| {
-            !session_duration_seconds_by_attempt.contains_key(&node.attempt_key)
-        });
+        || task_nodes
+            .iter()
+            .any(|node| !session_duration_seconds_by_attempt.contains_key(&node.attempt_key));
     let active_duration_seconds = task_nodes
         .iter()
         .filter_map(|node| session_duration_seconds_by_attempt.get(&node.attempt_key))

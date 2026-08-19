@@ -25,7 +25,7 @@
 - `token-usage`：Token 排行、输入输出和缓存使用。
 - `context-and-skills`：工具、Agent、权限、用户补充请求和有证据的 Skill 调用。
 
-每条洞察必须包含实际 `sampleCount`、安全 evidence locator、置信度和可执行建议。证据不足时不要生成该洞察；不得用肯定语气把相关性写成原因。
+每条洞察必须包含实际 `sampleCount`、安全 evidence locator、`confidence`（置信度）和可执行建议。证据不足时不要生成该洞察；不得用肯定语气把相关性写成原因。
 
 # 输出协议
 

@@ -758,7 +758,6 @@ pub(crate) fn execute_ai_node(
             round_id,
             node_id,
             attempt_id,
-            None,
             crate::runtime::RuntimeExecutionPhase::RunningNode,
         )?;
         if let Some(callback) = prompt_accepted.as_ref() {

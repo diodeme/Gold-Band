@@ -1899,6 +1899,58 @@ fn runtime_execution_applies_to_attempt(
     })
 }
 
+fn dynamic_node_runtime_execution(
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<RuntimeExecutionState> {
+    node.runtime_execution_phase
+        .map(|phase| RuntimeExecutionState {
+            revision: node.runtime_execution_revision,
+            phase,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: node
+                .runtime_execution_updated_at
+                .clone()
+                .unwrap_or_default(),
+        })
+}
+
+fn dynamic_attempt_runtime_execution(
+    run: &gold_band::runtime::RunState,
+    graph: &gold_band::dynamic::DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+) -> Option<RuntimeExecutionState> {
+    let graph_owns_transitional_leaf = graph.run.status == DynamicRunStatus::Running
+        && (dynamic_runtime_owns_completed_leaf(graph, &node.id)
+            || (node.status == gold_band::dynamic::DynamicNodeStatus::Paused
+                && graph
+                    .run
+                    .current_node_ids
+                    .iter()
+                    .any(|node_id| node_id == &node.id)));
+    if (run.status == RunStatus::Paused && node.outcome.is_none())
+        || (graph.run.phase == gold_band::dynamic::DynamicRunPhase::PreparingWorkspace
+            && run.execution.phase == RuntimeExecutionPhase::PreparingWorkspace)
+        || graph_owns_transitional_leaf
+    {
+        return Some(run.execution.clone());
+    }
+    dynamic_node_runtime_execution(node).or_else(|| {
+        (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
+            RuntimeExecutionState {
+                revision: node.runtime_execution_revision,
+                phase: RuntimeExecutionPhase::StartingNode,
+                locator: None,
+                recovery_candidate_token: None,
+                updated_at: node
+                    .runtime_execution_updated_at
+                    .clone()
+                    .unwrap_or_else(|| graph.run.updated_at.clone()),
+            }
+        })
+    })
+}
+
 fn acp_session_availability(session_status: Option<&str>, established: bool) -> String {
     let normalized = session_status.map(normalize_lifecycle_code);
     if matches!(normalized.as_deref(), Some("closing")) {
@@ -2316,6 +2368,7 @@ pub fn conversation_attempt_lifecycle_vm(
             attempt_id,
         );
         let session_presence = acp_session_presence(&attempt_dir);
+        let leaf_execution = dynamic_attempt_runtime_execution(&run, &dynamic_graph, dynamic_node);
         let mut lifecycle = derive_conversation_attempt_lifecycle_with_facets(
             session_status.as_deref(),
             prompt_activity(&attempt_dir),
@@ -2326,15 +2379,8 @@ pub fn conversation_attempt_lifecycle_vm(
             leaf_resumable,
             false,
             is_orchestrated,
-            is_orchestrated.then_some(&run.execution),
-            runtime_execution_applies_to_attempt(
-                &run.execution,
-                round_id,
-                node_id,
-                attempt_id,
-                Some(outer_node_id),
-                Some(outer_attempt_id),
-            ),
+            leaf_execution.as_ref(),
+            leaf_execution.is_some(),
             attempt_control_mode(&attempt_dir, is_orchestrated),
             session_presence.established,
         );
@@ -2971,6 +3017,11 @@ pub fn conversation_run_vm(
                                     dyn_attempt_id,
                                 );
                                 let session_presence = acp_session_presence(&dyn_attempt_dir);
+                                let leaf_execution = dynamic_attempt_runtime_execution(
+                                    &run,
+                                    &dynamic_graph,
+                                    dyn_node,
+                                );
                                 let mut lifecycle =
                                     derive_conversation_attempt_lifecycle_with_facets(
                                         dyn_session_status.as_deref(),
@@ -2982,15 +3033,8 @@ pub fn conversation_run_vm(
                                         dyn_leaf_resumable,
                                         false,
                                         is_orchestrated,
-                                        is_orchestrated.then_some(&run.execution),
-                                        runtime_execution_applies_to_attempt(
-                                            &run.execution,
-                                            &round.id,
-                                            &dyn_node.id,
-                                            dyn_attempt_id,
-                                            Some(&node.node_id),
-                                            Some(&latest_attempt.attempt_id),
-                                        ),
+                                        leaf_execution.as_ref(),
+                                        leaf_execution.is_some(),
                                         attempt_control_mode(&dyn_attempt_dir, is_orchestrated),
                                         session_presence.established,
                                     );
@@ -6942,6 +6986,15 @@ mod tests {
             "task": "Say good morning",
             "status": dynamic_node_status,
             "outcome": if dynamic_node_status == "completed" { json!("success") } else { json!(null) },
+            "runtimeExecutionId": if run_status == "running" && dynamic_node_status == "running" { json!("execution-good-morning") } else { json!(null) },
+            "runtimeExecutionPhase": match dynamic_node_status {
+                "paused" => json!("paused"),
+                "completed" => json!("terminal"),
+                "ready" => json!(null),
+                _ => json!("starting-node"),
+            },
+            "runtimeExecutionRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
+            "runtimeExecutionUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,

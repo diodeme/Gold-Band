@@ -5506,6 +5506,14 @@ fn execute_ai_dynamic_node(
     }
     resume_paused_dynamic_graph(&mut graph, ctx.resume_override.as_ref())?;
     persist_dynamic_graph(&ctx, &mut graph)?;
+    ctx.app.transition_runtime_execution_phase(
+        ctx.task_id,
+        ctx.run_id,
+        ctx.round_id,
+        ctx.outer_node_id,
+        ctx.outer_attempt_id,
+        RuntimeExecutionPhase::RunningNode,
+    )?;
     if let Some(mut resume) = reconciled_resume {
         notify_dynamic_resume_started(&ctx, &mut resume);
     }
@@ -5565,7 +5573,7 @@ fn rearm_dynamic_resume_target(
                 "dynamic node `{}` is not resumable by explicit continue",
                 resume.node_id
             );
-            target.runtime_execution_id = Some(resume.execution_id.clone());
+            target.begin_runtime_execution(resume.execution_id.clone(), now_rfc3339_like());
         }
         DynamicNodeStatus::Ready => {
             ensure!(
@@ -5585,12 +5593,13 @@ fn mark_dynamic_node_paused(
     pause_reason: PauseReason,
     runtime_error: Option<RuntimeErrorInfo>,
 ) {
+    let now = now_rfc3339_like();
     node.status = DynamicNodeStatus::Paused;
     node.outcome = None;
     node.pause_reason = Some(pause_reason);
     node.runtime_error = runtime_error;
-    node.runtime_execution_id = None;
-    node.finished_at = Some(now_rfc3339_like());
+    node.pause_runtime_execution(now.clone());
+    node.finished_at = Some(now);
 }
 
 fn rearm_dynamic_node(node: &mut DynamicNodeState, status: DynamicNodeStatus) {
@@ -5599,6 +5608,85 @@ fn rearm_dynamic_node(node: &mut DynamicNodeState, status: DynamicNodeStatus) {
     node.pause_reason = None;
     node.runtime_error = None;
     node.finished_at = None;
+}
+
+fn transition_dynamic_leaf_runtime_phase(
+    ctx: &DynamicExecutionContext<'_>,
+    node_id: &str,
+    attempt_id: &str,
+    expected_execution_id: &str,
+    phase: RuntimeExecutionPhase,
+) -> Result<()> {
+    {
+        let state_lock = dynamic_state_lock(ctx)?;
+        let _guard = state_lock.lock();
+        let graph_path = ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        );
+        let mut graph = load_dynamic_graph(&graph_path, &ctx.app.paths.repo_root)?;
+        let node = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == node_id && dynamic_attempt_id(node) == attempt_id)
+            .ok_or_else(|| anyhow!("dynamic node `{node_id}` attempt `{attempt_id}` not found"))?;
+        ensure!(
+            node.status == DynamicNodeStatus::Running,
+            "dynamic leaf runtime phase requires a running node"
+        );
+        ensure!(
+            node.transition_runtime_execution(expected_execution_id, phase, now_rfc3339_like(),)?,
+            "dynamic leaf runtime phase was superseded by a newer execution"
+        );
+        validate_dynamic_node_state(node)?;
+        let node_snapshot = node.clone();
+        write_json(&graph_path, &graph)?;
+        write_json(
+            &ctx.app.paths.dynamic_node_file(
+                ctx.task_id,
+                ctx.run_id,
+                ctx.round_id,
+                ctx.outer_node_id,
+                ctx.outer_attempt_id,
+                node_id,
+            ),
+            &node_snapshot,
+        )?;
+    }
+    emit_dynamic_session_update_best_effort(ctx, node_id, attempt_id);
+    Ok(())
+}
+
+fn refresh_dynamic_leaf_runtime_execution(
+    ctx: &DynamicExecutionContext<'_>,
+    node: &mut DynamicNodeState,
+) -> Result<()> {
+    let state_lock = dynamic_state_lock(ctx)?;
+    let _guard = state_lock.lock();
+    let graph = load_dynamic_graph(
+        &ctx.app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ),
+        &ctx.app.paths.repo_root,
+    )?;
+    let current = graph
+        .nodes
+        .iter()
+        .find(|candidate| candidate.id == node.id)
+        .ok_or_else(|| anyhow!("dynamic node `{}` not found", node.id))?;
+    if current.runtime_execution_id == node.runtime_execution_id {
+        node.runtime_execution_phase = current.runtime_execution_phase;
+        node.runtime_execution_revision = current.runtime_execution_revision;
+        node.runtime_execution_updated_at = current.runtime_execution_updated_at.clone();
+    }
+    Ok(())
 }
 
 fn dynamic_pause_reason_priority(reason: PauseReason) -> u8 {
@@ -5838,6 +5926,9 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         pause_reason: None,
         runtime_error: None,
         runtime_execution_id: None,
+        runtime_execution_phase: None,
+        runtime_execution_revision: 0,
+        runtime_execution_updated_at: None,
         group_id: None,
         chain_id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         depth: 0,
@@ -6219,8 +6310,9 @@ fn persist_dynamic_node_running_and_ack(
         .get_mut(index)
         .ok_or_else(|| anyhow!("dynamic node index out of range"))?;
     rearm_dynamic_node(node, DynamicNodeStatus::Running);
-    node.runtime_execution_id
-        .get_or_insert_with(next_runtime_execution_id);
+    if node.runtime_execution_id.is_none() {
+        node.begin_runtime_execution(next_runtime_execution_id(), now_rfc3339_like());
+    }
     node.started_at.get_or_insert_with(now_rfc3339_like);
     let node_clone = node.clone();
     let node_id_for_job = node_clone.id.clone();
@@ -6243,15 +6335,6 @@ fn persist_dynamic_node_running_and_ack(
         .rposition(|resume| resume.node_id == node_id_for_job)
         .map(|index| launch_resume_overrides.remove(index));
     persist_dynamic_graph(ctx, graph)?;
-    ctx.app.transition_runtime_execution_phase(
-        ctx.task_id,
-        ctx.run_id,
-        ctx.round_id,
-        ctx.outer_node_id,
-        ctx.outer_attempt_id,
-        Some((&node_clone.id, &dynamic_attempt_id(&node_clone))),
-        RuntimeExecutionPhase::StartingNode,
-    )?;
     if let Some(resume) = resume_override.as_mut() {
         notify_dynamic_resume_started(ctx, resume);
     }
@@ -7013,13 +7096,17 @@ fn execute_dynamic_worker(
     let resume_permission_mode_override = prompt_state.permission_mode_override;
     let mut proposals = Vec::new();
     let mut auto_retry_attempts = 0;
+    let expected_execution_id = node
+        .runtime_execution_id
+        .clone()
+        .ok_or_else(|| anyhow!("dynamic node `{}` has no active execution", node.id))?;
 
     loop {
         if !dynamic_leaf_attempt_is_still_running(
             ctx,
             &node.id,
             &attempt_id,
-            node.runtime_execution_id.as_deref(),
+            Some(expected_execution_id.as_str()),
         )? {
             mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
             return Ok(DynamicExecutionResult { node, proposals });
@@ -7029,13 +7116,11 @@ fn execute_dynamic_worker(
         let session_update = ctx.app.acp_session_update_for(live_update_context.clone());
         let prompt_accepted = ctx.app.acp_prompt_accepted_for(live_update_context);
         let runtime_prompt_accepted = |prompt_id: &str| {
-            ctx.app.transition_runtime_execution_phase(
-                ctx.task_id,
-                ctx.run_id,
-                ctx.round_id,
-                ctx.outer_node_id,
-                ctx.outer_attempt_id,
-                Some((&node.id, &attempt_id)),
+            transition_dynamic_leaf_runtime_phase(
+                ctx,
+                &node.id,
+                &attempt_id,
+                &expected_execution_id,
                 RuntimeExecutionPhase::RunningNode,
             )?;
             if let Some(callback) = prompt_accepted.as_ref() {
@@ -7066,13 +7151,11 @@ fn execute_dynamic_worker(
                     RuntimeExecutionPhase::FinalizingArtifact
                 }
             };
-            ctx.app.transition_runtime_execution_phase(
-                ctx.task_id,
-                ctx.run_id,
-                ctx.round_id,
-                ctx.outer_node_id,
-                ctx.outer_attempt_id,
-                Some((&node.id, &attempt_id)),
+            transition_dynamic_leaf_runtime_phase(
+                ctx,
+                &node.id,
+                &attempt_id,
+                &expected_execution_id,
                 phase,
             )?;
             Ok(())
@@ -7180,7 +7263,7 @@ fn execute_dynamic_worker(
                     ctx,
                     &node.id,
                     &attempt_id,
-                    node.runtime_execution_id.as_deref(),
+                    Some(expected_execution_id.as_str()),
                 )? {
                     mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
                     return Ok(DynamicExecutionResult { node, proposals });
@@ -7191,7 +7274,7 @@ fn execute_dynamic_worker(
                         ctx,
                         &node.id,
                         &attempt_id,
-                        node.runtime_execution_id.as_deref(),
+                        Some(expected_execution_id.as_str()),
                     )? {
                         mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
                         return Ok(DynamicExecutionResult { node, proposals });
@@ -7215,7 +7298,7 @@ fn execute_dynamic_worker(
                             ctx,
                             &node.id,
                             &attempt_id,
-                            node.runtime_execution_id.as_deref(),
+                            Some(expected_execution_id.as_str()),
                         )
                     })? {
                         mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
@@ -7226,6 +7309,7 @@ fn execute_dynamic_worker(
                 return Err(error);
             }
         };
+        refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
         dynamic_event_best_effort(
             ctx,
             "dynamic_worker_provider_end",
@@ -7245,7 +7329,7 @@ fn execute_dynamic_worker(
                 ctx,
                 &node.id,
                 &attempt_id,
-                node.runtime_execution_id.as_deref(),
+                Some(expected_execution_id.as_str()),
             )? {
                 mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
                 return Ok(DynamicExecutionResult { node, proposals });
@@ -7255,7 +7339,7 @@ fn execute_dynamic_worker(
                     ctx,
                     &node.id,
                     &attempt_id,
-                    node.runtime_execution_id.as_deref(),
+                    Some(expected_execution_id.as_str()),
                 )? {
                     mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
                     return Ok(DynamicExecutionResult { node, proposals });
@@ -7279,7 +7363,7 @@ fn execute_dynamic_worker(
                         ctx,
                         &node.id,
                         &attempt_id,
-                        node.runtime_execution_id.as_deref(),
+                        Some(expected_execution_id.as_str()),
                     )
                 })? {
                     mark_dynamic_node_paused(&mut node, PauseReason::ProcessInterrupted, None);
@@ -7322,14 +7406,17 @@ fn execute_dynamic_worker(
         }
         if node.outcome != Some(NodeOutcome::Success) {
             if !outer_attempt_is_still_current_running(ctx)? {
+                let now = now_rfc3339_like();
                 node.status = DynamicNodeStatus::Paused;
                 node.outcome = None;
-                node.finished_at = Some(now_rfc3339_like());
+                node.pause_runtime_execution(now.clone());
+                node.finished_at = Some(now);
                 return Ok(DynamicExecutionResult {
                     node,
                     proposals: Vec::new(),
                 });
             }
+            node.complete_runtime_execution(now_rfc3339_like());
             bail!("dynamic worker `{}` failed", node.id);
         }
         if !outer_attempt_is_still_current_running(ctx)?
@@ -7349,9 +7436,11 @@ fn execute_dynamic_worker(
             return Ok(DynamicExecutionResult { node, proposals });
         }
         if !outer_attempt_is_still_current_running(ctx)? {
+            let now = now_rfc3339_like();
             node.status = DynamicNodeStatus::Paused;
             node.outcome = None;
-            node.finished_at = Some(now_rfc3339_like());
+            node.pause_runtime_execution(now.clone());
+            node.finished_at = Some(now);
             return Ok(DynamicExecutionResult {
                 node,
                 proposals: Vec::new(),
@@ -7362,6 +7451,7 @@ fn execute_dynamic_worker(
                 if proposal.validation_status == DynamicProposalValidationStatus::Accepted =>
             {
                 proposals.push(proposal);
+                node.complete_runtime_execution(now_rfc3339_like());
                 append_dynamic_event(
                     ctx,
                     "dynamic_node_completed",
@@ -7423,6 +7513,14 @@ fn execute_dynamic_worker(
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
+                transition_dynamic_leaf_runtime_phase(
+                    ctx,
+                    &node.id,
+                    &attempt_id,
+                    &expected_execution_id,
+                    RuntimeExecutionPhase::RepairingArtifact,
+                )?;
+                refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
                 continue;
             }
             Ok(proposal) => {
@@ -7479,6 +7577,14 @@ fn execute_dynamic_worker(
                 node.status = DynamicNodeStatus::Running;
                 node.outcome = None;
                 node.finished_at = None;
+                transition_dynamic_leaf_runtime_phase(
+                    ctx,
+                    &node.id,
+                    &attempt_id,
+                    &expected_execution_id,
+                    RuntimeExecutionPhase::RepairingArtifact,
+                )?;
+                refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
                 continue;
             }
             Err(err) => {
@@ -7596,6 +7702,23 @@ fn execute_dynamic_agent_stage(
     let live_update = ctx.app.acp_live_update_for(live_update_context.clone());
     let session_update = ctx.app.acp_session_update_for(live_update_context.clone());
     let prompt_accepted = ctx.app.acp_prompt_accepted_for(live_update_context);
+    let expected_execution_id = node
+        .runtime_execution_id
+        .clone()
+        .ok_or_else(|| anyhow!("dynamic node `{}` has no active execution", node.id))?;
+    let runtime_prompt_accepted = |prompt_id: &str| {
+        transition_dynamic_leaf_runtime_phase(
+            ctx,
+            &node.id,
+            &attempt_id,
+            &expected_execution_id,
+            RuntimeExecutionPhase::RunningNode,
+        )?;
+        if let Some(callback) = prompt_accepted.as_ref() {
+            callback(prompt_id)?;
+        }
+        Ok(())
+    };
     let invocation_build_started_at = Instant::now();
     dynamic_event_best_effort(
         ctx,
@@ -7638,14 +7761,18 @@ fn execute_dynamic_agent_stage(
             "model": node.model.clone(),
         }),
     );
-    let provider_id = node.provider.as_deref().ok_or_else(|| {
-        runtime_error(manual_runtime_error_info(
-            RuntimeErrorDomain::Config,
-            "config.provider-missing",
-            format!("dynamic stage `{}` is missing provider", node.id),
-            serde_json::json!({ "nodeId": node.id }),
-        ))
-    })?;
+    let provider_id = node
+        .provider
+        .as_deref()
+        .ok_or_else(|| {
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Config,
+                "config.provider-missing",
+                format!("dynamic stage `{}` is missing provider", node.id),
+                serde_json::json!({ "nodeId": node.id }),
+            ))
+        })?
+        .to_string();
     append_dynamic_event(
         ctx,
         "dynamic_node_started",
@@ -7666,7 +7793,7 @@ fn execute_dynamic_agent_stage(
             "model": node.model.clone(),
         }),
     );
-    let provider = ctx.app.provider_for_id(provider_id).with_context(|| {
+    let provider = ctx.app.provider_for_id(&provider_id).with_context(|| {
         format!(
             "failed to resolve provider `{provider_id}` for `{}`",
             node.id
@@ -7678,9 +7805,10 @@ fn execute_dynamic_agent_stage(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
-            prompt_accepted.as_ref().map(|callback| callback as _),
+            Some(&runtime_prompt_accepted),
         )
         .with_context(|| format!("provider `{provider_id}` failed to run `{}`", node.id))?;
+    refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
     dynamic_event_best_effort(
         ctx,
         "dynamic_worker_provider_end",
@@ -7697,7 +7825,9 @@ fn execute_dynamic_agent_stage(
     if !outer_attempt_is_still_current_running(ctx)? {
         node.status = DynamicNodeStatus::Paused;
         node.outcome = None;
-        node.finished_at = Some(now_rfc3339_like());
+        let now = now_rfc3339_like();
+        node.pause_runtime_execution(now.clone());
+        node.finished_at = Some(now);
         return Ok(DynamicExecutionResult {
             node,
             proposals: Vec::new(),
@@ -7711,8 +7841,10 @@ fn execute_dynamic_agent_stage(
         });
     }
     if node.outcome != Some(NodeOutcome::Success) {
+        node.complete_runtime_execution(now_rfc3339_like());
         bail!("dynamic stage `{}` failed", node.id);
     }
+    node.complete_runtime_execution(now_rfc3339_like());
     append_dynamic_event(
         ctx,
         "dynamic_node_completed",
@@ -7758,6 +7890,18 @@ fn execute_dynamic_workflow_invocation(
     );
 
     let attempt_id = dynamic_attempt_id(&node);
+    let expected_execution_id = node
+        .runtime_execution_id
+        .clone()
+        .ok_or_else(|| anyhow!("dynamic node `{}` has no active execution", node.id))?;
+    transition_dynamic_leaf_runtime_phase(
+        ctx,
+        &node.id,
+        &attempt_id,
+        &expected_execution_id,
+        RuntimeExecutionPhase::RunningNode,
+    )?;
+    refresh_dynamic_leaf_runtime_execution(ctx, &mut node)?;
     prepare_dynamic_attempt_dirs(ctx, &node, &attempt_id)?;
     let child_workflow = workflow_with_dynamic_invocation_task(
         ctx.app.config.desktop_language,
@@ -7838,6 +7982,7 @@ fn execute_dynamic_workflow_invocation(
             });
         }
         RunStatus::Completed => {
+            let now = now_rfc3339_like();
             node.finished_at = Some(now_rfc3339_like());
             node.status = DynamicNodeStatus::Completed;
             node.outcome = Some(match child_run.outcome {
@@ -7846,6 +7991,7 @@ fn execute_dynamic_workflow_invocation(
             });
             node.pause_reason = None;
             node.runtime_error = None;
+            node.complete_runtime_execution(now);
         }
         RunStatus::Running => {
             bail!("child workflow invocation `{}` is still running", node.id);
@@ -7985,12 +8131,14 @@ fn finalize_dynamic_worker_result(
             node.outcome = Some(NodeOutcome::Failure);
             node.pause_reason = None;
             node.runtime_error = None;
+            node.complete_runtime_execution(now_rfc3339_like());
         }
         ProviderRunStatus::Interrupted
         | ProviderRunStatus::WaitingForUserInput
         | ProviderRunStatus::PermissionRequested => {
             node.status = DynamicNodeStatus::Paused;
             node.outcome = None;
+            node.pause_runtime_execution(now_rfc3339_like());
         }
     }
     validate_dynamic_node_state(node)
@@ -8149,7 +8297,9 @@ fn try_accept_interrupted_dynamic_completion(
     node.outcome = Some(NodeOutcome::Success);
     node.pause_reason = None;
     node.runtime_error = None;
-    node.finished_at = Some(now_rfc3339_like());
+    let now = now_rfc3339_like();
+    node.complete_runtime_execution(now.clone());
+    node.finished_at = Some(now);
     validate_dynamic_node_state(node)?;
     append_dynamic_event(
         ctx,
@@ -9684,6 +9834,9 @@ fn dynamic_node_state_from_spec(
         pause_reason: None,
         runtime_error: None,
         runtime_execution_id: None,
+        runtime_execution_phase: None,
+        runtime_execution_revision: 0,
+        runtime_execution_updated_at: None,
         group_id,
         chain_id,
         depth: source.depth + 1,
@@ -10059,6 +10212,9 @@ fn create_dynamic_merge_node(
         pause_reason: None,
         runtime_error: None,
         runtime_execution_id: None,
+        runtime_execution_phase: None,
+        runtime_execution_revision: 0,
+        runtime_execution_updated_at: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -10108,6 +10264,9 @@ fn create_dynamic_acceptance_node(
         pause_reason: None,
         runtime_error: None,
         runtime_execution_id: None,
+        runtime_execution_phase: None,
+        runtime_execution_revision: 0,
+        runtime_execution_updated_at: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -12019,7 +12178,6 @@ fn with_dynamic_workspace_transition<T>(
         ctx.round_id,
         ctx.outer_node_id,
         ctx.outer_attempt_id,
-        None,
         RuntimeExecutionPhase::PreparingWorkspace,
     )?;
     dynamic_event_best_effort(
@@ -12045,7 +12203,6 @@ fn with_dynamic_workspace_transition<T>(
             ctx.round_id,
             ctx.outer_node_id,
             ctx.outer_attempt_id,
-            None,
             RuntimeExecutionPhase::RunningNode,
         );
     }
@@ -13298,6 +13455,9 @@ mod tests {
                 depth: 0,
                 depends_on: Vec::new(),
                 runtime_execution_id: None,
+                runtime_execution_phase: None,
+                runtime_execution_revision: 0,
+                runtime_execution_updated_at: None,
                 workspace_id: "workspace-main".into(),
                 provider: None,
                 profile: None,
@@ -15048,6 +15208,9 @@ mod tests {
             pause_reason: None,
             runtime_error: None,
             runtime_execution_id: None,
+            runtime_execution_phase: None,
+            runtime_execution_revision: 0,
+            runtime_execution_updated_at: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -17455,6 +17618,145 @@ mod tests {
     }
 
     #[test]
+    fn parallel_leaf_finalizing_does_not_block_sibling_start() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        app.transition_runtime_execution_phase(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+            RuntimeExecutionPhase::RunningNode,
+        )
+        .unwrap();
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut finalizing = test_worktree_node("finalizing-worker");
+        finalizing.status = DynamicNodeStatus::Running;
+        finalizing
+            .begin_runtime_execution("execution-finalizing", "2026-06-16T00:00:01Z".to_string());
+        let sibling = test_worktree_node("starting-worker");
+        let mut graph = test_dynamic_graph(vec![finalizing, sibling]);
+        refresh_dynamic_current_leaf_ids(&mut graph);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        transition_dynamic_leaf_runtime_phase(
+            &ctx,
+            "finalizing-worker",
+            "attempt-001",
+            "execution-finalizing",
+            RuntimeExecutionPhase::RunningNode,
+        )
+        .unwrap();
+        transition_dynamic_leaf_runtime_phase(
+            &ctx,
+            "finalizing-worker",
+            "attempt-001",
+            "execution-finalizing",
+            RuntimeExecutionPhase::FinalizingArtifact,
+        )
+        .unwrap();
+        graph = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        let mut launch_resumes = Vec::new();
+        let (started, _) =
+            persist_dynamic_node_running_and_ack(&ctx, &mut graph, 1, &mut launch_resumes).unwrap();
+
+        let outer = app.run_status(ctx.task_id, ctx.run_id).unwrap();
+        let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(outer.execution.phase, RuntimeExecutionPhase::RunningNode);
+        assert_eq!(
+            outer.execution.locator.as_ref().map(|locator| (
+                locator.node_id.as_str(),
+                locator.attempt_id.as_str(),
+                locator.outer_node_id.as_deref(),
+            )),
+            Some(("ai-dynamic", "attempt-001", None))
+        );
+        assert_eq!(
+            durable.nodes[0].runtime_execution_phase,
+            Some(RuntimeExecutionPhase::FinalizingArtifact)
+        );
+        assert_eq!(started.id, "starting-worker");
+        assert_eq!(
+            durable.nodes[1].runtime_execution_phase,
+            Some(RuntimeExecutionPhase::StartingNode)
+        );
+    }
+
+    #[test]
+    fn stale_leaf_phase_callback_cannot_override_new_execution() {
+        let (_temp, repo_root) = init_repo();
+        let app = App::with_config(repo_root, RuntimeConfig::default());
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut current = test_worktree_node("good-morning");
+        current.status = DynamicNodeStatus::Running;
+        current.begin_runtime_execution("execution-b", "2026-06-16T00:00:01Z".to_string());
+        current
+            .transition_runtime_execution(
+                "execution-b",
+                RuntimeExecutionPhase::RunningNode,
+                "2026-06-16T00:00:02Z".to_string(),
+            )
+            .unwrap();
+        let expected_revision = current.runtime_execution_revision;
+        let mut graph = test_dynamic_graph(vec![current]);
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let error = transition_dynamic_leaf_runtime_phase(
+            &ctx,
+            "good-morning",
+            "attempt-001",
+            "execution-a",
+            RuntimeExecutionPhase::FinalizingArtifact,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("superseded by a newer execution")
+        );
+        let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert_eq!(
+            durable.nodes[0].runtime_execution_id.as_deref(),
+            Some("execution-b")
+        );
+        assert_eq!(
+            durable.nodes[0].runtime_execution_phase,
+            Some(RuntimeExecutionPhase::RunningNode)
+        );
+        assert_eq!(
+            durable.nodes[0].runtime_execution_revision,
+            expected_revision
+        );
+    }
+
+    #[test]
     fn dynamic_resume_reports_started_only_after_running_state_is_durable() {
         let (_temp, repo_root) = init_repo();
         let app = App::with_config(repo_root, RuntimeConfig::default());
@@ -17467,7 +17769,7 @@ mod tests {
         target.finished_at = Some("2026-06-16T00:00:00Z".to_string());
         let mut sibling = test_worktree_node("good-night");
         sibling.status = DynamicNodeStatus::Running;
-        sibling.runtime_execution_id = Some("execution-night".to_string());
+        sibling.begin_runtime_execution("execution-night", "2026-06-16T00:00:01Z".to_string());
         let mut graph = test_dynamic_graph(vec![target, sibling]);
         refresh_dynamic_current_leaf_ids(&mut graph);
         persist_dynamic_graph(&ctx, &mut graph).unwrap();
@@ -17560,7 +17862,7 @@ mod tests {
         let ctx = test_context(&app, &dynamic);
         let mut current = test_worktree_node("good-morning");
         current.status = DynamicNodeStatus::Running;
-        current.runtime_execution_id = Some("execution-b".to_string());
+        current.begin_runtime_execution("execution-b", "2026-06-16T00:00:01Z".to_string());
         let mut graph = test_dynamic_graph(vec![current]);
         persist_dynamic_graph(&ctx, &mut graph).unwrap();
 
@@ -17579,6 +17881,10 @@ mod tests {
         assert_eq!(
             graph.nodes[0].runtime_execution_id.as_deref(),
             Some("execution-b")
+        );
+        assert_eq!(
+            graph.nodes[0].runtime_execution_phase,
+            Some(RuntimeExecutionPhase::StartingNode)
         );
         let durable: DynamicGraphState = read_json(&app.paths.dynamic_graph_file(
             ctx.task_id,

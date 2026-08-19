@@ -43,7 +43,7 @@ impl RuntimeLifecycleStore {
     }
 }
 
-fn runtime_execution_transition_allowed(
+pub(crate) fn runtime_execution_transition_allowed(
     from: RuntimeExecutionPhase,
     to: RuntimeExecutionPhase,
 ) -> bool {

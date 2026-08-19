@@ -907,7 +907,9 @@ fn write_task_input_image(app: &App, task_id: &str, name: &str) -> Utf8PathBuf {
     let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
     let path = inputs_dir.join(name);
-    std::fs::write(path.as_std_path(), b"\x89PNG\r\n\x1a\nimage").unwrap();
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]))
+        .save(path.as_std_path())
+        .unwrap();
     path
 }
 
@@ -1434,7 +1436,11 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .unwrap_or(false)
     }));
 
-    let prompt = render_prompt_bundle(&invocations[0]).unwrap();
+    let business_invocation = invocations
+        .iter()
+        .find(|invocation| is_business_invocation(invocation))
+        .expect("expected a business invocation");
+    let prompt = render_prompt_bundle(business_invocation).unwrap();
     assert_eq!(prompt.attachment_metas.len(), 1);
     assert_eq!(prompt.attachment_metas[0].name, "image.png");
     assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
@@ -2179,9 +2185,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         gold_band::runtime::RuntimeExecutionPhase::Paused
     );
     let locator = durable_parent.execution.locator.as_ref().unwrap();
-    assert_eq!(locator.node_id, "child-flow-node");
-    assert_eq!(locator.outer_node_id.as_deref(), Some("router"));
-    assert_eq!(locator.outer_attempt_id.as_deref(), Some("attempt-001"));
+    assert_eq!(locator.node_id, "router");
+    assert_eq!(locator.attempt_id, "attempt-001");
+    assert_eq!(locator.outer_node_id, None);
+    assert_eq!(locator.outer_attempt_id, None);
 
     let resumed = app.run_continue(task_id, "run-001", None, None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0](https://github.com/diodeme/Gold-Band/compare/v0.13.2...v0.14.0) (2026-08-20)
+
+
+### Features
+
+* **scheduled-tasks:** add creation success notice ([7e599f6](https://github.com/diodeme/Gold-Band/commit/7e599f62767eda110ede5034c8097a985179daee))
+* **scheduled-tasks:** add creation success notice ([dbc0bf8](https://github.com/diodeme/Gold-Band/commit/dbc0bf8c587d1cf0c10c593355ecc2dc75537ad3))
+
+
+### Bug Fixes
+
+* **acp:** align canonical timeline regressions ([8a90056](https://github.com/diodeme/Gold-Band/commit/8a9005606190e84bf5d1d31c5039c8710ed33fcf))
+* defer workflow profile validation until loaded ([4998de0](https://github.com/diodeme/Gold-Band/commit/4998de070e6f4a7d6bde4aece43632b7d3aa4a4f))
+* **workflow:** model profile catalog lifecycle ([1699f96](https://github.com/diodeme/Gold-Band/commit/1699f96b335c1bf4c1e97144df405ed8859183d7))
+
 ## [0.13.2](https://github.com/diodeme/Gold-Band/compare/v0.13.1...v0.13.2) (2026-08-19)
 
 

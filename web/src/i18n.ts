@@ -990,6 +990,10 @@ const resources = {
         noDoctorReadyAgents:
           "暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。",
         agentDoctorUnavailable: "Agent 未通过 doctor",
+        profileCatalogLoading: "正在加载角色目录",
+        profileCatalogLoadingDescription: "角色目录就绪后才能保存工作流。",
+        profileCatalogLoadFailed: "角色目录加载失败",
+        profileCatalogRetry: "重新加载",
         selectHint: "选择画布中的节点或边进行配置。",
         terminalSelectionHint: "终点节点无需配置，可通过画布上方的删除操作移除。",
         currentSelection: "当前选择",
@@ -3169,6 +3173,10 @@ const resources = {
         noDoctorReadyAgents:
           "No doctor-ready agents yet. Run doctor in Agent Management first.",
         agentDoctorUnavailable: "Agent has not passed doctor",
+        profileCatalogLoading: "Loading profile catalog",
+        profileCatalogLoadingDescription: "The workflow can be saved after the profile catalog is ready.",
+        profileCatalogLoadFailed: "Profile catalog failed to load",
+        profileCatalogRetry: "Reload",
         selectHint: "Select a node or edge on the canvas to configure it.",
         terminalSelectionHint:
           "Terminal nodes need no configuration and can be removed with the delete action above the canvas.",

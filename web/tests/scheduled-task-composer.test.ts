@@ -46,15 +46,17 @@ describe('scheduled task composer entry', () => {
 
     expect(composer).toContain("<Trans i18nKey=\"scheduled.composer.created\"");
     expect(composer).toContain('href="/chat/scheduled-tasks"');
-    expect(composer).toContain('setScheduledTaskCreated(true);');
+    expect(composer).toContain('onScheduledTaskCreated?.();');
     expect(composer).toContain('onOpenScheduledTasks();');
-    expect(composer).toContain('const SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS = 5000;');
-    expect(composer).toContain('window.setTimeout(() => {');
-    expect(composer).toContain('setScheduledTaskCreated(false);');
-    expect(composer).toContain('}, SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS);');
-    expect(composer).toContain('window.clearTimeout(timer);');
+    const notice = readFileSync(fileURLToPath(new URL('../src/lib/scheduled-task-created-notice.ts', import.meta.url)), 'utf8');
+    expect(notice).toContain('SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS = 5000');
+    expect(notice).toContain('const timer = window.setTimeout(dismiss, SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS);');
+    expect(notice).toContain('window.clearTimeout(timer);');
+    expect(app).toContain('scheduledTaskCreatedNotice.visible');
+    expect(app).toContain('scheduledTaskCreatedNotice.show');
     expect(home).toContain('onOpenScheduledTasks={onOpenScheduledTasks}');
-    expect(app).toContain("onOpenScheduledTasks={() => onSelectConversation({ kind: 'scheduled-tasks' })}");
+    expect(app).toContain('scheduledTaskCreatedNotice.dismiss();');
+    expect(app).toContain("onSelectConversation({ kind: 'scheduled-tasks' });");
   });
 
   it('uses the ordinary composer workspace surface without offering worktree selection', () => {

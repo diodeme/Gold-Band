@@ -10,6 +10,7 @@ import type {
   WorkflowTemplateStore,
 } from '@/types';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -170,7 +171,7 @@ export function validateWorkflowTemplateForConversationStart(
   const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
-    profiles,
+    readyWorkflowProfileCatalog(profiles),
     agents,
     t,
     workflowTemplates,
@@ -195,7 +196,7 @@ export function workflowRepairTargetForTemplate(
   const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
-    profiles,
+    readyWorkflowProfileCatalog(profiles),
     agents,
     t,
     workflowTemplates,

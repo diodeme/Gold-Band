@@ -16,11 +16,13 @@ interface ConversationHomePageProps {
   busy: boolean;
   inlineContentMaxBytes: number;
   initialScheduledMode?: boolean;
+  scheduledTaskCreated?: boolean;
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
+  onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
   onOpenScheduledTasks: () => void;
   onOpenRunModeSettings: () => void;
@@ -41,11 +43,13 @@ export function ConversationHomePage({
   busy,
   inlineContentMaxBytes,
   initialScheduledMode = false,
+  scheduledTaskCreated = false,
   workLocation,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
   onCreateScheduledTask,
+  onScheduledTaskCreated,
   onOpenAgentManagement,
   onOpenScheduledTasks,
   onOpenRunModeSettings,
@@ -75,11 +79,13 @@ export function ConversationHomePage({
           busy={busy}
           inlineContentMaxBytes={inlineContentMaxBytes}
           initialScheduledMode={initialScheduledMode}
+          scheduledTaskCreated={scheduledTaskCreated}
           workLocation={workLocation}
           onRunModeChange={onRunModeChange}
           onLoadProfiles={onLoadProfiles}
           onSubmit={onSubmit}
           onCreateScheduledTask={onCreateScheduledTask}
+          onScheduledTaskCreated={onScheduledTaskCreated}
           onOpenAgentManagement={onOpenAgentManagement}
           onOpenScheduledTasks={onOpenScheduledTasks}
           onOpenRunModeSettings={onOpenRunModeSettings}

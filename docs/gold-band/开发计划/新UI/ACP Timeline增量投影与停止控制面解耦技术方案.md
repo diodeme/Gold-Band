@@ -785,3 +785,15 @@ task-284 原 timeline 副本的 V4 Release 复测：一次性 V3→V4 migration 
 - `spawn_blocking`/Provider 初始化等外层失败路径先按同一 turn ID 持久化 failed terminal，再发布 `turn-finished`。若 durable 写入失败或该 turn 已被更晚 terminal 覆盖，则不发布迟到的失败终态，保持 lifecycle canonical state 的单调性。
 
 接口回归新增单项 queue settlement 隔离测试，以及 replay delta 临时失败后保持静态、按退避重试并在 ACK 后收敛的前端测试。新增逻辑只读取单个 queue item、单页 delta 和固定大小 lifecycle header；没有全量 timeline 扫描、无界重试、额外缓存或第二状态机。
+
+### 14.8 会话停止继续与 Timeline 运行态恢复根因修复（2026-08-20）
+
+本轮把停止控制面和运行态恢复的剩余根因收敛到既有 append log + materialized index 设计：
+
+- stop 只取消当前 turn，不关闭 provider session；`availability` 保持 session 可用性，`cancelRequested` 只存在于 live turn activity。canonical reducer 以 `turnId + operationId + revision` 做 CAS，terminal 保证 `idle + outcome + non-closing availability`，并让 durable cancellation intent 胜过迟到 provider completion。
+- `AcpRuntime::from_connection` 使用 index snapshot、bounded hot interaction 和 active stream snapshot；attached reuse、resume、new 路径不调用完整 Timeline replay，也不 hydrate Blob。`Load + externalSessionSyncEnabled` 才读取 prompt anchors 供 provider replay importer 使用。
+- runtime restore 明确记录 `index-hit / tail-replay / full-rebuild`。index 缺失、损坏、版本不兼容、tail 超限和 compaction 才进入全量路径；tail 超限触发的重建与启动 compaction 均会报告 `full-rebuild`，避免性能诊断误报。
+- active stream snapshot 与旧完整重放保持 parity：text/thought/plan 在 tool boundary 处保留 stable provider identity 的 suspended stream，匿名流仍按既有规则关闭；branch 合并按 branch + item identity 去重。
+- `repair_attempt_usage` 只读取 usage journal 和 prompt locator，不再通过 `load_timeline_items` 无条件 hydrate Blob。性能验收记录 `restoreMs`、restore mode、tail records、locator reads、full timeline item load 和 hydrated Blob bytes；正常 attached/resume 路径 Blob bytes 必须为 0。
+
+接口级回归新增 cancellation intent 与 provider completion 竞态、tail 超限 full-rebuild 诊断、active stream tool/revision parity；既有 10,000 revision、Blob reference、prompt anchor 延迟读取和 branch identity 测试继续作为回归门槛。自评审：未新增数据库、消息队列、全局状态机或无界缓存，复用现有 revision/CAS、Timeline index 和原子 JSON 写入，正常恢复复杂度与历史正文大小解耦。

@@ -166,18 +166,28 @@ function cancelledSession(id: string): AcpSessionVm {
 
 async function renderPausedDialog(options: {
   onOptimisticEventsChange?: (events: AcpUiEventVm[]) => void;
+  initialLifecycle?: ConversationAttemptLifecycleVm;
+  sessionStatus?: string;
+  session?: Partial<AcpSessionVm>;
 } = {}) {
   fixtureIndex += 1;
   const id = String(fixtureIndex);
-  const session = cancelledSession(id);
+  const session = {
+    ...cancelledSession(id),
+    status: options.sessionStatus ?? 'cancelled',
+    ...options.session,
+  };
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
-  await act(async () => {
+  const render = async (
+    lifecycle: ConversationAttemptLifecycleVm,
+    nextSession: AcpSessionVm = session,
+  ) => act(async () => {
     root.render(
       <TooltipProvider>
         <ACPChatDialog
-          session={session}
+          session={nextSession}
           projectId={`project-${id}`}
           taskId={`task-${id}`}
           runId={`run-${id}`}
@@ -186,7 +196,7 @@ async function renderPausedDialog(options: {
           attemptId={session.attemptId}
           runtimeComposerContext={{
             isOrchestrated: true,
-            lifecycle: pausedLifecycle(),
+            lifecycle,
             workflowValid: true,
           }}
           showSystemPromptAction={false}
@@ -197,7 +207,8 @@ async function renderPausedDialog(options: {
       </TooltipProvider>,
     );
   });
-  return { container, id, root, session };
+  await render(options.initialLifecycle ?? pausedLifecycle());
+  return { container, id, root, session, render };
 }
 
 async function renderActiveDirectDialog() {
@@ -308,6 +319,147 @@ afterEach(() => {
 });
 
 describe('ACP runtime continue submission', () => {
+  it('settles an old permission card once and still accepts a real permission from the next turn', async () => {
+    const firstTurn = runningLifecycle();
+    firstTurn.acp = {
+      ...firstTurn.acp,
+      revision: 1,
+      turnId: 'turn-1',
+    };
+    const terminal = pausedLifecycle();
+    terminal.acp = {
+      ...terminal.acp,
+      revision: 2,
+      turnId: 'turn-1',
+    };
+    const nextTurn = runningLifecycle();
+    nextTurn.acp = {
+      ...nextTurn.acp,
+      revision: 3,
+      turnId: 'turn-2',
+    };
+    const oldPermission = {
+      requestId: 'request-old',
+      title: 'OLD_PERMISSION_CARD',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      raw: { requestId: 'request-old' },
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialLifecycle: firstTurn,
+      sessionStatus: 'running',
+      session: {
+        pendingPermissions: [oldPermission],
+      },
+    });
+    try {
+      expect(container.textContent).toContain('OLD_PERMISSION_CARD');
+
+      await render(terminal);
+      expect(container.textContent).not.toContain('OLD_PERMISSION_CARD');
+
+      await render(nextTurn);
+      expect(container.textContent).not.toContain('OLD_PERMISSION_CARD');
+
+      await render(nextTurn, {
+        ...session,
+        eventPage: {
+          ...session.eventPage,
+          coveredRevision: 4,
+          newestRevision: 4,
+          newestSeq: 4,
+        },
+        pendingPermissions: [{
+          ...oldPermission,
+          title: 'NEW_PERMISSION_CARD',
+          raw: { requestId: 'request-old' },
+        }],
+      });
+      expect(container.textContent).toContain('NEW_PERMISSION_CARD');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('settles an old elicitation card once and still accepts a real elicitation from the next turn', async () => {
+    const firstTurn = runningLifecycle();
+    firstTurn.acp = { ...firstTurn.acp, revision: 1, turnId: 'turn-1' };
+    const terminal = pausedLifecycle();
+    terminal.acp = { ...terminal.acp, revision: 2, turnId: 'turn-1' };
+    const nextTurn = runningLifecycle();
+    nextTurn.acp = { ...nextTurn.acp, revision: 3, turnId: 'turn-2' };
+    const oldElicitation = {
+      elicitationId: 'elicitation-old',
+      message: 'OLD_ELICITATION_CARD',
+      requestedSchema: {
+        type: 'object',
+        properties: { answer: { type: 'string', title: 'Answer' } },
+      },
+      raw: { elicitationId: 'elicitation-old' },
+    };
+    const { container, root, render, session } = await renderPausedDialog({
+      initialLifecycle: firstTurn,
+      sessionStatus: 'running',
+      session: { pendingElicitations: [oldElicitation] },
+    });
+    try {
+      expect(container.textContent).toContain('OLD_ELICITATION_CARD');
+
+      await render(terminal);
+      expect(container.textContent).not.toContain('OLD_ELICITATION_CARD');
+
+      await render(nextTurn);
+      expect(container.textContent).not.toContain('OLD_ELICITATION_CARD');
+
+      await render(nextTurn, {
+        ...session,
+        eventPage: {
+          ...session.eventPage,
+          coveredRevision: 4,
+          newestRevision: 4,
+          newestSeq: 4,
+        },
+        pendingElicitations: [{
+          ...oldElicitation,
+          elicitationId: 'elicitation-new',
+          message: 'NEW_ELICITATION_CARD',
+          raw: { elicitationId: 'elicitation-new' },
+        }],
+      });
+      expect(container.textContent).toContain('NEW_ELICITATION_CARD');
+    } finally {
+      await unmount(root);
+    }
+  });
+
+  it('submits on the same mounted page after terminal lifecycle settles a stale running session snapshot', async () => {
+    const { container, root, render } = await renderPausedDialog({
+      initialLifecycle: runningLifecycle(),
+      sessionStatus: 'running',
+    });
+    try {
+      await render(pausedLifecycle());
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      expect(textarea).not.toBeNull();
+      await setTextareaValue(textarea!, '停止后的第二句');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => sendButton?.click());
+      expect(apiMocks.submitConversationPrompt).toHaveBeenCalledTimes(1);
+
+      apiMocks.submitConversationPrompt.mockClear();
+      await flushInteraction(() => {
+        textarea!.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+        }));
+      });
+      expect(apiMocks.submitConversationPrompt).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps the send button and Enter on the ordinary conversation path', async () => {
     const { container, root } = await renderPausedDialog();
     try {
@@ -340,7 +492,7 @@ describe('ACP runtime continue submission', () => {
     }
   });
 
-  it('submits one atomic runtime continue and settles the optimistic bubble to processing', async () => {
+  it('submits one atomic runtime continue while keeping the optimistic bubble in sending state', async () => {
     const optimisticSnapshots: AcpUiEventVm[][] = [];
     apiMocks.continueConversationRuntime.mockResolvedValue({
       kind: 'runtime-continue-started',
@@ -378,7 +530,7 @@ describe('ACP runtime continue submission', () => {
       expect(optimisticSnapshots.at(-1)?.at(-1)).toMatchObject({
         content: '继续并补充测试',
         kind: 'userTextDelta',
-        status: 'processing',
+        status: 'sending',
       });
     } finally {
       await unmount(root);

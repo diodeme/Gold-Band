@@ -640,6 +640,16 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
 - 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
+
+## 2026-08-20 会话停止继续与 Timeline 运行态恢复
+
+- 用户停止只取消当前 prompt turn，不关闭 ACP provider session。停止 accepted 时只投影 `liveTurnActivity=cancelRequested`；`availability` 保持 `established/restorable/unavailable`，只有显式 session close 才能使用 `closing`。
+- terminal lifecycle 由后端 canonical reducer 统一产生，必须满足 `liveTurnActivity=idle`、`latestTurnStatus!=none`、`availability!=closing`。停止意图优先于迟到的 provider completed/failed 回调，最终结果固定为 `cancelled`；重复 stop、旧 owner 和孤儿恢复均按 operation/revision CAS 幂等收敛。
+- Composer 的发送、Enter、Stop、输入锁定和“发送中/处理中”只消费单调合并后的 `ConversationAttemptLifecycleVm.composer/acp` projection。旧 `AcpSessionVm.status=running` 只可作为没有 lifecycle 时的兼容输入，不能在 terminal lifecycle 已到达后旁路阻止 follow-up；停止后当前页面无需卸载或切换会话即可继续发送。
+- lifecycle 与当前页面的 pending permission/elicitation session projection 必须一起收敛：terminal revision 清空旧卡片，后续同水位旧 session body 不能复活它；下一轮只有 Timeline generation/revision/sequence 前进才能建立真实新 interaction。不得按裸 RPC request ID 做永久 dismiss，因为 provider 可以在同一 session 内复用该 ID。
+- `runtimeControl` 与 ACP lifecycle 虽属于不同领域，但共享 metadata JSON；control writer 必须在 lifecycle 的文件事务锁内做字段级 patch。业务 turn terminal 落盘并释放 owner 后才允许 admission 隐藏 finalize/repair prompt，避免业务 RPC 已 `end_turn`、metadata 仍伪 active 时被自身 busy guard 拒绝。
+- attached reuse、resume、load、new 四种路径共享 bounded runtime snapshot，但只有 `Load + externalSessionSyncEnabled` 读取 Gold Band prompt anchors；正常 attached/resume/new 不读取完整 Timeline 正文，不 hydrate Blob。页面正文仍由 ACP event-window 查询边界按需读取，不能从 summary 或 stopping 状态反向猜测正文。
+- runtime 首屏只消费 Timeline materialized index、bounded hot interaction 和 active stream snapshot。index 命中、有限 tail replay、full rebuild/compaction 通过诊断明确区分；正常历史增长只影响 index，不能使 stop/continue 按全部事件和 Blob 正文线性加载。
 ## Composer 附件与资源工作区
 
 - 快速对话与会话详情追问的所有未发送附件使用同一 `draft-attachment` 右侧工作区资源；点击附件 chip 不打开遮罩式图片或文本 Dialog。图片继续复用现有工作区画布；文本复用共享只读查看器，其中 Markdown 提供渲染/源码双模式。附件被移除、清空或随 prompt 提交后，必须在同一事件链关闭对应预览 Tab，不能保留引用已释放 Object URL 或已失效内容 locator 的僵尸资源。
@@ -656,5 +666,5 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 - Direct 与 Workflow 的 ACP prompt 统一经过 `Starting -> Accepted -> Running -> terminal` 生命周期。后端在 provider 调用前以 `turnId + lifecycleOperationId + acpRevision` 原子认领已接纳 turn；只有 claim 可以创建不可变的内存值对象 `AcpLifecycleOwner`，并把 claim 后的三元组随执行参数传入 provider runtime。`acpRevision` 是 ownership generation：admission、claim、stop 接管和 terminal 推进它；同一 owner 的 `Accepted/Running` metadata 写入必须保留它，供终态 CAS 精确比较。
 - Session metadata 的 catalog、诊断和 provider snapshot 写入不得从当前文件反推缺失的 turn 身份。没有明确身份的写入只能更新非生命周期字段；显式身份与当前 turn 不匹配时只能保留当前 canonical lifecycle，不能覆盖新 turn。
-- provider 的 `Accepted/Running/terminal` lifecycle 写入及外层执行失败结算，都必须用 runtime 持有的同一 `AcpLifecycleOwner` 对当前 `turnId + operationId + revision` 做精确 CAS，不能从写入时读取到的最新 snapshot 反推自己的身份。stop 接管会创建新的 control-plane ownership；停止控制方在 cancel dispatch 后用该 owner 结算 `cancelled`，不能再等待已失去 ownership 的 provider runtime 写 terminal。若该 turn 已完成、取消、revision 已推进或已被后续 turn 接管，迟到结果必须是 stale no-op，不得升级为 provider failure，也不得清理或覆盖新 turn 的 active ownership。
+- provider 的 `Accepted/Running/terminal` lifecycle 写入及外层执行失败结算，都必须用 runtime 持有的同一 `AcpLifecycleOwner` 对当前 `turnId + operationId + revision` 做精确 CAS，不能从写入时读取到的最新 snapshot 反推自己的身份。stop 接管会创建新的 control-plane ownership；停止控制方在 cancel dispatch 后用该 owner 结算 `cancelled`，不能再等待已失去 ownership 的 provider runtime 写 terminal。若该 turn 已完成、取消、revision 已推进或已被后续 turn 接管，迟到结果必须是 stale no-op，不得升级为 provider failure，也不得清理或覆盖新 turn 的 active ownership。stop command 必须使用 stop transition 返回的 owner 结果区分“本次 accepted”和重复/terminal no-op；后两者不得再次写 attempt-wide provider cancel latch、暂停运行态或启动旧 turn cleanup，避免旧 stop 误伤后续 turn。
 - 接纳后无法认领不再静默返回成功，而返回稳定的 `conversation.prompt-execution-claim-lost` 错误并发布当前权威 lifecycle；Direct composer 继续依据 canonical lifecycle 决定排队或恢复发送。

@@ -37,7 +37,7 @@ use crate::dynamic::{
     WorkspaceState, WorkspaceStatus, dynamic_completion_effective_schema,
     dynamic_graph_has_active_leaf, dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
     validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
-    validate_workspace_state, validate_workspace_topology,
+    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
@@ -72,7 +72,7 @@ use crate::provider::{
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, RunState, RunWorktreeState, RuntimeAttemptLocator,
     RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState, validate_round_state,
-    validate_run_state, validate_worker_ref_state,
+    validate_run_state, validate_worker_ref_state, write_node_state,
 };
 use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
@@ -1181,7 +1181,7 @@ fn prepare_run_from_workflow(
         entry_node,
         entry_profile,
     );
-    write_json(
+    write_node_state(
         &app.paths
             .node_file(task_id, &run_id, &round_id, &node.node_id, &node.attempt_id),
         &node,
@@ -1578,7 +1578,7 @@ fn pause_dynamic_leaf_runtime_state_with_policy(
             outer_node.outcome = None;
             outer_node.finished_at = Some(now);
             crate::runtime::validate_node_state(&outer_node)?;
-            write_json(&outer_node_path, &outer_node)?;
+            write_node_state(&outer_node_path, &outer_node)?;
             write_run_progress_best_effort(
                 &app.paths,
                 task_id,
@@ -2279,10 +2279,10 @@ pub(crate) fn run_continue_background(
         let node_path =
             app.paths
                 .node_file(task_id, run_id, &round.id, &node.node_id, &node.attempt_id);
-        write_json(&node_path, &node)?;
+        write_node_state(&node_path, &node)?;
         if let Err(error) = write_json(&app.paths.run_file(task_id, run_id), &current_run) {
             node.runtime_execution_id = None;
-            let _ = write_json(&node_path, &node);
+            let _ = write_node_state(&node_path, &node);
             return Err(error);
         }
     }
@@ -5255,7 +5255,7 @@ fn persist_dynamic_graph_for_resume_unlocked(
         graph,
     )?;
     for node in &graph.nodes {
-        write_json(
+        write_dynamic_node_state(
             &app.paths.dynamic_node_file(
                 task_id,
                 run_id,
@@ -5644,7 +5644,7 @@ fn transition_dynamic_leaf_runtime_phase(
         validate_dynamic_node_state(node)?;
         let node_snapshot = node.clone();
         write_json(&graph_path, &graph)?;
-        write_json(
+        write_dynamic_node_state(
             &ctx.app.paths.dynamic_node_file(
                 ctx.task_id,
                 ctx.run_id,
@@ -5916,6 +5916,7 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
     };
     let bootstrap = DynamicNodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         dynamic_run_id: dynamic_run_id.clone(),
         kind: DynamicNodeKind::Worker,
@@ -9824,6 +9825,7 @@ fn dynamic_node_state_from_spec(
         .and_then(|provider| dynamic_permission_mode_for_provider(ctx.dynamic, provider));
     let node = DynamicNodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         id: spec.id,
         dynamic_run_id: graph.run.id.clone(),
         kind,
@@ -10202,6 +10204,7 @@ fn create_dynamic_merge_node(
     let task = group.merge.task.clone();
     let node = DynamicNodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         id: id.clone(),
         dynamic_run_id: graph.run.id.clone(),
         kind: DynamicNodeKind::Merge,
@@ -10254,6 +10257,7 @@ fn create_dynamic_acceptance_node(
     let task = group.acceptance.task.clone();
     let node = DynamicNodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         id: id.clone(),
         dynamic_run_id: graph.run.id.clone(),
         kind: DynamicNodeKind::Acceptance,
@@ -13366,6 +13370,7 @@ mod tests {
         };
         let mut node = NodeState {
             version: crate::domain::VERSION.into(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "plan".into(),
             node_type: crate::domain::NodeType::Worker,
             run_id: run_id.into(),
@@ -13441,6 +13446,7 @@ mod tests {
         ) -> crate::dynamic::DynamicNodeState {
             crate::dynamic::DynamicNodeState {
                 version: crate::domain::VERSION.into(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
                 id: id.into(),
                 dynamic_run_id: "dynamic-001".into(),
                 kind,
@@ -13822,6 +13828,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: node_id.to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: run_id.to_string(),
@@ -13870,6 +13877,49 @@ mod tests {
 
         assert!(!active);
         assert_eq!(checks, 2);
+    }
+
+    #[test]
+    fn dynamic_graph_persistence_declares_storage_schema_only_on_leaf_node() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = App::new(repo_root);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph(vec![test_worktree_node("leaf-a")]);
+
+        persist_dynamic_graph(&ctx, &mut graph).unwrap();
+
+        let graph_json = read_json::<serde_json::Value>(&app.paths.dynamic_graph_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+        ))
+        .unwrap();
+        assert!(
+            graph_json["nodes"][0]
+                .get("acpStorageSchemaVersion")
+                .is_none()
+        );
+        let leaf_json = read_json::<serde_json::Value>(&app.paths.dynamic_node_file(
+            ctx.task_id,
+            ctx.run_id,
+            ctx.round_id,
+            ctx.outer_node_id,
+            ctx.outer_attempt_id,
+            "leaf-a",
+        ))
+        .unwrap();
+        assert_eq!(
+            leaf_json
+                .get("acpStorageSchemaVersion")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(
+                crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION
+            ))
+        );
     }
 
     #[test]
@@ -13975,6 +14025,28 @@ mod tests {
             node,
             ..
         } = accepted.data;
+        assert_eq!(
+            node.acp_storage_schema_version,
+            crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION
+        );
+        let attempt_dir = app.paths.attempt_dir(
+            &task_id,
+            &run.id,
+            &round.id,
+            &node.node_id,
+            &node.attempt_id,
+        );
+        let durable_node: NodeState = read_json(&attempt_dir.join("node.json")).unwrap();
+        assert_eq!(
+            durable_node.acp_storage_schema_version,
+            crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION
+        );
+        assert!(
+            !attempt_dir
+                .join(".acp-branch-timeline-migration-v1")
+                .exists()
+        );
+        assert!(!attempt_dir.join(".acp-agent-result-migration-v2").exists());
         app.run_pause(&task_id, &run.id, PauseReason::ProcessInterrupted)
             .unwrap();
 
@@ -14049,6 +14121,7 @@ mod tests {
         );
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "accept".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: "run-001".to_string(),
@@ -14247,6 +14320,7 @@ mod tests {
         );
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "accept".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: run.id.clone(),
@@ -14353,6 +14427,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: run.id.clone(),
@@ -14493,6 +14568,7 @@ mod tests {
         };
         let current_node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: run.id.clone(),
@@ -14616,6 +14692,7 @@ mod tests {
         };
         let node = NodeState {
             version: crate::domain::VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "plan".to_string(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
@@ -14696,6 +14773,7 @@ mod tests {
         };
         let node = NodeState {
             version: crate::domain::VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "plan".to_string(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
@@ -14766,6 +14844,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "review".to_string(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
@@ -14894,6 +14973,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "review".to_string(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
@@ -15006,6 +15086,7 @@ mod tests {
         };
         let original_node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "review".to_string(),
             run_id: original_run.id.clone(),
             round_id: original_round.id.clone(),
@@ -15152,6 +15233,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
@@ -15199,6 +15281,7 @@ mod tests {
     fn test_worktree_node(id: &str) -> DynamicNodeState {
         DynamicNodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             id: id.to_string(),
             dynamic_run_id: "dynamic-run-001".to_string(),
             kind: DynamicNodeKind::Worker,
@@ -15273,6 +15356,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "ai-dynamic".to_string(),
             node_type: crate::domain::NodeType::AiDynamic,
             run_id: "run-001".to_string(),

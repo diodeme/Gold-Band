@@ -6,6 +6,7 @@ import {
   isAcceptedAcpPromptSubmitKind,
   isTerminalAcpLifecycle,
   isTerminalLifecycleForTurn,
+  shouldHidePendingAcpInteractions,
   mergeConversationAttemptLifecycle,
   shouldSettleAcpComposerTransientState,
   shouldKeepLocalRuntimeLifecycleOverride,
@@ -735,6 +736,19 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.showStatus).toBe(false);
   });
 
+  it('lets an accepted stop win over a stale permission snapshot', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({ acp: { stopping: true, latestTurnStatus: 'none' } }),
+      waitingForPermission: true,
+      stopCommandPending: true,
+    }));
+
+    expect(state.mode).toBe('stopping');
+    expect(state.stopInProgress).toBe(true);
+    expect(state.composerLocked).toBe(false);
+    expect(state.canStop).toBe(true);
+  });
+
   it('routes a Direct message to the existing queue while permission remains pending', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -1156,6 +1170,24 @@ describe('isTerminalAcpLifecycle', () => {
   });
 });
 
+describe('shouldHidePendingAcpInteractions', () => {
+  it('hides a stale permission projection as soon as stop is accepted', () => {
+    const stopping = lifecycle({ acp: { stopping: true, latestTurnStatus: 'none' } });
+
+    expect(shouldHidePendingAcpInteractions(stopping, 'turn-1', false, false)).toBe(true);
+    expect(shouldHidePendingAcpInteractions(lifecycle(), null, true, false)).toBe(true);
+  });
+
+  it('hides pending interactions after the lifecycle reaches terminal', () => {
+    const terminal = lifecycle({
+      acp: { turnId: 'turn-1', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
+    });
+
+    expect(shouldHidePendingAcpInteractions(terminal, 'turn-1', false, false)).toBe(true);
+    expect(shouldHidePendingAcpInteractions(terminal, 'turn-2', false, false)).toBe(false);
+  });
+});
+
 describe('activityProjectionStatus', () => {
   it('archives activity on a lifecycle-only terminal patch when the body snapshot is stale', () => {
     const terminal = lifecycle({
@@ -1251,6 +1283,31 @@ describe('lifecycle-only terminal composer recovery', () => {
 });
 
 describe('shouldKeepLocalRuntimeLifecycleOverride', () => {
+  it('accepts a newer terminal revision over a local continue-started override', () => {
+    const localActive = lifecycle({
+      runtime: { active: true, revision: 7, phase: 'provider-running' },
+      acp: {
+        revision: 7,
+        turnId: 'turn-1',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+      },
+    });
+    const terminal = lifecycle({
+      runtime: { active: false, revision: 8, phase: 'paused' },
+      acp: {
+        revision: 8,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+      continueKind: 'action',
+    });
+
+    expect(shouldKeepLocalRuntimeLifecycleOverride(localActive, terminal)).toBe(false);
+  });
+
   it('keeps continue-started lifecycle over stale paused parent snapshots', () => {
     const localActive = lifecycle({
       runtime: {

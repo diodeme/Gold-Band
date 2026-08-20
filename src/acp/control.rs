@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::acp::events::{current_timestamp, load_session_metadata_value, load_timeline_items};
+use crate::acp::events::{
+    current_timestamp, load_session_metadata_value, load_timeline_items,
+    patch_session_runtime_control,
+};
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
-use crate::storage::{ensure_parent_dir, write_json};
 
 const SNAPSHOT_FILE: &str = "acp.snapshot.json";
 const SESSION_FILE: &str = "acp.session.json";
@@ -218,11 +220,7 @@ fn write_transition_unlocked(
 fn persist_cursor_unlocked(attempt_dir: &Utf8Path, cursor: &AcpRuntimeControlCursor) -> Result<()> {
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let mut session = session_value(&path)?;
-        session["runtimeControl"] = serde_json::to_value(cursor)?;
-        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
-        ensure_parent_dir(&path)?;
-        write_json(&path, &session)?;
+        patch_session_runtime_control(&path, Some(cursor), true)?;
     }
     Ok(())
 }
@@ -257,30 +255,21 @@ fn reconstruct_cursor_from_timeline_unlocked(
 fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()> {
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let mut session = session_value(&path)?;
-        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
-        ensure_parent_dir(&path)?;
-        write_json(&path, &session)?;
+        patch_session_runtime_control(&path, None, true)?;
     }
     Ok(())
-}
-
-fn session_value(path: &Utf8Path) -> Result<Value> {
-    if path.exists() {
-        return load_session_metadata_value(path, None);
-    }
-    Ok(serde_json::json!({
-        "availability": "unavailable",
-        "latestTurnStatus": "none",
-        "restored": false,
-        "createdAt": current_timestamp(),
-    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::events::{AcpUiEvent, write_timeline_items};
+    use crate::acp::events::{
+        AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpTurnAdmission,
+        AcpTurnExecutionClaim, AcpUiEvent, begin_session_turn, claim_session_turn_for_execution,
+        persist_session_turn_terminal_owned, read_lifecycle_header, write_timeline_items,
+    };
+    use crate::provider::ConversationPromptInput;
+    use crate::storage::write_json;
 
     #[test]
     fn timeline_scan_placeholder_is_not_an_established_session() {
@@ -433,6 +422,84 @@ mod tests {
         let resumed = load_runtime_control_cursor(attempt_dir).unwrap().unwrap();
         assert_eq!(resumed.current_mode, TurnControlMode::RuntimeControlled);
         assert_eq!(resumed.transition_id, resumed_id);
+    }
+
+    #[test]
+    fn workflow_continue_patch_preserves_turn_owner_and_allows_immediate_finalize_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let snapshot = attempt_dir.join(SNAPSHOT_FILE);
+        let interrupted = mark_runtime_interrupted(attempt_dir).unwrap();
+        let business = AcpPromptSubmission {
+            turn_id: "business-turn".to_string(),
+            operation_id: "business-operation".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: ConversationPromptInput {
+                display_text: "run business turn".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-20T00:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&snapshot, &business).unwrap()
+        else {
+            panic!("business turn must be admitted");
+        };
+        let owner = match claim_session_turn_for_execution(
+            &snapshot,
+            &business.turn_id,
+            started.revision,
+            &business.operation_id,
+        )
+        .unwrap()
+        {
+            AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("business turn must own execution, got {claim:?}"),
+        };
+
+        let (source_id, resumed_id) = prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert_eq!(source_id, interrupted.transition_id);
+        assert!(commit_workflow_continued(attempt_dir, &source_id, &resumed_id).unwrap());
+        let after_control_patch = read_lifecycle_header(&snapshot).unwrap().unwrap();
+        assert_eq!(after_control_patch.revision, owner.revision);
+        assert_eq!(
+            after_control_patch.turn_id.as_deref(),
+            Some("business-turn")
+        );
+        assert_eq!(
+            after_control_patch.live_turn_activity,
+            AcpLiveTurnActivity::Accepted
+        );
+
+        let terminal = persist_session_turn_terminal_owned(
+            &snapshot,
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            AcpLatestTurnStatus::Completed,
+            "end_turn",
+            "2026-08-20T00:00:01Z",
+        )
+        .unwrap()
+        .expect("business owner must reach terminal before finalize");
+        assert_eq!(terminal.latest_turn_status, AcpLatestTurnStatus::Completed);
+
+        let finalize = AcpPromptSubmission {
+            turn_id: "artifact-finalize-attempt-001".to_string(),
+            operation_id: "finalize-operation".to_string(),
+            input: ConversationPromptInput {
+                display_text: "hidden finalize".to_string(),
+                quotes: Vec::new(),
+            },
+            admitted_at: "2026-08-20T00:00:02Z".to_string(),
+            ..business
+        };
+        assert!(matches!(
+            begin_session_turn(&snapshot, &finalize).unwrap(),
+            AcpTurnAdmission::Started(_)
+        ));
     }
 
     #[test]

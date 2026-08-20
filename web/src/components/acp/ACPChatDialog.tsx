@@ -190,7 +190,9 @@ import {
   deriveAcpRuntimeComposerState,
   isAcceptedAcpPromptSubmitKind,
   isAcceptedQueuePromptSubmitKind,
+  isTerminalAcpLifecycle,
   isTerminalLifecycleForTurn,
+  shouldHidePendingAcpInteractions,
   mergeConversationAttemptLifecycle,
   shouldSettleAcpComposerTransientState,
   shouldSettleRuntimeContinueSubmission,
@@ -982,6 +984,9 @@ export function ACPChatDialog(
   const [stopCommandPending, setStopCommandPending] = useState(false);
   const [runtimeStopAccepted, setRuntimeStopAccepted] = useState(false);
   const [localRuntimeLifecycle, setLocalRuntimeLifecycle] = useState<ConversationAttemptLifecycleVm | null>(null);
+  const lifecycleProjectionRef = useRef<ConversationAttemptLifecycleVm | null>(
+    runtimeComposerContext?.lifecycle ?? null,
+  );
   const [queueMutationPending, setQueueMutationPending] = useState(false);
   const [queueRestorePending, setQueueRestorePending] = useState(false);
   const latestSessionRef = useRef<AcpSessionVm | null>(restoredSession);
@@ -1010,6 +1015,26 @@ export function ACPChatDialog(
     setOptimisticEvents(next);
     onOptimisticEventsChange?.(next);
   };
+
+  const applyLifecycleProjection = useCallback((
+    incoming: ConversationAttemptLifecycleVm,
+    source: "context" | "local" = "local",
+  ) => {
+    const current = lifecycleProjectionRef.current;
+    if (shouldKeepLocalRuntimeLifecycleOverride(current, incoming)) return;
+    const merged = mergeConversationAttemptLifecycle(current, incoming);
+    lifecycleProjectionRef.current = merged;
+    setLocalRuntimeLifecycle(source === "context" && merged === incoming ? null : merged);
+    if (!isTerminalAcpLifecycle(merged)) return;
+    setCurrentSession((currentSession) => {
+      const base = currentSession ?? latestSessionRef.current;
+      const settled = settlePendingAcpInteractionsForLifecycle(base, merged);
+      if (settled === base) return currentSession;
+      latestSessionRef.current = settled;
+      if (settled) storeAcpSession(eventWindowKey, settled);
+      return settled;
+    });
+  }, [eventWindowKey]);
 
   useEffect(() => {
     logAcpSessionReadyLifecycle("component-mount", componentInstanceId, sessionIdentity);
@@ -1043,18 +1068,15 @@ export function ACPChatDialog(
     setRuntimeContinueSubmitting(false);
     setRuntimeContinueError(null);
     setLocalRuntimeLifecycle(null);
+    lifecycleProjectionRef.current = null;
     setQueueSubmitPending(false);
   }, [attemptId, manualCheckPending, nodeId, roundId, runId, taskId]);
 
   useEffect(() => {
     const incoming = runtimeComposerContext?.lifecycle;
     if (!incoming) return;
-    setLocalRuntimeLifecycle((current) => {
-      if (shouldKeepLocalRuntimeLifecycleOverride(current, incoming)) return current;
-      const merged = mergeConversationAttemptLifecycle(current, incoming);
-      return merged === incoming ? null : merged;
-    });
-  }, [runtimeComposerContext?.lifecycle]);
+    applyLifecycleProjection(incoming, "context");
+  }, [applyLifecycleProjection, runtimeComposerContext?.lifecycle]);
 
   useEffect(() => {
     const identityChanged = sessionPropSyncIdentityRef.current !== eventWindowKey;
@@ -1064,9 +1086,13 @@ export function ACPChatDialog(
         latestSessionRef.current = previous;
         return previous;
       }
-      const next = reconcileAcpSessionForDisplay(
+      const reconciled = reconcileAcpSessionForDisplay(
         identityChanged ? null : previous,
         session ?? null,
+      );
+      const next = settlePendingAcpInteractionsForLifecycle(
+        reconciled,
+        lifecycleProjectionRef.current,
       );
       latestSessionRef.current = next;
       if (next) storeAcpSession(eventWindowKey, next);
@@ -1132,9 +1158,12 @@ export function ACPChatDialog(
         latestSessionRef.current = previous;
         return previous;
       }
-      const next = reconcileAcpSessionForDisplay(
-        identityChanged ? null : previous,
-        cachedSession,
+      const next = settlePendingAcpInteractionsForLifecycle(
+        reconcileAcpSessionForDisplay(
+          identityChanged ? null : previous,
+          cachedSession,
+        ),
+        lifecycleProjectionRef.current,
       );
       latestSessionRef.current = next;
       if (next) storeAcpSession(eventWindowKey, next);
@@ -1336,16 +1365,26 @@ export function ACPChatDialog(
     hasNewerEvents,
     "permission",
   );
-  const pendingPermission =
-    effective?.pendingPermissions?.find(
-      (request) => !dismissedPermissionIds.has(request.requestId),
-    ) ?? (canInferPendingPermission
-      ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
-      : null);
-  const waitingForPermission = Boolean(pendingPermission);
-  const pendingElicitationRequest = effective?.pendingElicitations.find(
-    (request) => !answeredElicitations.has(request.elicitationId),
+  const hidePendingInteractions = shouldHidePendingAcpInteractions(
+    localLifecycle,
+    activeTurnPromptId,
+    cancelling,
+    stopCommandPending,
   );
+  const pendingPermission =
+    hidePendingInteractions
+      ? null
+      : effective?.pendingPermissions?.find(
+          (request) => !dismissedPermissionIds.has(request.requestId),
+        ) ?? (canInferPendingPermission
+          ? pendingPermissionFromEvents(effectiveEvents, dismissedPermissionIds)
+          : null);
+  const waitingForPermission = Boolean(pendingPermission);
+  const pendingElicitationRequest = hidePendingInteractions
+    ? null
+    : effective?.pendingElicitations.find(
+        (request) => !answeredElicitations.has(request.elicitationId),
+      );
   const pendingElicitation = pendingElicitationRequest
     ? pendingElicitationFromRequest(pendingElicitationRequest)
     : null;
@@ -1371,7 +1410,13 @@ export function ACPChatDialog(
     runtimeActive: initializationLifecycleActive,
     sending,
   });
-  const acpSessionActive = isSessionActiveStatus(effective?.status);
+  const sessionSnapshotSettled = shouldSettleAcpComposerTransientState(
+    localLifecycle,
+    effective?.status,
+    activeTurnPromptId,
+  );
+  const acpSessionActive = isSessionActiveStatus(effective?.status)
+    && !sessionSnapshotSettled;
   const sessionActive = acpSessionActive || runtimeActive || projectionLifecycle?.acp.liveTurnActivity !== "idle" || promptCommandPending;
   const messageAttachmentLocator = useMemo<MessageAttachmentLocator>(
     () => ({
@@ -1643,7 +1688,7 @@ export function ACPChatDialog(
     const incoming = normalizeSessionUpdate(updated);
     const previous = latestSessionRef.current;
     const reconciled = reconcileAcpSessionForDisplay(previous, incoming);
-    const normalized = reconciled
+    const paginated = reconciled
       ? {
           ...reconciled,
           eventPage: reconcileAcpEventPageForUpdate(
@@ -1653,6 +1698,10 @@ export function ACPChatDialog(
           ),
         }
       : null;
+    const normalized = settlePendingAcpInteractionsForLifecycle(
+      paginated,
+      lifecycleProjectionRef.current,
+    );
     const refEquivalent = sessionsEquivalent(previous, normalized);
     logAcpSessionReady(source, componentInstanceId, sessionIdentity, normalized, {
       refEquivalent,
@@ -1925,7 +1974,10 @@ export function ACPChatDialog(
         if (hasElicitationLifecycleUpdate) {
           updated = applyPendingElicitationEventsToSession(updated, normalizedEvents);
         }
-        const reconciled = reconcileAcpSessionForDisplay(latest, updated);
+        const reconciled = settlePendingAcpInteractionsForLifecycle(
+          reconcileAcpSessionForDisplay(latest, updated),
+          lifecycleProjectionRef.current,
+        );
         latestSessionRef.current = reconciled;
         return reconciled;
       });
@@ -2230,6 +2282,11 @@ export function ACPChatDialog(
       outerNodeId,
       outerAttemptId,
     };
+    let retryAttempt = 0;
+    let lastLoadError: unknown = null;
+    let initialFetchSucceeded = false;
+    let snapshotGeneration = latestSessionRef.current?.eventPage.generation ?? 0;
+    let snapshotCoveredRevision = latestSessionRef.current?.eventPage.coveredRevision ?? 0;
     void (async () => {
       stopListening = subscribeConversationEvents((event) => {
         const locatorMatches = conversationEventMatchesAttempt(event, branchLocator);
@@ -2243,9 +2300,7 @@ export function ACPChatDialog(
         }));
         if (!active || !locatorMatches) return;
         if (event.lifecycle) {
-          setLocalRuntimeLifecycle((current) =>
-            mergeConversationAttemptLifecycle(current, event.lifecycle!),
-          );
+          applyLifecycleProjection(event.lifecycle);
         }
         if (event.event) {
           if ((event.branchId ?? 'root') !== branchId) {
@@ -2324,7 +2379,45 @@ export function ACPChatDialog(
           if (isSessionTerminalStatus(incoming.status)) {
             settleLiveStreamingMarkdown();
           }
+          const current = latestSessionRef.current;
+          const incomingGeneration = event.timelineGeneration
+            ?? incoming.eventPage.generation;
+          const currentGeneration = Math.max(
+            snapshotGeneration,
+            current?.eventPage.generation ?? 0,
+          );
+          const sessionIdentityConflicts = Boolean(
+            current?.sessionId
+            && incoming.sessionId
+            && current.sessionId !== incoming.sessionId,
+          );
+          if (
+            incoming.branchId !== "root"
+            || sessionIdentityConflicts
+            || (incomingGeneration != null && incomingGeneration < currentGeneration)
+          ) {
+            return;
+          }
           applySessionUpdate(incoming, "subscription-session");
+          const incomingCoveredRevision = event.timelineRevision
+            ?? incoming.eventPage.coveredRevision
+            ?? 0;
+          if (incomingGeneration != null && incomingGeneration > snapshotGeneration) {
+            snapshotGeneration = incomingGeneration;
+            snapshotCoveredRevision = incomingCoveredRevision;
+          } else {
+            snapshotCoveredRevision = Math.max(
+              snapshotCoveredRevision,
+              incomingCoveredRevision,
+            );
+          }
+          if (isAcpSessionReadyForInitialDisplay(incoming)) {
+            initialFetchSucceeded = true;
+            lastLoadError = null;
+            markAcpSessionContentHydrated(eventWindowKey);
+            setSessionLoadError(null);
+            setInitialSessionQueryState("success");
+          }
         }
       });
       await ensureConversationEventRouterStarted();
@@ -2332,11 +2425,6 @@ export function ACPChatDialog(
       logAcpSessionReadyLifecycle("subscription-listening", componentInstanceId, sessionIdentity, {
         refreshSeq,
       });
-      let retryAttempt = 0;
-      let lastLoadError: unknown = null;
-      let initialFetchSucceeded = false;
-      let snapshotGeneration = 0;
-      let snapshotCoveredRevision = 0;
       while (active && sessionRefreshSeqRef.current === refreshSeq) {
         const requestTraceId = `${effectTraceId}:request-${retryAttempt + 1}`;
         const requestStartedAt = performance.now();
@@ -2379,10 +2467,17 @@ export function ACPChatDialog(
             currentRefreshSeq: sessionRefreshSeqRef.current,
           });
           if (updated && active && sessionRefreshSeqRef.current === refreshSeq) {
+            const updatedGeneration = updated.eventPage.generation;
+            if (
+              (initialFetchSucceeded && !isAcpSessionReadyForInitialDisplay(updated))
+              || (updatedGeneration != null && updatedGeneration < snapshotGeneration)
+            ) {
+              break;
+            }
             lastLoadError = null;
             setSessionLoadError(null);
             applySessionUpdate(updated, "initial-fetch");
-            snapshotGeneration = updated.eventPage.generation ?? 0;
+            snapshotGeneration = updatedGeneration ?? snapshotGeneration;
             snapshotCoveredRevision = Math.max(
               snapshotCoveredRevision,
               updated.eventPage.coveredRevision ?? 0,
@@ -2879,6 +2974,7 @@ export function ACPChatDialog(
     target: "conversation" | "runtime-continue" = "conversation",
   ) => {
     const { displayText: draftContent, quotes: submittedQuotes } = submission;
+    if (!composerState.canSubmit || composerState.stopInProgress) return false;
     const enqueueing = target === "conversation"
       && composerState.submitTarget === "queue-prompt";
     if (enqueueing) {
@@ -2918,9 +3014,7 @@ export function ACPChatDialog(
           requestAnimationFrame(() => composerTextareaRef.current?.focus());
         }
         if (result.lifecycle) {
-          setLocalRuntimeLifecycle((current) =>
-            mergeConversationAttemptLifecycle(current, result.lifecycle!),
-          );
+          applyLifecycleProjection(result.lifecycle);
           emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
         }
       } catch (error) {
@@ -2933,7 +3027,7 @@ export function ACPChatDialog(
       }
       return submissionAccepted;
     }
-    if (sending || activeAwaitingResponse || sessionActive || cancelling) return false;
+    if (composerState.submitTarget !== "acp-prompt") return false;
     setSending(true);
     setPromptCommandPending(true);
     setSendError(null);
@@ -3012,31 +3106,15 @@ export function ACPChatDialog(
       const updated = result.session ?? null;
       if (updated) applySessionUpdate(updated);
       if (result.lifecycle) {
-        setLocalRuntimeLifecycle((current) =>
-          mergeConversationAttemptLifecycle(current, result.lifecycle!),
-        );
+        applyLifecycleProjection(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       if (target === "runtime-continue" && result.kind === "runtime-continue-started") {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
-        updateOptimisticEvents((current) =>
-          current.map((event) =>
-            event.id === optimisticEvent.id
-              ? { ...event, status: "processing" }
-              : event,
-          ),
-        );
       } else if (!updated && isAcceptedAcpPromptSubmitKind(result.kind)) {
         submissionAccepted = true;
         setActiveTurnStartedAt(optimisticEvent.timestamp);
-        updateOptimisticEvents((current) =>
-          current.map((event) =>
-            event.id === optimisticEvent.id
-              ? { ...event, status: "processing" }
-              : event,
-          ),
-        );
       } else if (result.kind === "rejected") {
         setSendError(t("errors.app.unexpected", { message: "" }));
         setAwaitingResponse(false);
@@ -3139,9 +3217,7 @@ export function ACPChatDialog(
 
   const applyQueueLifecycle = (lifecycle?: ConversationAttemptLifecycleVm | null) => {
     if (!lifecycle) return;
-    setLocalRuntimeLifecycle((current) =>
-      mergeConversationAttemptLifecycle(current, lifecycle),
-    );
+    applyLifecycleProjection(lifecycle);
     emitLifecycleSnapshot(lifecycle, effective ?? null);
   };
 
@@ -3292,11 +3368,9 @@ export function ACPChatDialog(
       const stopPlan = planAcpStopResponse(result);
       const awaitTerminalStop = stopPlan.awaitTerminal;
       awaitTerminalStopRef.current = awaitTerminalStop;
-      setRuntimeStopAccepted(stopPlan.accepted || Boolean(result.run));
+      setRuntimeStopAccepted(stopPlan.accepted);
       if (result.lifecycle) {
-        setLocalRuntimeLifecycle((current) =>
-          mergeConversationAttemptLifecycle(current, result.lifecycle!),
-        );
+        applyLifecycleProjection(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       if (stopPlan.sessionSnapshot) applySessionUpdate(stopPlan.sessionSnapshot);
@@ -3393,9 +3467,7 @@ export function ACPChatDialog(
           );
       }
       if (result.lifecycle) {
-        setLocalRuntimeLifecycle((current) =>
-          mergeConversationAttemptLifecycle(current, result.lifecycle!),
-        );
+        applyLifecycleProjection(result.lifecycle);
         emitLifecycleSnapshot(result.lifecycle, result.session ?? null);
       }
       setRuntimeStopAccepted(false);
@@ -8015,6 +8087,30 @@ function reconcileAcpSessionForDisplay(
   return preserveAcpSessionMetadataForDisplay(previous, timingStable);
 }
 
+/**
+ * A terminal ACP lifecycle settles the transient interaction projection for
+ * that turn even when the session body carrying the corresponding Timeline
+ * settlement has not arrived yet. Callers must pass the monotonically merged
+ * lifecycle so a late terminal revision cannot clear a newer active turn.
+ */
+export function settlePendingAcpInteractionsForLifecycle(
+  session: AcpSessionVm | null | undefined,
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+): AcpSessionVm | null {
+  if (!session || !isTerminalAcpLifecycle(lifecycle)) return session ?? null;
+  if (
+    session.pendingPermissions.length === 0
+    && session.pendingElicitations.length === 0
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    pendingPermissions: [],
+    pendingElicitations: [],
+  };
+}
+
 function preserveAcpSessionMetadataForDisplay(
   previous: AcpSessionVm | null | undefined,
   next: AcpSessionVm | null,
@@ -8029,13 +8125,24 @@ function preserveAcpSessionMetadataForDisplay(
   const preserveGoldBandPrompts =
     previous.events.some(isGoldBandUserPrompt) &&
     !next.events.some(isGoldBandUserPrompt);
+  const pendingProjectionAdvanced = hasAdvancedAcpSessionProjection(previous, next);
+  const preserveSettledPermissions =
+    previous.pendingPermissions.length === 0
+    && next.pendingPermissions.length > 0
+    && !pendingProjectionAdvanced;
   const preservePendingElicitations = shouldPreservePendingElicitations(previous, next);
+  const preserveSettledElicitations =
+    previous.pendingElicitations.length === 0
+    && next.pendingElicitations.length > 0
+    && !pendingProjectionAdvanced;
 
   if (
     !preserveSystemPrompt &&
     !preserveConfig &&
     !preserveGoldBandPrompts &&
-    !preservePendingElicitations
+    !preserveSettledPermissions &&
+    !preservePendingElicitations &&
+    !preserveSettledElicitations
   ) {
     return next;
   }
@@ -8059,12 +8166,39 @@ function preserveAcpSessionMetadataForDisplay(
     config: preserveConfig
       ? mergeAcpSessionConfigForDisplay(previous.config, next.config)
       : next.config,
-    pendingElicitations: preservePendingElicitations
+    pendingPermissions: preserveSettledPermissions
+      ? previous.pendingPermissions
+      : next.pendingPermissions,
+    pendingElicitations: preservePendingElicitations || preserveSettledElicitations
       ? previous.pendingElicitations
       : next.pendingElicitations,
     events,
     eventPage: next.eventPage,
   };
+}
+
+function hasAdvancedAcpSessionProjection(
+  previous: AcpSessionVm,
+  next: AcpSessionVm,
+) {
+  const previousGeneration = previous.eventPage.generation;
+  const nextGeneration = next.eventPage.generation;
+  if (previousGeneration != null && nextGeneration != null) {
+    if (nextGeneration > previousGeneration) return true;
+    if (nextGeneration < previousGeneration) return false;
+  } else if (previousGeneration == null && nextGeneration != null) {
+    return true;
+  }
+  for (const [previousValue, nextValue] of [
+    [previous.eventPage.coveredRevision, next.eventPage.coveredRevision],
+    [previous.eventPage.newestRevision, next.eventPage.newestRevision],
+    [previous.eventPage.newestSeq, next.eventPage.newestSeq],
+  ] as const) {
+    if (nextValue != null && (previousValue == null || nextValue > previousValue)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function shouldPreservePendingElicitations(
@@ -8509,7 +8643,10 @@ function isOptimisticEvent(event: AcpUiEventVm) {
 
 function clearPendingOptimisticPromptsAfterStop(events: AcpUiEventVm[]) {
   return events.filter(
-    (event) => !(isOptimisticEvent(event) && event.status === "sending"),
+    (event) => !(
+      isOptimisticEvent(event)
+      && (event.status === "sending" || event.status === "processing")
+    ),
   );
 }
 

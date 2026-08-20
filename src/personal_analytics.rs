@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 
 pub mod index;
 
-pub const PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION: &str = "2.1.0";
+pub const PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION: &str = "2.2.0";
 pub const PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS: usize = 120;
 pub const PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS: usize = 1_200;
 pub const PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS: usize = 72_000;
@@ -191,6 +191,12 @@ pub struct AnalyticsQuality {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnalyticsTaskSummary {
     pub task_locator: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub latest_run_id: Option<String>,
     pub title: String,
     pub mode: String,
     pub status: String,
@@ -378,6 +384,7 @@ struct TokenCounters {
 struct RunFact {
     task_key: String,
     run_key: String,
+    unit_type: String,
     status: String,
     outcome: Option<String>,
     updated_epoch: Option<i64>,
@@ -652,6 +659,7 @@ fn process_json_file(
             accumulator.runs.push(RunFact {
                 task_key: task_key(relative).unwrap_or_default(),
                 run_key: run_key(relative).unwrap_or_default(),
+                unit_type: "workflow-run".to_string(),
                 status: value
                     .get("status")
                     .and_then(Value::as_str)
@@ -1483,6 +1491,15 @@ fn task_summary(
             .cmp(&right.updated_epoch)
             .then_with(|| left.locator.cmp(&right.locator))
     })?;
+    let navigation_run = task_runs
+        .iter()
+        .copied()
+        .filter(|run| matches!(run.unit_type.as_str(), "workflow-run" | "auto-outer-run"))
+        .max_by(|left, right| {
+            left.updated_epoch
+                .cmp(&right.updated_epoch)
+                .then_with(|| left.locator.cmp(&right.locator))
+        })?;
     let task_nodes = nodes
         .iter()
         .filter(|node| node.task_key == task_key)
@@ -1501,8 +1518,13 @@ fn task_summary(
         .into_iter()
         .chain(task_runs.iter().filter_map(|run| run.updated_epoch))
         .max();
+    let (project_id, task_id) = task_key.split_once('/')?;
+    let latest_run_id = navigation_run.locator.rsplit('/').next()?.to_string();
     Some(AnalyticsTaskSummary {
         task_locator: task_key.to_string(),
+        project_id: Some(project_id.to_string()),
+        task_id: Some(task_id.to_string()),
+        latest_run_id: Some(latest_run_id),
         title: if task.title.trim().is_empty() {
             task_key.rsplit('/').next().unwrap_or("Task").to_string()
         } else {
@@ -1574,6 +1596,18 @@ mod tests {
     fn write(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn task_summary_accepts_cached_reports_without_navigation_identity() {
+        let task: AnalyticsTaskSummary = serde_json::from_str(
+            r#"{"taskLocator":"project-a/task-1","title":"Legacy task","mode":"workflow","status":"completed","outcome":"success","agentNames":[],"totalTokens":10,"activeDurationSeconds":20,"activeDurationZeroFilled":false,"terminalNode":"accept","lastActivityAt":"2026-08-18T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(task.project_id, None);
+        assert_eq!(task.task_id, None);
+        assert_eq!(task.latest_run_id, None);
     }
 
     #[test]

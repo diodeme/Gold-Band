@@ -520,6 +520,9 @@ export interface PersonalAnalyticsRateMetricVm {
 
 export interface PersonalAnalyticsTaskSummaryVm {
   taskLocator: string;
+  projectId?: string | null;
+  taskId?: string | null;
+  latestRunId?: string | null;
   title: string;
   mode: string;
   status: string;

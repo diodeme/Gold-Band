@@ -63,7 +63,7 @@ const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
   },
   insightOperation: null,
   latestReport: {
-    schemaVersion: '2.1.0',
+    schemaVersion: '2.2.0',
     reportId: 'preview-report',
     generatedAt: '2026-08-17T12:02:18Z',
     sourceWatermark: '2026-08-17T12:00:00Z',
@@ -91,7 +91,7 @@ const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
       latestAt: '2026-08-17T11:51:00Z',
     },
     recentTasks: [{
-      taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+      taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
       agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
       terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
     }],
@@ -117,7 +117,7 @@ const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
       resumeCount: 18,
       manualContinueCount: 11,
       topDurationTasks: [{
-        taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
         agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
         terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
       }],
@@ -131,7 +131,7 @@ const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
       totalTokens: 3241096,
       observedPromptCount: 238,
       topTokenTasks: [{
-        taskLocator: 'project-a/task-b', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
+        taskLocator: 'project-a/task-b', projectId: 'project-a', taskId: 'task-b', latestRunId: 'run-1', title: '优化个人数据分析', mode: 'workflow', status: 'completed', outcome: 'success',
         agentNames: ['codex-acp'], totalTokens: 128400, activeDurationSeconds: 1842, activeDurationZeroFilled: false,
         terminalNode: 'accept', lastActivityAt: '2026-08-17T11:51:00Z',
       }],

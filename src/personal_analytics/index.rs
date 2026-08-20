@@ -695,6 +695,7 @@ fn upsert_source(
     source: &SourceFile,
     facts: &SourceFacts,
 ) -> rusqlite::Result<()> {
+    let mut task_locators = BTreeSet::new();
     tx.execute(
         "INSERT OR REPLACE INTO analytics_sources
          (sourcePath, sourceType, fingerprint, parseStatus, errorCode, sizeBytes, activityEpoch)
@@ -745,7 +746,7 @@ fn upsert_source(
                 update.last_activity_epoch
             ],
         )?;
-        refresh_run_types(tx, &update.task_locator)?;
+        task_locators.insert(update.task_locator.clone());
     }
     for run in &facts.runs {
         tx.execute(
@@ -762,6 +763,10 @@ fn upsert_source(
                 source.relative
             ],
         )?;
+        task_locators.insert(run.task_locator.clone());
+    }
+    for task_locator in task_locators {
+        refresh_run_types(tx, &task_locator)?;
     }
     for attempt in &facts.attempts {
         let zero_filled = attempt.session_elapsed_seconds.is_none();
@@ -1357,13 +1362,14 @@ fn load_runs(
         }
         accumulator.runs.push(RunFact {
             task_key: task,
-            run_key: locator,
+            run_key: locator.clone(),
+            unit_type,
             status,
             outcome,
             updated_epoch: Some(epoch),
             terminal_node: terminal,
             pause_reason: pause,
-            locator: String::new(),
+            locator,
         });
         accumulator.earliest_epoch =
             Some(accumulator.earliest_epoch.unwrap_or(epoch)).filter(|value| *value <= epoch);
@@ -1549,6 +1555,48 @@ mod tests {
     }
 
     #[test]
+    fn report_keeps_auto_tasks_navigable_and_classified() {
+        let root = tempfile::tempdir().unwrap();
+        let task = root.path().join("project-a/tasks/task-auto");
+        write(
+            &task.join("task.json"),
+            r#"{"version":"1.0","id":"task-auto","title":"Auto task"}"#,
+        );
+        write(
+            &task.join("conversation.json"),
+            r#"{"version":"1.0","runMode":"auto","createdAt":"2026-08-18T01:00:00Z"}"#,
+        );
+        write(
+            &task.join("runs/run-1/run.json"),
+            r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
+        );
+        let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+        let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+        index.sync(&projects, |_, _| {}, || false).unwrap();
+        let report = index
+            .report(&PersonalAnalyticsDateRange::default(), "report-auto".into())
+            .unwrap();
+
+        assert_eq!(
+            report
+                .reliability
+                .auto_outer_run_terminal_success_rate
+                .numerator,
+            1
+        );
+        assert_eq!(report.recent_tasks[0].mode, "auto");
+        assert_eq!(
+            report.recent_tasks[0].task_id,
+            Some("task-auto".to_string())
+        );
+        assert_eq!(
+            report.recent_tasks[0].latest_run_id,
+            Some("run-1".to_string())
+        );
+    }
+
+    #[test]
     fn incremental_sync_reports_ranges_and_views_from_index() {
         let root = tempfile::tempdir().unwrap();
         analytics_fixture(root.path());
@@ -1564,6 +1612,12 @@ mod tests {
             all.reliability.workflow_run_terminal_success_rate.numerator,
             1
         );
+        assert_eq!(
+            all.recent_tasks[0].project_id,
+            Some("project-a".to_string())
+        );
+        assert_eq!(all.recent_tasks[0].task_id, Some("task-1".to_string()));
+        assert_eq!(all.recent_tasks[0].latest_run_id, Some("run-1".to_string()));
         assert_eq!(all.token_usage.total_tokens, 160);
         assert_eq!(all.efficiency.observed_terminal_run_active_seconds, 60);
         assert_eq!(all.index_revision, first.index_revision);

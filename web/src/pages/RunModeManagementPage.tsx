@@ -81,6 +81,7 @@ export function TemplateActionRow({
   notice,
   showSaveCurrent = true,
   saveCurrentDisabled = false,
+  saveAsDisabled = false,
   saving,
   saveCurrentLabel,
   savingLabel,
@@ -98,6 +99,7 @@ export function TemplateActionRow({
   notice?: ReactNode;
   showSaveCurrent?: boolean;
   saveCurrentDisabled?: boolean;
+  saveAsDisabled?: boolean;
   saving: boolean;
   saveCurrentLabel: string;
   savingLabel: string;
@@ -122,7 +124,7 @@ export function TemplateActionRow({
         ) : null}
         {restoreAction}
         <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
-        <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
+        <Button size="sm" disabled={!name.trim() || saving || saveAsDisabled} onClick={onSaveAs}>
           {saveAsLabel}
         </Button>
       </div>
@@ -1326,7 +1328,8 @@ export function RunModeManagementPage({
               ) : null}
               notice={showDefaultWorkflowSaveAsNotice ? t('taskList.create.defaultWorkflowSaveAsNotice') : null}
               showSaveCurrent={Boolean(wfEditTemplateId)}
-              saveCurrentDisabled={wfSaveCurrentDisabled}
+              saveCurrentDisabled={!profilesLoaded || wfSaveCurrentDisabled}
+              saveAsDisabled={!profilesLoaded}
               saving={wfSaving}
               saveCurrentLabel={t('taskList.create.saveCurrentWorkflow')}
               savingLabel={t('taskList.create.savingWorkflowTemplate')}
@@ -1356,6 +1359,7 @@ export function RunModeManagementPage({
                     modelBindings={wfEditModelBindings}
                     agentRegistry={agentRegistry}
                     profiles={profiles}
+                    profileCatalogReady={profilesLoaded}
                     workflowTemplates={effectiveWorkflowTemplates}
                     currentTemplateId={wfEditTemplateId}
                     currentTemplateName={selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null}

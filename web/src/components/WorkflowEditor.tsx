@@ -353,6 +353,7 @@ interface WorkflowEditorProps {
   modelBindings?: WorkflowModelBindings;
   agentRegistry: AgentRegistryVm | null;
   profiles?: ProfileVm[];
+  profileCatalogReady?: boolean;
   onOpenProfileManagement?: () => void;
   onSave: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
@@ -373,7 +374,7 @@ interface WorkflowEditorProps {
   onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
 }
 
-export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profiles = [], profileCatalogReady = true, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
@@ -481,10 +482,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setLiveValidation(validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings));
+      setLiveValidation(validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings, { profileCatalogReady }));
     }, 320);
     return () => window.clearTimeout(timer);
-  }, [currentTemplateId, currentTemplateName, doctorReadyAgents, modelBindings, profiles, t, validateModelBindings, validateTemplateDuplicateId, workflow, workflowTemplates]);
+  }, [currentTemplateId, currentTemplateName, doctorReadyAgents, modelBindings, profileCatalogReady, profiles, t, validateModelBindings, validateTemplateDuplicateId, workflow, workflowTemplates]);
 
   useEffect(() => () => {
     if (externalChangeTimerRef.current) {
@@ -3071,6 +3072,7 @@ export function validateWorkflowForSave(
   validateTemplateDuplicateId = true,
   modelBindings: WorkflowModelBindings = emptyWorkflowModelBindings(),
   validateModelBindings = true,
+  { profileCatalogReady = true }: { profileCatalogReady?: boolean } = {},
 ): WorkflowValidationResult {
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
@@ -3183,7 +3185,7 @@ export function validateWorkflowForSave(
     const workerNode = node as WorkflowWorkerNodeDsl;
     if (!workerNode.profile?.trim()) {
       addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
-    } else if (!profileIds.has(workerNode.profile)) {
+    } else if (profileCatalogReady && !profileIds.has(workerNode.profile)) {
       addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
       const sanitized = sanitizedWorkflow.nodes[nodeIndex];
       if (sanitized && sanitized.type === 'worker') sanitized.profile = null;

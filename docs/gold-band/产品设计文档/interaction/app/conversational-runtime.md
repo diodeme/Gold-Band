@@ -17,7 +17,7 @@
 - composer 在 active compaction 期间将泛化 processing kind 切换为 `compacting`，文案为“正在压缩上下文”，停止按钮继续复用现有会话停止语义。
 - 状态变化使用 polite live region 提供无障碍播报。
 
-运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
+运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；索引中残留的非 canonical 大小写 ID 不得借用当前 workspace 的名称或运行时入口。查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
 ## 运行时数据与内存边界
 
@@ -279,7 +279,7 @@ ElicitationCard 的单选、多选必须共享同一套选中语义：使用 `ac
 - Activity 摘要的 `live` 是同一 `activityStartSeq` 展示实体的单调生命周期：可以从 live 收敛为 archived，但已 archived 的 identity 不得被迟到的 active session snapshot 重新打开。停止响应、live event 与完整 snapshot 乱序到达时，同一摘要只完成一次“正在操作 → 已记录”转换；新一轮操作必须以新的 `activityStartSeq` 创建新 identity，不能复用旧摘要。
 - 根会话 composer 草稿属于高频局部编辑状态，不得改变历史消息树消费的 branch locator、workspace command 或 timeline item 引用。用户逐键输入时，已完成 Markdown、Activity、Thought 和 Tool 只能由自身数据变化触发重渲染，不能因为 Provider value 临时创建新对象而绕过 memo 边界。
 - 已完成消息的 prompt-kit `Markdown` 是静态渲染边界：当 Markdown 文本、className 和 streaming 标记未变时必须保持组件引用与解析结果稳定。右侧工作区打开文件、切换 Tab、拖动宽度不得使历史 Streamdown 重新解析；消息中的文件、artifact、Agent 与 turn file 操作只订阅右侧工作区稳定命令接口，不订阅 tabs、activeTab、requestedOpen 或 width。
-- 会话分页按用户消息、Assistant 正式消息、Agent link、活动摘要、待决交互和 attempt/压缩边界等语义块计算。活动内工具数量、折叠状态和 Agent 子分支事件数不改变父分支 cursor 或 `hasOlder`；根分支和 Agent 分支共用同一 `eventPage`、有限事件 buffer、真实 DOM 锚点补偿和原生滚动容器，不引入动态高度虚拟列表。
+- 会话分页按用户消息、Assistant 正式消息、Agent link、活动摘要、待决交互和 attempt/压缩边界等语义块计算。Agent link 必须由 canonical `_meta.agentTranscript.agentLaunch = true` 关系识别，并作为独立 standalone 语义块进入 owning branch；`_meta.goldBandConversation.launchedAgentExecutionId` 只是派生定位信息，不能单独把普通 tool call 提升为 Agent link。活动内工具数量、折叠状态和 Agent 子分支事件数不改变父分支 cursor 或 `hasOlder`；根分支和 Agent 分支共用同一 `eventPage`、有限事件 buffer、真实 DOM 锚点补偿和原生滚动容器，不引入动态高度虚拟列表。
 - 活动摘要折叠时不请求审计详情。首次展开携带 `branchId + activityStartSeq + activityEndSeq`，后端顺序扫描轻量 header，只保留最近有限候选并仅反序列化当前页选中的事件；“显示更早活动”使用独立 cursor，不修改会话分页。单条工具 raw output 再延迟到该工具展开时按 event/tool ID 查询。已决 permission 不进入活动审计，待决 permission 只进入 owning branch 的 intervention。
 - Activity 摘要统计与本地审计详情必须分别表达“总量”和“已加载范围”。`events.length > 0` 只代表存在局部实时尾部，不能代表详情完整；本地可见审计数少于摘要 `totalEventCount` 时，首次展开仍必须读取权威详情并按稳定事件身份合并。重新进入会话后的 summary-only 路径与活跃会话中“summary + partial live tail”竞态必须得到相同的两段思考/工具展示结果。
 - Agent 分支只读面板与根会话复用 `ConversationViewport`、消息、Markdown、Activity、Tool 和 `InterventionLayer`，但不挂载 composer、模型/权限配置、停止、继续或重试 DOM。pending permission/elicitation 仍可在 owning Agent 分支中响应；停止和继续只由根 runtime lifecycle 控制。

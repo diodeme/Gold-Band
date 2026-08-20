@@ -11083,15 +11083,26 @@ mod tests {
     fn permission_response_signal_is_kept_for_live_waiter_when_snapshot_is_cancelled() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-permission-response-signal-test-{}",
-            std::process::id()
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let params = serde_json::json!({ "sessionId": "session-1" });
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
-            serde_json::json!({ "sessionId": "session-1" }),
+            params.clone(),
             "1778771541Z".to_string(),
+        )
+        .unwrap();
+        let mut pending =
+            gold_band::acp::events::permission_request_event(1, "0".to_string(), params);
+        pending.id = "permission-0".to_string();
+        pending.started_seq = Some(1);
+        pending.ended_seq = Some(1);
+        gold_band::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[pending],
         )
         .unwrap();
         gold_band::storage::write_json(

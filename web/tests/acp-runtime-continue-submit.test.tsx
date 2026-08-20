@@ -271,6 +271,44 @@ async function renderActiveDirectDialog() {
   return { container, id, root, session };
 }
 
+async function renderCancelledDirectAttemptDialog() {
+  fixtureIndex += 1;
+  const id = String(fixtureIndex);
+  const lifecycle = pausedLifecycle();
+  lifecycle.acp = {
+    ...lifecycle.acp,
+    sessionAvailability: 'unavailable',
+  };
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <TooltipProvider>
+        <ACPChatDialog
+          session={null}
+          projectId={`project-${id}`}
+          taskId={`task-${id}`}
+          runId={`run-${id}`}
+          roundId={`round-${id}`}
+          nodeId={`node-${id}`}
+          attemptId={`attempt-${id}`}
+          runtimeComposerContext={{
+            isOrchestrated: false,
+            lifecycle,
+            promptQueueEnabled: true,
+            workflowValid: true,
+          }}
+          showSystemPromptAction={false}
+          showRawFramesAction={false}
+          usageCompact
+        />
+      </TooltipProvider>,
+    );
+  });
+  return { container, id, root };
+}
+
 async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(
     HTMLTextAreaElement.prototype,
@@ -559,6 +597,49 @@ describe('ACP runtime continue submission', () => {
 });
 
 describe('ACP Direct queue submission', () => {
+  it('continues on the same page after startup is stopped before a provider session exists', async () => {
+    apiMocks.submitConversationPrompt.mockResolvedValue({
+      kind: 'acp-session-started',
+      session: null,
+      run: null,
+      lifecycle: runningLifecycle(),
+    });
+    const { container, id, root } = await renderCancelledDirectAttemptDialog();
+    try {
+      expect(container.textContent).not.toContain('ACP session failed');
+      expect(container.textContent).not.toContain('ACP 会话失败');
+      expect(container.querySelector('[data-acp-continue-workflow="true"]')).toBeNull();
+
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      expect(textarea).not.toBeNull();
+      await setTextareaValue(textarea!, '首轮停止后的下一句');
+
+      const sendButton = container.querySelector<HTMLButtonElement>('[data-acp-send="true"]');
+      expect(sendButton?.disabled).toBe(false);
+      await flushInteraction(() => sendButton?.click());
+
+      expect(apiMocks.submitConversationPrompt).toHaveBeenCalledWith(
+        `project-${id}`,
+        `task-${id}`,
+        `run-${id}`,
+        `round-${id}`,
+        `node-${id}`,
+        `attempt-${id}`,
+        { displayText: '首轮停止后的下一句', quotes: [] },
+        expect.any(String),
+        expect.objectContaining({
+          sessionId: null,
+          status: 'cancelled',
+        }),
+        undefined,
+        undefined,
+        undefined,
+      );
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('settles a queue-targeted submission when the backend starts it directly at the idle boundary', async () => {
     const { container, id, root, session } = await renderActiveDirectDialog();
     apiMocks.submitConversationPrompt.mockResolvedValue({

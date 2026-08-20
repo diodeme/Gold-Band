@@ -210,6 +210,7 @@ import {
   missingAcpSessionRetryDelay,
   resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
+  shouldCreateCancelledDirectAttemptShell,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
 import { formatLocalDateTime } from "@/lib/datetime";
@@ -1239,6 +1240,10 @@ export function ACPChatDialog(
   const baseSession = currentSession ?? session;
   const projectionLifecycle = localRuntimeLifecycle ?? runtimeComposerContext?.lifecycle;
   const runtimeActiveFromContext = !runtimeStopAccepted && (runtimeComposerContext?.lifecycle?.runtime.active ?? isRuntimeActiveStatus(runtimeComposerContext?.runtimeStatus));
+  const cancelledDirectAttemptShell = shouldCreateCancelledDirectAttemptShell({
+    isOrchestrated: runtimeComposerContext?.isOrchestrated ?? true,
+    lifecycle: projectionLifecycle,
+  });
   const initializationLifecycleActive = Boolean(
     (!runtimeStopAccepted || localRuntimeLifecycle != null)
     && (
@@ -1280,19 +1285,22 @@ export function ACPChatDialog(
       sessionReferenceId,
     ],
   );
-  const initializingSessionShell = useMemo(
+  const attemptSessionShell = useMemo(
     () =>
-      initializationLifecycleActive &&
+      (initializationLifecycleActive || cancelledDirectAttemptShell) &&
       !baseSession &&
       !liveSessionShell &&
       !establishedSessionShell
         ? createLiveAcpSessionShell(
             loadedEvents,
-            runtimeActiveFromContext ? "running" : "completed",
+            cancelledDirectAttemptShell
+              ? "cancelled"
+              : runtimeActiveFromContext ? "running" : "completed",
           )
         : null,
     [
       baseSession,
+      cancelledDirectAttemptShell,
       establishedSessionShell,
       liveSessionShell,
       loadedEvents,
@@ -1308,11 +1316,11 @@ export function ACPChatDialog(
             loadedEvents,
             effectiveLoadedEventBufferLimit,
           )
-        : (liveSessionShell ?? establishedSessionShell ?? initializingSessionShell),
+        : (liveSessionShell ?? establishedSessionShell ?? attemptSessionShell),
     [
       baseSession,
       effectiveLoadedEventBufferLimit,
-      initializingSessionShell,
+      attemptSessionShell,
       liveSessionShell,
       establishedSessionShell,
       loadedEvents,
@@ -1466,7 +1474,8 @@ export function ACPChatDialog(
 
   const showManualCheckActions = manualCheckPending && !manualCheckResolved;
   const showRuntimeContinueAction = Boolean(
-    localLifecycle?.continueKind
+    (runtimeComposerContext?.isOrchestrated ?? true)
+      && localLifecycle?.continueKind
       && (localLifecycle.continueKind !== 'recover-completed-attempt' || localLifecycle.runtime.revision != null)
       && localLifecycle.runtime.continuable
       && !localLifecycle.runtime.active
@@ -2246,7 +2255,11 @@ export function ACPChatDialog(
   ]);
 
   useEffect(() => {
-    if (sessionInitializationInterrupted || sessionInitializationFailed) {
+    if (
+      sessionInitializationInterrupted ||
+      sessionInitializationFailed ||
+      cancelledDirectAttemptShell
+    ) {
       setInitialSessionQueryState("success");
       return;
     }
@@ -2672,6 +2685,7 @@ export function ACPChatDialog(
     applyEventUpdates,
     attemptId,
     branchId,
+    cancelledDirectAttemptShell,
     enqueueLiveEventUpdate,
     eventWindowKey,
     effectiveEventPageSize,
@@ -3698,6 +3712,7 @@ export function ACPChatDialog(
     baseSessionReady: isAcpSessionReadyForInitialDisplay(baseSession),
     hasLiveSessionShell: Boolean(liveSessionShell),
     hasEstablishedSessionShell: Boolean(establishedSessionShell),
+    hasSettledAttemptShell: cancelledDirectAttemptShell,
     initialSessionLoading: initialSessionQueryState === "loading",
     initialSessionLoadFailed: initialSessionQueryState === "error",
     initializationFailed: sessionInitializationFailed,

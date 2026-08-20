@@ -101,6 +101,48 @@ describe('PersonalAnalyticsPage', () => {
     expect(container.querySelector('[data-personal-analytics-agent="true"]')?.className).toContain('min-w-0');
   });
 
+  it('opens task conversations and keeps duration beside token rankings', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    const container = await renderPage(registry(true));
+    const taskRows = Array.from(container.querySelectorAll('[data-personal-analytics-report="true"] tbody tr'));
+
+    expect(taskRows).toHaveLength(3);
+    for (const row of taskRows) {
+      await act(async () => {
+        row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+    }
+    expect(onOpenTask).toHaveBeenCalledTimes(3);
+    expect(onOpenTask).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      projectId: 'project-a',
+      taskId: 'task-workflow',
+      latestRunId: 'run-1',
+    }));
+    expect(container.querySelector('#token-usage')?.textContent).toContain('累计执行耗时');
+    expect(container.querySelector('#token-usage')?.textContent).toContain('1m');
+  });
+
+  it('keeps legacy cached report tasks visible without navigation', async () => {
+    const legacyTask = { ...report().recentTasks[0] };
+    delete legacyTask.projectId;
+    delete legacyTask.taskId;
+    delete legacyTask.latestRunId;
+    const legacyReport = { ...report(), recentTasks: [legacyTask] };
+    api.getPersonalAnalytics.mockResolvedValueOnce({
+      ...snapshot('completed', 6),
+      latestReport: legacyReport,
+    });
+    api.queryPersonalAnalyticsReport.mockResolvedValueOnce(legacyReport);
+    const container = await renderPage(registry(true));
+    const recentRow = container.querySelector('#recent-tasks tbody tr');
+
+    expect(recentRow?.textContent).toContain('Workflow task');
+    await act(async () => {
+      recentRow?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
   it('shows an immediate submitting state and coalesces duplicate clicks', async () => {
     let resolveStart: ((value: PersonalAnalyticsSnapshotVm) => void) | undefined;
     api.syncPersonalAnalytics.mockReturnValueOnce(new Promise((resolve) => { resolveStart = resolve; }));
@@ -321,11 +363,13 @@ async function renderPage(agentRegistry: AgentRegistryVm) {
   mountedRoot = createRoot(container);
   await act(async () => {
     mountedRoot?.render(
-      <PersonalAnalyticsPage agentRegistry={agentRegistry} onOpenAgentManagement={vi.fn()} />,
+      <PersonalAnalyticsPage agentRegistry={agentRegistry} onOpenAgentManagement={vi.fn()} onOpenTask={onOpenTask} />,
     );
   });
   return container;
 }
+
+const onOpenTask = vi.fn();
 
 function registry(available: boolean, displayName = 'Agent A'): AgentRegistryVm {
   return {
@@ -373,13 +417,13 @@ function snapshot(
 
 function report(insights: PersonalAnalyticsReportVm['insights'] = []): PersonalAnalyticsReportVm {
   const task = {
-    taskLocator: 'project-a/task-workflow', title: 'Workflow task', mode: 'workflow', status: 'completed', outcome: 'success',
+    taskLocator: 'project-a/task-workflow', projectId: 'project-a', taskId: 'task-workflow', latestRunId: 'run-1', title: 'Workflow task', mode: 'workflow', status: 'completed', outcome: 'success',
     agentNames: ['Agent A'], totalTokens: 1200, activeDurationSeconds: 60, activeDurationZeroFilled: false,
     terminalNode: 'accept', lastActivityAt: '2026-08-18T00:00:00Z',
   };
   const rate = (metricId: string) => ({ metricId, numerator: 1, denominator: 1, unknownCount: 0, rate: 1, evidenceLocators: ['project-a/task-workflow/run.json'] });
   return {
-    schemaVersion: '2.1.0', reportId: 'report-1', generatedAt: '2026-08-18T00:01:00Z', sourceWatermark: 'watermark', indexRevision: 1, range: { start: null, end: null },
+    schemaVersion: '2.2.0', reportId: 'report-1', generatedAt: '2026-08-18T00:01:00Z', sourceWatermark: 'watermark', indexRevision: 1, range: { start: null, end: null },
     sourceCoverage: { discoveredFiles: 10, eligibleFiles: 8, parsedFiles: 8, skippedFiles: 2, corruptFiles: 0, unknownVersionFiles: 0, discoveredBytes: 1024, semanticEligibleItems: 1, semanticSampledItems: 1 },
     overview: { projectCount: 1, taskCount: 1, conversationCount: 1, runCount: 1, turnCount: 0, attemptCount: 1, earliestAt: '2026-08-18T00:00:00Z', latestAt: '2026-08-18T00:01:00Z' },
     recentTasks: [task],

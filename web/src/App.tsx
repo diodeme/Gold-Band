@@ -2363,6 +2363,14 @@ export function App() {
         <PersonalAnalyticsPage
           agentRegistry={agentRegistry}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenTask={(task) => {
+            onSelectConversation({
+              kind: 'conversation-run',
+              projectId: task.projectId,
+              taskId: task.taskId,
+              runId: task.latestRunId,
+            });
+          }}
         />
       );
     }

@@ -21,12 +21,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { formatTokenCount } from '@/lib/format-token';
 import { isPersonalAnalyticsActive, mergePersonalAnalyticsSnapshot } from '@/lib/personal-analytics-state';
 
+interface PersonalAnalyticsTaskNavigationTarget {
+  projectId: string;
+  taskId: string;
+  latestRunId: string;
+}
+
 interface PersonalAnalyticsPageProps {
   agentRegistry: AgentRegistryVm | null;
   onOpenAgentManagement: () => void;
+  onOpenTask: (task: PersonalAnalyticsTaskNavigationTarget) => void;
 }
 
-export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement }: PersonalAnalyticsPageProps) {
+export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, onOpenTask }: PersonalAnalyticsPageProps) {
   const { t, i18n } = useTranslation();
   const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof getPersonalAnalytics>> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -175,7 +182,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement }: 
   return (
     <main className="min-h-0 flex-1 bg-background text-foreground" data-personal-analytics-page="true">
       <ScrollArea className="h-full">
-        <div className="mx-auto w-full max-w-6xl px-5 py-5 md:px-8 md:py-7">
+        <div className="mx-auto w-full max-w-7xl px-5 py-5 md:px-8 md:py-7">
           <header className="flex flex-wrap items-start justify-between gap-5 border-b border-border/70 pb-5">
             <div className="min-w-0">
               <h1 className="text-xl font-semibold">{t('personalAnalytics.title')}</h1>
@@ -263,14 +270,14 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement }: 
 
           {loading && !report ? <LoadingState label={t('personalAnalytics.loading')} /> : null}
           {!loading && !report ? <EmptyState /> : null}
-          {report ? <ReportContent report={report} number={number} locale={locale} /> : null}
+          {report ? <ReportContent report={report} number={number} locale={locale} onOpenTask={onOpenTask} /> : null}
         </div>
       </ScrollArea>
     </main>
   );
 }
 
-function ReportContent({ report, number, locale }: { report: PersonalAnalyticsReportVm; number: Intl.NumberFormat; locale: string }) {
+function ReportContent({ report, number, locale, onOpenTask }: { report: PersonalAnalyticsReportVm; number: Intl.NumberFormat; locale: string; onOpenTask: (task: PersonalAnalyticsTaskNavigationTarget) => void }) {
   const { t } = useTranslation();
   const sections = [
     ['overview', t('personalAnalytics.overview')],
@@ -288,7 +295,7 @@ function ReportContent({ report, number, locale }: { report: PersonalAnalyticsRe
     ['autoOuterRunTerminalSuccessRate', report.reliability.autoOuterRunTerminalSuccessRate],
   ];
   return (
-    <div data-personal-analytics-report="true" className="grid gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
+    <div data-personal-analytics-report="true" className="grid gap-5 lg:grid-cols-[11rem_minmax(0,1fr)]">
       <SectionNav sections={sections} />
       <div className="min-w-0">
       <ReportSection id="overview" icon={<Gauge className="size-4" />} title={t('personalAnalytics.overview')}>
@@ -306,7 +313,7 @@ function ReportContent({ report, number, locale }: { report: PersonalAnalyticsRe
       </ReportSection>
 
       <ReportSection id="recent-tasks" icon={<ListChecks className="size-4" />} title={t('personalAnalytics.recentTasks')}>
-        <TaskTable tasks={report.recentTasks} locale={locale} emptyLabel={t('personalAnalytics.noRecentTasks')} />
+        <TaskTable tasks={report.recentTasks} locale={locale} emptyLabel={t('personalAnalytics.noRecentTasks')} onOpenTask={onOpenTask} />
       </ReportSection>
 
       <ReportSection id="reliability" icon={<ShieldCheck className="size-4" />} title={t('personalAnalytics.reliability')}>
@@ -341,7 +348,7 @@ function ReportContent({ report, number, locale }: { report: PersonalAnalyticsRe
           [t('personalAnalytics.manualContinues'), number.format(report.efficiency.manualContinueCount)],
         ]} />
         <h3 className="mt-7 text-sm font-semibold">{t('personalAnalytics.topDurationTasks')}</h3>
-        <TaskTable tasks={report.efficiency.topDurationTasks} locale={locale} emptyLabel={t('personalAnalytics.noRankedTasks')} ranking="duration" />
+        <TaskTable tasks={report.efficiency.topDurationTasks} locale={locale} emptyLabel={t('personalAnalytics.noRankedTasks')} ranking="duration" onOpenTask={onOpenTask} />
         <h3 className="mt-7 text-sm font-semibold">{t('personalAnalytics.nodeEfficiency')}</h3>
         <div className="mt-3 hidden min-w-0 overflow-hidden md:block">
           <Table>
@@ -363,7 +370,7 @@ function ReportContent({ report, number, locale }: { report: PersonalAnalyticsRe
           [t('personalAnalytics.observedPrompts'), number.format(report.tokenUsage.observedPromptCount)],
         ]} />
         <h3 className="mt-7 text-sm font-semibold">{t('personalAnalytics.topTokenTasks')}</h3>
-        <TaskTable tasks={report.tokenUsage.topTokenTasks} locale={locale} emptyLabel={t('personalAnalytics.noRankedTasks')} ranking="tokens" />
+        <TaskTable tasks={report.tokenUsage.topTokenTasks} locale={locale} emptyLabel={t('personalAnalytics.noRankedTasks')} ranking="tokens" onOpenTask={onOpenTask} />
         <SectionInsights report={report} section="token-usage" number={number} />
       </ReportSection>
 
@@ -439,19 +446,64 @@ function SectionNav({ sections }: { sections: ReadonlyArray<readonly [string, st
   );
 }
 
-function TaskTable({ tasks, locale, emptyLabel, ranking }: { tasks: PersonalAnalyticsTaskSummaryVm[]; locale: string; emptyLabel: string; ranking?: 'duration' | 'tokens' }) {
+function TaskTable({ tasks, locale, emptyLabel, ranking, onOpenTask }: { tasks: PersonalAnalyticsTaskSummaryVm[]; locale: string; emptyLabel: string; ranking?: 'duration' | 'tokens'; onOpenTask: (task: PersonalAnalyticsTaskNavigationTarget) => void }) {
   const { t } = useTranslation();
   if (tasks.length === 0) return <p className="mt-3 text-sm text-muted-foreground">{emptyLabel}</p>;
-  const tokenRanking = ranking === 'tokens';
   return <>
     <div className="mt-3 hidden min-w-0 overflow-hidden md:block">
       <Table>
-        <TableHeader><TableRow>{ranking ? <TableHead className="w-12">#</TableHead> : null}<TableHead>{t('personalAnalytics.task')}</TableHead><TableHead>{t('personalAnalytics.mode')}</TableHead><TableHead>{t('personalAnalytics.outcome')}</TableHead><TableHead className="hidden lg:table-cell">{t('personalAnalytics.agent')}</TableHead>{!tokenRanking ? <TableHead className="text-right">{t('personalAnalytics.duration')}</TableHead> : null}<TableHead className="text-right">{t('personalAnalytics.token')}</TableHead></TableRow></TableHeader>
-        <TableBody>{tasks.map((task, index) => <TableRow key={task.taskLocator}>{ranking ? <TableCell>{index + 1}</TableCell> : null}<TableCell className="min-w-0"><div className="break-words font-medium">{task.title}</div><div className="mt-0.5 break-all text-xs text-muted-foreground">{task.taskLocator}</div></TableCell><TableCell><Badge variant="outline">{task.mode.toUpperCase()}</Badge></TableCell><TableCell>{formatOutcome(task.status, task.outcome)}</TableCell><TableCell className="hidden max-w-48 truncate lg:table-cell">{task.agentNames.join(', ') || '-'}</TableCell>{!tokenRanking ? <TableCell className="text-right tabular-nums">{formatDuration(task.activeDurationSeconds)}</TableCell> : null}<TableCell className="text-right tabular-nums">{formatAnalyticsTokenCount(task.totalTokens)}</TableCell></TableRow>)}</TableBody>
+        <TableHeader><TableRow>{ranking ? <TableHead className="w-12">#</TableHead> : null}<TableHead>{t('personalAnalytics.task')}</TableHead><TableHead>{t('personalAnalytics.mode')}</TableHead><TableHead>{t('personalAnalytics.outcome')}</TableHead><TableHead className="hidden lg:table-cell">{t('personalAnalytics.agent')}</TableHead><TableHead className="text-right">{t('personalAnalytics.duration')}</TableHead><TableHead className="text-right">{t('personalAnalytics.token')}</TableHead></TableRow></TableHeader>
+        <TableBody>{tasks.map((task, index) => {
+          const navigationTarget = taskNavigationTarget(task);
+          const openTask = () => {
+            if (navigationTarget) onOpenTask(navigationTarget);
+          };
+          return (
+            <TableRow
+              key={task.taskLocator}
+              tabIndex={navigationTarget ? 0 : undefined}
+              className={navigationTarget ? 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50' : undefined}
+              onClick={navigationTarget ? openTask : undefined}
+              onKeyDown={navigationTarget ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  openTask();
+                }
+              } : undefined}
+            >
+              {ranking ? <TableCell>{index + 1}</TableCell> : null}
+              <TableCell className="min-w-0"><div className="break-words font-medium">{task.title}</div><div className="mt-0.5 break-all text-xs text-muted-foreground">{task.taskLocator}</div></TableCell>
+              <TableCell><Badge variant="outline">{task.mode.toUpperCase()}</Badge></TableCell>
+              <TableCell>{formatOutcome(task.status, task.outcome)}</TableCell>
+              <TableCell className="hidden max-w-48 truncate lg:table-cell">{task.agentNames.join(', ') || '-'}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatDuration(task.activeDurationSeconds)}</TableCell>
+              <TableCell className="text-right tabular-nums">{formatAnalyticsTokenCount(task.totalTokens)}</TableCell>
+            </TableRow>
+          );
+        })}</TableBody>
       </Table>
     </div>
-    <div className="mt-3 divide-y divide-border/60 md:hidden">{tasks.map((task, index) => <article key={task.taskLocator} className="py-3"><div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><div className="break-words text-sm font-medium">{ranking ? `${index + 1}. ` : ''}{task.title}</div><div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>{task.mode.toUpperCase()}</span><span>{formatOutcome(task.status, task.outcome)}</span>{task.lastActivityAt ? <span>{formatDate(task.lastActivityAt, locale)}</span> : null}</div></div><div className="flex shrink-0 flex-col items-end gap-0.5 text-sm font-semibold tabular-nums">{!tokenRanking ? <span>{formatDuration(task.activeDurationSeconds)}</span> : null}<span className={!tokenRanking ? 'text-xs font-normal text-muted-foreground' : undefined}>{formatAnalyticsTokenCount(task.totalTokens)}</span></div></div></article>)}</div>
+    <div className="mt-3 divide-y divide-border/60 md:hidden">{tasks.map((task, index) => {
+      const navigationTarget = taskNavigationTarget(task);
+      const content = (
+        <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><div className="break-words text-sm font-medium">{ranking ? `${index + 1}. ` : ''}{task.title}</div><div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><span>{task.mode.toUpperCase()}</span><span>{formatOutcome(task.status, task.outcome)}</span>{task.lastActivityAt ? <span>{formatDate(task.lastActivityAt, locale)}</span> : null}</div></div><div className="flex shrink-0 flex-col items-end gap-0.5 text-sm font-semibold tabular-nums"><span>{formatDuration(task.activeDurationSeconds)}</span><span className="text-xs font-normal text-muted-foreground">{formatAnalyticsTokenCount(task.totalTokens)}</span></div></div>
+      );
+      return navigationTarget ? (
+        <button key={task.taskLocator} type="button" className="block w-full cursor-pointer py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50" onClick={() => onOpenTask(navigationTarget)}>
+          {content}
+        </button>
+      ) : (
+        <article key={task.taskLocator} className="py-3">
+          {content}
+        </article>
+      );
+    })}</div>
   </>;
+}
+
+function taskNavigationTarget(task: PersonalAnalyticsTaskSummaryVm): PersonalAnalyticsTaskNavigationTarget | null {
+  if (!task.projectId || !task.taskId || !task.latestRunId) return null;
+  return { projectId: task.projectId, taskId: task.taskId, latestRunId: task.latestRunId };
 }
 
 function NamedCountList({ title, items, number, emptyLabel }: { title: string; items: Array<{ name: string; count: number }>; number: Intl.NumberFormat; emptyLabel: string }) {

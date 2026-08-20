@@ -94,7 +94,9 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 3. 桌面宽度使用左侧章节导航和右侧报告内容；窄宽度切换为横向吸顶导航，当前章节由 `IntersectionObserver` 标记。
 4. 标题操作区使用 shadcn `Select` 列出可用 Agent，并只服务“生成 Agent 洞察”；确定性同步不依赖 Agent。
 5. 同步期间保留当前可用报告并展示进度；洞察运行中锁定 Agent 选择并禁止重复启动，失败或取消不影响统计。
-6. 页面使用现有 shadcn/ui 和 Tailwind 组件，参考增强版 HTML 的信息架构，不复制其营销式视觉或执行其中代码。
+6. 报告契约为 `2.2.0`，任务摘要携带 `projectId + taskId + latestRunId` 稳定导航身份；最近任务、耗时 TOP10 和 Token TOP10 的任务行均可点击，并通过既有会话路由直接进入对应会话。缺失导航身份的 `2.1.0` 缓存报告仍可展示，但任务行降级为不可点击，下一次成功查询或同步后恢复。
+7. 桌面宽度收窄章节目录并扩大报告内容可用空间；Token TOP10 同时展示累计执行耗时与 Token。
+8. 页面使用现有 shadcn/ui 和 Tailwind 组件，参考增强版 HTML 的信息架构，不复制其营销式视觉或执行其中代码。
 
 报告使用纵向原生分区，主要段落固定为：
 
@@ -102,7 +104,7 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 2. 最近任务：最近 10 条 Workflow/AUTO 任务，同时展示累计执行耗时和 Token。
 3. 质量：纠错重入率、重试后恢复、失败/取消/暂停信号和对应洞察。
 4. 效率：终局累计执行耗时、暂停恢复、TOP10 累计执行耗时任务、节点累计执行耗时和对应洞察；耗时 TOP10 同时展示 Token。
-5. Token 消耗：输入/输出/缓存、TOP10 Token 任务和对应洞察；不展示真实金额。
+5. Token 消耗：输入/输出/缓存、TOP10 Token 任务和对应洞察；Token TOP10 同时展示累计执行耗时，不展示真实金额。
 6. 上下文与技能使用：工具、Agent、权限、用户补充请求和有显式 invocation 证据的 Skill。
 
 报告内所有 Token 数值使用 K/M 紧凑格式，避免同一页面混用原始整数和缩写。
@@ -117,6 +119,7 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 - 最近任务和排行榜最多各 10 条，节点、工具、Agent、Skill 聚合最多各 12 条；页面 DTO 保持有界。
 - 单项损坏、超大或未知版本只进入 coverage warning，不触发全量失败或无界重试。
 - operation 使用稳定 ID 和单调 revision；迟到进度或失败不能覆盖新状态和终态。前端合并同范围报告时比较 `indexRevision`，低版本报告不能覆盖高版本报告。
+- `unitType` 由任务模式统一归一：Workflow 映射 `workflow-run`，AUTO 映射 `auto-outer-run`，Direct turn 保持 `direct-reply`；任务导航选择 Workflow/AUTO 终局 run，不使用 Direct turn 伪造会话入口。
 
 SQLite 是唯一派生索引存储，始终可删除重建；无源文件变化时不推进 `indexRevision`，避免可用洞察被无效失效。
 

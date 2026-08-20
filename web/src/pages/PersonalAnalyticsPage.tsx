@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatTokenCount } from '@/lib/format-token';
 import { isPersonalAnalyticsActive, mergePersonalAnalyticsSnapshot } from '@/lib/personal-analytics-state';
 
@@ -26,6 +27,8 @@ interface PersonalAnalyticsTaskNavigationTarget {
   taskId: string;
   latestRunId: string;
 }
+
+type DefinitionItem = [label: string, value: string, description?: string];
 
 interface PersonalAnalyticsPageProps {
   agentRegistry: AgentRegistryVm | null;
@@ -391,12 +394,12 @@ function ReportContent({ report, number, locale, onOpenTask }: { report: Persona
 
       <ReportSection id="coverage" icon={<FileCheck2 className="size-4" />} title={t('personalAnalytics.coverage')} last>
         <DefinitionGrid items={[
-          [t('personalAnalytics.parsedFiles'), `${number.format(report.sourceCoverage.parsedFiles)} / ${number.format(report.sourceCoverage.eligibleFiles)}`],
-          [t('personalAnalytics.skippedFiles'), number.format(report.sourceCoverage.skippedFiles)],
-          [t('personalAnalytics.corruptFiles'), number.format(report.sourceCoverage.corruptFiles)],
-          [t('personalAnalytics.unknownVersionFiles'), number.format(report.sourceCoverage.unknownVersionFiles)],
-          [t('personalAnalytics.semanticSamples'), `${number.format(report.sourceCoverage.semanticSampledItems)} / ${number.format(report.sourceCoverage.semanticEligibleItems)}`],
-          [t('personalAnalytics.durationZeroFilled'), number.format(report.efficiency.activeDurationZeroFilledCount)],
+          [t('personalAnalytics.parsedFiles'), `${number.format(report.sourceCoverage.parsedFiles)} / ${number.format(report.sourceCoverage.eligibleFiles)}`, t('personalAnalytics.coverageHints.parsedFiles')],
+          [t('personalAnalytics.skippedFiles'), number.format(report.sourceCoverage.skippedFiles), t('personalAnalytics.coverageHints.skippedFiles')],
+          [t('personalAnalytics.corruptFiles'), number.format(report.sourceCoverage.corruptFiles), t('personalAnalytics.coverageHints.corruptFiles')],
+          [t('personalAnalytics.unknownVersionFiles'), number.format(report.sourceCoverage.unknownVersionFiles), t('personalAnalytics.coverageHints.unknownVersionFiles')],
+          [t('personalAnalytics.semanticSamples'), `${number.format(report.sourceCoverage.semanticSampledItems)} / ${number.format(report.sourceCoverage.semanticEligibleItems)}`, t('personalAnalytics.coverageHints.semanticSamples')],
+          [t('personalAnalytics.durationZeroFilled'), number.format(report.efficiency.activeDurationZeroFilledCount), t('personalAnalytics.coverageHints.durationZeroFilled')],
         ]} />
         {report.warnings.length > 0 ? <div className="mt-5 space-y-2">{report.warnings.map((warning, index) => <div key={`${warning.code}-${index}`} className="flex gap-2 text-sm text-muted-foreground"><AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" /><span>{t(`personalAnalytics.warningCodes.${warning.code}`, { defaultValue: warning.code, ...warning.params })}</span></div>)}</div> : null}
       </ReportSection>
@@ -531,8 +534,15 @@ function RateMetric({ label, metric, number }: { label: string; metric: Personal
   return <div className="rounded-md border border-border/70 p-4"><div className="text-sm font-medium leading-5">{label}</div><div className="mt-3 flex items-end justify-between gap-3"><span className="text-2xl font-semibold tabular-nums">{metric.rate == null ? '-' : `${(metric.rate * 100).toFixed(1)}%`}</span><span className="text-xs text-muted-foreground">{number.format(metric.numerator)} / {number.format(metric.denominator)}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div>{metric.unknownCount > 0 ? <div className="mt-2 text-xs text-muted-foreground">{t('personalAnalytics.unknownCount', { value: number.format(metric.unknownCount) })}</div> : null}</div>;
 }
 
-function DefinitionGrid({ items }: { items: Array<[string, string]> }) {
-  return <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 md:grid-cols-3">{items.map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 break-words text-base font-semibold tabular-nums">{value}</dd></div>)}</dl>;
+function DefinitionGrid({ items }: { items: DefinitionItem[] }) {
+  return <TooltipProvider><dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 md:grid-cols-3">{items.map(([label, value, description]) => <div key={label} className="min-w-0"><dt className="text-xs text-muted-foreground">{description ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} data-personal-analytics-coverage-hint="true" className="cursor-help border-b border-dotted border-current outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-ring/50">{label}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6}>{description}</TooltipContent>
+    </Tooltip>
+  ) : label}</dt><dd className="mt-1 break-words text-base font-semibold tabular-nums">{value}</dd></div>)}</dl></TooltipProvider>;
 }
 
 function EmptyState() {

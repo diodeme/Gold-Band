@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
@@ -62,6 +62,7 @@ interface ConversationComposerProps {
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
+  onOpenScheduledTasks: () => void;
   onOpenRunModeSettings: () => void;
   onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -80,6 +81,7 @@ interface ConversationWorkspaceControlProps {
 const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
 const CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX = '0 0 48 28';
 const CONVERSATION_WORKSPACE_INFO_CURVE_PATH = 'M0 28L20.14 4Q23.497 0 29.497 0H48V28Z';
+const SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS = 5000;
 
 export function ConversationWorkspaceControl({
   projectId,
@@ -347,6 +349,7 @@ export function ConversationComposer({
   onSubmit,
   onCreateScheduledTask,
   onOpenAgentManagement,
+  onOpenScheduledTasks,
   onOpenRunModeSettings,
   onWorkflowRepairTargetChange,
   onWorkspaceChange,
@@ -371,6 +374,7 @@ export function ConversationComposer({
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
   const [scheduledMode, setScheduledMode] = useState(initialScheduledMode);
   const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
+  const [scheduledTaskCreated, setScheduledTaskCreated] = useState(false);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
   const rightWorkspace = useOptionalRightWorkspace();
@@ -440,6 +444,7 @@ export function ConversationComposer({
 
   const openScheduledConfig = useCallback(() => {
     if (!rightWorkspace?.scopeKey || !scheduledConfigResourceKey) return;
+    setScheduledTaskCreated(false);
     setScheduledMode(true);
     void rightWorkspace.openResource({
       kind: 'scheduled-task-config',
@@ -493,6 +498,15 @@ export function ConversationComposer({
     if (!rightWorkspace) return;
     return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
   }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
+
+  useEffect(() => {
+    if (!scheduledTaskCreated) return;
+    const timer = window.setTimeout(() => {
+      setScheduledTaskCreated(false);
+    }, SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [scheduledTaskCreated]);
+
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
@@ -769,6 +783,7 @@ export function ConversationComposer({
       composerDraft.reset();
       exitScheduledMode();
       setRunModeError(null);
+      setScheduledTaskCreated(true);
     } catch (error) {
       setRunModeError(displayAppError(t, error));
     } finally {
@@ -974,6 +989,24 @@ export function ConversationComposer({
         {/* File error */}
         {fileError ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{fileError}</div>
+        ) : null}
+
+        {scheduledTaskCreated ? (
+          <div className="px-3 text-xs text-muted-foreground" role="status">
+            <Trans i18nKey="scheduled.composer.created" components={{
+              tasks: (
+                <a
+                  href="/chat/scheduled-tasks"
+                  className="rounded-sm font-medium text-link underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  onClick={(event) => {
+                    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    onOpenScheduledTasks();
+                  }}
+                />
+              ),
+            }} />
+          </div>
         ) : null}
 
         {/* Run mode selector */}

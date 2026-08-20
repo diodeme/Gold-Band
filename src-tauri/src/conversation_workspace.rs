@@ -1136,7 +1136,10 @@ mod tests {
                 .task_path
                 .starts_with(paths.runtime_root.as_str())
         );
-        assert!(!results[0].task_path.starts_with(old_root.as_str()));
+        assert!(
+            !Utf8Path::new(&results[0].task_path).starts_with(&old_root),
+            "canonical slug--hash directory must not be mistaken for the legacy slug directory"
+        );
 
         let second = migrator
             .execute(Some(workspace.as_path()), &mut state)

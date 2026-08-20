@@ -82,6 +82,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
+import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
   isRuntimeControlledConversationLifecycle,
   planConversationAcpRunUpdate,
@@ -395,6 +396,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const scheduledTaskCreatedNotice = useScheduledTaskCreatedNotice();
   const [workflowRepairTarget, setWorkflowRepairTarget] = useState<WorkflowRepairTarget | null>(null);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
@@ -415,6 +417,7 @@ export function App() {
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
@@ -2402,6 +2405,7 @@ export function App() {
           busy={busy}
           inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
+          scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
@@ -2481,7 +2485,12 @@ export function App() {
           onCreateScheduledTask={async (input) => {
             await createScheduledTask(input);
           }}
+          onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenScheduledTasks={() => {
+            scheduledTaskCreatedNotice.dismiss();
+            onSelectConversation({ kind: 'scheduled-tasks' });
+          }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
@@ -2702,11 +2711,17 @@ export function App() {
         profiles={profiles}
         busy={busy}
         inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
+        scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
         workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
+        onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
         onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+        onOpenScheduledTasks={() => {
+          scheduledTaskCreatedNotice.dismiss();
+          onSelectConversation({ kind: 'scheduled-tasks' });
+        }}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
           resetConversationComposerDraft(composerDraftRef.current);

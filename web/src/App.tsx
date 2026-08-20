@@ -2482,6 +2482,7 @@ export function App() {
             await createScheduledTask(input);
           }}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenScheduledTasks={() => onSelectConversation({ kind: 'scheduled-tasks' })}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
@@ -2707,6 +2708,7 @@ export function App() {
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
         onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+        onOpenScheduledTasks={() => onSelectConversation({ kind: 'scheduled-tasks' })}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
           resetConversationComposerDraft(composerDraftRef.current);

@@ -22,6 +22,7 @@ interface ConversationHomePageProps {
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
   onOpenAgentManagement: () => void;
+  onOpenScheduledTasks: () => void;
   onOpenRunModeSettings: () => void;
   onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -46,6 +47,7 @@ export function ConversationHomePage({
   onSubmit,
   onCreateScheduledTask,
   onOpenAgentManagement,
+  onOpenScheduledTasks,
   onOpenRunModeSettings,
   onWorkflowRepairTargetChange,
   onWorkspaceChange,
@@ -79,6 +81,7 @@ export function ConversationHomePage({
           onSubmit={onSubmit}
           onCreateScheduledTask={onCreateScheduledTask}
           onOpenAgentManagement={onOpenAgentManagement}
+          onOpenScheduledTasks={onOpenScheduledTasks}
           onOpenRunModeSettings={onOpenRunModeSettings}
           onWorkflowRepairTargetChange={onWorkflowRepairTargetChange}
           onWorkspaceChange={onWorkspaceChange}

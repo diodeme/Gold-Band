@@ -64,9 +64,11 @@ describe('RunModeTabsToolbar', () => {
   });
 
   it('keeps workflow profile validation and template saves pending until profiles load', () => {
-    expect(pageSource).toContain('profileCatalogReady={profilesLoaded}');
-    expect(pageSource).toContain('saveCurrentDisabled={!profilesLoaded || wfSaveCurrentDisabled}');
-    expect(pageSource).toContain('saveAsDisabled={!profilesLoaded}');
+    expect(pageSource).toContain('profileCatalog={profileCatalog}');
+    expect(pageSource).toContain("saveCurrentDisabled={profileCatalog.status !== 'ready' || wfSaveCurrentDisabled}");
+    expect(pageSource).toContain("saveAsDisabled={profileCatalog.status !== 'ready'}");
+    expect(pageSource).toContain('profileCatalog.error.message');
+    expect(pageSource).toContain('profileCatalog.retry');
   });
 
   it('creates an independent empty AUTO draft for a new template', () => {

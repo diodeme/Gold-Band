@@ -89,6 +89,13 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 工作流模板存储在用户目录 `~/.gold-band/context/workflows.json`，属于用户级跨 workspace 模板；若新路径不存在且当前 workspace 仍存在旧版 `authoring/workflows.json`，首次读取时会复制迁移到用户级 context
 - 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store；另存成功后以保存结果中的模板身份更新当前运行模式和编辑选择，新模板应立刻出现在模板选择器中并保持显示保存后的模板名，不能回退到默认工作流
 
+### Profile catalog 生命周期（Phase 73）
+
+- 所有复用 `WorkflowEditor` 的入口必须传入同一三态 `profileCatalog` 契约：`loading`、`ready` 或 `error`；`profiles: []` 只表示已成功加载且目录为空，不能表达未加载或失败。
+- `loading` 时继续执行不依赖角色目录的 DSL 结构、必填项和拓扑校验，但不生成角色缺失错误，也不允许保存；`ready` 后才执行普通 Worker 与 AI-DYNAMIC `allowedProfiles` 的引用存在性校验。
+- `error` 必须在编辑区域展示结构化错误文案和“重新加载”操作；保存/另存按钮保持禁用直到重试成功，不能静默失败或永久无入口。
+- 目录请求由入口自身管理，使用请求代次忽略卸载、切换和重试产生的迟到响应；不使用全局缓存、自动轮询或名称反查。
+
 ## 校验规则
 
 创建新会话时校验：

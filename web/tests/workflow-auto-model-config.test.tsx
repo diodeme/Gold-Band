@@ -7,6 +7,7 @@ import { optionalWorkerConfigOptions, workerAgentSelectionPatch, WorkflowEditor,
 import { RunModeManagementPage } from '@/pages/RunModeManagementPage';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { AgentRegistryVm, WorkflowDsl, WorkflowModelBindings } from '@/types';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 const agentRegistry = {
   agents: [{
@@ -71,7 +72,7 @@ describe('workflow and AUTO model configuration', () => {
     const html = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
-      profiles: [{ id: 'interview', name: 'Interview' }],
+      profileCatalog: readyWorkflowProfileCatalog([{ id: 'interview', name: 'Interview' }]),
       onSave: () => undefined,
       showSaveAction: false,
     }));
@@ -121,7 +122,7 @@ describe('workflow and AUTO model configuration', () => {
       value: workflow,
       modelBindings,
       agentRegistry,
-      profiles: [{ id: 'interview', name: 'Interview' }],
+      profileCatalog: readyWorkflowProfileCatalog([{ id: 'interview', name: 'Interview' }]),
       onSave: () => undefined,
       showSaveAction: false,
     }));
@@ -211,7 +212,7 @@ describe('workflow and AUTO model configuration', () => {
     const editorHtml = renderWithTooltip(React.createElement(WorkflowEditor, {
       value: workflow,
       agentRegistry,
-      profiles: [],
+      profileCatalog: readyWorkflowProfileCatalog([]),
       onSave: () => undefined,
       showSaveAction: false,
       allowAiDynamic: true,

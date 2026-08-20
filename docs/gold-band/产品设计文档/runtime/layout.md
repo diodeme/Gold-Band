@@ -104,6 +104,8 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 
 `projects/{project-id}` 存放某个仓库对应的全部 Gold Band 过程状态，包括 task authoring、run 状态、ACP runtime 文件、artifacts、attachments。
 
+`project-id` 是由规范化仓库路径确定性生成的 canonical identity，格式为 `{可读 slug}--{8 位 BLAKE3}`；运行时路径、测试和调用方必须读取 `GoldBandPaths::project_id`，不得重新拼接旧的纯 slug。
+
 系统级 debug 日志（`runtime.log`）为桌面/CLI 进程级全局日志，放在 `~/.gold-band/logs/`；桌面端启动时，即使当前还没有 task / run / ACP 事件，也必须先预创建 `~/.gold-band/logs/runtime.log`，保证首次启动、未选 workspace、目录选择器异常等问题都能有稳定的系统级排障落点。workspace 级过程日志仍通过 task/run/attempt 目录下的 `events.jsonl`、`run-progress.json`、`raw.stream.jsonl` 等文件保存。
 
 凡是桌面端在主线程触发的原生文件/目录选择器，也必须使用非阻塞调用并通过回调或事件把结果回传到 runtime；不能在 workspace 选择、会话 workspace 添加等入口使用 blocking dialog API，否则会把“打开选择器”本身变成不可观测的卡死点。
@@ -113,9 +115,9 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 ```json
 {
   "version": "0.1",
-  "projectId": "D--Projects-code-ai-Gold-Band",
-  "repoRoot": "D:/Projects/code/ai/Gold-Band",
-  "normalizedRepoRoot": "d:/projects/code/ai/gold-band"
+  "projectId": "d-projects-example-app--3d4964d2",
+  "repoRoot": "D:/Projects/Example App",
+  "normalizedRepoRoot": "d:/projects/example-app"
 }
 ```
 

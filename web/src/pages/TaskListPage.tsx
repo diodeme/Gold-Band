@@ -2,9 +2,9 @@ import { type ChangeEvent, type Dispatch, type ReactNode, type SetStateAction, u
 import type { TFunction } from 'i18next';
 import { Check, ChevronDown, Copy, Plus, RefreshCw, Trash2, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentRegistryVm, CreateTaskInput, ProfileListVm, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplate, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, CreateTaskInput, TaskListVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplate, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
-import { deleteWorkflowTemplate, getAgentRegistry, getProfiles, getWorkflowTemplates, saveWorkflowTemplate, updateWorkflowTemplate } from '../api';
+import { deleteWorkflowTemplate, getAgentRegistry, getWorkflowTemplates, saveWorkflowTemplate, updateWorkflowTemplate } from '../api';
 import { StatusBadge } from '../components/StatusBadge';
 import { validateWorkflowForSave, WorkflowEditor } from '../components/WorkflowEditor';
 import { AppCard } from '@/components/AppCard';
@@ -27,6 +27,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { createBlankWorkflowDraft, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 type TaskListLoading = 'initial' | 'manual' | null;
 
@@ -293,8 +294,8 @@ export function TaskListPage({ vm, loading, breadcrumbs, onNavigate, onRefresh, 
 
 function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileManagement }: { draft: CreateTaskDraftState; onDraftChange: Dispatch<SetStateAction<CreateTaskDraftState>>; onCreateTask: (input: CreateTaskInput) => Promise<WorkflowVm | undefined>; onOpenProfileManagement: () => void }) {
   const { t } = useTranslation();
+  const profileCatalog = useWorkflowProfileCatalog(draft.open);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<WorkflowTemplate | null>(null);
@@ -348,11 +349,10 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
     setFormError(null);
     setWorkflowError(null);
     setWorkflowNotice(null);
-    Promise.all([getAgentRegistry(), getWorkflowTemplates(), getProfiles()])
-      .then(([registry, templates, profiles]) => {
+    Promise.all([getAgentRegistry(), getWorkflowTemplates()])
+      .then(([registry, templates]) => {
         setAgentRegistry(registry);
         setTemplateStore(templates);
-        setProfileList(profiles);
         if (!draft.initialized) {
           const selectedTemplate = templates.templates[0] ?? null;
           const initialWorkflow = selectedTemplate?.workflow ?? templates.lastCreatedWorkflow ?? null;
@@ -469,12 +469,12 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
   };
 
   const validateTemplateWorkflow = (workflowDraft: WorkflowDsl, validateTemplateDuplicateId = true) => {
-    if (!agentRegistry || !profileList) {
+    if (!agentRegistry || profileCatalog.status !== 'ready') {
       setWorkflowNotice(null);
-      setWorkflowError(t('common.loading'));
+      setWorkflowError(profileCatalog.status === 'error' ? profileCatalog.error.message : t('common.loading'));
       return null;
     }
-    const validation = validateWorkflowForSave(workflowDraft, profileList.profiles, agentRegistry.agents.filter((agent) => agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId, modelBindings, false);
+    const validation = validateWorkflowForSave(workflowDraft, profileCatalog, agentRegistry.agents.filter((agent) => agent.diagnostic?.available === true), t, templateStore ?? null, selectedTemplateId, selectedTemplate ? workflowTemplateDisplayName(selectedTemplate, t) : null, validateTemplateDuplicateId, modelBindings, false);
     if (!validation.valid) {
       setWorkflowNotice(null);
       setWorkflowError(validation.issues.map((issue) => issue.message).join('\n'));
@@ -773,9 +773,9 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                   {workflowDirty ? (
                     <div className="space-y-1.5">
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                        {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
+                        {canUpdateSelectedTemplate ? <Button variant="outline" size="sm" disabled={profileCatalog.status !== 'ready' || saving} onClick={() => void saveCurrentTemplateChanges()}>{saving ? t('taskList.create.savingWorkflowTemplate') : t('taskList.create.saveCurrentWorkflow')}</Button> : null}
                         <Input className="sm:w-52" value={saveTemplateName} placeholder={t('taskList.create.workflowTemplateName')} onChange={(event) => updateDraft({ saveTemplateName: event.target.value })} />
-                        <Button variant="outline" size="sm" disabled={!saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
+                        <Button variant="outline" size="sm" disabled={profileCatalog.status !== 'ready' || !saveTemplateName.trim() || saving} onClick={() => void saveCurrentAsTemplate()}>{t('taskList.create.saveAsWorkflow')}</Button>
                       </div>
                       {showDefaultWorkflowSaveAsNotice ? (
                         <p role="status" className="text-xs text-destructive">
@@ -798,7 +798,7 @@ function CreateTaskSheet({ draft, onDraftChange, onCreateTask, onOpenProfileMana
                   value={workflow}
                   modelBindings={modelBindings}
                   agentRegistry={agentRegistry}
-                  profiles={profileList?.profiles ?? []}
+                  profileCatalog={profileCatalog}
                   onOpenProfileManagement={onOpenProfileManagement}
                   defaultWorkflow={defaultWorkflow}
                   workflowTemplates={templateStore}

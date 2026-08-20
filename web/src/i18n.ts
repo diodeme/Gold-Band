@@ -61,7 +61,7 @@ const resources = {
             later: "较晚（{{offset}}）",
           },
         },
-        composer: { create: "创建定时任务", unconfigured: "尚未配置执行计划", repeat: "重复计划", at: "单次计划", creating: "定时任务创建", exit: "退出定时任务创建", configure: "配置定时任务", moreSendOptions: "更多发送选项" },
+        composer: { create: "创建定时任务", created: "定时任务已创建，<tasks>查看定时任务</tasks>", unconfigured: "尚未配置执行计划", repeat: "重复计划", at: "单次计划", creating: "定时任务创建", exit: "退出定时任务创建", configure: "配置定时任务", moreSendOptions: "更多发送选项" },
         errors: {
           SCHEDULED_POWER_INHIBITOR_FAILED: "无法阻止系统自动休眠", SCHEDULED_PERMISSION_REQUIRED: "需要权限审批", SCHEDULED_USER_INPUT_REQUIRED: "需要用户输入",
           SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "前序运行需处理", SCHEDULED_QUEUE_BUSY: "队列繁忙已跳过", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent 不支持无人值守模式", SCHEDULED_EXECUTION_FAILED: "执行失败", SCHEDULED_LEASE_LOST: "执行超时租约丢失",
@@ -990,6 +990,10 @@ const resources = {
         noDoctorReadyAgents:
           "暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。",
         agentDoctorUnavailable: "Agent 未通过 doctor",
+        profileCatalogLoading: "正在加载角色目录",
+        profileCatalogLoadingDescription: "角色目录就绪后才能保存工作流。",
+        profileCatalogLoadFailed: "角色目录加载失败",
+        profileCatalogRetry: "重新加载",
         selectHint: "选择画布中的节点或边进行配置。",
         terminalSelectionHint: "终点节点无需配置，可通过画布上方的删除操作移除。",
         currentSelection: "当前选择",
@@ -2217,7 +2221,7 @@ const resources = {
             later: "Later ({{offset}})",
           },
         },
-        composer: { create: "Create scheduled task", unconfigured: "No schedule configured", repeat: "Repeating schedule", at: "One-time schedule", creating: "Scheduled task creation", exit: "Exit scheduled task creation", configure: "Configure scheduled task", moreSendOptions: "More send options" },
+        composer: { create: "Create scheduled task", created: "Scheduled task created. <tasks>View scheduled tasks</tasks>", unconfigured: "No schedule configured", repeat: "Repeating schedule", at: "One-time schedule", creating: "Scheduled task creation", exit: "Exit scheduled task creation", configure: "Configure scheduled task", moreSendOptions: "More send options" },
         errors: {
           SCHEDULED_POWER_INHIBITOR_FAILED: "Unable to prevent automatic system sleep", SCHEDULED_PERMISSION_REQUIRED: "Permission approval required", SCHEDULED_USER_INPUT_REQUIRED: "User input required",
           SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "Previous run needs attention", SCHEDULED_QUEUE_BUSY: "Skipped because the queue is busy", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent does not support unattended mode", SCHEDULED_EXECUTION_FAILED: "Execution failed", SCHEDULED_LEASE_LOST: "Execution lease expired",
@@ -3169,6 +3173,10 @@ const resources = {
         noDoctorReadyAgents:
           "No doctor-ready agents yet. Run doctor in Agent Management first.",
         agentDoctorUnavailable: "Agent has not passed doctor",
+        profileCatalogLoading: "Loading profile catalog",
+        profileCatalogLoadingDescription: "The workflow can be saved after the profile catalog is ready.",
+        profileCatalogLoadFailed: "Profile catalog failed to load",
+        profileCatalogRetry: "Reload",
         selectHint: "Select a node or edge on the canvas to configure it.",
         terminalSelectionHint:
           "Terminal nodes need no configuration and can be removed with the delete action above the canvas.",

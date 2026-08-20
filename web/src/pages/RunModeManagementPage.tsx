@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Bot, ChevronDown, CircleHelp, Folders, Plus, Route, Trash2 } from 'lucide-react';
-import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, ProfileVm, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
-import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, getProfiles, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
+import type { AgentRegistryVm, AutoTemplate, ConversationAutoConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, DynamicAgentRefDsl, DynamicControlDsl, WorkflowDsl, WorkflowModelBindings, WorkflowRepairTarget, WorkflowTemplate, WorkflowTemplateStore } from '../types';
+import { deleteAutoTemplate as deleteAutoTemplateApi, deleteWorkflowTemplate, getAutoTemplates, replaceAutoTemplates, saveAutoTemplate, saveWorkflowTemplate, updateAutoTemplate, updateWorkflowTemplate } from '@/api';
 import { Page, PageHeader } from '@/components/PageScaffold';
 import {
   AcpModelThoughtSelects,
@@ -26,6 +26,7 @@ import { displayAppError } from '@/i18n';
 import { pruneMissingAutoConfigReferences, pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, selectableAgentOptions, selectableWorkflowOptions, validateAutoConfig } from '@/lib/run-mode-validation';
 import { createBlankWorkflowDraft, hasWorkflowBindingDraftChanges, hasWorkflowDraftChanges, restoreBuiltInWorkflowDefinition, shouldShowDefaultWorkflowSaveAsNotice, workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { cn } from '@/lib/utils';
+import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 interface RunModeManagementPageProps {
   projectId: string;
@@ -81,6 +82,7 @@ export function TemplateActionRow({
   notice,
   showSaveCurrent = true,
   saveCurrentDisabled = false,
+  saveAsDisabled = false,
   saving,
   saveCurrentLabel,
   savingLabel,
@@ -98,6 +100,7 @@ export function TemplateActionRow({
   notice?: ReactNode;
   showSaveCurrent?: boolean;
   saveCurrentDisabled?: boolean;
+  saveAsDisabled?: boolean;
   saving: boolean;
   saveCurrentLabel: string;
   savingLabel: string;
@@ -122,7 +125,7 @@ export function TemplateActionRow({
         ) : null}
         {restoreAction}
         <Input className="h-8 w-40" disabled={saving} value={name} placeholder={namePlaceholder} onChange={(event) => onNameChange(event.target.value)} />
-        <Button size="sm" disabled={!name.trim() || saving} onClick={onSaveAs}>
+        <Button size="sm" disabled={!name.trim() || saving || saveAsDisabled} onClick={onSaveAs}>
           {saveAsLabel}
         </Button>
       </div>
@@ -267,8 +270,8 @@ export function RunModeManagementPage({
   const [allowedProfiles, setAllowedProfiles] = useState(runMode.autoConfig?.allowedProfiles ?? []);
   const [control, setControl] = useState<DynamicControlDsl>({ ...DEFAULT_DYNAMIC_CONTROL, ...(runMode.autoConfig?.control ?? {}) });
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? workflowTemplates?.lastUsedTemplateId ?? workflowTemplates?.templates[0]?.id ?? '');
-  const [profiles, setProfiles] = useState<ProfileVm[]>([]);
-  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const profileCatalog = useWorkflowProfileCatalog();
+  const profiles = profileCatalog.profiles;
   const [templates, setTemplates] = useState<AutoTemplate[]>([]);
   const [templateName, setTemplateName] = useState(runMode.autoConfig?.activeTemplateName ?? '');
   const [activeTemplateId, setActiveTemplateId] = useState(runMode.autoConfig?.activeTemplateId ?? '');
@@ -410,25 +413,8 @@ export function RunModeManagementPage({
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    getProfiles()
-      .then((result) => {
-        if (cancelled) return;
-        setProfiles(result.profiles);
-        setProfilesLoaded(true);
-      })
-      .catch(() => {
-        // Keep the last known profile set. A failed load is not proof that all
-        // persisted profile references are invalid.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     const config = runMode.autoConfig;
-    if (!config || !profilesLoaded || !effectiveWorkflowTemplates) return;
+    if (!config || profileCatalog.status !== 'ready' || !effectiveWorkflowTemplates) return;
 
     const currentWorkflowIds = (config.allowedWorkflows ?? []).map((item) => item.workflowId);
     const currentProfileIds = config.allowedProfiles ?? [];
@@ -459,11 +445,11 @@ export function RunModeManagementPage({
         profiles: prunedProfiles.removedProfileIds.length,
       }),
     });
-  }, [effectiveWorkflowTemplates, profiles, profilesLoaded, projectId, runMode, t]);
+  }, [effectiveWorkflowTemplates, profileCatalog.status, profiles, projectId, runMode, t]);
 
   useEffect(() => {
     const activeTemplateId = runMode.autoConfig?.activeTemplateId?.trim();
-    if (!profilesLoaded || !effectiveWorkflowTemplates || !activeTemplateId) return;
+    if (profileCatalog.status !== 'ready' || !effectiveWorkflowTemplates || !activeTemplateId) return;
     const activeTemplate = templates.find((template) => template.id === activeTemplateId);
     if (!activeTemplate) return;
 
@@ -496,7 +482,7 @@ export function RunModeManagementPage({
     return () => {
       cancelled = true;
     };
-  }, [effectiveWorkflowTemplates, profiles, profilesLoaded, runMode.autoConfig?.activeTemplateId, t, templates]);
+  }, [effectiveWorkflowTemplates, profileCatalog.status, profiles, runMode.autoConfig?.activeTemplateId, t, templates]);
 
   useEffect(() => {
     let cancelled = false;
@@ -734,7 +720,7 @@ export function RunModeManagementPage({
 
   const validateWfForTemplate = (workflow: WorkflowDsl, validateTemplateDuplicateId = true, validateModelBindings = false): WorkflowDsl | null => {
     const supportedAgents = agents.filter((agent) => agent.diagnostic?.available === true);
-    const validation = validateWorkflowForSave(workflow, profiles, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId, wfEditModelBindings, validateModelBindings);
+    const validation = validateWorkflowForSave(workflow, profileCatalog, supportedAgents, t, effectiveWorkflowTemplates ?? null, wfEditTemplateId, selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null, validateTemplateDuplicateId, wfEditModelBindings, validateModelBindings);
     if (!validation.valid) {
       setWfError(validation.issues.map((issue) => issue.message).join('\n'));
       return null;
@@ -954,6 +940,16 @@ export function RunModeManagementPage({
           />
         </div>
 
+        {profileCatalog.status === 'error' ? (
+          <Alert variant="destructive" className="shrink-0 bg-destructive/5">
+            <AlertTriangle />
+            <AlertDescription className="flex flex-wrap items-center gap-3">
+              <span>{profileCatalog.error.message}</span>
+              <Button type="button" variant="outline" size="sm" onClick={profileCatalog.retry}>{t('workflowEditor.profileCatalogRetry')}</Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
         {mode === 'auto' ? (
           <div className="space-y-6">
             <section className="space-y-3">
@@ -1026,6 +1022,8 @@ export function RunModeManagementPage({
                 showSaveCurrent={!isAutoTemplateDraft}
                 saveCurrentLabel={t('runMode.saveChanges')}
                 savingLabel={t('runMode.saving')}
+                saveCurrentDisabled={profileCatalog.status !== 'ready'}
+                saveAsDisabled={profileCatalog.status !== 'ready'}
                 onSaveCurrent={() => void saveCurrentTemplate()}
                 name={templateName}
                 namePlaceholder={t('runMode.autoTemplateName')}
@@ -1326,7 +1324,8 @@ export function RunModeManagementPage({
               ) : null}
               notice={showDefaultWorkflowSaveAsNotice ? t('taskList.create.defaultWorkflowSaveAsNotice') : null}
               showSaveCurrent={Boolean(wfEditTemplateId)}
-              saveCurrentDisabled={wfSaveCurrentDisabled}
+              saveCurrentDisabled={profileCatalog.status !== 'ready' || wfSaveCurrentDisabled}
+              saveAsDisabled={profileCatalog.status !== 'ready'}
               saving={wfSaving}
               saveCurrentLabel={t('taskList.create.saveCurrentWorkflow')}
               savingLabel={t('taskList.create.savingWorkflowTemplate')}
@@ -1355,7 +1354,7 @@ export function RunModeManagementPage({
                     value={wfEditWorkflow}
                     modelBindings={wfEditModelBindings}
                     agentRegistry={agentRegistry}
-                    profiles={profiles}
+                    profileCatalog={profileCatalog}
                     workflowTemplates={effectiveWorkflowTemplates}
                     currentTemplateId={wfEditTemplateId}
                     currentTemplateName={selectedWfTemplate ? workflowTemplateDisplayName(selectedWfTemplate, t) : null}

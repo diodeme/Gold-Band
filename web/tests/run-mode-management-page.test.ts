@@ -1,9 +1,13 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDsl } from '@/types';
 import { autoNoticeAutoDismiss, autoNoticeDismissDelay, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
 import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, pruneMissingAutoConfigReferences } from '@/lib/run-mode-validation';
+
+const pageSource = readFileSync(fileURLToPath(new URL('../src/pages/RunModeManagementPage.tsx', import.meta.url)), 'utf8');
 
 describe('RunModeTabsToolbar', () => {
   it('renders a title-only page header, without a mode description or duplicate back action', () => {
@@ -57,6 +61,14 @@ describe('RunModeTabsToolbar', () => {
       edges: [],
     });
     expect(draft.workflow.id).toMatch(/^workflow-/);
+  });
+
+  it('keeps workflow profile validation and template saves pending until profiles load', () => {
+    expect(pageSource).toContain('profileCatalog={profileCatalog}');
+    expect(pageSource).toContain("saveCurrentDisabled={profileCatalog.status !== 'ready' || wfSaveCurrentDisabled}");
+    expect(pageSource).toContain("saveAsDisabled={profileCatalog.status !== 'ready'}");
+    expect(pageSource).toContain('profileCatalog.error.message');
+    expect(pageSource).toContain('profileCatalog.retry');
   });
 
   it('creates an independent empty AUTO draft for a new template', () => {

@@ -2628,7 +2628,7 @@ mod tests {
         let resolved = super::workspace_entry_for_project(&state, &indexed_project_id);
 
         assert_eq!(indexed_project_id, "D--Projects-code-ai-claude-code");
-        assert_eq!(workspace_name, "claude code");
+        assert_eq!(workspace_name, indexed_project_id);
         assert!(resolved.is_none());
     }
 

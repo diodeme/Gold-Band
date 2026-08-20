@@ -10783,6 +10783,9 @@ mod tests {
                         "branchId": "root",
                         "launchedAgentExecutionId": agent_execution_id,
                         "toolName": "Agent"
+                    }, "agentTranscript": {
+                        "agentLaunch": true,
+                        "toolName": "Agent"
                     } },
                     "rawInput": { "run_in_background": true, "description": id }
                 })),

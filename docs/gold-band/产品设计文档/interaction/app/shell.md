@@ -163,7 +163,7 @@ Agent 管理
 - 小窗口下优先保证中间页面核心内容；左侧导航和右侧辅助工作区按统一状态机自动收起，并保留显式恢复入口
 - 应用整窗统一使用共享顶栏，不保留额外原生 header；macOS 仅保留系统左上角 traffic lights，Windows/Linux 使用顶栏右侧自定义窗口按钮
 - 顶栏颜色跟随当前主题切换，浅色与深色主题都维持同一套结构
-- 共享顶栏统一使用 36px 紧凑高度；品牌图标容器为 24×36px，应用品牌标题使用独立的 16px/700 字重，不继承全局界面强调所用的 520 `font-bold` 映射。左右栏开关继续使用 28px 点击区和 14px 对称 `PanelLeft/PanelRight` 图标。顶栏左侧按“品牌 icon+标题、左侧导航开关”排列，右侧工作区开关放在顶栏尾部操作区。Windows/Linux 中它位于自定义窗口控制组之前，自定义窗口按钮填满顶栏高度但保留既有横向点击宽度；macOS 的原生 traffic lights 仍由品牌前方安全区占位，右栏开关通过正常 flex 流停在顶栏右端，不使用绝对坐标。打开态仅使用低对比 titlebar hover surface，不增加强边框。右栏按钮只在快速对话与会话详情页展示，观察期内不展示 Workbench / Conversation 形态切换控件。
+- 共享顶栏统一使用 36px 紧凑高度；品牌图标容器为 28×36px，应用品牌标题使用独立的 16px/700 字重，不继承全局界面强调所用的 520 `font-bold` 映射。Logo 以此共享规格填充容器，保证在紧凑顶栏中具备与标题相称的视觉权重。左右栏开关继续使用 28px 点击区和 14px 对称 `PanelLeft/PanelRight` 图标。顶栏左侧按“品牌 icon+标题、左侧导航开关”排列，右侧工作区开关放在顶栏尾部操作区。Windows/Linux 中它位于自定义窗口控制组之前，自定义窗口按钮填满顶栏高度但保留既有横向点击宽度；macOS 的原生 traffic lights 仍由品牌前方安全区占位，右栏开关通过正常 flex 流停在顶栏右端，不使用绝对坐标。打开态仅使用低对比 titlebar hover surface，不增加强边框。右栏按钮只在快速对话与会话详情页展示，观察期内不展示 Workbench / Conversation 形态切换控件。
 - 共享顶栏除按钮、输入等交互控件外都属于窗口拖拽命中区；鼠标拖拽与双击最大化统一由 Tauri `data-tauri-drag-region` 注入脚本管理，WebView2 `app-region: drag` 仅作为 Windows 触摸/触控笔补充。禁止 React `mousedown` 再手动调用 `startDragging()`，避免同一手势重复进入 TAO 原生拖拽生命周期；交互控件必须显式退出拖拽区
 - 侧边栏折叠/展开使用平滑宽度过渡，不做瞬时消失；内容透明度可略早于宽度收起，以减少视觉突兀
 - 顶栏与侧边栏默认共用同一 surface 底色，并去掉强横向分割线；右侧主区使用左上圆角和主题化主 surface 阴影表达统一的前后层级，主区圆角后方露出的底色继续复用 sidebar surface，而不是把侧边栏自身裁成圆角，避免角后方出现异色小方块。主区统一消费 `--workspace-main-surface-shadow`，但大面积工作区不得直接叠加以底部层级为主的 composer material shadow，否则其侧向扩散会与环境层重合而形成深色灰带。最终投影按方向分工：左侧与四周环境层使用零偏移、零 spread、16px blur 和主题 `--gold-window-edge-shadow` 的 45%；顶部层使用 `0 -8px 16px -8px` 和同一主题色的 85%，利用负 spread 将增强限制在顶部，避免加深长边。中心区与展开后的右侧工作区必须由各自不会裁切的 surface host 消费同一 token，使顶部层级连续；中心区左侧不得再叠加实体 `border-left`，避免系统缩放后形成粗硬边，中心与右侧之间仅由 resize handle 表达可调整边界。承载左中右面板的工作区容器必须纵向放行投影越过顶部边界，同时在横向使用 `overflow: clip` 阻止贴近窗口边缘的投影扩大页面滚动宽度，内层 `<main>` 只负责背景、顶部边界与内容裁切。禁止按页面写死阴影值、正 spread 或多层同向投影；顶部专用负 spread 不得在左侧长边形成可辨识加深或圆角灰块
@@ -258,6 +258,7 @@ MVP 中应用壳由 `web/src/components/Shell.tsx` 实现：
 - 2026-08-16：主题 recipe 由各主题明确声明 role 视觉，并统一作为 CSS `components` 层默认值；组件显式变体可以覆盖背景、前景、边框色、focus ring、阴影、动效和几何，不允许高优先级 recipe 抹掉 `border-0`、单边分隔、圆形、pill、joined-control 圆角或定向阴影。Gold Band 与技术中性主题中的 Shell、共享顶栏、侧栏、右侧工作区、编辑器根面和源码管理根面不拥有完整 perimeter，统一声明 `borderWidth:none + radius:none`；后续主题仍可选择其他 role 形状。工作区顶边、主区圆角、侧栏/右栏 separator 与 Sheet 靠内容侧边线继续由布局 owner 单独绘制。共享顶栏本身不显示下边框，也不得形成四边圆角卡片。
 - 2026-08-16：Gold Band 浅色主题的共享顶栏与侧栏统一使用 `#fafafa` sidebar surface，消除顶栏白色条带与导航区之间的色阶断层；深色 Gold Band 和技术中性主题维持各自已有声明。该视觉由主题 token/recipe 投影，禁止在共享 `AppTitleBar` 中按主题特判。
 - 2026-08-15：共享顶栏从 44px 收紧为 36px，品牌图标容器同步收紧为 24×36px，应用标题由 14px 提升为 16px，并使用独立 700 字重而不是全局映射为 520 的 `font-bold`；帮助入口为 28px 高，左右栏开关保持 28px，Windows/Linux 窗口控制保留既有横向点击宽度并填满顶栏高度。改动只调整共享 `AppTitleBar` 的静态布局 token，不改变拖拽区、平台控制策略和窗口生命周期。
+- 2026-08-20：用户反馈紧凑顶栏中的品牌标识视觉权重偏低。共享 `AppTitleBar` 的品牌图标容器由 24×36px 提升为 28×36px，标题、操作按钮、拖拽区和平台窗口控制策略保持不变；尺寸作为单一 layout token，由所有页面共同消费。
 
 ---
 

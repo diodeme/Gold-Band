@@ -39,7 +39,7 @@ use crate::dsl::{
 };
 use crate::dynamic::{
     DynamicNodeStatus, DynamicRunPhase, DynamicRunStatus, dynamic_leaf_is_active,
-    refresh_dynamic_current_leaf_ids,
+    refresh_dynamic_current_leaf_ids, write_dynamic_node_state,
 };
 use crate::dynamic_store::load_dynamic_graph;
 use crate::mcp::McpManager;
@@ -52,7 +52,7 @@ use crate::provider::{
 use crate::runtime::{
     NodeState, RoundState, RunState, RuntimeAttemptLocator, RuntimeExecutionPhase, TaskState,
     WorkerRefState, validate_node_state, validate_round_state, validate_run_state,
-    validate_task_state, validate_worker_ref_state,
+    validate_task_state, validate_worker_ref_state, write_node_state,
 };
 use crate::storage::{
     GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
@@ -4170,7 +4170,7 @@ impl App {
             &graph.run,
         );
         for dynamic_node in &graph.nodes {
-            let _ = write_json(
+            let _ = write_dynamic_node_state(
                 &self.paths.dynamic_node_file(
                     task_id,
                     run_id,
@@ -4282,7 +4282,7 @@ impl App {
                     node.runtime_execution_id = None;
                     node.finished_at = Some(now);
                     validate_node_state(&node)?;
-                    write_json(&node_path, &node)?;
+                    write_node_state(&node_path, &node)?;
                 }
             }
             drop(guard);
@@ -4479,7 +4479,7 @@ impl App {
                 node.runtime_execution_id = None;
                 node.finished_at = Some(now);
                 validate_node_state(&node)?;
-                write_json(&node_path, &node)?;
+                write_node_state(&node_path, &node)?;
             }
         }
 
@@ -5480,6 +5480,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             node_type: NodeType::Worker,
             run_id: "run-001".to_string(),
@@ -7029,6 +7030,7 @@ mod tests {
     fn dynamic_pause_node(id: &str, status: DynamicNodeStatus) -> DynamicNodeState {
         let mut node = DynamicNodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             id: id.to_string(),
             dynamic_run_id: "dynamic-run-001".to_string(),
             kind: DynamicNodeKind::Worker,
@@ -7135,6 +7137,7 @@ mod tests {
                 .node_file(task_id, run_id, round_id, outer_node_id, outer_attempt_id),
             &NodeState {
                 version: VERSION.to_string(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
                 node_id: outer_node_id.to_string(),
                 node_type: NodeType::AiDynamic,
                 run_id: run_id.to_string(),
@@ -7617,6 +7620,7 @@ mod tests {
                 .node_file(task_id, run_id, round_id, node_id, attempt_id),
             &NodeState {
                 version: VERSION.to_string(),
+                acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
                 node_id: node_id.to_string(),
                 node_type: NodeType::Worker,
                 run_id: run_id.to_string(),

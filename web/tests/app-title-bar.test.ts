@@ -27,7 +27,7 @@ describe('AppTitleBar', () => {
     }));
 
     expect(APP_TITLE_BAR_LAYOUT.rootClassName).toContain('h-9');
-    expect(APP_TITLE_BAR_LAYOUT.brandMarkClassName).toContain('size-6');
+    expect(APP_TITLE_BAR_LAYOUT.brandMarkClassName).toContain('size-7');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('text-base');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).toContain('font-[700]');
     expect(APP_TITLE_BAR_LAYOUT.brandTitleClassName).not.toContain('font-bold');

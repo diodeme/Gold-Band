@@ -131,7 +131,11 @@ function update(eventUpdate: AcpUiEventVm): AcpSessionUpdatedEventVm {
   };
 }
 
-async function renderDialog(acpSession: AcpSessionVm, branchId = 'root') {
+async function renderDialog(
+  acpSession: AcpSessionVm,
+  branchId = 'root',
+  onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
+) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -142,6 +146,7 @@ async function renderDialog(acpSession: AcpSessionVm, branchId = 'root') {
           session={acpSession}
           {...locator}
           branchId={branchId}
+          onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
           usageCompact
@@ -180,6 +185,56 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('closes the initial query gate on a ready live session and ignores a late placeholder', async () => {
+    const placeholder = {
+      ...session([], 'pending'),
+      sessionId: null,
+    };
+    const prompt = event('prompt-live-ready', 1, 'userTextDelta', '首轮已经就绪', {
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-live-ready' },
+    });
+    const ready = session([prompt]);
+    ready.eventPage.generation = 2;
+    let resolveInitialFetch: ((value: AcpSessionVm) => void) | null = null;
+    vi.mocked(getAcpSession).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveInitialFetch = resolve;
+    }));
+    const queryStates: string[] = [];
+
+    const { container, root } = await renderDialog(
+      placeholder,
+      'root',
+      (state) => queryStates.push(state),
+    );
+    try {
+      await act(async () => {
+        runtime.listener?.({
+          ...locator,
+          branchId: 'root',
+          timelineGeneration: 2,
+          timelineRevision: 1,
+          session: ready,
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('首轮已经就绪');
+      expect(queryStates.at(-1)).toBe('success');
+
+      await act(async () => {
+        resolveInitialFetch?.(placeholder);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('首轮已经就绪');
+      expect(queryStates.at(-1)).toBe('success');
+      expect(queryStates).not.toContain('error');
+      expect(vi.mocked(getAcpSession)).toHaveBeenCalledTimes(1);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('keeps retrying when the first response is an unmaterialized control placeholder', async () => {
     const placeholder = {
       ...session([], 'pending'),
@@ -385,9 +440,20 @@ describe('ACP session re-entry reconciliation', () => {
     });
     const current = session([historicalPrompt, historicalAnswer, currentPrompt]);
     vi.mocked(getAcpSession).mockResolvedValue(current);
+    let resolveHandshake: (() => void) | null = null;
+    const handshake = new Promise<void>((resolve) => {
+      resolveHandshake = resolve;
+    });
 
-    const { container, root } = await renderDialog(current);
+    const { container, root } = await renderDialog(
+      current,
+      'root',
+      (state) => {
+        if (state === 'success') resolveHandshake?.();
+      },
+    );
     try {
+      await act(async () => handshake);
       const historical = [...container.querySelectorAll('[data-testid="markdown"]')]
         .find((node) => node.textContent === '已经显示过的完整回答');
       expect(historical?.getAttribute('data-streaming')).toBe('false');

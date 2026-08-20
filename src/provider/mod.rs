@@ -1408,6 +1408,59 @@ impl AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> Result<ProviderRunResult> {
         let prompt = render_prompt_bundle(&req)?;
+        let turn_id = prompt
+            .prompt_id
+            .as_deref()
+            .filter(|turn_id| !turn_id.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("acp.prompt-turn-id-required"))?;
+        let lifecycle_path = req.attempt_dir.join("acp.snapshot.json");
+        let submission = crate::acp::events::AcpPromptSubmission {
+            turn_id: turn_id.to_string(),
+            operation_id: format!("prompt:{}", uuid::Uuid::new_v4().simple()),
+            adapter_id: self.provider_id.clone(),
+            adapter_display_name: self.adapter_config.display_name.clone(),
+            cwd: req.attempt_dir.to_string(),
+            input: ConversationPromptInput {
+                display_text: prompt
+                    .display_text
+                    .clone()
+                    .unwrap_or_else(|| prompt.user_prompt.clone()),
+                quotes: prompt.quotes.clone(),
+            },
+            attachment_paths: req
+                .task_input_attachment_paths
+                .iter()
+                .chain(req.user_input_attachment_paths.iter())
+                .cloned()
+                .collect(),
+            admitted_at: crate::acp::events::current_timestamp(),
+        };
+        let lifecycle_owner = match crate::acp::events::admit_session_turn_for_execution(
+            &lifecycle_path,
+            &submission,
+        )? {
+            crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            crate::acp::events::AcpTurnExecutionClaim::AlreadySettled(header)
+                if acp_turn_was_cancelled_before_execution(&header, turn_id) =>
+            {
+                return Ok(interrupted_acp_provider_run_result());
+            }
+            crate::acp::events::AcpTurnExecutionClaim::AlreadySettled(_) => {
+                bail!("acp.prompt-execution-already-settled")
+            }
+            crate::acp::events::AcpTurnExecutionClaim::Stale => {
+                if crate::acp::events::read_lifecycle_header(&lifecycle_path)?
+                    .as_ref()
+                    .is_some_and(|header| acp_turn_was_cancelled_before_execution(header, turn_id))
+                {
+                    return Ok(interrupted_acp_provider_run_result());
+                }
+                bail!("acp.prompt-execution-claim-lost")
+            }
+        };
+        if let Some(session_update) = session_update {
+            let _ = session_update();
+        }
         log_prompt_bundle(
             &prompt,
             req.invocation_kind,
@@ -1438,7 +1491,7 @@ impl AcpProvider {
             self.acp_raw_max_size_bytes,
             self.acp_raw_target_size_bytes,
             self.runtime_policy,
-            None,
+            lifecycle_owner.clone(),
             live_update,
             &req.mcp_servers,
             session_update,
@@ -1457,9 +1510,9 @@ impl AcpProvider {
                     .clone()
                     .unwrap_or_else(|| req.runtime_context.attempt_id.clone()),
                 attempt_state_file: req.runtime_context.attempt_state_file.clone(),
-                turn_control_mode: req.turn_control_mode,
-                lifecycle_file: None,
-                turn_id: None,
+                runtime_generation_owned: true,
+                lifecycle_file: Some(lifecycle_path),
+                turn_id: Some(lifecycle_owner.turn_id),
             }),
         )?;
         let mut terminal = classify_acp_prompt_run(&run);
@@ -1571,6 +1624,27 @@ impl AcpProvider {
             session_update,
             prompt_accepted,
         )
+    }
+}
+
+fn acp_turn_was_cancelled_before_execution(
+    header: &crate::acp::events::AcpLifecycleHeader,
+    turn_id: &str,
+) -> bool {
+    header.turn_id.as_deref() == Some(turn_id)
+        && (header.live_turn_activity == crate::acp::events::AcpLiveTurnActivity::CancelRequested
+            || (header.live_turn_activity == crate::acp::events::AcpLiveTurnActivity::Idle
+                && header.latest_turn_status == crate::acp::events::AcpLatestTurnStatus::Cancelled))
+}
+
+fn interrupted_acp_provider_run_result() -> ProviderRunResult {
+    ProviderRunResult {
+        status: ProviderRunStatus::Interrupted,
+        exit_code: None,
+        result_payload: None,
+        worker_ref_seed: None,
+        stream_path: None,
+        runtime_error: None,
     }
 }
 
@@ -2667,6 +2741,44 @@ mod tests {
             mcp_servers: Vec::new(),
             scheduled_context: None,
         }
+    }
+
+    #[test]
+    fn cancelled_turn_before_provider_execution_is_classified_as_interrupted() {
+        let matching_terminal = crate::acp::events::AcpLifecycleHeader {
+            turn_id: Some("turn-001".to_string()),
+            availability: crate::acp::events::AcpSessionAvailability::Established,
+            live_turn_activity: crate::acp::events::AcpLiveTurnActivity::Idle,
+            latest_turn_status: crate::acp::events::AcpLatestTurnStatus::Cancelled,
+            ..Default::default()
+        };
+        let matching_stop = crate::acp::events::AcpLifecycleHeader {
+            live_turn_activity: crate::acp::events::AcpLiveTurnActivity::CancelRequested,
+            latest_turn_status: crate::acp::events::AcpLatestTurnStatus::None,
+            ..matching_terminal.clone()
+        };
+        let other_turn = crate::acp::events::AcpLifecycleHeader {
+            turn_id: Some("turn-002".to_string()),
+            ..matching_terminal.clone()
+        };
+
+        assert!(acp_turn_was_cancelled_before_execution(
+            &matching_terminal,
+            "turn-001"
+        ));
+        assert!(acp_turn_was_cancelled_before_execution(
+            &matching_stop,
+            "turn-001"
+        ));
+        assert!(!acp_turn_was_cancelled_before_execution(
+            &other_turn,
+            "turn-001"
+        ));
+
+        let result = interrupted_acp_provider_run_result();
+        assert_eq!(result.status, ProviderRunStatus::Interrupted);
+        assert!(result.runtime_error.is_none());
+        assert!(result.result_payload.is_none());
     }
 
     fn test_output_contract(emission_mode: OutputEmissionMode) -> PromptOutputContract {

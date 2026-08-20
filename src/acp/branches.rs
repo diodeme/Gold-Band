@@ -16,16 +16,19 @@ use crate::acp::events::{
     AcpUiEvent, AgentTranscriptRelation, agent_transcript_tool_output,
     extract_agent_transcript_relation, load_timeline_items, write_timeline_items,
 };
+use crate::runtime::{CURRENT_ACP_STORAGE_SCHEMA_VERSION, advance_node_acp_storage_schema_version};
 #[cfg(test)]
 use crate::storage::atomic_write_file;
 #[cfg(test)]
 use crate::storage::ensure_parent_dir;
+use crate::storage::read_json;
+#[cfg(test)]
 use crate::storage::write_json;
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
-const BRANCH_TIMELINE_MIGRATION_MARKER: &str = ".acp-branch-timeline-migration-v1";
-const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v2";
+const BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION: u32 = 1;
+const AGENT_RESULT_STORAGE_SCHEMA_VERSION: u32 = 2;
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 #[cfg(test)]
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
@@ -758,24 +761,67 @@ fn normalize_legacy_timeline_identity(event: &mut AcpUiEvent) -> bool {
     true
 }
 
-/// Establishes the branch/index storage boundary once per attempt. Runtime
-/// startup calls this before the first event is written; old attempts pay the
-/// full migration cost once and then use the marker as the bounded fast path.
+/// Establishes the branch/index storage boundary once per legacy attempt.
+/// New attempts declare the current schema in node.json and never scan history.
 pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
-    let marker = attempt_dir.join(BRANCH_TIMELINE_MIGRATION_MARKER);
-    if marker.exists() {
+    let node_path = attempt_storage_state_path(attempt_dir)?;
+    let initial = attempt_storage_schema_version(&node_path)?;
+    if initial > CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+        anyhow::bail!("acp.storage-schema-version-unsupported");
+    }
+    if initial == CURRENT_ACP_STORAGE_SCHEMA_VERSION {
         return Ok(false);
     }
     let _guard = branch_timeline_migration_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if marker.exists() {
+    let current = attempt_storage_schema_version(&node_path)?;
+    if current > CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+        anyhow::bail!("acp.storage-schema-version-unsupported");
+    }
+    if current == CURRENT_ACP_STORAGE_SCHEMA_VERSION {
         return Ok(false);
     }
-    let mut changed = migrate_legacy_agent_timeline(attempt_dir)?;
-    changed |= migrate_legacy_agent_results(attempt_dir)?;
-    write_json(&marker, &json!({ "version": 1 }))?;
+    let mut changed = false;
+    if current < BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION {
+        changed |= migrate_legacy_agent_timeline(attempt_dir)?;
+        advance_node_acp_storage_schema_version(
+            &node_path,
+            BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION,
+        )?;
+    }
+    if current < AGENT_RESULT_STORAGE_SCHEMA_VERSION {
+        changed |= migrate_legacy_agent_results(attempt_dir)?;
+        advance_node_acp_storage_schema_version(&node_path, AGENT_RESULT_STORAGE_SCHEMA_VERSION)?;
+    }
     Ok(changed)
+}
+
+fn attempt_storage_state_path(attempt_dir: &Utf8Path) -> Result<Utf8PathBuf> {
+    let direct = attempt_dir.join("node.json");
+    if direct.exists() {
+        return Ok(direct);
+    }
+    let dynamic_leaf = attempt_dir
+        .parent()
+        .map(|parent| parent.join("node.json"))
+        .filter(|path| path.exists());
+    dynamic_leaf.ok_or_else(|| anyhow::anyhow!("acp.attempt-state-missing"))
+}
+
+fn attempt_storage_schema_version(path: &Utf8Path) -> Result<u32> {
+    let state = read_json::<Value>(path)?;
+    let version = state
+        .get("acp_storage_schema_version")
+        .or_else(|| state.get("acpStorageSchemaVersion"))
+        .map(|version| {
+            version
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-invalid"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    u32::try_from(version).map_err(|_| anyhow::anyhow!("acp.storage-schema-version-unsupported"))
 }
 
 pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -800,11 +846,6 @@ pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>>
 /// One-time repair for conversations written before Agent launch prompts and
 /// valid foreground results were materialized in the launched branch.
 fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
-    let marker = attempt_dir.join(AGENT_RESULT_MIGRATION_MARKER);
-    if marker.exists() {
-        return Ok(false);
-    }
-
     let mut timeline_paths = vec![branch_timeline_path(attempt_dir, ROOT_BRANCH_ID)];
     let agents_dir = attempt_dir.join("agents");
     if agents_dir.exists() {
@@ -901,7 +942,6 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
         changed = true;
     }
 
-    write_json(&marker, &json!({ "version": 2 }))?;
     Ok(changed)
 }
 
@@ -1558,6 +1598,7 @@ fn tool_raw_input(raw: &Value) -> Option<&Value> {
 mod tests {
     use super::*;
     use crate::acp::events::append_ui_event;
+    use crate::runtime::NodeState;
 
     fn event_at(
         id: &str,
@@ -1610,6 +1651,50 @@ mod tests {
         Utf8PathBuf::from_path_buf(path).unwrap()
     }
 
+    fn write_node_storage_version(attempt_dir: &Utf8Path, version: Option<u32>) {
+        let mut node = json!({
+            "version": crate::domain::VERSION,
+            "node_id": "worker",
+            "node_type": "worker",
+            "run_id": "run-001",
+            "round_id": "round-001",
+            "attempt_id": "attempt-001",
+            "status": "running",
+            "outcome": null,
+            "started_at": "1Z",
+            "finished_at": null,
+            "manual_check_pending": false,
+            "runtime_execution_id": "runtime-execution-001",
+            "resolved_config": {}
+        });
+        if let Some(version) = version {
+            node["acp_storage_schema_version"] = json!(version);
+        }
+        write_json(&attempt_dir.join("node.json"), &node).unwrap();
+    }
+
+    fn write_dynamic_node_storage_version(attempt_dir: &Utf8Path, version: Option<u32>) {
+        let node_dir = attempt_dir.parent().unwrap();
+        let mut node = json!({
+            "version": crate::domain::VERSION,
+            "id": "worker",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Worker",
+            "task": "Run worker",
+            "status": "running",
+            "chainId": "worker",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "sessionMode": "new"
+        });
+        if let Some(version) = version {
+            node["acpStorageSchemaVersion"] = json!(version);
+        }
+        write_json(&node_dir.join("node.json"), &node).unwrap();
+    }
+
     fn persist_partitioned(attempt_dir: &Utf8Path, events: Vec<AcpUiEvent>) {
         let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
         for mut event in events {
@@ -1633,6 +1718,142 @@ mod tests {
         for (branch_id, events) in by_branch {
             write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &events).unwrap();
         }
+    }
+
+    #[test]
+    fn current_attempt_storage_schema_skips_legacy_scan_and_marker_files() {
+        let attempt = temp_attempt("current-storage-schema");
+        write_node_storage_version(&attempt, Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION));
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        assert!(!attempt.join(".acp-branch-timeline-migration-v1").exists());
+        assert!(!attempt.join(".acp-agent-result-migration-v2").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn current_dynamic_leaf_storage_schema_uses_parent_node_and_skips_legacy_scan() {
+        let root = temp_attempt("current-dynamic-storage-schema");
+        let attempt = root.join("worker").join("attempt-001");
+        std::fs::create_dir_all(attempt.as_std_path()).unwrap();
+        write_dynamic_node_storage_version(&attempt, Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION));
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        assert!(!attempt.join("node.json").exists());
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_dynamic_leaf_advances_parent_node_storage_schema() {
+        let root = temp_attempt("legacy-dynamic-storage-schema");
+        let attempt = root.join("worker").join("attempt-001");
+        std::fs::create_dir_all(attempt.as_std_path()).unwrap();
+        write_dynamic_node_storage_version(&attempt, None);
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        let node = read_json::<Value>(&root.join("worker").join("node.json")).unwrap();
+        assert_eq!(
+            node.get("acpStorageSchemaVersion").and_then(Value::as_u64),
+            Some(u64::from(CURRENT_ACP_STORAGE_SCHEMA_VERSION))
+        );
+        assert!(node.get("acp_storage_schema_version").is_none());
+        assert!(!attempt.join("node.json").exists());
+
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn future_attempt_storage_schema_is_rejected_without_scanning_timeline() {
+        let attempt = temp_attempt("future-storage-schema");
+        write_node_storage_version(
+            &attempt,
+            Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION.saturating_add(1)),
+        );
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        let error = prepare_agent_timeline_storage(&attempt).unwrap_err();
+        assert_eq!(error.to_string(), "acp.storage-schema-version-unsupported");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_attempt_ignores_markers_and_advances_canonical_node_schema() {
+        let attempt = temp_attempt("legacy-storage-schema");
+        write_node_storage_version(&attempt, None);
+        std::fs::write(
+            attempt
+                .join(".acp-branch-timeline-migration-v1")
+                .as_std_path(),
+            b"ignored",
+        )
+        .unwrap();
+        std::fs::write(
+            attempt.join(".acp-agent-result-migration-v2").as_std_path(),
+            b"ignored",
+        )
+        .unwrap();
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "description": "child" })),
+        );
+        write_timeline_items(&branch_timeline_path(&attempt, ROOT_BRANCH_ID), &[launch]).unwrap();
+
+        prepare_agent_timeline_storage(&attempt).unwrap();
+        let node = read_json::<NodeState>(&attempt.join("node.json")).unwrap();
+        assert_eq!(
+            node.acp_storage_schema_version,
+            CURRENT_ACP_STORAGE_SCHEMA_VERSION
+        );
+        assert!(attempt.join(".acp-branch-timeline-migration-v1").exists());
+        assert!(attempt.join(".acp-agent-result-migration-v2").exists());
+
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn failed_schema_step_does_not_advance_node_version() {
+        let attempt = temp_attempt("failed-storage-schema-step");
+        write_node_storage_version(&attempt, Some(BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION));
+        std::fs::write(attempt.join("agents").as_std_path(), b"not a directory").unwrap();
+
+        assert!(prepare_agent_timeline_storage(&attempt).is_err());
+        let node = read_json::<NodeState>(&attempt.join("node.json")).unwrap();
+        assert_eq!(
+            node.acp_storage_schema_version,
+            BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION
+        );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
     #[test]
@@ -2167,7 +2388,6 @@ mod tests {
         let branch = load_timeline_items(&branch_timeline_path(&attempt, &branch_id)).unwrap();
         assert!(!branch.iter().any(is_agent_result_event));
         assert!(branch.iter().any(is_agent_prompt_event));
-        assert!(attempt.join(AGENT_RESULT_MIGRATION_MARKER).exists());
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

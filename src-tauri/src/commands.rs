@@ -24,7 +24,9 @@ use gold_band::app::{
     ProfileCommandError, ProfileEntry, ProfileInput, ProfileList, RuntimeInterventionKind,
     RuntimeLifecycleEvent, WorkflowTemplateStore,
 };
-use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
+use gold_band::domain::{
+    NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode, TurnControlMode,
+};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
 use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
@@ -3546,30 +3548,28 @@ pub async fn stop_active_session(
     );
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
-    if direct_mode {
-        request_auto_dispatch_suspension(&locator.attempt_dir(&app)).map_err(command_error)?;
-    }
     let operation_id = Uuid::new_v4().to_string();
     let control_operation_id = operation_id.clone();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
-    let (attempt_dir, stop_turn_id, current_run, lifecycle) = spawn_blocking_command(move || {
-        if direct_mode {
-            let queue_attempt_dir = control_locator.attempt_dir(&control_app);
-            let queue = load_prompt_queue(&queue_attempt_dir).map_err(command_error)?;
-            if !queue.items.is_empty() {
-                suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
+    let (attempt_dir, stop_turn_id, accepted, current_run, lifecycle) =
+        spawn_blocking_command(move || {
+            let (attempt_dir, stop_turn_id, accepted) =
+                persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
+            if direct_mode && accepted {
+                request_auto_dispatch_suspension(&attempt_dir).map_err(command_error)?;
+                let queue = load_prompt_queue(&attempt_dir).map_err(command_error)?;
+                if !queue.items.is_empty() {
+                    suspend_auto_dispatch(&attempt_dir).map_err(command_error)?;
+                }
             }
-        }
-        let (attempt_dir, stop_turn_id) =
-            persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
-        let current_run = control_app
-            .run_status(&control_locator.task_id, &control_locator.run_id)
-            .map_err(command_error)?;
-        let lifecycle = lifecycle_for_locator(&control_app, &control_locator);
-        Ok((attempt_dir, stop_turn_id, current_run, lifecycle))
-    })
-    .await?;
+            let current_run = control_app
+                .run_status(&control_locator.task_id, &control_locator.run_id)
+                .map_err(command_error)?;
+            let lifecycle = lifecycle_for_locator(&control_app, &control_locator);
+            Ok((attempt_dir, stop_turn_id, accepted, current_run, lifecycle))
+        })
+        .await?;
 
     spawn_active_session_stop_cleanup(
         app_handle,
@@ -3591,8 +3591,13 @@ pub async fn stop_active_session(
     );
     Ok(ActiveSessionStopVm {
         operation_id,
-        status: "accepted".to_string(),
-        kind: "stop-accepted".to_string(),
+        status: if accepted { "accepted" } else { "no-op" }.to_string(),
+        kind: if accepted {
+            "stop-accepted"
+        } else {
+            "stop-noop"
+        }
+        .to_string(),
         run: Some(run_summary_vm(current_run)),
         session: None,
         lifecycle,
@@ -5544,7 +5549,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
-                Some(claimed_owner.clone()),
+                claimed_owner.clone(),
                 Some(&|event, timeline_revision| {
                     live_update(
                         acp_live_event_context(
@@ -5579,7 +5584,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                         outer_attempt_id,
                         &node_id,
                     )),
-                    turn_control_mode: prompt_bundle.turn_control_mode,
+                    runtime_generation_owned: prompt_bundle.turn_control_mode
+                        == TurnControlMode::RuntimeControlled,
                     lifecycle_file: Some(lifecycle_path_for_stop.clone()),
                     turn_id: Some(turn_id_for_stop.clone()),
                 }),
@@ -5701,7 +5707,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
-            Some(claimed_owner.clone()),
+            claimed_owner.clone(),
             Some(&|event, timeline_revision| {
                 live_update(
                     acp_live_event_context(
@@ -5735,7 +5741,8 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     &node_id,
                     &attempt_id,
                 )),
-                turn_control_mode: prompt_bundle.turn_control_mode,
+                runtime_generation_owned: prompt_bundle.turn_control_mode
+                    == TurnControlMode::RuntimeControlled,
                 lifecycle_file: Some(lifecycle_path_for_stop),
                 turn_id: Some(turn_id_for_stop),
             }),
@@ -5975,10 +5982,59 @@ fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
     operation_id: &str,
-) -> CommandResult<(Utf8PathBuf, Option<(String, String, u64)>)> {
+) -> CommandResult<(Utf8PathBuf, Option<(String, String, u64)>, bool)> {
     let attempt_dir = locator.attempt_dir(app);
-    let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
-    if let (Some(outer_node_id), Some(outer_attempt_id)) =
+    let runtime_was_active = app
+        .run_status(&locator.task_id, &locator.run_id)
+        .is_ok_and(|run| run.status == RunStatus::Running && locator.matches_run_current(&run));
+    // Persist the user intent before touching runtime-control files. A failure
+    // in pause bookkeeping must not leave the provider turn running without a
+    // durable cancellation request that recovery can observe.
+    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+    let stop = gold_band::acp::events::request_session_stop_outcome(
+        &lifecycle_path,
+        operation_id,
+        &gold_band::acp::events::current_timestamp(),
+    )
+    .map_err(command_error)?;
+    let stop_owner = stop
+        .owner
+        .map(|owner| (owner.turn_id, owner.operation_id, owner.revision));
+
+    // A provider turn may not have reached durable admission yet while its
+    // owning Runtime generation is already running. Runtime pause is the
+    // authoritative durable stop in that startup window. Only a request with
+    // neither an ACP owner nor a running Runtime owner is an idempotent no-op.
+    if stop_owner.is_none() && !runtime_was_active {
+        return Ok((attempt_dir, None, false));
+    }
+
+    let runtime_was_controlled = match attempt_is_runtime_controlled(app, locator) {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(?error, %attempt_dir, "failed to inspect ACP runtime control mode after durable stop");
+            false
+        }
+    };
+    if let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() {
+        let owner = gold_band::acp::events::AcpLifecycleOwner {
+            turn_id: turn_id.clone(),
+            operation_id: operation_id.clone(),
+            revision: *revision,
+        };
+        if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+            .map_err(command_error)?
+        {
+            return Ok((attempt_dir, None, runtime_was_active));
+        }
+        client::request_prompt_cancel(&attempt_dir);
+        if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+            .map_err(command_error)?
+        {
+            return Ok((attempt_dir, None, runtime_was_active));
+        }
+    }
+    let pause_result = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (locator.outer_node_id(), locator.outer_attempt_id())
     {
         app.pause_dynamic_attempt_runtime_state(
@@ -5990,7 +6046,6 @@ fn persist_active_session_stop(
             &locator.node_id,
             PauseReason::ProcessInterrupted,
         )
-        .map_err(command_error)?;
     } else {
         app.pause_attempt_runtime_state(
             &locator.task_id,
@@ -6000,25 +6055,34 @@ fn persist_active_session_stop(
             &locator.attempt_id,
             PauseReason::ProcessInterrupted,
         )
-        .map_err(command_error)?;
+    };
+    if let Err(error) = pause_result {
+        if stop_owner.is_some() {
+            // The ACP cancellation intent is already durable and remains the
+            // accepted operation even if the Runtime projection cannot also
+            // be paused. Provider cancellation still observes the owner.
+            warn!(%error, %attempt_dir, "failed to pause runtime after durable ACP stop");
+        } else {
+            let runtime_is_still_active = app
+                .run_status(&locator.task_id, &locator.run_id)
+                .is_ok_and(|run| {
+                    run.status == RunStatus::Running && locator.matches_run_current(&run)
+                });
+            if runtime_is_still_active {
+                return Err(command_error(error));
+            }
+            // The owner settled while Stop was racing with startup. No
+            // durable ACP intent was acquired and no Runtime generation was
+            // paused, so this invocation is an idempotent no-op.
+            return Ok((attempt_dir, None, false));
+        }
     }
     if runtime_was_controlled {
-        gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
+        if let Err(error) = gold_band::acp::control::mark_runtime_interrupted(&attempt_dir) {
+            warn!(%error, %attempt_dir, "failed to mark runtime interrupted after durable stop");
+        }
     }
-    client::request_prompt_cancel(&attempt_dir);
-    let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-    let lifecycle = gold_band::acp::events::request_session_stop(
-        &lifecycle_path,
-        operation_id,
-        &gold_band::acp::events::current_timestamp(),
-    )
-    .map_err(command_error)?;
-    let stop_owner = lifecycle
-        .turn_id
-        .clone()
-        .zip(lifecycle.operation_id.clone())
-        .map(|(turn_id, operation_id)| (turn_id, operation_id, lifecycle.revision));
-    Ok((attempt_dir, stop_owner))
+    Ok((attempt_dir, stop_owner, true))
 }
 
 fn spawn_active_session_stop_cleanup(
@@ -6030,6 +6094,23 @@ fn spawn_active_session_stop_cleanup(
     stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() else {
+            return;
+        };
+        let owner = gold_band::acp::events::AcpLifecycleOwner {
+            turn_id: turn_id.clone(),
+            operation_id: operation_id.clone(),
+            revision: *revision,
+        };
+        let owner_is_current =
+            gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+                .unwrap_or(false);
+        if !owner_is_current {
+            // The old turn may already be terminal and a newer turn may own
+            // this attempt. Never send an attempt-wide cancel in that case.
+            return;
+        }
         match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
             Ok(_) => {}
             Err(error) => {
@@ -6039,18 +6120,15 @@ fn spawn_active_session_stop_cleanup(
         // request_session_stop transferred lifecycle ownership away from the
         // provider runtime. The stop controller therefore owns terminal
         // settlement after dispatch; the old provider owner can only no-op.
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        if let Some((turn_id, operation_id, revision)) = stop_owner.as_ref()
-            && let Err(error) = gold_band::acp::events::persist_session_turn_terminal_owned(
-                &lifecycle_path,
-                turn_id,
-                Some(operation_id),
-                *revision,
-                gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-                "cancelled",
-                &gold_band::acp::events::current_timestamp(),
-            )
-        {
+        if let Err(error) = gold_band::acp::events::persist_session_turn_terminal_owned(
+            &lifecycle_path,
+            turn_id,
+            Some(operation_id),
+            *revision,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            &gold_band::acp::events::current_timestamp(),
+        ) {
             warn!(%error, %attempt_dir, %turn_id, "failed to settle accepted ACP stop ownership");
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
@@ -9710,7 +9788,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_stop_persists_control_state_without_reading_timeline() {
+    fn startup_stop_pauses_current_runtime_without_synthesizing_an_acp_turn() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-stop-control-test-{}",
             uuid::Uuid::new_v4()
@@ -9792,21 +9870,22 @@ mod tests {
             "attempt-001",
         );
         std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
-
         let started = std::time::Instant::now();
-        let (attempt_dir, _) =
+        let (attempt_dir, stop_owner, accepted) =
             persist_active_session_stop(&app, &locator, "operation-001").unwrap();
 
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(accepted);
+        assert!(stop_owner.is_none());
         let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run["status"], "paused");
+        assert_eq!(run["pause_reason"], "process-interrupted");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
+        assert!(snapshot.get("turnId").is_none());
+        assert!(snapshot.get("promptSubmission").is_none());
+        assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
-        assert_eq!(
-            snapshot["runtimeControl"]["currentMode"],
-            "non-runtime-controlled"
-        );
         assert!(timeline_path.is_dir());
     }
 

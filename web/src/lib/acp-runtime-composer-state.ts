@@ -100,13 +100,16 @@ export function deriveAcpRuntimeComposerState(
   const acpTerminal = lifecycleTerminal
     ? (!input.localTurnId || lifecycleMatchesLocalTurn)
     : (!input.lifecycle && !input.localTurnId && isSessionTerminalStatus(input.acpStatus));
+  const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
+  const stopRequested = input.cancelling || input.stopCommandPending || backendStopping;
   const localTurnInFlight = !acpTerminal && Boolean(input.localTurnId) && (
     input.sending || input.awaitingResponse || input.waitingForOptimisticPrompt
   );
   const sending = input.sending && !acpTerminal;
   const acpActive = !acpTerminal && lifecycleAcpRunning;
-  const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
-  const waitingForPermission = input.waitingForPermission;
+  // Stop is a control-plane fact. A stale session snapshot must not win over
+  // it and keep the composer in permission-blocked mode.
+  const waitingForPermission = input.waitingForPermission && !stopRequested;
   const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
@@ -231,6 +234,24 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
 ) {
   if (!local?.runtime.active) return false;
   if (!incoming) return true;
+  const localAcpRevision = local.acp.revision;
+  const incomingAcpRevision = incoming.acp.revision;
+  if (
+    localAcpRevision != null
+    && incomingAcpRevision != null
+    && incomingAcpRevision > localAcpRevision
+  ) {
+    return false;
+  }
+  const localRuntimeRevision = local.runtime.revision;
+  const incomingRuntimeRevision = incoming.runtime.revision;
+  if (
+    localRuntimeRevision != null
+    && incomingRuntimeRevision != null
+    && incomingRuntimeRevision > localRuntimeRevision
+  ) {
+    return false;
+  }
   if (incoming.runtime.active || incoming.acp.liveTurnActivity !== 'idle' || incoming.acp.stopping) {
     return false;
   }
@@ -273,6 +294,25 @@ export function isTerminalAcpLifecycle(
   lifecycle: ConversationAttemptLifecycleVm | null | undefined,
 ) {
   return Boolean(lifecycle && isTerminalAcpFacet(lifecycle.acp));
+}
+
+/**
+ * Pending interaction arrays may lag behind a lifecycle-only stop/terminal
+ * update. The lifecycle is authoritative for the current turn, so the UI
+ * must not keep rendering a permission or elicitation card from that stale
+ * session projection.
+ */
+export function shouldHidePendingAcpInteractions(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  localTurnId: string | null | undefined,
+  cancelling: boolean,
+  stopCommandPending: boolean,
+) {
+  if (cancelling || stopCommandPending || Boolean(lifecycle?.acp.stopping)) {
+    return true;
+  }
+  return isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
 }
 
 /**

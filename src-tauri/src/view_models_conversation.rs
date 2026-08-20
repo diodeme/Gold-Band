@@ -2029,9 +2029,7 @@ fn dynamic_attempt_runtime_execution(
 
 fn acp_session_availability(session_status: Option<&str>, established: bool) -> String {
     let normalized = session_status.map(normalize_lifecycle_code);
-    if matches!(normalized.as_deref(), Some("closing")) {
-        "closing".to_string()
-    } else if matches!(normalized.as_deref(), Some("restorable")) {
+    if matches!(normalized.as_deref(), Some("restorable")) {
         "restorable".to_string()
     } else if established || matches!(normalized.as_deref(), Some("established")) {
         "established".to_string()
@@ -4974,6 +4972,24 @@ mod tests {
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn legacy_closing_projection_keeps_session_available_for_turn_cancel() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("closing"),
+            None,
+            "paused",
+            None,
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(lifecycle.acp.session_availability, "established");
+        assert_eq!(lifecycle.acp.latest_turn_status, "none");
     }
 
     #[test]

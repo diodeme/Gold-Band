@@ -6780,20 +6780,84 @@ fn session_metadata_status(session: &serde_json::Value) -> &str {
         .get("availability")
         .and_then(Value::as_str)
         .unwrap_or("unavailable");
-    if availability.eq_ignore_ascii_case("closing") {
-        return "closing";
+    let activity = session
+        .get("liveTurnActivity")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if activity.eq_ignore_ascii_case("cancelRequested") {
+        return "cancelling";
     }
-    match session
+    let latest = session
         .get("latestTurnStatus")
         .and_then(Value::as_str)
-        .unwrap_or("none")
-    {
+        .unwrap_or("none");
+    match latest.to_ascii_lowercase().as_str() {
         "completed" => "completed",
-        "cancelled" => "cancelled",
+        "cancelled" | "canceled" => "cancelled",
         "failed" => "failed",
-        _ if matches!(availability, "established" | "restorable") => "idle",
+        _ if availability.eq_ignore_ascii_case("closing") => "closing",
+        _ if matches!(
+            availability.to_ascii_lowercase().as_str(),
+            "established" | "restorable"
+        ) =>
+        {
+            "idle"
+        }
         _ => "unknown",
     }
+}
+
+fn canonical_legacy_availability(
+    normalized_status: &str,
+    session_established: bool,
+) -> &'static str {
+    match normalized_status {
+        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
+        _ if session_established => "established",
+        _ => "unavailable",
+    }
+}
+
+fn canonical_legacy_activity(normalized_status: &str) -> &'static str {
+    match normalized_status {
+        "cancelling" | "cancel-requested" | "closing" => "cancelRequested",
+        _ => "idle",
+    }
+}
+
+fn canonical_legacy_latest_status(normalized_status: &str) -> &'static str {
+    match normalized_status {
+        "completed" | "complete" => "completed",
+        "cancelled" | "canceled" => "cancelled",
+        "failed" | "failure" | "error" | "killed" => "failed",
+        _ => "none",
+    }
+}
+
+fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
+    let legacy_status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(status) = legacy_status else {
+        return session;
+    };
+    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
+    let session_established = session
+        .get("sessionId")
+        .or_else(|| session.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    session["availability"] = serde_json::json!(canonical_legacy_availability(
+        &normalized,
+        session_established
+    ));
+    session["liveTurnActivity"] = serde_json::json!(canonical_legacy_activity(&normalized));
+    session["latestTurnStatus"] = serde_json::json!(canonical_legacy_latest_status(&normalized));
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session
 }
 
 fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
@@ -6855,38 +6919,6 @@ fn workspace_worktree_path(
             })
             .map(|worktree| worktree.path.to_string()),
     }
-}
-
-fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
-    let legacy_status = session
-        .get("status")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let Some(status) = legacy_status else {
-        return session;
-    };
-    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
-    let session_established = session
-        .get("sessionId")
-        .or_else(|| session.get("acpSessionId"))
-        .and_then(Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty());
-    session["availability"] = serde_json::json!(match normalized.as_str() {
-        "closing" | "cancelling" | "cancel-requested" => "closing",
-        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
-        _ if session_established => "established",
-        _ => "unavailable",
-    });
-    session["latestTurnStatus"] = serde_json::json!(match normalized.as_str() {
-        "completed" | "complete" => "completed",
-        "cancelled" | "canceled" => "cancelled",
-        "failed" | "failure" | "error" | "killed" => "failed",
-        _ => "none",
-    });
-    if let Some(object) = session.as_object_mut() {
-        object.remove("status");
-    }
-    session
 }
 
 fn is_acp_session_stopping_status(status: &str) -> bool {
@@ -8785,6 +8817,46 @@ mod tests {
             "cancelling"
         );
         assert_eq!(effective_acp_session_status("completed", None), "completed");
+    }
+
+    #[test]
+    fn session_metadata_status_prioritizes_turn_terminal_over_legacy_closing() {
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "closing",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "cancelled"
+            })),
+            "cancelled"
+        );
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "established",
+                "liveTurnActivity": "cancelRequested",
+                "latestTurnStatus": "none"
+            })),
+            "cancelling"
+        );
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "closing",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "none"
+            })),
+            "closing"
+        );
+    }
+
+    #[test]
+    fn preloaded_legacy_stop_is_migrated_to_turn_cancellation() {
+        let normalized = normalize_preloaded_session_metadata(json!({
+            "sessionId": "provider-session",
+            "status": "closing"
+        }));
+        assert_eq!(normalized["availability"], "established");
+        assert_eq!(normalized["liveTurnActivity"], "cancelRequested");
+        assert_eq!(normalized["latestTurnStatus"], "none");
+        assert!(normalized.get("status").is_none());
     }
 
     #[test]

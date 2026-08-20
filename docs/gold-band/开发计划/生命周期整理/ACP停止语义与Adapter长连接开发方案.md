@@ -527,3 +527,14 @@ PromptState: Running | CancelRequested | CancelObserved | Settled | TimedOut
    - 本轮已完成降权：`provider.pid` 不再推导 running/stopping/continue/stop 成功，不参与 UI 状态。
    - 后续如果要在 crash 后清理残留 adapter process，不能只凭 pid 文件 kill。必须校验 pid 仍存在、command line/cwd/env/启动 marker 能证明它是 Gold Band 为对应 workspace/provider 启动的 adapter，且 pid 未被系统复用。
    - 建议增加 per-process nonce/marker 文件或启动 env marker；清理失败只记录诊断，不影响业务 continue，也不全局 kill `claude.exe` / `node.exe`。
+
+## 11. 会话停止继续与 Timeline 运行态恢复根因修复（2026-08-20）
+
+本轮实现与本方案的长连接边界保持一致：
+
+1. Stop 是 turn cancel，不是 session close。停止请求只把 canonical lifecycle 推进到 `cancelRequested`，保留 `established/restorable/unavailable` availability；真正 close 流程才允许 `closing`。
+2. lifecycle 使用统一 reducer、原子 JSON 写入和 `turnId + operationId + revision` CAS。控制方先持久化 stop intent，再锁外 cancel provider，最后幂等结算 terminal；当前 turn 已被取消时，迟到 provider completed/failed 不得覆盖为其他 outcome。stop transition 必须返回本次是否取得 control-plane owner：重复 stop 或已 terminal 的 no-op 不得再次写 attempt-wide cancel latch、暂停运行态或启动旧 turn cleanup，防止旧 stop 在后续 turn admission 后误取消新 turn。
+3. attached reuse 优先于 resume/load；resume 和 new 不读取完整历史，load 仅在 external history sync 开启时读取 prompt anchors。Runtime 初始化使用 Timeline index snapshot、bounded hot state 和 branch stream snapshot，正常路径不 hydrate Blob。
+4. index hit、有限 tail replay 和 full rebuild/compaction 的 restore mode 必须进入诊断。tail 超限或 compaction 已经读取完整 timeline 时必须标记 full rebuild，不能误报为 index hit；usage repair 只能通过 usage journal/prompt locator 恢复。
+
+本轮接口回归覆盖 cancellation intent 与 provider completion 竞态、旧 owner/stale stop、active stream tool/revision parity、branch identity、Blob reference 保留、prompt anchor 延迟读取和 full-rebuild 诊断。该实现继续复用现有 Adapter connection/session route、Timeline index、revision/CAS 与原子写入，不引入第二套全局状态机或后台队列。

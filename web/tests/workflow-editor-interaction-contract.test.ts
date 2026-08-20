@@ -204,6 +204,52 @@ describe('workflow editor interaction contracts', () => {
     expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresOutputValidation')).toBe(true);
   });
 
+  it('defers only profile reference validation while the profile catalog is loading', () => {
+    const value = workflow({
+      id: '',
+      nodes: [
+        worker('plan', { executionSlotId: 'slot-plan', profile: 'missing-profile' }),
+        worker('build', { executionSlotId: 'slot-build' }),
+        worker('review', {
+          executionSlotId: 'slot-review',
+          output: { kind: 'json', artifact: 'review-result' },
+          success_condition: { expression: '$.result == true' },
+        }),
+      ],
+    });
+
+    const loadingValidation = validateWorkflowForSave(
+      value,
+      [],
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+      { profileCatalogReady: false },
+    );
+    const readyValidation = validateWorkflowForSave(
+      value,
+      [],
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+      { profileCatalogReady: true },
+    );
+
+    expect(loadingValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationWorkflowIdRequired');
+    expect(loadingValidation.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+    expect(readyValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+  });
+
   it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {
     const value = workflow();
     const layout = createAuthoringGraphLayout(value, new Set(['$end']));

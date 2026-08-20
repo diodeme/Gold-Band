@@ -143,6 +143,29 @@ describe('PersonalAnalyticsPage', () => {
     expect(onOpenTask).not.toHaveBeenCalled();
   });
 
+  it('exposes concise explanations for coverage field names', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    const container = await renderPage(registry(true));
+    const hints = Array.from(container.querySelectorAll('[data-personal-analytics-coverage-hint="true"]'));
+
+    expect(hints.map((hint) => hint.textContent)).toEqual([
+      '已解析文件',
+      '已跳过文件',
+      '损坏文件',
+      '未知版本文件',
+      '语义样本',
+      '缺失累计执行耗时按 0 计',
+    ]);
+    expect(hints.every((hint) => hint.getAttribute('tabindex') === '0')).toBe(true);
+
+    await act(async () => {
+      hints[5].dispatchEvent(new Event('pointermove', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(document.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('历史版本影响，部分任务缺少耗时统计。');
+  });
+
   it('shows an immediate submitting state and coalesces duplicate clicks', async () => {
     let resolveStart: ((value: PersonalAnalyticsSnapshotVm) => void) | undefined;
     api.syncPersonalAnalytics.mockReturnValueOnce(new Promise((resolve) => { resolveStart = resolve; }));

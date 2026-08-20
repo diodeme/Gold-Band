@@ -109,7 +109,7 @@ Agent 最终只能输出 `PersonalAnalyticsNarrative`，包含 `schemaVersion + 
 
 报告内所有 Token 数值使用 K/M 紧凑格式，避免同一页面混用原始整数和缩写。
 
-数据覆盖作为末尾固定区块。桌面宽度使用 shadcn Table；窄窗口切换为紧凑列表，不依赖横向滚动。
+数据覆盖作为末尾固定区块。桌面宽度使用 shadcn Table；窄窗口切换为紧凑列表，不依赖横向滚动。字段名称使用 shadcn Tooltip 展示精简含义；“缺失累计执行耗时按 0 计”说明需注明历史版本影响。
 
 ## 7. 性能与数据完整性
 

@@ -96,6 +96,32 @@ describe('PermissionRequestCard', () => {
     expect(html).toContain('Get-ChildItem -Force &quot;D:\\Projects\\code\\ai&quot;');
   });
 
+  it('bounds long permission parameters so decision buttons remain after the preview', () => {
+    const longArgs = 'ov4fn1rbmgI'.repeat(160);
+    const html = renderToStaticMarkup(
+      React.createElement(
+        TooltipProvider,
+        null,
+        React.createElement(PermissionRequestCard, {
+          request: {
+            requestId: 'permission-long-args',
+            title: 'Skill',
+            raw: { toolCall: { title: 'Skill', rawInput: { args: longArgs } } },
+            options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }],
+          },
+          onSelect: () => undefined,
+        }),
+      ),
+    );
+
+    const summaryStart = html.indexOf('data-acp-permission-summary="true"');
+    const summaryEnd = html.indexOf('</div>', summaryStart);
+    const summaryHtml = html.slice(summaryStart, summaryEnd);
+    expect(summaryHtml).toContain('max-h-32');
+    expect(summaryHtml).toContain('overflow-hidden');
+    expect(html.indexOf('>Allow once<')).toBeGreaterThan(summaryEnd);
+  });
+
   it('does not render resolved permission records', () => {
     const html = renderToStaticMarkup(
       React.createElement(

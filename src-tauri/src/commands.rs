@@ -595,6 +595,22 @@ fn admit_conversation_prompt_turn(
             None,
         );
     }
+    let header = admission.header();
+    info!(
+        project_id = %app.paths.project_id,
+        task_id = %locator.task_id,
+        run_id = %locator.run_id,
+        round_id = %locator.round_id,
+        node_id = %locator.node_id,
+        attempt_id = %locator.attempt_id,
+        outer_node_id = ?locator.outer_node_id,
+        outer_attempt_id = ?locator.outer_attempt_id,
+        turn_id = ?header.turn_id,
+        operation_id = ?header.operation_id,
+        revision = header.revision,
+        admission = if admission.started() { "started" } else { "existing" },
+        "conversation prompt admitted"
+    );
     Ok(admission)
 }
 
@@ -610,6 +626,14 @@ fn acp_turn_outcome_for_stop_reason(stop_reason: Option<&str>) -> AcpTurnOutcome
         Some("cancelled" | "canceled") => AcpTurnOutcome::Cancelled,
         Some("interrupted") => AcpTurnOutcome::Failed,
         _ => AcpTurnOutcome::Completed,
+    }
+}
+
+fn acp_turn_outcome_label(outcome: AcpTurnOutcome) -> &'static str {
+    match outcome {
+        AcpTurnOutcome::Completed => "completed",
+        AcpTurnOutcome::Failed => "failed",
+        AcpTurnOutcome::Cancelled => "cancelled",
     }
 }
 
@@ -752,6 +776,21 @@ fn emit_acp_turn_finished(
     outcome: AcpTurnOutcome,
     batch_progress: AcpTurnBatchProgress,
 ) {
+    info!(
+        project_id = %app.paths.project_id,
+        task_id = %locator.task_id,
+        run_id = %locator.run_id,
+        round_id = %locator.round_id,
+        node_id = %locator.node_id,
+        attempt_id = %locator.attempt_id,
+        outer_node_id = ?locator.outer_node_id,
+        outer_attempt_id = ?locator.outer_attempt_id,
+        %turn_id,
+        outcome = acp_turn_outcome_label(outcome),
+        completed_reply_count = batch_progress.completed_reply_count,
+        batch_continues = batch_progress.continues,
+        "conversation ACP turn reached terminal state"
+    );
     app.emit_lifecycle_event(RuntimeLifecycleEvent::AcpTurnFinished {
         event_id: gold_band::app::make_turn_dedup_key(
             &app.paths.project_id,
@@ -1501,11 +1540,33 @@ fn schedule_direct_prompt_queue_drain(
     }
     let attempt_dir = locator.attempt_dir(&app);
     if let Some(completion) = completed_turn.as_ref() {
-        let _ = settle_dispatching_prompt(&attempt_dir, &completion.turn_id);
+        if let Err(error) = settle_dispatching_prompt(&attempt_dir, &completion.turn_id) {
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                turn_id = %completion.turn_id,
+                %error,
+                "failed to settle completed queued conversation prompt"
+            );
+        }
     }
     let queue = match load_prompt_queue(&attempt_dir) {
         Ok(queue) => queue,
-        Err(_) => {
+        Err(error) => {
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                %error,
+                "failed to load conversation prompt queue for automatic dispatch"
+            );
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
             return;
         }
@@ -1551,8 +1612,22 @@ fn schedule_direct_prompt_queue_drain(
             Ok(AutoClaimResult::Claimed(item)) => item,
             Ok(
                 AutoClaimResult::Empty | AutoClaimResult::Preempted | AutoClaimResult::Suspended,
-            )
-            | Err(_) => {
+            ) => {
+                emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
+                return;
+            }
+            Err(error) => {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    expected_revision,
+                    %error,
+                    "failed to claim queued conversation prompt for automatic dispatch"
+                );
                 emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
                 return;
             }
@@ -1571,7 +1646,19 @@ fn schedule_direct_prompt_queue_drain(
             None,
         );
         if auto_dispatch_is_suspended(&attempt_dir) {
-            let _ = release_queued_prompt(&attempt_dir, &claimed.id);
+            if let Err(error) = release_queued_prompt(&attempt_dir, &claimed.id) {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    item_id = %claimed.id,
+                    %error,
+                    "failed to release queued conversation prompt after dispatch suspension"
+                );
+            }
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
             return;
         }
@@ -1581,7 +1668,7 @@ fn schedule_direct_prompt_queue_drain(
             app_handle.clone(),
             project_id.clone(),
         );
-        let _result = send_acp_prompt_with_configured_app(
+        if let Err(error) = send_acp_prompt_with_configured_app(
             app_handle.clone(),
             queued_turn_app,
             project_id.clone(),
@@ -1599,8 +1686,33 @@ fn schedule_direct_prompt_queue_drain(
             locator.outer_attempt_id.clone(),
             (!claimed.attachment_paths.is_empty()).then_some(claimed.attachment_paths.clone()),
         )
-        .await;
-        let _ = settle_dispatching_prompt(&attempt_dir, &claimed.prompt_id);
+        .await
+        {
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                turn_id = %claimed.prompt_id,
+                error_code = %error.code,
+                "automatically dispatched conversation prompt failed"
+            );
+        }
+        if let Err(error) = settle_dispatching_prompt(&attempt_dir, &claimed.prompt_id) {
+            warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                turn_id = %claimed.prompt_id,
+                %error,
+                "failed to settle automatically dispatched conversation prompt"
+            );
+        }
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -3407,6 +3519,75 @@ pub async fn continue_conversation_runtime(
     prompt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_round_id = round_id.clone();
+    let log_node_id = node_id.clone();
+    let log_attempt_id = attempt_id.clone();
+    let log_outer_node_id = outer_node_id.clone();
+    let log_outer_attempt_id = outer_attempt_id.clone();
+    let result = continue_conversation_runtime_inner(
+        app_handle,
+        state,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+        input,
+        prompt_id,
+        attachment_paths,
+    )
+    .await;
+    match &result {
+        Ok(value) => info!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            kind = %value.kind,
+            "conversation runtime continue accepted"
+        ),
+        Err(error) => warn!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            error_code = %error.code,
+            "conversation runtime continue failed"
+        ),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn continue_conversation_runtime_inner(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    prompt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationPromptSubmitVm> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -3549,6 +3730,70 @@ pub fn pause_run(
 
 #[tauri::command]
 pub async fn stop_active_session(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ActiveSessionStopVm> {
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_round_id = round_id.clone();
+    let log_node_id = node_id.clone();
+    let log_attempt_id = attempt_id.clone();
+    let log_outer_node_id = outer_node_id.clone();
+    let log_outer_attempt_id = outer_attempt_id.clone();
+    let result = stop_active_session_inner(
+        app_handle,
+        state,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    )
+    .await;
+    match &result {
+        Ok(value) => info!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            operation_id = %value.operation_id,
+            status = %value.status,
+            "conversation session stop accepted"
+        ),
+        Err(error) => warn!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            error_code = %error.code,
+            "conversation session stop failed"
+        ),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stop_active_session_inner(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -5100,6 +5345,78 @@ pub async fn submit_conversation_prompt(
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_round_id = round_id.clone();
+    let log_node_id = node_id.clone();
+    let log_attempt_id = attempt_id.clone();
+    let log_outer_node_id = outer_node_id.clone();
+    let log_outer_attempt_id = outer_attempt_id.clone();
+    let result = submit_conversation_prompt_inner(
+        app_handle,
+        state,
+        project_id,
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        input,
+        prompt_id,
+        outer_node_id,
+        outer_attempt_id,
+        attachment_paths,
+    )
+    .await;
+    match &result {
+        Ok(value) => info!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            kind = %value.kind,
+            turn_id = ?value.turn_id,
+            operation_id = ?value.operation_id,
+            revision = ?value.revision,
+            "conversation prompt submission accepted"
+        ),
+        Err(error) => warn!(
+            project_id = ?log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            outer_node_id = ?log_outer_node_id,
+            outer_attempt_id = ?log_outer_attempt_id,
+            error_code = %error.code,
+            "conversation prompt submission failed"
+        ),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn submit_conversation_prompt_inner(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    input: ConversationPromptInput,
+    prompt_id: Option<String>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
+) -> CommandResult<ConversationPromptSubmitVm> {
     let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
@@ -5173,7 +5490,7 @@ pub async fn submit_conversation_prompt(
                 .run_status(&locator.task_id, &locator.run_id)
                 .is_ok_and(|run| run.status == RunStatus::Completed)
         {
-            let _ = app.notify_prompt_turn_finished(
+            if let Err(error) = app.notify_prompt_turn_finished(
                 acp_live_event_context(
                     &locator.task_id,
                     &locator.run_id,
@@ -5185,7 +5502,18 @@ pub async fn submit_conversation_prompt(
                 ),
                 None,
                 true,
-            );
+            ) {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    %error,
+                    "failed to dispatch queued conversation prompt after terminal run"
+                );
+            }
         }
         return Ok(ConversationPromptSubmitVm {
             kind: "queued".to_string(),
@@ -5246,12 +5574,36 @@ pub async fn submit_conversation_prompt(
         );
         tauri::async_runtime::spawn(async move {
             if let Err(error) = background.await {
-                warn!(code = %error.code, turn_id = %failure_turn_id, "accepted ACP prompt failed in background");
+                warn!(
+                    project_id = %background_app.paths.project_id,
+                    task_id = %background_locator.task_id,
+                    run_id = %background_locator.run_id,
+                    round_id = %background_locator.round_id,
+                    node_id = %background_locator.node_id,
+                    attempt_id = %background_locator.attempt_id,
+                    outer_node_id = ?background_locator.outer_node_id,
+                    outer_attempt_id = ?background_locator.outer_attempt_id,
+                    error_code = %error.code,
+                    turn_id = %failure_turn_id,
+                    "accepted ACP prompt failed in background"
+                );
             }
-            let _ = settle_dispatching_prompt(
+            if let Err(error) = settle_dispatching_prompt(
                 &background_locator.attempt_dir(&background_app),
                 &failure_turn_id,
-            );
+            ) {
+                warn!(
+                    project_id = %background_app.paths.project_id,
+                    task_id = %background_locator.task_id,
+                    run_id = %background_locator.run_id,
+                    round_id = %background_locator.round_id,
+                    node_id = %background_locator.node_id,
+                    attempt_id = %background_locator.attempt_id,
+                    turn_id = %failure_turn_id,
+                    %error,
+                    "failed to settle conversation prompt after background completion"
+                );
+            }
             emit_prompt_queue_lifecycle(
                 &background_app_handle,
                 &background_app,
@@ -5589,8 +5941,20 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                         timeline_revision,
                     )
                 }),
-                &app.acp_mcp_servers().unwrap_or_else(|e| {
-                    eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
+                &app.acp_mcp_servers().unwrap_or_else(|error| {
+                    warn!(
+                        project_id = %app.paths.project_id,
+                        %task_id,
+                        %run_id,
+                        %round_id,
+                        %node_id,
+                        %attempt_id,
+                        %outer_node_id,
+                        %outer_attempt_id,
+                        provider,
+                        %error,
+                        "failed to load MCP servers for ACP session; continuing without MCP servers"
+                    );
                     Vec::new()
                 }),
                 session_update.as_ref().map(|callback| callback as _),
@@ -5747,8 +6111,18 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     timeline_revision,
                 )
             }),
-            &app.acp_mcp_servers().unwrap_or_else(|e| {
-                eprintln!("WARN: failed to load MCP servers for ACP session: {e}");
+            &app.acp_mcp_servers().unwrap_or_else(|error| {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    %task_id,
+                    %run_id,
+                    %round_id,
+                    %node_id,
+                    %attempt_id,
+                    provider,
+                    %error,
+                    "failed to load MCP servers for ACP session; continuing without MCP servers"
+                );
                 Vec::new()
             }),
             session_update.as_ref().map(|callback| callback as _),
@@ -6144,7 +6518,7 @@ fn spawn_active_session_stop_cleanup(
         // request_session_stop transferred lifecycle ownership away from the
         // provider runtime. The stop controller therefore owns terminal
         // settlement after dispatch; the old provider owner can only no-op.
-        if let Err(error) = gold_band::acp::events::persist_session_turn_terminal_owned(
+        match gold_band::acp::events::persist_session_turn_terminal_owned(
             &lifecycle_path,
             turn_id,
             Some(operation_id),
@@ -6153,7 +6527,38 @@ fn spawn_active_session_stop_cleanup(
             "cancelled",
             &gold_band::acp::events::current_timestamp(),
         ) {
-            warn!(%error, %attempt_dir, %turn_id, "failed to settle accepted ACP stop ownership");
+            Ok(Some(_)) => info!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                outer_node_id = ?locator.outer_node_id,
+                outer_attempt_id = ?locator.outer_attempt_id,
+                %turn_id,
+                %operation_id,
+                outcome = "cancelled",
+                "conversation session stop reached terminal state"
+            ),
+            Ok(None) => tracing::debug!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                turn_id = %turn_id,
+                "stale conversation session stop settlement skipped"
+            ),
+            Err(error) => warn!(
+                project_id = %app.paths.project_id,
+                task_id = %locator.task_id,
+                run_id = %locator.run_id,
+                round_id = %locator.round_id,
+                node_id = %locator.node_id,
+                attempt_id = %locator.attempt_id,
+                %error,
+                %turn_id,
+                "failed to settle accepted ACP stop ownership"
+            ),
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
             warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");

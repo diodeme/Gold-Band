@@ -2117,6 +2117,22 @@ pub(crate) fn run_continue_dynamic_inner_background(
                 background_execution_id.clone(),
             ) {
                 let info = runtime_continue_launch_error(&err);
+                tracing::warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %background_task_id,
+                    run_id = %background_run_id,
+                    round_id = %background_round_id,
+                    node_id = %background_dynamic_node_id,
+                    attempt_id = %background_dynamic_attempt_id,
+                    outer_node_id = %background_outer_node_id,
+                    outer_attempt_id = %background_outer_attempt_id,
+                    request_id = %background_request_id,
+                    execution_id = %background_execution_id,
+                    error_code = %info.code.code,
+                    error_domain = ?info.domain,
+                    error = %err,
+                    "accepted dynamic conversation runtime continue failed in background"
+                );
                 let resume_key = dynamic_state_lock_key(
                     &app.paths.repo_root,
                     &background_task_id,
@@ -2178,7 +2194,24 @@ pub(crate) fn run_continue_dynamic_inner_background(
             }
         });
     if let Err(error) = spawn_result {
-        let info = runtime_continue_launch_error(&error.into());
+        let error: anyhow::Error = error.into();
+        let info = runtime_continue_launch_error(&error);
+        tracing::warn!(
+            project_id = %app.paths.project_id,
+            %task_id,
+            %run_id,
+            %round_id,
+            node_id = %dynamic_node_id,
+            attempt_id = %dynamic_attempt_id,
+            %outer_node_id,
+            %outer_attempt_id,
+            %request_id,
+            %execution_id,
+            error_code = %info.code.code,
+            error_domain = ?info.domain,
+            %error,
+            "failed to start dynamic conversation runtime continue worker"
+        );
         let resume_key = dynamic_state_lock_key(
             &app.paths.repo_root,
             task_id,
@@ -2303,10 +2336,17 @@ pub(crate) fn run_continue_background(
     let node_id = node.node_id;
     let attempt_id = node.attempt_id;
     let background_execution_id = execution_id.clone();
+    let log_project_id = app.paths.project_id.clone();
+    let log_task_id = task_id.clone();
+    let log_run_id = run_id.clone();
+    let log_round_id = round_id.clone();
+    let log_node_id = node_id.clone();
+    let log_attempt_id = attempt_id.clone();
+    let log_execution_id = execution_id.clone();
     let (launch_sender, launch_receiver) = mpsc::channel();
     let launch_failure_sender = launch_sender.clone();
 
-    thread::Builder::new()
+    let spawn_result = thread::Builder::new()
         .name("gold-band-runtime-continue".to_string())
         .spawn(move || {
             let app = background_app;
@@ -2323,6 +2363,19 @@ pub(crate) fn run_continue_background(
                 Some(background_execution_id.clone()),
             ) {
                 let info = runtime_continue_launch_error(&err);
+                tracing::warn!(
+                    project_id = %app.paths.project_id,
+                    %task_id,
+                    %run_id,
+                    %round_id,
+                    %node_id,
+                    %attempt_id,
+                    execution_id = %background_execution_id,
+                    error_code = %info.code.code,
+                    error_domain = ?info.domain,
+                    error = %err,
+                    "accepted conversation runtime continue failed in background"
+                );
                 let convergence = app.pause_attempt_runtime_state_if_active_execution(
                     &task_id,
                     &run_id,
@@ -2357,8 +2410,25 @@ pub(crate) fn run_continue_background(
                     format!("{err:#}{convergence_details}"),
                 );
             }
-        })
-        .map_err(|error| runtime_error(runtime_continue_launch_error(&error.into())))?;
+        });
+    if let Err(error) = spawn_result {
+        let error: anyhow::Error = error.into();
+        let info = runtime_continue_launch_error(&error);
+        tracing::warn!(
+            project_id = %log_project_id,
+            task_id = %log_task_id,
+            run_id = %log_run_id,
+            round_id = %log_round_id,
+            node_id = %log_node_id,
+            attempt_id = %log_attempt_id,
+            execution_id = %log_execution_id,
+            error_code = %info.code.code,
+            error_domain = ?info.domain,
+            %error,
+            "failed to start conversation runtime continue worker"
+        );
+        return Err(runtime_error(info));
+    }
 
     drop(initial_run);
     let launched_run = wait_for_runtime_continue_launch(launch_receiver);

@@ -1393,3 +1393,10 @@ attempt-001/
 - 回归要求：组件接口测试固定中文按钮顺序、下载入口缺失、主次按钮 variant，并在真实 `RightWorkspaceProvider` 中点击主按钮，断言对话框关闭且 active Tab 收敛为当前项目的 `source-control:<projectId>:main`；布局 transition 测试固定非紧凑中间态不提前消费 open revision，紧凑态收敛后自动展开 Sheet。执行定向 Web 测试、TypeScript 检查、生产构建，并用内置浏览器 deep link 验证正常与窄宽度下的对话框及右侧 Tab 切换。
 - 验收结果：Git 对话框、低频工作区命令和 auto-collapse 定向回归 28 项通过，TypeScript 检查与生产 Vite 构建通过。内置浏览器 deep link `/chat` 验证 1280px 下按钮顺序与主按钮黑色样式正确、点击后直接打开源码管理 Dock；520px 下按钮纵向同序且无溢出、点击后直接打开源码管理 Sheet；页面无 console error/warn。Web 全量 1546 项中 1544 项通过：ACP 重入计时用例单独重跑通过；唯一稳定失败是与本需求无关的 `ConversationPromptQueue` 既有组件仍使用共享 `border` class、测试却断言 `border-0` 的基线不一致。
 - 性能与过度设计评审：点击只提交一次 O(1) 工作区资源 locator 与局部导航状态；源码管理内容继续在活动 Tab 中按需加载。不新增依赖、持久字段、缓存、队列、扫描、轮询、宽 Context 订阅或重复 Git 检测；现有 workspace identity 与低频命令 Context 已足够表达不变量，无需新 aggregate、状态机或专项 benchmark。
+
+## 2026-08-21：Windows 任务栏图标 DPI 清晰度契约
+
+- 根因：Windows ICO 已包含 `16 / 24 / 32 / 48 / 64 / 256` 多档图层，但 16px 位于目录首层。Tauri 2 在 Windows 的 `generate_context!()` 中只解码 ICO 首层作为实时窗口图标；Windows 任务栏在实时窗口图标、EXE 多分辨率资源和 Shell 缓存之间选择来源时，可能把该 16px 位图放大，因此同一开发进程或生产安装版在不同 DPI、固定和激活状态下清晰度不一致。
+- 实现：继续复用 Tauri 官方多分辨率 ICO 与既有品牌矢量源，只把 32px 调整为首层，保留 16/24/48/64/256 图层和 32 位 RGBA，不增加运行时 `set_icon`、任务栏特判、Explorer 缓存清理或新图标生成依赖。开发窗口与生产 EXE 继续消费同一 `src-tauri/icons/icon.ico`。
+- 回归要求：品牌资源测试直接解析 ICO directory，固定图层顺序为 `32 / 16 / 24 / 48 / 64 / 256`、全部 32 位，并继续逐层检查无白色 matte 像素；执行定向 Vitest、Web 生产构建、Tauri debug 构建资源检查和 Windows 原生任务栏验证。
+- 性能与过度设计评审：改动仅调整 6 个 ICO directory entry 的顺序，不改变像素数据或文件规模；运行时仍只加载一个固定尺寸窗口图标，不新增状态、依赖、I/O、缓存、队列、锁、渲染或后台任务，对启动和运行性能无可测影响。现有资源契约足以表达问题，无需新增图标服务或平台状态机。

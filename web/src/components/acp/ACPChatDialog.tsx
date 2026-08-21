@@ -149,6 +149,7 @@ import { AcpConversationComposer } from "@/components/conversation/AcpConversati
 import { AgentSelectionQuoteButton } from "@/components/conversation/AgentSelectionQuoteButton";
 import { ConversationPromptQueue } from "@/components/conversation/ConversationPromptQueue";
 import { UserMessageQuotes } from "@/components/conversation/UserMessageQuotes";
+import { UserMessageDisclosure } from "@/components/conversation/UserMessageDisclosure";
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from "@/lib/slash-command";
 import { useAgentCommands } from "@/hooks/useAgentCommands";
 import { useSlashCommandController } from "@/hooks/useSlashCommandController";
@@ -5751,12 +5752,14 @@ const MessageBubble = memo(function MessageBubble({
             )}
           >
             {isUser ? (
-              <HiddenPromptMessageContent
-                content={event.content ?? ""}
-                onOpenSection={branchLocator && workspace?.scopeKey && !event.optimistic
-                  ? openHiddenPromptSection
-                  : undefined}
-              />
+              <UserMessageDisclosure>
+                <HiddenPromptMessageContent
+                  content={event.content ?? ""}
+                  onOpenSection={branchLocator && workspace?.scopeKey && !event.optimistic
+                    ? openHiddenPromptSection
+                    : undefined}
+                />
+              </UserMessageDisclosure>
             ) : (
               <Markdown streaming={streamingDraft}>{messageText}</Markdown>
             )}

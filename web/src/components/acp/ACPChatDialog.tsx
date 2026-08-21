@@ -6359,7 +6359,10 @@ export function PermissionRequestCard({
               <div className="mb-1 text-ui-micro font-medium uppercase tracking-[0.08em] text-muted-foreground">
                 {t("acp.toolParameters")}
               </div>
-              <div className="min-w-0 whitespace-pre-wrap break-all font-mono text-ui-caption leading-5 text-foreground/85 [overflow-wrap:anywhere]">
+              <div
+                data-acp-permission-summary="true"
+                className="max-h-32 min-w-0 overflow-hidden whitespace-pre-wrap break-all font-mono text-ui-caption leading-5 text-foreground/85 [overflow-wrap:anywhere]"
+              >
                 {decisionSummary}
               </div>
             </div>

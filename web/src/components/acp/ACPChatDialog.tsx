@@ -6364,7 +6364,7 @@ export function PermissionRequestCard({
               </div>
               <div
                 data-acp-permission-summary="true"
-                className="max-h-32 min-w-0 overflow-hidden whitespace-pre-wrap break-all font-mono text-ui-caption leading-5 text-foreground/85 [overflow-wrap:anywhere]"
+                className="line-clamp-6 min-w-0 overflow-hidden whitespace-pre-wrap break-all font-mono text-ui-caption leading-5 text-foreground/85 [overflow-wrap:anywhere]"
               >
                 {decisionSummary}
               </div>

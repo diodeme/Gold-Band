@@ -117,8 +117,9 @@ describe('PermissionRequestCard', () => {
     const summaryStart = html.indexOf('data-acp-permission-summary="true"');
     const summaryEnd = html.indexOf('</div>', summaryStart);
     const summaryHtml = html.slice(summaryStart, summaryEnd);
-    expect(summaryHtml).toContain('max-h-32');
+    expect(summaryHtml).toContain('line-clamp-6');
     expect(summaryHtml).toContain('overflow-hidden');
+    expect(summaryHtml).not.toContain('max-h-32');
     expect(html.indexOf('>Allow once<')).toBeGreaterThan(summaryEnd);
   });
 

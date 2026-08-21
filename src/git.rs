@@ -234,7 +234,84 @@ pub struct GitWorkspaceManager {
     repository: GitRepositoryService,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeRegistrationStatus {
+    AlreadyRegistered,
+    Repaired,
+}
+
 impl GitWorkspaceManager {
+    /// Ensures that Git's main-repository worktree catalog points back to an
+    /// existing linked worktree. Parent-directory moves can leave the
+    /// worktree usable from inside while the main repository still records
+    /// its previous path.
+    pub fn ensure_worktree_registration(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+    ) -> Result<WorktreeRegistrationStatus> {
+        let repository = GitSourceControlService::default().repository_identity(repository_root)?;
+        GitCoordinationService.with_runtime_write(
+            &repository.common_dir,
+            Some(path),
+            "runtime-worktree-registration-repair",
+            || self.ensure_worktree_registration_unlocked(repository_root, path, &repository, None),
+        )
+    }
+
+    fn ensure_worktree_registration_unlocked(
+        &self,
+        repository_root: &Utf8Path,
+        path: &Utf8Path,
+        repository: &GitRepositoryIdentity,
+        known_workspace: Option<&GitRepositoryIdentity>,
+    ) -> Result<WorktreeRegistrationStatus> {
+        ensure!(path.is_dir(), "Git worktree path is missing: {path}");
+        let source_control = GitSourceControlService::default();
+        if let Some(worktree) = registered_worktree(&source_control, repository_root, path)? {
+            ensure!(!worktree.main, "workspace path is the main Git worktree");
+            return Ok(WorktreeRegistrationStatus::AlreadyRegistered);
+        }
+        let workspace = known_workspace
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| source_control.repository_identity(path))?;
+        ensure!(
+            same_filesystem_path(&workspace.workspace_path, path)?,
+            "workspace path is not the expected Git worktree"
+        );
+        ensure!(
+            same_filesystem_path(&repository.common_dir, &workspace.common_dir)?,
+            "Git worktree belongs to a different repository"
+        );
+        let git_dir = self
+            .runner
+            .run(path, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
+        ensure!(
+            git_dir.success,
+            "git rev-parse --git-dir failed: {}",
+            details(&git_dir)
+        );
+        ensure!(
+            !same_filesystem_path(Utf8Path::new(&git_dir.stdout), &workspace.common_dir)?,
+            "workspace path is the main Git worktree"
+        );
+
+        let repair = self
+            .runner
+            .run(repository_root, &["worktree", "repair", path.as_str()])?;
+        ensure!(
+            repair.success,
+            "git worktree repair failed: {}",
+            details(&repair)
+        );
+        ensure!(
+            registered_worktree(&source_control, repository_root, path)?.is_some(),
+            "git worktree repair did not register the requested path"
+        );
+        Ok(WorktreeRegistrationStatus::Repaired)
+    }
+
     /// Creates a runtime-owned worktree, or validates the durable identity
     /// when a previous attempt already completed the Git operation.
     pub fn ensure_worktree(
@@ -420,7 +497,15 @@ impl GitWorkspaceManager {
             &repository.common_dir,
             Some(&workspace.workspace_path),
             "runtime-worktree-remove",
-            || self.remove_worktree_unlocked(repository_root, path, branch),
+            || {
+                self.ensure_worktree_registration_unlocked(
+                    repository_root,
+                    path,
+                    &repository,
+                    Some(&workspace),
+                )?;
+                self.remove_worktree_unlocked(repository_root, path, branch)
+            },
         )
     }
 
@@ -491,6 +576,17 @@ impl GitWorkspaceManager {
     }
 }
 
+fn registered_worktree(
+    source_control: &GitSourceControlService,
+    repository_root: &Utf8Path,
+    path: &Utf8Path,
+) -> Result<Option<GitWorktree>> {
+    Ok(source_control
+        .worktrees(repository_root)?
+        .into_iter()
+        .find(|worktree| same_filesystem_path(&worktree.path, path).unwrap_or(false)))
+}
+
 fn same_filesystem_path(left: &Utf8Path, right: &Utf8Path) -> Result<bool> {
     let normalize = |path: &Utf8Path| -> Result<String> {
         let canonical = std::fs::canonicalize(path.as_std_path())
@@ -518,7 +614,8 @@ mod tests {
 
     fn initialized_repository() -> (tempfile::TempDir, Utf8PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.path().join("repository")).unwrap();
+        std::fs::create_dir_all(root.as_std_path()).unwrap();
         let runner = GitCommandRunner::default();
         assert!(runner.run(&root, &["init"]).unwrap().success);
         std::fs::write(root.join("README.md"), "initial\n").unwrap();
@@ -634,6 +731,52 @@ mod tests {
         manager
             .validate_worktree(&worktree, "gb-test-conversation")
             .unwrap();
+    }
+
+    #[test]
+    fn registration_repair_handles_parent_move_and_is_idempotent() {
+        let (_dir, root) = initialized_repository();
+        let manager = GitWorkspaceManager::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let runtime_parent = root.parent().unwrap().join("runtime-old");
+        let old_worktree = runtime_parent.join("conversation");
+        manager
+            .create_worktree(&root, &old_worktree, "gb-test-registration", &head)
+            .unwrap();
+        std::fs::write(old_worktree.join("dirty.txt"), "preserve me\n").unwrap();
+        let new_runtime_parent = root.parent().unwrap().join("runtime-new");
+        std::fs::rename(
+            runtime_parent.as_std_path(),
+            new_runtime_parent.as_std_path(),
+        )
+        .unwrap();
+        let new_worktree = new_runtime_parent.join("conversation");
+
+        assert!(
+            registered_worktree(&GitSourceControlService::default(), &root, &new_worktree)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            manager
+                .ensure_worktree_registration(&root, &new_worktree)
+                .unwrap(),
+            WorktreeRegistrationStatus::Repaired
+        );
+        assert_eq!(
+            manager
+                .ensure_worktree_registration(&root, &new_worktree)
+                .unwrap(),
+            WorktreeRegistrationStatus::AlreadyRegistered
+        );
+        assert_eq!(
+            std::fs::read_to_string(new_worktree.join("dirty.txt")).unwrap(),
+            "preserve me\n"
+        );
+        manager
+            .remove_worktree(&root, &new_worktree, "gb-test-registration")
+            .unwrap();
+        assert!(!new_worktree.exists());
     }
 
     #[test]

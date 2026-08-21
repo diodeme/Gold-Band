@@ -25,6 +25,8 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。`not-installed` 显示系统 Git 未安装与官方下载入口；`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
 
+快速会话选择新工作树但 Git capability 未就绪时，阻塞对话框的恢复动作固定为“取消 / 重新检测 / 使用主工作区 / 打开源码管理”。“重新检测”和“使用主工作区”使用次按钮，“打开源码管理”是唯一主按钮；对话框不再重复提供 Git 下载页入口。点击主按钮通过当前会话作用域的右侧工作区命令，以 `projectId + main workspace` 打开或激活源码管理 Tab，并关闭对话框；紧凑布局必须在 auto-collapse 收敛后自动展开右侧 Sheet，不能只创建隐藏 Tab。用户完成首次提交或其他仓库配置后再显式重新检测。
+
 源码管理包含四个页签：
 
 1. 更改：conflict、staged、unstaged、untracked 分组，文件级和全部 stage/unstage，staged-only commit，以及保存当前更改为 stash。

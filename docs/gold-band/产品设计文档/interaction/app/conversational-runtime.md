@@ -522,7 +522,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - `Agent` 工具调用在所属父分支只投影为轻量 `AgentLinkRow`，展示 ACP 已确认的名称、说明、结构化状态、工具数和文件读写数；不提供 Collapsible，不在父消息流挂载 transcript，也不猜测“正在测试/搜索”等意图。
 - 点击 Agent link 使用稳定资源 key 在右侧工作区打开或激活只读 Agent Tab。嵌套 Agent 在父 Agent 分支中继续显示相同链接，并打开另一个 Tab；同一 execution 原位更新，不因 streaming update 生成新行。
 - Agent Prompt 作为目标分支的 synthetic 用户消息持久化；正式回答只在目标分支展示。launch tool 的 `completed` 仅表示分发完成，execution 状态由统一索引按 queued/running/waiting_permission/completed/failed/interrupted 管理。
-- TODO 按显式 branch ownership 投影；根分支与任一 Agent 分支都不得依据文字猜归属。父分支只列直属 Agent，嵌套 execution 只在其直接父 Agent 会话中出现。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。权限卡片中的 tool call 参数只作为有界摘要预览：最多展示 6 行，超出部分直接截断，不在卡片内引入滚动；决策按钮必须位于摘要之后并保持可见。
+- TODO 按显式 branch ownership 投影；根分支与任一 Agent 分支都不得依据文字猜归属。父分支只列直属 Agent，嵌套 execution 只在其直接父 Agent 会话中出现。待决权限只在 owning branch 展示可操作 intervention，同时向所有祖先 Agent link/Tab 投影 attention；决策完成后退出 intervention，不保留权限申请审计行。权限卡片中的 tool call 参数只作为有界摘要预览：最多展示 6 个完整文本行，超出部分在末行显示省略号，不得裁出残缺行，也不在卡片内引入滚动；决策按钮必须位于摘要之后并保持可见。
 - 只挂载激活 Agent Tab 的 `ConversationViewport`。分支事件窗口、滚动锚点、贴底和 `hasOlder/hasNewer` 保存在有限 LRU 中；切回 dirty Tab 时重新拉取该分支最新语义页。普通后台 streaming 不驱动所有 Tab React render。
 
 ## Runtime Control JSON 展示

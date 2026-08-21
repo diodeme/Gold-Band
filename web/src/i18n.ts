@@ -1643,6 +1643,8 @@ const resources = {
         hiddenStableSystemPrompt: "隐藏系统提示",
         hiddenPromptCharacters: "{{count}} 字符",
         hiddenPromptUnavailable: "无法读取这段隐藏提示",
+        userMessageShowMore: "查看更多",
+        userMessageCollapse: "收起",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -3853,6 +3855,8 @@ const resources = {
         hiddenStableSystemPrompt: "Hidden system prompt",
         hiddenPromptCharacters: "{{count}} characters",
         hiddenPromptUnavailable: "This hidden prompt section is unavailable",
+        userMessageShowMore: "Show more",
+        userMessageCollapse: "Collapse",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:

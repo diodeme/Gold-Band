@@ -1382,6 +1382,14 @@ attempt-001/
 - 回归：Rust 接口测试覆盖 claim 单次消费、空/错误身份拒绝、同一 owner 的 running 写入保留 generation、owned terminal 推进 generation 且旧 owner 不可复用、stop 接管后旧 provider running/terminal 写入不得覆盖 `CancelRequested`、stop owner 可以结算 `cancelled`，以及 execution failure 只能结算拥有者。ACP events 92 项测试、desktop crate check、Rust 格式与 diff 检查均通过。
 - 性能与过度设计评审：复用现有 attempt 文件锁、revision 和 active registry；新增操作均为 O(1) JSON header 条件写入，不扫描 timeline、不增加缓存/队列/依赖，也不扩大 provider 网络调用锁范围。
 
+## 2026-08-21：本轮文件变更按工具成功终态结算
+
+- 根因：turn 文件聚合此前把 ACP `content[type=diff]` 直接视为已发生变更；Codex 在授权前会先以 `in_progress` 发布候选 diff，用户拒绝后同一工具以 `failed` 收敛，但候选版本仍被固化成 `fileChangeSet`。这是 diff 证据与工具生命周期契约缺失，不是前端卡片过滤问题。
+- 数据与接口：中间 diff 继续写入既有 BLAKE3 CAS 与 mutation journal，供工具卡片预览；运行时只为本 turn 出现 diff 的 `branchId + toolCallId` 维护终态投影。`TurnFileStore::finalize_turn_branch` 必须显式接收结构化工具终态，只有 `completed/success/succeeded` 纳入，`failed/error/cancelled/canceled` 及无终态调用排除。permission 的选择、取消和文案不进入该接口，不形成第二套文件事实源。
+- 历史收敛：change set schema 升级为 v4；读取旧 schema 时只在迁移慢路径扫描该 branch canonical timeline，并按同一工具终态重建。没有成功终态的旧集合写回 v4 空集合，前端既有 `fileCount === 0` 契约会移除错误卡片；正常 v4 读取与新 turn 结算不扫描 timeline。
+- 回归与验收：核心接口测试覆盖 `in_progress(diff) → completed(无重复 diff)` 生成变更、缺失成功终态不生成、`in_progress(diff) → failed(重复 diff)` 不生成、终态映射与 permission 无关，以及 schema v3 失败工具集合迁移为空。定向 `cargo test --lib acp::turn_files` 17 项通过；宽泛 package test 被既有 `tests/entity_uuid_test.rs` 缺少 `NodeState.acp_storage_schema_version` 的夹具编译错误阻塞，未在本需求中修改该无关用户改动。
+- 性能与过度设计评审：新 turn 每个 diff 工具只增加一次 `HashMap` 常数级记录，状态随 turn 结算清空；聚合仍只遍历该 turn 已有的有界 mutation，不新增依赖、持久字段、队列、缓存、锁或普通路径 timeline 扫描。历史全 timeline 读取只发生在 schema v1-v3 的一次性迁移慢路径。现有 `toolCallId`、timeline status 与 change-set 模型足以表达不变量，无需 permission→diff 关联、新 aggregate 或第二套状态机。
+
 ## 2026-08-21：Direct 首轮停止后的空会话投影
 
 - 根因：后端为避免把只有 `initialize`/outbound raw frame、尚未完成 `session/new` 的占位数据误报为真实 ACP session，正确过滤了 `unavailable + no sessionId + empty Timeline` 的 Provider session；前端只实现了 Workflow/AUTO 的“初始化被中断”投影，却没有按 Direct attempt lifecycle 建立可继续对话的空壳，最终把合法的 `paused + cancelled` 状态降级为通用“ACP 会话失败”。

@@ -1818,6 +1818,8 @@ struct AcpRuntime<'a> {
     provider_history_replay: ProviderHistoryReplay,
     current_turn_item_ids: HashSet<String>,
     active_turn_file_branches: HashSet<String>,
+    active_turn_file_tool_outcomes:
+        HashMap<(String, String), Option<crate::acp::turn_files::TurnFileToolTerminalOutcome>>,
     active_prompt_turn: Option<AcpPromptTurnIdentity>,
     pending_retry_prompt_event: Option<AcpUiEvent>,
     prompt_retry: Option<AcpPromptRetryState>,
@@ -3251,6 +3253,7 @@ impl<'a> AcpRuntime<'a> {
             provider_history_replay,
             current_turn_item_ids: HashSet::new(),
             active_turn_file_branches: HashSet::new(),
+            active_turn_file_tool_outcomes: HashMap::new(),
             active_prompt_turn: None,
             pending_retry_prompt_event,
             prompt_retry,
@@ -4451,6 +4454,7 @@ impl<'a> AcpRuntime<'a> {
             event: user_event,
         };
         self.active_turn_file_branches.clear();
+        self.active_turn_file_tool_outcomes.clear();
         self.pending_retry_prompt_event = None;
         self.active_prompt_turn = Some(identity.clone());
         Ok(identity)
@@ -4997,7 +5001,7 @@ impl<'a> AcpRuntime<'a> {
 
         self.seq += 1;
         let event = normalize_session_update(self.seq, session_id, &update);
-        self.capture_turn_file_diffs(&event)?;
+        self.capture_turn_file_event(&event)?;
         self.prompt_output.observe(&update, &event);
         let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
@@ -5039,7 +5043,7 @@ impl<'a> AcpRuntime<'a> {
         self.persist_event(&event)
     }
 
-    fn capture_turn_file_diffs(&mut self, event: &AcpUiEvent) -> Result<()> {
+    fn capture_turn_file_event(&mut self, event: &AcpUiEvent) -> Result<()> {
         if !matches!(event.kind.as_str(), "toolCall" | "toolCallUpdate") {
             return Ok(());
         }
@@ -5064,8 +5068,19 @@ impl<'a> AcpRuntime<'a> {
             &event.timestamp,
             raw,
         )?;
+        let tool_key = (branch_id.clone(), tool_call_id.to_string());
         if captured > 0 {
-            self.active_turn_file_branches.insert(branch_id);
+            self.active_turn_file_branches.insert(branch_id.clone());
+            self.active_turn_file_tool_outcomes
+                .entry(tool_key.clone())
+                .or_insert(None);
+        }
+        if let Some(outcome) = crate::acp::turn_files::TurnFileToolTerminalOutcome::from_status(
+            event.status.as_deref(),
+        ) && let Some(current) = self.active_turn_file_tool_outcomes.get_mut(&tool_key)
+            && current.is_none()
+        {
+            *current = Some(outcome);
         }
         Ok(())
     }
@@ -5082,12 +5097,22 @@ impl<'a> AcpRuntime<'a> {
             .cloned()
             .collect::<Vec<_>>();
         for branch_id in branches {
+            let tool_outcomes = self
+                .active_turn_file_tool_outcomes
+                .iter()
+                .filter_map(|((outcome_branch_id, tool_call_id), outcome)| {
+                    (outcome_branch_id == &branch_id)
+                        .then_some(outcome.map(|outcome| (tool_call_id.clone(), outcome)))
+                        .flatten()
+                })
+                .collect::<HashMap<_, _>>();
             let Some(change_set) = store.finalize_turn_branch(
                 &turn.id,
                 &turn.prompt_event_id,
                 &branch_id,
                 &turn.started_at,
                 &finished_at,
+                &tool_outcomes,
             )?
             else {
                 continue;
@@ -5133,6 +5158,7 @@ impl<'a> AcpRuntime<'a> {
         }
         self.active_prompt_turn = None;
         self.active_turn_file_branches.clear();
+        self.active_turn_file_tool_outcomes.clear();
         Ok(())
     }
 

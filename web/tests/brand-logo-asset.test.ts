@@ -72,6 +72,20 @@ function decodeRgbaPngFile(path: string) {
   return decodeRgbaPng(readFileSync(path));
 }
 
+function readIcoFrames(source: Buffer) {
+  const frameCount = source.readUInt16LE(4);
+  return Array.from({ length: frameCount }, (_, index) => {
+    const entryOffset = 6 + index * 16;
+    return {
+      width: source[entryOffset] || 256,
+      height: source[entryOffset + 1] || 256,
+      bitsPerPixel: source.readUInt16LE(entryOffset + 6),
+      length: source.readUInt32LE(entryOffset + 8),
+      offset: source.readUInt32LE(entryOffset + 12),
+    };
+  });
+}
+
 describe('brand logo asset', () => {
   it('keeps the frontend logo as a compact true vector asset', () => {
     expect(webLogo).toContain('viewBox="0 0 1254 1254"');
@@ -85,6 +99,22 @@ describe('brand logo asset', () => {
     expect(tauriLogoSource).toContain('viewBox="0 0 2048 2048"');
     expect(tauriLogoSource).not.toContain('<image');
     expect(vectorPaths(tauriLogoSource)).toEqual(vectorPaths(webLogo));
+  });
+
+  it('keeps the Tauri Windows default window icon at 32px with complete DPI frames', () => {
+    const frames = readIcoFrames(readFileSync(windowsIcoPath));
+
+    // Tauri decodes the first ICO frame for the live window icon. Keep 32px first
+    // so Windows does not upscale a 16px frame on common taskbar DPI settings.
+    expect(frames.map(({ width, height }) => [width, height])).toEqual([
+      [32, 32],
+      [16, 16],
+      [24, 24],
+      [48, 48],
+      [64, 64],
+      [256, 256],
+    ]);
+    expect(frames.every(frame => frame.bitsPerPixel === 32)).toBe(true);
   });
 
   it('keeps the Windows taskbar icon free from white matte pixels', () => {
@@ -101,18 +131,8 @@ describe('brand logo asset', () => {
     expect(whiteMattePixels).toEqual([]);
 
     const ico = readFileSync(windowsIcoPath);
-    const frameCount = ico.readUInt16LE(4);
-    const frameSizes = Array.from({ length: frameCount }, (_, index) => {
-      const entryOffset = 6 + index * 16;
-      return [ico[entryOffset] || 256, ico[entryOffset + 1] || 256];
-    });
-    expect(frameSizes).toEqual([[16, 16], [24, 24], [32, 32], [48, 48], [64, 64], [256, 256]]);
-
-    for (let index = 0; index < frameCount; index += 1) {
-      const entryOffset = 6 + index * 16;
-      const frameOffset = ico.readUInt32LE(entryOffset + 12);
-      const frameLength = ico.readUInt32LE(entryOffset + 8);
-      const frame = decodeRgbaPng(ico.subarray(frameOffset, frameOffset + frameLength));
+    for (const { offset, length } of readIcoFrames(ico)) {
+      const frame = decodeRgbaPng(ico.subarray(offset, offset + length));
       for (let offset = 0; offset < frame.pixels.length; offset += 4) {
         const [red, green, blue, alpha] = frame.pixels.subarray(offset, offset + 4);
         expect(alpha > 0 && alpha < 255 && red >= 245 && green >= 245 && blue >= 245).toBe(false);

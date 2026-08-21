@@ -1384,3 +1384,11 @@ attempt-001/
 - 实现：保留后端 Provider session 物化边界；仅当当前 Direct attempt 同时满足 `paused + process-interrupted`、runtime inactive、ACP `unavailable + idle + cancelled`、非 stopping 且 composer 为 `normal + acp-prompt + input unlocked` 时，前端从 canonical lifecycle 投影无 sessionId 的空 Timeline shell，并复用现有 prompt-kit composer。该状态停止无意义的 session 查询；下一次发送返回 active lifecycle 后恢复既有查询与 `initialize -> session/new -> session/prompt` 路径。Workflow/AUTO 与真实失败投影不变。
 - 回归与验收：纯策略测试固定 Direct 正向条件及 orchestrated、active、established、failed、无 submit target 等反例；DOM 接口测试以 `session=null` 挂载早停 Direct attempt，固定不显示 ACP failure/Workflow continue、composer 可输入且发送调用携带当前 attempt locator 与无 sessionId shell。定向 Web 51 项测试、TypeScript 检查与生产 Vite 构建通过；内置浏览器使用同构的 Direct 早停夹具 deep link 验证空 Timeline、普通 composer、无错误页、无 Workflow continue、发送前按钮可用，点击后草稿清空且无 console error/warn。验收后已删除临时夹具并关闭页面与开发服务。
 - 性能与过度设计评审：复用既有 attempt lifecycle、session shell 和 composer，不新增持久字段、状态机、依赖、缓存、队列或兼容层；判断与渲染均为 O(1)，早停空会话还会停止最长约 30 秒的 missing-session 轮询。现有 canonical lifecycle 已足够表达不变量，无需恢复旧 placeholder session 或建立 Direct 专用数据模型。
+
+## 2026-08-21：Git 前置条件对话框接入右侧源码管理
+
+- 根因与实现：快速会话选择新工作树遇到缺失首次提交等 Git 前置条件时，对话框仍提供外部 Git 下载页，却没有接入已经存在的右侧源码管理恢复入口。现复用 shadcn Dialog/Button 与 `RightWorkspaceCommands`，按当前会话 `projectId + scopeKey` 打开或激活主工作区源码管理 Tab。真实窄窗口验收同时发现显式 open revision 会在 auto-collapse 判定紧凑布局前被提前消费，导致只创建隐藏 Tab；修复后的 transition 仅在紧凑状态就绪时消费 revision 并展开 Sheet，不新增页面、Git 状态或旁路导航。
+- 交互契约：恢复动作按“取消 / 重新检测 / 使用主工作区 / 打开源码管理”排列；前两项业务恢复动作使用 outline，“打开源码管理”作为唯一主按钮，删除对话框内“打开 Git 下载页面”。源码管理工作区仍可按 capability 提供对应安装或仓库操作，完成后由用户显式重新检测。
+- 回归要求：组件接口测试固定中文按钮顺序、下载入口缺失、主次按钮 variant，并在真实 `RightWorkspaceProvider` 中点击主按钮，断言对话框关闭且 active Tab 收敛为当前项目的 `source-control:<projectId>:main`；布局 transition 测试固定非紧凑中间态不提前消费 open revision，紧凑态收敛后自动展开 Sheet。执行定向 Web 测试、TypeScript 检查、生产构建，并用内置浏览器 deep link 验证正常与窄宽度下的对话框及右侧 Tab 切换。
+- 验收结果：Git 对话框、低频工作区命令和 auto-collapse 定向回归 28 项通过，TypeScript 检查与生产 Vite 构建通过。内置浏览器 deep link `/chat` 验证 1280px 下按钮顺序与主按钮黑色样式正确、点击后直接打开源码管理 Dock；520px 下按钮纵向同序且无溢出、点击后直接打开源码管理 Sheet；页面无 console error/warn。Web 全量 1546 项中 1544 项通过：ACP 重入计时用例单独重跑通过；唯一稳定失败是与本需求无关的 `ConversationPromptQueue` 既有组件仍使用共享 `border` class、测试却断言 `border-0` 的基线不一致。
+- 性能与过度设计评审：点击只提交一次 O(1) 工作区资源 locator 与局部导航状态；源码管理内容继续在活动 Tab 中按需加载。不新增依赖、持久字段、缓存、队列、扫描、轮询、宽 Context 订阅或重复 Git 检测；现有 workspace identity 与低频命令 Context 已足够表达不变量，无需新 aggregate、状态机或专项 benchmark。

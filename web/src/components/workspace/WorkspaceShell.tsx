@@ -36,7 +36,7 @@ import {
   resolveWorkspacePanelWidthFromLayout,
   resolveWorkspaceUserResizeTarget,
   FALLBACK_WORKSPACE_FILES,
-  shouldOpenRightWorkspaceSheet,
+  resolveRightWorkspaceSheetOpenTransition,
   WORKSPACE_SIDEBAR_DEFAULT_WIDTH,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
   WORKSPACE_SIDEBAR_MIN_WIDTH,
@@ -514,13 +514,13 @@ function WorkspaceShellLayout({
       setCompactSheetOpen(false);
       return;
     }
-    const previousOpenRevision = handledOpenRevisionRef.current;
-    handledOpenRevisionRef.current = workspace.openRevision;
-    if (shouldOpenRightWorkspaceSheet({
+    const transition = resolveRightWorkspaceSheetOpenTransition({
       compact: rightWorkspaceCompact,
-      previousOpenRevision,
+      previousOpenRevision: handledOpenRevisionRef.current,
       openRevision: workspace.openRevision,
-    })) {
+    });
+    handledOpenRevisionRef.current = transition.handledOpenRevision;
+    if (transition.openSheet) {
       setCompactSheetOpen(true);
     }
   }, [rightWorkspaceCompact, workspace.openRevision, workspace.scopeKey]);

@@ -722,6 +722,14 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn pending_update_path(&self) -> Result<Option<Utf8PathBuf>> {
+        Ok(self
+            .pending_critical_update
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clone())
+    }
+
     pub fn take_pending_update(&self) -> Option<Utf8PathBuf> {
         self.pending_critical_update
             .lock()
@@ -1445,6 +1453,16 @@ mod tests {
         let result = provision_project_manifest_for_desktop(&paths);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn pending_update_path_reads_without_consuming_install_work() {
+        let (_root, state) = desktop_state();
+        let path = Utf8PathBuf::from("D:/Temp/gold-band-update/update-0.13.2.pkg");
+        state.store_pending_update(path.clone()).unwrap();
+
+        assert_eq!(state.pending_update_path().unwrap(), Some(path.clone()));
+        assert_eq!(state.take_pending_update(), Some(path));
     }
 
     fn write_completed_attempt_with_running_run(app: &App, candidate_token: Option<String>) {

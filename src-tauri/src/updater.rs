@@ -1,11 +1,13 @@
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use gold_band::config::RuntimeConfig;
+use gold_band::storage::atomic_write_file;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
@@ -60,6 +62,11 @@ pub struct UpdateStatusVm {
     pub background: bool,
 }
 
+struct UpdateCheckOutcome {
+    status: UpdateStatusVm,
+    update: Option<Update>,
+}
+
 pub fn initial_update_status(checked_at: Option<String>) -> UpdateStatusVm {
     UpdateStatusVm {
         status: UpdateCheckStatus::Idle,
@@ -108,9 +115,9 @@ pub fn start_update_polling<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(90)).await;
         loop {
-            let _ = check_update(&app, true).await;
-            // 尝试后台静默下载关键更新
-            if let Err(e) = try_background_download(&app).await {
+            if let Err(e) =
+                poll_update_once(&app, current_channel_config().silent_update_enabled).await
+            {
                 eprintln!("Background critical download failed: {e}");
             }
             tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_MINUTES * 60)).await;
@@ -119,6 +126,24 @@ pub fn start_update_polling<R: Runtime>(app: AppHandle<R>) {
 }
 
 pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> UpdateStatusVm {
+    perform_update_check(app, background).await.status
+}
+
+async fn poll_update_once<R: Runtime>(
+    app: &AppHandle<R>,
+    silent_update_enabled: bool,
+) -> Result<()> {
+    let outcome = perform_update_check(app, true).await;
+    if silent_update_enabled && let Some(update) = outcome.update.as_ref() {
+        try_background_download(app, update).await?;
+    }
+    Ok(())
+}
+
+async fn perform_update_check<R: Runtime>(
+    app: &AppHandle<R>,
+    background: bool,
+) -> UpdateCheckOutcome {
     let checking = UpdateStatusVm {
         status: UpdateCheckStatus::Checking,
         checked_at: None,
@@ -131,31 +156,43 @@ pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> U
     }
 
     let checked_at = current_timestamp();
-    let status = match check_update_inner(app).await {
-        Ok(Some(update)) => UpdateStatusVm {
-            status: UpdateCheckStatus::Available,
-            checked_at: Some(checked_at.clone()),
-            update: Some(update),
-            error: None,
-            background,
-        },
-        Ok(None) => UpdateStatusVm {
-            status: UpdateCheckStatus::NotAvailable,
-            checked_at: Some(checked_at.clone()),
-            update: None,
-            error: None,
-            background,
-        },
-        Err(error) => UpdateStatusVm {
-            status: UpdateCheckStatus::Error,
-            checked_at: Some(checked_at.clone()),
-            update: None,
-            error: Some(UpdateErrorVm {
-                code: updater_error_code(&error),
-                params: serde_json::json!({ "message": error.to_string() }),
-            }),
-            background,
-        },
+    let (status, update) = match check_update_inner(app).await {
+        Ok(Some(update)) => {
+            let info = update_info(&update);
+            (
+                UpdateStatusVm {
+                    status: UpdateCheckStatus::Available,
+                    checked_at: Some(checked_at.clone()),
+                    update: Some(info),
+                    error: None,
+                    background,
+                },
+                Some(update),
+            )
+        }
+        Ok(None) => (
+            UpdateStatusVm {
+                status: UpdateCheckStatus::NotAvailable,
+                checked_at: Some(checked_at.clone()),
+                update: None,
+                error: None,
+                background,
+            },
+            None,
+        ),
+        Err(error) => (
+            UpdateStatusVm {
+                status: UpdateCheckStatus::Error,
+                checked_at: Some(checked_at.clone()),
+                update: None,
+                error: Some(UpdateErrorVm {
+                    code: updater_error_code(&error),
+                    params: serde_json::json!({ "message": error.to_string() }),
+                }),
+                background,
+            },
+            None,
+        ),
     };
 
     if let Some(state) = app.try_state::<DesktopState>() {
@@ -169,7 +206,7 @@ pub async fn check_update<R: Runtime>(app: &AppHandle<R>, background: bool) -> U
     ) {
         let _ = app.emit("gold-band://update-status", &status);
     }
-    status
+    UpdateCheckOutcome { status, update }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -217,15 +254,18 @@ pub async fn download_and_install_update<R: Runtime>(app: &AppHandle<R>) -> Resu
     Ok(())
 }
 
-async fn check_update_inner<R: Runtime>(app: &AppHandle<R>) -> Result<Option<UpdateInfoVm>> {
+async fn check_update_inner<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Update>> {
     let updater = build_updater(app)?;
-    let update = updater.check().await.context("updater.check-failed")?;
-    Ok(update.map(|update| UpdateInfoVm {
-        version: update.version,
-        current_version: update.current_version,
-        notes: update.body,
+    updater.check().await.context("updater.check-failed")
+}
+
+fn update_info(update: &Update) -> UpdateInfoVm {
+    UpdateInfoVm {
+        version: update.version.clone(),
+        current_version: update.current_version.clone(),
+        notes: update.body.clone(),
         pub_date: update.date.map(|date| date.to_string()),
-    }))
+    }
 }
 
 fn build_updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater::Updater> {
@@ -268,18 +308,8 @@ fn pending_update_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("gold-band-update")
 }
 
-/// 后台检测关键更新并静默下载到文件，不安装
-pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
-    let channel = current_channel_config();
-    if !channel.silent_update_enabled {
-        return Ok(());
-    }
-
-    let updater = build_updater(app)?;
-    let Some(update) = updater.check().await? else {
-        return Ok(());
-    };
-
+/// 复用本轮检查到的关键更新并静默下载到文件，不安装
+async fn try_background_download<R: Runtime>(app: &AppHandle<R>, update: &Update) -> Result<()> {
     let is_critical = update
         .raw_json
         .get("critical")
@@ -289,23 +319,41 @@ pub async fn try_background_download<R: Runtime>(app: &AppHandle<R>) -> Result<(
         return Ok(());
     }
 
-    // 后台静默下载
-    let bytes = update.download(|_chunk, _total| {}, || {}).await?;
-
-    // 写入 /tmp/gold-band-update/（崩溃也不丢）
     let dir = pending_update_dir();
-    std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("update-{}.pkg", update.version));
-    std::fs::write(&path, &bytes)?;
-
-    if let Some(state) = app.try_state::<DesktopState>() {
-        let _ = state.store_pending_update(
-            camino::Utf8PathBuf::from_path_buf(path)
-                .map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?,
-        );
+    let path =
+        camino::Utf8PathBuf::from_path_buf(path).map_err(|_| anyhow::anyhow!("non-UTF-8 path"))?;
+    let state = app.state::<DesktopState>();
+    let pending = state.pending_update_path()?;
+    if pending_update_is_ready(pending.as_deref(), &path) {
+        return Ok(());
     }
 
+    let bytes = update.download(|_chunk, _total| {}, || {}).await?;
+    let write_path = path.clone();
+    tokio::task::spawn_blocking(move || write_pending_update(&write_path, &bytes))
+        .await
+        .context("updater.pending-write-task-failed")??;
+    state.store_pending_update(path)?;
+
     Ok(())
+}
+
+fn pending_update_is_ready(
+    pending: Option<&camino::Utf8Path>,
+    expected: &camino::Utf8Path,
+) -> bool {
+    pending == Some(expected) && expected.is_file()
+}
+
+fn write_pending_update(path: &camino::Utf8Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        file.write_all(bytes)?;
+        Ok(())
+    })
 }
 
 /// 从文件路径安装更新包
@@ -355,7 +403,68 @@ pub fn retry_pending_startup_install<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_updater_url;
+    use super::{
+        pending_update_is_ready, poll_update_once, validate_updater_url, write_pending_update,
+    };
+    use crate::state::{DesktopContext, DesktopState};
+    use gold_band::config::RuntimeConfig;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::thread;
+    use tauri::Manager;
+
+    fn mock_app(endpoint: String) -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = camino::Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let mut config = RuntimeConfig::default();
+        config.desktop_updater_url_override = Some(endpoint);
+        let context = DesktopContext {
+            repo_root,
+            config,
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        };
+        let mut tauri_context = tauri::test::mock_context(tauri::test::noop_assets());
+        tauri_context.config_mut().plugins.0.insert(
+            "updater".to_string(),
+            serde_json::json!({
+                "pubkey": crate::channel::current_channel_config().updater_public_key,
+                "endpoints": [],
+                "windows": null,
+            }),
+        );
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(tauri_context)
+            .unwrap();
+        app.manage(DesktopState::new(context));
+        (app, root)
+    }
+
+    fn update_server(response: String) -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = format!("http://{}/latest.json", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_thread = requests.clone();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            requests_for_thread.fetch_add(1, Ordering::SeqCst);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .unwrap();
+        });
+        (endpoint, requests, handle)
+    }
 
     #[test]
     fn accepts_https_updater_url() {
@@ -368,5 +477,54 @@ mod tests {
     #[test]
     fn rejects_invalid_updater_url() {
         assert!(validate_updater_url("not a url").is_err());
+    }
+
+    #[test]
+    fn polling_reuses_one_manifest_check_for_silent_channel() {
+        let (endpoint, requests, server) = update_server(
+            serde_json::json!({
+                "version": "999.0.0",
+                "notes": "test",
+                "pub_date": "2025-01-01T00:00:00Z",
+                "url": "http://127.0.0.1/package",
+                "signature": "test-signature",
+                "critical": false,
+            })
+            .to_string(),
+        );
+        let (app, _root) = mock_app(endpoint);
+
+        tauri::async_runtime::block_on(poll_update_once(&app.handle(), true)).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pending_update_is_ready_only_for_existing_same_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = camino::Utf8PathBuf::from_path_buf(dir.path().join("update.pkg")).unwrap();
+        std::fs::write(expected.as_std_path(), b"complete").unwrap();
+        let other = camino::Utf8PathBuf::from_path_buf(dir.path().join("other.pkg")).unwrap();
+
+        assert!(pending_update_is_ready(Some(&expected), &expected));
+        assert!(!pending_update_is_ready(Some(&other), &expected));
+
+        std::fs::remove_file(expected.as_std_path()).unwrap();
+        assert!(!pending_update_is_ready(Some(&expected), &expected));
+    }
+
+    #[test]
+    fn pending_update_write_commits_complete_bytes_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("nested/update.pkg")).unwrap();
+
+        write_pending_update(&path, b"complete package").unwrap();
+
+        assert_eq!(
+            std::fs::read(path.as_std_path()).unwrap(),
+            b"complete package"
+        );
     }
 }

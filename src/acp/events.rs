@@ -2223,6 +2223,27 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     if let Some(prompt_submission) = current.get("promptSubmission") {
         incoming["promptSubmission"] = prompt_submission.clone();
     }
+    // The effective launch configuration becomes the initial mutable session
+    // override when provider metadata first establishes the ACP session. Once
+    // a session id is durable, these fields are command-owned: their absence
+    // means the user selected "unspecified" and a stale provider rewrite must
+    // not resurrect its older copy.
+    let session_config_initialized = current
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .is_some_and(|session_id| !session_id.trim().is_empty());
+    for key in [
+        "modelOverride",
+        "permissionModeOverride",
+        "configOptionOverrides",
+        "configCatalogRefreshRequiredAt",
+    ] {
+        if let Some(field) = current.get(key) {
+            incoming[key] = field.clone();
+        } else if session_config_initialized && let Some(object) = incoming.as_object_mut() {
+            object.remove(key);
+        }
+    }
     if has_lifecycle_owner
         && incoming_turn_id.is_some()
         && current_header.turn_id.is_some()
@@ -4018,6 +4039,116 @@ mod tests {
         assert_eq!(header.turn_id.as_deref(), Some("turn-new"));
         assert_eq!(header.live_turn_activity, AcpLiveTurnActivity::Starting);
         assert_eq!(header.latest_turn_status, AcpLatestTurnStatus::None);
+    }
+
+    #[test]
+    fn first_provider_metadata_write_keeps_explicit_launch_overrides() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-new".to_string(),
+            operation_id: "operation-new".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "hi".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("launch override test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut running = load_session_metadata(&path, None).unwrap();
+        running.session_id = Some("session-new".to_string());
+        running.availability = AcpSessionAvailability::Established;
+        running.live_turn_activity = AcpLiveTurnActivity::Running;
+        running.model_override = Some("sonnet".to_string());
+        running.permission_mode_override = Some("default".to_string());
+        running.config_option_overrides =
+            std::collections::BTreeMap::from([("effort".to_string(), "high".to_string())]);
+
+        super::write_session_metadata_owned(&path, &running, &owner)
+            .unwrap()
+            .expect("first provider metadata write must keep its owner");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert_eq!(persisted["modelOverride"], "sonnet");
+        assert_eq!(persisted["permissionModeOverride"], "default");
+        assert_eq!(persisted["configOptionOverrides"]["effort"], "high");
+    }
+
+    #[test]
+    fn established_session_keeps_command_owned_override_clear() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        let submission = AcpPromptSubmission {
+            turn_id: "turn-existing".to_string(),
+            operation_id: "operation-existing".to_string(),
+            adapter_id: "claude-acp".to_string(),
+            adapter_display_name: "Claude".to_string(),
+            cwd: "C:/tmp/attempt".to_string(),
+            input: crate::provider::ConversationPromptInput {
+                display_text: "follow up".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-21T10:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&path, &submission).unwrap()
+        else {
+            panic!("command clear test admission must start");
+        };
+        let owner = match super::claim_session_turn_for_execution(
+            &path,
+            &submission.turn_id,
+            started.revision,
+            &submission.operation_id,
+        )
+        .unwrap()
+        {
+            super::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("expected ownership claim, got {claim:?}"),
+        };
+        let mut stale_provider = load_session_metadata(&path, None).unwrap();
+        stale_provider.session_id = Some("session-existing".to_string());
+        stale_provider.availability = AcpSessionAvailability::Established;
+        stale_provider.live_turn_activity = AcpLiveTurnActivity::Running;
+        stale_provider.model_override = Some("stale-model".to_string());
+        stale_provider.permission_mode_override = Some("stale-mode".to_string());
+        stale_provider.config_option_overrides =
+            std::collections::BTreeMap::from([("effort".to_string(), "stale".to_string())]);
+        let mut command_owned = read_json::<Value>(&path).unwrap();
+        command_owned["sessionId"] = json!("session-existing");
+        if let Some(object) = command_owned.as_object_mut() {
+            object.remove("modelOverride");
+            object.remove("permissionModeOverride");
+            object.remove("configOptionOverrides");
+        }
+        write_json(&path, &command_owned).unwrap();
+
+        super::write_session_metadata_owned(&path, &stale_provider, &owner)
+            .unwrap()
+            .expect("same owner provider write must merge command state");
+        let persisted = read_json::<Value>(&path).unwrap();
+
+        assert!(persisted.get("modelOverride").is_none());
+        assert!(persisted.get("permissionModeOverride").is_none());
+        assert!(persisted.get("configOptionOverrides").is_none());
     }
 
     #[test]

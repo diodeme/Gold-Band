@@ -550,6 +550,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 
 ## ACP 会话 attachment、历史同步与有界资源
 
+- 首轮 provider 元数据物化时，若 admission 快照尚未建立 `sessionId`，provider 本次执行配置中的显式 `modelOverride`、`permissionModeOverride` 与 `configOptionOverrides` 必须在同一 metadata merge 中初始化；一旦快照已有 `sessionId`，这些字段由用户配置命令拥有，字段缺失表示用户选择“不指定”，迟到 provider 写回不得重新注入旧值。该边界不改变 `currentModelId/currentValue` 的 Agent 观测语义。
 - ACP adapter process、Provider session attachment 和单次 prompt 是三个不同生命周期。AdapterConnection 以 `provider + adapter workspace` 复用；session runtime 以 attempt locator + ACP sessionId 复用；PromptRun 只覆盖单轮 `session/prompt`。
 - 同一 attached session 的连续追问不得固定执行 `session/load`。发送前先检查 connection generation、本地 session config fingerprint 和 Provider freshness；三者均未变化时直接 `session/prompt`。
 - 外部历史同步是 Agent 级 Beta 可选能力，配置字段为 `ManagedAgentConfig.externalSessionSyncEnabled`，默认关闭，不设置全局开关。Agent 管理 UI 的可编辑项必须与 `ManagedAgentConfig` 对齐：执行命令、参数、环境变量、`primaryAgentDir`、`compatibleAgentDirs` 和外部会话同步开关都要支持保存与回填；主卡片只展示命令、参数、环境变量和最近检测，Agent 目录与外部会话同步等高级属性只在修改抽屉展示。同步开关标题必须展示紧凑 Beta Badge 和可聚焦问号 Tooltip；Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，常驻说明明确提示“仅在确认该 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误”。只有 Agent 能保证跨客户端共享同一线性上下文，或提供可选择的 branch/leaf 时才允许开启。

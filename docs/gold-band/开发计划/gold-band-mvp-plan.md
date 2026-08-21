@@ -1407,3 +1407,9 @@ attempt-001/
 - [x] 折叠状态保存在单条消息组件，不修改 canonical Timeline、event window、分页 cursor、分页 anchor 或偏好存储；展开/收起复用既有 chat content-expansion controller，保留自动贴底意图，并尊重展开期间的用户主动滚动。
 - [x] DOM 接口回归覆盖短消息、超长消息默认折叠、展开/收起与 controller token 配对；同时回归自动贴底与 ACP 分页测试，执行前端类型检查、生产构建及会话 deep-link 长文本验证。
 - 性能与过度设计评审：每条用户消息只增加一个局部 `ResizeObserver` 和两个布尔展示状态，测量为 O(1) 高度比较且仅在结果变化时提交状态；不扫描 timeline、不重解析 Markdown、不增加网络 I/O、依赖、缓存、队列、并发或持久字段。现有 prompt-kit/shadcn 组件和滚动 controller 已足以表达不变量，无需新消息模型或第二套滚动状态机。
+
+## 2026-08-21：首轮 ACP 模型覆盖值持久化边界
+
+- [x] 修复首轮 provider 元数据写回时的配置覆盖丢失：admission 快照尚未有 `sessionId` 时保留本次执行显式的 `modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`；已建立 session 后继续以用户命令写入的覆盖字段为准，字段被清除时迟到 provider 快照不能复活旧值。
+- [x] Rust 接口级回归覆盖“首次写回保留 `sonnet/high`”与“已建立 session 的显式清空保持为空”两条路径；前端继续只显示 Gold Band override，不从 Agent `currentValue` 反推用户选择。
+- 性能与过度设计评审：复用现有 attempt metadata 锁、lifecycle owner 和 override 字段，仅增加常量级存在性判断与字段合并；不新增状态机、持久字段、RPC、扫描、缓存或队列，正常路径 I/O 与复杂度不变。

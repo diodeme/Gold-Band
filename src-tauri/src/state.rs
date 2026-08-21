@@ -28,7 +28,7 @@ use gold_band::storage::{
     GoldBandPaths, active_storage_path_config, load_settings_file, read_json, write_json,
 };
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::WorkspaceIdentityMigrator;
@@ -1007,6 +1007,11 @@ impl DesktopState {
             .into_iter()
             .filter(|agent_id| !scheduled.contains(agent_id))
             .collect::<Vec<_>>();
+        debug!(
+            agent_count = to_probe.len(),
+            scheduled_count = scheduled.len(),
+            "periodic agent diagnostics started"
+        );
         if to_probe.is_empty() {
             return self.prune_agent_diagnostics();
         }
@@ -1019,7 +1024,18 @@ impl DesktopState {
             for agent_id in &to_probe {
                 let agent_id = agent_id.clone();
                 s.spawn(move || {
-                    let _ = self.refresh_background_agent_diagnostic_unlocked(&agent_id);
+                    match self.refresh_background_agent_diagnostic_unlocked(&agent_id) {
+                        Ok(diagnostic) => debug!(
+                            agent_type = agent_id.as_str(),
+                            available = diagnostic.available,
+                            "periodic agent diagnostic completed"
+                        ),
+                        Err(error) => warn!(
+                            agent_type = agent_id.as_str(),
+                            %error,
+                            "periodic agent diagnostic infrastructure failed"
+                        ),
+                    }
                 });
             }
         });
@@ -1167,8 +1183,16 @@ impl DesktopState {
         let app = App::with_config(workspace.clone(), config);
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         for agent_id in agent_ids {
-            let _ = self
-                .refresh_agent_command_catalog_for_workspace_unlocked(&agent_id, workspace.clone());
+            if let Err(error) = self
+                .refresh_agent_command_catalog_for_workspace_unlocked(&agent_id, workspace.clone())
+            {
+                warn!(
+                    agent_type = agent_id.as_str(),
+                    %workspace,
+                    %error,
+                    "periodic agent command catalog refresh failed"
+                );
+            }
         }
         Ok(())
     }
@@ -1513,6 +1537,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             node_type: NodeType::Worker,
             run_id: "run-001".to_string(),

@@ -1232,6 +1232,56 @@ impl AcpPromptOutputAccumulator {
 
 const CONTEXT_COMPACTION_COMPLETED_USAGE_SOURCE: &str = "contextCompactionCompleted";
 
+fn append_diagnostic_best_effort(
+    path: &Utf8Path,
+    level: impl Into<String>,
+    message: impl Into<String>,
+    data: Option<Value>,
+) {
+    if let Err(error) = append_diagnostic(path, level, message, data) {
+        debug!(
+            target: "gold_band::acp::diagnostic",
+            %path,
+            %error,
+            "failed to append ACP diagnostic; continuing runtime"
+        );
+    }
+}
+
+fn append_structured_diagnostic_best_effort(
+    path: &Utf8Path,
+    level: impl Into<String>,
+    code: impl Into<String>,
+    data: Option<Value>,
+) {
+    if let Err(error) = append_structured_diagnostic(path, level, code, data) {
+        debug!(
+            target: "gold_band::acp::diagnostic",
+            %path,
+            %error,
+            "failed to append structured ACP diagnostic; continuing runtime"
+        );
+    }
+}
+
+fn append_raw_frame_best_effort(
+    path: &Utf8Path,
+    direction: &str,
+    frame: Value,
+    max_size: u64,
+    target_size: u64,
+) {
+    if let Err(error) = append_raw_frame(path, direction, frame, max_size, target_size) {
+        debug!(
+            target: "gold_band::acp::diagnostic",
+            %path,
+            %direction,
+            %error,
+            "failed to append ACP raw frame; continuing runtime"
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpPromptRun {
     pub session_id: String,
@@ -2322,12 +2372,12 @@ pub fn run_prompt(
         Err(error) => {
             let _ = runtime.cancel_pending_prompt_interactions(current_timestamp());
             let _ = runtime.interrupt_active_context_compaction("prompt_failed");
-            append_diagnostic(
+            append_diagnostic_best_effort(
                 &runtime.paths.diagnostics,
                 "error",
                 format!("ACP prompt failed: {error}"),
                 None,
-            )?;
+            );
             runtime.write_worker_ref(
                 provider_id,
                 &workspace_dir,
@@ -2337,7 +2387,7 @@ pub fn run_prompt(
                 true,
             )?;
             if let Err(capture_error) = runtime.finalize_turn_file_changes(&prompt_turn) {
-                append_structured_diagnostic(
+                append_structured_diagnostic_best_effort(
                     &runtime.paths.diagnostics,
                     "error",
                     "turn-files.finalize-failed",
@@ -2345,7 +2395,7 @@ pub fn run_prompt(
                         "error": capture_error.to_string(),
                         "turnId": prompt_turn.id,
                     })),
-                )?;
+                );
             }
             runtime.control.mark_stopped();
             runtime.write_session("failed", restored, Some("error".to_string()), capabilities)?;
@@ -2358,7 +2408,7 @@ pub fn run_prompt(
     };
     if let Some(failure) = terminal_failure.as_ref() {
         runtime.mark_prompt_terminal_failure(&prompt_turn, failure)?;
-        append_diagnostic(
+        append_diagnostic_best_effort(
             &runtime.paths.diagnostics,
             "error",
             format!("ACP prompt failed: {}", failure.diagnostic()),
@@ -2367,7 +2417,7 @@ pub fn run_prompt(
                 "details": failure.details,
                 "raw": failure.raw,
             })),
-        )?;
+        );
     } else if status == "cancelled" {
         runtime.mark_prompt_cancelled(&prompt_turn)?;
     } else if status == "completed"
@@ -3115,7 +3165,7 @@ impl<'a> AcpRuntime<'a> {
         let runtime_restore_mode = runtime_restore.restore_mode;
         let runtime_restore_processed_tail_records = runtime_restore.processed_tail_records;
         let runtime_restore_locator_reads = runtime_restore.locator_reads;
-        append_diagnostic(
+        append_diagnostic_best_effort(
             &paths.diagnostics,
             "info",
             "ACP runtime restore completed",
@@ -3135,7 +3185,7 @@ impl<'a> AcpRuntime<'a> {
                 "hydratedBlobCount": 0,
                 "hydratedBlobBytes": 0,
             })),
-        )?;
+        );
         let seq = runtime_restore.latest_seq;
         let timing_state = runtime_restore
             .timing_state_snapshot
@@ -3525,7 +3575,7 @@ impl<'a> AcpRuntime<'a> {
                 }
                 Err(err) => {
                     self.session_update_phase = SessionUpdatePhase::Live;
-                    append_diagnostic(
+                    append_diagnostic_best_effort(
                         &self.paths.diagnostics,
                         "warn",
                         format!(
@@ -3536,7 +3586,7 @@ impl<'a> AcpRuntime<'a> {
                             }
                         ),
                         None,
-                    )?;
+                    );
                     if is_transport_interruption(&err) {
                         self.set_session_id(session_id.to_string());
                         return Err(err);
@@ -4535,7 +4585,7 @@ impl<'a> AcpRuntime<'a> {
             }),
         );
         let request = self.connection.begin_request(method, params)?;
-        self.append_outbound_frame(&request.frame)?;
+        self.append_outbound_frame(&request.frame);
         let started_at = Instant::now();
         let mut last_title_refresh_at = Instant::now();
         loop {
@@ -4571,7 +4621,7 @@ impl<'a> AcpRuntime<'a> {
             };
             match request.recv_timeout(wait_for) {
                 Ok(value) => {
-                    self.append_inbound_frame(&value)?;
+                    self.append_inbound_frame(&value);
                     self.drain_available_inbound()?;
                     if observe_attempt_cancellation && self.is_prompt_cancel_requested() {
                         self.observe_prompt_cancel_request()?;
@@ -4682,7 +4732,7 @@ impl<'a> AcpRuntime<'a> {
                 &agent_capabilities,
             ),
         )?;
-        self.append_outbound_frame(&request.frame)?;
+        self.append_outbound_frame(&request.frame);
         let result = (|| {
             let mut cancel_started_at: Option<Instant> = None;
             let mut last_title_refresh_at = Instant::now();
@@ -4712,7 +4762,7 @@ impl<'a> AcpRuntime<'a> {
                 match request.recv_timeout_with_session_route_watermark(wait_for) {
                     Ok(response) => {
                         let value = response.frame;
-                        self.append_inbound_frame(&value)?;
+                        self.append_inbound_frame(&value);
                         let result = value.get("result").cloned().unwrap_or_else(|| json!({}));
                         if value.get("error").is_none()
                             && let Some(prompt_usage) =
@@ -4867,12 +4917,12 @@ impl<'a> AcpRuntime<'a> {
             Some("session/request_permission") => self.handle_permission_request(value),
             Some("elicitation/create") => self.handle_elicitation_request(value),
             Some(method) => {
-                append_diagnostic(
+                append_diagnostic_best_effort(
                     &self.paths.diagnostics,
                     "warn",
                     format!("unsupported ACP adapter request/notification `{method}`"),
                     Some(value),
-                )?;
+                );
                 Ok(())
             }
             None => Ok(()),
@@ -4952,7 +5002,7 @@ impl<'a> AcpRuntime<'a> {
         let confirmed_usage_before_event = self.usage.context.confirmed_used;
         self.persist_event(&event)?;
         if event.kind == "contextCompaction" {
-            append_diagnostic(
+            append_diagnostic_best_effort(
                 &self.paths.diagnostics,
                 "info",
                 format!(
@@ -4966,7 +5016,7 @@ impl<'a> AcpRuntime<'a> {
                     "status": event.status,
                     "contextCompaction": event.raw.as_ref().and_then(|raw| raw.get("contextCompaction")),
                 })),
-            )?;
+            );
         }
         if event.kind == "contextCompaction"
             && self.usage.context.confirmed_used != confirmed_usage_before_event
@@ -5108,7 +5158,7 @@ impl<'a> AcpRuntime<'a> {
         );
         self.persist_event(&item)?;
         self.usage.compaction = None;
-        append_diagnostic(
+        append_diagnostic_best_effort(
             &self.paths.diagnostics,
             "info",
             "ACP context compaction usage observed",
@@ -5119,7 +5169,8 @@ impl<'a> AcpRuntime<'a> {
                 "contextUsedAfter": used,
                 "contextSize": state.context_size,
             })),
-        )
+        );
+        Ok(())
     }
 
     fn interrupt_active_context_compaction(&mut self, reason: &str) -> Result<()> {
@@ -5155,7 +5206,7 @@ impl<'a> AcpRuntime<'a> {
         }
         self.persist_event(&item)?;
         self.usage.compaction = None;
-        append_diagnostic(
+        append_diagnostic_best_effort(
             &self.paths.diagnostics,
             "warn",
             "ACP context compaction interrupted",
@@ -5164,7 +5215,7 @@ impl<'a> AcpRuntime<'a> {
                 "sourceSeq": self.seq,
                 "reason": reason,
             })),
-        )?;
+        );
         Ok(())
     }
 
@@ -5311,7 +5362,7 @@ impl<'a> AcpRuntime<'a> {
             "id": rpc_id.clone(),
             "result": result.clone(),
         });
-        self.append_outbound_frame(&frame)?;
+        self.append_outbound_frame(&frame);
         self.connection.send_response(rpc_id, result)
     }
 
@@ -5327,7 +5378,7 @@ impl<'a> AcpRuntime<'a> {
             "id": rpc_id.clone(),
             "result": result.clone(),
         });
-        self.append_outbound_frame(&frame)?;
+        self.append_outbound_frame(&frame);
         self.connection.send_response(rpc_id, result)
     }
 
@@ -5360,12 +5411,11 @@ impl<'a> AcpRuntime<'a> {
                 "sessionId": session_id,
             },
         });
-        if let Err(error) = self.append_outbound_frame(&frame).and_then(|_| {
-            self.connection.send_notification(
-                "session/cancel",
-                frame.get("params").cloned().unwrap_or_else(|| json!({})),
-            )
-        }) {
+        self.append_outbound_frame(&frame);
+        if let Err(error) = self.connection.send_notification(
+            "session/cancel",
+            frame.get("params").cloned().unwrap_or_else(|| json!({})),
+        ) {
             let _ = append_diagnostic(
                 &self.paths.diagnostics,
                 "warn",
@@ -5457,7 +5507,7 @@ impl<'a> AcpRuntime<'a> {
             "id": rpc_id,
             "result": result,
         });
-        self.append_outbound_frame(&response_frame)?;
+        self.append_outbound_frame(&response_frame);
         self.connection.send_response(rpc_id, result)?;
 
         if crate::acp::timeline::read_indexed_timeline_item(
@@ -5500,7 +5550,7 @@ impl<'a> AcpRuntime<'a> {
             "id": rpc_id.clone(),
             "result": result.clone(),
         });
-        self.append_outbound_frame(&frame)?;
+        self.append_outbound_frame(&frame);
         self.connection.send_response(rpc_id, result)
     }
 
@@ -5518,7 +5568,7 @@ impl<'a> AcpRuntime<'a> {
                     return Err(anyhow!(AcpTransportInterrupted));
                 }
             };
-            self.append_inbound_frame(&value)?;
+            self.append_inbound_frame(&value);
             self.handle_inbound(value)?;
         }
     }
@@ -5536,7 +5586,7 @@ impl<'a> AcpRuntime<'a> {
                 }
             },
             |value| {
-                self.append_inbound_frame(&value)?;
+                self.append_inbound_frame(&value);
                 self.handle_inbound(value)
             },
         )
@@ -5563,7 +5613,7 @@ impl<'a> AcpRuntime<'a> {
             || receiver.has_consumed(watermark),
             |wait_for| receiver.recv_timeout(wait_for),
             |value| {
-                self.append_inbound_frame(&value)?;
+                self.append_inbound_frame(&value);
                 self.handle_inbound(value)
             },
         )?;
@@ -5599,7 +5649,7 @@ impl<'a> AcpRuntime<'a> {
             timeout,
             |wait_for| receiver.recv_timeout(wait_for),
             |value| {
-                self.append_inbound_frame(&value)?;
+                self.append_inbound_frame(&value);
                 self.handle_inbound(value)
             },
             |timeout| anyhow!(AcpPromptRouteDrainTimeout { timeout }),
@@ -5628,7 +5678,7 @@ impl<'a> AcpRuntime<'a> {
             SESSION_REPLAY_DRAIN_TIMEOUT,
             |wait_for| receiver.recv_timeout(wait_for),
             |value| {
-                self.append_inbound_frame(&value)?;
+                self.append_inbound_frame(&value);
                 self.handle_inbound(value)
             },
         )?;
@@ -5645,24 +5695,24 @@ impl<'a> AcpRuntime<'a> {
         Ok(())
     }
 
-    fn append_outbound_frame(&self, frame: &Value) -> Result<()> {
-        append_raw_frame(
+    fn append_outbound_frame(&self, frame: &Value) {
+        append_raw_frame_best_effort(
             &self.paths.raw,
             "outbound",
             frame.clone(),
             self.raw_max_size,
             self.raw_target_size,
-        )
+        );
     }
 
-    fn append_inbound_frame(&self, frame: &Value) -> Result<()> {
-        append_raw_frame(
+    fn append_inbound_frame(&self, frame: &Value) {
+        append_raw_frame_best_effort(
             &self.paths.raw,
             "inbound",
             frame.clone(),
             self.raw_max_size,
             self.raw_target_size,
-        )
+        );
     }
 
     fn write_worker_ref(
@@ -7262,7 +7312,8 @@ mod tests {
         SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
         SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, attached_sync_required, cancel_attempt_prompt,
+        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
+        append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
         canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
         dispatch_attempt_prompt_cancel, drain_available_frames_bounded, drain_frames_until_quiet,
@@ -7308,6 +7359,54 @@ mod tests {
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn diagnostic_sidecars_are_best_effort_when_the_target_is_not_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked_path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("diagnostic.jsonl")).unwrap();
+        std::fs::create_dir(&blocked_path).unwrap();
+
+        append_diagnostic_best_effort(
+            &blocked_path,
+            "error",
+            "provider failure remains authoritative",
+            None,
+        );
+        append_structured_diagnostic_best_effort(
+            &blocked_path,
+            "error",
+            "acp.test-diagnostic",
+            Some(json!({"attemptId": "attempt-1"})),
+        );
+
+        assert!(blocked_path.is_dir());
+    }
+
+    #[test]
+    fn raw_frame_sidecar_failure_does_not_escape_into_the_rpc_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked_path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.raw.jsonl")).unwrap();
+        std::fs::create_dir(&blocked_path).unwrap();
+
+        append_raw_frame_best_effort(
+            &blocked_path,
+            "outbound",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "session/prompt"}),
+            1024,
+            512,
+        );
+        append_raw_frame_best_effort(
+            &blocked_path,
+            "inbound",
+            json!({"jsonrpc": "2.0", "id": 1, "result": {}}),
+            1024,
+            512,
+        );
+
+        assert!(blocked_path.is_dir());
     }
 
     #[test]

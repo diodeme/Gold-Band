@@ -1542,29 +1542,27 @@ where
 fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
     let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
     if line.encoding == "non-utf8" {
-        warn!(
-            provider = %connection.provider_id,
-            adapter = %connection.adapter.adapter_id,
-            command = %connection.adapter.command,
-            stderr = %line.text,
-            stderr_bytes = line.byte_len,
-            stderr_encoding = line.encoding,
-            stderr_bytes_hex_prefix = raw_bytes_hex,
-            stderr_truncated = line.truncated,
-            "ACP adapter stderr"
-        );
-    } else {
         debug!(
             provider = %connection.provider_id,
             adapter = %connection.adapter.adapter_id,
             command = %connection.adapter.command,
-            stderr = %line.text,
             stderr_bytes = line.byte_len,
             stderr_encoding = line.encoding,
             stderr_truncated = line.truncated,
-            "ACP adapter stderr"
+            "ACP adapter stderr used non-UTF-8 bytes; decoded output is available when detailed logs are enabled"
         );
     }
+    debug!(
+        provider = %connection.provider_id,
+        adapter = %connection.adapter.adapter_id,
+        command = %connection.adapter.command,
+        stderr = %line.text,
+        stderr_bytes = line.byte_len,
+        stderr_encoding = line.encoding,
+        stderr_bytes_hex_prefix = raw_bytes_hex,
+        stderr_truncated = line.truncated,
+        "ACP adapter stderr"
+    );
 }
 
 fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {

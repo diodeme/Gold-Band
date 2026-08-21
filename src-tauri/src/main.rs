@@ -88,7 +88,7 @@ use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -290,16 +290,32 @@ fn run() -> anyhow::Result<()> {
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
-                    let diagnostics_refreshed = state.refresh_all_agent_diagnostics().is_ok();
-                    let commands_refreshed = state
-                        .refresh_agent_command_catalogs_for_active_workspaces()
-                        .is_ok();
+                    debug!("periodic agent maintenance cycle started");
+                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            warn!(%error, "periodic agent diagnostic refresh failed");
+                            false
+                        }
+                    };
+                    let commands_refreshed =
+                        match state.refresh_agent_command_catalogs_for_active_workspaces() {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent command catalog refresh failed");
+                                false
+                            }
+                        };
                     if diagnostics_refreshed {
                         commands::emit_agent_registry_updated(&handle);
                     }
                     if diagnostics_refreshed || commands_refreshed {
                         commands::emit_agent_commands_updated(&handle, None);
                     }
+                    debug!(
+                        diagnostics_refreshed,
+                        commands_refreshed, "periodic agent maintenance cycle completed"
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });

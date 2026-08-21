@@ -251,6 +251,39 @@ export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined): b
   return node?.type === 'worker' && Boolean(node.manual_check || node.output || node.success_condition);
 }
 
+export function createAuthoringWorkerNode(
+  workflow: WorkflowDsl,
+  baseId: string,
+  createSlotId: () => string = () => crypto.randomUUID(),
+): WorkflowWorkerNodeDsl {
+  return {
+    type: 'worker',
+    id: uniqueNodeId(workflow, baseId),
+    executionSlotId: createSlotId(),
+    goal: null,
+  };
+}
+
+export function upsertWorkerModelBinding(
+  modelBindings: WorkflowModelBindings,
+  executionSlotId: string,
+  patch: Partial<WorkerModelBinding>,
+): WorkflowModelBindings {
+  const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
+  const nextBinding: WorkerModelBinding = {
+    executionSlotId,
+    agentId: current?.agentId ?? '',
+    ...current,
+    ...patch,
+  };
+  return {
+    ...modelBindings,
+    bindings: current
+      ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
+      : [...modelBindings.bindings, nextBinding],
+  };
+}
+
 export function removeTerminalFromWorkflow(workflow: WorkflowDsl, terminalId: string): WorkflowDsl {
   if (terminalId !== END_NODE && terminalId !== NEW_ROUND_NODE) return workflow;
   return { ...workflow, edges: workflow.edges.filter((edge) => edge.to !== terminalId) };
@@ -607,19 +640,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   };
 
   const updateWorkerBinding = (executionSlotId: string, patch: Partial<WorkerModelBinding>) => {
-    const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
-    const nextBinding: WorkerModelBinding = {
-      executionSlotId,
-      agentId: current?.agentId ?? '',
-      ...current,
-      ...patch,
-    };
-    syncModelBindings({
-      ...modelBindings,
-      bindings: current
-        ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
-        : [...modelBindings.bindings, nextBinding],
-    });
+    syncModelBindings(upsertWorkerModelBinding(modelBindings, executionSlotId, patch));
   };
 
   const syncWorkerBindingToOthers = (executionSlotId: string, overwriteConfigured: boolean) => {
@@ -726,13 +747,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const addWorkerNode = () => {
     const nextIndex = workflow.nodes.length + 1;
-    const id = uniqueNodeId(workflow, `node-${nextIndex}`);
-    const node: WorkflowWorkerNodeDsl = {
-      type: 'worker',
-      id,
-      executionSlotId: crypto.randomUUID(),
-      goal: null,
-    };
+    const node = createAuthoringWorkerNode(workflow, `node-${nextIndex}`);
+    const id = node.id;
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
     syncWorkflow(next);
     setSelectedNodeId(id);
@@ -798,8 +814,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const currentWorkflow = workflowRef.current;
     const sourceNode = currentWorkflow.nodes.find((node) => node.id === sourceId);
     if (!sourceNode || (outcome === 'failure' && !nodeSupportsFailureOutcome(sourceNode))) return;
-    const id = uniqueNodeId(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
-    const node: WorkflowWorkerNodeDsl = { type: 'worker', id, provider: null, goal: null };
+    const node = createAuthoringWorkerNode(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
+    const id = node.id;
     const edge: WorkflowEdgeDsl = { from: sourceId, to: id, on: outcome };
     const next = { ...currentWorkflow, nodes: [...currentWorkflow.nodes, node], edges: [...currentWorkflow.edges, edge] };
     syncWorkflow(next);

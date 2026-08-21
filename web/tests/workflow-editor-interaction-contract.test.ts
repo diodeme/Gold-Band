@@ -190,18 +190,36 @@ describe('workflow editor interaction contracts', () => {
     expect(runtimeGraphSource).toContain('const path = route?.path ?? smoothPath;');
   });
 
-  it('derives failure handles from AI output validation instead of node kind', () => {
-    const value = workflow();
+  it('derives failure handles from AI output validation or manual check instead of node kind', () => {
+    const value = workflow({
+      nodes: [
+        worker('plan', { manual_check: true }),
+        worker('build'),
+        worker('review', {
+          output: { kind: 'json', artifact: 'review-result' },
+          success_condition: { expression: '$.result == true' },
+        }),
+      ],
+    });
     const projection = createAuthoringFlowProjection(value, createAuthoringGraphLayout(value), null, null, new Set(), new Map(), t);
 
-    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'plan'))).toBe(false);
+    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'plan'))).toBe(true);
+    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'build'))).toBe(false);
     expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'review'))).toBe(true);
-    expect(projection.nodes.find((node) => node.id === 'plan')?.data.supportsFailureOutcome).toBe(false);
+    expect(projection.nodes.find((node) => node.id === 'plan')?.data.supportsFailureOutcome).toBe(true);
+    expect(projection.nodes.find((node) => node.id === 'build')?.data.supportsFailureOutcome).toBe(false);
     expect(projection.nodes.find((node) => node.id === 'review')?.data.supportsFailureOutcome).toBe(true);
 
-    const invalid = workflow({ edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }] });
+    const manualFailure = workflow({
+      nodes: value.nodes,
+      edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }],
+    });
+    const manualValidation = validateWorkflowForSave(manualFailure, [], [], t);
+    expect(manualValidation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(false);
+
+    const invalid = workflow({ edges: [...value.edges, { from: 'build', to: 'plan', on: 'failure' }] });
     const validation = validateWorkflowForSave(invalid, [], [], t);
-    expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresOutputValidation')).toBe(true);
+    expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(true);
   });
 
   it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {
@@ -240,6 +258,8 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain("const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;");
     expect(editorSource).toContain('data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP');
     expect(editorSource).toContain('style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }}');
+    expect(editorSource).toContain('updateNodeInternals(id);');
+    expect(editorSource).toContain('[data.supportsFailureOutcome, id, updateNodeInternals]');
   });
 
   it('routes node, terminal, and edge deletion through the canvas toolbar', () => {

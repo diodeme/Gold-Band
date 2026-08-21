@@ -1202,8 +1202,8 @@ const resources = {
         validationEdgeTargetRequired: "第 {{index}} 条边缺少目标节点。",
         validationEdgeTargetMissing: "边的目标节点 {{node}} 不存在。",
         validationEdgeOutcomeRequired: "第 {{index}} 条边类型无效。",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} 只有开启 AI 输出验证后才能配置失败分支。",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} 只有开启 AI 输出验证或人工 check 后才能配置失败分支。",
         validationDuplicateEdgeOutcome:
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
@@ -3410,8 +3410,8 @@ const resources = {
         validationEdgeTargetMissing:
           "Edge target node {{node}} does not exist.",
         validationEdgeOutcomeRequired: "Edge {{index}} has an invalid outcome.",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} can only have a failure branch when AI output validation is enabled.",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} can only have a failure branch when AI output validation or manual check is enabled.",
         validationDuplicateEdgeOutcome:
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:

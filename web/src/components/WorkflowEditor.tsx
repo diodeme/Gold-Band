@@ -11,10 +11,12 @@ import {
   Position,
   ReactFlow,
   getSmoothStepPath,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type EdgeProps,
   type Node,
+  type NodeProps,
   type ReactFlowInstance,
   type Viewport,
 } from '@xyflow/react';
@@ -246,7 +248,7 @@ export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWor
 }
 
 export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined): boolean {
-  return node?.type === 'worker' && Boolean(node.output || node.success_condition);
+  return node?.type === 'worker' && Boolean(node.manual_check || node.output || node.success_condition);
 }
 
 export function removeTerminalFromWorkflow(workflow: WorkflowDsl, terminalId: string): WorkflowDsl {
@@ -272,7 +274,11 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
   );
 }
 
-function EditorCanvasNode({ data }: { data: EditorNodeData }) {
+function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [data.supportsFailureOutcome, id, updateNodeInternals]);
   if (data.terminal) {
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
@@ -2648,7 +2654,7 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
 export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [node.id, node.type]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node)]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
   });
 }
@@ -3220,7 +3226,7 @@ export function validateWorkflowForSave(
     else if (![END_NODE, NEW_ROUND_NODE].includes(edge.to) && !nodeIds.has(edge.to)) addIssue(t('workflowEditor.validationEdgeTargetMissing', { node: edge.to }), edgeField(index, 'to'), edge.to, index);
     if (!['success', 'failure'].includes(edge.on)) addIssue(t('workflowEditor.validationEdgeOutcomeRequired', { index: index + 1 }), edgeField(index, 'on'), undefined, index);
     else if (edge.on === 'failure' && !nodeSupportsFailureOutcome(nodeById.get(edge.from))) {
-      addIssue(t('workflowEditor.validationFailureOutcomeRequiresOutputValidation', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
+      addIssue(t('workflowEditor.validationFailureOutcomeRequiresResultDecision', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
     }
     else if (edge.on === 'success' && edge.to === NEW_ROUND_NODE) {
       addIssue(t('workflowEditor.validationSuccessNewRoundTarget', { node: edge.from }), edgeField(index, 'to'), edge.from, index);

@@ -138,6 +138,7 @@ export interface AcpSessionUpdatedEventVm {
 }
 
 export interface ConversationRunStateUpdatedEventVm {
+  eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';
   projectId: string;
   taskId: string;
   runId: string;

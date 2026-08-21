@@ -387,6 +387,16 @@ describe('ACPChatDialog finite branch event cache', () => {
     expect(restoreAcpLoadedEvents(newKey, [], 360)).toEqual([]);
     expect(restoreAcpLoadedEvents(oldKey, [], 360)).toHaveLength(1);
   });
+
+  it('separates cache entries by project, dynamic owner, and branch locator', () => {
+    const base = ['namespace', 'task-1', 'run-1', 'round-1', 'node-1', 'attempt-1'] as const;
+    const root = createAcpSessionCacheKey(...base, 'project-1', null, null, 'root');
+    const otherProject = createAcpSessionCacheKey(...base, 'project-2', null, null, 'root');
+    const dynamicLeaf = createAcpSessionCacheKey(...base, 'project-1', 'outer-1', 'attempt-outer', 'root');
+    const agentBranch = createAcpSessionCacheKey(...base, 'project-1', null, null, 'agent-1');
+
+    expect(new Set([root, otherProject, dynamicLeaf, agentBranch]).size).toBe(4);
+  });
 });
 
 describe('ACPChatDialog optimistic prompt placement', () => {

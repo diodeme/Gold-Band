@@ -349,13 +349,13 @@ use crate::acp::elicitation::{
     wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
-    AcpAttemptPaths, AcpLatestTurnStatus, AcpLifecycleOwner, AcpLiveTurnActivity,
-    AcpPromptRetryState, AcpSessionAvailability, AcpSessionMetadata, AcpSessionTiming,
-    AcpTimingState, AcpUiEvent, append_diagnostic, append_raw_frame, append_structured_diagnostic,
-    cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
-    load_session_metadata, normalize_session_update, permission_request_event,
-    read_lifecycle_header, user_prompt_event_with_quotes, write_session_metadata,
-    write_session_metadata_owned,
+    AcpAttemptPaths, AcpLatestTurnStatus, AcpLifecycleOwner, AcpLifecycleTerminalGuard,
+    AcpLiveTurnActivity, AcpPromptRetryState, AcpSessionAvailability, AcpSessionMetadata,
+    AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic, append_raw_frame,
+    append_structured_diagnostic, cancel_latest_processing_prompt_retry, current_timestamp,
+    is_semantically_empty_agent_content, load_session_metadata, normalize_session_update,
+    permission_request_event, read_lifecycle_header, user_prompt_event_with_quotes,
+    write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -2097,6 +2097,10 @@ pub fn run_prompt(
     prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
     stop_probe: Option<RuntimeStopProbe>,
 ) -> Result<AcpPromptRun> {
+    let mut lifecycle_terminal_guard = AcpLifecycleTerminalGuard::new(
+        attempt_dir.join("acp.snapshot.json"),
+        lifecycle_owner.clone(),
+    );
     let run_prompt_started_at = Instant::now();
     let prompt_lock = AcpSessionRuntimeRegistry::shared().prompt_lock(&attempt_dir);
     let _prompt_guard = prompt_lock
@@ -2240,9 +2244,7 @@ pub fn run_prompt(
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
     runtime.control.mark_accepted();
-    if let Some(prompt_accepted) = prompt_accepted {
-        let _ = prompt_accepted(&prompt_turn.id);
-    }
+    publish_prompt_accepted(prompt_accepted, &prompt_turn.id)?;
     runtime.write_session("running", restored, None, capabilities.clone())?;
     if acp_session_title_refresh_enabled {
         runtime.refresh_session_title_and_persist(
@@ -2416,7 +2418,18 @@ pub fn run_prompt(
     } else {
         runtime.release_managed_session();
     }
+    lifecycle_terminal_guard.disarm();
     Ok(run)
+}
+
+fn publish_prompt_accepted(
+    prompt_accepted: Option<&dyn Fn(&str) -> Result<()>>,
+    prompt_id: &str,
+) -> Result<()> {
+    if let Some(prompt_accepted) = prompt_accepted {
+        prompt_accepted(prompt_id)?;
+    }
+    Ok(())
 }
 
 /// Settles a logical prompt that was interrupted before the provider accepted
@@ -3807,14 +3820,23 @@ impl<'a> AcpRuntime<'a> {
         } else {
             return Ok(());
         };
-        let mut metadata = load_session_metadata(path, self.session_id.clone())?;
-        metadata.models = self.models.clone();
-        metadata.modes = self.modes.clone();
-        metadata.config_options = self.config_options.clone();
-        metadata.config_catalog_observed_at = self.config_catalog_observed_at.clone();
-        metadata.config_catalog_refresh_required_at =
-            self.config_catalog_refresh_required_at.clone();
-        write_session_metadata(path, &metadata)
+        crate::acp::events::patch_session_metadata(path, |metadata| {
+            metadata["models"] = self.models.clone().unwrap_or(Value::Null);
+            metadata["modes"] = self.modes.clone().unwrap_or(Value::Null);
+            metadata["configOptions"] = self.config_options.clone().unwrap_or(Value::Null);
+            metadata["configCatalogObservedAt"] = self
+                .config_catalog_observed_at
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+            metadata["configCatalogRefreshRequiredAt"] = self
+                .config_catalog_refresh_required_at
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null);
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Applies the effective session configuration for the ACP session.
@@ -7259,6 +7281,15 @@ mod tests {
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
     };
+
+    #[test]
+    fn canonical_prompt_accepted_error_is_not_downgraded_to_best_effort() {
+        let callback = |_prompt_id: &str| anyhow::bail!("canonical transition failed");
+
+        let error = super::publish_prompt_accepted(Some(&callback), "turn-1").unwrap_err();
+
+        assert!(error.to_string().contains("canonical transition failed"));
+    }
 
     fn non_runtime_control_test_prompt(prompt_id: &str) -> PromptBundle {
         PromptBundle {

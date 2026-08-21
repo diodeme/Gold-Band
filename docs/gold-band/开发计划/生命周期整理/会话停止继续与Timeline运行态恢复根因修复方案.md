@@ -7,6 +7,21 @@
 
 不建议引入数据库、工作流框架或新的全局状态机。复用现有的 timeline index、revision、operation ID、owner CAS 和原子 JSON 写入。
 
+## 2026-08-21 一致性审计补充
+
+本轮审计确认原有 canonical lifecycle、revision、owner/CAS 和 metadata lock 设计方向正确，缺口来自共享 `acp.snapshot.json` 的事务边界与消费端投影没有完全收口。实现按原设计补齐，不引入新状态机、数据库或 Timeline index 分片：
+
+- 所有运行期 metadata writer 在同一 attempt lock 内读取最新 `acp.snapshot.json`，并仅 patch 自己所属字段；Runtime-control、provider metadata、catalog/config 与 stop settlement 不再互相整文件覆盖。`acp.session.json` 只作为旧 attempt 的只读 fallback，首次 canonical 写入继承仍有效的 session identity/lifecycle 后只写 snapshot，不再生产双写。
+- provider turn claim 后由共享 `client::run_prompt()` 边界建立 terminal guard；Direct、Workflow、AUTO 与隐藏 finalize/repair 的正常结束显式 settlement，启动/setup/canonical callback 异常由同一 guard 兜底，busy guard 保持不变。
+- `prompt_accepted` 的 Runtime canonical transition 错误通过桌面端生产 wiring 向上传播，durable prompt queue 的 load/claim 等失败不能被吞掉；session/UI refresh 继续允许 best-effort。
+- `artifact-emission.json` 的 finalizing checkpoint 增加 generation；checkpoint 已写但对应控制 turn 尚未 terminal 时复用同一 generation，只有匹配的 finalize/repair 已 terminal 且 artifact 未完成时才在 provider 请求前持久化新 generation，并用 generation 组成 prompt identity。
+- Web 按 ACP/runtime/queue 各自 revision 合并后重新派生 composer/display；缓存 identity 补齐 project、outer node/attempt 和 branch。
+- ViewModel 正常查询只读 snapshot/index，不写回 lifecycle，也不通过完整 raw 日志推断 session close；raw frame 分页和显式诊断查看仍按原功能保留。
+
+性能边界：本轮只消除高频正常查询中的全量 raw I/O 和错误的大范围前端状态复用。低频迁移、显式 raw diagnostics、单体 Timeline index checkpoint 维持现状；没有 profiling 证据时不继续投入复杂增量索引或缓存机制。
+
+最终缺口审计：provider catalog 是 provider-owned 新鲜观测，不能被旧值保护规则冻结；命令侧只拥有 override 与 refresh marker。terminal guard 已下沉到所有执行模式共享的 ACP client prompt 边界，删除 provider/Direct 旁路的重复 guard 与 settlement，避免模式间的错误收敛语义再次分叉。RoundDetail optimistic key 与 ACP session/event cache 对齐完整 locator，并补入 effective branch；所有改动均为单个小 JSON 读取或 O(1) key/状态派生，同时减少 legacy metadata 写入，不增加 Timeline/raw 扫描或额外并发机制。
+
 ## 一、先明确不变量
 
 ### 1. Session availability 与 Turn lifecycle 分离
@@ -290,13 +305,14 @@ pub struct TimelineRuntimeRestore {
 - provider history identity membership 由已加载的 `TimelineStore` index 直接 O(1) 查询，不再 clone 到 restore snapshot；
 - provider prompt anchors 不属于启动 snapshot，只有显式 `session/load` 且启用 external history sync 时才按 locator 读取。
 
-`TimelineMaterializedIndex` V7 增加 `runtimeProjection`，由统一的 `apply_index_event()` 增量维护：
+`TimelineMaterializedIndex` V8 保留 V7 的 `runtimeProjection`，并补齐 canonical Agent launch 的语义分页身份；由统一的 `apply_index_event()` 增量维护：
 
 - `latestSeq`；
 - active tool item IDs；
 - 最新 context-compaction 候选；
 - 每个 branch 的 text/thought/plan current 与 suspended stable 槽位；
 - provider history identity 引用计数。
+- `_meta.goldBandConversation.launchedAgentExecutionId` 对应的独立 Agent link 语义块与 launch projection。
 
 index-hit restore 只枚举上述有界集合并读取对应 locator。旧索引升级或检测到改变语义顺序的迟到历史 patch 时允许在索引构建/写入路径重建 projection；不得把全量 locator 扫描留在每次启动路径。
 
@@ -737,7 +753,7 @@ hydrated_blob_bytes
 ## 九、2026-08-20 实施收口
 
 - usage：attached runtime registry 已携带 live usage；reuse 决策前不再执行 durable repair，reuse miss 后 repair 至多一次。
-- Timeline：index format 升级为 V7；runtime hot projection 在统一索引写入路径维护，index-hit restore 不再遍历、分组或排序全部 locator。
+- Timeline：index format 升级为 V8；runtime hot projection 在统一索引写入路径维护，index-hit restore 不再遍历、分组或排序全部 locator；canonical Agent launch 不再被 activity summary 合并，旧 V7 索引首次读取时可重建一次。
 - TimelineStore：删除 open 时由 locator 再复制的全量 fingerprint HashMap 和只写不读的 canonical event body mirror；upsert/compaction 直接使用 materialized index，避免在 JSON index 反序列化之外再制造一次 O(N) 分配。
 - provider replay suppression：不再在 `AcpRuntime` 启动时复制全部历史 identity，改由 root/branch `TimelineStore` 查询索引 membership；已有 branch store 在启动时保留并复用于后续写入与查询。
 - context compaction：只读取最新候选，已有 `contextUsedAfter` 或非 running/completed 的候选不进入 hot state，不再恢复全部历史 completed compaction。
@@ -781,3 +797,31 @@ hydrated_blob_bytes
 - 接口回归固定：普通 attempt 与 AI-DYNAMIC leaf 在当前版本下即使 Timeline 损坏也必须零迁移快速返回；旧 marker 完全不影响迁移判断；旧 attempt 成功后只推进对应 canonical `node.json` 到 `2` 且第二次不扫描；失败步骤不推进；future version 在扫描前拒绝；迟到 lifecycle 写回不能降低版本；dynamic `graph.json` 不复制该字段。
 
 性能与过度设计复核：新 attempt 只增加 `node.json` 中一个整数，无新增日常扫描和额外文件；旧 attempt 最多承担一次既有迁移。统一 node 写入增加一次小型 `node.json` 读取，写入频率只在 lifecycle 转换边界，数据大小有界，不处于 Timeline/流式事件热路径。现有单体 index 足以覆盖当前主要性能目标，暂不为剩余 O(N) JSON 解析引入高复杂度存储层。
+
+## 十二、2026-08-21 terminal 展示与节点自动跟随收口
+
+### 根因与边界
+
+- Timeline 最后一条 `textDelta` 是 terminal 前的历史内容，不代表 terminal 后仍有回复生成。Composer 曾把“最后发生过什么”误当成“当前正在做什么”，导致 ACP 已结束但页面长期显示“回复生成中”。
+- Workflow 已切换 execution locator 时，非当前旧节点的 VM 没有携带 Run revision，前端不能用新 inactive 投影淘汰本地旧 active facet；同时只有 ACP session 事件触发详情刷新，新节点尚未进入旧 session tree 时缺少可靠自动跟随边界。
+- 这是现有 ACP lifecycle、Runtime execution 与 Timeline 分层设计的消费实现不完整，不新增状态机或针对单一节点的 fallback。
+
+### 实现方案
+
+1. `deriveAcpRuntimeComposerState()` 先读取 ACP live activity；只有当前 ACP turn active 时才允许 Timeline 的 `thinking/tool/compacting/responding` 细化状态。terminal 后使用中性 `processing` API 值且不激活状态展示；Runtime 仍 active 时由其 canonical phase 决定状态。
+2. 普通 Workflow/AUTO 的所有 attempt lifecycle 都携带当前 `run.execution.revision` 水位，但 `current/active/phase` 继续由完整 execution locator 精确匹配。Direct revision 保持空；AI-DYNAMIC leaf 继续使用 leaf-owned dynamic execution。
+3. `NodeStarted` 增加稳定 `project_id`，桌面端仅将普通节点（`metrics_unit_kind=None`）桥接为轻量 Run 状态事件。它发生在 Starting/Running execution 已落盘之后，是 RuntimeControlled auto-follow 边界；AI-DYNAMIC 内部 metrics leaf 不映射。
+4. 详情页复用既有单 in-flight、至多一次 follow-up 的合并刷新。canonical Run 边界在 pending 和 in-flight 期间不能被旧节点迟到 ACP 更新替换；manual follow、NonRuntimeControlled follow-up 不改变选择。`NodeCompleted` 保留原有 repair/metrics 顺序，不作为详情刷新入口，等待后续 durable `NodeStarted/RunPaused/RunCompleted`。
+
+### 回归与兼容验收
+
+- ACP terminal + 历史 `responding`：不显示状态、输入可用、普通 prompt 可发。
+- ACP terminal + Runtime active：显示中性 Runtime 处理状态，不显示“回复生成中”，普通 Workflow 输入保持锁定。
+- ACP active + 最新 `textDelta`：仍显示“回复生成中”。
+- NonRuntimeControlled 完成后追问、停止后追问继续 `acp-prompt`；Direct active 继续 `queue-prompt`。
+- `NodeStarted` 可刷新尚未出现在旧 tree 的普通 Workflow 新节点；manual 选择和 NonRuntime follow-up 不自动切换；AI-DYNAMIC 内部 leaf 不产生错误的顶层 session key。
+- 新 Run revision 的非当前 inactive lifecycle 能覆盖旧 active 投影，但不得把 sibling 标记为 current/active。
+
+### 性能与过度设计复核
+
+节点边界是低频 O(1) event/locator 操作，复用现有合并刷新，最多一个请求在途且重复事件合并为一次后续刷新。Composer 只增加常数级 lifecycle 判断，Runtime VM 复用已经读取的 `run.execution`；不读取 Timeline/raw 正文，不增加轮询、缓存、持久字段、队列、依赖或第二状态机。现有 revision 与完整 locator 已足够表达不变量，继续优化单体 Timeline index 等低收益路径不在本次范围。

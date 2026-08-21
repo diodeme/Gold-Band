@@ -616,7 +616,7 @@ describe('deriveAcpRuntimeComposerState', () => {
       expect(state.stopInProgress).toBe(false);
       expect(state.sessionActive).toBe(false);
       expect(state.statusActive).toBe(false);
-      expect(state.processingKind).toBe('responding');
+      expect(state.processingKind).toBe('processing');
       expect(state.submitTarget).toBe('acp-prompt');
       expect(state.inputDisabled).toBe(false);
       expect(state.canStop).toBe(false);
@@ -649,7 +649,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     }));
 
     expect(state.mode).toBe('normal');
-    expect(state.processingKind).toBe('responding');
+    expect(state.processingKind).toBe('processing');
     expect(state.statusActive).toBe(false);
     expect(state.inputDisabled).toBe(false);
     expect(state.canStop).toBe(false);
@@ -808,7 +808,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.mode).toBe('normal');
     expect(state.sessionActive).toBe(false);
     expect(state.statusActive).toBe(false);
-    expect(state.processingKind).toBe('responding');
+    expect(state.processingKind).toBe('processing');
     expect(state.canStop).toBe(false);
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
@@ -1102,6 +1102,41 @@ describe('mergeConversationAttemptLifecycle', () => {
     expect(merged.promptQueue).toEqual(local.promptQueue);
   });
 
+  it('re-derives composer state after combining a newer runtime facet with terminal ACP state', () => {
+    const local = lifecycle({
+      runtime: { revision: 4, status: 'paused', active: false, phase: 'paused' },
+      acp: {
+        revision: 9,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'cancelled',
+        stopping: false,
+      },
+      composer: { mode: 'normal', submitTarget: 'acp-prompt', lockInput: false },
+    });
+    const incoming = lifecycle({
+      runtime: { revision: 5, status: 'paused', active: false, phase: 'paused' },
+      acp: {
+        revision: 8,
+        turnId: 'turn-1',
+        liveTurnActivity: 'running',
+        latestTurnStatus: 'none',
+        stopping: false,
+      },
+      displayStatus: 'running',
+      composer: { mode: 'runtime-active', submitTarget: 'none', lockInput: true },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(local, incoming);
+
+    expect(merged.runtime.revision).toBe(5);
+    expect(merged.acp).toBe(local.acp);
+    expect(merged.displayStatus).toBe('paused');
+    expect(merged.composer.mode).toBe('normal');
+    expect(merged.composer.lockInput).toBe(false);
+    expect(merged.composer.submitTarget).toBe('acp-prompt');
+  });
+
   it('accepts an empty queue when its revision is newer', () => {
     const local = lifecycle({
       promptQueue: {
@@ -1253,6 +1288,78 @@ describe('lifecycle-only terminal composer recovery', () => {
     expect(state.stopInProgress).toBe(false);
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
+  });
+
+  it('does not project historical textDelta as active response generation after ACP terminal', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          liveTurnActivity: 'idle',
+          latestTurnStatus: 'completed',
+          stopping: false,
+        },
+      }),
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.statusActive).toBe(false);
+    expect(state.showStatus).toBe(false);
+    expect(state.processingKind).toBe('processing');
+    expect(state.inputDisabled).toBe(false);
+    expect(state.submitTarget).toBe('acp-prompt');
+  });
+
+  it('keeps the neutral processing kind while Runtime work is active after ACP terminal', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: {
+          status: 'running',
+          active: true,
+          current: true,
+          phase: 'running-node',
+        },
+        acp: {
+          liveTurnActivity: 'idle',
+          latestTurnStatus: 'completed',
+          stopping: false,
+        },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'processing',
+          lockInput: true,
+          canStop: true,
+        },
+      }),
+      acpStatus: 'completed',
+      hasTimelineItems: true,
+      hasEffectiveEvents: true,
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('processing');
+    expect(state.processingKind).not.toBe('responding');
+    expect(state.inputDisabled).toBe(true);
+    expect(state.submitTarget).toBe('none');
+  });
+
+  it('uses the latest Timeline activity only while the ACP turn is live', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'running-node' },
+        acp: { liveTurnActivity: 'running', latestTurnStatus: 'none', stopping: false },
+      }),
+      acpStatus: 'running',
+      timelineProcessingKind: 'responding',
+    }));
+
+    expect(state.acpActive).toBe(true);
+    expect(state.statusActive).toBe(true);
+    expect(state.processingKind).toBe('responding');
   });
 
   it('settles local transient state from a lifecycle-only terminal patch', () => {

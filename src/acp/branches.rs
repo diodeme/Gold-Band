@@ -992,11 +992,9 @@ pub fn rebuild_agent_index(
                 .clone()
                 .unwrap_or_else(|| "unknown-session".to_string());
             let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
-            let relation = agent_relation(&launch).unwrap_or_default();
-            let parent_agent_execution_id = relation
-                .parent_tool_call_id
-                .as_deref()
-                .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
+            let parent_branch_id = event_branch_id(&launch);
+            let parent_agent_execution_id =
+                (parent_branch_id != ROOT_BRANCH_ID).then_some(parent_branch_id);
             let branch_events =
                 load_timeline_items(&branch_timeline_path(attempt_dir, &agent_execution_id))
                     .unwrap_or_default();
@@ -1155,11 +1153,9 @@ pub fn indexed_agent_index(
                 .clone()
                 .unwrap_or_else(|| "unknown-session".to_string());
             let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
-            let relation = agent_relation(&launch).unwrap_or_default();
-            let parent_agent_execution_id = relation
-                .parent_tool_call_id
-                .as_deref()
-                .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
+            let parent_branch_id = event_branch_id(&launch);
+            let parent_agent_execution_id =
+                (parent_branch_id != ROOT_BRANCH_ID).then_some(parent_branch_id);
             let projection = projections.get(&agent_execution_id);
             let launch_status = launch
                 .status

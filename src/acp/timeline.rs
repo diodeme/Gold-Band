@@ -23,6 +23,9 @@ use crate::storage::{
 pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
 pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+// V8 keeps Agent launch links as standalone semantic blocks and recognizes
+// their canonical Gold Band conversation identity. V7 indexes grouped these
+// links into ordinary activity when provider-only metadata was absent.
 // V7 adds the durable bounded runtime projection. Index-hit restore can now
 // select active streams, tools, compaction, and provider replay identities
 // without scanning, grouping, or sorting every historical locator.
@@ -35,7 +38,7 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V4 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 7;
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 8;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -1324,10 +1327,7 @@ fn timeline_item_locator(
             )
             .then(|| item.id.trim_end_matches("-response").to_string())
         });
-    let relation = raw.and_then(extract_agent_transcript_relation);
-    let agent_launch = relation
-        .as_ref()
-        .is_some_and(|relation| relation.agent_launch);
+    let agent_launch = is_agent_launch(item);
     let activity = matches!(
         item.kind.as_str(),
         "thoughtDelta" | "toolCall" | "toolCallUpdate" | "error"
@@ -1335,8 +1335,8 @@ fn timeline_item_locator(
     let standalone = matches!(
         item.kind.as_str(),
         "userTextDelta" | "textDelta" | "fileChangeSet" | "attemptSeparator" | "contextCompaction"
-    ) || (item.kind == "permissionRequest"
-        && item.status.as_deref() == Some("pending"))
+    ) || agent_launch
+        || (item.kind == "permissionRequest" && item.status.as_deref() == Some("pending"))
         || (item.kind == "elicitationRequest"
             && item.status.as_deref().unwrap_or("pending") == "pending");
     let semantic_kind = if activity {
@@ -1409,6 +1409,20 @@ fn timeline_item_locator(
             == Some("goldBandPrompt"),
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
+    })
+}
+
+fn is_agent_launch(item: &AcpUiEvent) -> bool {
+    item.raw.as_ref().is_some_and(|raw| {
+        extract_agent_transcript_relation(raw).is_some_and(|relation| relation.agent_launch)
+            || [
+                "/_meta/goldBandConversation/launchedAgentExecutionId",
+                "/toolCall/_meta/goldBandConversation/launchedAgentExecutionId",
+            ]
+            .into_iter()
+            .filter_map(|pointer| raw.pointer(pointer))
+            .filter_map(Value::as_str)
+            .any(|value| !value.trim().is_empty())
     })
 }
 
@@ -1612,11 +1626,7 @@ fn apply_lightweight_projection(index: &mut TimelineMaterializedIndex, item: &Ac
     {
         index.accepted_prompt_ids.insert(prompt_id.to_string());
     }
-    if let Some(relation) = item
-        .raw
-        .as_ref()
-        .and_then(extract_agent_transcript_relation)
-        && relation.agent_launch
+    if is_agent_launch(item)
         && let Some(tool_call_id) = item.tool_call_id.as_ref()
     {
         let should_replace = index
@@ -2900,6 +2910,45 @@ mod tests {
     }
 
     #[test]
+    fn agent_launches_are_standalone_semantic_blocks_from_canonical_metadata() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store.upsert(1, &event("prompt", 1, "delegate")).unwrap();
+        for (revision, tool_call_id) in [(2, "agent-a"), (3, "agent-b")] {
+            let mut launch = event(tool_call_id, revision, "");
+            launch.kind = "toolCall".to_string();
+            launch.tool_call_id = Some(tool_call_id.to_string());
+            launch.raw = Some(json!({
+                "_meta": {
+                    "goldBandConversation": {
+                        "branchId": "root",
+                        "launchedAgentExecutionId": format!("execution-{tool_call_id}"),
+                        "toolName": "Agent"
+                    }
+                },
+                "rawInput": { "description": tool_call_id }
+            }));
+            store.upsert(revision, &launch).unwrap();
+        }
+        store.force_checkpoint().unwrap();
+
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+
+        assert_eq!(page.total_semantic_blocks, 3);
+        assert_eq!(page.loaded_semantic_blocks, 3);
+        assert_eq!(page.events.len(), 3);
+        assert_eq!(
+            read_indexed_timeline_projection(&path)
+                .unwrap()
+                .agent_launches
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn revision_delta_returns_only_blocks_changed_after_snapshot_watermark() {
         let dir = tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
@@ -3378,7 +3427,7 @@ mod tests {
             }
             writer.flush().unwrap();
 
-            // First read is the allowed V7 index construction. The second is
+            // First read is the allowed current-index construction. The second is
             // the steady-state index-hit path measured by this regression.
             read_indexed_runtime_restore(path).unwrap();
             read_indexed_runtime_restore(path).unwrap()

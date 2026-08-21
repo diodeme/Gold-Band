@@ -410,6 +410,8 @@ enum ArtifactEmissionPhase {
 struct ArtifactEmissionState {
     version: String,
     phase: ArtifactEmissionPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -453,13 +455,60 @@ fn write_artifact_emission_phase(
     attempt_dir: &Utf8Path,
     phase: ArtifactEmissionPhase,
 ) -> Result<()> {
+    write_artifact_emission_phase_with_generation(attempt_dir, phase, None)
+}
+
+fn write_artifact_emission_phase_with_generation(
+    attempt_dir: &Utf8Path,
+    phase: ArtifactEmissionPhase,
+    generation: Option<String>,
+) -> Result<()> {
     write_json(
         &attempt_dir.join(ARTIFACT_EMISSION_STATE_FILE),
         &ArtifactEmissionState {
             version: VERSION.to_string(),
             phase,
+            generation,
         },
     )
+}
+
+fn artifact_control_turn_matches_generation(turn_id: &str, generation: &str) -> bool {
+    let generation_suffix = format!("-{generation}");
+    (turn_id.starts_with("artifact-finalize-") || turn_id.starts_with("artifact-repair-"))
+        && turn_id.ends_with(&generation_suffix)
+}
+
+fn artifact_finalize_generation_is_terminal(
+    attempt_dir: &Utf8Path,
+    generation: &str,
+) -> Result<bool> {
+    let Some(header) =
+        crate::acp::events::read_lifecycle_header_snapshot(&attempt_dir.join("acp.snapshot.json"))?
+    else {
+        return Ok(false);
+    };
+    Ok(header
+        .turn_id
+        .as_deref()
+        .is_some_and(|turn_id| artifact_control_turn_matches_generation(turn_id, generation))
+        && header.live_turn_activity == crate::acp::events::AcpLiveTurnActivity::Idle
+        && header.latest_turn_status != crate::acp::events::AcpLatestTurnStatus::None)
+}
+
+fn next_artifact_finalize_generation(attempt_dir: &Utf8Path) -> Result<String> {
+    if let Some(generation) = artifact_emission_checkpoint(attempt_dir)?
+        .and_then(|state| state.generation)
+        .filter(|generation| !generation.trim().is_empty())
+    {
+        // The checkpoint is committed before provider admission. Reuse its
+        // identity until a terminal control turn proves that retrying needs a
+        // fresh prompt identity.
+        if !artifact_finalize_generation_is_terminal(attempt_dir, &generation)? {
+            return Ok(generation);
+        }
+    }
+    Ok(uuid::Uuid::new_v4().simple().to_string())
 }
 
 fn prepare_post_turn_projection(req: &WorkerInvocation) -> Result<PostTurnProjectionEntry> {
@@ -1579,7 +1628,12 @@ impl AcpProvider {
             }
         }
 
-        write_artifact_emission_phase(&req.attempt_dir, ArtifactEmissionPhase::Finalizing)?;
+        let finalize_generation = next_artifact_finalize_generation(&req.attempt_dir)?;
+        write_artifact_emission_phase_with_generation(
+            &req.attempt_dir,
+            ArtifactEmissionPhase::Finalizing,
+            Some(finalize_generation.clone()),
+        )?;
         if let Some(runtime_phase_update) = runtime_phase_update {
             runtime_phase_update(ProviderRuntimePhase::FinalizingArtifact)?;
         }
@@ -1606,15 +1660,22 @@ impl AcpProvider {
         finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
         finalize_req.task_input_attachment_paths.clear();
         finalize_req.user_input_attachment_paths.clear();
+        let control_turn_kind = if preserve_control_prompt
+            && finalize_req.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
+        {
+            "artifact-repair"
+        } else {
+            "artifact-finalize"
+        };
+        finalize_req.resume_prompt_id = Some(format!(
+            "{control_turn_kind}-{}-{finalize_generation}",
+            finalize_req.runtime_context.attempt_id
+        ));
         if !preserve_control_prompt {
             finalize_req.resume_prompt = Some(render_artifact_finalize_prompt(
                 finalize_req.runtime_context.language,
                 &contract,
             )?);
-            finalize_req.resume_prompt_id = Some(format!(
-                "artifact-finalize-{}",
-                finalize_req.runtime_context.attempt_id
-            ));
             finalize_req.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         }
 
@@ -3239,6 +3300,103 @@ mod tests {
         assert_eq!(
             prepare_post_turn_projection(&repair_req).unwrap(),
             PostTurnProjectionEntry::ResumeFinalization
+        );
+    }
+
+    #[test]
+    fn finalize_generation_is_reused_until_its_control_turn_is_terminal() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+
+        let first = next_artifact_finalize_generation(&attempt_dir).unwrap();
+        write_artifact_emission_phase_with_generation(
+            &attempt_dir,
+            ArtifactEmissionPhase::Finalizing,
+            Some(first.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            next_artifact_finalize_generation(&attempt_dir).unwrap(),
+            first
+        );
+
+        crate::storage::write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "acpRevision": 4,
+                "turnId": format!("artifact-finalize-attempt-001-{first}"),
+                "lifecycleOperationId": "finalize-operation",
+                "availability": "established",
+                "liveTurnActivity": "running",
+                "latestTurnStatus": "none"
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            next_artifact_finalize_generation(&attempt_dir).unwrap(),
+            first
+        );
+
+        crate::storage::write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "acpRevision": 5,
+                "turnId": format!("artifact-finalize-attempt-001-{first}"),
+                "lifecycleOperationId": "finalize-operation",
+                "availability": "established",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "cancelled",
+                "stopReason": "cancelled"
+            }),
+        )
+        .unwrap();
+        let second = next_artifact_finalize_generation(&attempt_dir).unwrap();
+
+        assert_ne!(first, second);
+        let checkpoint = artifact_emission_checkpoint(&attempt_dir).unwrap().unwrap();
+        assert_eq!(checkpoint.generation.as_deref(), Some(first.as_str()));
+    }
+
+    #[test]
+    fn lifecycle_guard_settles_a_claim_when_provider_startup_returns_early() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let path = attempt_dir.join("acp.snapshot.json");
+        let submission = crate::acp::events::AcpPromptSubmission {
+            turn_id: "guarded-turn".to_string(),
+            operation_id: "guarded-operation".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: ConversationPromptInput {
+                display_text: "hi".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "1Z".to_string(),
+        };
+        let owner = match crate::acp::events::admit_session_turn_for_execution(&path, &submission)
+            .unwrap()
+        {
+            crate::acp::events::AcpTurnExecutionClaim::Claimed(owner) => owner,
+            other => panic!("expected lifecycle claim, got {other:?}"),
+        };
+
+        drop(crate::acp::events::AcpLifecycleTerminalGuard::new(
+            path.clone(),
+            owner,
+        ));
+
+        let header = crate::acp::events::read_lifecycle_header_snapshot(&path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            header.latest_turn_status,
+            crate::acp::events::AcpLatestTurnStatus::Failed
+        );
+        assert_eq!(
+            header.live_turn_activity,
+            crate::acp::events::AcpLiveTurnActivity::Idle
         );
     }
 

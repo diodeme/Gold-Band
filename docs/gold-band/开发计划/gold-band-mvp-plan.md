@@ -1408,8 +1408,29 @@ attempt-001/
 - [x] DOM 接口回归覆盖短消息、超长消息默认折叠、展开/收起与 controller token 配对；同时回归自动贴底与 ACP 分页测试，执行前端类型检查、生产构建及会话 deep-link 长文本验证。
 - 性能与过度设计评审：每条用户消息只增加一个局部 `ResizeObserver` 和两个布尔展示状态，测量为 O(1) 高度比较且仅在结果变化时提交状态；不扫描 timeline、不重解析 Markdown、不增加网络 I/O、依赖、缓存、队列、并发或持久字段。现有 prompt-kit/shadcn 组件和滚动 controller 已足以表达不变量，无需新消息模型或第二套滚动状态机。
 
+## 2026-08-21 ACP lifecycle consistency follow-up
+
+- [x] Unified metadata patching under the existing attempt lock and made `acp.snapshot.json` the only production write target; runtime control, catalog/config updates, stop cleanup, and provider metadata preserve the latest lifecycle owner and revision. Legacy `acp.session.json` is read-only fallback that seeds the first canonical snapshot write for old attempts, with no continued dual write.
+- [x] Centralized the owner terminal fallback at `client::run_prompt()` for Direct、Workflow、AUTO and hidden finalize/repair, and propagated canonical `prompt_accepted` failures through desktop production wiring. Startup/setup/callback or durable prompt-queue failures therefore cannot leave a claimed turn permanently active or make finalize fail with a false session-busy state.
+- [x] Added generation-scoped artifact finalize identities with durable checkpointing. Recovery reuses a checkpointed generation until its matching control turn is canonical terminal, then creates a fresh generation so an already-settled prompt identity is never resubmitted.
+- [x] Made lifecycle ViewModel reads non-mutating and removed normal query dependence on complete `acp.raw.jsonl` recovery. Frontend lifecycle merge now rejects stale revisions, re-derives projection fields, and uses project/outer/branch-complete cache locators.
+
+Scope deliberately excludes Timeline index decomposition, a new database/state machine, and speculative optimization of low-frequency background paths. The acceptance target is functional convergence after stop/continue/follow-up and bounded I/O on normal conversation reads.
+
+Final audit kept provider-owned catalog fields (`models/modes/configOptions/observedAt`) replaceable while protecting command-owned overrides and refresh markers. The terminal fallback now belongs to the shared ACP client prompt boundary instead of Direct-specific outer settlement, preventing preparation/provider/join failures from diverging by execution mode. Round-detail optimistic state includes the effective branch in the same complete locator as session/event caches. These are constant-size metadata/key operations and remove redundant legacy writes; no new scan, cache, queue, lock, dependency, or benchmark is introduced.
+
+## 2026-08-21：ACP terminal 展示与 Workflow 节点跟随
+
+- [x] Composer 只在 ACP live turn active 时使用 Timeline 最新 `thought/tool/textDelta` 细化当前状态；terminal 后历史 `textDelta` 不再维持“回复生成中”，Workflow 仍处理时改由 Runtime phase 显示中性处理状态。
+- [x] 普通 Workflow/AUTO attempt VM 携带 `run.execution.revision` 水位，同时继续以完整 locator 限定 `current/active/phase`；Direct 无该 revision，AI-DYNAMIC leaf 使用自身 execution。
+- [x] 普通节点 durable `NodeStarted` 通过完整 project/session locator 触发局部 Run 刷新和 RuntimeControlled auto-follow；manual/NonRuntimeControlled 不抢焦点，Dynamic 内部 metrics leaf 不映射。canonical Run 边界在合并刷新 pending/in-flight 期间优先于迟到 ACP 更新；`NodeCompleted` 保持 repair/metrics 原顺序，不作为详情刷新入口。
+- [x] 自动回归与编译：Composer、session follow/navigation、sidebar event DTO 共 123 项通过；Rust Run event mapping 与 lifecycle VM revision 定向接口测试各 1 项通过；Web TypeScript/生产构建、`gold-band` 与 `gold-band-desktop` 编译检查、Rust 格式与 diff 检查通过。
+- 性能与过度设计评审：所有新增判断和事件映射均为 O(1)，复用单 in-flight 合并刷新；无 Timeline/raw 扫描、轮询、缓存、持久字段、队列、依赖或新状态机。现有 ACP lifecycle、Run revision 和完整 locator 足够表达问题，不为低频边界或剩余单体 index 成本扩建设计。
+
 ## 2026-08-21：首轮 ACP 模型覆盖值持久化边界
 
 - [x] 修复首轮 provider 元数据写回时的配置覆盖丢失：admission 快照尚未有 `sessionId` 时保留本次执行显式的 `modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`；已建立 session 后继续以用户命令写入的覆盖字段为准，字段被清除时迟到 provider 快照不能复活旧值。
 - [x] Rust 接口级回归覆盖“首次写回保留 `sonnet/high`”与“已建立 session 的显式清空保持为空”两条路径；前端继续只显示 Gold Band override，不从 Agent `currentValue` 反推用户选择。
 - 性能与过度设计评审：复用现有 attempt metadata 锁、lifecycle owner 和 override 字段，仅增加常量级存在性判断与字段合并；不新增状态机、持久字段、RPC、扫描、缓存或队列，正常路径 I/O 与复杂度不变。
+
+The final desktop regression audit also fixed a V7 index contract gap: canonical Agent launches carrying only `goldBandConversation.launchedAgentExecutionId` were grouped into an activity summary, so pagination and Agent links diverged after re-entry. V8 recognizes the canonical identity as both an indexed launch and a standalone semantic block; older indexes rebuild once, while steady-state page and runtime reads retain the same bounded behavior. Desktop fixtures now declare the current attempt storage schema instead of weakening production validation.

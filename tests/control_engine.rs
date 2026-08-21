@@ -48,6 +48,7 @@ fn sample_round() -> RoundState {
 fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
     NodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         node_id: node_id.to_string(),
         node_type: NodeType::Worker,
         run_id: "run-001".to_string(),

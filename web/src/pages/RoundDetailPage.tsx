@@ -485,8 +485,18 @@ function AssetDetailSheet({ asset, content, loading, onBack }: { asset: AssetIte
   );
 }
 
-function acpOptimisticKey(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string) {
-  return `${taskId}:${runId}:${roundId}:${nodeId}:${attemptId}`;
+export function acpOptimisticKey(
+  projectId: string,
+  taskId: string,
+  runId: string,
+  roundId: string,
+  nodeId: string,
+  attemptId: string,
+  outerNodeId?: string | null,
+  outerAttemptId?: string | null,
+  branchId?: string | null,
+) {
+  return `${projectId}:${taskId}:${runId}:${roundId}:${outerNodeId ?? ''}:${outerAttemptId ?? ''}:${nodeId}:${attemptId}:${branchId ?? 'root'}`;
 }
 
 function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, optimisticAcpEventsByKey, onOptimisticAcpEventsChange }: { vm: RoundDetailVm; detail: NodeDetailVm; appConfig: AppConfigVm; workspaceProjectId?: string; onRefresh: () => void; optimisticAcpEventsByKey: Record<string, AcpUiEventVm[]>; onOptimisticAcpEventsChange: (key: string, events: AcpUiEventVm[]) => void }) {
@@ -510,7 +520,18 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
   );
   const attemptId = activeAttempt?.attemptId ?? detail.attemptId;
   const runtimeStatus = activeAttempt?.status ?? detail.status;
-  const optimisticKey = acpOptimisticKey(vm.run.taskId, vm.run.id, vm.round.id, detail.nodeId, attemptId);
+  const branchId = session?.branchId ?? 'root';
+  const optimisticKey = acpOptimisticKey(
+    workspaceProjectId ?? 'default',
+    vm.run.taskId,
+    vm.run.id,
+    vm.round.id,
+    detail.nodeId,
+    attemptId,
+    detail.outerNodeId,
+    detail.outerAttemptId,
+    branchId,
+  );
   return (
     <div className="flex h-full min-h-0 flex-col">
       {conversations.length > 1 ? (
@@ -526,7 +547,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
       <div className="min-h-0 flex-1">
         <SessionErrorBoundary>
           <ACPChatDialog
-          key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}`}
+          key={`${selectedConversation?.key ?? 'current'}:${detail.nodeId}:${attemptId}:${detail.outerNodeId ?? ''}:${detail.outerAttemptId ?? ''}:${branchId}`}
           session={session}
           projectId={workspaceProjectId ?? 'default'}
           systemPromptOptions={systemPromptOptions}
@@ -541,6 +562,7 @@ function SessionContent({ vm, detail, appConfig, workspaceProjectId, onRefresh, 
           attemptId={attemptId}
           outerNodeId={detail.outerNodeId}
           outerAttemptId={detail.outerAttemptId}
+          branchId={branchId}
           runtimeComposerContext={{
             isOrchestrated: true,
             runtimeStatus,

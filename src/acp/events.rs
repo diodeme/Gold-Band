@@ -219,6 +219,49 @@ pub struct AcpLifecycleOwner {
     pub revision: u64,
 }
 
+/// Owns the terminal settlement fallback for one claimed provider turn.
+///
+/// Admission and terminal settlement use the same durable owner/CAS tuple, so
+/// a late Drop from an older executor can only become a no-op after a newer
+/// turn has taken over. Keeping this guard at the shared client boundary makes
+/// Direct and provider-orchestrated prompts obey the same failure contract.
+pub(crate) struct AcpLifecycleTerminalGuard {
+    path: Utf8PathBuf,
+    owner: AcpLifecycleOwner,
+    armed: bool,
+}
+
+impl AcpLifecycleTerminalGuard {
+    pub(crate) fn new(path: Utf8PathBuf, owner: AcpLifecycleOwner) -> Self {
+        Self {
+            path,
+            owner,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AcpLifecycleTerminalGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = persist_session_turn_terminal_owned(
+            &self.path,
+            &self.owner.turn_id,
+            Some(&self.owner.operation_id),
+            self.owner.revision,
+            AcpLatestTurnStatus::Failed,
+            "runtime-error",
+            &current_timestamp(),
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpStopRequestOutcome {
     pub lifecycle: AcpLifecycleHeader,
@@ -1964,9 +2007,30 @@ pub fn patch_session_runtime_control(
     cursor: Option<&AcpRuntimeControlCursor>,
     timeline_scan_complete: bool,
 ) -> Result<()> {
+    patch_session_metadata(path, |value| {
+        if let Some(cursor) = cursor {
+            value["runtimeControl"] = serde_json::to_value(cursor)?;
+        }
+        if timeline_scan_complete {
+            value["runtimeControlTimelineScanComplete"] = Value::Bool(true);
+        }
+        Ok(())
+    })
+    .map(drop)
+}
+
+/// Applies a non-lifecycle metadata update against the latest snapshot while
+/// holding the same metadata transaction used by lifecycle admission and
+/// settlement. Callers must only patch their own projection fields; the
+/// canonical lifecycle header is restored from the value read under the lock
+/// before the file is written.
+pub fn patch_session_metadata<F>(path: &Utf8Path, patch: F) -> Result<Value>
+where
+    F: FnOnce(&mut Value) -> Result<()>,
+{
     let _guard = session_metadata_lock(path).lock().unwrap();
-    let mut value = if path.exists() {
-        read_json::<Value>(path)?
+    let mut value = if let Some(value) = admission_metadata_base(path)? {
+        value
     } else {
         serde_json::json!({
             "availability": "unavailable",
@@ -1976,14 +2040,13 @@ pub fn patch_session_runtime_control(
             "createdAt": current_timestamp(),
         })
     };
-    if let Some(cursor) = cursor {
-        value["runtimeControl"] = serde_json::to_value(cursor)?;
-    }
-    if timeline_scan_complete {
-        value["runtimeControlTimelineScanComplete"] = Value::Bool(true);
-    }
+    let canonical_header = lifecycle_header_from_value(&value);
+    patch(&mut value)?;
+    apply_lifecycle_header(&mut value, &canonical_header);
+    validate_lifecycle_header(&canonical_header)?;
     ensure_parent_dir(path)?;
-    write_json(path, &value)
+    write_json(path, &value)?;
+    Ok(value)
 }
 
 fn prompt_submission_from_value(value: &Value) -> Result<Option<AcpPromptSubmission>> {
@@ -2222,6 +2285,16 @@ fn merge_session_lifecycle(current: Option<&Value>, incoming: &mut Value) {
     let has_lifecycle_owner = incoming_turn_id.is_some() && incoming_operation_id.is_some();
     if let Some(prompt_submission) = current.get("promptSubmission") {
         incoming["promptSubmission"] = prompt_submission.clone();
+    }
+    // Runtime control is a separate domain sharing this file. Provider
+    // metadata is assembled before it acquires the file transaction, so its
+    // copy may be older than a just-committed continue/interruption cursor.
+    for key in ["runtimeControl", "runtimeControlTimelineScanComplete"] {
+        if let Some(field) = current.get(key) {
+            incoming[key] = field.clone();
+        } else if let Some(object) = incoming.as_object_mut() {
+            object.remove(key);
+        }
     }
     // The effective launch configuration becomes the initial mutable session
     // override when provider metadata first establishes the ACP session. Once
@@ -2465,8 +2538,8 @@ pub fn request_session_stop_outcome(
     decided_at: &str,
 ) -> Result<AcpStopRequestOutcome> {
     let _guard = session_metadata_lock(path).lock().unwrap();
-    let mut value = if path.exists() {
-        read_json::<Value>(path)?
+    let mut value = if let Some(value) = admission_metadata_base(path)? {
+        value
     } else {
         serde_json::json!({
             "availability": "unavailable",
@@ -2515,8 +2588,8 @@ pub fn persist_session_terminal(
     decided_at: &str,
 ) -> Result<AcpLifecycleHeader> {
     let _guard = session_metadata_lock(path).lock().unwrap();
-    let mut value = if path.exists() {
-        read_json::<Value>(path)?
+    let mut value = if let Some(value) = admission_metadata_base(path)? {
+        value
     } else {
         serde_json::json!({
             "availability": "unavailable",
@@ -2548,6 +2621,20 @@ pub fn read_lifecycle_header(path: &Utf8Path) -> Result<Option<AcpLifecycleHeade
         return Ok(None);
     }
     let _ = reconcile_orphaned_session_turn(path)?;
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    Ok(Some(lifecycle_header_from_value(&read_json::<Value>(
+        path,
+    )?)))
+}
+
+/// Reads the durable lifecycle projection without performing orphan recovery
+/// or any migration write. UI/ViewModel queries must use this API so reads
+/// cannot race runtime-owned lifecycle settlement.
+pub fn read_lifecycle_header_snapshot(path: &Utf8Path) -> Result<Option<AcpLifecycleHeader>> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    if !path.exists() {
+        return Ok(None);
+    }
     Ok(Some(lifecycle_header_from_value(&read_json::<Value>(
         path,
     )?)))
@@ -2592,7 +2679,35 @@ pub fn load_session_metadata_value(
     established_session_id: Option<String>,
 ) -> Result<Value> {
     let _ = reconcile_orphaned_session_turn(path)?;
+    let _guard = session_metadata_lock(path).lock().unwrap();
     let mut value: Value = read_json(path)?;
+    normalize_loaded_session_metadata(&mut value, established_session_id);
+    let before_canonical = value.clone();
+    let mut header = lifecycle_header_from_value(&value);
+    normalize_lifecycle_header(&value, &mut header);
+    apply_lifecycle_header(&mut value, &header);
+    if value != before_canonical {
+        write_json(path, &value)?;
+    }
+    Ok(value)
+}
+
+/// Read-only variant for ViewModels and status queries. Legacy fields are
+/// normalized in memory, but the query never mutates the shared snapshot.
+pub fn read_session_metadata_value(
+    path: &Utf8Path,
+    established_session_id: Option<String>,
+) -> Result<Value> {
+    let _guard = session_metadata_lock(path).lock().unwrap();
+    let mut value: Value = read_json(path)?;
+    normalize_loaded_session_metadata(&mut value, established_session_id);
+    let mut header = lifecycle_header_from_value(&value);
+    normalize_lifecycle_header(&value, &mut header);
+    apply_lifecycle_header(&mut value, &header);
+    Ok(value)
+}
+
+fn normalize_loaded_session_metadata(value: &mut Value, established_session_id: Option<String>) {
     if let Some(legacy_status) = value
         .get("status")
         .and_then(Value::as_str)
@@ -2633,14 +2748,6 @@ pub fn load_session_metadata_value(
             object.remove("status");
         }
     }
-    let before_canonical = value.clone();
-    let mut header = lifecycle_header_from_value(&value);
-    normalize_lifecycle_header(&value, &mut header);
-    apply_lifecycle_header(&mut value, &header);
-    if value != before_canonical {
-        write_json(path, &value)?;
-    }
-    Ok(value)
 }
 
 pub fn normalize_session_update(
@@ -3215,6 +3322,62 @@ mod tests {
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    #[test]
+    fn metadata_patch_preserves_the_latest_canonical_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        write_json(
+            &path,
+            &json!({
+                "sessionId": "session-1",
+                "availability": "established",
+                "liveTurnActivity": "running",
+                "latestTurnStatus": "none",
+                "acpRevision": 7,
+                "turnId": "turn-1",
+                "lifecycleOperationId": "operation-1"
+            }),
+        )
+        .unwrap();
+
+        let patched = super::patch_session_metadata(&path, |value| {
+            value["modelOverride"] = json!("model-new");
+            value["liveTurnActivity"] = json!("idle");
+            value["latestTurnStatus"] = json!("completed");
+            value["acpRevision"] = json!(2);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(patched["modelOverride"], "model-new");
+        assert_eq!(patched["liveTurnActivity"], "running");
+        assert_eq!(patched["latestTurnStatus"], "none");
+        assert_eq!(patched["acpRevision"], 7);
+        assert_eq!(patched["turnId"], "turn-1");
+    }
+
+    #[test]
+    fn read_only_metadata_normalization_never_writes_the_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("acp.snapshot.json")).unwrap();
+        write_json(
+            &path,
+            &json!({
+                "sessionId": "session-1",
+                "status": "completed",
+                "createdAt": "1Z"
+            }),
+        )
+        .unwrap();
+        let before = std::fs::read(path.as_std_path()).unwrap();
+
+        let projected = super::read_session_metadata_value(&path, None).unwrap();
+
+        assert_eq!(projected["latestTurnStatus"], "completed");
+        assert!(projected.get("status").is_none());
+        assert_eq!(std::fs::read(path.as_std_path()).unwrap(), before);
+    }
 
     #[test]
     fn timing_state_snapshot_round_trips_exact_wait_accumulator() {

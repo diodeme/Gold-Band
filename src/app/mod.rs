@@ -55,8 +55,7 @@ use crate::runtime::{
     validate_task_state, validate_worker_ref_state, write_node_state,
 };
 use crate::storage::{
-    GoldBandPaths, StoragePathConfig, ensure_parent_dir, load_settings_file, read_json, sqlite,
-    write_json,
+    GoldBandPaths, StoragePathConfig, load_settings_file, read_json, sqlite, write_json,
 };
 use crate::workflow_model_binding::{
     TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, WorkflowModelBindings,
@@ -976,6 +975,7 @@ pub enum RuntimeLifecycleEvent {
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
         // ── IDs (display + UUID) ──
+        project_id: String,
         task_id: String,
         task_uuid: Option<String>,
         run_id: String,
@@ -1002,7 +1002,9 @@ pub enum RuntimeLifecycleEvent {
         child_run_id: Option<String>,
     },
     /// A node has completed execution (the AI provider returned). The
-    /// orchestrator has already persisted runtime state.
+    /// orchestrator is about to persist the completion and choose the next
+    /// control decision; this event is for metrics/sidebar projection, not a
+    /// selected-run refresh boundary.
     NodeCompleted {
         // ── IDs (display + UUID) ──
         task_id: String,
@@ -4566,40 +4568,18 @@ impl App {
     }
 
     pub fn persist_cancelled_session_snapshot(&self, attempt_dir: &Utf8Path) -> Result<()> {
-        self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"))?;
-        self.persist_cancelled_session_file(&attempt_dir.join("acp.session.json"))?;
-        Ok(())
+        self.persist_cancelled_session_file(&attempt_dir.join("acp.snapshot.json"))
     }
 
     fn persist_cancelled_session_file(&self, path: &Utf8Path) -> Result<()> {
-        let mut session = if path.exists() {
-            read_json::<serde_json::Value>(path)?
-        } else {
-            let session_id = path
-                .parent()
-                .and_then(|attempt_dir| attempt_dir.file_name())
-                .unwrap_or("session");
-            serde_json::json!({
-                "sessionId": session_id,
-                "availability": "established",
-                "latestTurnStatus": "cancelled",
-                "restored": false,
-                "createdAt": crate::acp::events::current_timestamp(),
-            })
-        };
         let now = crate::acp::events::current_timestamp();
-        if let Some(object) = session.as_object_mut() {
-            object.remove("status");
-        }
-        session["availability"] = serde_json::json!("established");
-        session["latestTurnStatus"] = serde_json::json!("cancelled");
-        session["stopReason"] = serde_json::json!("cancelled");
-        session["updatedAt"] = serde_json::json!(now.clone());
-        if session.get("updated_at").is_some() {
-            session["updated_at"] = serde_json::json!(now);
-        }
-        ensure_parent_dir(path)?;
-        write_json(path, &session)
+        crate::acp::events::persist_session_terminal(
+            path,
+            crate::acp::events::AcpLatestTurnStatus::Cancelled,
+            "cancelled",
+            &now,
+        )?;
+        Ok(())
     }
 
     pub fn cancel_all_active_acp_attempts_best_effort(&self) {
@@ -6569,6 +6549,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let node_started = |repo_root: String| RuntimeLifecycleEvent::NodeStarted {
+            project_id: "project-001".into(),
             task_id: "task-001".into(),
             task_uuid: Some(uuid::Uuid::new_v4().to_string()),
             run_id: "run-001".into(),
@@ -6643,6 +6624,7 @@ mod tests {
         let run_uuid = uuid::Uuid::new_v4().to_string();
         let task_uuid = uuid::Uuid::new_v4().to_string();
         app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeStarted {
+            project_id: "project-001".into(),
             task_id: "task-001".into(),
             task_uuid: Some(task_uuid.clone()),
             run_id: "run-001".into(),
@@ -7236,7 +7218,7 @@ mod tests {
             std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
             if node.status == DynamicNodeStatus::Completed {
                 write_json(
-                    &attempt_dir.join("acp.session.json"),
+                    &attempt_dir.join("acp.snapshot.json"),
                     &serde_json::json!({
                         "sessionId": format!("{}-session", node.id),
                         "availability": "established",
@@ -7275,7 +7257,7 @@ mod tests {
                 "attempt-001",
             );
             let session: serde_json::Value =
-                read_json(&attempt_dir.join("acp.session.json")).unwrap();
+                read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
             assert_eq!(
                 session
                     .get("latestTurnStatus")
@@ -7327,9 +7309,9 @@ mod tests {
             "attempt-001",
         );
         let running_session: serde_json::Value =
-            read_json(&running_attempt_dir.join("acp.session.json")).unwrap();
+            read_json(&running_attempt_dir.join("acp.snapshot.json")).unwrap();
         let completed_session: serde_json::Value =
-            read_json(&completed_attempt_dir.join("acp.session.json")).unwrap();
+            read_json(&completed_attempt_dir.join("acp.snapshot.json")).unwrap();
 
         assert_eq!(
             running_session

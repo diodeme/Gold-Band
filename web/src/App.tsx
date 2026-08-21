@@ -1172,6 +1172,8 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingCanonicalRunBoundary = false;
+    let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1196,8 +1198,10 @@ export function App() {
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
+      canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
           if (!active) return;
@@ -1225,6 +1229,7 @@ export function App() {
         .catch(() => {})
         .finally(() => {
           refreshInFlight = false;
+          canonicalRunBoundaryInFlight = false;
           if (!active || !refreshAgain) return;
           refreshAgain = false;
           if (refreshTimer === null) {
@@ -1237,10 +1242,19 @@ export function App() {
       sessionKey?: string | null,
       runtimeControlled = false,
       delayMs = 120,
+      canonicalRunBoundary = false,
     ) => {
-      if (sessionKey !== undefined) {
+      // A canonical NodeStarted event is the auto-follow boundary. A late ACP
+      // update from the node that just completed must not replace that target,
+      // including while its Run snapshot request is in flight. Newer canonical
+      // Run boundaries may still supersede it.
+      if (sessionKey !== undefined && (
+        canonicalRunBoundary
+        || (!pendingCanonicalRunBoundary && !canonicalRunBoundaryInFlight)
+      )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
@@ -1262,8 +1276,11 @@ export function App() {
         : null;
       queueConversationRunRefresh(
         sessionKey,
-        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        event.eventKind === 'node-started'
+          ? true
+          : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
         0,
+        true,
       );
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
@@ -1630,8 +1647,9 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key, run);
+    const selectedRun = run;
     setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : selectedRun;
       const next = beginConversationSessionSelection(base, key);
       conversationRunRef.current = next;
       return next;

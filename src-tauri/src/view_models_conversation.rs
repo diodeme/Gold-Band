@@ -1382,7 +1382,7 @@ fn display_pause_reason_for_dynamic_attempt(
 }
 
 fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
-    gold_band::acp::events::load_session_metadata_value(path, None)
+    gold_band::acp::events::read_session_metadata_value(path, None)
         .ok()
         .and_then(|session| {
             let stop_reason = session
@@ -2271,9 +2271,14 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             active: runtime_active,
             continuable: continue_kind.is_some(),
             phase: runtime_phase,
-            revision: runtime_execution
-                .filter(|_| execution_current)
-                .map(|execution| execution.revision),
+            // The revision is the watermark of the Runtime snapshot used to
+            // derive this facet, not proof that this attempt currently owns
+            // execution. Non-current workflow leaves must still advance this
+            // watermark so a fresh inactive projection can replace an older
+            // locally cached active facet. `active` and `phase` remain gated
+            // by the exact execution locator above. Direct passes no Runtime
+            // execution, while AI-DYNAMIC supplies its leaf-owned execution.
+            revision: runtime_execution.map(|execution| execution.revision),
         },
         control: ConversationControlFacetVm {
             mode: match effective_control_mode {
@@ -2528,7 +2533,7 @@ fn attach_acp_lifecycle_header(
     let header = [snapshot.as_path(), session.as_path()]
         .into_iter()
         .find_map(|path| {
-            gold_band::acp::events::read_lifecycle_header(path)
+            gold_band::acp::events::read_lifecycle_header_snapshot(path)
                 .ok()
                 .flatten()
         });
@@ -2562,15 +2567,44 @@ fn attach_acp_lifecycle_header(
         header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
     lifecycle.acp.stop_reason = header.stop_reason;
     lifecycle.acp.operation_id = header.operation_id;
-    if lifecycle.acp.stopping {
-        lifecycle.display_status = "cancelling".to_string();
-        lifecycle.composer.mode = "stopping".to_string();
-        lifecycle.composer.submit_target = "none".to_string();
-        lifecycle.composer.processing_kind = "stopping".to_string();
-        lifecycle.composer.status_key = Some("acp.stopping".to_string());
-        lifecycle.composer.can_stop = true;
-        lifecycle.composer.lock_input = true;
-    }
+    // The snapshot header may arrive after the broader runtime facet. Rebuild
+    // the derived projection from the merged canonical facets so a terminal
+    // header cannot leave the composer locked by an older running projection.
+    let acp_active = matches!(
+        header.live_turn_activity,
+        gold_band::acp::events::AcpLiveTurnActivity::Starting
+            | gold_band::acp::events::AcpLiveTurnActivity::Accepted
+            | gold_band::acp::events::AcpLiveTurnActivity::Running
+    );
+    let display_status = if lifecycle.acp.stopping {
+        "cancelling".to_string()
+    } else if acp_active && !lifecycle.runtime.active {
+        match header.live_turn_activity {
+            gold_band::acp::events::AcpLiveTurnActivity::Starting => "starting".to_string(),
+            _ => "running".to_string(),
+        }
+    } else if lifecycle.runtime.active {
+        lifecycle.runtime.status.clone()
+    } else {
+        lifecycle.display_status.clone()
+    };
+    lifecycle.display_status = display_status.clone();
+    lifecycle.runtime_display = runtime_display_vm(
+        Some(&display_status),
+        lifecycle.runtime.outcome.as_deref(),
+        lifecycle.runtime.current,
+        lifecycle.runtime.pause_reason.as_deref(),
+        lifecycle.runtime.resumable,
+    );
+    lifecycle.composer = composer_for_lifecycle(
+        &lifecycle.runtime.phase,
+        lifecycle.runtime.active,
+        acp_active,
+        lifecycle.acp.stopping,
+        &lifecycle.acp.live_turn_activity,
+        lifecycle.continue_kind.as_deref(),
+        &lifecycle.runtime_display,
+    );
 }
 
 #[cfg(test)]
@@ -4855,6 +4889,39 @@ mod tests {
         assert_eq!(lifecycle.runtime.revision, Some(7));
         assert_eq!(lifecycle.acp.latest_turn_status, "completed");
         assert_eq!(lifecycle.composer.processing_kind, "launching-next-node");
+    }
+
+    #[test]
+    fn non_current_workflow_leaf_carries_run_revision_without_becoming_active() {
+        let execution = RuntimeExecutionState {
+            revision: 8,
+            phase: RuntimeExecutionPhase::RunningNode,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: "t2".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            false,
+            None,
+            false,
+            false,
+            true,
+            Some(&execution),
+            false,
+            TurnControlMode::NonRuntimeControlled,
+            true,
+        );
+
+        assert_eq!(lifecycle.runtime.revision, Some(8));
+        assert_eq!(lifecycle.runtime.phase, "idle");
+        assert!(!lifecycle.runtime.current);
+        assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
     }
 
     #[test]

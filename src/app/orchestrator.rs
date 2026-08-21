@@ -6797,6 +6797,7 @@ fn execute_dynamic_node_job(
     resume_override: Option<DynamicResumeOverride>,
 ) -> Result<DynamicExecutionResult> {
     app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeStarted {
+        project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
         task_uuid: task_uuid.map(str::to_string),
         run_id: run_id.to_string(),
@@ -12581,6 +12582,7 @@ fn drive_from_node_with_initial_session(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
             app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeStarted {
+                project_id: app.paths.project_id.clone(),
                 task_id: task_id.to_string(),
                 task_uuid: run.task_uuid.clone(),
                 run_id: run.id.clone(),

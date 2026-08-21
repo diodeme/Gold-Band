@@ -16,11 +16,12 @@ use tracing::{debug, warn};
 
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::events::{append_raw_frame, current_timestamp};
+use crate::acp::events::{
+    AcpLatestTurnStatus, append_raw_frame, current_timestamp, persist_session_terminal,
+};
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::AcpAdapterConfig;
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE};
-use crate::storage::{ensure_parent_dir, read_json, write_json};
 
 const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
 const CLOSE_RAW_TARGET_SIZE: u64 = 4 * 1024 * 1024;
@@ -2190,43 +2191,16 @@ fn settle_attempt_for_session_close(attempt_dir: &Utf8Path) {
 }
 
 fn persist_cancelled_session_snapshot(attempt_dir: &Utf8Path) {
-    for file_name in ["acp.snapshot.json", "acp.session.json"] {
-        let path = attempt_dir.join(file_name);
-        if let Err(error) = persist_cancelled_session_file(&path) {
-            warn!(%path, %error, "failed to persist cancelled ACP session metadata after session close");
-        }
+    let path = attempt_dir.join("acp.snapshot.json");
+    if let Err(error) = persist_cancelled_session_file(&path) {
+        warn!(%path, %error, "failed to persist cancelled ACP session metadata after session close");
     }
 }
 
 fn persist_cancelled_session_file(path: &Utf8Path) -> Result<()> {
-    let mut session = if path.exists() {
-        read_json::<Value>(path)?
-    } else {
-        let session_id = path
-            .parent()
-            .and_then(|attempt_dir| attempt_dir.file_name())
-            .unwrap_or("session");
-        json!({
-            "sessionId": session_id,
-            "availability": "established",
-            "latestTurnStatus": "cancelled",
-            "restored": false,
-            "createdAt": current_timestamp(),
-        })
-    };
     let now = current_timestamp();
-    if let Some(object) = session.as_object_mut() {
-        object.remove("status");
-    }
-    session["availability"] = json!("established");
-    session["latestTurnStatus"] = json!("cancelled");
-    session["stopReason"] = json!("cancelled");
-    session["updatedAt"] = json!(now.clone());
-    if session.get("updated_at").is_some() {
-        session["updated_at"] = json!(now);
-    }
-    ensure_parent_dir(path)?;
-    write_json(path, &session)
+    persist_session_terminal(path, AcpLatestTurnStatus::Cancelled, "cancelled", &now)?;
+    Ok(())
 }
 
 static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
@@ -3021,5 +2995,6 @@ mod tests {
             snapshot.get("stopReason").and_then(|value| value.as_str()),
             Some("cancelled")
         );
+        assert!(!attempt_dir.join("acp.session.json").exists());
     }
 }

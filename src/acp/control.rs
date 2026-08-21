@@ -8,8 +8,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::acp::events::{
-    current_timestamp, load_session_metadata_value, load_timeline_items,
-    patch_session_runtime_control,
+    current_timestamp, load_timeline_items, patch_session_runtime_control,
+    read_session_metadata_value,
 };
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
 
@@ -183,7 +183,7 @@ fn load_persisted_cursor_unlocked(
     let mut timeline_scan_complete = false;
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let Ok(value) = load_session_metadata_value(&path, None) else {
+        let Ok(value) = read_session_metadata_value(&path, None) else {
             continue;
         };
         timeline_scan_complete |= value
@@ -218,11 +218,7 @@ fn write_transition_unlocked(
 }
 
 fn persist_cursor_unlocked(attempt_dir: &Utf8Path, cursor: &AcpRuntimeControlCursor) -> Result<()> {
-    for name in [SNAPSHOT_FILE, SESSION_FILE] {
-        let path = attempt_dir.join(name);
-        patch_session_runtime_control(&path, Some(cursor), true)?;
-    }
-    Ok(())
+    patch_session_runtime_control(&attempt_dir.join(SNAPSHOT_FILE), Some(cursor), true)
 }
 
 fn reconstruct_cursor_from_timeline_unlocked(
@@ -253,11 +249,7 @@ fn reconstruct_cursor_from_timeline_unlocked(
 }
 
 fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()> {
-    for name in [SNAPSHOT_FILE, SESSION_FILE] {
-        let path = attempt_dir.join(name);
-        patch_session_runtime_control(&path, None, true)?;
-    }
-    Ok(())
+    patch_session_runtime_control(&attempt_dir.join(SNAPSHOT_FILE), None, true)
 }
 
 #[cfg(test)]
@@ -278,13 +270,12 @@ mod tests {
 
         persist_timeline_scan_complete_unlocked(attempt_dir).unwrap();
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(metadata["availability"], "unavailable");
-            assert_eq!(metadata["latestTurnStatus"], "none");
-            assert_eq!(metadata[TIMELINE_SCAN_COMPLETE_FIELD], true);
-            assert!(metadata.get("sessionId").is_none());
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["availability"], "unavailable");
+        assert_eq!(metadata["latestTurnStatus"], "none");
+        assert_eq!(metadata[TIMELINE_SCAN_COMPLETE_FIELD], true);
+        assert!(metadata.get("sessionId").is_none());
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]
@@ -294,14 +285,13 @@ mod tests {
 
         mark_runtime_interrupted(attempt_dir).unwrap();
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(metadata["latestTurnStatus"], "none");
-            assert_eq!(
-                metadata["runtimeControl"]["currentMode"],
-                "non-runtime-controlled"
-            );
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["latestTurnStatus"], "none");
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]
@@ -322,9 +312,37 @@ mod tests {
 
         mark_runtime_interrupted(attempt_dir).unwrap();
 
-        let metadata = load_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
         assert_eq!(metadata["latestTurnStatus"], "completed");
         assert_eq!(metadata["sessionId"], "session-existing");
+    }
+
+    #[test]
+    fn first_runtime_control_write_seeds_canonical_snapshot_from_legacy_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        write_json(
+            &attempt_dir.join(SESSION_FILE),
+            &serde_json::json!({
+                "sessionId": "legacy-session",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": current_timestamp(),
+            }),
+        )
+        .unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["sessionId"], "legacy-session");
+        assert_eq!(metadata["availability"], "established");
+        assert_eq!(metadata["latestTurnStatus"], "completed");
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
     }
 
     #[test]
@@ -344,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_manual_follow_up_persists_non_runtime_control_to_both_snapshots() {
+    fn accepted_manual_follow_up_persists_non_runtime_control_to_canonical_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
         let (source_id, transition_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
@@ -355,18 +373,17 @@ mod tests {
             commit_manual_follow_up(attempt_dir, source_id.as_deref(), &transition_id).unwrap()
         );
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(
-                metadata["runtimeControl"]["currentMode"],
-                "non-runtime-controlled"
-            );
-            assert_eq!(
-                metadata["runtimeControl"]["transitionCause"],
-                "manual-follow-up"
-            );
-            assert_eq!(metadata["runtimeControl"]["transitionId"], transition_id);
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
+        assert_eq!(
+            metadata["runtimeControl"]["transitionCause"],
+            "manual-follow-up"
+        );
+        assert_eq!(metadata["runtimeControl"]["transitionId"], transition_id);
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]

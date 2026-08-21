@@ -276,8 +276,9 @@ export function ConversationRunPage({
   const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
   const selectedContentIdentity = selectedLeaf
-    ? createAcpEventWindowCacheKey({
+      ? createAcpEventWindowCacheKey({
         cacheNamespace: run.taskUuid ?? `${run.projectId}:${run.taskId}`,
+        projectId: run.projectId,
         taskId: run.taskId,
         runId: run.runId,
         roundId: selectedLeaf.roundId,

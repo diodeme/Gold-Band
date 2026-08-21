@@ -202,7 +202,11 @@ describe('read-only Agent conversation boundary', () => {
       'round-1',
       'node-1',
       'attempt-1',
-    )}:::${branchId}:`;
+      'project-1',
+      null,
+      null,
+      branchId,
+    )}:`;
     storeAcpSession(cacheKey, session(branchId));
     const container = document.createElement('div');
     document.body.append(container);

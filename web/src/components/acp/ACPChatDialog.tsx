@@ -686,19 +686,28 @@ export function createAcpSessionCacheKey(
   roundId: string,
   nodeId: string,
   attemptId: string,
+  projectId?: string | null,
+  outerNodeId?: string | null,
+  outerAttemptId?: string | null,
+  branchId?: string | null,
 ) {
   return [
     namespace?.trim() || "default",
+    projectId?.trim() || "default-project",
     taskId,
     runId,
     roundId,
     nodeId,
     attemptId,
+    outerNodeId ?? "",
+    outerAttemptId ?? "",
+    branchId ?? "root",
   ].join(":");
 }
 
 export function createAcpEventWindowCacheKey(input: {
   cacheNamespace?: string | null;
+  projectId?: string | null;
   taskId: string;
   runId: string;
   roundId: string;
@@ -716,8 +725,12 @@ export function createAcpEventWindowCacheKey(input: {
     input.roundId,
     input.nodeId,
     input.attemptId,
+    input.projectId,
+    input.outerNodeId,
+    input.outerAttemptId,
+    input.branchId,
   );
-  return `${sessionKey}:${input.outerNodeId ?? ""}:${input.outerAttemptId ?? ""}:${input.branchId ?? "root"}:${input.eventIdPrefix ?? ""}`;
+  return `${sessionKey}:${input.eventIdPrefix ?? ""}`;
 }
 
 function normalizeEventPageSize(value?: number) {
@@ -852,9 +865,14 @@ export function ACPChatDialog(
     roundId,
     nodeId,
     attemptId,
+    projectId,
+    outerNodeId,
+    outerAttemptId,
+    branchId,
   );
   const eventWindowKey = createAcpEventWindowCacheKey({
     cacheNamespace,
+    projectId,
     taskId,
     runId,
     roundId,

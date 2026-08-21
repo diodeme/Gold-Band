@@ -1366,7 +1366,9 @@ pub(crate) fn run_workspace_dir(app: &App, task_id: &str, run_id: &str) -> Resul
         canonical_worktree.starts_with(&canonical_root),
         "run worktree is outside the managed conversation worktree root"
     );
-    GitWorkspaceManager::default().validate_worktree(&worktree.path, &worktree.branch)?;
+    let worktree_manager = GitWorkspaceManager::default();
+    worktree_manager.ensure_worktree_registration(&app.paths.repo_root, &worktree.path)?;
+    worktree_manager.validate_worktree(&worktree.path, &worktree.branch)?;
     Ok(worktree.path)
 }
 
@@ -11896,6 +11898,11 @@ fn ensure_dynamic_workspace(
                 .ok_or_else(|| anyhow!("runtime worktree is missing branch"))?,
         )?;
     } else {
+        if workspace.ownership == WorkspaceOwnership::User && workspace.path != workspace.repo_root
+        {
+            GitWorkspaceManager::default()
+                .ensure_worktree_registration(&workspace.repo_root, &workspace.path)?;
+        }
         GitRepositoryService::default().require_worktree(&workspace.path)?;
     }
     Ok(workspace.path.clone())
@@ -14040,6 +14047,39 @@ mod tests {
         assert_eq!(
             durable_node.acp_storage_schema_version,
             crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION
+    #[test]
+    fn dynamic_outer_conversation_worktree_repairs_registration_before_use() {
+        let (temp, repo_root) = init_repo();
+        let manager = GitWorkspaceManager::default();
+        let old_parent = Utf8PathBuf::from_path_buf(temp.path().join("runtime-old")).unwrap();
+        let old_worktree = old_parent.join("conversation");
+        manager
+            .create_worktree(
+                &repo_root,
+                &old_worktree,
+                "gold-band/test-dynamic-registration",
+                "HEAD",
+            )
+            .unwrap();
+        let new_parent = Utf8PathBuf::from_path_buf(temp.path().join("runtime-new")).unwrap();
+        std::fs::rename(old_parent.as_std_path(), new_parent.as_std_path()).unwrap();
+        let new_worktree = new_parent.join("conversation");
+        let node = test_worktree_node("bootstrap");
+        let mut graph = test_dynamic_graph_at(repo_root.clone(), vec![node.clone()]);
+        graph.workspaces[0].path = new_worktree.clone();
+
+        assert_eq!(
+            ensure_dynamic_workspace(&graph, &node).unwrap(),
+            new_worktree
+        );
+        assert_eq!(
+            manager
+                .ensure_worktree_registration(&repo_root, &graph.workspaces[0].path)
+                .unwrap(),
+            crate::git::WorktreeRegistrationStatus::AlreadyRegistered
+        );
+    }
+
         );
         assert!(
             !attempt_dir

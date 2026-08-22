@@ -253,6 +253,8 @@ import {
   conversationEventMatchesAttempt,
   ensureConversationEventRouterStarted,
   readConversationBranchReplaySnapshot,
+  reconcileConversationBranchSession,
+  resolveConversationBranchDisplayStatus,
   subscribeConversationEvents,
   useConversationBranchLiveSnapshot,
 } from "@/lib/conversation-event-router";
@@ -1234,6 +1236,11 @@ export function ACPChatDialog(
   }, [effectiveLoadedEventBufferLimit, eventWindowKey, sessionKey]);
 
   useEffect(() => {
+    if (branchId !== 'root' || !branchLiveSnapshot.lifecycle) return;
+    applyLifecycleProjection(branchLiveSnapshot.lifecycle);
+  }, [applyLifecycleProjection, branchId, branchLiveSnapshot.lifecycle]);
+
+  useEffect(() => {
     loadedEventsRef.current = loadedEvents;
     storeAcpLoadedEvents(
       eventWindowKey,
@@ -1737,7 +1744,19 @@ export function ACPChatDialog(
       incomingHadTimingRejected: incoming !== normalized,
     });
     latestSessionRef.current = normalized;
-    if (normalized) storeAcpSession(eventWindowKey, normalized);
+    if (normalized) {
+      reconcileConversationBranchSession({
+        projectId,
+        taskId,
+        runId,
+        roundId,
+        nodeId,
+        attemptId,
+        outerNodeId,
+        outerAttemptId,
+      }, normalized);
+      storeAcpSession(eventWindowKey, normalized);
+    }
     setCurrentSession((current) =>
       sessionsEquivalent(current, normalized) ? current : normalized,
     );
@@ -1758,7 +1777,7 @@ export function ACPChatDialog(
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, normalizeSessionUpdate, sessionIdentity]);
+  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -3819,7 +3838,10 @@ export function ACPChatDialog(
       {readOnly && effective.branchExecution ? (
         <AgentBranchSessionSummary
           execution={effective.branchExecution}
-          status={branchLiveSnapshot.status ?? effective.status}
+          status={resolveConversationBranchDisplayStatus(
+            effective.branchExecution.executionStatus || effective.status,
+            branchLiveSnapshot.status,
+          ) ?? effective.status}
           elapsedSeconds={effective.timing?.sessionElapsedSeconds ?? effective.sessionElapsedSeconds}
         />
       ) : null}
@@ -5228,7 +5250,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
   const description = event.description ?? input.description;
   const label = description || event.title;
   const metricsSummary = agentExecutionMetricsSummary(event, t);
-  const displayedStatus = liveSnapshot.status ?? event.status;
+  const displayedStatus = resolveConversationBranchDisplayStatus(event.status, liveSnapshot.status);
   const attention = liveSnapshot.revision > 0 ? liveSnapshot.attention : event.attention;
   const statusTone = toolStatusTone(displayedStatus);
   const statusLabel = childAgentStatusLabel(displayedStatus, t);
@@ -5256,6 +5278,7 @@ const AgentLinkRow = memo(function AgentLinkRow({ event }: { event: AcpAgentLink
       type="button"
       variant="ghost"
       data-agent-link-branch-id={event.agentExecutionId}
+      data-agent-link-status={displayedStatus}
       disabled={!canOpen}
       className="group h-auto min-h-10 w-full min-w-0 justify-start gap-3 rounded-lg px-2 py-2 text-left font-normal hover:bg-muted/30 disabled:cursor-default disabled:opacity-100"
       onClick={openAgent}

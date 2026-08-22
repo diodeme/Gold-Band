@@ -1,11 +1,16 @@
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
 import { getRuntimeApi } from '@/api/client';
-import type { AcpUiEventVm } from '@/types';
+import type {
+  AcpSessionVm,
+  AcpUiEventVm,
+  ConversationAttemptLifecycleVm,
+} from '@/types';
 import { useCallback, useSyncExternalStore } from 'react';
 import {
   recordAcpStreamingDiagnostic,
   summarizeAcpStreamingEvent,
 } from '@/lib/acp-streaming-diagnostics';
+import { mergeConversationAttemptLifecycle } from '@/lib/acp-runtime-composer-state';
 
 type Listener = (event: AcpSessionUpdatedEventVm) => void;
 
@@ -93,15 +98,19 @@ export async function ensureConversationEventRouterStarted() {
 export interface ConversationBranchLiveSnapshot {
   revision: number;
   contentRevision: number;
+  lifecycleRevision: number;
   status: string | null;
   attention: boolean;
+  lifecycle: ConversationAttemptLifecycleVm | null;
 }
 
 const EMPTY_BRANCH_SNAPSHOT: ConversationBranchLiveSnapshot = {
   revision: 0,
   contentRevision: 0,
+  lifecycleRevision: 0,
   status: null,
   attention: false,
+  lifecycle: null,
 };
 
 function attemptKey(locator: {
@@ -117,11 +126,14 @@ function attemptKey(locator: {
   return [locator.projectId ?? 'default', locator.taskId, locator.runId, locator.roundId, locator.nodeId, locator.attemptId, locator.outerNodeId ?? '', locator.outerAttemptId ?? ''].join(':');
 }
 
+type ConversationAttemptLocator = Parameters<typeof attemptKey>[0];
+
 export function conversationBranchStoreKey(locator: Parameters<typeof attemptKey>[0], branchId: string) {
   return `${attemptKey(locator)}:${branchId}`;
 }
 
 export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdatedEventVm) {
+  if (event.lifecycle) reconcileConversationBranchLifecycle(event, event.lifecycle);
   if (event.event) {
     const key = conversationBranchStoreKey(event, conversationEventBranchId(event));
     const accepted = retainConversationEvent(
@@ -144,30 +156,127 @@ export function applyConversationEventToBranchSnapshots(event: AcpSessionUpdated
     const response = event.event.kind === 'elicitationResponse';
     const interaction = request || response;
     const pending = request && (event.event.status ?? 'pending') === 'pending';
-    const status = pending
-      ? 'waiting_permission'
-      : isTerminalBranchStatus(current.status)
-        ? current.status
+    const terminal = isTerminalBranchStatus(current.status);
+    const status = terminal
+      ? current.status
+      : pending
+        ? 'waiting_permission'
         : 'running';
-    updateBranchSnapshot(key, status, interaction ? pending : current.attention, true);
+    updateBranchSnapshot(
+      key,
+      status,
+      terminal ? current.attention : interaction ? pending : current.attention,
+      true,
+    );
     return;
   }
-  if (!event.session) return;
+  if (event.session) {
+    reconcileConversationBranchSession(event, event.session);
+  }
+}
+
+export function reconcileConversationBranchSession(
+  locator: ConversationAttemptLocator,
+  session: AcpSessionVm,
+) {
+  const prefix = `${attemptKey(locator)}:`;
+  const branchId = session.branchId || 'root';
+  const branchKey = `${prefix}${branchId}`;
+  const branchExecution = session.branchExecution;
+  if (branchId === 'root') {
+    updateBranchSnapshot(
+      branchKey,
+      session.status,
+      (branchSnapshots.get(branchKey) ?? EMPTY_BRANCH_SNAPSHOT).attention,
+    );
+  } else {
+    const projectedStatus = branchExecution?.executionStatus ?? session.status;
+    const authoritativeStatus = isTerminalSessionStatus(session.status)
+      && !isTerminalBranchStatus(projectedStatus)
+      ? session.status
+      : projectedStatus;
+    updateAgentBranchSnapshot(
+      branchKey,
+      authoritativeStatus,
+      branchExecution?.hasAttention ?? false,
+    );
+  }
+
+  const projectedBranchKeys = new Set<string>();
+  const branchTerminal = isTerminalSessionStatus(session.status);
+  for (const agent of session.timelineProjection?.agents ?? []) {
+    const key = `${prefix}${agent.agentExecutionId}`;
+    projectedBranchKeys.add(key);
+    updateAgentBranchSnapshot(
+      key,
+      branchTerminal && !isTerminalBranchStatus(agent.executionStatus)
+        ? 'interrupted'
+        : agent.executionStatus,
+      branchTerminal ? false : agent.hasAttention,
+    );
+  }
+
+  if (branchId !== 'root' || !isTerminalSessionStatus(session.status)) return;
+  const rootKey = `${prefix}root`;
+  for (const [key, current] of branchSnapshots) {
+    if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
+    if (isTerminalBranchStatus(current.status)) continue;
+    updateBranchSnapshot(key, 'interrupted', false);
+  }
+}
+
+function reconcileConversationBranchLifecycle(
+  event: AcpSessionUpdatedEventVm,
+  lifecycle: ConversationAttemptLifecycleVm,
+) {
   const prefix = `${attemptKey(event)}:`;
   const rootKey = `${prefix}root`;
   const rootCurrent = branchSnapshots.get(rootKey) ?? EMPTY_BRANCH_SNAPSHOT;
-  updateBranchSnapshot(rootKey, event.session.status, rootCurrent.attention);
-  const projectedBranchKeys = new Set<string>();
-  for (const agent of event.session.timelineProjection?.agents ?? []) {
-    const key = `${prefix}${agent.agentExecutionId}`;
-    projectedBranchKeys.add(key);
-    updateBranchSnapshot(key, agent.executionStatus, agent.hasAttention);
-  }
-  if (!isTerminalSessionStatus(event.session.status)) return;
+  const mergedLifecycle = mergeConversationAttemptLifecycle(
+    rootCurrent.lifecycle,
+    lifecycle,
+  );
+  const status = branchStatusFromLifecycle(mergedLifecycle) ?? rootCurrent.status;
+  updateBranchSnapshot(
+    rootKey,
+    status,
+    rootCurrent.attention,
+    false,
+    mergedLifecycle,
+  );
+  if (!status || !isTerminalSessionStatus(status)) return;
   for (const [key, current] of branchSnapshots) {
-    if (!key.startsWith(prefix) || key === rootKey || projectedBranchKeys.has(key)) continue;
+    if (!key.startsWith(prefix) || key === rootKey || isTerminalBranchStatus(current.status)) continue;
     updateBranchSnapshot(key, 'interrupted', false);
   }
+}
+
+function branchStatusFromLifecycle(
+  lifecycle: AcpSessionUpdatedEventVm['lifecycle'],
+) {
+  if (!lifecycle) return null;
+  switch (lifecycle.acp.liveTurnActivity) {
+    case 'starting': return 'pending';
+    case 'accepted':
+    case 'running': return 'running';
+    case 'cancel-requested': return 'cancelling';
+    case 'idle':
+      switch (lifecycle.acp.latestTurnStatus) {
+        case 'completed': return 'completed';
+        case 'cancelled': return 'cancelled';
+        case 'failed': return 'failed';
+        default: return null;
+      }
+  }
+}
+
+export function resolveConversationBranchDisplayStatus(
+  persistedStatus: string | null | undefined,
+  liveStatus: string | null | undefined,
+) {
+  if (isTerminalBranchStatus(persistedStatus ?? null)) return persistedStatus ?? null;
+  if (isTerminalBranchStatus(liveStatus ?? null)) return liveStatus ?? null;
+  return liveStatus ?? persistedStatus ?? null;
 }
 
 function isSyntheticAgentPrompt(event: AcpSessionUpdatedEventVm['event']) {
@@ -185,9 +294,19 @@ function updateBranchSnapshot(
   status: string | null,
   attention: boolean,
   contentChanged = false,
+  lifecycle?: ConversationAttemptLifecycleVm,
 ) {
   const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
-  if (current.status === status && current.attention === attention) {
+  const nextLifecycle = lifecycle
+    ? mergeConversationAttemptLifecycle(current.lifecycle, lifecycle)
+    : current.lifecycle;
+  const nextLifecycleRevision = nextLifecycle?.acp.revision ?? current.lifecycleRevision;
+  if (
+    current.status === status
+    && current.attention === attention
+    && current.lifecycleRevision === nextLifecycleRevision
+    && current.lifecycle === nextLifecycle
+  ) {
     if (contentChanged) {
       storeBranchSnapshot(key, {
         ...current,
@@ -199,10 +318,25 @@ function updateBranchSnapshot(
   storeBranchSnapshot(key, {
     revision: current.revision + 1,
     contentRevision: current.contentRevision + Number(contentChanged),
+    lifecycleRevision: nextLifecycleRevision,
     status,
     attention,
+    lifecycle: nextLifecycle,
   });
   notifyBranch(key);
+}
+
+function updateAgentBranchSnapshot(
+  key: string,
+  status: string,
+  attention: boolean,
+) {
+  const current = branchSnapshots.get(key) ?? EMPTY_BRANCH_SNAPSHOT;
+  if (isTerminalBranchStatus(current.status) && !isTerminalBranchStatus(status)) {
+    updateBranchSnapshot(key, current.status, current.attention);
+    return;
+  }
+  updateBranchSnapshot(key, status, isTerminalBranchStatus(status) ? false : attention);
 }
 
 function isTerminalBranchStatus(status: string | null) {

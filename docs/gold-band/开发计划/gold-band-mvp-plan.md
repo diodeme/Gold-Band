@@ -1445,3 +1445,17 @@ Final audit kept provider-owned catalog fields (`models/modes/configOptions/obse
 - 性能与过度设计评审：复用现有 attempt metadata 锁、lifecycle owner 和 override 字段，仅增加常量级存在性判断与字段合并；不新增状态机、持久字段、RPC、扫描、缓存或队列，正常路径 I/O 与复杂度不变。
 
 The final desktop regression audit also fixed a V7 index contract gap: canonical Agent launches carrying only `goldBandConversation.launchedAgentExecutionId` were grouped into an activity summary, so pagination and Agent links diverged after re-entry. V8 recognizes the canonical identity as both an indexed launch and a standalone semantic block; older indexes rebuild once, while steady-state page and runtime reads retain the same bounded behavior. Desktop fixtures now declare the current attempt storage schema instead of weakening production validation.
+
+## 2026-08-21：子 Agent execution 跟随父 prompt turn 终止
+
+- 根因：Agent index 用当前 session 是否 active 推导全部历史 execution。Turn 1 取消后，Turn 2 把同一 session 重新置为 running，Turn 1 中没有结果证据的旧 Agent 因而被重新投影为 running；异步 launch tool 的 completed 回执还可能在 session 正常结束时被误当作子 Agent 完成。
+- 数据与接口：复用 root timeline index 已有的 Gold Band prompt locator、`startedSeq / endedSeq / status / endedAt` 与 Agent launch sequence，建立可删除重建的父 turn 边界投影，不增加子 Agent canonical 状态机。顶层 launch 绑定最近的前序 prompt；嵌套 launch 继承父 execution 的 turn。prompt terminal sequence 覆盖 launch sequence，或已有下一 prompt 时，该 turn 对此 execution 已终止；只有 branch result 证据保留 completed，否则统一 interrupted 并清除 attention。当前 turn 活跃时继续按 branch 事件投影 queued/running/waiting_permission。
+- 身份与回归：`AgentExecutionId` 继续由 session id 与本次 launch tool id 生成；新 turn 即使 Agent 名称、描述或 prompt 相同，只要发生新的 launch 就形成新的 execution。Rust 接口回归固定“Turn 1 cancel + Turn 2 active 不复活旧 Agent”“新 turn 同描述创建独立 execution”“父 turn completed 但只有异步启动回执仍 interrupted”以及真实 Agent result 保持 completed，并要求完整重建与 materialized index 两条路径结果一致。
+- 性能与过度设计评审：正常查询只在已加载的 timeline materialized index locator 上生成并排序 prompt 边界，不读取 prompt body、不扫描 `acp.raw.jsonl` 或完整 timeline，也不按 Agent 重复 I/O；Agent 与 prompt 的内存匹配为现有 attempt 小集合上的有界处理。未新增依赖、持久字段、缓存、队列、锁或独立生命周期 aggregate，现有 prompt sequence/revision 和 branch result 已足以表达不变量。
+
+## 2026-08-22：子 Agent 前端 live 状态终态收敛
+
+- [x] 根因：Tauri 停止完成发布的是不含 session 正文的 lifecycle patch；前端全局 conversation event router 只消费 event/session，导致子 Agent 最后一条普通事件留下的 running snapshot 跨会话切换继续覆盖后端 interrupted projection，只有应用重启清空内存后才恢复正确显示。
+- [x] 状态与接口：复用现有完整 attempt locator、ACP lifecycle revision、`latestTurnStatus/liveTurnActivity` 和 `AcpSessionVm.branchExecution/timelineProjection`，在同一个有界 branch live store 中统一收敛 lifecycle-only terminal、session event 与显式 session query。terminal patch 只中断仍为 queued/running/waiting_permission 的 execution并保留既有终态；Agent execution 终态不被迟到普通事件或较旧 lifecycle revision 复活，新的父 turn 仍通过新 launch ID 建立独立 execution。
+- [x] 展示与回归：Agent 外层 link 和右侧 branch 标题共享终态优先解析，权威 interrupted/completed/failed 不再被旧 live running 覆盖。接口与 DOM 回归覆盖 lifecycle-only cancel、completed 保留、attention 清理、迟到事件/revision、权威 branch query 校正以及外层/右侧一致显示；切换会话无需重启即可看到已中断。
+- 性能与过度设计评审：终止 patch 只扫描现有最多 64 个 branch snapshot，复杂度 O(64)；session 校正只遍历响应已携带的直属 Agent projection，不增加 IPC、Timeline/raw 读取、轮询、持久字段、依赖、缓存、队列或状态机。现有 canonical lifecycle 和 session projection 已足以表达不变量，无需扩展后端协议。

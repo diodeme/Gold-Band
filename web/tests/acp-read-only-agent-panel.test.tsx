@@ -20,11 +20,16 @@ import {
   storeAcpSession,
 } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import {
+  applyConversationEventToBranchSnapshots,
+  resetConversationEventRouterSnapshots,
+} from '@/lib/conversation-event-router';
 import type { AcpSessionVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
+  resetConversationEventRouterSnapshots();
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
@@ -135,6 +140,106 @@ describe('read-only Agent conversation boundary', () => {
       expect(container.textContent).not.toContain('停止');
       expect(container.textContent).not.toContain('继续');
       expect(container.textContent).not.toContain('重试');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not let a stale live running snapshot override an authoritative interruption', async () => {
+    applyConversationEventToBranchSnapshots({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      branchId: 'agent-1',
+      timelineGeneration: 1,
+      timelineRevision: 1,
+      event: {
+        id: 'agent-text-1',
+        seq: 1,
+        timestamp: '1Z',
+        kind: 'textDelta',
+        sessionId: 'session-1',
+        content: 'working',
+        title: null,
+        toolCallId: null,
+        status: null,
+        raw: null,
+      },
+    });
+    const interrupted = session('agent-1');
+    interrupted.status = 'interrupted';
+    if (interrupted.branchExecution) {
+      interrupted.branchExecution.executionStatus = 'interrupted';
+    }
+
+    const { container, root } = await renderDialog(interrupted, true);
+    try {
+      expect(container.querySelector('[data-agent-branch-summary="true"]')
+        ?.getAttribute('data-agent-branch-status')).toBe('interrupted');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows an authoritative interrupted status on the parent Agent link', async () => {
+    applyConversationEventToBranchSnapshots({
+      projectId: 'project-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      roundId: 'round-1',
+      nodeId: 'node-1',
+      attemptId: 'attempt-1',
+      branchId: 'agent-1',
+      event: {
+        id: 'agent-live-1',
+        seq: 2,
+        timestamp: '2Z',
+        kind: 'textDelta',
+        sessionId: 'session-1',
+        content: 'working',
+        title: null,
+        toolCallId: null,
+        status: null,
+        raw: null,
+      },
+    });
+    const rootSession = session('root');
+    rootSession.status = 'cancelled';
+    rootSession.events = [{
+      id: 'agent-launch-1',
+      seq: 1,
+      timestamp: '1Z',
+      kind: 'toolCall',
+      sessionId: 'session-1',
+      content: null,
+      title: 'Agent branch',
+      toolCallId: 'launch-1',
+      status: 'completed',
+      raw: {
+        _meta: {
+          goldBandConversation: {
+            branchId: 'root',
+            launchedAgentExecutionId: 'agent-1',
+            toolName: 'Agent',
+          },
+        },
+      },
+    }];
+    rootSession.timelineProjection = {
+      agents: [{
+        ...session('agent-1').branchExecution!,
+        executionStatus: 'interrupted',
+      }],
+      todoEntries: [],
+    };
+
+    const { container, root } = await renderDialog(rootSession, true);
+    try {
+      expect(container.querySelector('[data-agent-link-branch-id="agent-1"]')
+        ?.getAttribute('data-agent-link-status')).toBe('interrupted');
     } finally {
       await act(async () => root.unmount());
     }

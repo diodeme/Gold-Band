@@ -125,6 +125,85 @@ pub fn stable_agent_execution_id(session_id: &str, launch_tool_call_id: &str) ->
     )
 }
 
+#[cfg(test)]
+fn prompt_turn_projection_from_events(
+    events: &[AcpUiEvent],
+) -> Vec<crate::acp::timeline::TimelinePromptTurnProjection> {
+    let mut turns = events
+        .iter()
+        .filter(|event| event_branch_id(event) == ROOT_BRANCH_ID)
+        .filter_map(crate::acp::timeline::prompt_turn_projection)
+        .collect::<Vec<_>>();
+    turns.sort_by_key(|turn| turn.started_seq);
+    turns
+}
+
+fn owning_prompt_turn_index(
+    launch: &AcpUiEvent,
+    launches_by_execution_id: &HashMap<String, AcpUiEvent>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+) -> Option<(usize, u64)> {
+    let mut root_launch = launch;
+    let mut visited = HashSet::new();
+    loop {
+        let parent_branch_id = event_branch_id(root_launch);
+        if parent_branch_id == ROOT_BRANCH_ID {
+            break;
+        }
+        if !visited.insert(parent_branch_id.clone()) {
+            return None;
+        }
+        let Some(parent_launch) = launches_by_execution_id.get(&parent_branch_id) else {
+            break;
+        };
+        root_launch = parent_launch;
+    }
+    let launch_seq = root_launch.started_seq.unwrap_or(root_launch.seq);
+    let turn_index = prompt_turns
+        .partition_point(|turn| turn.started_seq <= launch_seq)
+        .checked_sub(1)?;
+    Some((turn_index, launch_seq))
+}
+
+fn prompt_turn_is_terminal(
+    ownership: Option<(usize, u64)>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+    session_active: bool,
+) -> bool {
+    ownership
+        .and_then(|(index, launch_seq)| {
+            prompt_turns
+                .get(index)
+                .map(|turn| (index, launch_seq, turn))
+        })
+        .map(|(index, launch_seq, turn)| {
+            turn.terminal_status.is_some()
+                && turn
+                    .terminal_seq
+                    .is_some_and(|terminal_seq| terminal_seq >= launch_seq)
+                || index + 1 < prompt_turns.len()
+                || !session_active
+        })
+        .unwrap_or(!session_active)
+}
+
+fn prompt_turn_ended_at(
+    ownership: Option<(usize, u64)>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+) -> Option<String> {
+    let (index, launch_seq) = ownership?;
+    let turn = prompt_turns.get(index)?;
+    let explicit_terminal_at = turn
+        .terminal_seq
+        .filter(|terminal_seq| *terminal_seq >= launch_seq)
+        .and_then(|_| turn.terminal_at.clone());
+    explicit_terminal_at.or_else(|| {
+        prompt_turns
+            .get(index + 1)
+            .map(|next| next.started_at.clone())
+    })
+}
+
 pub fn validate_conversation_branch_id(branch_id: &str) -> Result<()> {
     if branch_id == ROOT_BRANCH_ID {
         return Ok(());
@@ -954,10 +1033,6 @@ pub fn rebuild_agent_index(
         session_status,
         "running" | "active" | "starting" | "cancelling" | "stopping"
     );
-    let session_interrupted = matches!(
-        session_status,
-        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
-    );
     migrate_legacy_agent_timeline(attempt_dir)?;
     migrate_legacy_agent_results(attempt_dir)?;
     let source_signature = agent_index_source_signature(attempt_dir, session_status)?;
@@ -984,6 +1059,18 @@ pub fn rebuild_agent_index(
             launches.insert(tool_call_id.clone(), event.clone());
         }
     }
+    let prompt_turns = prompt_turn_projection_from_events(&all_events);
+    let launches_by_execution_id = launches
+        .values()
+        .map(|launch| {
+            let session_id = launch.session_id.as_deref().unwrap_or("unknown-session");
+            let launch_tool_call_id = launch.tool_call_id.as_deref().unwrap_or_default();
+            (
+                stable_agent_execution_id(session_id, launch_tool_call_id),
+                launch.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut records = launches
         .into_iter()
         .map(|(launch_tool_call_id, launch)| {
@@ -1022,24 +1109,20 @@ pub fn rebuild_agent_index(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
-            let has_attention = branch_has_pending_interaction(&branch_events);
+            let owning_turn =
+                owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
+            let owning_turn_terminal =
+                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let has_attention =
+                branch_has_pending_interaction(&branch_events) && !owning_turn_terminal;
             let status = if failed {
                 "failed"
             } else if has_agent_completion_evidence(&execution_events) {
                 "completed"
-            } else if has_attention && session_active {
+            } else if owning_turn_terminal {
+                "interrupted"
+            } else if has_attention {
                 "waiting_permission"
-            } else if !session_active {
-                if session_interrupted {
-                    "interrupted"
-                } else if matches!(
-                    launch_status.as_str(),
-                    "completed" | "success" | "succeeded"
-                ) {
-                    "completed"
-                } else {
-                    "interrupted"
-                }
             } else if execution_events.is_empty() {
                 "queued"
             } else {
@@ -1052,13 +1135,17 @@ pub fn rebuild_agent_index(
                 .and_then(|input| input.get("description"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let updated_at = latest_timestamp.unwrap_or_else(|| {
-                launch
-                    .ended_at
-                    .clone()
-                    .or_else(|| launch.started_at.clone())
-                    .unwrap_or_else(|| launch.timestamp.clone())
-            });
+            let updated_at = (status == "interrupted")
+                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .flatten()
+                .or(latest_timestamp)
+                .unwrap_or_else(|| {
+                    launch
+                        .ended_at
+                        .clone()
+                        .or_else(|| launch.started_at.clone())
+                        .unwrap_or_else(|| launch.timestamp.clone())
+                });
             let ended_at = matches!(status.as_str(), "completed" | "failed" | "interrupted")
                 .then(|| updated_at.clone());
             AgentExecutionRecord {
@@ -1108,14 +1195,11 @@ pub fn indexed_agent_index(
         session_status,
         "running" | "active" | "starting" | "cancelling" | "stopping"
     );
-    let session_interrupted = matches!(
-        session_status,
-        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
-    );
     let root = crate::acp::timeline::read_indexed_timeline_projection(&branch_timeline_path(
         attempt_dir,
         ROOT_BRANCH_ID,
     ))?;
+    let prompt_turns = root.prompt_turns;
     let mut pending_launches = VecDeque::from(root.agent_launches);
     let mut launches = HashMap::<String, AcpUiEvent>::new();
     let mut projections = HashMap::new();
@@ -1145,6 +1229,18 @@ pub fn indexed_agent_index(
         projections.insert(agent_execution_id, projection);
     }
 
+    let launches_by_execution_id = launches
+        .values()
+        .map(|launch| {
+            let session_id = launch.session_id.as_deref().unwrap_or("unknown-session");
+            let launch_tool_call_id = launch.tool_call_id.as_deref().unwrap_or_default();
+            (
+                stable_agent_execution_id(session_id, launch_tool_call_id),
+                launch.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
     let mut records = launches
         .into_iter()
         .map(|(launch_tool_call_id, launch)| {
@@ -1163,25 +1259,21 @@ pub fn indexed_agent_index(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
-            let has_attention =
-                projection.is_some_and(|projection| projection.has_pending_interaction);
+            let owning_turn =
+                owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
+            let owning_turn_terminal =
+                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let has_attention = projection
+                .is_some_and(|projection| projection.has_pending_interaction)
+                && !owning_turn_terminal;
             let status = if failed {
                 "failed"
             } else if projection.is_some_and(|projection| projection.has_completion_evidence) {
                 "completed"
-            } else if has_attention && session_active {
+            } else if owning_turn_terminal {
+                "interrupted"
+            } else if has_attention {
                 "waiting_permission"
-            } else if !session_active {
-                if session_interrupted {
-                    "interrupted"
-                } else if matches!(
-                    launch_status.as_str(),
-                    "completed" | "success" | "succeeded"
-                ) {
-                    "completed"
-                } else {
-                    "interrupted"
-                }
             } else if projection.is_none_or(|projection| projection.execution_event_count == 0) {
                 "queued"
             } else {
@@ -1189,8 +1281,10 @@ pub fn indexed_agent_index(
             }
             .to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
-            let updated_at = projection
-                .and_then(|projection| projection.latest_timestamp.clone())
+            let updated_at = (status == "interrupted")
+                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .flatten()
+                .or_else(|| projection.and_then(|projection| projection.latest_timestamp.clone()))
                 .unwrap_or_else(|| {
                     launch
                         .ended_at
@@ -1638,6 +1732,24 @@ mod tests {
             relation,
             None,
         )
+    }
+
+    fn prompt_turn_event(id: &str, started_seq: u64, terminal: Option<(&str, u64)>) -> AcpUiEvent {
+        let mut event = event_at(
+            id,
+            started_seq,
+            "userTextDelta",
+            None,
+            Some(terminal.map(|(status, _)| status).unwrap_or("completed")),
+            json!({}),
+            None,
+        );
+        event.raw = Some(json!({ "source": "goldBandPrompt", "promptId": id }));
+        if let Some((_, ended_seq)) = terminal {
+            event.ended_seq = Some(ended_seq);
+            event.ended_at = Some(format!("{ended_seq}Z"));
+        }
+        event
     }
 
     fn temp_attempt(label: &str) -> Utf8PathBuf {
@@ -2237,7 +2349,7 @@ mod tests {
     }
 
     #[test]
-    fn background_agent_with_streaming_text_remains_running_until_session_terminal() {
+    fn background_agent_with_streaming_text_is_interrupted_without_agent_result() {
         let attempt = temp_attempt("background-running");
         let launch = event_at(
             "launch",
@@ -2270,7 +2382,7 @@ mod tests {
         assert!(running[0].ended_at.is_none());
         assert_eq!(
             rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
-            "completed"
+            "interrupted"
         );
         assert_eq!(
             rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
@@ -2280,6 +2392,124 @@ mod tests {
             rebuild_agent_index(&attempt, "failed").unwrap()[0].status,
             "interrupted"
         );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn cancelled_parent_turn_stays_interrupted_when_a_later_turn_is_active() {
+        let attempt = temp_attempt("cancelled-parent-turn");
+        let first_prompt = prompt_turn_event("turn-1", 1, Some(("cancelled", 4)));
+        let first_launch = event_at(
+            "launch-1",
+            2,
+            "toolCall",
+            Some("provider-child-1"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        let first_child_event = event_at(
+            "child-thought",
+            3,
+            "thoughtDelta",
+            None,
+            None,
+            json!({ "parentToolCallId": "provider-child-1" }),
+            None,
+        );
+        let nested_launch = event_at(
+            "nested-launch",
+            4,
+            "toolCall",
+            Some("provider-nested"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "parentToolCallId": "provider-child-1" }),
+            Some(json!({ "run_in_background": true, "description": "nested" })),
+        );
+        let mut first_prompt = first_prompt;
+        first_prompt.ended_seq = Some(5);
+        first_prompt.ended_at = Some("5Z".to_string());
+        let second_prompt = prompt_turn_event("turn-2", 6, None);
+        persist_partitioned(
+            &attempt,
+            vec![
+                first_prompt,
+                first_launch,
+                first_child_event,
+                nested_launch,
+                second_prompt,
+            ],
+        );
+
+        let rebuilt = rebuild_agent_index(&attempt, "running").unwrap();
+        let indexed = indexed_agent_index(&attempt, "running").unwrap();
+        assert_eq!(indexed, rebuilt);
+        assert_eq!(indexed.len(), 2);
+        assert!(indexed.iter().all(|record| record.status == "interrupted"));
+        assert!(
+            indexed
+                .iter()
+                .all(|record| record.ended_at.as_deref() == Some("5Z"))
+        );
+        assert!(indexed.iter().all(|record| !record.has_attention));
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn same_agent_description_in_a_new_turn_creates_a_distinct_execution() {
+        let attempt = temp_attempt("new-turn-new-execution");
+        let first_prompt = prompt_turn_event("turn-1", 1, Some(("cancelled", 3)));
+        let first_launch = event_at(
+            "launch-1",
+            2,
+            "toolCall",
+            Some("provider-child-1"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "same child" })),
+        );
+        let second_prompt = prompt_turn_event("turn-2", 4, None);
+        let second_launch = event_at(
+            "launch-2",
+            5,
+            "toolCall",
+            Some("provider-child-2"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "same child" })),
+        );
+        persist_partitioned(
+            &attempt,
+            vec![first_prompt, first_launch, second_prompt, second_launch],
+        );
+
+        let records = indexed_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0].agent_execution_id, records[1].agent_execution_id);
+        assert_eq!(records[0].status, "interrupted");
+        assert_eq!(records[1].status, "queued");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn completed_parent_turn_does_not_treat_async_launch_ack_as_agent_completion() {
+        let attempt = temp_attempt("completed-parent-with-launch-ack");
+        let prompt = prompt_turn_event("turn-1", 1, Some(("completed", 3)));
+        let launch = event_at(
+            "launch",
+            2,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        persist_partitioned(&attempt, vec![prompt, launch]);
+
+        let rebuilt = rebuild_agent_index(&attempt, "completed").unwrap();
+        assert_eq!(indexed_agent_index(&attempt, "completed").unwrap(), rebuilt);
+        assert_eq!(rebuilt[0].status, "interrupted");
+        assert_eq!(rebuilt[0].ended_at.as_deref(), Some("3Z"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

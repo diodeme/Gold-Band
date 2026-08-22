@@ -8,7 +8,9 @@ import {
   conversationEventMatchesAttempt,
   readConversationBranchLiveSnapshot,
   readConversationBranchReplaySnapshot,
+  reconcileConversationBranchSession,
   resetConversationEventRouterSnapshots,
+  resolveConversationBranchDisplayStatus,
 } from '@/lib/conversation-event-router';
 import type { AcpAgentExecutionVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 
@@ -72,6 +74,53 @@ function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessio
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
   return { ...locator, session };
+}
+
+function lifecycleUpdate(
+  latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed',
+  liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested' = 'idle',
+  revision = 1,
+): AcpSessionUpdatedEventVm {
+  return {
+    ...locator,
+    lifecycle: {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: null,
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'idle',
+        revision,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision,
+        sessionAvailability: 'established',
+        liveTurnActivity,
+        latestTurnStatus,
+        stopping: liveTurnActivity === 'cancel-requested',
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'paused',
+        tone: 'warning',
+        icon: 'pause',
+        terminal: false,
+        resumable: true,
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'responding',
+        canStop: false,
+        lockInput: false,
+      },
+    },
+  };
 }
 
 function agent(agentExecutionId: string, executionStatus: string): AcpAgentExecutionVm {
@@ -342,6 +391,80 @@ describe('conversation event router', () => {
 
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a').status).toBe('completed');
     expect(readConversationBranchLiveSnapshot(locator, 'agent-b').status).toBe('interrupted');
+  });
+
+  it('converges active Agent snapshots on a lifecycle-only terminal update', () => {
+    applyConversationEventToBranchSnapshots(live('agent-completed', {
+      ...uiEvent('textDelta', 'completed'),
+      raw: { source: 'agentBranchResult' },
+    }));
+    applyConversationEventToBranchSnapshots(live('agent-running', uiEvent('toolCall', 'running')));
+    applyConversationEventToBranchSnapshots(live('agent-waiting', uiEvent('permissionRequest', 'pending')));
+
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('cancelled', 'idle', 4));
+
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'cancelled',
+      lifecycleRevision: 4,
+      lifecycle: expect.objectContaining({
+        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
+      }),
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-completed').status).toBe('completed');
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-running')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-waiting')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('does not let delayed lifecycle or branch events revive a terminal execution', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('toolCall', 'running')));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('cancelled', 'idle', 5));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('none', 'running', 4));
+    applyConversationEventToBranchSnapshots(live('agent-a', {
+      ...uiEvent('permissionRequest', 'pending'),
+      id: 'late-permission',
+      seq: 6,
+    }));
+
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'cancelled',
+      lifecycleRevision: 5,
+      lifecycle: expect.objectContaining({
+        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
+      }),
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('uses an authoritative branch query to correct a stale live snapshot', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('toolCall', 'running')));
+    const root = sessionUpdate('cancelled', []).session!;
+    reconcileConversationBranchSession(locator, {
+      ...root,
+      branchId: 'agent-a',
+      readOnly: true,
+      status: 'interrupted',
+      branchExecution: agent('agent-a', 'interrupted'),
+    });
+
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('keeps persisted terminal state ahead of a stale live running projection', () => {
+    expect(resolveConversationBranchDisplayStatus('interrupted', 'running')).toBe('interrupted');
+    expect(resolveConversationBranchDisplayStatus('running', 'completed')).toBe('completed');
+    expect(resolveConversationBranchDisplayStatus('queued', 'running')).toBe('running');
   });
 
   it('requires an exact project identity and rejects other attempts', () => {

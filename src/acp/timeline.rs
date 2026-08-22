@@ -524,6 +524,66 @@ pub struct TimelineBranchProjection {
     pub has_completion_evidence: bool,
     pub latest_plan_entries: Vec<Value>,
     pub agent_launches: Vec<AcpUiEvent>,
+    pub prompt_turns: Vec<TimelinePromptTurnProjection>,
+}
+
+/// Lightweight prompt-turn boundaries derived from the canonical root
+/// timeline index. Agent projections use these boundaries to keep historical
+/// executions attached to the turn that launched them without loading prompt
+/// bodies or introducing a second lifecycle state store.
+#[derive(Debug, Clone)]
+pub struct TimelinePromptTurnProjection {
+    pub started_seq: u64,
+    pub started_at: String,
+    pub terminal_seq: Option<u64>,
+    pub terminal_at: Option<String>,
+    pub terminal_status: Option<String>,
+}
+
+fn prompt_terminal_status(status: Option<&str>, ended_at: Option<&str>) -> Option<String> {
+    status.map(str::to_ascii_lowercase).filter(|status| {
+        ended_at.is_some()
+            && matches!(
+                status.as_str(),
+                "completed"
+                    | "success"
+                    | "succeeded"
+                    | "failed"
+                    | "error"
+                    | "cancelled"
+                    | "canceled"
+                    | "interrupted"
+            )
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn prompt_turn_projection(event: &AcpUiEvent) -> Option<TimelinePromptTurnProjection> {
+    let is_prompt = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.get("source"))
+        .and_then(Value::as_str)
+        == Some("goldBandPrompt");
+    if !is_prompt {
+        return None;
+    }
+    let terminal_status =
+        prompt_terminal_status(event.status.as_deref(), event.ended_at.as_deref());
+    Some(TimelinePromptTurnProjection {
+        started_seq: event.started_seq.unwrap_or(event.seq),
+        started_at: event
+            .started_at
+            .clone()
+            .unwrap_or_else(|| event.timestamp.clone()),
+        terminal_seq: terminal_status
+            .as_ref()
+            .map(|_| event.ended_seq.unwrap_or(event.seq)),
+        terminal_at: terminal_status
+            .as_ref()
+            .and_then(|_| event.ended_at.clone()),
+        terminal_status,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2342,6 +2402,28 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let mut prompt_turns = index
+            .item_locators
+            .values()
+            .filter(|locator| locator.gold_band_prompt)
+            .map(|locator| {
+                let terminal_status =
+                    prompt_terminal_status(locator.status.as_deref(), locator.ended_at.as_deref());
+                TimelinePromptTurnProjection {
+                    started_seq: locator.started_seq,
+                    started_at: locator
+                        .started_at
+                        .clone()
+                        .unwrap_or_else(|| locator.timestamp.clone()),
+                    terminal_seq: terminal_status.as_ref().map(|_| locator.ended_seq),
+                    terminal_at: terminal_status
+                        .as_ref()
+                        .and_then(|_| locator.ended_at.clone()),
+                    terminal_status,
+                }
+            })
+            .collect::<Vec<_>>();
+        prompt_turns.sort_by_key(|turn| turn.started_seq);
         Ok(TimelineBranchProjection {
             generation: index.generation,
             covered_revision: index.covered_revision,
@@ -2362,6 +2444,7 @@ pub fn read_indexed_timeline_projection(path: &Utf8Path) -> Result<TimelineBranc
             has_completion_evidence: execution.iter().any(|locator| locator.agent_result),
             latest_plan_entries,
             agent_launches: index.agent_launches.into_values().collect(),
+            prompt_turns,
         })
     })
 }

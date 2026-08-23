@@ -1905,12 +1905,13 @@ fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
 fn runtime_continue_kind(
     runtime_status: &str,
     runtime_outcome: Option<&str>,
+    runtime_continue_owner: bool,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
     is_orchestrated: bool,
 ) -> Option<String> {
-    if !is_orchestrated || manual_check_pending || !runtime_resumable {
+    if !runtime_continue_owner || !is_orchestrated || manual_check_pending || !runtime_resumable {
         return None;
     }
     if !matches!(
@@ -2131,6 +2132,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     runtime_status: &str,
     runtime_outcome: Option<&str>,
     current: bool,
+    runtime_continue_owner: bool,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
@@ -2235,6 +2237,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     let continue_kind = runtime_continue_kind(
         runtime_status,
         runtime_outcome,
+        runtime_continue_owner,
         pause_reason,
         runtime_resumable,
         manual_check_pending,
@@ -2341,6 +2344,7 @@ fn derive_conversation_attempt_lifecycle(
         runtime_status,
         runtime_outcome,
         current,
+        current,
         pause_reason,
         runtime_resumable,
         manual_check_pending,
@@ -2439,6 +2443,9 @@ pub fn conversation_attempt_lifecycle_vm(
                 || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
+        let runtime_continue_owner = run.current_round.as_deref() == Some(round_id)
+            && run.current_node.as_deref() == Some(outer_node_id)
+            && run.current_attempt.as_deref() == Some(outer_attempt_id);
         let leaf_resumable = runtime_status == "paused"
             && outcome.is_none()
             && is_runtime_continue_pause_reason(pause_reason.as_deref());
@@ -2459,6 +2466,7 @@ pub fn conversation_attempt_lifecycle_vm(
             &runtime_status,
             outcome.as_deref(),
             current,
+            runtime_continue_owner,
             pause_reason.as_deref(),
             leaf_resumable,
             false,
@@ -2501,6 +2509,7 @@ pub fn conversation_attempt_lifecycle_vm(
         prompt_activity(&attempt_dir),
         &runtime_status,
         outcome.as_deref(),
+        current,
         current,
         pause_reason.as_deref(),
         runtime_resumable,
@@ -3118,10 +3127,12 @@ pub fn conversation_run_vm(
                                     normalize_lifecycle_code(reason) == "error-blocked"
                                         || is_runtime_continue_pause_reason(Some(reason))
                                 });
-                            let dyn_current = run.current_round.as_deref() == Some(&round.id)
+                            let dynamic_parent_current = run.current_round.as_deref()
+                                == Some(&round.id)
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
-                                    == Some(&latest_attempt.attempt_id)
+                                    == Some(&latest_attempt.attempt_id);
+                            let dyn_current = dynamic_parent_current
                                 && (dynamic_graph
                                     .run
                                     .current_node_ids
@@ -3199,6 +3210,7 @@ pub fn conversation_run_vm(
                                         &dyn_status,
                                         dyn_outcome.as_deref(),
                                         dyn_current,
+                                        dynamic_parent_current,
                                         dyn_pause_reason.as_deref(),
                                         dyn_leaf_resumable,
                                         false,
@@ -3347,6 +3359,7 @@ pub fn conversation_run_vm(
                         prompt_activity(&attempt_dir),
                         &runtime_status,
                         outcome.as_deref(),
+                        current,
                         current,
                         display_pause_reason.as_deref(),
                         runtime_resumable,
@@ -4875,6 +4888,7 @@ mod tests {
             "running",
             None,
             true,
+            true,
             None,
             false,
             false,
@@ -4905,6 +4919,7 @@ mod tests {
             None,
             "completed",
             Some("success"),
+            false,
             false,
             None,
             false,
@@ -4938,6 +4953,7 @@ mod tests {
             None,
             "paused",
             None,
+            true,
             true,
             Some("waiting-for-user-input"),
             false,
@@ -4990,6 +5006,7 @@ mod tests {
             None,
             "completed",
             Some("success"),
+            true,
             true,
             None,
             false,
@@ -5267,6 +5284,137 @@ mod tests {
         );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.composer.mode, "normal");
+    }
+
+    #[test]
+    fn non_current_attempt_never_inherits_runtime_continue_action() {
+        let historical_completed = derive_conversation_attempt_lifecycle(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+        let historical_paused = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(historical_completed.continue_kind, None);
+        assert!(!historical_completed.runtime.continuable);
+        assert_eq!(historical_paused.continue_kind, None);
+        assert!(!historical_paused.runtime.continuable);
+    }
+
+    #[test]
+    fn lifecycle_vm_scopes_continue_action_to_run_current_attempt() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        let task_id = "task-current-continue";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let historical_node_id = "dev-test";
+        let current_node_id = "test";
+        let attempt_id = "attempt-001";
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-08-22T00:00:00Z",
+                "updated_at": "2026-08-22T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": current_node_id,
+                "current_attempt": attempt_id,
+                "new_rounds_opened": 0,
+                "pause_reason": "process-interrupted",
+                "execution": {
+                    "revision": 3,
+                    "phase": "paused",
+                    "locator": {
+                        "roundId": round_id,
+                        "nodeId": current_node_id,
+                        "attemptId": attempt_id
+                    },
+                    "updatedAt": "2026-08-22T00:00:03Z"
+                }
+            }),
+        )
+        .unwrap();
+        for (node_id, status, outcome) in [
+            (historical_node_id, "completed", json!("success")),
+            (current_node_id, "paused", json!(null)),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, node_id, attempt_id),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "acp_storage_schema_version": 2,
+                    "node_id": node_id,
+                    "node_type": "worker",
+                    "run_id": run_id,
+                    "round_id": round_id,
+                    "attempt_id": attempt_id,
+                    "status": status,
+                    "outcome": outcome,
+                    "started_at": "2026-08-22T00:00:00Z",
+                    "finished_at": "2026-08-22T00:00:03Z",
+                    "manual_check_pending": false,
+                    "runtime_execution_id": null,
+                    "resolved_config": {}
+                }),
+            )
+            .unwrap();
+        }
+
+        let historical = conversation_attempt_lifecycle_vm(
+            &app,
+            task_id,
+            run_id,
+            round_id,
+            historical_node_id,
+            attempt_id,
+            None,
+            None,
+        )
+        .unwrap();
+        let current = conversation_attempt_lifecycle_vm(
+            &app,
+            task_id,
+            run_id,
+            round_id,
+            current_node_id,
+            attempt_id,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(!historical.runtime.current);
+        assert_eq!(historical.continue_kind, None);
+        assert!(!historical.runtime.continuable);
+        assert!(current.runtime.current);
+        assert_eq!(
+            current.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
+        assert!(current.runtime.continuable);
     }
 
     #[test]

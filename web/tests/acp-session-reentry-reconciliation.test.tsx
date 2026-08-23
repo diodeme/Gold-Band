@@ -43,7 +43,7 @@ vi.mock('@/components/prompt-kit/markdown', () => ({
 }));
 
 import { getAcpSession } from '@/api';
-import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
+import { ACPChatDialog, optimisticUserEvent } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import {
   applyConversationEventToBranchSnapshots,
@@ -51,7 +51,11 @@ import {
   resetConversationEventRouterSnapshots,
 } from '@/lib/conversation-event-router';
 import type { AcpSessionUpdatedEventVm } from '@/api/client';
-import type { AcpSessionVm, AcpUiEventVm } from '@/types';
+import type {
+  AcpSessionVm,
+  AcpUiEventVm,
+  ConversationAttemptLifecycleVm,
+} from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -135,6 +139,7 @@ async function renderDialog(
   acpSession: AcpSessionVm,
   branchId = 'root',
   onInitialSessionQueryStateChange?: (state: 'loading' | 'success' | 'error') => void,
+  optimisticEvents?: AcpUiEventVm[],
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -146,6 +151,7 @@ async function renderDialog(
           session={acpSession}
           {...locator}
           branchId={branchId}
+          optimisticEvents={optimisticEvents}
           onInitialSessionQueryStateChange={onInitialSessionQueryStateChange}
           showSystemPromptAction={false}
           showRawFramesAction={false}
@@ -156,6 +162,48 @@ async function renderDialog(
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
   return { container, root };
+}
+
+function terminalLifecycle(turnId: string): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'paused',
+      outcome: null,
+      pauseReason: 'user-paused',
+      resumable: true,
+      current: true,
+      active: false,
+      continuable: true,
+      phase: 'idle',
+      revision: 7,
+    },
+    control: { mode: 'non-runtime-controlled' },
+    acp: {
+      revision: 11,
+      turnId,
+      sessionAvailability: 'established',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'completed',
+      stopping: false,
+    },
+    displayStatus: 'paused',
+    runtimeDisplay: {
+      code: 'paused',
+      tone: 'warning',
+      icon: 'pause',
+      terminal: false,
+      resumable: true,
+      reasonCode: 'user-paused',
+      blockingError: false,
+    },
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'responding',
+      canStop: false,
+      lockInput: false,
+    },
+  };
 }
 
 async function unmount(root: Root) {
@@ -185,6 +233,40 @@ afterEach(() => {
 });
 
 describe('ACP session re-entry reconciliation', () => {
+  it('settles stale optimistic response state from a terminal lifecycle received while unmounted', async () => {
+    const turnId = 'turn-background-completed';
+    const stale = session([
+      event('prompt-background', 1, 'userTextDelta', '停止后追问', {
+        raw: { source: 'goldBandPrompt', promptId: turnId },
+      }),
+      event('answer-background', 2, 'textDelta', '后台已经回复完成'),
+    ], 'running');
+    const optimistic = optimisticUserEvent('停止后追问', turnId, [], 0);
+    vi.mocked(getAcpSession).mockResolvedValue(stale);
+    applyConversationEventToBranchSnapshots({
+      ...locator,
+      lifecycle: terminalLifecycle(turnId),
+    });
+
+    const { container, root } = await renderDialog(
+      stale,
+      'root',
+      undefined,
+      [optimistic],
+    );
+    try {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
+
+      expect(container.textContent).toContain('后台已经回复完成');
+      expect(container.textContent).not.toContain('回复生成中');
+      expect(container.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(false);
+    } finally {
+      await unmount(root);
+    }
+  });
+
   it('closes the initial query gate on a ready live session and ignores a late placeholder', async () => {
     const placeholder = {
       ...session([], 'pending'),

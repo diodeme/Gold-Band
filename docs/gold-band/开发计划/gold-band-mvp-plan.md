@@ -1459,3 +1459,18 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 状态与接口：复用现有完整 attempt locator、ACP lifecycle revision、`latestTurnStatus/liveTurnActivity` 和 `AcpSessionVm.branchExecution/timelineProjection`，在同一个有界 branch live store 中统一收敛 lifecycle-only terminal、session event 与显式 session query。terminal patch 只中断仍为 queued/running/waiting_permission 的 execution并保留既有终态；Agent execution 终态不被迟到普通事件或较旧 lifecycle revision 复活，新的父 turn 仍通过新 launch ID 建立独立 execution。
 - [x] 展示与回归：Agent 外层 link 和右侧 branch 标题共享终态优先解析，权威 interrupted/completed/failed 不再被旧 live running 覆盖。接口与 DOM 回归覆盖 lifecycle-only cancel、completed 保留、attention 清理、迟到事件/revision、权威 branch query 校正以及外层/右侧一致显示；切换会话无需重启即可看到已中断。
 - 性能与过度设计评审：终止 patch 只扫描现有最多 64 个 branch snapshot，复杂度 O(64)；session 校正只遍历响应已携带的直属 Agent projection，不增加 IPC、Timeline/raw 读取、轮询、持久字段、依赖、缓存、队列或状态机。现有 canonical lifecycle 和 session projection 已足以表达不变量，无需扩展后端协议。
+
+## 2026-08-22：后台追问 terminal lifecycle 重进恢复
+
+- [x] 根因：切出会话期间的 Timeline live event 已由有界 replay 保留，因此重进能显示 Agent 最终回复；但 lifecycle-only terminal 只发送给事件发生时已挂载的详情页，路由快照只保存派生 status/revision，不足以收敛恢复出的 `awaitingResponse + activeTurnPromptId`，导致 Composer 持续显示“回复生成中”。后端 ACP snapshot、raw RPC、Timeline 与 Workflow paused 状态均已正确落定。
+- [x] 实现：复用现有 conversation event router 与最多 64 个最近活跃 branch 的内存上限，在 root branch snapshot 保留完整 lifecycle，并通过既有 `mergeConversationAttemptLifecycle()` 按 ACP、Runtime 与 prompt queue revision 分域单调合并。root 会话挂载或重进时把 retained lifecycle 投影到既有 Composer 状态机；普通 live subscription、停止后追问、Direct 与 NonRuntimeControlled follow-up 共用同一入口，只读 Agent branch 不消费 root Composer lifecycle。
+- [x] 接口回归：router 测试固定 terminal lifecycle 完整保留以及较旧 running revision 不得复活 terminal；DOM 重进测试固定“后台 terminal + stale running session + sending optimistic prompt”必须展示最终正文、不显示“回复生成中”且 textarea 已解锁。
+- [x] 验证：conversation router、重进恢复、Composer 状态和 Runtime continue 相邻回归共 99 项通过；Web TypeScript 检查与生产 Vite 构建通过。按用户约定不进行桌面端手工验证，由用户使用真实会话验收。
+- 性能与过度设计评审：每个既有 branch snapshot 仅增加一份常量级 lifecycle 对象，Map 定位、revision 合并和挂载读取均为 O(1)；容量仍为 64，不新增后端状态、持久字段、IPC、轮询、Timeline/raw 扫描、依赖、缓存层或状态机。现有 canonical lifecycle 与有界 live snapshot 足以覆盖真实切页窗口，不为被淘汰后的低频边界扩展长期缓存。
+
+## 2026-08-22：工作流继续动作按当前 attempt 归属
+
+- [x] 根因：会话生命周期投影使用 Run 级 `process-interrupted` 判断 continue 类型，却没有先校验恢复命令的完整 locator 所有权，导致历史 `completed/success` attempt 也得到 `recover-completed-attempt`，显示“恢复工作流”；实际后端命令已有 current locator 校验，点击只会被拒绝。
+- [x] 状态与接口：复用 `run.currentRound/currentNode/currentAttempt` 作为普通 Workflow/AUTO 的 continue owner。只有当前 attempt 可以投影 continue action：未完成断点使用 `continue-current-attempt`（“继续工作流”），已成功完成但后继边尚未提交的断点使用 `recover-completed-attempt`（“恢复工作流”）；历史 attempt 固定 `continueKind=null`。AI-DYNAMIC 保留既有复合节点语义，以当前 outer attempt 作为命令 owner，dynamic leaf 继续描述内部断点。
+- [x] 回归：Rust ViewModel 接口测试固定同一 paused Run 下“历史成功 dev-test 无 continue action、当前 paused test 显示继续工作流”，并保留 dynamic parent running/paused、stale cancelled leaf 和 launching suppression 的既有覆盖；83 项 Conversation ViewModel 测试通过。
+- 性能与过度设计评审：只复用已加载 Run 的三个 locator 字段增加 O(1) 身份比较，不新增协议字段、持久状态、状态机、依赖、缓存、I/O、Timeline/raw 扫描或锁范围；现有 canonical current identity 已足够表达动作所有权，无需复制 UI 状态。

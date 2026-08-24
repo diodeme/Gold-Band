@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { BoundedLruCache } from '@/lib/bounded-lru-cache';
+import type { AttachmentItem } from '@/lib/attachment-service';
 import { RIGHT_WORKSPACE_DEFAULT_WIDTH } from './workspace-layout';
 
 export interface AgentTranscriptLocator {
@@ -27,6 +28,12 @@ export interface AcpAttemptWorkspaceLocator extends ConversationRunLocator {
   outerNodeId?: string | null;
   outerAttemptId?: string | null;
   branchId: string;
+}
+
+export interface HiddenPromptSectionWorkspaceLocator extends AcpAttemptWorkspaceLocator {
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
 }
 
 export type ConversationWorkspaceScope =
@@ -81,7 +88,7 @@ export type GitFileComparisonWorkspaceResource = RightWorkspaceResourceBase & {
   gitSource: import('@/types').GitComparisonSourceVm;
   reviewSessionId?: string | null;
   reviewItemId?: string | null;
-  reviewLanding?: 'first' | 'last' | null;
+  reviewLanding?: 'top' | 'first-change' | 'last-change' | null;
 };
 
 export type SourceControlWorkspaceResource = RightWorkspaceResourceBase & {
@@ -98,6 +105,12 @@ export type ConversationAssetWorkspaceResource = RightWorkspaceResourceBase & {
   path?: string | null;
 };
 
+export type DraftAttachmentWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'draft-attachment';
+  projectId: string;
+  attachment: AttachmentItem;
+};
+
 export type WorkflowViewWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'workflow-view';
   locator: ConversationRunLocator;
@@ -112,6 +125,11 @@ export type WorkflowEditWorkspaceResource = RightWorkspaceResourceBase & {
 export type SystemPromptWorkspaceResource = RightWorkspaceResourceBase & {
   kind: 'system-prompt';
   locator: AcpAttemptWorkspaceLocator;
+};
+
+export type HiddenPromptSectionWorkspaceResource = RightWorkspaceResourceBase & {
+  kind: 'hidden-prompt-section';
+  locator: HiddenPromptSectionWorkspaceLocator;
 };
 
 export type RawFramesWorkspaceResource = RightWorkspaceResourceBase & {
@@ -132,22 +150,29 @@ export type RightWorkspaceResource =
   | GitFileComparisonWorkspaceResource
   | SourceControlWorkspaceResource
   | ConversationAssetWorkspaceResource
+  | DraftAttachmentWorkspaceResource
   | WorkflowViewWorkspaceResource
   | WorkflowEditWorkspaceResource
   | SystemPromptWorkspaceResource
+  | HiddenPromptSectionWorkspaceResource
   | RawFramesWorkspaceResource
   | ScheduledTaskConfigWorkspaceResource;
 
 export interface RightWorkspaceSessionState {
   tabs: RightWorkspaceResource[];
   activeTabKey: string | null;
-  requestedOpen: boolean;
-  openRevision: number;
 }
 
-export interface RightWorkspaceState extends RightWorkspaceSessionState {
-  scopeKey: string | null;
+export interface RightWorkspaceShellState {
+  requestedOpen: boolean;
+  openRevision: number;
   width: number;
+}
+
+type RightWorkspacePresentationState = Pick<RightWorkspaceShellState, 'requestedOpen' | 'openRevision'>;
+
+export interface RightWorkspaceState extends RightWorkspaceSessionState, RightWorkspaceShellState {
+  scopeKey: string | null;
 }
 
 interface RightWorkspaceContextValue extends RightWorkspaceState {
@@ -169,6 +194,7 @@ export interface RightWorkspaceCommands {
   scopeKey: string | null;
   projectId: string | null;
   openResource: (resource: RightWorkspaceResource) => void | Promise<void>;
+  closeTab: (key: string) => void | Promise<void>;
   getResource: (key: string) => RightWorkspaceResource | null;
 }
 
@@ -182,10 +208,9 @@ export type RightWorkspaceResourceCloseResolver = (
 
 export type RightWorkspaceAction =
   | { type: 'open'; resource: RightWorkspaceResource }
-  | { type: 'open-workspace' }
+  | { type: 'synchronize'; resource: RightWorkspaceResource }
   | { type: 'activate'; key: string }
-  | { type: 'close'; key: string }
-  | { type: 'close-workspace' };
+  | { type: 'close'; key: string };
 
 export const DEFAULT_RIGHT_WORKSPACE_WIDTH = RIGHT_WORKSPACE_DEFAULT_WIDTH;
 export const CONVERSATION_WORKSPACE_LRU_LIMIT = 24;
@@ -210,7 +235,7 @@ export function createConversationWorkspaceScope(input: {
 }
 
 export function createInitialRightWorkspaceState(): RightWorkspaceSessionState {
-  return { tabs: [], activeTabKey: null, requestedOpen: false, openRevision: 0 };
+  return { tabs: [], activeTabKey: null };
 }
 
 function cloneRightWorkspaceState(state: RightWorkspaceSessionState): RightWorkspaceSessionState {
@@ -220,10 +245,18 @@ function cloneRightWorkspaceState(state: RightWorkspaceSessionState): RightWorks
 interface StoredConversationWorkspace {
   scope: ConversationWorkspaceScope;
   state: RightWorkspaceSessionState;
+  presentation: RightWorkspacePresentationState;
+}
+
+function createInitialRightWorkspacePresentation(): RightWorkspacePresentationState {
+  return { requestedOpen: false, openRevision: 0 };
 }
 
 export class ConversationWorkspaceStore {
   private readonly entries = new BoundedLruCache<string, StoredConversationWorkspace>(CONVERSATION_WORKSPACE_LRU_LIMIT);
+  private width = RIGHT_WORKSPACE_DEFAULT_WIDTH;
+  private widthInitialized = false;
+  private widthTouched = false;
 
   restore(scope: ConversationWorkspaceScope) {
     const stored = this.entries.get(scope.key);
@@ -236,26 +269,93 @@ export class ConversationWorkspaceStore {
   }
 
   save(scope: ConversationWorkspaceScope, state: RightWorkspaceSessionState) {
-    this.entries.set(scope.key, { scope, state: cloneRightWorkspaceState(state) });
+    const stored = this.entries.peek(scope.key);
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(state),
+      presentation: stored?.presentation ?? createInitialRightWorkspacePresentation(),
+    });
   }
 
   touch(scope: ConversationWorkspaceScope) {
     this.entries.get(scope.key);
   }
 
+  peekShellState(scope: ConversationWorkspaceScope | null, initialWidth?: number): RightWorkspaceShellState {
+    const presentation = scope
+      ? this.entries.peek(scope.key)?.presentation ?? createInitialRightWorkspacePresentation()
+      : createInitialRightWorkspacePresentation();
+    return {
+      ...presentation,
+      width: !this.widthInitialized && initialWidth != null ? initialWidth : this.width,
+    };
+  }
+
+  hydrateWidth(width: number) {
+    if (this.widthTouched) return false;
+    const shouldRender = this.widthInitialized && this.width !== width;
+    this.widthInitialized = true;
+    this.width = width;
+    return shouldRender;
+  }
+
+  setWidth(width: number) {
+    this.widthInitialized = true;
+    this.widthTouched = true;
+    if (this.width === width) return false;
+    this.width = width;
+    return true;
+  }
+
+  openWorkspace(scope: ConversationWorkspaceScope, { explicit }: { explicit: boolean }) {
+    const stored = this.entries.peek(scope.key);
+    const presentation = stored?.presentation ?? createInitialRightWorkspacePresentation();
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(stored?.state ?? createInitialRightWorkspaceState()),
+      presentation: {
+        ...presentation,
+        requestedOpen: true,
+        openRevision: explicit ? presentation.openRevision + 1 : presentation.openRevision,
+      },
+    });
+  }
+
+  closeWorkspace(scope: ConversationWorkspaceScope) {
+    const stored = this.entries.peek(scope.key);
+    if (!stored?.presentation.requestedOpen) return false;
+    this.entries.set(scope.key, {
+      scope,
+      state: cloneRightWorkspaceState(stored.state),
+      presentation: {
+        ...stored.presentation,
+        requestedOpen: false,
+      },
+    });
+    return true;
+  }
+
   promoteDraft(draft: ConversationWorkspaceScope, conversation: ConversationWorkspaceScope) {
-    if (draft.kind !== 'draft' || conversation.kind !== 'conversation') return;
-    const previous = this.entries.get(draft.key);
-    this.entries.delete(draft.key);
-    if (!previous) return;
+    if (
+      draft.kind !== 'draft'
+      || conversation.kind !== 'conversation'
+      || draft.projectId !== conversation.projectId
+    ) return;
+    const draftWorkspace = this.entries.peek(draft.key);
+    if (!draftWorkspace) return;
+    const promotedTabs = draftWorkspace.state.tabs.map((resource) => promoteDraftWorkspaceResource(resource, conversation.key));
+    const promotedActiveTabKey = draftWorkspace.state.activeTabKey == null
+      ? null
+      : promotedTabs[draftWorkspace.state.tabs.findIndex((resource) => resource.key === draftWorkspace.state.activeTabKey)]?.key ?? null;
     this.entries.set(conversation.key, {
       scope: conversation,
       state: {
-        ...createInitialRightWorkspaceState(),
-        requestedOpen: previous.state.requestedOpen,
-        openRevision: previous.state.openRevision,
+        tabs: promotedTabs,
+        activeTabKey: promotedActiveTabKey,
       },
+      presentation: { ...draftWorkspace.presentation },
     });
+    this.entries.delete(draft.key);
   }
 
   deleteConversation(projectId: string, taskId: string) {
@@ -302,19 +402,19 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
         ...state,
         tabs,
         activeTabKey: resource.key,
-        requestedOpen: true,
-        openRevision: state.openRevision + 1,
       };
     }
-    case 'open-workspace':
+    case 'synchronize': {
+      const existing = state.tabs.findIndex((tab) => tab.key === action.resource.key);
+      if (existing < 0) return state;
       return {
         ...state,
-        requestedOpen: true,
-        openRevision: state.openRevision + 1,
+        tabs: state.tabs.map((tab, index) => index === existing ? action.resource : tab),
       };
+    }
     case 'activate':
       return state.tabs.some((tab) => tab.key === action.key)
-        ? { ...state, activeTabKey: action.key, requestedOpen: true }
+        ? { ...state, activeTabKey: action.key }
         : state;
     case 'close': {
       const index = state.tabs.findIndex((tab) => tab.key === action.key);
@@ -327,12 +427,39 @@ export function rightWorkspaceReducer(state: RightWorkspaceSessionState, action:
         ...state,
         tabs,
         activeTabKey,
-        requestedOpen: tabs.length > 0 && state.requestedOpen,
       };
     }
-    case 'close-workspace':
-      return { ...state, requestedOpen: false };
   }
+}
+
+function promoteDraftWorkspaceResource(
+  resource: RightWorkspaceResource,
+  scopeKey: string,
+): RightWorkspaceResource {
+  if (resource.kind === 'draft-attachment') {
+    return {
+      ...resource,
+      key: draftAttachmentWorkspaceResourceKey(scopeKey, resource.attachment.id),
+      scopeKey,
+    };
+  }
+  if (resource.kind === 'scheduled-task-config') {
+    return {
+      ...resource,
+      key: scheduledTaskConfigWorkspaceResourceKey(scopeKey),
+      scopeKey,
+    };
+  }
+  if (resource.kind === 'file-browser') {
+    return {
+      ...resource,
+      scopeKey,
+      selectedFile: resource.selectedFile
+        ? { ...resource.selectedFile, scopeKey }
+        : resource.selectedFile,
+    };
+  }
+  return { ...resource, scopeKey };
 }
 
 const DEFAULT_SCOPE = createDraftConversationWorkspaceScope('default');
@@ -353,8 +480,6 @@ export function RightWorkspaceProvider({
   const effectiveStore = store ?? internalStoreRef.current;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
-  const widthTouchedRef = useRef(false);
-  const [width, setWidthState] = useState(initialWidth ?? DEFAULT_RIGHT_WORKSPACE_WIDTH);
   const [conversationDirectoryEntry, setConversationDirectoryEntryState] = useState<ConversationDirectoryWorkspaceEntry | null>(null);
   const [revision, render] = useReducer((currentRevision) => currentRevision + 1, 0);
   const rendererRegistryRef = useRef(new Map<RightWorkspaceResourceKind, RightWorkspaceResourceRenderer>());
@@ -364,6 +489,10 @@ export function RightWorkspaceProvider({
   const sessionState = useMemo(
     () => scope ? effectiveStore.peek(scope) : createInitialRightWorkspaceState(),
     [effectiveStore, revision, scope],
+  );
+  const shellState = useMemo(
+    () => effectiveStore.peekShellState(scope, initialWidth),
+    [effectiveStore, initialWidth, revision, scope],
   );
 
   useEffect(() => {
@@ -380,17 +509,22 @@ export function RightWorkspaceProvider({
   }, [effectiveStore, scope]);
 
   useEffect(() => {
-    if (widthTouchedRef.current || initialWidth == null) return;
-    setWidthState(initialWidth);
-  }, [initialWidth]);
+    if (initialWidth == null || !effectiveStore.hydrateWidth(initialWidth)) return;
+    render();
+  }, [effectiveStore, initialWidth]);
 
   const commit = useCallback((action: RightWorkspaceAction) => {
     const currentScope = scopeRef.current;
-    if (!currentScope) return;
+    if (!currentScope) return null;
     const current = effectiveStore.peek(currentScope);
-    if (action.type === 'open' && action.resource.scopeKey !== currentScope.key) return;
-    effectiveStore.save(currentScope, rightWorkspaceReducer(current, action));
-    render();
+    if (
+      (action.type === 'open' || action.type === 'synchronize')
+      && action.resource.scopeKey !== currentScope.key
+    ) return null;
+    const next = rightWorkspaceReducer(current, action);
+    if (next === current) return null;
+    effectiveStore.save(currentScope, next);
+    return next;
   }, [effectiveStore]);
   const openResource = useCallback(async (resource: RightWorkspaceResource) => {
     const currentScope = scopeRef.current;
@@ -400,14 +534,21 @@ export function RightWorkspaceProvider({
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
-    commit({ type: 'open', resource });
+    if (!commit({ type: 'open', resource })) return;
+    effectiveStore.openWorkspace(currentScope, { explicit: true });
+    render();
   }, [commit, effectiveStore]);
   const getResource = useCallback((key: string) => {
     const currentScope = scopeRef.current;
     if (!currentScope) return null;
     return effectiveStore.peek(currentScope).tabs.find((tab) => tab.key === key) ?? null;
   }, [effectiveStore]);
-  const openWorkspace = useCallback(() => commit({ type: 'open-workspace' }), [commit]);
+  const openWorkspace = useCallback(() => {
+    const currentScope = scopeRef.current;
+    if (!currentScope) return;
+    effectiveStore.openWorkspace(currentScope, { explicit: true });
+    render();
+  }, [effectiveStore]);
   const activateTab = useCallback(async (key: string) => {
     if (!scope) return;
     const current = effectiveStore.peek(scope);
@@ -415,28 +556,39 @@ export function RightWorkspaceProvider({
       const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
       if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'deactivate') === false) return;
     }
-    commit({ type: 'activate', key });
+    if (!commit({ type: 'activate', key })) return;
+    effectiveStore.openWorkspace(scope, { explicit: false });
+    render();
   }, [commit, effectiveStore, scope]);
   const closeTab = useCallback(async (key: string) => {
     if (!scope) return;
     const resource = effectiveStore.peek(scope).tabs.find((tab) => tab.key === key);
     if (resource && await closeResolverRegistryRef.current.get(resource.kind)?.(resource, 'close') === false) return;
-    commit({ type: 'close', key });
+    const next = commit({ type: 'close', key });
+    if (!next) return;
+    if (next.tabs.length === 0) effectiveStore.closeWorkspace(scope);
+    render();
   }, [commit, effectiveStore, scope]);
   const closeWorkspace = useCallback(async () => {
     if (!scope) return;
     const current = effectiveStore.peek(scope);
     const active = current.tabs.find((tab) => tab.key === current.activeTabKey);
     if (active && await closeResolverRegistryRef.current.get(active.kind)?.(active, 'workspace-close') === false) return;
-    commit({ type: 'close-workspace' });
-  }, [commit, effectiveStore, scope]);
+    effectiveStore.closeWorkspace(scope);
+    render();
+  }, [effectiveStore, scope]);
   const setWidth = useCallback((nextWidth: number) => {
-    widthTouchedRef.current = true;
-    setWidthState(nextWidth);
-  }, []);
+    if (effectiveStore.setWidth(nextWidth)) render();
+  }, [effectiveStore]);
   const setConversationDirectoryEntry = useCallback((entry: ConversationDirectoryWorkspaceEntry | null) => {
     setConversationDirectoryEntryState(entry);
-  }, []);
+    if (!entry) return;
+    const resource: ConversationDirectoryWorkspaceResource = {
+      ...entry,
+      key: conversationDirectoryWorkspaceResourceKey(entry.locator),
+    };
+    if (commit({ type: 'synchronize', resource })) render();
+  }, [commit]);
   const renderResource = useCallback((resource: RightWorkspaceResource) => rendererRegistryRef.current.get(resource.kind)?.(resource) ?? null, []);
   const registerResourceRenderer = useCallback((kind: RightWorkspaceResourceKind, renderer: RightWorkspaceResourceRenderer) => {
     rendererRegistryRef.current.set(kind, renderer);
@@ -455,11 +607,11 @@ export function RightWorkspaceProvider({
   }, []);
   const value = useMemo(() => ({
     ...sessionState,
+    ...shellState,
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
     conversationDirectoryEntry: conversationDirectoryEntry?.scopeKey === scope?.key ? conversationDirectoryEntry : null,
     setConversationDirectoryEntry,
-    width,
     openResource,
     openWorkspace,
     activateTab,
@@ -469,13 +621,14 @@ export function RightWorkspaceProvider({
     renderResource,
     registerResourceRenderer,
     registerResourceCloseResolver,
-  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, width]);
+  }), [activateTab, closeTab, closeWorkspace, conversationDirectoryEntry, openResource, openWorkspace, registerResourceCloseResolver, registerResourceRenderer, renderResource, rendererRevision, scope?.key, scope?.projectId, sessionState, setConversationDirectoryEntry, setWidth, shellState]);
   const commands = useMemo<RightWorkspaceCommands>(() => ({
     scopeKey: scope?.key ?? null,
     projectId: scope?.projectId ?? null,
     openResource,
+    closeTab,
     getResource,
-  }), [getResource, openResource, scope?.key, scope?.projectId]);
+  }), [closeTab, getResource, openResource, scope?.key, scope?.projectId]);
   return (
     <RightWorkspaceCommandsContext.Provider value={commands}>
       <RightWorkspaceContext.Provider value={value}>{children}</RightWorkspaceContext.Provider>
@@ -542,7 +695,7 @@ export function gitFileComparisonWorkspaceResourceKey(projectId: string, source:
   if (source.kind === 'commit') {
     return `git-diff:${projectId}:${workspacePath}:commit:${source.beforeOid ?? ''}:${source.beforePath ?? ''}:${source.afterOid}:${source.path}`;
   }
-  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.baseOid}:${source.headOid}:${source.path}`;
+  return `git-diff:${projectId}:${workspacePath}:github-pr:${source.host}:${source.repository}:${source.prNumber}:${source.baseOid}:${source.headOid}:${source.beforePath ?? ''}:${source.path}`;
 }
 
 export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessionId: string) {
@@ -550,7 +703,11 @@ export function gitDiffReviewWorkspaceResourceKey(projectId: string, reviewSessi
 }
 
 export function conversationDirectoryWorkspaceResourceKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
-  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
+  return ['conversation-directory', locator.projectId, locator.taskId, locator.runId].join(':');
+}
+
+export function conversationDirectoryWorkspaceDataKey(locator: ConversationDirectoryWorkspaceResource['locator']) {
+  return [locator.projectId, locator.taskId, locator.runId, locator.roundId, locator.outerNodeId ?? '', locator.outerAttemptId ?? '', locator.nodeId, locator.attemptId].join(':');
 }
 
 export function fileWorkspaceResourceKey(projectId: string, canonicalPath: string) {
@@ -594,4 +751,68 @@ export function conversationAssetWorkspaceResourceKey(
     locator.branchId,
     path ?? name,
   ].join(':');
+}
+
+export function hiddenPromptSectionWorkspaceResourceKey(locator: HiddenPromptSectionWorkspaceLocator) {
+  return [
+    'hidden-prompt-section',
+    locator.projectId,
+    locator.taskId,
+    locator.runId,
+    locator.roundId,
+    locator.nodeId,
+    locator.attemptId,
+    locator.outerNodeId ?? '',
+    locator.outerAttemptId ?? '',
+    locator.branchId,
+    locator.eventId,
+    locator.eventSeq,
+    locator.partIndex,
+  ].join(':');
+}
+
+export function createHiddenPromptSectionWorkspaceResource(input: {
+  scopeKey: string;
+  title: string;
+  locator: AcpAttemptWorkspaceLocator;
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
+}): HiddenPromptSectionWorkspaceResource {
+  const locator: HiddenPromptSectionWorkspaceLocator = {
+    ...input.locator,
+    eventId: input.eventId,
+    eventSeq: input.eventSeq,
+    partIndex: input.partIndex,
+  };
+  return {
+    kind: 'hidden-prompt-section',
+    key: hiddenPromptSectionWorkspaceResourceKey(locator),
+    scopeKey: input.scopeKey,
+    title: input.title,
+    description: null,
+    attention: false,
+    locator,
+  };
+}
+
+export function draftAttachmentWorkspaceResourceKey(scopeKey: string, attachmentId: string) {
+  return ['draft-attachment', scopeKey, attachmentId].join(':');
+}
+
+export function createDraftAttachmentWorkspaceResource(input: {
+  scopeKey: string;
+  projectId: string;
+  attachment: AttachmentItem;
+}): DraftAttachmentWorkspaceResource {
+  return {
+    kind: 'draft-attachment',
+    key: draftAttachmentWorkspaceResourceKey(input.scopeKey, input.attachment.id),
+    scopeKey: input.scopeKey,
+    projectId: input.projectId,
+    title: input.attachment.name,
+    description: input.attachment.path ?? null,
+    attention: false,
+    attachment: input.attachment,
+  };
 }

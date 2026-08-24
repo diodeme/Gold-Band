@@ -53,7 +53,7 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 | 列 | 类型 | 来源 | 说明 |
 |---|---|---|---|
 | `attempt_path` | TEXT PK | 文件系统路径 | 全局唯一 |
-| `session_id` | TEXT | `snapshot.adapter_id` | 适配器 ID |
+| `session_id` | TEXT? | `snapshot.session_id` | 真实 ACP session ID；尚未建立或旧文件缺失时为 `NULL`，不得用 adapter、attempt ID 或 timeline 反推 |
 | `task_id` | TEXT | 调用方传入 | 所属 task |
 | `run_id` | TEXT | 调用方传入 | |
 | `round_id` | TEXT | 调用方传入 | |
@@ -62,7 +62,7 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 | `outer_node_id` | TEXT? | 调用方传入 | AI-Dynamic 父节点 |
 | `outer_attempt_id` | TEXT? | 调用方传入 | AI-Dynamic 父 attempt |
 | `title` | TEXT | `snapshot.title` | 会话标题 |
-| `status` | TEXT | `snapshot.status` | running/completed/failed/cancelled |
+| `status` | TEXT | `snapshot.latest_turn_status` | none/completed/failed/cancelled |
 | `created_at` | TEXT | `snapshot.created_at` | |
 | `updated_at` | TEXT | `snapshot.updated_at` | |
 
@@ -74,7 +74,7 @@ SQLite 在本项目中**仅用于辅助检索**，不承担：
 |---|---|---|---|
 | `id` | TEXT | `timeline item.id` | 如 `gold-band-user-prompt-7` |
 | `attempt_path` | TEXT | 文件系统路径 | 关联 sessions |
-| `session_id` | TEXT | 同 sessions | |
+| `session_id` | TEXT? | 同 sessions | 真实 ACP session ID；重建或重复索引时随 session 身份更新 |
 | `prompt_id` | TEXT? | `item.raw.promptId` | 业务 prompt ID |
 | `timestamp` | TEXT | `item.timestamp` | |
 | `text` | TEXT | `item.content` | 用户原始输入 |
@@ -120,6 +120,10 @@ schema v2 会把已有 `tasks` 表从 `task_id` 主键迁移为 `task_path` 主�
 
 schema v3 将 task FTS tokenizer 从默认 `unicode61` 升级为 SQLite FTS5 内置 `trigram`。升级只用 `tasks` 表已有行重建派生 `tasks_fts`，不扫描 task 文件目录、不补齐历史未入库 task。该 tokenizer 用于支持中文、英文和中英混排内容的任意位置子串检索。
 
+schema v4 首次把 `sessions.session_id` 与 `session_prompts.session_id` 改为可空的真实 `snapshot.session_id`，但曾临时增加不必要的 `sessions.adapter_id`。
+
+schema v5 删除该临时 `adapter_id`：搜索索引只保存检索和路由结果实际需要的 session identity，不复制启动命令或 provider identity。provider 的既有权威持久化边界仍是 `worker-ref.json.provider`。升级时破坏式重建 session/prompt 派生表并从文件回填，保留 `tasks` 表；缺少真实 session ID 的旧 attempt 保持 `NULL`。
+
 ## 搜索接口
 
 ### `search_tasks`
@@ -156,7 +160,7 @@ workspace 项目 ID 必须统一通过 `GoldBandPaths::project_id` 生成，不�
 ```jsonc
 {
   "promptEventId": "...",
-  "sessionId": "...",
+  "sessionId": null, // string | null
   "promptId": "...",
   "timestamp": "...",
   "text": "...",
@@ -176,7 +180,7 @@ workspace 项目 ID 必须统一通过 `GoldBandPaths::project_id` 生成，不�
 
 ```jsonc
 {
-  "sessionId": "...",
+  "sessionId": null, // string | null
   "attemptPath": "...",
   "taskId": "...",
   "runId": "...",

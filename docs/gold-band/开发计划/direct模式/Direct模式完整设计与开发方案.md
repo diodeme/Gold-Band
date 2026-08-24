@@ -79,7 +79,7 @@ Direct 与普通 ACP follow-up 共用以下修复：
 - 选中 Agent 后恢复该 workspace 下这个 Agent 上次使用的模型和权限模式。
 - 模型和权限模式放在输入框右下角，与发送按钮形成同一组紧凑控制。
 - Direct 会话创建后持续复用同一个 ACP session，不向用户展示 workflow 成功、暂停或节点终态心智。
-- Direct 会话侧边栏使用 Agent icon 表达身份，不使用绿点、黄点、红点表达 run 结果。
+- Direct 会话侧边栏使用 Agent icon 表达身份；运行中沿用图标呼吸效果。终局后允许以绿/黄/红点表达尚未查看的完成/停止/失败事件，但不得把该点作为 run 状态本身。
 - 页面切换、session 切换后，正在执行的 Direct turn 必须恢复发送/处理/思考/工具/停止状态、耗时和 token。
 
 ### 3.2 技术目标
@@ -960,7 +960,7 @@ Direct `authoring/conversation.json` 建议结构：
 - 前端依赖 component-local awaiting state 判断持久 active 的规则。
 - Direct 借用 `ConversationAutoConfig` 的临时方案。
 - Direct 使用 Agent 文本下拉而不是 icon picker 的临时 UI。
-- Direct task row 的 runtime 彩色状态点。
+- Direct task row 把 runtime 状态直接替换成彩色点的旧方案；终局未查看提醒点作为独立投影保留。
 - Direct 页面中的 workflow 编辑/查看、session tree 和 launching-next-node 文案。
 - conversation metadata 中散落的 untyped `serde_json::Value` runMode 读取，逐步收敛到 typed metadata。
 
@@ -1013,7 +1013,7 @@ Direct `authoring/conversation.json` 建议结构：
 - lifecycle ACP active 且没有 optimistic event 时仍锁输入、显示状态、可停止。
 - 页面重新挂载后 timing/token 继续显示。
 - session terminal 后恢复输入。
-- Direct sidebar 使用 Agent icon，不渲染 status dot。
+- Direct sidebar 使用 Agent icon；运行中不渲染终局点，未查看的完成/停止/失败分别渲染绿/黄/红提醒点。
 - Direct sidebar 不渲染 run 子列表。
 - Workflow/AUTO sidebar 仍渲染 status dot。
 - Direct 搜索和置顶同样使用 Agent icon。
@@ -1084,11 +1084,11 @@ npm run web:build
 ### 18.5 侧边栏
 
 - [ ] Direct 行首是 Agent icon。
-- [ ] Direct 不显示绿/黄/红 run 状态点。
+- [x] Direct 不显示常驻 run 状态点；仅显示可确认的终局未查看提醒点。
 - [ ] Workflow/AUTO 状态点不受影响。
 - [ ] Direct 相对时间随后续对话更新。
 - [ ] Direct 置顶和搜索结果使用相同 Agent icon。
-- [ ] 后台 Direct 回复可选使用轻量 icon halo，不使用成功/暂停颜色。
+- [x] Direct 活动态沿用 Agent icon 呼吸效果；后台终局使用成功/停止/失败语义色提醒，成功呈现后消失。
 
 ## 19. 实施阶段
 
@@ -1220,7 +1220,7 @@ web/tests/*
 5. 快速会话模式顺序固定为 Direct、工作流、AUTO。
 6. Direct 使用 Agent icon picker；模型和权限放在 composer 右下角。
 7. 模型和权限按 workspace + agent 记忆。
-8. Direct 侧边栏使用 Agent icon，不展示 workflow 绿/黄/红状态点。
+8. Direct 侧边栏使用 Agent icon，不展示 Workflow 式常驻 run 状态点；只在终局事件尚未查看时叠加绿/黄/红提醒点。
 9. Direct 使用 lastActivityAt 表达持续对话的最近活动。
 10. 发送和停止继续使用 `submit_conversation_prompt` / `stop_active_session` 单一入口。
 11. token、耗时、权限、elicitation、附件和工具展示全部复用现有 ACP 管道。
@@ -1241,7 +1241,7 @@ web/tests/*
 - [x] Direct 无可选 Agent 时展示提示文案和“+”入口，点击直接进入 Agent 管理页。
 - [x] Direct 运行时隐藏 workflow、session tree、run outcome 和重跑心智，header 展示 Agent identity。
 - [x] Direct 侧边栏 task 行和搜索结果使用 Agent icon；身份槽位与 Workflow/AUTO 状态点等宽，标题起点对齐，最近排序与相对时间使用 `lastActivityAt`。
-- [x] Direct 侧边栏补齐 task 级活跃 turn 旋转环；后端聚合 runtime status 与 per-attempt live prompt activity，前端在 submit/stop lifecycle snapshot 和 live lifecycle 更新时同步置顶区与 workspace 区，completed run 追问不再丢失运行态提示。
+- [x] Direct 侧边栏补齐 task 级活跃 turn 呼吸效果；后端聚合 runtime status 与 per-attempt live prompt activity，前端在 submit/stop lifecycle snapshot 和 live lifecycle 更新时同步置顶区与 workspace 区，completed run 追问不再丢失运行态提示。
 - [x] Direct 侧边栏不展示 run 子列表；Direct ACP header 不展示无意义的“系统提示”按钮。
 - [x] 创建接口增加 Direct Agent/model/permission 后端校验，错误以结构化 code 返回。
 - [x] profile resolver 按 prompt envelope 分流：`runtime-managed` 必须解析角色，`raw-agent` 跳过角色解析且禁止绑定 profile；Direct 创建不再触发 `direct-agent is not associated with role`。
@@ -1311,8 +1311,11 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 数据与接口：
 
 - [x] 新增 attempt 级 `acp.prompt-queue.json`、`PromptQueue / QueuedPrompt / QueuedPromptState`，FIFO 上限统一为 10。
-- [x] 队列项保存稳定 item/prompt identity、正文、附件、创建时间和 dispatch 状态；编辑不改变位置。
-- [x] 新增 update/delete/use Tauri commands，继续使用结构化 error code + params。
+- [x] 队列项保存稳定 item/prompt identity、正文、结构化引用、附件路径、创建时间和 dispatch 状态；authoring payload 由 attempt 级队列统一管理。
+- [x] lifecycle/list VM 只投影稳定 ID、正文与引用/附件计数；完整引用和附件路径仅由单条 restore command 按需返回，避免高频 session update 重复搬运整个队列 authoring payload。
+- [x] 删除只修改正文的 update 入口；保留 delete/use，并新增按需返回完整 authoring payload 的 restore command 与 `expectedRevision + orderedItemIds` reorder Tauri command，继续使用结构化 error code + params。
+- [x] 合并编译契约回归：桌面 command import 与 `generate_handler!` 只注册当前真实存在且被客户端消费的 restore/reorder/delete/use 接口，删除遗留的 update 注册；生产依赖与测试专用导入分层，避免合并后出现 unresolved command 或 unused import。
+- [x] reorder 在 attempt 队列锁内执行 revision CAS、完整 queued ID 集合与重复 ID 校验；成功后一次原子写入，stale/invalid 请求不修改 durable 队列。
 - [x] lifecycle 仅为 Direct 投影 `promptQueue`；Workflow/AUTO 的数据和 composer 规则不变。
 - [x] App turn hook 收敛为统一 prompt lifecycle：`Accepted { promptId }` 精确完成 durable 出队，`Finished { successful }` 决定是否继续排空；失败/取消只恢复 durable timeline 尚未接受的 dispatching 项。
 
@@ -1332,23 +1335,56 @@ Direct 与节点完成后的手动追问复用同一个 ACP attempt。原通知�
 
 - [x] Direct 运行中 composer 保持可输入，发送按钮显示“加入队列”；满 10 条时禁止继续入队。
 - [x] 队列紧贴 composer 上方、位于 usage/token 行下方；默认展示 3 条，可展开至全部 10 条。
-- [x] 队列 surface 属于 attempt 底部常驻区域，不属于 active/idle/stopped/runtime-error 的 composer 分支；只要持久化队列非空，停止、刷新或重新进入会话后仍展示并可编辑、删除。
+- [x] 队列 surface 属于 attempt 底部常驻区域，不属于 active/idle/stopped/runtime-error 的 composer 分支；只要持久化队列非空，停止、刷新或重新进入会话后仍展示并可恢复到 composer、排序、删除。
 - [x] Direct 队列能力由 run mode 显式传入 composer 状态机；首次 prompt 尚处于本地“发送中”、后端 active lifecycle 尚未回传时，后续提交也立即路由到 `queue-prompt`，不出现短暂锁输入。
 - [x] Conversation run/session-tree 初始与刷新快照和单 attempt lifecycle 接口统一装配同一持久化队列，杜绝停止态刷新丢失队列。
-- [x] 使用 shadcn Collapsible/Button/Tooltip/Textarea、Tailwind 和现有 prompt-kit composer；提供编辑、使用、删除 icon action 与无障碍标签。
+- [x] 使用 shadcn Collapsible/Button/Tooltip、Tailwind 和现有 prompt-kit composer；排序复用 `dnd-kit` pointer/keyboard sensor 与专用手柄，不自研拖拽状态机；提供编辑、使用、删除 icon action 与无障碍标签。
 - [x] 入队响应不创建 optimistic 用户气泡、不进入 awaiting response；自动出队仍写标准用户 timeline 消息并复用标准样式。
-- [x] 编辑原位保存；停止/空闲后可指定使用；删除立即回灌后端 lifecycle。
+- [x] 编辑把正文、结构化引用和附件路径完整恢复为当前 session composer draft，并删除原 durable 队列项；composer 已有草稿时禁止覆盖。附件文件元数据延迟补齐且只在 draft identity 未变化时替换，不能覆盖用户随后修改。停止/空闲后仍可指定使用；删除立即回灌后端 lifecycle。
+- [x] 默认前三条与展开后的全部十条均按 stable item ID 投影；拖拽结束立即显示有界 optimistic order，后端 lifecycle revision 到达后收敛，冲突时回滚本次视觉排序。
 - [x] 修复 completed Direct session 进入 follow-up `session/resume` 时的会话壳竞态：同 attempt 快照合并不再降级已持久化的 `sessionEstablished / sessionId`；详细 session payload 短暂缺失时由持久化引用保持历史会话壳、composer 和待发送队列，不再误显示“ACP 会话失败”。
 - [x] 根因修正：排队的 lifecycle-only 更新不再被认为 session 清空；订阅层只在带有非空 authoritative session payload 时替换当前会话，从根上避免排队操作在 `session/resume` 窗口清掉 composer。
 - [x] 首轮自动出队根因修正：创建/重跑与继续入口统一装配 ACP live、session snapshot、prompt lifecycle callback；首轮 `end_turn` 现在也会产生后继的 Direct 队列调度。
+- [x] 连续自动出队生命周期断链修正：自动队列恢复走标准 `send_acp_prompt` 入口；底层发送接口只接受 `ConfiguredConversationApp`，从类型边界禁止裸 `App` 绕过 callbacks。drain 保留触发 turn 的生命周期上下文，后继用户消息再显式切回普通会话上下文；scheduled continuous 统一安装 live/session/prompt lifecycle callbacks 并保留 occurrence identity。
 
 接口级回归：
 
-- [x] Rust：容量、FIFO/编辑位置、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、prompt lifecycle accepted identity、durable accepted 精确出队、普通 prompt 不创建队列存储、取消不回队、接受前失败恢复、v1 迁移和重启孤儿恢复。
+- [x] Rust：容量、FIFO、重排成功/no-op、stale revision、重复或缺失 ID 不写入、用户 revision 抢占、stop suspension、主动恢复、指定使用顺序、进程内 dispatch、prompt lifecycle accepted identity、durable accepted 精确出队、普通 prompt 不创建队列存储、取消不回队、接受前失败恢复、v1 迁移和重启孤儿恢复。
+- [x] Rust lifecycle 集成回归：三条队列逐轮执行 `claim -> Accepted 立即出队 -> Finished 调度下一条`，固定连续 FIFO 排空和消息进入 timeline 后不再留在队列的接口契约；底层发送的受控类型同时提供编译期回归门禁。
 - [x] Web semantic composer：Direct active 可输入/可入队、容量满、非 Direct active 仍锁定。
 - [x] Web semantic composer：Direct 首次发送过渡期即使 lifecycle 尚未携带 queue，也可输入并入队。
 - [x] Rust conversation run VM：停止态 selected leaf 仍投影持久化队列。
-- [x] Web DOM：默认 3 条/展开、原位编辑、icon aria-label、运行中禁用手动使用。
+- [x] Web DOM：默认 3 条/展开、完整 payload 恢复入口、已有 composer 草稿保护、pointer/keyboard 排序手柄、stable ID 顺序计算、icon aria-label、运行中禁用手动使用。
 - [x] Web 会话壳：已建立 session 的 detail payload 临时为空时仍渲染 composer；same-attempt resume refresh 不丢失 session 引用和历史 payload。
 - [ ] 完整 Rust/Web test 与 build。
 - [ ] Direct deep link 页面验收（位置、展开、编辑、删除、停止后使用、深浅主题）并清理测试资源。
+
+## 27. 2026-08-18 Direct 终局未查看提醒
+
+状态：已完成实现与验证。
+
+设计结论：
+
+- Direct 运行中继续使用既有 Agent icon 呼吸效果，不增加旋转环或状态点。
+- 完成、停止/取消、失败/异常分别投影绿、黄、红色未查看提醒点。提醒事实与 `run.status/outcome` 分离，查看操作不修改权威生命周期。
+- 复用 `AcpTurnFinished.eventId`；Direct 首轮失败/被终止使用 `RunCompleted.eventId`。批处理仍有后继 turn 时不提前产生完成提醒。
+- 每个 workspace 使用一个有版本的轻量 attention 文件，按 task 保存最新终局事件与已查看游标；侧栏快照每个 workspace 只读取一次并在内存中按 task 投影。
+- 侧栏、置顶、搜索、通知和 deep link 统一通过会话呈现入口确认。确认请求携带最新 `eventId`，后端和前端均拒绝用迟到响应清除更新提醒；目标 run 未成功呈现时不确认。
+- 删除 conversation task 时同步移除对应 attention 条目；写入复用已有原子 JSON 写工具和 workspace 内短临界区，不新增依赖、队列、缓存或第二套 lifecycle。
+
+接口级验收：
+
+- [x] 同一终局事件在匹配确认前持续未查看，确认后消失。
+- [x] 旧 `eventId` 的迟到确认不能清除新终局事件，已确认事件重放不会重新点亮。
+- [x] 同一 workspace 多 task 独立投影，删除 task 后仅清理对应条目。
+- [x] Direct 批处理只在最后一个 turn 产生完成提醒；失败与停止映射保持红/黄语义。
+- [x] 前端只在 project/task/run 完整匹配成功呈现的会话上确认，确认在途去重，旧响应不覆盖新事件。
+- [x] 提醒点使用 Gold Band 主题语义 token、Tooltip 和 `aria-label`，不只依赖颜色传达含义。
+
+最终验证：
+
+- `cargo test -p gold-band-desktop conversation_attention --no-fail-fast`：4 项通过。
+- `cargo test -p gold-band-desktop direct_terminal_result_projection --no-fail-fast`：2 项通过。
+- `npm run web:test -- web/tests/conversation-terminal-result.test.ts web/tests/conversation-terminal-result-ui.test.tsx web/tests/api/desktop.test.ts`：21 项通过。
+- `npx tsc -p web/tsconfig.build.json --noEmit` 与 `npx vite build --config web/vite.config.ts`：通过。
+- 本地 `/chat` 页面：浅色和深色均验证 8px 提醒点位于 16px Agent icon 右上角；危险色分别投影为浅色 `rgb(200, 50, 55)`、深色 `rgb(223, 107, 107)`，可访问名称为“Codex · 执行异常，尚未查看”。进入会话后的清除、迟到确认保护和在途去重由 DOM/导航/接口回归测试固化。

@@ -64,7 +64,7 @@ Agent Cards
 - Catalog 更新只影响之后新建的 Agent；已经创建的实例无论是否被用户编辑，都不跟随 Catalog 的版本、命令、目录或能力变化
 - 新增时预填 ACP Registry 当前快照中的推荐命令、参数和 display name，用户可按本机安装路径调整；npx 类 Agent 使用 Registry package，Cursor、Goose、OpenCode、Kimi 和 Amp 默认调用 PATH 中已安装的可执行文件。Pi 使用 Registry 的 `npx -y pi-acp@<version>` 适配器，同时要求用户自行安装并配置可由 PATH 发现的 Pi coding agent
 - Gold Band 不下载、解压、托管或安装 Agent 二进制；非 npx Agent 的安装和 PATH 配置由用户负责，保存后 doctor 负责验证当前配置是否可运行
-- 自定义 Agent 复用同一编辑 Sheet；用户填写 Agent ID、icon、命令、参数、环境、Skills 目录和跨端会话能力。Agent ID 是持久化与 workflow `provider` 引用使用的稳定唯一标识，创建后不可修改
+- 自定义 Agent 复用同一编辑 Sheet；用户填写 Agent ID、icon、命令、参数、环境和 Skills 目录。Agent ID 是持久化与 workflow `provider` 引用使用的稳定唯一标识，创建后不可修改
 - 编辑 Sheet 必须显式保存 `catalog / custom / existing` 来源状态，Agent ID 的可编辑性只由来源和创建/编辑生命周期决定，不得根据输入文本是否暂时匹配 Catalog ID 反推；因此自定义输入 `kimi` 后仍可继续填写为 `kimi-for-mine`
 - Agent ID 输入必须兼容中文等 IME 组合输入：组合期间保留输入法管理的临时文本，不执行小写化或非法字符过滤；`compositionend` 后再统一规范化为小写字母、数字和连字符，避免回车选词时丢失连字符或光标附近内容
 - system prompt 传递能力不在新建或编辑界面展示，也不接受 `ManagedAgentInput` 覆盖；内置 Agent 创建时由 Catalog 写入已验证能力，自定义 Agent 固定为不支持，编辑时保留实例已有的内部能力值
@@ -90,10 +90,12 @@ Agent Cards
 - 编辑器以单一生命周期状态统一管理 `open`、来源、Agent ID、表单、文本配置和初始快照；Catalog、自定义和既有实例入口一次性替换完整状态，关闭或保存成功只切换 `open=false`。Sheet 的退出动画期间保留当前 draft，下一次打开再整体初始化，避免内容闪变被误认为抽屉重新打开
 - 公共 Sheet 的 overlay 默认跟随 Root 的 `modal` 语义：模态 Sheet 保留遮罩，非模态侧栏默认不渲染遮罩。Agent 编辑器以及其他桌面编辑/详情侧栏统一使用非模态语义；仅窄屏工作区等真正覆盖主界面的 Sheet 保留模态遮罩，避免关闭侧栏时全局页面由暗变亮
 - 删除确认框以统一生命周期状态维护 `open + target`；确认、取消或失败只关闭弹窗，不在退出动画期间清空 target，确保 Agent 名称在动画完成前保持稳定
+- 删除确认前统计当前用户模板以及已注册/current workspace 中受影响的 Task 和定时任务；引用来源统一覆盖普通 Worker 本机模型绑定、历史 Worker `provider`、AI-DYNAMIC 固定/引导/可选 Agent、Direct 定时快照和 AUTO 定时快照。同一实体包含多个相同 Agent 引用时只计一次
+- 引用统计逐项隔离损坏的 Task authoring、定时定义和 Workflow 快照；确认框同时展示正常引用数量与“无法确认”的 Task / 定时任务数量，并明确警告删除后 unknown 项可能留下失效引用。unknown 不得伪装为 0，也不阻断用户在读完提示后显式删除
+- 引用统计失败时禁用确认删除并提供重试；统计结果只用于二次确认，删除仍不级联清理引用，已有定义保留失效 Agent ID
 - 主 Agent 目录（默认由全局与项目共用；可通过右侧分裂图标切换为全局主目录和项目主目录）
 - 兼容 Agent 目录
-- 跨端会话合并能力
-- 外部会话同步（Beta，仅在跨端会话合并能力开启时可用，默认关闭）
+- 跨端会话合并与外部会话同步属于暂未对客开放的高级运行能力，当前版本不在 Agent 卡片、新增 Agent 或修改 Agent 界面展示；底层配置、持久化与 runtime 行为继续保留，后续具备自动能力发现与清晰使用场景后再开放
 
 交互：
 - 通过右侧 Sheet 编辑
@@ -108,9 +110,9 @@ Agent Cards
 - 卡片底部竖线左侧展示读取目录包含该实体目录的全部已配置 Agent；右侧展示不能直读该实体、可在自身主目录创建软链接的 Agent
 - 若某个 Agent 已能通过主目录或兼容目录直读实体，但其主目录仍保留历史软链接，则该 Agent 同时出现在左右两侧：左侧表示直读关系，右侧绿色状态图标仅提供删除现有软链接的入口；删除成功后右侧图标消失，左侧图标保留，并且不再提供重新创建冗余软链接的入口
 - Agent 新增、删除或目录配置变化后，左右图标集合根据当前配置和实际软链接状态动态重算，不自动清理用户文件系统中的历史软链接
-- 外部会话同步标题右侧展示紧凑 `Beta` Badge 和可聚焦问号 Tooltip；Tooltip 解释“同步同一个 Session 在其他客户端中发生过的对话”，常驻说明则明确提示仅在确认该 Agent 支持跨客户端共享同一会话上下文时开启，否则可能造成历史顺序或上下文理解错误
 - system prompt 是 Gold Band 内部维护的实例能力而不是 ACP 标准能力发现结果：已验证的 Claude 通过 ACP `session/new` / `session/load` 的 `_meta.systemPrompt.append` 传递稳定 system prompt；其他内置与自定义 Agent 默认关闭，并仅在新会话首个 user prompt 内嵌隐藏稳定上下文，恢复会话不重复注入
 - “支持跨端会话合并”与“启用外部会话同步”分开保存；能力关闭时启用值必须在前后端同时归一化为 `false`
+- 隐藏期间编辑其他 Agent 字段必须原样保留已有跨端能力与同步配置，不得因为界面不可见而静默关闭或改写；新建实例继续采用 Catalog 或自定义 Agent 的既有默认值
 - 修改 Sheet 必须基于规范化后的持久化配置判断脏状态；未修改时“保存”按钮禁用，提交入口也不得调用更新接口或触发自动诊断。参数仅改变空格/换行、环境变量仅调整行顺序但规范化结果一致时，不视为配置修改
 - 保存成功后立即清空当前 agent 的旧诊断状态，并由桌面端后台自动触发一次环境诊断；保存接口既不等待本次 doctor，也不等待正在执行的手动或周期 doctor，持久化成功后立即关闭编辑 Sheet 并提示“配置已保存，正在后台诊断”
 - 自动诊断运行期间，卡片沿用“诊断中”加载状态并暂时禁用修改、删除和重复诊断；诊断完成后通过桌面事件刷新全局 Agent registry，并按健康或异常结果展示数秒横幅

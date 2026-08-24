@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import CodeMirror, { basicSetup, type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { EditorSelection, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
-import { getChunks, goToNextChunk, goToPreviousChunk, unifiedMergeView } from '@codemirror/merge';
+import { getChunks, goToNextChunk, goToPreviousChunk } from '@codemirror/merge';
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileText, LoaderCircle, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getFileComparison, getGitComparison } from '@/api';
+import { getGitComparison } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { loadTurnFileComparison } from '@/lib/turn-file-comparison-cache';
 import type { FileComparisonVm, GitFileComparisonVm } from '@/types';
 import type { GitFileComparisonWorkspaceResource, TurnFileWorkspaceResource } from '../right-workspace-context';
 import { useRightWorkspaceCommands } from '../right-workspace-context';
@@ -21,6 +22,9 @@ import {
 } from './editor-extensions';
 import { isMarkdownDocumentPath } from './markdown-document';
 import type { MarkdownEditorMode } from './file-content-store';
+import { ReadonlyUnifiedDiff } from './ReadonlyUnifiedDiff';
+
+export { DIFF_VIEW_SCAN_LIMIT, DIFF_VIEW_TIMEOUT_MS } from './ReadonlyUnifiedDiff';
 
 type FileComparisonWorkspaceResource = TurnFileWorkspaceResource | GitFileComparisonWorkspaceResource;
 type WorkspaceComparisonVm = FileComparisonVm | GitFileComparisonVm;
@@ -58,7 +62,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
         : resource.gitSource.kind === 'github-pr'
         ? githubComparisonCache.get(resource.projectId, resource.gitSource)
         : getGitComparison(resource.projectId, resource.gitSource)
-      : getFileComparison(resource.locator, resource.changeSetId, resource.changeId);
+      : loadTurnFileComparison(resource.locator, resource.changeSetId, resource.changeId);
     void request
       .then((next) => {
         if (cancelled) return;
@@ -76,7 +80,7 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     return () => { cancelled = true; };
   }, [resource, reviewItem]);
 
-  const navigateReviewFile = (offset: number, landing: 'first' | 'last') => {
+  const navigateReviewFile = (offset: number, landing: 'top' | 'first-change' | 'last-change') => {
     if (!('gitSource' in resource) || !reviewSession || reviewItemIndex < 0) return;
     const item = reviewSession.items[reviewItemIndex + offset];
     if (!item) return;
@@ -97,9 +101,10 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
     if (!view || !chunk) return false;
     const from = Math.min(chunk.fromB, view.state.doc.length);
     const to = Math.min(chunk.toB, view.state.doc.length);
+    const range = EditorSelection.range(to, from);
     view.dispatch({
-      selection: EditorSelection.range(to, from),
-      effects: EditorView.scrollIntoView(EditorSelection.range(to, from)),
+      selection: range,
+      effects: EditorView.scrollIntoView(range),
     });
     setActiveChunkIndex(index);
     return true;
@@ -119,12 +124,15 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
       direction,
     });
     if (target.kind === 'chunk') focusChunk(target.index);
-    if (target.kind === 'file') navigateReviewFile(target.offset, target.landing);
+    if (target.kind === 'file') navigateReviewFile(
+      target.offset,
+      target.landing === 'first' ? 'first-change' : 'last-change',
+    );
   };
 
   useEffect(() => {
     let cancelled = false;
-    if (isMarkdownDocumentPath(resource.title)) {
+    if (resource.kind === 'file-diff' || isMarkdownDocumentPath(resource.title)) {
       setLanguage(null);
       return () => { cancelled = true; };
     }
@@ -136,7 +144,6 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
 
   useEffect(() => setMarkdownMode('live-preview'), [resource.key]);
 
-  const before = comparison?.before?.content ?? '';
   const after = comparison?.after?.content ?? '';
   const markdownVersion = resource.kind === 'file-version'
     && isMarkdownDocumentPath(comparison?.path ?? resource.title);
@@ -152,17 +159,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
       workspaceSyntaxHighlighting,
     ];
     if (language) base.push(language);
-    if (resource.kind === 'file-diff') {
-      base.push(unifiedMergeView({
-        original: before,
-        highlightChanges: true,
-        gutter: true,
-        mergeControls: false,
-        collapseUnchanged: { margin: 3, minSize: 8 },
-      }));
-    }
     return base;
-  }, [before, language, resource.kind]);
+  }, [language]);
 
   if (errorCode) {
     return <PanelMessage icon={<TriangleAlert className="size-4 text-destructive" />} text={t(`errors.${errorCode}`, { defaultValue: t('turnFiles.loadFailed') })} />;
@@ -189,12 +187,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
               {reviewSession ? `${reviewItemIndex + 1} / ${reviewSession.items.length}` : 'gitSource' in resource ? t('sourceControl.diff') : t('turnFiles.turnDiff')}
             </span>
             {reviewSession ? <>
-              <Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex <= 0} aria-label={t('sourceControl.previousFile')} onClick={() => navigateReviewFile(-1, 'first')}>
-                <ChevronLeft className="size-3.5" />
-              </Button>
-              <Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex >= reviewSession.items.length - 1} aria-label={t('sourceControl.nextFile')} onClick={() => navigateReviewFile(1, 'first')}>
-                <ChevronRight className="size-3.5" />
-              </Button>
+              <Tooltip><TooltipTrigger asChild><Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex <= 0} aria-label={t('sourceControl.previousFile')} onClick={() => navigateReviewFile(-1, 'top')}><ChevronLeft className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('sourceControl.previousFile')}</TooltipContent></Tooltip>
+              <Tooltip><TooltipTrigger asChild><Button size="icon" variant="ghost" className="size-7" disabled={reviewItemIndex >= reviewSession.items.length - 1} aria-label={t('sourceControl.nextFile')} onClick={() => navigateReviewFile(1, 'top')}><ChevronRight className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('sourceControl.nextFile')}</TooltipContent></Tooltip>
             </> : null}
             {showDiffChunkNavigation ? <>
               <Tooltip>
@@ -235,9 +229,29 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             markdownMode={markdownMode}
             onMarkdownModeChange={setMarkdownMode}
           />
+        ) : resource.kind === 'file-diff' ? (
+          <ReadonlyUnifiedDiff
+            comparison={comparison}
+            editorRef={editorRef}
+            ariaLabel={t('turnFiles.diffViewer')}
+            onCreateEditor={(view) => {
+              const count = getChunks(view.state)?.chunks.length ?? 0;
+              setDiffChunkCount(count);
+              const initialIndex = 'gitSource' in resource && resource.reviewLanding === 'last-change'
+                ? Math.max(0, count - 1)
+                : 0;
+              setActiveChunkIndex(initialIndex);
+              const shouldFocusChunk = count > 0
+                && 'gitSource' in resource
+                && resource.reviewSessionId
+                && (resource.reviewLanding === 'first-change' || resource.reviewLanding === 'last-change');
+              if (shouldFocusChunk) {
+                requestAnimationFrame(() => focusChunk(initialIndex));
+              }
+            }}
+          />
         ) : (
           <CodeMirror
-            ref={editorRef}
             value={after}
             height="100%"
             width="100%"
@@ -245,19 +259,8 @@ export function TurnFileWorkspacePanel({ resource }: { resource: FileComparisonW
             basicSetup={false}
             editable={false}
             extensions={extensions}
-            onCreateEditor={(view) => {
-              const count = getChunks(view.state)?.chunks.length ?? 0;
-              setDiffChunkCount(count);
-              const initialIndex = resource.kind === 'file-diff' && 'gitSource' in resource && resource.reviewLanding === 'last'
-                ? Math.max(0, count - 1)
-                : 0;
-              setActiveChunkIndex(initialIndex);
-              if (count > 0 && 'gitSource' in resource && resource.reviewSessionId) {
-                requestAnimationFrame(() => focusChunk(initialIndex));
-              }
-            }}
             className="h-full min-h-0 min-w-0 max-w-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:max-w-full [&_.cm-scroller]:max-w-full [&_.cm-scroller]:overflow-y-auto [&_.cm-scroller]:overflow-x-hidden"
-            aria-label={resource.kind === 'file-diff' ? t('turnFiles.diffViewer') : t('turnFiles.versionViewer')}
+            aria-label={t('turnFiles.versionViewer')}
           />
         )}
       </div>

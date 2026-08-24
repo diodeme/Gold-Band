@@ -4,6 +4,7 @@ use gold_band::acp::client::prompt_activity;
 use gold_band::app::{AcpTurnOutcome, App, RuntimeInterventionKind, RuntimeLifecycleEvent};
 use gold_band::config::ConversationRunMode;
 use gold_band::domain::{RunOutcome, RunStatus};
+use gold_band::runtime::RunState;
 use gold_band::scheduler::coordinator::{DeadlineRegistry, ReconcileReason, ScheduledJobKey};
 use gold_band::scheduler::db::{
     DueMaterialization, RecoverableScheduledJob, ScheduledJobRecord, ScheduledTaskDatabase,
@@ -17,9 +18,11 @@ use gold_band::scheduler::queue::{
     ActiveExecution, DEFAULT_OCCURRENCE_RETENTION_DAYS, LATE_FIRE_GRACE,
     MISSED_RECONCILE_BATCH_SIZE, QueueDecision, RETENTION_DELETE_BATCH_SIZE, decide_queue,
 };
-use gold_band::scheduler::store::ScheduledTaskStore;
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
+use gold_band::workflow_model_binding::{
+    TaskAuthoringWorkflow, TaskAuthoringWorkflowCompat, migrate_authoring_workflow,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -28,10 +31,9 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::commands::acp_live_update_emitter_for_app;
-use crate::commands::acp_session_update_emitter;
+use crate::commands::configure_conversation_runtime_callbacks;
 use crate::scheduled_service::{ManualRunResult, ScheduledServiceError, ScheduledServiceResult};
-use crate::state::DesktopState;
+use crate::state::{DesktopState, provision_project_manifest_for_desktop};
 use crate::view_models_conversation::ConversationCreateInputVm;
 
 mod execution;
@@ -91,7 +93,7 @@ pub enum SchedulerCommand {
         run_id: String,
         round_id: String,
         attempt_id: String,
-        reply: oneshot::Sender<ScheduledServiceResult<bool>>,
+        reply: oneshot::Sender<ScheduledServiceResult<Option<String>>>,
     },
     SettingsChanged,
     CleanupWorkspace {
@@ -166,7 +168,7 @@ impl SchedulerCoordinatorHandle {
         run_id: String,
         round_id: String,
         attempt_id: String,
-    ) -> ScheduledServiceResult<bool> {
+    ) -> ScheduledServiceResult<Option<String>> {
         let (reply, receiver) = oneshot::channel();
         self.send(SchedulerCommand::ResumeAttention {
             workspace_path,
@@ -314,7 +316,39 @@ pub struct ScheduledOccurrenceUpdatedEventVm {
     pub run_id: Option<String>,
 }
 
-pub fn emit_scheduled_task_updated(app_handle: &AppHandle, definition: &ScheduledTaskDefinition) {
+fn scheduled_occurrence_updated_event(
+    project_id: &str,
+    scheduled_task_id: &str,
+    occurrence: &ScheduledOccurrence,
+) -> ScheduledOccurrenceUpdatedEventVm {
+    ScheduledOccurrenceUpdatedEventVm {
+        project_id: project_id.to_string(),
+        scheduled_task_id: scheduled_task_id.to_string(),
+        occurrence_id: occurrence.id.clone(),
+        status: occurrence.status.to_string(),
+        error_code: occurrence.error_code.map(|value| value.to_string()),
+        task_id: occurrence.task_id.clone(),
+        run_id: occurrence.run_id.clone(),
+    }
+}
+
+fn emit_scheduled_occurrence_updated(
+    app_handle: &AppHandle,
+    project_id: &str,
+    scheduled_task_id: &str,
+    occurrence: &ScheduledOccurrence,
+) {
+    let _ = app_handle.emit(
+        SCHEDULER_EVENT,
+        scheduled_occurrence_updated_event(project_id, scheduled_task_id, occurrence),
+    );
+}
+
+pub fn emit_scheduled_task_updated(
+    app_handle: &AppHandle,
+    definition: &ScheduledTaskDefinition,
+    next_run_at: Option<chrono::DateTime<chrono::Utc>>,
+) {
     let _ = app_handle.emit(
         SCHEDULED_TASK_UPDATED_EVENT,
         ScheduledTaskUpdatedEventVm {
@@ -330,7 +364,10 @@ pub fn emit_scheduled_task_updated(app_handle: &AppHandle, definition: &Schedule
                 .to_string()
             }),
             task: Some(
-                crate::view_models_conversation::ScheduledTaskVm::from_definition(definition),
+                crate::view_models_conversation::ScheduledTaskVm::from_definition(
+                    definition,
+                    next_run_at,
+                ),
             ),
         },
     );
@@ -399,13 +436,28 @@ struct ActiveOccurrence {
     guard: OccurrenceExecutionGuard,
 }
 
-type ActiveOccurrenceRegistry = Arc<Mutex<HashMap<String, ActiveOccurrence>>>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ActiveOccurrenceKey {
+    project_id: String,
+    occurrence_id: String,
+}
+
+impl ActiveOccurrenceKey {
+    fn new(project_id: impl Into<String>, occurrence_id: impl Into<String>) -> Self {
+        Self {
+            project_id: project_id.into(),
+            occurrence_id: occurrence_id.into(),
+        }
+    }
+}
+
+type ActiveOccurrenceRegistry = Arc<Mutex<HashMap<ActiveOccurrenceKey, ActiveOccurrence>>>;
 type PendingGuardJoins = Arc<Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>>;
 
 struct ClaimToHandoffGuard {
     active: ActiveOccurrenceRegistry,
     pending_stops: PendingGuardJoins,
-    occurrence_id: String,
+    key: ActiveOccurrenceKey,
     lease: ActiveOccurrenceMetadata,
     armed: bool,
 }
@@ -417,31 +469,37 @@ impl ClaimToHandoffGuard {
         occurrence_id: String,
         lease: ActiveOccurrenceMetadata,
     ) -> anyhow::Result<Self> {
+        let key = ActiveOccurrenceKey::new(lease.project_id.clone(), occurrence_id);
         {
             let active_state = active
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scheduler active state lock poisoned"))?;
-            if active_state.contains_key(&occurrence_id) {
-                anyhow::bail!("scheduled occurrence is already active: {occurrence_id}");
+            if active_state.contains_key(&key) {
+                anyhow::bail!(
+                    "scheduled occurrence is already active: {}/{}",
+                    key.project_id,
+                    key.occurrence_id
+                );
             }
         }
         let callback_active = active.clone();
-        let callback_occurrence_id = occurrence_id.clone();
+        let callback_key = key.clone();
         let execution_guard = OccurrenceExecutionGuard::start(
             lease.database.clone(),
-            occurrence_id.clone(),
+            lease.project_id.clone(),
+            key.occurrence_id.clone(),
             lease.owner_id.clone(),
             LeaseConfig::default(),
             move || {
                 // The guard task owns the callback. Detach the registry entry here and let
                 // the guard task finish naturally; joining from this callback would deadlock.
-                detach_active_occurrence(&callback_active, &callback_occurrence_id);
+                detach_active_occurrence(&callback_active, &callback_key);
             },
         );
         let guard = Self {
             active,
             pending_stops,
-            occurrence_id,
+            key,
             lease,
             armed: true,
         };
@@ -453,25 +511,26 @@ impl ClaimToHandoffGuard {
             .active
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler active state lock poisoned"))?
-            .insert(guard.occurrence_id.clone(), entry);
+            .insert(guard.key.clone(), entry);
         if let Some(previous) = previous {
             let previous_lease = previous.metadata.clone();
             schedule_claim_cleanup(
                 Some(previous),
                 previous_lease,
-                guard.occurrence_id.clone(),
+                guard.key.occurrence_id.clone(),
                 &guard.pending_stops,
             );
             anyhow::bail!(
-                "scheduled occurrence is already active: {}",
-                guard.occurrence_id
+                "scheduled occurrence is already active: {}/{}",
+                guard.key.project_id,
+                guard.key.occurrence_id
             );
         }
         Ok(guard)
     }
 
     async fn stop(&mut self) {
-        if let Some(entry) = take_active_occurrence(&self.active, &self.occurrence_id) {
+        if let Some(entry) = take_active_occurrence(&self.active, &self.key) {
             entry.guard.stop().await;
         }
     }
@@ -490,27 +549,27 @@ impl Drop for ClaimToHandoffGuard {
         if !self.armed {
             return;
         }
-        let entry = take_active_occurrence(&self.active, &self.occurrence_id);
+        let entry = take_active_occurrence(&self.active, &self.key);
         schedule_claim_cleanup(
             entry,
             self.lease.clone(),
-            self.occurrence_id.clone(),
+            self.key.occurrence_id.clone(),
             &self.pending_stops,
         );
     }
 }
 
-fn detach_active_occurrence(active: &ActiveOccurrenceRegistry, occurrence_id: &str) {
+fn detach_active_occurrence(active: &ActiveOccurrenceRegistry, key: &ActiveOccurrenceKey) {
     if let Ok(mut active) = active.lock() {
-        active.remove(occurrence_id);
+        active.remove(key);
     }
 }
 
 fn take_active_occurrence(
     active: &ActiveOccurrenceRegistry,
-    occurrence_id: &str,
+    key: &ActiveOccurrenceKey,
 ) -> Option<ActiveOccurrence> {
-    active.lock().ok()?.remove(occurrence_id)
+    active.lock().ok()?.remove(key)
 }
 
 fn schedule_claim_cleanup(
@@ -526,8 +585,14 @@ fn schedule_claim_cleanup(
         }
         let database = lease.database;
         let owner_id = lease.owner_id;
+        let project_id = lease.project_id;
         let release = tokio::task::spawn_blocking(move || {
-            database.release_owned_occurrence_for_retry(&occurrence_id, &owner_id, Utc::now())
+            database.release_owned_occurrence_for_retry(
+                &project_id,
+                &occurrence_id,
+                &owner_id,
+                Utc::now(),
+            )
         })
         .await;
         match release {
@@ -559,9 +624,9 @@ async fn shutdown_active_occurrences(
     // Calling stop() synchronously publishes cancellation before any future is awaited.
     let mut release_inputs = Vec::with_capacity(active.len());
     let mut stops = Vec::with_capacity(active.len());
-    for (occurrence_id, entry) in active {
+    for (key, entry) in active {
         release_inputs.push((
-            occurrence_id,
+            key,
             entry.metadata.database.clone(),
             entry.metadata.owner_id.clone(),
         ));
@@ -583,11 +648,14 @@ async fn shutdown_active_occurrences(
 
     let failures = tokio::task::spawn_blocking(move || {
         let mut failures = Vec::new();
-        for (occurrence_id, database, owner_id) in release_inputs {
-            if let Err(error) =
-                database.release_owned_occurrence_for_retry(&occurrence_id, &owner_id, now)
-            {
-                failures.push(format!("{occurrence_id}: {error}"));
+        for (key, database, owner_id) in release_inputs {
+            if let Err(error) = database.release_owned_occurrence_for_retry(
+                &key.project_id,
+                &key.occurrence_id,
+                &owner_id,
+                now,
+            ) {
+                failures.push(format!("{}/{}: {error}", key.project_id, key.occurrence_id));
             }
         }
         failures
@@ -622,8 +690,9 @@ struct SchedulerCoordinator<R = ScheduledRuntime> {
     timer_drift_reconcile_pending: bool,
 }
 
-pub fn start(app_handle: AppHandle) -> anyhow::Result<()> {
+pub fn start(app_handle: AppHandle, blocked_project_ids: &HashSet<String>) -> anyhow::Result<()> {
     let state = app_handle.state::<DesktopState>();
+    state.runtime_recovery().ensure_scheduler_start_allowed()?;
     let runtime_app = state.app()?;
     let runtime = Arc::new(ScheduledRuntime {
         app_handle: app_handle.clone(),
@@ -660,6 +729,23 @@ pub fn start(app_handle: AppHandle) -> anyhow::Result<()> {
             .map(|workspace| Utf8PathBuf::from(workspace.workspace_path)),
     );
     for workspace_path in workspaces {
+        let paths = GoldBandPaths::new(workspace_path.clone());
+        if blocked_project_ids.contains(&paths.project_id) {
+            warn!(
+                workspace_path = %workspace_path,
+                "scheduled task workspace remains blocked by runtime recovery"
+            );
+            continue;
+        }
+        if let Err(error) = provision_project_manifest_for_desktop(&paths) {
+            warn!(
+                workspace_path = %workspace_path,
+                project_id = %paths.project_id,
+                error = %error,
+                "scheduled task workspace manifest validation failed"
+            );
+            continue;
+        }
         handle.send(SchedulerCommand::RegisterWorkspace { workspace_path })?;
     }
     info!("scheduled task scheduler started");
@@ -680,6 +766,7 @@ impl ScheduledRuntime {
             create_manual_occurrence(&database, &definition.project_id, definition.id())?;
         let now = Utc::now();
         let claim = database.claim_occurrence(
+            &definition.project_id,
             &occurrence.id,
             &self.owner_id,
             now,
@@ -723,8 +810,14 @@ impl ScheduledRuntime {
         };
         if let Some((status, error)) = terminal_queue_result {
             handoff.stop().await;
-            let finished =
-                database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)?;
+            let finished = database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )?;
             if !finished {
                 anyhow::bail!("failed to finish busy manual occurrence");
             }
@@ -742,7 +835,7 @@ impl ScheduledRuntime {
             }
             return Ok(ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&claimed.id)?
+                    .get_occurrence(&definition.project_id, &claimed.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             });
@@ -759,7 +852,7 @@ impl ScheduledRuntime {
             .await?;
             return Ok(ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&claimed.id)?
+                    .get_occurrence(&definition.project_id, &claimed.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             });
@@ -791,7 +884,7 @@ impl ScheduledRuntime {
         }
         Ok(ManualRunResult {
             occurrence: database
-                .get_occurrence(&claimed.id)?
+                .get_occurrence(&definition.project_id, &claimed.id)?
                 .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
             immediate_links: execution.immediate_links,
         })
@@ -806,6 +899,7 @@ impl ScheduledRuntime {
         now: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         let mut expected_revision = Some(job.revision);
+        let next_run_at = job.next_run_at;
         let mut definition = job.definition;
         ensure_definition_workspace(app, &definition)?;
         if definition.retry_at.is_some_and(|retry_at| retry_at > now) {
@@ -813,13 +907,24 @@ impl ScheduledRuntime {
         }
         let scheduled_at = occurrence.scheduled_at;
         let lease_until = LeaseConfig::default().lease_until(now);
-        let claim = database.claim_occurrence(&occurrence.id, &self.owner_id, now, lease_until)?;
+        let claim = database.claim_occurrence(
+            &definition.project_id,
+            &occurrence.id,
+            &self.owner_id,
+            now,
+            lease_until,
+        )?;
         let claimed = match claim {
             ClaimResult::Claimed(value) => value,
             ClaimResult::AlreadyOwned => return Ok(()),
             ClaimResult::Busy => return Ok(()),
             ClaimResult::NotFound => return Ok(()),
         };
+        // next_run_at 已在 materialize_due_occurrence 中推进到下一个触发点。
+        // 触发瞬间就通知前端，让「下次执行时间」立即更新——它与本次 occurrence 是否执行完、
+        // 执行多久完全解耦；否则 UI 在 execute → persist_active_projection 之间（可能长达整个 Run）
+        // 一直显示旧的 next_run_at。
+        emit_scheduled_task_updated(&self.app_handle, &definition, next_run_at);
         let mut handoff = self.claim_to_handoff_guard(
             &claimed,
             &definition,
@@ -830,12 +935,19 @@ impl ScheduledRuntime {
 
         if let Some((status, error)) = recovery_outcome_for_accepted_occurrence(app, &claimed)? {
             handoff.stop().await;
-            if !database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)? {
+            if !database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )? {
                 anyhow::bail!("failed to finish recovered accepted scheduled occurrence");
             }
             handoff.disarm();
             let recovered = database
-                .get_occurrence(&claimed.id)?
+                .get_occurrence(&definition.project_id, &claimed.id)?
                 .ok_or_else(|| anyhow::anyhow!("recovered scheduled occurrence disappeared"))?;
             definition.last_trigger_at = Some(recovered.scheduled_at);
             definition.last_trigger_status = Some(recovered.status.to_string());
@@ -882,8 +994,14 @@ impl ScheduledRuntime {
                 }
             };
             handoff.stop().await;
-            let finished =
-                database.finish_occurrence(&claimed.id, &self.owner_id, status, None, error)?;
+            let finished = database.finish_occurrence(
+                &definition.project_id,
+                &claimed.id,
+                &self.owner_id,
+                status,
+                None,
+                error,
+            )?;
             if !finished {
                 anyhow::bail!("failed to finish busy scheduled occurrence");
             }
@@ -955,6 +1073,56 @@ impl ScheduledRuntime {
         Ok(())
     }
 
+    async fn reconcile_running_occurrences(
+        &self,
+        database: &ScheduledTaskDatabase,
+        app: &App,
+        job: &ScheduledJobRecord,
+    ) -> anyhow::Result<()> {
+        let occurrences = database
+            .list_running_occurrences_for_job(&job.definition.project_id, job.definition.id())?;
+        for occurrence in occurrences {
+            let Some((status, error)) = reconcile_running_occurrence_outcome(app, &occurrence)?
+            else {
+                continue; // Task/Run 仍 active 或尚未 execute，保留 running。
+            };
+            let Some(finished) = finish_reconciled_occurrence(
+                database,
+                &self.active,
+                &job.definition.project_id,
+                &occurrence.id,
+                &self.owner_id,
+                status,
+                error.clone(),
+            )
+            .await?
+            else {
+                // lease 已被别人接手或已终态：跳过，交由其 owner 处理。
+                continue;
+            };
+            apply_terminal_occurrence_side_effects(
+                &self.app_handle,
+                ActiveOccurrenceMetadata {
+                    database: database.clone(),
+                    workspace_path: app.paths.repo_root.clone(),
+                    owner_id: self.owner_id.clone(),
+                    project_id: job.definition.project_id.clone(),
+                    scheduled_task_id: job.definition.id.clone(),
+                    expected_revision: Some(job.revision),
+                },
+                &finished,
+            );
+            warn!(
+                occurrence_id = %occurrence.id,
+                job_id = %job.definition.id(),
+                status = %status,
+                error = ?error.map(|e| e.code.to_string()),
+                "scheduled running occurrence reconciled to terminal (lifecycle event likely lost)"
+            );
+        }
+        Ok(())
+    }
+
     async fn finish_immediate_failure(
         &self,
         database: &ScheduledTaskDatabase,
@@ -967,6 +1135,7 @@ impl ScheduledRuntime {
         let error_code = error.code;
         handoff.stop().await;
         let finished = database.finish_occurrence(
+            &definition.project_id,
             &occurrence.id,
             &self.owner_id,
             OccurrenceStatus::Failed,
@@ -992,7 +1161,9 @@ impl ScheduledRuntime {
         execution_error: &anyhow::Error,
     ) -> anyhow::Result<()> {
         handoff.stop().await;
+        let project_id = handoff.lease.project_id.clone();
         let finished = database.finish_occurrence(
+            &project_id,
             &occurrence.id,
             &self.owner_id,
             OccurrenceStatus::Failed,
@@ -1042,8 +1213,8 @@ impl ScheduledRuntime {
         let Some(revision) = *expected_revision else {
             return Ok(());
         };
-        let updated = persist_runtime_projection(database, definition, revision, |updated| {
-            emit_scheduled_task_updated(&self.app_handle, updated);
+        let updated = persist_runtime_projection(database, definition, revision, |record| {
+            emit_scheduled_task_updated(&self.app_handle, &record.definition, record.next_run_at);
         })?;
         match updated {
             Some(updated) => {
@@ -1052,8 +1223,9 @@ impl ScheduledRuntime {
             }
             None => *expected_revision = None,
         }
+        let key = ActiveOccurrenceKey::new(&definition.project_id, occurrence_id);
         if let Ok(mut active) = self.active.lock()
-            && let Some(active) = active.get_mut(occurrence_id)
+            && let Some(active) = active.get_mut(&key)
         {
             active.metadata.expected_revision = *expected_revision;
         }
@@ -1072,16 +1244,24 @@ impl ScheduledRuntime {
         run_id: &str,
         round_id: &str,
         attempt_id: &str,
-    ) -> anyhow::Result<bool> {
-        let Some(attention) =
-            database.find_attention_occurrence_by_links(task_id, run_id, round_id, attempt_id)?
+    ) -> anyhow::Result<Option<String>> {
+        let Some(attention) = database.find_attention_occurrence_by_links(
+            &app.paths.project_id,
+            task_id,
+            run_id,
+            round_id,
+            attempt_id,
+        )?
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        let Some(job) = database.get_job_definition_by_id(&attention.job_id)? else {
-            return Ok(false);
+        let Some(mut job) =
+            database.get_job_definition(&app.paths.project_id, &attention.job_id)?
+        else {
+            anyhow::bail!("scheduled attention definition was not found");
         };
         let claim = database.resume_attention_occurrence(
+            &app.paths.project_id,
             &attention.id,
             &self.owner_id,
             Utc::now(),
@@ -1089,11 +1269,11 @@ impl ScheduledRuntime {
         )?;
         let claimed = match claim {
             ClaimResult::Claimed(value) => value,
-            ClaimResult::AlreadyOwned => return Ok(true),
+            ClaimResult::AlreadyOwned => return Ok(Some(attention.id)),
             ClaimResult::Busy => {
                 anyhow::bail!("scheduled attention occurrence is owned by another runtime")
             }
-            ClaimResult::NotFound => return Ok(false),
+            ClaimResult::NotFound => return Ok(None),
         };
         let guard = self.claim_to_handoff_guard(
             &claimed,
@@ -1102,20 +1282,49 @@ impl ScheduledRuntime {
             &app.paths.repo_root,
             Some(job.revision),
         )?;
+        project_resumed_attention(&mut job.definition, &claimed, Utc::now());
+        let mut expected_revision = Some(job.revision);
+        self.persist_active_projection(
+            &claimed.id,
+            database,
+            &mut job.definition,
+            &mut expected_revision,
+        )?;
         guard.handoff();
-        Ok(true)
+        emit_scheduled_occurrence_updated(
+            &self.app_handle,
+            &job.definition.project_id,
+            job.definition.id(),
+            &claimed,
+        );
+        Ok(Some(claimed.id))
     }
 
     fn handle_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
-        let Some(occurrence_id) = scheduled_occurrence_id(&event) else {
+        let Some(key) = scheduled_occurrence_key(&event) else {
+            // 终止事件未携带 occurrence_id（orchestrator 硬编码 None，依赖 App 注入）。
+            // 若这是某条 scheduled run 的完成事件，对应 occurrence 会因收不到事件卡 running，
+            // 只能靠主动对账收尾。这里记录便于定位。
+            if event_finishes_occurrence(&event) {
+                warn!(
+                    event = ?event,
+                    "scheduled lifecycle terminal event has no occurrence id; occurrence may stick in running"
+                );
+            }
             return;
         };
         if !event_finishes_occurrence(&event) {
             return;
         }
-        let Some(entry) = take_active_occurrence(&self.active, &occurrence_id) else {
+        let Some(entry) = take_active_occurrence(&self.active, &key) else {
+            warn!(
+                project_id = %key.project_id,
+                occurrence_id = %key.occurrence_id,
+                "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
+            );
             return;
         };
+        let occurrence_id = key.occurrence_id;
         let app_handle = self.app_handle.clone();
         let pending_guard_joins = self.pending_guard_joins.clone();
         let join = tauri::async_runtime::spawn(async move {
@@ -1134,58 +1343,85 @@ fn finish_lifecycle_occurrence(
     active: ActiveOccurrenceMetadata,
     event: RuntimeLifecycleEvent,
 ) {
-    match finish_occurrence_for_event(&active.database, &occurrence_id, &active.owner_id, &event) {
+    match finish_occurrence_for_event(
+        &active.database,
+        &active.project_id,
+        &occurrence_id,
+        &active.owner_id,
+        &event,
+    ) {
         Ok(Some(occurrence)) => {
-            let workspace_path = active.workspace_path.clone();
-            if let Some(expected_revision) = active.expected_revision {
-                match active
-                    .database
-                    .get_job_definition(&active.project_id, &active.scheduled_task_id)
-                {
-                    Ok(Some(current)) => {
-                        let mut definition = current.definition;
-                        definition.last_trigger_at = Some(occurrence.scheduled_at);
-                        definition.last_trigger_status = Some(occurrence.status.to_string());
-                        definition.last_error =
-                            occurrence.error_code.map(|value| value.to_string());
-                        if occurrence.task_id.is_some() {
-                            definition.task_id = occurrence.task_id.clone();
-                        }
-                        definition.updated_at = Utc::now();
-                        if let Err(error) = persist_runtime_projection(
-                            &active.database,
-                            &definition,
-                            expected_revision,
-                            |updated| emit_scheduled_task_updated(&app_handle, updated),
-                        ) {
-                            warn!(%error, %occurrence_id, "failed to persist scheduled lifecycle projection");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!(%error, %occurrence_id, "failed to load scheduled lifecycle projection")
-                    }
-                }
-            }
-            emit_scheduled_occurrence_notification(&app_handle, &active.project_id, &occurrence);
-            let _ = app_handle.emit(
-                SCHEDULER_EVENT,
-                ScheduledOccurrenceUpdatedEventVm {
-                    project_id: active.project_id,
-                    scheduled_task_id: active.scheduled_task_id,
-                    occurrence_id: occurrence.id,
-                    status: occurrence.status.to_string(),
-                    error_code: occurrence.error_code.map(|value| value.to_string()),
-                    task_id: occurrence.task_id,
-                    run_id: occurrence.run_id,
-                },
-            );
-            if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
-                let _ = coordinator.send(SchedulerCommand::CleanupWorkspace { workspace_path });
-            }
+            apply_terminal_occurrence_side_effects(&app_handle, active, &occurrence);
         }
         Ok(None) => {}
         Err(error) => warn!(%error, %occurrence_id, "failed to finish scheduled occurrence"),
+    }
+}
+
+fn project_resumed_attention(
+    definition: &mut ScheduledTaskDefinition,
+    occurrence: &ScheduledOccurrence,
+    now: DateTime<Utc>,
+) {
+    definition.last_trigger_at = Some(occurrence.scheduled_at);
+    definition.last_trigger_status = Some(OccurrenceStatus::Running.to_string());
+    definition.last_error = None;
+    definition.retry_count = 0;
+    definition.retry_at = None;
+    definition.updated_at = now;
+}
+
+fn apply_terminal_occurrence_side_effects(
+    app_handle: &AppHandle,
+    active: ActiveOccurrenceMetadata,
+    occurrence: &ScheduledOccurrence,
+) {
+    if let Some(expected_revision) = active.expected_revision {
+        match active
+            .database
+            .get_job_definition(&active.project_id, &active.scheduled_task_id)
+        {
+            Ok(Some(current)) => {
+                let mut definition = current.definition;
+                definition.last_trigger_at = Some(occurrence.scheduled_at);
+                definition.last_trigger_status = Some(occurrence.status.to_string());
+                definition.last_error = occurrence.error_code.map(|value| value.to_string());
+                if occurrence.task_id.is_some() {
+                    definition.task_id = occurrence.task_id.clone();
+                }
+                definition.updated_at = Utc::now();
+                if let Err(error) = persist_runtime_projection(
+                    &active.database,
+                    &definition,
+                    expected_revision,
+                    |record| {
+                        emit_scheduled_task_updated(
+                            app_handle,
+                            &record.definition,
+                            record.next_run_at,
+                        )
+                    },
+                ) {
+                    warn!(%error, occurrence_id = %occurrence.id, "failed to persist scheduled terminal projection");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(%error, occurrence_id = %occurrence.id, "failed to load scheduled terminal projection")
+            }
+        }
+    }
+    emit_scheduled_occurrence_notification(app_handle, &active.project_id, occurrence);
+    emit_scheduled_occurrence_updated(
+        app_handle,
+        &active.project_id,
+        &active.scheduled_task_id,
+        occurrence,
+    );
+    if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
+        let _ = coordinator.send(SchedulerCommand::CleanupWorkspace {
+            workspace_path: active.workspace_path,
+        });
     }
 }
 
@@ -1254,6 +1490,17 @@ trait CoordinatorRuntimeDriver: Send + Sync + 'static {
         now: DateTime<Utc>,
     ) -> anyhow::Result<()>;
 
+    /// 主动状态对账：核对指定 job 的 running occurrence 与底层 Task/Run 真实状态，
+    /// 把 lifecycle 终止事件已丢失的 occurrence 收尾为终态。默认不做任何事（测试 mock 可不实现）。
+    async fn reconcile_running_occurrences(
+        &self,
+        _database: &ScheduledTaskDatabase,
+        _app: &App,
+        _job: &ScheduledJobRecord,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     async fn run_manual(
         &self,
         app: &App,
@@ -1268,9 +1515,9 @@ trait CoordinatorRuntimeDriver: Send + Sync + 'static {
         run_id: &str,
         round_id: &str,
         attempt_id: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<String>> {
         let _ = (database, app, task_id, run_id, round_id, attempt_id);
-        Ok(false)
+        Ok(None)
     }
 }
 
@@ -1287,6 +1534,15 @@ impl CoordinatorRuntimeDriver for ScheduledRuntime {
             .context()
             .map(|context| context.config.scheduled_occurrence_retention_days)
             .unwrap_or(DEFAULT_OCCURRENCE_RETENTION_DAYS)
+    }
+
+    async fn reconcile_running_occurrences(
+        &self,
+        database: &ScheduledTaskDatabase,
+        app: &App,
+        job: &ScheduledJobRecord,
+    ) -> anyhow::Result<()> {
+        ScheduledRuntime::reconcile_running_occurrences(self, database, app, job).await
     }
 
     fn reconcile_power_state(&self, enabled_job_count: usize, app_is_running: bool) {
@@ -1353,7 +1609,7 @@ impl CoordinatorRuntimeDriver for ScheduledRuntime {
         run_id: &str,
         round_id: &str,
         attempt_id: &str,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<String>> {
         ScheduledRuntime::resume_attention(
             self, database, app, task_id, run_id, round_id, attempt_id,
         )
@@ -1571,10 +1827,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         let app = self.runtime.app_for_workspace(&workspace_path)?;
         let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path())?;
         let now = self.runtime.now();
-        migrate_legacy_scheduler_database(&app.paths, &database, now)?;
-        let legacy_store = ScheduledTaskStore::new(app.paths.clone());
-        database.import_legacy_store(&legacy_store)?;
-        database.recover_expired(now)?;
+        database.recover_expired(&app.paths.project_id, now)?;
         let candidate = WorkspaceRegistration {
             app: Arc::new(app),
             database,
@@ -1639,7 +1892,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .try_fold(0usize, |count, registration| {
                 registration
                     .database
-                    .enabled_job_count()
+                    .enabled_job_count(&registration.app.paths.project_id)
                     .map(|workspace_count| count.saturating_add(workspace_count))
             });
         match enabled_job_count {
@@ -1670,6 +1923,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             ));
         loop {
             let result = registration.database.cleanup_terminal_occurrences(
+                &registration.app.paths.project_id,
                 cutoff,
                 RETENTION_DELETE_BATCH_SIZE,
                 &protected_run_ids,
@@ -1697,7 +1951,10 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         registration: &WorkspaceRegistration,
         occurrence_id: &str,
     ) {
-        match registration.database.get_occurrence(occurrence_id) {
+        match registration
+            .database
+            .get_occurrence(&registration.app.paths.project_id, occurrence_id)
+        {
             Ok(Some(occurrence)) => self
                 .runtime
                 .notify_occurrence(&registration.app.paths.project_id, &occurrence),
@@ -1738,7 +1995,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         _reason: ReconcileReason,
     ) -> anyhow::Result<()> {
         let now = self.runtime.now();
-        registration.database.recover_expired(now)?;
+        registration
+            .database
+            .recover_expired(&registration.app.paths.project_id, now)?;
         let recoverable = registration
             .database
             .list_recoverable_jobs_for_project(&registration.app.paths.project_id)?;
@@ -1772,7 +2031,7 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             };
             if recovery.has_runnable_occurrence
                 && let Some(occurrence) =
-                    next_runnable_occurrence(&registration.database, &key.job_id)?
+                    next_runnable_occurrence(&registration.database, &key.project_id, &key.job_id)?
             {
                 if recovery
                     .job
@@ -1832,18 +2091,39 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("scheduled workspace is not registered"))?;
         let now = self.runtime.now();
-        registration.database.recover_expired(now)?;
+        registration
+            .database
+            .recover_expired(&registration.app.paths.project_id, now)?;
         let Some(recovery) = registration
             .database
             .get_recoverable_job_for_project(&key.project_id, &key.job_id)?
         else {
             return Ok(());
         };
+        // 主动状态对账：在每次触发点核对当前 job 的 running occurrence。
+        // recover_expired 只回收 lease 过期的；lease 仍新鲜但 lifecycle 终止事件已丢失的
+        // occurrence 会永久卡 running。这里以 Task/Run 真实状态为基准收尾，真在跑的保留。
+        if let Err(error) = self
+            .runtime
+            .reconcile_running_occurrences(&registration.database, &registration.app, &recovery.job)
+            .await
+        {
+            warn!(%error, job_id = %key.job_id, "scheduled running occurrence reconcile failed");
+        }
         if !registered.matches(&recovery.job) {
-            return self.register_record(key.clone(), recovery, now);
+            if recovery.has_runnable_occurrence {
+                return self.register_record(key.clone(), recovery, now);
+            }
+            return self.register_record_not_before(
+                key.clone(),
+                recovery,
+                now,
+                Some(stale_deadline_retry_at(registered.wake_at, now)),
+            );
         }
         if recovery.has_runnable_occurrence
-            && let Some(occurrence) = next_runnable_occurrence(&registration.database, &key.job_id)?
+            && let Some(occurrence) =
+                next_runnable_occurrence(&registration.database, &key.project_id, &key.job_id)?
         {
             if recovery
                 .job
@@ -1954,9 +2234,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         run_id: &str,
         round_id: &str,
         attempt_id: &str,
-    ) -> ScheduledServiceResult<bool> {
+    ) -> ScheduledServiceResult<Option<String>> {
         let Some(registration) = self.workspaces.get(&workspace_path).cloned() else {
-            return Ok(false);
+            return Err(coordinator_error("resume-attention-workspace"));
         };
         self.runtime
             .resume_attention(
@@ -2034,6 +2314,16 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         record: RecoverableScheduledJob,
         now: DateTime<Utc>,
     ) -> anyhow::Result<()> {
+        self.register_record_not_before(key, record, now, None)
+    }
+
+    fn register_record_not_before(
+        &mut self,
+        key: ScheduledJobKey,
+        record: RecoverableScheduledJob,
+        now: DateTime<Utc>,
+        not_before: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<()> {
         let scheduled_deadline = record
             .job
             .definition
@@ -2051,10 +2341,13 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         .into_iter()
         .flatten()
         .min();
-        let Some(wake_at) = wake_at else {
+        let Some(mut wake_at) = wake_at else {
             self.cancel_job(&key);
             return Ok(());
         };
+        if let Some(not_before) = not_before {
+            wake_at = wake_at.max(not_before);
+        }
         let registered = RegisteredDeadline {
             revision: record.job.revision,
             scheduled_deadline,
@@ -2071,6 +2364,14 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
     }
 }
 
+fn stale_deadline_retry_at(wake_at: DateTime<Utc>, now: DateTime<Utc>) -> DateTime<Utc> {
+    if wake_at > now {
+        return wake_at;
+    }
+    now + Duration::from_std(DEADLINE_FAILURE_RETRY_DELAY)
+        .expect("deadline retry delay must fit chrono::Duration")
+}
+
 fn coordinator_error(operation: &'static str) -> ScheduledServiceError {
     ScheduledServiceError::new(
         ScheduledErrorCode::CoordinatorUnavailable,
@@ -2080,9 +2381,10 @@ fn coordinator_error(operation: &'static str) -> ScheduledServiceError {
 
 fn next_runnable_occurrence(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     job_id: &str,
 ) -> anyhow::Result<Option<ScheduledOccurrence>> {
-    Ok(database.oldest_runnable_occurrence(job_id)?)
+    Ok(database.oldest_runnable_occurrence(project_id, job_id)?)
 }
 
 fn runtime_app_for_workspace(
@@ -2092,19 +2394,6 @@ fn runtime_app_for_workspace(
 ) -> anyhow::Result<App> {
     let base = state.app()?;
     Ok(base.with_repo_root(Utf8PathBuf::from(workspace), context.config.clone()))
-}
-
-fn migrate_legacy_scheduler_database(
-    paths: &GoldBandPaths,
-    destination: &ScheduledTaskDatabase,
-    applied_at: DateTime<Utc>,
-) -> anyhow::Result<()> {
-    let legacy_path = paths.legacy_scheduler_db_path();
-    if legacy_path == paths.scheduler_db_path() {
-        return Ok(());
-    }
-    destination.import_legacy_database_path_once(legacy_path, &paths.project_id, applied_at)?;
-    Ok(())
 }
 
 fn ensure_definition_workspace(
@@ -2129,11 +2418,11 @@ fn persist_runtime_projection<F>(
     notify: F,
 ) -> anyhow::Result<Option<ScheduledJobRecord>>
 where
-    F: FnOnce(&ScheduledTaskDefinition),
+    F: FnOnce(&ScheduledJobRecord),
 {
     match database.update_job_runtime_projection(definition, expected_revision)? {
         UpdateJobResult::Updated(updated) => {
-            notify(&updated.definition);
+            notify(&updated);
             Ok(Some(updated))
         }
         UpdateJobResult::Conflict(_) | UpdateJobResult::NotFound => Ok(None),
@@ -2375,27 +2664,37 @@ fn is_full_auto_mode(value: &str) -> bool {
     )
 }
 
-fn scheduled_occurrence_id(event: &RuntimeLifecycleEvent) -> Option<String> {
+fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccurrenceKey> {
     match event {
         RuntimeLifecycleEvent::RunPaused {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::InterventionRequested {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::RunCompleted {
+            project_id,
             scheduled_occurrence_id,
             ..
         }
         | RuntimeLifecycleEvent::AcpTurnFinished {
+            project_id,
             scheduled_occurrence_id,
             ..
-        } => scheduled_occurrence_id.clone(),
-        RuntimeLifecycleEvent::NodeStarted { .. } | RuntimeLifecycleEvent::NodeCompleted { .. } => {
-            None
-        }
+        } => scheduled_occurrence_id
+            .as_ref()
+            .map(|occurrence_id| ActiveOccurrenceKey::new(project_id, occurrence_id)),
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::NodeStarted { .. }
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => None,
     }
 }
 
@@ -2408,8 +2707,28 @@ fn event_finishes_occurrence(event: &RuntimeLifecycleEvent) -> bool {
     )
 }
 
+async fn finish_reconciled_occurrence(
+    database: &ScheduledTaskDatabase,
+    active: &ActiveOccurrenceRegistry,
+    project_id: &str,
+    occurrence_id: &str,
+    owner_id: &str,
+    status: OccurrenceStatus,
+    error: Option<ScheduledError>,
+) -> anyhow::Result<Option<ScheduledOccurrence>> {
+    let key = ActiveOccurrenceKey::new(project_id, occurrence_id);
+    if let Some(entry) = take_active_occurrence(active, &key) {
+        entry.guard.stop().await;
+    }
+    if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, None, error)? {
+        return Ok(None);
+    }
+    Ok(database.get_occurrence(project_id, occurrence_id)?)
+}
+
 pub(crate) fn finish_occurrence_for_event(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     event: &RuntimeLifecycleEvent,
@@ -2490,14 +2809,19 @@ pub(crate) fn finish_occurrence_for_event(
                 Some(ScheduledError::new(code)),
             )
         }
-        RuntimeLifecycleEvent::RunPaused { .. }
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
-        | RuntimeLifecycleEvent::NodeCompleted { .. } => return Ok(None),
+        | RuntimeLifecycleEvent::NodeCompleted { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
     };
-    if !database.finish_occurrence(occurrence_id, owner_id, status, links, error)? {
+    if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, links, error)? {
         return Ok(None);
     }
-    Ok(database.get_occurrence(occurrence_id)?)
+    Ok(database.get_occurrence(project_id, occurrence_id)?)
 }
 
 fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
@@ -2527,6 +2851,7 @@ pub(super) struct ExecutionResult {
 #[cfg(test)]
 fn accept_occurrence_links_then<T, F>(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     now: DateTime<Utc>,
@@ -2536,13 +2861,14 @@ fn accept_occurrence_links_then<T, F>(
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(occurrence_id, owner_id, now, links)? {
+    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
         anyhow::bail!("scheduled occurrence execution links were not accepted");
     }
     match launch() {
         Ok(result) => Ok(result),
         Err(launch_error) => {
             let finish_result = database.finish_occurrence(
+                project_id,
                 occurrence_id,
                 owner_id,
                 OccurrenceStatus::Failed,
@@ -2567,6 +2893,7 @@ where
 
 fn accept_occurrence_links_then_deferred<T, F>(
     database: &ScheduledTaskDatabase,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     now: DateTime<Utc>,
@@ -2576,7 +2903,7 @@ fn accept_occurrence_links_then_deferred<T, F>(
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(occurrence_id, owner_id, now, links)? {
+    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
         anyhow::bail!("scheduled occurrence execution links were not accepted");
     }
     launch()
@@ -2592,10 +2919,17 @@ fn recover_accepted_occurrence(
     let Some((status, error)) = recovery_outcome_for_accepted_occurrence(app, occurrence)? else {
         return Ok(None);
     };
-    if !database.finish_occurrence(&occurrence.id, owner_id, status, None, error)? {
+    if !database.finish_occurrence(
+        &app.paths.project_id,
+        &occurrence.id,
+        owner_id,
+        status,
+        None,
+        error,
+    )? {
         anyhow::bail!("failed to finish recovered accepted scheduled occurrence");
     }
-    Ok(database.get_occurrence(&occurrence.id)?)
+    Ok(database.get_occurrence(&app.paths.project_id, &occurrence.id)?)
 }
 
 fn recovery_outcome_for_accepted_occurrence(
@@ -2638,6 +2972,67 @@ fn recovery_outcome_for_accepted_occurrence(
 
 fn task_has_active_execution(app: &App, task_id: Option<&str>) -> anyhow::Result<bool> {
     Ok(active_execution_for_task(app, task_id)?.is_active())
+}
+
+/// 主动状态对账：判断一条 running occurrence 是否需要收尾。
+///
+/// 与 `recovery_outcome_for_accepted_occurrence`（claim 时自检，run 还 Running 会 pause 并 Failed）
+/// 不同，本函数用于 scheduler 周期性对账：**Task/Run 仍 active 就保留**（返回 None，不误杀长任务），
+/// 只有 Task/Run 已 Completed/不存在（说明 lifecycle 事件丢失）才给出终态。
+fn reconcile_running_occurrence_outcome(
+    app: &App,
+    occurrence: &ScheduledOccurrence,
+) -> anyhow::Result<Option<(OccurrenceStatus, Option<ScheduledError>)>> {
+    let (Some(task_id), Some(run_id)) =
+        (occurrence.task_id.as_deref(), occurrence.run_id.as_deref())
+    else {
+        // claim 后尚未 execute（无 task_id/run_id）：交给 lease 机制处理，对账不动。
+        return Ok(None);
+    };
+    let (status, error) = match app.run_status(task_id, run_id) {
+        Ok(run) => {
+            if active_execution_for_loaded_run(app, task_id, &run).is_active() {
+                // 只判断 occurrence 自己关联的 Run；同 Task 的其他 Run 不属于该 occurrence。
+                return Ok(None);
+            }
+            if run.status == RunStatus::Completed {
+                match run.outcome {
+                    Some(RunOutcome::Success) => (OccurrenceStatus::Succeeded, None),
+                    Some(RunOutcome::Failure | RunOutcome::Killed) | None => (
+                        OccurrenceStatus::Failed,
+                        Some(ScheduledError::new(ScheduledErrorCode::ExecutionFailed)),
+                    ),
+                }
+            } else {
+                (
+                    OccurrenceStatus::Failed,
+                    Some(ScheduledError::new(ScheduledErrorCode::LeaseLost)),
+                )
+            }
+        }
+        Err(_) => (
+            OccurrenceStatus::Failed,
+            Some(ScheduledError::new(ScheduledErrorCode::LeaseLost)),
+        ),
+    };
+    Ok(Some((status, error)))
+}
+
+fn active_execution_for_loaded_run(app: &App, task_id: &str, run: &RunState) -> ActiveExecution {
+    let has_active_prompt = match (
+        run.current_round.as_deref(),
+        run.current_node.as_deref(),
+        run.current_attempt.as_deref(),
+    ) {
+        (Some(round_id), Some(node_id), Some(attempt_id)) => {
+            let attempt_dir = app
+                .paths
+                .attempt_dir(task_id, &run.id, round_id, node_id, attempt_id);
+            attempt_tree_has_active_prompt(&attempt_dir, &|path| prompt_activity(path).is_some())
+        }
+        _ => false,
+    };
+    active_execution_for_run(run.status, run.pause_reason, has_active_prompt)
 }
 
 fn active_execution_for_task(app: &App, task_id: Option<&str>) -> anyhow::Result<ActiveExecution> {
@@ -2868,19 +3263,11 @@ pub(super) fn execute_definition_with_action(
                         trigger_kind,
                         scheduled_at,
                     )));
-                let live_update = acp_live_update_emitter_for_app(
-                    &scheduled_app,
+                let scheduled_app = configure_conversation_runtime_callbacks(
+                    scheduled_app,
                     app_handle.clone(),
                     Some(definition.project_id.clone()),
                 );
-                let background_app = scheduled_app.clone_for_background();
-                let scheduled_app = scheduled_app
-                    .with_acp_live_update(live_update)
-                    .with_acp_session_update(acp_session_update_emitter(
-                        app_handle.clone(),
-                        background_app,
-                        Some(definition.project_id.clone()),
-                    ));
                 let handle = app_handle.clone();
                 let project_id = Some(definition.project_id.clone());
                 let task_id_for_thread = task_id.clone();
@@ -2896,6 +3283,7 @@ pub(super) fn execute_definition_with_action(
                 };
                 accept_occurrence_links_then_deferred(
                     database,
+                    &definition.project_id,
                     occurrence_id,
                     owner_id,
                     Utc::now(),
@@ -2905,7 +3293,7 @@ pub(super) fn execute_definition_with_action(
                             .name("scheduled-continuous-prompt".to_string())
                             .spawn(move || {
                                 let result = tauri::async_runtime::block_on(
-                                    crate::commands::send_acp_prompt_with_app(
+                                    crate::commands::send_acp_prompt_with_configured_app(
                                         handle,
                                         scheduled_app,
                                         project_id,
@@ -2914,7 +3302,7 @@ pub(super) fn execute_definition_with_action(
                                         round_id_for_thread,
                                         node_id_for_thread,
                                         attempt_id_for_thread,
-                                        input.content,
+                                        input.content.into(),
                                         None,
                                         None,
                                         None,
@@ -2942,20 +3330,23 @@ pub(super) fn execute_definition_with_action(
                     trigger_kind,
                     scheduled_at,
                 )));
-            let live_update = acp_live_update_emitter_for_app(
-                &scheduled_app,
+            let scheduled_app = configure_conversation_runtime_callbacks(
+                scheduled_app,
                 app_handle.clone(),
                 Some(definition.project_id.clone()),
             );
-            let background_app = scheduled_app.clone_for_background();
-            let scheduled_app = scheduled_app
-                .with_acp_live_update(live_update)
-                .with_acp_session_update(acp_session_update_emitter(
-                    app_handle.clone(),
-                    background_app,
-                    Some(definition.project_id.clone()),
-                ));
-            let prepared_run = scheduled_app.prepare_run(&task_id, None)?;
+            let prepared_run = match definition.mode {
+                ScheduledMode::Workflow => {
+                    let authoring = scheduled_workflow_authoring(definition)?.ok_or_else(|| {
+                        anyhow::anyhow!("scheduled workflow authoring snapshot is missing")
+                    })?;
+                    scheduled_app.prepare_run_with_authoring(&task_id, &authoring)?
+                }
+                ScheduledMode::Auto => scheduled_app.prepare_run(&task_id, None)?,
+                ScheduledMode::Direct => {
+                    anyhow::bail!("direct mode cannot use the start-new-run action")
+                }
+            };
             let run = prepared_run.run().clone();
             let links = OccurrenceLinks {
                 task_id: Some(task_id.clone()),
@@ -2965,6 +3356,7 @@ pub(super) fn execute_definition_with_action(
             };
             accept_occurrence_links_then_deferred(
                 database,
+                &definition.project_id,
                 occurrence_id,
                 owner_id,
                 Utc::now(),
@@ -2991,19 +3383,11 @@ pub(super) fn execute_definition_with_action(
             trigger_kind,
             scheduled_at,
         )));
-    let live_update = acp_live_update_emitter_for_app(
-        &scheduled_app,
+    let run_app = configure_conversation_runtime_callbacks(
+        scheduled_app,
         app_handle.clone(),
         Some(definition.project_id.clone()),
     );
-    let background_app = scheduled_app.clone_for_background();
-    let run_app = scheduled_app
-        .with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(
-            app_handle.clone(),
-            background_app,
-            Some(definition.project_id.clone()),
-        ));
     let prepared_task =
         crate::view_models_conversation::prepare_conversation_task_vm(&run_app, &input)?;
     let task_id = prepared_task.task_id().to_string();
@@ -3017,6 +3401,7 @@ pub(super) fn execute_definition_with_action(
     };
     accept_occurrence_links_then_deferred(
         database,
+        &definition.project_id,
         occurrence_id,
         owner_id,
         Utc::now(),
@@ -3071,9 +3456,10 @@ fn scheduled_create_input(
         .get("workflowTemplateId")
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned);
-    let include_interview = config
-        .get("includeInterview")
+    let include_optional_entry = config
+        .get("includeOptionalEntry")
         .and_then(|value| value.as_bool());
+    let workflow_authoring = scheduled_workflow_authoring(definition)?;
     let input_dir = app.paths.scheduled_task_dir(&definition.id).join("inputs");
     let attachment_paths = definition
         .attachment_names
@@ -3090,13 +3476,27 @@ fn scheduled_create_input(
             .unwrap_or_else(|| ConversationRunMode::Direct.as_str())
             .to_string(),
         workflow_template_id,
-        include_interview,
+        include_optional_entry,
         direct_config,
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
+        work_location: Default::default(),
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
+        workflow_authoring,
     })
+}
+
+fn scheduled_workflow_authoring(
+    definition: &ScheduledTaskDefinition,
+) -> anyhow::Result<Option<TaskAuthoringWorkflow>> {
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(None);
+    };
+    let compat = serde_json::from_value::<TaskAuthoringWorkflowCompat>(value)?;
+    let (mut authoring, _) = compat.into_current();
+    migrate_authoring_workflow(&mut authoring.workflow, &mut authoring.model_bindings, None)?;
+    Ok(Some(authoring))
 }
 
 #[cfg(test)]
@@ -3110,7 +3510,7 @@ mod tests {
     use gold_band::app::{RuntimeInterventionKind, RuntimeLifecycleEvent};
     use gold_band::config::ProviderDiagnosticSnapshot;
     use gold_band::domain::{PauseReason, RunOutcome, RunStatus, VERSION};
-    use gold_band::runtime::RunState;
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::scheduler::coordinator::{DeadlineRegistry, ReconcileReason, ScheduledJobKey};
     use gold_band::scheduler::db::{DueMaterialization, ScheduledTaskDatabase, UpdateJobResult};
     use gold_band::scheduler::occurrence::{
@@ -3123,21 +3523,26 @@ mod tests {
         OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition, SessionPolicy,
     };
     use gold_band::storage::write_json;
+    use gold_band::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
+    };
     use tempfile::tempdir;
     use tokio::sync::Notify;
 
     use super::{
-        ActiveOccurrenceMetadata, CLOCK_DRIFT_CHECK_INTERVAL, ClaimToHandoffGuard,
-        ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE, OccurrenceExecutionGuard,
-        PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction, SchedulerCommand,
-        SchedulerCoordinator, SchedulerCoordinatorHandle, WORKSPACE_REGISTRATION_RETRY_DELAY,
-        WorkspaceRegistration, accept_occurrence_links_then, active_execution_for_run,
-        attempt_tree_has_active_prompt, create_manual_occurrence, ensure_definition_workspace,
-        finish_occurrence_for_event, mark_past_points_missed, materialize_registered_deadline,
-        migrate_legacy_scheduler_database, persist_runtime_projection, reconcile_missed_deadlines,
-        recover_accepted_occurrence, scheduled_agent_unattended_error, scheduled_execution_action,
-        scheduled_execution_action_for_fingerprint, shutdown_active_occurrences,
-        task_has_active_execution, task_has_active_execution_with_prompt_probe,
+        ActiveOccurrenceKey, ActiveOccurrenceMetadata, CLOCK_DRIFT_CHECK_INTERVAL,
+        ClaimToHandoffGuard, ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE,
+        OccurrenceExecutionGuard, PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction,
+        SchedulerCommand, SchedulerCoordinator, SchedulerCoordinatorHandle,
+        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration, accept_occurrence_links_then,
+        active_execution_for_run, attempt_tree_has_active_prompt, create_manual_occurrence,
+        ensure_definition_workspace, finish_occurrence_for_event, finish_reconciled_occurrence,
+        mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
+        project_resumed_attention, reconcile_missed_deadlines, recover_accepted_occurrence,
+        scheduled_agent_unattended_error, scheduled_execution_action,
+        scheduled_execution_action_for_fingerprint, scheduled_occurrence_updated_event,
+        shutdown_active_occurrences, task_has_active_execution,
+        task_has_active_execution_with_prompt_probe,
     };
 
     #[derive(Default)]
@@ -3179,8 +3584,15 @@ mod tests {
             )?;
             let now = Utc::now();
             let owner_id = "test-coordinator";
-            database.claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(1))?;
+            database.claim_occurrence(
+                &job.definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(1),
+            )?;
             database.finish_occurrence(
+                &job.definition.project_id,
                 &occurrence.id,
                 owner_id,
                 OccurrenceStatus::Succeeded,
@@ -3189,10 +3601,30 @@ mod tests {
             )?;
             Ok(crate::scheduled_service::ManualRunResult {
                 occurrence: database
-                    .get_occurrence(&occurrence.id)?
+                    .get_occurrence(&job.definition.project_id, &occurrence.id)?
                     .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
                 immediate_links: None,
             })
+        }
+
+        async fn resume_attention(
+            &self,
+            database: &ScheduledTaskDatabase,
+            app: &gold_band::app::App,
+            task_id: &str,
+            run_id: &str,
+            round_id: &str,
+            attempt_id: &str,
+        ) -> anyhow::Result<Option<String>> {
+            Ok(database
+                .find_attention_occurrence_by_links(
+                    &app.paths.project_id,
+                    task_id,
+                    run_id,
+                    round_id,
+                    attempt_id,
+                )?
+                .map(|occurrence| occurrence.id))
         }
     }
 
@@ -3289,7 +3721,7 @@ mod tests {
             &self,
             database: &ScheduledTaskDatabase,
             _app: &gold_band::app::App,
-            _job: gold_band::scheduler::db::ScheduledJobRecord,
+            job: gold_band::scheduler::db::ScheduledJobRecord,
             occurrence: gold_band::scheduler::occurrence::ScheduledOccurrence,
             now: chrono::DateTime<Utc>,
         ) -> anyhow::Result<()> {
@@ -3304,6 +3736,7 @@ mod tests {
             }
             let owner_id = "loop-runtime";
             let claim = database.claim_occurrence(
+                &job.definition.project_id,
                 &occurrence.id,
                 owner_id,
                 now,
@@ -3312,6 +3745,7 @@ mod tests {
             if let gold_band::scheduler::occurrence::ClaimResult::Claimed(_) = claim {
                 self.processed_occurrences.fetch_add(1, Ordering::SeqCst);
                 database.finish_occurrence(
+                    &job.definition.project_id,
                     &occurrence.id,
                     owner_id,
                     OccurrenceStatus::Succeeded,
@@ -3356,6 +3790,89 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[test]
+    fn scheduled_create_input_uses_frozen_workflow_authoring_snapshot() {
+        let directory = tempdir().unwrap();
+        let app = gold_band::app::App::new(
+            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap(),
+        );
+        let mut definition = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "frozen-workflow",
+            "workflow",
+            ScheduleSpec::at(Utc::now() + Duration::hours(1)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let workflow = gold_band::dsl::WorkflowDsl {
+            version: "0.1".to_string(),
+            id: "frozen".to_string(),
+            entry: "worker".to_string(),
+            control: Default::default(),
+            nodes: vec![gold_band::dsl::NodeDsl::Worker(
+                gold_band::dsl::WorkerNode {
+                    id: "worker".to_string(),
+                    execution_slot_id: Some("slot-frozen".to_string()),
+                    provider: None,
+                    model: None,
+                    profile: Some("developer".to_string()),
+                    goal: Some("frozen goal".to_string()),
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    config_options: Default::default(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                },
+            )],
+            edges: vec![],
+        };
+        let authoring = TaskAuthoringWorkflow {
+            workflow,
+            model_bindings: WorkflowModelBindings {
+                definition_revision: "revision".to_string(),
+                binding_revision: 4,
+                bindings: vec![WorkerModelBinding {
+                    execution_slot_id: "slot-frozen".to_string(),
+                    agent_id: "agent-frozen".to_string(),
+                    model_id: Some("model-frozen".to_string()),
+                    permission_mode_id: Some("ask".to_string()),
+                    config_options: Default::default(),
+                }],
+            },
+        };
+        definition.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(&authoring).unwrap());
+        definition.execution_config = serde_json::json!({
+            "runMode": "workflow",
+            "workflowTemplateId": "template-that-no-longer-exists"
+        });
+
+        let input = super::scheduled_create_input(&app, &definition).unwrap();
+
+        assert_eq!(
+            input.workflow_template_id.as_deref(),
+            Some("template-that-no-longer-exists")
+        );
+        let frozen = input.workflow_authoring.unwrap();
+        assert_eq!(
+            serde_json::to_value(&frozen.workflow).unwrap(),
+            serde_json::to_value(&authoring.workflow).unwrap()
+        );
+        assert_eq!(
+            frozen.model_bindings.bindings,
+            authoring.model_bindings.bindings
+        );
+        assert_eq!(
+            frozen.model_bindings.definition_revision,
+            gold_band::workflow_model_binding::definition_revision(&frozen.workflow)
+        );
+        assert_eq!(
+            frozen.model_bindings.binding_revision,
+            authoring.model_bindings.binding_revision
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3453,6 +3970,7 @@ mod tests {
             .unwrap();
         database
             .claim_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "retention-owner",
                 finished_at,
@@ -3461,6 +3979,7 @@ mod tests {
             .unwrap();
         database
             .finish_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "retention-owner",
                 OccurrenceStatus::Succeeded,
@@ -3479,7 +3998,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(database.get_occurrence(&occurrence.id).unwrap().is_none());
+        assert!(
+            database
+                .get_occurrence(&definition.project_id, &occurrence.id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     async fn drain_pending_guard_joins(pending: &PendingGuardJoins) {
@@ -3522,6 +4046,83 @@ mod tests {
         (handle, coordinator)
     }
 
+    #[tokio::test]
+    async fn resume_attention_returns_the_reclaimed_occurrence_identity() {
+        let directory = tempdir().unwrap();
+        let workspace_path =
+            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = gold_band::app::App::new(workspace_path.clone());
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let now = Utc::now();
+        let definition = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-resume",
+            "direct",
+            ScheduleSpec::at(now + Duration::hours(1)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &definition.project_id,
+                definition.id(),
+                now,
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        database
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                "test-owner",
+                now,
+                now + Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                "test-owner",
+                OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+        let (handle, coordinator) =
+            coordinator_with_workspace(workspace_path.clone(), database.clone());
+        let loop_task = tokio::spawn(coordinator.run());
+
+        let resumed_occurrence_id: Option<String> = handle
+            .resume_attention(
+                workspace_path,
+                "task-1".to_string(),
+                "run-1".to_string(),
+                "round-1".to_string(),
+                "attempt-1".to_string(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            resumed_occurrence_id.as_deref(),
+            Some(occurrence.id.as_str())
+        );
+        handle.shutdown().await.unwrap();
+        loop_task.await.unwrap();
+    }
+
     fn claimed_occurrence() -> (ScheduledTaskDatabase, String, String) {
         let directory = tempdir().unwrap();
         let database = ScheduledTaskDatabase::open(directory.path().join("scheduler.db")).unwrap();
@@ -3550,6 +4151,7 @@ mod tests {
         assert!(
             database
                 .claim_occurrence(
+                    &definition.project_id,
                     &occurrence.id,
                     &owner_id,
                     scheduled_at,
@@ -3575,6 +4177,7 @@ mod tests {
         assert!(
             accept_occurrence_links_then(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 Utc::now() + Duration::minutes(10),
@@ -3590,7 +4193,7 @@ mod tests {
         assert_eq!(launches.load(Ordering::SeqCst), 0);
         assert_eq!(
             database
-                .get_occurrence(&occurrence_id)
+                .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
                 .unwrap()
                 .links(),
@@ -3628,6 +4231,7 @@ mod tests {
         assert!(
             accept_occurrence_links_then(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 Utc::now(),
@@ -3638,14 +4242,22 @@ mod tests {
         );
         guard.disarm();
 
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::Failed);
         assert_eq!(
             occurrence.error_code,
             Some(ScheduledErrorCode::ExecutionFailed)
         );
         assert_eq!(occurrence.links(), links);
-        assert!(!active.lock().unwrap().contains_key(&occurrence_id));
+        assert!(
+            !active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
     }
 
     #[test]
@@ -3677,7 +4289,13 @@ mod tests {
             .unwrap();
         let owner_id = "recovery-owner";
         let claimed = match database
-            .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(5))
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(5),
+            )
             .unwrap()
         {
             ClaimResult::Claimed(claimed) => claimed,
@@ -3691,7 +4309,13 @@ mod tests {
         };
         assert!(
             database
-                .accept_occurrence_links(&claimed.id, owner_id, now, &links)
+                .accept_occurrence_links(
+                    &definition.project_id,
+                    &claimed.id,
+                    owner_id,
+                    now,
+                    &links,
+                )
                 .unwrap()
         );
         let run = RunState {
@@ -3711,10 +4335,15 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
 
-        let accepted = database.get_occurrence(&claimed.id).unwrap().unwrap();
+        let accepted = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
         let recovered = recover_accepted_occurrence(&database, &app, &accepted, owner_id)
             .unwrap()
             .unwrap();
@@ -3753,7 +4382,13 @@ mod tests {
             .unwrap();
         let owner_id = "recovery-owner";
         let claimed = match database
-            .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::minutes(5))
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(5),
+            )
             .unwrap()
         {
             ClaimResult::Claimed(claimed) => claimed,
@@ -3767,7 +4402,13 @@ mod tests {
         };
         assert!(
             database
-                .accept_occurrence_links(&claimed.id, owner_id, now, &links)
+                .accept_occurrence_links(
+                    &definition.project_id,
+                    &claimed.id,
+                    owner_id,
+                    now,
+                    &links,
+                )
                 .unwrap()
         );
         let run = RunState {
@@ -3787,9 +4428,14 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file("task-1", "run-1"), &run).unwrap();
-        let accepted = database.get_occurrence(&claimed.id).unwrap().unwrap();
+        let accepted = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
 
         let recovered = recover_accepted_occurrence(&database, &app, &accepted, owner_id)
             .unwrap()
@@ -3850,7 +4496,13 @@ mod tests {
                 .unwrap();
             let owner_id = format!("claim-owner-{offset}");
             let claimed = match database
-                .claim_occurrence(&occurrence.id, &owner_id, now, now + Duration::minutes(1))
+                .claim_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    &owner_id,
+                    now,
+                    now + Duration::minutes(1),
+                )
                 .unwrap()
             {
                 ClaimResult::Claimed(claimed) => claimed,
@@ -3878,11 +4530,22 @@ mod tests {
 
             drain_pending_guard_joins(&pending_stops).await;
 
-            let released = database.get_occurrence(&claimed.id).unwrap().unwrap();
+            let released = database
+                .get_occurrence(&definition.project_id, &claimed.id)
+                .unwrap()
+                .unwrap();
             assert_eq!(released.status, OccurrenceStatus::Retrying);
             assert_eq!(released.owner_id, None);
             assert_eq!(released.lease_until, None);
-            assert!(!active.lock().unwrap().contains_key(&claimed.id));
+            assert!(
+                !active
+                    .lock()
+                    .unwrap()
+                    .contains_key(&ActiveOccurrenceKey::new(
+                        &definition.project_id,
+                        &claimed.id,
+                    ))
+            );
         }
     }
 
@@ -3911,12 +4574,27 @@ mod tests {
 
         {
             let active_state = active.lock().unwrap();
-            assert!(active_state.contains_key(&occurrence_id));
-            assert!(active_state.get(&occurrence_id).unwrap().guard.is_running());
+            let key = ActiveOccurrenceKey::new("project-1", &occurrence_id);
+            assert!(active_state.contains_key(&key));
+            assert!(active_state.get(&key).unwrap().guard.is_running());
         }
         shutdown_active_occurrences(&active, &pending_stops, Utc::now())
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn active_occurrence_registry_key_is_project_scoped() {
+        let first = ActiveOccurrenceKey::new("project-a", "occurrence-shared");
+        let second = ActiveOccurrenceKey::new("project-b", "occurrence-shared");
+        let mut entries = HashMap::new();
+
+        entries.insert(first.clone(), "first");
+        entries.insert(second.clone(), "second");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.get(&first), Some(&"first"));
+        assert_eq!(entries.get(&second), Some(&"second"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3945,7 +4623,10 @@ mod tests {
             .await
             .unwrap();
 
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert!(active.lock().unwrap().is_empty());
         assert!(pending_stops.lock().unwrap().is_empty());
         assert_eq!(occurrence.status, OccurrenceStatus::Retrying);
@@ -3981,7 +4662,13 @@ mod tests {
         let owner_id = "lease-guard-owner";
         assert!(matches!(
             database
-                .claim_occurrence(&occurrence.id, owner_id, now, now - Duration::seconds(1),)
+                .claim_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    owner_id,
+                    now,
+                    now - Duration::seconds(1),
+                )
                 .unwrap(),
             ClaimResult::Claimed(_)
         ));
@@ -3993,6 +4680,7 @@ mod tests {
         tokio::pin!(lost_notification);
         let _guard = OccurrenceExecutionGuard::start(
             database.clone(),
+            definition.project_id.clone(),
             occurrence.id.clone(),
             owner_id.to_string(),
             LeaseConfig {
@@ -4008,7 +4696,10 @@ mod tests {
         tokio::time::advance(StdDuration::from_secs(1)).await;
         lost_notification.await;
 
-        let occurrence = database.get_occurrence(&occurrence.id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence(&definition.project_id, &occurrence.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(lost.load(Ordering::SeqCst), 1);
         assert_eq!(occurrence.status, OccurrenceStatus::Retrying);
         assert_eq!(occurrence.error_code, Some(ScheduledErrorCode::LeaseLost));
@@ -4059,7 +4750,9 @@ mod tests {
         advance_command_loop(&runtime, StdDuration::from_secs(1)).await;
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
 
-        let history = database.list_occurrences(definition.id(), 10).unwrap();
+        let history = database
+            .list_occurrences(&definition.project_id, definition.id(), 10)
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].status, OccurrenceStatus::Succeeded);
         handle.shutdown().await.unwrap();
@@ -4142,7 +4835,7 @@ mod tests {
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
         assert_eq!(
             database
-                .list_occurrences(definition.id(), 10)
+                .list_occurrences(&definition.project_id, definition.id(), 10)
                 .unwrap()
                 .first()
                 .unwrap()
@@ -4183,6 +4876,7 @@ mod tests {
             .unwrap();
         database
             .claim_occurrence(
+                &definition.project_id,
                 &occurrence.id,
                 "crashed-owner",
                 base,
@@ -4204,7 +4898,7 @@ mod tests {
         assert_eq!(runtime.processed_occurrences.load(Ordering::SeqCst), 1);
         assert_eq!(
             database
-                .get_occurrence(&occurrence.id)
+                .get_occurrence(&definition.project_id, &occurrence.id)
                 .unwrap()
                 .unwrap()
                 .status,
@@ -4244,6 +4938,17 @@ mod tests {
         handle.shutdown().await.unwrap();
         let coordinator = loop_task.await.unwrap();
         assert!(coordinator.workspaces.contains_key(&workspace_path));
+    }
+
+    #[test]
+    fn stale_past_deadline_is_rearmed_with_failure_backoff() {
+        let now = Utc.with_ymd_and_hms(2026, 8, 12, 9, 0, 0).unwrap();
+        let stale = now - Duration::minutes(1);
+
+        assert_eq!(
+            super::stale_deadline_retry_at(stale, now),
+            now + Duration::from_std(super::DEADLINE_FAILURE_RETRY_DELAY).unwrap()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -4638,7 +5343,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, DueMaterialization::Stale);
-        assert!(database.list_occurrences("job-a", 10).unwrap().is_empty());
+        assert!(
+            database
+                .list_occurrences("project-a", "job-a", 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -4777,28 +5487,10 @@ mod tests {
         );
         assert!(
             database
-                .list_occurrences(definition.id(), 10)
+                .list_occurrences(&definition.project_id, definition.id(), 10)
                 .unwrap()
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn completed_shared_database_marker_skips_corrupt_source_during_workspace_migration() {
-        let directory = tempdir().unwrap();
-        let workspace_path =
-            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
-        let paths = gold_band::storage::GoldBandPaths::new(workspace_path);
-        let database = ScheduledTaskDatabase::open(paths.scheduler_db_path()).unwrap();
-        let source = ScheduledTaskDatabase::open(paths.legacy_scheduler_db_path()).unwrap();
-
-        database
-            .import_legacy_database_once(&source, &paths.project_id, Utc::now())
-            .unwrap();
-        drop(source);
-        std::fs::write(paths.legacy_scheduler_db_path(), b"not sqlite").unwrap();
-
-        migrate_legacy_scheduler_database(&paths, &database, Utc::now()).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -4919,7 +5611,7 @@ mod tests {
         let reconciled = reconciled.record.unwrap();
 
         assert_eq!(reconciled.next_run_at, Some(near_late_deadline));
-        let occurrences = database.list_occurrences("job-a", 10).unwrap();
+        let occurrences = database.list_occurrences("project-a", "job-a", 10).unwrap();
         assert_eq!(occurrences.len(), 1);
         assert_eq!(occurrences[0].scheduled_at, old_deadline);
         assert_eq!(occurrences[0].status, OccurrenceStatus::Missed);
@@ -4969,7 +5661,9 @@ mod tests {
         .unwrap();
         assert_eq!(reconciled.missed_count, MISSED_RECONCILE_BATCH_SIZE as u32);
         let reconciled = reconciled.record.unwrap();
-        let occurrences = database.list_occurrences(definition.id(), 1_000).unwrap();
+        let occurrences = database
+            .list_occurrences(&definition.project_id, definition.id(), 1_000)
+            .unwrap();
 
         assert!(!occurrences.is_empty());
         assert!(occurrences.len() < BACKLOG_POINTS as usize);
@@ -4981,6 +5675,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::RunCompleted {
@@ -5000,7 +5695,10 @@ mod tests {
             },
         )
         .unwrap();
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::Succeeded);
         assert_eq!(occurrence.task_id.as_deref(), Some("task-1"));
         assert_eq!(occurrence.run_id.as_deref(), Some("run-1"));
@@ -5011,6 +5709,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::AcpTurnFinished {
@@ -5033,7 +5732,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             database
-                .get_occurrence(&occurrence_id)
+                .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
                 .unwrap()
                 .status,
@@ -5047,6 +5746,7 @@ mod tests {
         assert!(
             finish_occurrence_for_event(
                 &database,
+                "project-1",
                 &occurrence_id,
                 &owner_id,
                 &RuntimeLifecycleEvent::RunPaused {
@@ -5067,7 +5767,10 @@ mod tests {
             .unwrap()
             .is_none()
         );
-        let paused_occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let paused_occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(paused_occurrence.status, OccurrenceStatus::Running);
         assert_eq!(
             paused_occurrence.owner_id.as_deref(),
@@ -5076,6 +5779,7 @@ mod tests {
 
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::InterventionRequested {
@@ -5094,7 +5798,10 @@ mod tests {
             },
         )
         .unwrap();
-        let finished_occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let finished_occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(finished_occurrence.status, OccurrenceStatus::Failed);
         assert!(finished_occurrence.owner_id.is_none());
     }
@@ -5123,6 +5830,8 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         let run_file = app.paths.run_file(task_id, run_id);
         std::fs::create_dir_all(run_file.parent().unwrap().as_std_path()).unwrap();
@@ -5190,6 +5899,7 @@ mod tests {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
         finish_occurrence_for_event(
             &database,
+            "project-1",
             &occurrence_id,
             &owner_id,
             &RuntimeLifecycleEvent::InterventionRequested {
@@ -5208,7 +5918,10 @@ mod tests {
             },
         )
         .unwrap();
-        let occurrence = database.get_occurrence(&occurrence_id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-1", &occurrence_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(occurrence.status, OccurrenceStatus::AttentionRequired);
         assert_eq!(
             occurrence.error_code,
@@ -5216,6 +5929,106 @@ mod tests {
         );
         assert!(occurrence.owner_id.is_none());
         assert!(occurrence.lease_until.is_none());
+    }
+
+    #[test]
+    fn resumed_attention_occurrence_projects_running_update_event() {
+        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let now = Utc::now();
+        database
+            .finish_occurrence(
+                "project-1",
+                &occurrence_id,
+                &owner_id,
+                OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+        let resumed = match database
+            .resume_attention_occurrence(
+                "project-1",
+                &occurrence_id,
+                "resume-owner",
+                now,
+                now + Duration::minutes(5),
+            )
+            .unwrap()
+        {
+            ClaimResult::Claimed(value) => value,
+            other => panic!("expected resumed occurrence, got {other:?}"),
+        };
+
+        let event = scheduled_occurrence_updated_event("project-1", "job-1", &resumed);
+
+        assert_eq!(event.occurrence_id, occurrence_id);
+        assert_eq!(event.status, "running");
+        assert_eq!(event.error_code, None);
+        assert_eq!(event.task_id.as_deref(), Some("task-1"));
+        assert_eq!(event.run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn resumed_attention_occurrence_clears_attention_definition_projection() {
+        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let now = Utc::now();
+        database
+            .finish_occurrence(
+                "project-1",
+                &occurrence_id,
+                &owner_id,
+                OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+        let resumed = match database
+            .resume_attention_occurrence(
+                "project-1",
+                &occurrence_id,
+                "resume-owner",
+                now,
+                now + Duration::minutes(5),
+            )
+            .unwrap()
+        {
+            ClaimResult::Claimed(value) => value,
+            other => panic!("expected resumed occurrence, got {other:?}"),
+        };
+        let mut definition = ScheduledTaskDefinition::new(
+            "project-1",
+            "job-1",
+            "direct",
+            ScheduleSpec::at(now + Duration::hours(1)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        definition.last_trigger_status = Some("attention_required".to_string());
+        definition.last_error = Some(ScheduledErrorCode::UserInputRequired.to_string());
+        definition.retry_count = 2;
+        definition.retry_at = Some(now + Duration::minutes(1));
+
+        project_resumed_attention(&mut definition, &resumed, now);
+
+        assert_eq!(definition.last_trigger_status.as_deref(), Some("running"));
+        assert_eq!(definition.last_trigger_at, Some(resumed.scheduled_at));
+        assert_eq!(definition.last_error, None);
+        assert_eq!(definition.retry_count, 0);
+        assert_eq!(definition.retry_at, None);
     }
 
     #[test]
@@ -5235,7 +6048,9 @@ mod tests {
         let now = past + Duration::hours(1);
         database.create_job(&definition, Some(past)).unwrap();
         mark_past_points_missed(&database, &mut definition, now).unwrap();
-        let history = database.list_occurrences("job-1", 10).unwrap();
+        let history = database
+            .list_occurrences(&definition.project_id, definition.id(), 10)
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].status, OccurrenceStatus::Missed);
         assert_eq!(definition.last_trigger_at, Some(past));
@@ -5430,14 +6245,16 @@ mod tests {
 
         let updated =
             persist_runtime_projection(&database, &definition, created.revision, |updated| {
-                notified_task_id = updated.task_id.clone();
+                notified_task_id = updated.definition.task_id.clone();
             })
             .unwrap();
 
         assert!(updated.is_some());
         assert_eq!(notified_task_id.as_deref(), Some("task-1"));
         assert_eq!(
-            database.list_job_definitions().unwrap()[0]
+            database
+                .list_job_definitions_for_project("project-1")
+                .unwrap()[0]
                 .task_id
                 .as_deref(),
             Some("task-1")
@@ -5644,6 +6461,283 @@ mod tests {
             ScheduledExecutionAction::StartNewRun {
                 task_id: "task-001".to_string(),
             }
+        );
+    }
+
+    fn reconcile_outcome_setup(
+        run: Option<RunState>,
+    ) -> (
+        gold_band::app::App,
+        gold_band::scheduler::occurrence::ScheduledOccurrence,
+        tempfile::TempDir,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo_root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = gold_band::app::App::new(repo_root);
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let now = Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            "project-a",
+            "job-reconcile",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::every(1, "hours", now).unwrap(),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database.create_job(&definition, None).unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &definition.project_id,
+                definition.id(),
+                now,
+                OccurrenceTriggerKind::Scheduled,
+            )
+            .unwrap()
+            .unwrap();
+        let owner = "reconcile-owner";
+        let claimed = match database
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner,
+                now,
+                now + Duration::minutes(5),
+            )
+            .unwrap()
+        {
+            ClaimResult::Claimed(claimed) => claimed,
+            result => panic!("expected claim, got {result:?}"),
+        };
+        let links = gold_band::scheduler::occurrence::OccurrenceLinks {
+            task_id: Some("task-reconcile".to_string()),
+            run_id: Some("run-reconcile".to_string()),
+            round_id: Some("round-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
+        };
+        assert!(
+            database
+                .accept_occurrence_links(&definition.project_id, &claimed.id, owner, now, &links)
+                .unwrap()
+        );
+        if let Some(run) = run {
+            write_json(&app.paths.run_file("task-reconcile", "run-reconcile"), &run).unwrap();
+        }
+        let occurrence = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
+        (app, occurrence, directory)
+    }
+
+    #[test]
+    fn reconcile_running_occurrence_finalizes_when_underlying_run_completed() {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-reconcile".to_string(),
+            task_id: "task-reconcile".to_string(),
+            task_uuid: None,
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Success),
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:01:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::Terminal,
+                None,
+                "2026-08-12T00:01:00Z",
+            ),
+        };
+        let (app, occurrence, _dir) = reconcile_outcome_setup(Some(run));
+
+        // Task/Run 已 Completed（不再 active）：对账应给出 Succeeded 终态。
+        let outcome = super::reconcile_running_occurrence_outcome(&app, &occurrence).unwrap();
+        assert_eq!(
+            outcome.map(|(status, _)| status),
+            Some(OccurrenceStatus::Succeeded)
+        );
+    }
+
+    #[test]
+    fn reconcile_running_occurrence_finalizes_when_underlying_run_missing() {
+        // 不写 run.json：Task/Run 不存在，对账应给出 Failed 终态。
+        let (app, occurrence, _dir) = reconcile_outcome_setup(None);
+
+        let outcome = super::reconcile_running_occurrence_outcome(&app, &occurrence).unwrap();
+        assert_eq!(
+            outcome.map(|(status, error)| (status, error.map(|e| e.code))),
+            Some((
+                OccurrenceStatus::Failed,
+                Some(ScheduledErrorCode::LeaseLost)
+            ))
+        );
+    }
+
+    #[test]
+    fn reconcile_running_occurrence_preserves_when_underlying_run_still_active() {
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-reconcile".to_string(),
+            task_id: "task-reconcile".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:01:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::RunningNode,
+                None,
+                "2026-08-12T00:01:00Z",
+            ),
+        };
+        let (app, occurrence, _dir) = reconcile_outcome_setup(Some(run));
+
+        // Task/Run 仍 Running（active）：对账应保留（返回 None），不误杀。
+        let outcome = super::reconcile_running_occurrence_outcome(&app, &occurrence).unwrap();
+        assert!(
+            outcome.is_none(),
+            "active run must be preserved, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn reconcile_running_occurrence_ignores_a_newer_active_run_on_the_same_task() {
+        let completed = RunState {
+            version: VERSION.to_string(),
+            id: "run-reconcile".to_string(),
+            task_id: "task-reconcile".to_string(),
+            task_uuid: None,
+            status: RunStatus::Completed,
+            outcome: Some(RunOutcome::Success),
+            started_at: "2026-08-12T00:00:00Z".to_string(),
+            updated_at: "2026-08-12T00:01:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::Terminal,
+                None,
+                "2026-08-12T00:01:00Z",
+            ),
+        };
+        let (app, occurrence, _dir) = reconcile_outcome_setup(Some(completed));
+        let newer_active = RunState {
+            version: VERSION.to_string(),
+            id: "run-newer".to_string(),
+            task_id: "task-reconcile".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-08-12T00:02:00Z".to_string(),
+            updated_at: "2026-08-12T00:03:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState::new(
+                RuntimeExecutionPhase::RunningNode,
+                None,
+                "2026-08-12T00:03:00Z",
+            ),
+        };
+        write_json(
+            &app.paths.run_file("task-reconcile", "run-newer"),
+            &newer_active,
+        )
+        .unwrap();
+
+        let outcome = super::reconcile_running_occurrence_outcome(&app, &occurrence).unwrap();
+
+        assert_eq!(
+            outcome.map(|(status, _)| status),
+            Some(OccurrenceStatus::Succeeded),
+            "another active run under the reused task must not keep this occurrence running"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconciled_terminal_occurrence_stops_and_removes_its_active_guard() {
+        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let active = Arc::new(Mutex::new(HashMap::new()));
+        let pending_stops = Arc::new(Mutex::new(Vec::new()));
+        let lease = ActiveOccurrenceMetadata {
+            database: database.clone(),
+            workspace_path: camino::Utf8PathBuf::from("C:/workspace"),
+            owner_id: owner_id.clone(),
+            project_id: "project-1".to_string(),
+            scheduled_task_id: "job-1".to_string(),
+            expected_revision: None,
+        };
+        let guard = ClaimToHandoffGuard::new_with_pending(
+            active.clone(),
+            pending_stops,
+            occurrence_id.clone(),
+            lease,
+        )
+        .unwrap();
+        guard.handoff();
+        assert!(
+            active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
+
+        assert!(
+            finish_reconciled_occurrence(
+                &database,
+                &active,
+                "project-1",
+                &occurrence_id,
+                &owner_id,
+                OccurrenceStatus::Succeeded,
+                None,
+            )
+            .await
+            .unwrap()
+            .is_some()
+        );
+
+        assert!(
+            !active
+                .lock()
+                .unwrap()
+                .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
+        assert_eq!(
+            database
+                .get_occurrence("project-1", &occurrence_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            OccurrenceStatus::Succeeded
         );
     }
 }

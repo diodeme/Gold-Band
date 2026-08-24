@@ -95,6 +95,7 @@ pub enum ProgressStage {
 #[serde(rename_all = "camelCase")]
 pub struct RunProgressSnapshot {
     pub version: String,
+    pub runtime_revision: u64,
     pub status: RunStatus,
     pub current_round_id: Option<String>,
     pub current_node_id: Option<String>,
@@ -161,6 +162,17 @@ pub struct RunEventData {
     pub details: Option<serde_json::Value>,
 }
 
+struct LocalTimer;
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(
+            w,
+            "{}",
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f")
+        )
+    }
+}
+
 pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr_progress: bool) {
     let _ = TRACE_ID.get_or_init(trace_id_seed);
     cleanup_old_logs(paths, config.log_retention_days);
@@ -188,11 +200,13 @@ pub fn init_tracing(paths: &GoldBandPaths, config: &RuntimeConfig, enable_stderr
             RUNTIME_LOG_ROTATED_FILES,
         )))
         .with_target(true)
+        .with_timer(LocalTimer)
         .with_filter(FilterFn::new(runtime_log_filter));
 
     let stderr_layer = fmt::layer()
         .compact()
         .with_target(false)
+        .with_timer(LocalTimer)
         .with_writer(stderr_writer)
         .with_filter(progress_filter);
 
@@ -251,6 +265,7 @@ pub fn write_run_progress_best_effort(
 ) {
     let snapshot = RunProgressSnapshot {
         version: VERSION.to_string(),
+        runtime_revision: run.execution.revision,
         status: run.status,
         current_round_id: run.current_round.clone(),
         current_node_id: run.current_node.clone(),

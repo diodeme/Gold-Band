@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::app::{App, LogSource, TaskSummary};
-use crate::dsl::{EdgeOutcome, WorkflowDsl, validate_workflow};
+use crate::dsl::{EdgeOutcome, WorkflowDsl, validate_authoring_workflow};
 use crate::inspect::render_console_banner;
 use crate::runtime::RunState;
 use anyhow::{Result, anyhow};
@@ -78,13 +78,13 @@ pub fn build_view_model(app: &App, state: &ConsoleState) -> Result<ConsoleViewMo
 pub fn build_workspace_state(app: &App, task_summary: TaskSummary) -> Result<WorkspaceState> {
     let workflow_path = app.paths.workflow_file(&task_summary.task.id);
     let workflow = if workflow_path.exists() {
-        Some(crate::storage::read_json::<WorkflowDsl>(&workflow_path)?)
+        Some(app.task_workflow(&task_summary.task.id)?)
     } else {
         None
     };
     let dag_positions = workflow
         .as_ref()
-        .and_then(|workflow| validate_workflow(workflow.clone()).ok())
+        .and_then(|workflow| validate_authoring_workflow(workflow.clone()).ok())
         .map(|validated| dag_columns(&validated.raw))
         .unwrap_or_default();
     let active_run_id = app.find_active_or_resumable_run_id(&task_summary.task.id)?;
@@ -738,8 +738,7 @@ fn render_workspace_dag(app: &App, workspace: &WorkspaceState) -> Result<Vec<Str
         return Ok(vec!["No valid workflow graph available".to_string()]);
     }
 
-    let workflow: WorkflowDsl =
-        crate::storage::read_json(&app.paths.workflow_file(&workspace.task_id))?;
+    let workflow = app.task_workflow(&workspace.task_id)?;
     let active_run = workspace
         .active_run_id
         .as_ref()
@@ -917,8 +916,7 @@ fn render_node_home(app: &App, workspace: &WorkspaceState, node_id: &str) -> Res
     let Some(round_id) = workspace.selected_round_id.as_ref() else {
         return Ok(format!("Node: {}\nNo active round", node_id));
     };
-    let workflow: WorkflowDsl =
-        crate::storage::read_json(&app.paths.workflow_file(&workspace.task_id))?;
+    let workflow = app.task_workflow(&workspace.task_id)?;
     let summary =
         app.node_runtime_summary(&workspace.task_id, run_id, round_id, &workflow, node_id)?;
     let mut lines = vec![format!("Node: {}", node_id)];

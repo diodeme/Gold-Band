@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronsUpDown, CircleHelp, Info, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, ChevronsUpDown, CircleHelp, Copy, CornerDownRight, Info, Plus, Redo2, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import {
   Background,
   BaseEdge,
-  Controls,
   EdgeLabelRenderer,
   Handle,
   MarkerType,
+  NodeToolbar,
+  Panel,
   Position,
   ReactFlow,
   getSmoothStepPath,
@@ -15,10 +16,11 @@ import {
   type EdgeProps,
   type Node,
   type ReactFlowInstance,
+  type Viewport,
 } from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
-import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
+import type { AgentRegistryVm, DynamicAgentRefDsl, DynamicControlDsl, ManagedAgentVm, ProfileVm, WorkerModelBinding, WorkflowAiDynamicDynamicAgentStrategyDsl, WorkflowAiDynamicFixedAgentStrategyDsl, WorkflowAiDynamicNodeDsl, WorkflowControlDsl, WorkflowDsl, WorkflowEdgeDsl, WorkflowJsonConditionDsl, WorkflowModelBindings, WorkflowNodeDsl, WorkflowOutputContractDsl, WorkflowTemplate, WorkflowTemplateStore, WorkflowWorkerNodeDsl } from '../types';
 import {
   END_NODE,
   ENTRY_NODE,
@@ -29,13 +31,14 @@ import {
   TERMINAL_NODE_HEIGHT,
   collectAuthoringNodes,
   workflowSuccessTopologyOrder,
-  computeBackwardLanes,
   isBackwardEdge,
   authoringEdgeColor,
   layoutSuccessPath,
+  routeWorkflowBranchEdges,
   topLeft,
   SOURCE_POS,
   TARGET_POS,
+  type WorkflowGraphBranchRoute,
 } from './workflowGraph';
 import { AppCard } from '@/components/AppCard';
 import {
@@ -46,13 +49,17 @@ import {
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { CodeBlock, EmptyState } from '@/components/PageScaffold';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -62,6 +69,9 @@ import { displayAppError } from '../i18n';
 import { cn } from '@/lib/utils';
 import { formatLocalDateTime } from '@/lib/datetime';
 import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { GraphControls } from '@/components/GraphControls';
+import { normalizeWorkflowModelBindings } from '@/lib/workflow-model-bindings';
+import type { WorkflowProfileCatalogState } from '@/lib/workflow-profile-catalog';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
@@ -73,13 +83,30 @@ type EditorTab = 'canvas' | 'json';
 
 export interface WorkflowEditorSessionDraft {
   workflow: WorkflowDsl;
+  modelBindings: WorkflowModelBindings;
   tab: EditorTab;
   jsonDraft: string;
+  viewport?: Viewport;
 }
 type EdgeOutcome = 'success' | 'failure';
 type SessionMode = 'new' | 'continue';
-type EditorNodeData = { label: string; kind: string; detail: string; terminal?: boolean; iconKey?: string; entryCandidate?: boolean; entryLabel?: string };
-type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; lane?: number };
+type EditorNodeData = {
+  label: string;
+  kind: string;
+  terminal?: boolean;
+  iconKey?: string;
+  entryCandidate?: boolean;
+  entryLabel?: string;
+  selected?: boolean;
+  supportsFailureOutcome?: boolean;
+  successLabel?: string;
+  failureLabel?: string;
+  quickAddLabel?: string;
+  deleteLabel?: string;
+  onQuickAdd?: (outcome: EdgeOutcome) => void;
+  onDelete?: () => void;
+};
+type WorkflowEdgeData = { outcome: WorkflowEdgeDsl['on']; route?: WorkflowGraphBranchRoute };
 export type WorkflowValidationIssue = { message: string; fieldKey?: string; nodeId?: string; nodeIds?: string[]; edgeIndex?: number };
 export type WorkflowValidationResult = {
   valid: boolean;
@@ -91,6 +118,116 @@ type TerminalMenu = { x: number; y: number };
 const edgeTypes = { workflowRouted: WorkflowRoutedEdge };
 const editorNodeTypes = { editorCanvas: EditorCanvasNode };
 const SCHEMA_VALIDATION_DELAY_MS = 2000;
+const WORKFLOW_HISTORY_LIMIT = 50;
+const WORKFLOW_EDITOR_COMPACT_WIDTH = 820;
+const WORKFLOW_EDITOR_MIN_ZOOM = 0.3;
+const WORKFLOW_EDITOR_MAX_ZOOM = 1.4;
+const WORKFLOW_EDITOR_FIT_MAX_ZOOM = 0.92;
+const WORKFLOW_EDITOR_DRAFT_DELAY_MS = 180;
+const WORKFLOW_NODE_SINGLE_OUTCOME_TOP = '50%';
+const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;
+const WORKFLOW_NODE_SPLIT_OUTCOME_RATIO = { success: 0.34, failure: 0.66 } as const;
+
+export type WorkflowEditorHistory = { past: WorkflowDsl[]; future: WorkflowDsl[] };
+
+export function mergeBufferedNodePatches(
+  pending: Partial<WorkflowNodeDsl>,
+  immediate: Partial<WorkflowNodeDsl> = {},
+): Partial<WorkflowNodeDsl> {
+  return { ...pending, ...immediate };
+}
+
+export function recordWorkflowHistory(history: WorkflowEditorHistory, current: WorkflowDsl, limit = WORKFLOW_HISTORY_LIMIT): WorkflowEditorHistory {
+  return { past: [...history.past.slice(-(limit - 1)), current], future: [] };
+}
+
+export function undoWorkflowHistory(history: WorkflowEditorHistory, current: WorkflowDsl, limit = WORKFLOW_HISTORY_LIMIT): { history: WorkflowEditorHistory; workflow: WorkflowDsl } | null {
+  const workflow = history.past.at(-1);
+  if (!workflow) return null;
+  return {
+    workflow,
+    history: {
+      past: history.past.slice(0, -1),
+      future: [current, ...history.future].slice(0, limit),
+    },
+  };
+}
+
+export function redoWorkflowHistory(history: WorkflowEditorHistory, current: WorkflowDsl, limit = WORKFLOW_HISTORY_LIMIT): { history: WorkflowEditorHistory; workflow: WorkflowDsl } | null {
+  const workflow = history.future[0];
+  if (!workflow) return null;
+  return {
+    workflow,
+    history: {
+      past: [...history.past.slice(-(limit - 1)), current],
+      future: history.future.slice(1),
+    },
+  };
+}
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
+
+export interface WorkerBindingSyncPlan {
+  fillCount: number;
+  overwriteCount: number;
+  skipCount: number;
+  targetSlotIds: string[];
+}
+
+export function planWorkerBindingSync(
+  workflow: WorkflowDsl,
+  modelBindings: WorkflowModelBindings,
+  sourceSlotId: string,
+  overwriteConfigured: boolean,
+): WorkerBindingSyncPlan {
+  const bindingBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  let fillCount = 0;
+  let overwriteCount = 0;
+  let skipCount = 0;
+  const targetSlotIds: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.type !== 'worker' || !node.executionSlotId || node.executionSlotId === sourceSlotId) continue;
+    const configured = Boolean(bindingBySlot.get(node.executionSlotId)?.agentId.trim());
+    if (!configured) {
+      fillCount += 1;
+      targetSlotIds.push(node.executionSlotId);
+    } else if (overwriteConfigured) {
+      overwriteCount += 1;
+      targetSlotIds.push(node.executionSlotId);
+    } else {
+      skipCount += 1;
+    }
+  }
+  return { fillCount, overwriteCount, skipCount, targetSlotIds };
+}
+
+export function applyWorkerBindingSync(
+  workflow: WorkflowDsl,
+  modelBindings: WorkflowModelBindings,
+  sourceSlotId: string,
+  overwriteConfigured: boolean,
+): WorkflowModelBindings {
+  const source = modelBindings.bindings.find((binding) => binding.executionSlotId === sourceSlotId);
+  if (!source?.agentId.trim()) return modelBindings;
+  const plan = planWorkerBindingSync(workflow, modelBindings, sourceSlotId, overwriteConfigured);
+  if (!plan.targetSlotIds.length) return modelBindings;
+  const targetSlots = new Set(plan.targetSlotIds);
+  const nextBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  for (const executionSlotId of targetSlots) {
+    nextBySlot.set(executionSlotId, {
+      ...source,
+      executionSlotId,
+      configOptions: source.configOptions ? { ...source.configOptions } : undefined,
+    });
+  }
+  const workflowSlots = new Set(workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [node.executionSlotId] : []));
+  return {
+    ...modelBindings,
+    bindings: Array.from(nextBySlot.values()).filter((binding) => workflowSlots.has(binding.executionSlotId)),
+  };
+}
 
 export function isWorkflowAgentDoctorReady(agent: ManagedAgentVm): boolean {
   return agent.diagnostic?.available === true;
@@ -107,6 +244,15 @@ export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWor
     model: undefined,
     config_options: undefined,
   };
+}
+
+export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined): boolean {
+  return node?.type === 'worker' && Boolean(node.output || node.success_condition);
+}
+
+export function removeTerminalFromWorkflow(workflow: WorkflowDsl, terminalId: string): WorkflowDsl {
+  if (terminalId !== END_NODE && terminalId !== NEW_ROUND_NODE) return workflow;
+  return { ...workflow, edges: workflow.edges.filter((edge) => edge.to !== terminalId) };
 }
 
 export function optionalWorkerConfigOptions(
@@ -130,21 +276,65 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
 function EditorCanvasNode({ data }: { data: EditorNodeData }) {
   if (data.terminal) {
     return (
-      <div className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
+      <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
         <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
         {data.label}
       </div>
     );
   }
+  const successHandleTop = data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP;
   return (
-    <div className="relative flex size-full flex-col items-center justify-center gap-1 rounded-[14px] border border-border bg-card px-3 py-2">
+      <div data-theme-role="workflow-node" data-selected={data.selected} className="relative flex size-full flex-col items-center justify-center gap-1 border border-border bg-card px-3 py-2">
+      <NodeToolbar isVisible={data.selected} position={Position.Bottom} offset={10} className="flex items-center gap-1 rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" onClick={() => data.onQuickAdd?.('success')}>
+              <CornerDownRight className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+              {data.successLabel}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{data.quickAddLabel}: {data.successLabel}</TooltipContent>
+        </Tooltip>
+        {data.supportsFailureOutcome ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="sm" className="nodrag nopan h-7 gap-1 px-2 text-xs" onClick={() => data.onQuickAdd?.('failure')}>
+                <CornerDownRight className="size-3.5 text-destructive" />
+                {data.failureLabel}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{data.quickAddLabel}: {data.failureLabel}</TooltipContent>
+          </Tooltip>
+        ) : null}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-sm" className="nodrag nopan size-7 text-muted-foreground hover:text-destructive" aria-label={data.deleteLabel} onClick={() => data.onDelete?.()}>
+              <Trash2 className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{data.deleteLabel}</TooltipContent>
+        </Tooltip>
+      </NodeToolbar>
       {data.entryCandidate ? (
         <Badge variant="outline" className="pointer-events-none absolute -left-1 -top-2 z-10 h-5 rounded-full bg-background px-1.5 text-[10px] font-medium">
           {data.entryLabel}
         </Badge>
       ) : null}
       <Handle type="target" position={Position.Left} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
-      <Handle type="source" position={Position.Right} className="!size-2 !border-2 !border-card !bg-muted-foreground" />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Handle id="success" type="source" position={Position.Right} className="workflow-handle-success !size-2.5 !border-2 !border-card !bg-emerald-500" style={{ top: successHandleTop }} />
+        </TooltipTrigger>
+        <TooltipContent>{data.successLabel}</TooltipContent>
+      </Tooltip>
+      {data.supportsFailureOutcome ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Handle id="failure" type="source" position={Position.Right} className="workflow-handle-failure !size-2.5 !border-2 !border-card !bg-destructive" style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }} />
+          </TooltipTrigger>
+          <TooltipContent>{data.failureLabel}</TooltipContent>
+        </Tooltip>
+      ) : null}
       <div className="flex items-center gap-1.5">
         {data.iconKey ? (
           <span className="grid size-5 shrink-0 place-items-center rounded-md border border-border/60 bg-muted/30 shadow-sm">
@@ -159,37 +349,48 @@ function EditorCanvasNode({ data }: { data: EditorNodeData }) {
 }
 
 interface WorkflowEditorProps {
+  className?: string;
   value: WorkflowDsl;
+  modelBindings?: WorkflowModelBindings;
   agentRegistry: AgentRegistryVm | null;
-  profiles?: ProfileVm[];
+  profileCatalog: WorkflowProfileCatalogState;
   onOpenProfileManagement?: () => void;
-  onSave: (workflow: WorkflowDsl) => Promise<void> | void;
+  onSave: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
+  onModelBindingsChange?: (modelBindings: WorkflowModelBindings) => void;
   onApplyDefaultTemplate?: (workflow: WorkflowDsl) => void;
   defaultWorkflow?: WorkflowDsl | null;
   workflowTemplates?: WorkflowTemplateStore | null;
   currentTemplateId?: string | null;
   currentTemplateName?: string | null;
   validateTemplateDuplicateId?: boolean;
+  validateModelBindings?: boolean;
   allowAiDynamic?: boolean;
   saving?: boolean;
   showSaveAction?: boolean;
   validationRequestId?: number;
+  focusNodeId?: string | null;
   initialSessionDraft?: WorkflowEditorSessionDraft | null;
   onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
 }
 
-export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
   const [workflow, setWorkflow] = useState<WorkflowDsl>(restoredWorkflow);
+  const [modelBindings, setModelBindings] = useState<WorkflowModelBindings>(() => normalizeWorkflowModelBindings(initialSessionDraft?.modelBindings ?? modelBindingsValue));
   const [tab, setTab] = useState<EditorTab>(initialSessionDraft?.tab ?? 'canvas');
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(restoredWorkflow.nodes[0]?.id ?? null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedTerminalId, setSelectedTerminalId] = useState<string | null>(null);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<EditorNodeData>, Edge> | null>(null);
   const [pendingFocusNodeId, setPendingFocusNodeId] = useState<string | null>(null);
   const [visibleTerminalIds, setVisibleTerminalIds] = useState<Set<string>>(new Set());
+  const [compactPane, setCompactPane] = useState<'canvas' | 'inspector'>('canvas');
+  const [isCompact, setIsCompact] = useState(false);
+  const [viewportRevision, setViewportRevision] = useState(0);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [terminalMenu, setTerminalMenu] = useState<TerminalMenu | null>(null);
   const [validationDialogOpen, setValidationDialogOpen] = useState(false);
   const [pendingValidation, setPendingValidation] = useState<WorkflowValidationResult | null>(null);
@@ -197,27 +398,103 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const [invalidNodeIds, setInvalidNodeIds] = useState<Set<string>>(new Set());
   const [jsonDraft, setJsonDraft] = useState(() => initialSessionDraft?.jsonDraft ?? JSON.stringify(restoredWorkflow, null, 2));
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [liveValidation, setLiveValidation] = useState<WorkflowValidationResult | null>(null);
   const [newRoundEntryDrafts, setNewRoundEntryDrafts] = useState<Record<number, string>>(() => newRoundEntryDraftsFromWorkflow(restoredWorkflow));
   const handledValidationRequestIdRef = useRef(0);
+  const handledFocusNodeIdRef = useRef<string | null>(null);
   const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
+  const workflowRef = useRef(workflow);
+  const onChangeRef = useRef(onChange);
+  const onSessionDraftChangeRef = useRef(onSessionDraftChange);
+  const externalChangeTimerRef = useRef<number | null>(null);
+  const historyRef = useRef<WorkflowEditorHistory>({ past: [], future: [] });
+  const viewportRef = useRef<Viewport>(initialSessionDraft?.viewport ?? { x: 0, y: 0, zoom: 1 });
+  const hasStableViewportRef = useRef(Boolean(initialSessionDraft?.viewport));
+  const initialFitFrameRef = useRef<number | null>(null);
+  const canvasActionsRef = useRef<{
+    quickAdd: (nodeId: string, outcome: EdgeOutcome) => void;
+    deleteNode: (nodeId: string) => void;
+  }>({ quickAdd: () => undefined, deleteNode: () => undefined });
+  const clearCanvasSelection = useCallback(() => {
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
+    setPendingFocusNodeId(null);
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && editorContainerRef.current?.contains(activeElement)) activeElement.blur();
+  }, []);
+  workflowRef.current = workflow;
+  onChangeRef.current = onChange;
+  onSessionDraftChangeRef.current = onSessionDraftChange;
   const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
   const agentIconKeys = useMemo(() => workflowAgentIconKeys(agents), [agents]);
   const doctorReadyAgents = useMemo(() => agents.filter(isWorkflowAgentDoctorReady), [agents]);
+  const profiles = profileCatalog.profiles;
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
-  const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && doctorReadyAgents.length > 0;
+  const canSave = profileCatalog.status === 'ready' && workflow.nodes.length > 0 && workflow.entry.trim() !== '' && doctorReadyAgents.length > 0;
+  const workflowTopologySignature = useMemo(() => authoringWorkflowTopologySignature(workflow), [workflow]);
   const workflowGraphSignature = useMemo(() => authoringWorkflowGraphSignature(workflow), [workflow]);
   const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
   const visibleTerminalSignature = useMemo(() => stringSetSignature(visibleTerminalIds), [visibleTerminalIds]);
-  const { nodes, edges } = useMemo(
-    () => workflowToFlow(workflow, selectedNodeId, selectedEdgeId, invalidNodeIds, visibleTerminalIds, agentIconKeys, t),
-    [agentIconKeys, invalidNodeSignature, selectedEdgeId, selectedNodeId, t, visibleTerminalSignature, workflowGraphSignature],
+  const nodeAgentIds = useMemo(
+    () => authoringWorkflowNodeAgentIds(workflow, modelBindings),
+    [modelBindings, workflow],
   );
+  const nodeAgentSignature = JSON.stringify(nodeAgentIds);
+  const nodeIconKeys = useMemo(
+    () => new Map(Object.entries(nodeAgentIds).map(([nodeId, agentId]) => [nodeId, agentIconKeys.get(agentId) ?? DEFAULT_AGENT_ICON_KEY])),
+    [agentIconKeys, nodeAgentSignature],
+  );
+  const graphLayout = useMemo(
+    () => createAuthoringGraphLayout(workflow, visibleTerminalIds),
+    [visibleTerminalSignature, workflowTopologySignature],
+  );
+  const handleCanvasQuickAdd = useCallback((nodeId: string, outcome: EdgeOutcome) => canvasActionsRef.current.quickAdd(nodeId, outcome), []);
+  const handleCanvasDelete = useCallback((nodeId: string) => canvasActionsRef.current.deleteNode(nodeId), []);
+  const { nodes, edges } = useMemo(
+    () => createAuthoringFlowProjection(workflow, graphLayout, selectedNodeId, selectedEdgeId, invalidNodeIds, nodeIconKeys, t, handleCanvasQuickAdd, handleCanvasDelete, selectedTerminalId),
+    [graphLayout, handleCanvasDelete, handleCanvasQuickAdd, invalidNodeSignature, nodeIconKeys, selectedEdgeId, selectedNodeId, selectedTerminalId, t, workflowGraphSignature],
+  );
+  useEffect(() => {
+    if (!onSessionDraftChangeRef.current) return undefined;
+    const timer = window.setTimeout(() => {
+      onSessionDraftChangeRef.current?.({ workflow, modelBindings, tab, jsonDraft, viewport: viewportRef.current });
+    }, WORKFLOW_EDITOR_DRAFT_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [jsonDraft, modelBindings, tab, viewportRevision, workflow]);
 
   useEffect(() => {
-    onSessionDraftChange?.({ workflow, tab, jsonDraft });
-  }, [jsonDraft, onSessionDraftChange, tab, workflow]);
+    const container = editorContainerRef.current;
+    if (!container) return undefined;
+    const publishLayoutMode = (width: number) => {
+      const nextCompact = width < WORKFLOW_EDITOR_COMPACT_WIDTH;
+      setIsCompact((current) => current === nextCompact ? current : nextCompact);
+    };
+    publishLayoutMode(container.clientWidth);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) publishLayoutMode(entry.contentRect.width);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLiveValidation(validateWorkflowForSave(workflow, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings));
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [currentTemplateId, currentTemplateName, doctorReadyAgents, modelBindings, profileCatalog, t, validateModelBindings, validateTemplateDuplicateId, workflow, workflowTemplates]);
+
+  useEffect(() => () => {
+    if (externalChangeTimerRef.current) {
+      window.clearTimeout(externalChangeTimerRef.current);
+      onChangeRef.current?.(workflowRef.current);
+    }
+    if (initialFitFrameRef.current) window.cancelAnimationFrame(initialFitFrameRef.current);
+  }, []);
 
   useEffect(() => {
     if (restoredDraftAppliedRef.current) {
@@ -228,21 +505,40 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setWorkflow(initialWorkflow);
     setJsonDraft(JSON.stringify(initialWorkflow, null, 2));
     setJsonError(null);
-    setSelectedNodeId(initialWorkflow.nodes[0]?.id ?? null);
-    setSelectedEdgeId(null);
+    clearCanvasSelection();
     setVisibleTerminalIds(new Set());
     setTerminalMenu(null);
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(initialWorkflow));
-  }, [initialWorkflow]);
+    historyRef.current = { past: [], future: [] };
+    setHistoryRevision((revision) => revision + 1);
+  }, [clearCanvasSelection, initialWorkflow]);
 
   useEffect(() => {
-    if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
+    if (!modelBindingsValue) return;
+    setModelBindings(normalizeWorkflowModelBindings(modelBindingsValue));
+  }, [modelBindingsValue]);
+
+  useEffect(() => {
+    if (!focusNodeId) {
+      handledFocusNodeIdRef.current = null;
+      return;
+    }
+    if (handledFocusNodeIdRef.current === focusNodeId || !workflow.nodes.some((node) => node.id === focusNodeId)) return;
+    handledFocusNodeIdRef.current = focusNodeId;
+    setTab('canvas');
+    setSelectedNodeId(focusNodeId);
+    setSelectedEdgeId(null);
+    setPendingFocusNodeId(focusNodeId);
+  }, [focusNodeId, workflow.nodes]);
+
+  useEffect(() => {
+    if (profileCatalog.status !== 'ready' || validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    const validation = validateWorkflowForSave(workflow, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
-  }, [doctorReadyAgents, profiles, t, validationRequestId, workflow, workflowTemplates]);
+  }, [doctorReadyAgents, modelBindings, profileCatalog, t, validationRequestId, workflow, workflowTemplates]);
 
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
@@ -256,14 +552,74 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     });
   }, [flowInstance, nodes, pendingFocusNodeId]);
 
-  const syncWorkflow = (next: WorkflowDsl) => {
+  const queueExternalChange = useCallback((next: WorkflowDsl) => {
+    if (externalChangeTimerRef.current) window.clearTimeout(externalChangeTimerRef.current);
+    externalChangeTimerRef.current = window.setTimeout(() => {
+      externalChangeTimerRef.current = null;
+      onChangeRef.current?.(next);
+    }, WORKFLOW_EDITOR_DRAFT_DELAY_MS);
+  }, []);
+
+  const applyWorkflowWithoutHistory = useCallback((next: WorkflowDsl) => {
     const normalizedNext = normalizeWorkflowEntryFromTopology(next);
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     setJsonError(null);
     setWorkflow(normalizedNext);
-    setJsonDraft(JSON.stringify(normalizedNext, null, 2));
-    onChange?.(normalizedNext);
+    queueExternalChange(normalizedNext);
+    return normalizedNext;
+  }, [queueExternalChange]);
+
+  const syncWorkflow = useCallback((next: WorkflowDsl) => {
+    const current = workflowRef.current;
+    historyRef.current = recordWorkflowHistory(historyRef.current, current);
+    setHistoryRevision((revision) => revision + 1);
+    return applyWorkflowWithoutHistory(next);
+  }, [applyWorkflowWithoutHistory]);
+
+  const undoWorkflow = useCallback(() => {
+    const result = undoWorkflowHistory(historyRef.current, workflowRef.current);
+    if (!result) return;
+    historyRef.current = result.history;
+    applyWorkflowWithoutHistory(result.workflow);
+    clearCanvasSelection();
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(result.workflow));
+    setHistoryRevision((revision) => revision + 1);
+  }, [applyWorkflowWithoutHistory, clearCanvasSelection]);
+
+  const redoWorkflow = useCallback(() => {
+    const result = redoWorkflowHistory(historyRef.current, workflowRef.current);
+    if (!result) return;
+    historyRef.current = result.history;
+    applyWorkflowWithoutHistory(result.workflow);
+    clearCanvasSelection();
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(result.workflow));
+    setHistoryRevision((revision) => revision + 1);
+  }, [applyWorkflowWithoutHistory, clearCanvasSelection]);
+
+  const syncModelBindings = (next: WorkflowModelBindings) => {
+    setModelBindings(next);
+    onModelBindingsChange?.(next);
+  };
+
+  const updateWorkerBinding = (executionSlotId: string, patch: Partial<WorkerModelBinding>) => {
+    const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
+    const nextBinding: WorkerModelBinding = {
+      executionSlotId,
+      agentId: current?.agentId ?? '',
+      ...current,
+      ...patch,
+    };
+    syncModelBindings({
+      ...modelBindings,
+      bindings: current
+        ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
+        : [...modelBindings.bindings, nextBinding],
+    });
+  };
+
+  const syncWorkerBindingToOthers = (executionSlotId: string, overwriteConfigured: boolean) => {
+    syncModelBindings(applyWorkerBindingSync(workflow, modelBindings, executionSlotId, overwriteConfigured));
   };
 
   const closeValidationDialog = (open: boolean) => {
@@ -271,21 +627,21 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     if (open || !pendingValidation) return;
     setFieldErrors(pendingValidation.fieldErrors);
     setInvalidNodeIds(new Set(pendingValidation.issues.flatMap((issue) => issue.nodeIds ?? (issue.nodeId ? [issue.nodeId] : []))));
-    setWorkflow(pendingValidation.sanitizedWorkflow);
-    setJsonDraft(JSON.stringify(pendingValidation.sanitizedWorkflow, null, 2));
+    syncWorkflow(pendingValidation.sanitizedWorkflow);
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(pendingValidation.sanitizedWorkflow));
-    onChange?.(pendingValidation.sanitizedWorkflow);
     const firstIssue = pendingValidation.issues.find((issue) => issue.nodeId || issue.nodeIds?.length || issue.edgeIndex !== undefined);
     const firstIssueNodeId = firstIssue?.nodeId ?? firstIssue?.nodeIds?.[0];
     if (firstIssueNodeId) {
       setSelectedNodeId(firstIssueNodeId);
       setSelectedEdgeId(null);
+      setSelectedTerminalId(null);
       setPendingFocusNodeId(firstIssueNodeId);
     } else if (firstIssue?.edgeIndex !== undefined) {
       const edge = pendingValidation.sanitizedWorkflow.edges[firstIssue.edgeIndex];
       if (edge) {
         setSelectedNodeId(null);
         setSelectedEdgeId(edgeId(edge, firstIssue.edgeIndex));
+        setSelectedTerminalId(null);
       }
     }
     setPendingValidation(null);
@@ -294,20 +650,26 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
   const handleConnect = (connection: Connection) => {
     if (!connection.source || !connection.target) return;
     if (connection.source === END_NODE || connection.source === NEW_ROUND_NODE) return;
+    const sourceNode = workflow.nodes.find((node) => node.id === connection.source);
+    if (connection.sourceHandle === 'failure' && !nodeSupportsFailureOutcome(sourceNode)) return;
     const edge: WorkflowEdgeDsl = {
       from: connection.source,
       to: connection.target,
-      on: connection.target === NEW_ROUND_NODE ? 'failure' : 'success',
+      on: connection.target === NEW_ROUND_NODE || connection.sourceHandle === 'failure' ? 'failure' : 'success',
     };
     const next = { ...workflow, edges: [...workflow.edges, edge] };
     syncWorkflow(next);
     setSelectedEdgeId(edgeId(edge, next.edges.length - 1));
     setSelectedNodeId(null);
+    setSelectedTerminalId(null);
     setTerminalMenu(null);
   };
 
   const showTerminalTarget = (terminalId: string) => {
     setVisibleTerminalIds((current) => new Set(current).add(terminalId));
+    setSelectedTerminalId(terminalId);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     setTerminalMenu(null);
   };
 
@@ -317,8 +679,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     syncWorkflow(next);
     setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(next));
     onApplyDefaultTemplate?.(next);
-    setSelectedNodeId(next.nodes[0]?.id ?? null);
-    setSelectedEdgeId(null);
+    clearCanvasSelection();
   };
 
   const handleSave = async () => {
@@ -329,12 +690,15 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
         setJsonError(t('workflowEditor.outputSchemaInvalid'));
         return;
       }
-      workflowToSave = normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(parsed));
+      workflowToSave = normalizeWorkflowEntryFromTopology(
+        normalizeWorkflowExecutionSlots(normalizeWorkflowSchemas(parsed), workflow),
+      );
       setWorkflow(workflowToSave);
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
-      onChange?.(workflowToSave);
+      queueExternalChange(workflowToSave);
     }
-    const validation = validateWorkflowForSave(workflowToSave, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId);
+    if (profileCatalog.status !== 'ready') return;
+    const validation = validateWorkflowForSave(workflowToSave, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -343,7 +707,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     setFieldErrors({});
     setInvalidNodeIds(new Set());
     try {
-      await onSave(validation.sanitizedWorkflow);
+      await onSave(validation.sanitizedWorkflow, modelBindings);
       setWorkflow(validation.sanitizedWorkflow);
       setJsonDraft(JSON.stringify(validation.sanitizedWorkflow, null, 2));
     } catch (error) {
@@ -363,7 +727,7 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     const node: WorkflowWorkerNodeDsl = {
       type: 'worker',
       id,
-      provider: null,
+      executionSlotId: crypto.randomUUID(),
       goal: null,
     };
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
@@ -389,49 +753,87 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     syncWorkflow(next);
     setSelectedNodeId(id);
     setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
     setPendingFocusNodeId(id);
   };
 
-  const deleteSelectedNode = () => {
-    if (!selectedNodeId) return;
-    const nodes = workflow.nodes.filter((node) => node.id !== selectedNodeId);
+  const deleteNodeById = useCallback((nodeId: string) => {
+    const currentWorkflow = workflowRef.current;
+    const nodes = currentWorkflow.nodes.filter((node) => node.id !== nodeId);
     const next = {
-      ...workflow,
-      entry: workflow.entry === selectedNodeId ? nodes[0]?.id ?? '' : workflow.entry,
+      ...currentWorkflow,
+      entry: currentWorkflow.entry === nodeId ? nodes[0]?.id ?? '' : currentWorkflow.entry,
       nodes,
-      edges: workflow.edges
-        .filter((edge) => edge.from !== selectedNodeId && edge.to !== selectedNodeId)
+      edges: currentWorkflow.edges
+        .filter((edge) => edge.from !== nodeId && edge.to !== nodeId)
         .map((edge) => {
-          if (edge.new_round_entry !== selectedNodeId) return edge;
+          if (edge.new_round_entry !== nodeId) return edge;
           const updated = { ...edge };
           delete updated.new_round_entry;
           return updated;
         }),
     };
     syncWorkflow(next);
-    setSelectedNodeId(next.nodes[0]?.id ?? null);
-  };
+    clearCanvasSelection();
+  }, [clearCanvasSelection, syncWorkflow]);
+
+  const deleteTerminalById = useCallback((terminalId: string) => {
+    const currentWorkflow = workflowRef.current;
+    const next = removeTerminalFromWorkflow(currentWorkflow, terminalId);
+    if (next.edges.length !== currentWorkflow.edges.length) syncWorkflow(next);
+    setVisibleTerminalIds((current) => {
+      const updated = new Set(current);
+      updated.delete(terminalId);
+      return updated;
+    });
+    setSelectedTerminalId(null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+  }, [syncWorkflow]);
+
+  const quickAddSuccessor = useCallback((sourceId: string, outcome: EdgeOutcome) => {
+    const currentWorkflow = workflowRef.current;
+    const sourceNode = currentWorkflow.nodes.find((node) => node.id === sourceId);
+    if (!sourceNode || (outcome === 'failure' && !nodeSupportsFailureOutcome(sourceNode))) return;
+    const id = uniqueNodeId(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
+    const node: WorkflowWorkerNodeDsl = { type: 'worker', id, provider: null, goal: null };
+    const edge: WorkflowEdgeDsl = { from: sourceId, to: id, on: outcome };
+    const next = { ...currentWorkflow, nodes: [...currentWorkflow.nodes, node], edges: [...currentWorkflow.edges, edge] };
+    syncWorkflow(next);
+    setSelectedNodeId(id);
+    setSelectedEdgeId(null);
+    setSelectedTerminalId(null);
+    setPendingFocusNodeId(id);
+  }, [syncWorkflow]);
 
   const updateNode = (nodeId: string, patch: Partial<WorkflowNodeDsl>) => {
     const nextId = patch.id && patch.id !== nodeId ? sanitizeNodeId(patch.id, workflow, nodeId) : null;
+    const nodes = workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl : node);
+    const updatedNode = nodes.find((node) => node.id === (nextId ?? nodeId));
+    const renamedEdges = nextId ? workflow.edges.map((edge) => ({
+      ...edge,
+      from: edge.from === nodeId ? nextId : edge.from,
+      to: edge.to === nodeId ? nextId : edge.to,
+      new_round_entry: edge.new_round_entry === nodeId ? nextId : edge.new_round_entry,
+    })) : workflow.edges;
+    const edges = nodeSupportsFailureOutcome(updatedNode)
+      ? renamedEdges
+      : renamedEdges.filter((edge) => edge.from !== (nextId ?? nodeId) || edge.on !== 'failure');
     const next = {
       ...workflow,
       entry: nextId && workflow.entry === nodeId ? nextId : workflow.entry,
-      nodes: workflow.nodes.map((node) => node.id === nodeId ? { ...node, ...patch, id: nextId ?? node.id } as WorkflowNodeDsl : node),
-      edges: nextId ? workflow.edges.map((edge) => ({
-        ...edge,
-        from: edge.from === nodeId ? nextId : edge.from,
-        to: edge.to === nodeId ? nextId : edge.to,
-        new_round_entry: edge.new_round_entry === nodeId ? nextId : edge.new_round_entry,
-      })) : workflow.edges,
+      nodes,
+      edges,
     };
     syncWorkflow(next);
+    if (edges.length !== workflow.edges.length) setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(next));
     if (nextId) setSelectedNodeId(nextId);
   };
 
   const updateEdge = (index: number, patch: Partial<WorkflowEdgeDsl>) => {
     const currentEdge = workflow.edges[index];
     if (!currentEdge) return;
+    if (patch.on === 'failure' && !nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === currentEdge.from))) return;
     const updatedEdge = { ...currentEdge, ...patch };
     const draftValue = (patch.new_round_entry ?? currentEdge.new_round_entry)?.trim();
     if (draftValue) {
@@ -458,172 +860,362 @@ export function WorkflowEditor({ value, agentRegistry, profiles = [], onOpenProf
     syncWorkflow({ ...workflow, control });
   };
 
-  const deleteSelectedEdge = () => {
+  const deleteSelectedEdge = useCallback(() => {
     if (selectedEdgeIndex < 0) return;
-    const next = { ...workflow, edges: workflow.edges.filter((_, index) => index !== selectedEdgeIndex) };
+    const currentWorkflow = workflowRef.current;
+    const next = { ...currentWorkflow, edges: currentWorkflow.edges.filter((_, index) => index !== selectedEdgeIndex) };
     syncWorkflow(next);
     setNewRoundEntryDrafts((current) => shiftNewRoundEntryDraftsAfterDelete(current, selectedEdgeIndex));
     setSelectedEdgeId(null);
-  };
+  }, [selectedEdgeIndex, syncWorkflow]);
+
+  const deleteSelectedCanvasElement = useCallback(() => {
+    if (selectedNodeId) deleteNodeById(selectedNodeId);
+    else if (selectedTerminalId) deleteTerminalById(selectedTerminalId);
+    else if (selectedEdgeIndex >= 0) deleteSelectedEdge();
+  }, [deleteNodeById, deleteSelectedEdge, deleteTerminalById, selectedEdgeIndex, selectedNodeId, selectedTerminalId]);
+
+  canvasActionsRef.current = { quickAdd: quickAddSuccessor, deleteNode: deleteNodeById };
+
+  const focusValidationIssue = useCallback((issue: WorkflowValidationIssue, validation: WorkflowValidationResult) => {
+    setFieldErrors(validation.fieldErrors);
+    setInvalidNodeIds(new Set(validation.issues.flatMap((item) => item.nodeIds ?? (item.nodeId ? [item.nodeId] : []))));
+    const nodeId = issue.nodeId ?? issue.nodeIds?.[0];
+    if (nodeId) {
+      setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
+      setSelectedTerminalId(null);
+      setPendingFocusNodeId(nodeId);
+    } else if (issue.edgeIndex !== undefined) {
+      const edge = workflowRef.current.edges[issue.edgeIndex];
+      if (edge) {
+        setSelectedNodeId(null);
+        setSelectedEdgeId(edgeId(edge, issue.edgeIndex));
+        setSelectedTerminalId(null);
+      }
+    }
+    setCompactPane('inspector');
+    setTab('canvas');
+  }, []);
+
+  const handleEditorTabChange = useCallback((nextTab: EditorTab) => {
+    if (nextTab === tab) return;
+    if (nextTab === 'json') {
+      setJsonDraft(JSON.stringify(workflowRef.current, null, 2));
+      setJsonError(null);
+      setTab('json');
+      return;
+    }
+    const parsed = parseWorkflowJson(jsonDraft);
+    if (!parsed) {
+      setJsonError(t('workflowEditor.outputSchemaInvalid'));
+      return;
+    }
+    syncWorkflow(normalizeWorkflowSchemas(parsed));
+    setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(parsed));
+    setTab('canvas');
+  }, [jsonDraft, syncWorkflow, t, tab]);
+
+  const handleFlowInit = useCallback((instance: ReactFlowInstance<Node<EditorNodeData>, Edge>) => {
+    setFlowInstance(instance);
+    if (hasStableViewportRef.current) {
+      void instance.setViewport(viewportRef.current);
+      return;
+    }
+    initialFitFrameRef.current = window.requestAnimationFrame(() => {
+      initialFitFrameRef.current = window.requestAnimationFrame(() => {
+        void instance.fitView({ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM, duration: 0 }).then(() => {
+          viewportRef.current = instance.getViewport();
+          hasStableViewportRef.current = true;
+          setViewportRevision((revision) => revision + 1);
+        });
+      });
+    });
+  }, []);
+
+  const handleMoveEnd = useCallback((_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    viewportRef.current = viewport;
+    hasStableViewportRef.current = true;
+    setViewportRevision((revision) => revision + 1);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName ?? '')) return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) redoWorkflow();
+        else undoWorkflow();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        redoWorkflow();
+        return;
+      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0) return;
+      event.preventDefault();
+      if (selectedNodeId) deleteNodeById(selectedNodeId);
+      else if (selectedTerminalId) deleteTerminalById(selectedTerminalId);
+      else deleteSelectedEdge();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [deleteNodeById, deleteSelectedEdge, deleteTerminalById, redoWorkflow, selectedEdgeIndex, selectedNodeId, selectedTerminalId, undoWorkflow]);
+
+  const canUndo = historyRevision >= 0 && historyRef.current.past.length > 0;
+  const canRedo = historyRevision >= 0 && historyRef.current.future.length > 0;
+  const validationIssues = liveValidation?.issues ?? [];
+
+  const canvasSurface = (
+    <AppCard className="flex size-full min-h-0 flex-col gap-0 overflow-hidden border-0 bg-transparent py-0 shadow-none">
+      <CardHeader className="flex shrink-0 flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
+        <div className="min-w-0">
+          <CardTitle>{t('workflowEditor.title')}</CardTitle>
+          <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Tabs value={tab} onValueChange={(value) => handleEditorTabChange(value as EditorTab)}>
+            <TabsList>
+              <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
+              <TabsTrigger value="json">JSON</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className="flex items-center rounded-lg border bg-background/70 p-0.5">
+            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canUndo} onClick={undoWorkflow} aria-label={t('workflowEditor.undo')}><Undo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.undo')} (Ctrl+Z)</TooltipContent></Tooltip>
+            <Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" className="size-7" disabled={!canRedo} onClick={redoWorkflow} aria-label={t('workflowEditor.redo')}><Redo2 className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('workflowEditor.redo')} (Ctrl+Y)</TooltipContent></Tooltip>
+          </div>
+          {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
+          {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
+        </div>
+      </CardHeader>
+      <CardContent className="min-h-0 flex-1 p-0">
+        {tab === 'canvas' ? (
+          <div className="relative size-full min-h-0">
+            {terminalMenu ? (
+              <div className="absolute z-30 w-44 overflow-hidden rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-lg" style={{ left: terminalMenu.x, top: terminalMenu.y }}>
+                <button type="button" className="flex min-h-9 w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(END_NODE)}>{t('workflowEditor.addEndTarget')}</button>
+                <button type="button" className="flex min-h-9 w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(NEW_ROUND_NODE)}>{t('workflowEditor.addNewRoundTarget')}</button>
+              </div>
+            ) : null}
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onConnect={handleConnect}
+              onPaneClick={() => { setTerminalMenu(null); setSelectedNodeId(null); setSelectedEdgeId(null); setSelectedTerminalId(null); }}
+              onPaneContextMenu={(event) => {
+                event.preventDefault();
+                const target = event.currentTarget as Element | null;
+                if (!target) return;
+                const bounds = target.getBoundingClientRect();
+                setTerminalMenu({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
+              }}
+              onInit={handleFlowInit}
+              onMoveEnd={handleMoveEnd}
+              onNodeClick={(_, node) => {
+                setSelectedNodeId(node.data.terminal ? null : node.id);
+                setSelectedTerminalId(node.data.terminal ? node.id : null);
+                setSelectedEdgeId(null);
+              }}
+              onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); setSelectedTerminalId(null); }}
+              nodesDraggable={false}
+              nodesConnectable
+              connectOnClick
+              connectionRadius={32}
+              elementsSelectable
+              nodesFocusable
+              edgesFocusable
+              deleteKeyCode={null}
+              defaultViewport={viewportRef.current}
+              minZoom={WORKFLOW_EDITOR_MIN_ZOOM}
+              maxZoom={WORKFLOW_EDITOR_MAX_ZOOM}
+              proOptions={{ hideAttribution: true }}
+              edgeTypes={edgeTypes}
+              nodeTypes={editorNodeTypes}
+              className="workflow-graph bg-muted/10"
+            >
+              <Background color="var(--border)" gap={28} size={1} />
+              <Panel position="top-left" className="m-3 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-background/85 p-1 shadow-sm backdrop-blur-md">
+                <DropdownMenu>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" size="icon-sm" variant="ghost" className="size-8 rounded-full" aria-label={t('workflowEditor.addNode')}><Plus className="size-4" /></Button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('workflowEditor.addNode')}</TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuContent align="start" sideOffset={8}>
+                    <DropdownMenuItem onClick={addWorkerNode}><Plus className="size-4" />{t('workflowEditor.addWorkerNode')}</DropdownMenuItem>
+                    {allowAiDynamic ? <DropdownMenuItem onClick={addAiDynamicNode}><Sparkles className="size-4" />{t('workflowEditor.addAiDynamicNode')}</DropdownMenuItem> : null}
+                    <DropdownMenuItem onClick={() => showTerminalTarget(END_NODE)}><Check className="size-4" />{t('workflowEditor.endTarget')}</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => showTerminalTarget(NEW_ROUND_NODE)}><Redo2 className="size-4" />{t('workflowEditor.newRoundTarget')}</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId && !selectedTerminalId && selectedEdgeIndex < 0} onClick={deleteSelectedCanvasElement}><Trash2 className="size-3.5" />{t(selectedEdgeIndex >= 0 ? 'workflowEditor.deleteEdge' : 'workflowEditor.deleteNode')}</Button>
+              </Panel>
+              <GraphControls
+                disabled={!flowInstance}
+                onZoomIn={() => { void flowInstance?.zoomIn(); }}
+                onZoomOut={() => { void flowInstance?.zoomOut(); }}
+                onFitView={() => { void flowInstance?.fitView({ padding: 0.22, maxZoom: WORKFLOW_EDITOR_FIT_MAX_ZOOM }); }}
+              />
+            </ReactFlow>
+          </div>
+        ) : (
+          <div className="flex size-full min-h-0 flex-col p-4">
+            <Textarea
+              value={jsonDraft}
+              onChange={(event) => {
+                const nextDraft = event.target.value;
+                setJsonDraft(nextDraft);
+                setJsonError(null);
+                const parsed = parseWorkflowJson(nextDraft);
+                if (!parsed) return;
+                const nextWorkflow = normalizeWorkflowSchemas(parsed);
+                setWorkflow(nextWorkflow);
+                setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
+                queueExternalChange(nextWorkflow);
+              }}
+              className="min-h-0 flex-1 resize-none font-mono text-xs"
+              spellCheck={false}
+            />
+            {jsonError ? <p className="mt-2 text-xs text-destructive">{jsonError}</p> : null}
+          </div>
+        )}
+      </CardContent>
+    </AppCard>
+  );
+
+  const inspectorSurface = (
+    <AppCard className="flex size-full min-h-0 flex-col gap-0 overflow-hidden border-0 bg-transparent py-0 shadow-none">
+      <CardHeader className="shrink-0 border-b px-4 py-3"><CardTitle>{t('workflowEditor.inspector')}</CardTitle></CardHeader>
+      <CardContent className="min-h-0 flex-1 p-0">
+        <ScrollArea className="size-full">
+          <div className="space-y-4 p-4">
+            {profileCatalog.status === 'loading' ? (
+              <Alert>
+                <AlertCircle />
+                <AlertTitle>{t('workflowEditor.profileCatalogLoading')}</AlertTitle>
+                <AlertDescription>{t('workflowEditor.profileCatalogLoadingDescription')}</AlertDescription>
+              </Alert>
+            ) : null}
+            {profileCatalog.status === 'error' ? (
+              <Alert variant="destructive" className="bg-destructive/5">
+                <AlertCircle />
+                <AlertTitle>{t('workflowEditor.profileCatalogLoadFailed')}</AlertTitle>
+                <AlertDescription className="space-y-2">
+                  <p>{profileCatalog.error.message}</p>
+                  <Button type="button" variant="outline" size="sm" onClick={profileCatalog.retry}>{t('workflowEditor.profileCatalogRetry')}</Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {validationIssues.length > 0 && liveValidation ? (
+              <Alert variant="destructive" className="bg-destructive/5">
+                <AlertCircle />
+                <AlertTitle>{t('workflowEditor.validationSummary', { count: validationIssues.length })}</AlertTitle>
+                <AlertDescription>
+                  {validationIssues.slice(0, 6).map((issue, index) => (
+                    <button key={`${issue.message}:${index}`} type="button" className="w-full rounded-md px-1 py-1 text-left text-xs leading-5 underline-offset-2 hover:bg-destructive/10 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => focusValidationIssue(issue, liveValidation)}>{issue.message}</button>
+                  ))}
+                  {validationIssues.length > 6 ? <p className="px-1 text-xs">{t('workflowEditor.moreValidationIssues', { count: validationIssues.length - 6 })}</p> : null}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <section className="space-y-3" aria-labelledby="workflow-current-selection-title">
+              <div className="space-y-1"><h3 id="workflow-current-selection-title" className="text-sm font-semibold">{t('workflowEditor.currentSelection')}</h3><p className="text-xs text-muted-foreground">{t('workflowEditor.currentSelectionHelp')}</p></div>
+              {!agents.length ? <EmptyState>{t('workflowEditor.noAgents')}</EmptyState> : null}
+              {selectedNode ? (
+                <BufferedNodeInspector
+                  key={selectedNode.id}
+                  node={selectedNode}
+                  binding={selectedNode.type === 'worker' ? modelBindings.bindings.find((binding) => binding.executionSlotId === selectedNode.executionSlotId) ?? null : null}
+                  modelBindings={modelBindings}
+                  agents={agents}
+                  profiles={profiles}
+                  workflow={workflow}
+                  workflowTemplates={workflowTemplates ?? null}
+                  fieldErrors={fieldErrors}
+                  onUpdate={updateNode}
+                  onBindingUpdate={updateWorkerBinding}
+                  onBindingSync={syncWorkerBindingToOthers}
+                  workflowControl={<BufferedWorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />}
+                  onOpenProfileManagement={onOpenProfileManagement}
+                  t={t}
+                />
+              ) : null}
+              {selectedEdge ? <EdgeInspector edge={selectedEdge} index={selectedEdgeIndex} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateEdge} t={t} /> : null}
+              {selectedTerminalId ? <EmptyState>{t('workflowEditor.terminalSelectionHint')}</EmptyState> : null}
+              {!selectedNode && !selectedEdge && !selectedTerminalId ? <EmptyState>{t('workflowEditor.selectHint')}</EmptyState> : null}
+            </section>
+            {!selectedNode ? <BufferedWorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} /> : null}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </AppCard>
+  );
 
   return (
     <>
       <Dialog open={validationDialogOpen} onOpenChange={closeValidationDialog}>
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('workflowEditor.validationDialogTitle')}</DialogTitle>
-            <DialogDescription>{t('workflowEditor.validationDialogDescription')}</DialogDescription>
-          </DialogHeader>
-          <div className="max-h-80 space-y-2 overflow-auto rounded-lg border bg-muted/20 p-3 text-sm">
-            {pendingValidation?.issues.map((issue, index) => (
-              <div key={`${issue.message}:${index}`} className="rounded-md bg-background/70 px-3 py-2 text-destructive">
-                {issue.message}
-              </div>
-            ))}
-          </div>
-          <DialogFooter>
-            <Button onClick={() => closeValidationDialog(false)}>{t('workflowEditor.validationDialogClose')}</Button>
-          </DialogFooter>
+          <DialogHeader><DialogTitle>{t('workflowEditor.validationDialogTitle')}</DialogTitle><DialogDescription>{t('workflowEditor.validationDialogDescription')}</DialogDescription></DialogHeader>
+          <div className="max-h-80 space-y-2 overflow-auto rounded-lg border bg-muted/20 p-3 text-sm">{pendingValidation?.issues.map((issue, index) => <div key={`${issue.message}:${index}`} className="rounded-md bg-background/70 px-3 py-2 text-destructive">{issue.message}</div>)}</div>
+          <DialogFooter><Button onClick={() => closeValidationDialog(false)}>{t('workflowEditor.validationDialogClose')}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="@container/workflow-editor">
-      <div className="grid min-h-[620px] gap-3 @5xl/workflow-editor:grid-cols-[minmax(0,1fr)_340px]">
-      <AppCard className="min-h-0 gap-0 overflow-hidden py-0">
-        <CardHeader className="flex flex-col items-stretch justify-between gap-3 border-b px-4 py-3 @lg/workflow-editor:flex-row @lg/workflow-editor:items-center">
-          <div className="min-w-0">
-            <CardTitle>{t('workflowEditor.title')}</CardTitle>
-            <p className="mt-1 text-xs text-muted-foreground">{t('workflowEditor.subtitle')}</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Tabs value={tab} onValueChange={(value) => setTab(value as EditorTab)}>
-              <TabsList>
-                <TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger>
-                <TabsTrigger value="json">JSON</TabsTrigger>
-              </TabsList>
+      <div ref={editorContainerRef} className={cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)} data-workflow-editor-layout={isCompact ? 'compact' : 'split'}>
+        {isCompact ? (
+          <div className="flex size-full min-h-0 flex-col gap-2">
+            <Tabs value={compactPane} onValueChange={(value) => setCompactPane(value as 'canvas' | 'inspector')} className="shrink-0">
+              <TabsList className="w-full"><TabsTrigger value="canvas">{t('workflowEditor.canvas')}</TabsTrigger><TabsTrigger value="inspector">{t('workflowEditor.inspector')}</TabsTrigger></TabsList>
             </Tabs>
-            {defaultWorkflow ? <Button variant="outline" size="sm" onClick={applyDefaultTemplate}>{t('workflowEditor.defaultTemplate')}</Button> : null}
-            {showSaveAction ? <Button size="sm" disabled={!canSave || saving} onClick={() => void handleSave()}>{t('workflowEditor.saveWorkflow')}</Button> : null}
+            <div className="min-h-0 flex-1">{compactPane === 'canvas' ? canvasSurface : inspectorSurface}</div>
           </div>
-        </CardHeader>
-        <CardContent className="min-h-0 flex-1 p-0">
-          {tab === 'canvas' ? (
-            <div className="relative h-[560px] min-h-0">
-              <div className="absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-background/75 p-1 shadow-sm shadow-background/20 backdrop-blur-md">
-                <Button size="sm" variant="ghost" className="h-8 rounded-full px-3 text-xs font-medium hover:bg-muted/80" onClick={addWorkerNode}>
-                  <Plus className="size-3.5" />
-                  {t('workflowEditor.addWorkerNode')}
-                </Button>
-                {allowAiDynamic ? (
-                  <span className="inline-flex items-center">
-                    <Button size="sm" variant="ghost" className="h-8 rounded-full px-3 text-xs font-medium hover:bg-muted/80" onClick={addAiDynamicNode}>
-                      <Sparkles className="size-3.5" />
-                      {t('workflowEditor.addAiDynamicNode')}
-                    </Button>
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button type="button" variant="ghost" size="icon-xs" className="ml-0.5 h-7 w-7 rounded-full" aria-label={t('workflowEditor.aiDynamicHelp')}>
-                            <CircleHelp className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-72 whitespace-pre-wrap break-words text-[12px] leading-relaxed" side="bottom" sideOffset={8}>
-                          {t('workflowEditor.aiDynamicHelp')}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </span>
-                ) : null}
-                <Button size="sm" variant="ghost" className="h-8 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:hover:bg-transparent" disabled={!selectedNodeId} onClick={deleteSelectedNode}>
-                  <Trash2 className="size-3.5" />
-                  {t('workflowEditor.deleteNode')}
-                </Button>
-              </div>
-              {terminalMenu ? (
-                <div className="absolute z-20 w-44 overflow-hidden rounded-xl border bg-popover p-1 text-sm text-popover-foreground shadow-lg" style={{ left: terminalMenu.x, top: terminalMenu.y }}>
-                  <button type="button" className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(END_NODE)}>{t('workflowEditor.addEndTarget')}</button>
-                  <button type="button" className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground" onClick={() => showTerminalTarget(NEW_ROUND_NODE)}>{t('workflowEditor.addNewRoundTarget')}</button>
-                </div>
-              ) : null}
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onConnect={handleConnect}
-                onPaneClick={() => setTerminalMenu(null)}
-                onPaneContextMenu={(event) => {
-                  event.preventDefault();
-                  const target = event.currentTarget as Element | null;
-                  if (!target) return;
-                  const bounds = target.getBoundingClientRect();
-                  setTerminalMenu({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
-                }}
-                onInit={(instance) => setFlowInstance(instance)}
-                onNodeClick={(_, node) => {
-                  if (node.data.terminal) {
-                    setSelectedNodeId(null);
-                  } else {
-                    setSelectedNodeId(node.id);
-                  }
-                  setSelectedEdgeId(null);
-                }}
-                onEdgeClick={(_, edge) => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); }}
-                nodesDraggable={false}
-                nodesConnectable
-                elementsSelectable={false}
-                nodesFocusable={false}
-                edgesFocusable={false}
-                fitView
-                proOptions={{ hideAttribution: true }}
-                edgeTypes={edgeTypes}
-                nodeTypes={editorNodeTypes}
-                className="workflow-graph bg-muted/10"
-              >
-                <Background color="var(--border)" gap={28} size={1} />
-                <Controls showInteractive={false} position="bottom-right" />
-              </ReactFlow>
-            </div>
-          ) : (
-            <div className="h-[560px] p-4">
-              <Textarea
-                value={jsonDraft}
-                onChange={(event) => {
-                  const nextDraft = event.target.value;
-                  setJsonDraft(nextDraft);
-                  setJsonError(null);
-                  const parsed = parseWorkflowJson(nextDraft);
-                  if (!parsed) return;
-                  const nextWorkflow = normalizeWorkflowSchemas(parsed);
-                  setWorkflow(nextWorkflow);
-                  setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(nextWorkflow));
-                  onChange?.(nextWorkflow);
-                }}
-                className="h-full min-h-full resize-none font-mono text-xs"
-                spellCheck={false}
-              />
-              {jsonError ? <p className="mt-2 text-xs text-destructive">{jsonError}</p> : null}
-            </div>
-          )}
-        </CardContent>
-      </AppCard>
-      <AppCard className="min-h-0 gap-0 overflow-hidden py-0">
-        <CardHeader className="border-b px-4 py-3">
-          <CardTitle>{t('workflowEditor.inspector')}</CardTitle>
-        </CardHeader>
-        <CardContent className="min-h-0 p-0">
-          <ScrollArea className="h-[620px]">
-            <div className="space-y-4 p-4">
-              <WorkflowControlInspector control={workflow.control} fieldErrors={fieldErrors} onUpdate={updateWorkflowControl} t={t} />
-              {!agents.length ? <EmptyState>{t('workflowEditor.noAgents')}</EmptyState> : null}
-              {selectedNode ? <NodeInspector node={selectedNode} agents={agents} profiles={profiles} workflow={workflow} workflowTemplates={workflowTemplates ?? null} fieldErrors={fieldErrors} onUpdate={updateNode} onOpenProfileManagement={onOpenProfileManagement} t={t} /> : null}
-              {selectedEdge ? <EdgeInspector edge={selectedEdge} index={selectedEdgeIndex} workflow={workflow} fieldErrors={fieldErrors} onUpdate={updateEdge} onDelete={deleteSelectedEdge} t={t} /> : null}
-              {!selectedNode && !selectedEdge ? <EmptyState>{t('workflowEditor.selectHint')}</EmptyState> : null}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </AppCard>
-    </div>
-    </div>
+        ) : (
+          <ResizablePanelGroup orientation="horizontal" className="size-full gap-0">
+            <ResizablePanel id="workflow-canvas" defaultSize="68%" minSize={480} className="min-w-0">{canvasSurface}</ResizablePanel>
+            <ResizableHandle withHandle className="mx-1 bg-border/60" />
+            <ResizablePanel id="workflow-inspector" defaultSize="32%" minSize={300} maxSize={460} className="min-w-0">{inspectorSurface}</ResizablePanel>
+          </ResizablePanelGroup>
+        )}
+      </div>
     </>
   );
+}
+
+function BufferedWorkflowControlInspector({ control, onUpdate, ...props }: { control: WorkflowControlDsl; fieldErrors: Record<string, string[]>; onUpdate: (patch: Partial<WorkflowControlDsl>) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+  const [draft, setDraft] = useState(control);
+  const pendingPatchRef = useRef<Partial<WorkflowControlDsl>>({});
+  const timerRef = useRef<number | null>(null);
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+
+  useEffect(() => {
+    if (Object.keys(pendingPatchRef.current).length === 0) setDraft(control);
+  }, [control]);
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (Object.keys(pendingPatchRef.current).length > 0) onUpdateRef.current(pendingPatchRef.current);
+  }, []);
+
+  const updateDraft = (patch: Partial<WorkflowControlDsl>) => {
+    pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+    setDraft((current) => ({ ...current, ...patch }));
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      const pending = pendingPatchRef.current;
+      pendingPatchRef.current = {};
+      timerRef.current = null;
+      onUpdateRef.current(pending);
+    }, WORKFLOW_EDITOR_DRAFT_DELAY_MS);
+  };
+
+  return <WorkflowControlInspector {...props} control={draft} onUpdate={updateDraft} />;
 }
 
 function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { control: WorkflowControlDsl; fieldErrors: Record<string, string[]>; onUpdate: (patch: Partial<WorkflowControlDsl>) => void; t: (key: string, options?: Record<string, unknown>) => string }) {
@@ -634,7 +1226,7 @@ function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { contr
     return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
   };
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
+    <section data-slot="workflow-control-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
       <div className="space-y-1">
         <strong className="text-sm">{t('workflowEditor.workflowControls')}</strong>
         <p className="text-xs leading-5 text-muted-foreground">{t('workflowEditor.workflowControlsHelp')}</p>
@@ -661,34 +1253,114 @@ function WorkflowControlInspector({ control, fieldErrors, onUpdate, t }: { contr
           onChange={(event) => onUpdate({ max_rounds: parseLimit(event.target.value) })}
         />
       </Field>
-    </div>
+    </section>
   );
 }
 
-function NodeInspector(props: { node: WorkflowNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function BufferedNodeInspector(props: Parameters<typeof NodeInspector>[0]) {
+  const { node, onUpdate } = props;
+  const [draft, setDraft] = useState(node);
+  const pendingPatchRef = useRef<Partial<WorkflowNodeDsl>>({});
+  const timerRef = useRef<number | null>(null);
+  const nodeIdRef = useRef(node.id);
+  const onUpdateRef = useRef(onUpdate);
+  nodeIdRef.current = node.id;
+  onUpdateRef.current = onUpdate;
+
+  useEffect(() => {
+    if (Object.keys(pendingPatchRef.current).length === 0) setDraft(node);
+  }, [node]);
+
+  useEffect(() => () => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (Object.keys(pendingPatchRef.current).length > 0) onUpdateRef.current(nodeIdRef.current, pendingPatchRef.current);
+  }, []);
+
+  const flush = (immediatePatch: Partial<WorkflowNodeDsl> = {}) => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    const pending = pendingPatchRef.current;
+    pendingPatchRef.current = {};
+    timerRef.current = null;
+    const merged = mergeBufferedNodePatches(pending, immediatePatch);
+    if (Object.keys(merged).length > 0) onUpdateRef.current(nodeIdRef.current, merged);
+  };
+
+  const updateDraft = (_nodeId: string, patch: Partial<WorkflowNodeDsl>) => {
+    if (patch.id !== undefined) {
+      flush(patch);
+      return;
+    }
+    pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+    setDraft((current) => ({ ...current, ...patch } as WorkflowNodeDsl));
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(flush, WORKFLOW_EDITOR_DRAFT_DELAY_MS);
+  };
+
+  return <NodeInspector {...props} node={draft} onUpdate={updateDraft} />;
+}
+
+export function WorkflowNodeInspector(props: Parameters<typeof NodeInspector>[0]) {
+  return <NodeInspector {...props} />;
+}
+
+function NodeInspector(props: { node: WorkflowNodeDsl; binding: WorkerModelBinding | null; modelBindings: WorkflowModelBindings; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onBindingUpdate: (executionSlotId: string, patch: Partial<WorkerModelBinding>) => void; onBindingSync: (executionSlotId: string, overwriteConfigured: boolean) => void; workflowControl: ReactNode; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   if (props.node.type === 'ai-dynamic') {
-    return <AiDynamicNodeInspector {...props} node={props.node} />;
+    return <>{props.workflowControl}<AiDynamicNodeInspector {...props} node={props.node} /></>;
   }
   return <WorkerNodeInspector {...props} node={props.node} />;
 }
 
-function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, onOpenProfileManagement, t }: { node: WorkflowWorkerNodeDsl; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
+function FragmentRow({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-words">{value}</dd>
+    </>
+  );
+}
+
+function SyncCount({ label, count }: { label: string; count: number }) {
+  return (
+    <div className="rounded-md border px-2 py-3">
+      <strong className="block text-base tabular-nums">{count}</strong>
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+function WorkerNodeInspector({ node, binding, modelBindings, agents, profiles, workflow, fieldErrors, onUpdate, onBindingUpdate, onBindingSync, workflowControl, onOpenProfileManagement, t }: { node: WorkflowWorkerNodeDsl; binding: WorkerModelBinding | null; modelBindings: WorkflowModelBindings; agents: ManagedAgentVm[]; profiles: ProfileVm[]; workflow: WorkflowDsl; workflowTemplates: WorkflowTemplateStore | null; fieldErrors: Record<string, string[]>; onUpdate: (nodeId: string, patch: Partial<WorkflowNodeDsl>) => void; onBindingUpdate: (executionSlotId: string, patch: Partial<WorkerModelBinding>) => void; onBindingSync: (executionSlotId: string, overwriteConfigured: boolean) => void; workflowControl: ReactNode; onOpenProfileManagement?: () => void; t: (key: string, options?: Record<string, unknown>) => string }) {
   const [nodeIdDraft, setNodeIdDraft] = useState(node.id);
   const [nodeIdComposing, setNodeIdComposing] = useState(false);
   const [schemaDraft, setSchemaDraft] = useState('');
   const [schemaError, setSchemaError] = useState<string | null>(null);
   const [schemaDirty, setSchemaDirty] = useState(false);
+  const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+  const [overwriteConfigured, setOverwriteConfigured] = useState(false);
   const schemaSelfUpdateNodeId = useRef<string | null>(null);
 
   const validationEnabled = Boolean(node.output || node.success_condition);
   const manualCheckEnabled = Boolean(node.manual_check);
   const resultMode = validationEnabled ? 'ai' : manualCheckEnabled ? 'manual' : 'none';
   const expression = conditionExpression(node.success_condition);
-  const selectedAgent = agents.find((agent) => agent.agentType === node.provider) ?? null;
+  const selectedAgent = agents.find((agent) => agent.agentType === binding?.agentId) ?? null;
   const updateWorker = (patch: Partial<WorkflowWorkerNodeDsl>) => onUpdate(node.id, patch as Partial<WorkflowNodeDsl>);
+  const updateBinding = (patch: Partial<WorkerModelBinding>) => {
+    if (!node.executionSlotId) return;
+    onBindingUpdate(node.executionSlotId, patch);
+  };
   const modelOptions = selectedAgent?.supportedModels ?? [];
   const thoughtLevel = findAcpThoughtLevel(selectedAgent?.configOptions);
   const permissionModes = selectedAgent?.supportedModes ?? [];
+  const syncPlan = planWorkerBindingSync(workflow, modelBindings, node.executionSlotId ?? '', overwriteConfigured);
+  const selectedModelName = modelOptions.find((model) => model.id === binding?.modelId)?.name ?? binding?.modelId ?? t('workflowEditor.permissionModeUnspecified');
+  const selectedPermissionName = permissionModes.find((mode) => mode.id === binding?.permissionModeId)?.name ?? binding?.permissionModeId ?? t('workflowEditor.permissionModeUnspecified');
+  const selectedConfigOptions = Object.entries(binding?.configOptions ?? {}).map(([optionId, value]) => {
+    const option = selectedAgent?.configOptions?.find((item) => item.id === optionId);
+    return {
+      id: option?.name ?? optionId,
+      value: option?.options.find((item) => item.value === value)?.name ?? value,
+    };
+  });
   const errorsFor = (field: string) => fieldErrors[`node:${node.id}:${field}`] ?? [];
   const clearValidationPatch = { output: null, success_condition: null };
   const updateOutput = useCallback((patch: Partial<WorkflowOutputContractDsl>) => {
@@ -766,11 +1438,88 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
     updateWorker({ id: value });
   };
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
+    <div data-slot="worker-inspector" className="space-y-4">
+    <section data-slot="worker-model-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
       <div className="flex items-center justify-between gap-2">
-        <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
-        <Badge variant="outline">worker</Badge>
+        <strong className="text-sm">{t('workflowEditor.modelConfig')}</strong>
+        <Button type="button" size="sm" variant="outline" disabled={!binding?.agentId.trim() || syncPlan.fillCount + syncPlan.overwriteCount + syncPlan.skipCount === 0} onClick={() => { setOverwriteConfigured(false); setSyncDialogOpen(true); }}>
+          <Copy className="size-3.5" />
+          {t('workflowEditor.syncToOtherNodes')}
+        </Button>
       </div>
+      <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
+        <Select value={binding?.agentId ?? ''} onValueChange={(agentId) => updateBinding({ agentId, modelId: undefined, permissionModeId: undefined, configOptions: undefined })}>
+          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
+          <SelectContent>{agents.map((agent) => (
+            <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
+              <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
+            </SelectItem>
+          ))}</SelectContent>
+        </Select>
+        {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
+      </Field>
+      {modelOptions.length > 0 || thoughtLevel ? (
+        <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
+          <AcpModelThoughtSelects
+            models={modelOptions}
+            modelValue={binding?.modelId}
+            thoughtLevel={thoughtLevel}
+            thoughtValue={thoughtLevel ? binding?.configOptions?.[thoughtLevel.id] : null}
+            compact
+            triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
+            onModelChange={(modelId) => updateBinding({ modelId: modelId ?? undefined })}
+            onThoughtChange={(optionId, value) => updateBinding({
+              configOptions: optionalWorkerConfigOptions(
+                updateAcpConfigOptionOverride(binding?.configOptions, optionId, value),
+              ),
+            })}
+          />
+        </Field>
+      ) : null}
+      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
+        <Select value={binding?.permissionModeId ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateBinding({ permissionModeId: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
+          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
+            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
+            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </Field>
+      <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t('workflowEditor.syncDialogTitle')}</DialogTitle>
+            <DialogDescription>{t('workflowEditor.syncDialogDescription')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 rounded-md border bg-muted/20 p-3">
+              <dt className="text-muted-foreground">{t('workflowEditor.agent')}</dt><dd className="min-w-0 break-words">{selectedAgent?.displayName ?? binding?.agentId}</dd>
+              <dt className="text-muted-foreground">{t('workflowEditor.model')}</dt><dd className="min-w-0 break-words">{selectedModelName}</dd>
+              <dt className="text-muted-foreground">{t('workflowEditor.permissionMode')}</dt><dd className="min-w-0 break-words">{selectedPermissionName}</dd>
+              {selectedConfigOptions.map((option) => <FragmentRow key={option.id} label={option.id} value={option.value} />)}
+            </dl>
+            <label className="flex items-start gap-3 rounded-md border p-3">
+              <Checkbox checked={overwriteConfigured} onCheckedChange={(checked) => setOverwriteConfigured(checked === true)} />
+              <span className="space-y-1"><span className="block font-medium">{t('workflowEditor.syncOverwriteConfigured')}</span><span className="block text-xs text-muted-foreground">{t('workflowEditor.syncOverwriteDescription')}</span></span>
+            </label>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <SyncCount label={t('workflowEditor.syncFillCount')} count={syncPlan.fillCount} />
+              <SyncCount label={t('workflowEditor.syncOverwriteCount')} count={syncPlan.overwriteCount} />
+              <SyncCount label={t('workflowEditor.syncSkipCount')} count={syncPlan.skipCount} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSyncDialogOpen(false)}>{t('common.cancel')}</Button>
+            <Button type="button" disabled={!syncPlan.targetSlotIds.length} onClick={() => { if (node.executionSlotId) onBindingSync(node.executionSlotId, overwriteConfigured); setSyncDialogOpen(false); }}>{t('workflowEditor.syncConfirm')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+    {workflowControl}
+    <section data-slot="worker-node-config" className="space-y-3 rounded-xl border bg-card/45 p-3">
+      <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
       <Field label={t('workflowEditor.nodeId')} required errors={errorsFor('id')}>
         <Input
           className={errorClass(errorsFor('id'))}
@@ -789,48 +1538,8 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
           }}
         />
       </Field>
-      <Field label={t('workflowEditor.agent')} required errors={errorsFor('provider')}>
-        <Select value={node.provider ?? ''} onValueChange={(provider) => updateWorker(workerAgentSelectionPatch(provider))}>
-          <SelectTrigger className={errorClass(errorsFor('provider'))}><SelectValue placeholder={t('workflowEditor.selectAgent')} /></SelectTrigger>
-          <SelectContent>{agents.map((agent) => (
-            <SelectItem value={agent.agentType} key={agent.agentType} disabled={!isWorkflowAgentDoctorReady(agent)}>
-              <AgentSelectItemContent agent={agent} unavailableLabel={t('workflowEditor.agentDoctorUnavailable')} />
-            </SelectItem>
-          ))}</SelectContent>
-        </Select>
-        {agents.length === 0 ? <p className="text-xs text-muted-foreground">{t('workflowEditor.noDoctorReadyAgents')}</p> : null}
-      </Field>
-      {modelOptions.length > 0 || thoughtLevel ? (
-        <Field label={t('workflowEditor.model')} errors={errorsFor('model')}>
-          <AcpModelThoughtSelects
-            models={modelOptions}
-            modelValue={node.model}
-            thoughtLevel={thoughtLevel}
-            thoughtValue={thoughtLevel ? node.config_options?.[thoughtLevel.id] : null}
-            compact
-            triggerClassName={cn('w-full max-w-none rounded-md', errorClass(errorsFor('model')))}
-            onModelChange={(model) => updateWorker({ model: model ?? undefined })}
-            onThoughtChange={(optionId, value) => updateWorker({
-              config_options: optionalWorkerConfigOptions(
-                updateAcpConfigOptionOverride(node.config_options, optionId, value),
-              ),
-            })}
-          />
-        </Field>
-      ) : null}
       <Field label={<ProfileLabel t={t} onOpenProfileManagement={onOpenProfileManagement} />} required errors={errorsFor('profile')}>
         <ProfilePicker profiles={profiles} value={node.profile ?? null} invalid={errorsFor('profile').length > 0} onChange={(profile) => updateWorker({ profile })} t={t} />
-      </Field>
-      <Field label={t('workflowEditor.permissionMode')} errors={errorsFor('permission_mode')}>
-        <Select value={node.permission_mode ?? UNSPECIFIED_PERMISSION_MODE} onValueChange={(value) => updateWorker({ permission_mode: value === UNSPECIFIED_PERMISSION_MODE ? undefined : value })}>
-          <SelectTrigger className={errorClass(errorsFor('permission_mode'))}>
-            <SelectValue placeholder={t('workflowEditor.permissionModeUnspecified')} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={UNSPECIFIED_PERMISSION_MODE}>{t('workflowEditor.permissionModeUnspecified')}</SelectItem>
-            {permissionModes.map((mode) => <SelectItem value={mode.id} key={mode.id}>{mode.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
       </Field>
       <Field label={t('workflowEditor.goal')} errors={errorsFor('goal')}>
         <Textarea className={errorClass(errorsFor('goal'))} value={node.goal ?? ''} placeholder={t('workflowEditor.defaultNodeGoal')} onChange={(event) => updateWorker({ goal: event.target.value })} />
@@ -913,6 +1622,7 @@ function WorkerNodeInspector({ node, agents, profiles, fieldErrors, onUpdate, on
           </div>
         ) : null}
       </div>
+    </section>
     </div>
   );
 }
@@ -947,11 +1657,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
   }, [node.id]);
 
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <strong className="text-sm">{t('workflowEditor.nodeConfig')}</strong>
-        <Badge variant="outline">{t('workflowEditor.addAiDynamicNode')}</Badge>
-      </div>
+    <InspectorCollapsible title={t('workflowEditor.nodeConfig')} meta={<Badge variant="outline">{t('workflowEditor.addAiDynamicNode')}</Badge>}>
       <Field label={t('workflowEditor.nodeId')} required errors={errorsFor('id')}>
         <Input
           className={errorClass(errorsFor('id'))}
@@ -1272,7 +1978,7 @@ function AiDynamicNodeInspector({ node, agents, profiles, workflowTemplates, fie
           </Field>
         ))}
       </div>
-    </div>
+    </InspectorCollapsible>
   );
 }
 
@@ -1809,20 +2515,32 @@ function workflowCommandScore(itemValue: string, search: string) {
   return itemValue.toLowerCase().includes(normalizedSearch) ? 1 : 0;
 }
 
-function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete, t }: { edge: WorkflowEdgeDsl; index: number; workflow: WorkflowDsl; fieldErrors: Record<string, string[]>; onUpdate: (index: number, patch: Partial<WorkflowEdgeDsl>) => void; onDelete: () => void; t: (key: string) => string }) {
+function InspectorCollapsible({ title, meta, children }: { title: string; meta?: ReactNode; children: ReactNode }) {
+  return (
+    <Collapsible defaultOpen className="overflow-hidden rounded-lg bg-muted/20">
+      <div className="flex items-center gap-1">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset">
+          <span className="flex min-w-0 items-center gap-2"><strong className="truncate text-sm">{title}</strong>{meta}</span>
+          <ChevronDown className="size-4 shrink-0 transition-transform [[data-state=open]>&]:rotate-180" />
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent className="space-y-3 border-t border-border/50 p-3">{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, t }: { edge: WorkflowEdgeDsl; index: number; workflow: WorkflowDsl; fieldErrors: Record<string, string[]>; onUpdate: (index: number, patch: Partial<WorkflowEdgeDsl>) => void; t: (key: string) => string }) {
   const errorsFor = (field: string) => fieldErrors[`edge:${index}:${field}`] ?? [];
   const targetOptions = edge.on === 'success' ? [END_NODE] : [END_NODE, NEW_ROUND_NODE];
   const newRoundEntryOptions = [ENTRY_NODE, ...workflow.nodes.map((node) => node.id)];
+  const sourceSupportsFailureOutcome = nodeSupportsFailureOutcome(workflow.nodes.find((node) => node.id === edge.from));
+  const outcomeOptions: EdgeOutcome[] = sourceSupportsFailureOutcome || edge.on === 'failure' ? ['success', 'failure'] : ['success'];
   return (
-    <div className="space-y-3 rounded-xl border bg-card/45 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <strong className="text-sm">{t('workflowEditor.edgeConfig')}</strong>
-        <Button size="sm" variant="outline" onClick={onDelete}>{t('workflowEditor.deleteEdge')}</Button>
-      </div>
+    <InspectorCollapsible title={t('workflowEditor.edgeConfig')}>
       <Field label={t('workflowEditor.edgeOutcome')} required errors={errorsFor('on')}>
         <Select value={edge.on} onValueChange={(on) => onUpdate(index, { on: on as EdgeOutcome })}>
           <SelectTrigger className={errorClass(errorsFor('on'))}><SelectValue /></SelectTrigger>
-          <SelectContent>{(['success', 'failure'] as EdgeOutcome[]).map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent>
+          <SelectContent>{outcomeOptions.map((value) => <SelectItem value={value} key={value} disabled={value === 'failure' && !sourceSupportsFailureOutcome}>{value}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
       <Field label={t('workflowEditor.edgeTarget')} required errors={errorsFor('to')}>
@@ -1857,7 +2575,7 @@ function EdgeInspector({ edge, index, workflow, fieldErrors, onUpdate, onDelete,
           </SelectContent>
         </Select>
       </Field>
-    </div>
+    </InspectorCollapsible>
   );
 }
 
@@ -1910,23 +2628,19 @@ function HelpLabel({ label, help }: { label: string; help: string }) {
 }
 
 function WorkflowRoutedEdge({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, markerEnd, style, label, data }: EdgeProps<Edge<WorkflowEdgeData>>) {
-  const lane = data?.lane;
-  const sourceOffsetX = sourceX + 34;
-  const targetOffsetX = targetX - 34;
-  const laneY = lane === undefined ? null : Math.min(sourceY, targetY) - 82 - lane * 38;
+  const route = data?.route;
   const [smoothPath, smoothLabelX, smoothLabelY] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
-  const path = laneY === null
-    ? smoothPath
-    : `M ${sourceX},${sourceY} L ${sourceOffsetX},${sourceY} L ${sourceOffsetX},${laneY} L ${targetOffsetX},${laneY} L ${targetOffsetX},${targetY} L ${targetX},${targetY}`;
-  const labelX = laneY === null ? smoothLabelX : (sourceOffsetX + targetOffsetX) / 2;
-  const labelY = laneY === null ? smoothLabelY : laneY;
+  const path = route?.path ?? smoothPath;
+  const labelX = route?.labelX ?? smoothLabelX;
+  const labelY = route?.labelY ?? smoothLabelY;
   return (
     <>
-      <BaseEdge path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
+      <BaseEdge data-theme-role="workflow-edge" path={path} markerEnd={markerEnd} style={style} className="workflow-edge-flow" />
       {label ? (
         <EdgeLabelRenderer>
           <span
-            className="pointer-events-none absolute rounded-full border bg-background/90 px-2 py-0.5 text-[11px] font-semibold shadow-sm"
+            data-theme-role="workflow-edge"
+            className="workflow-edge-label pointer-events-none absolute z-20 rounded-full border bg-background px-2 py-0.5 text-[11px] font-semibold shadow-sm"
             style={{ color: style?.stroke, transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             {label}
@@ -1954,13 +2668,28 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
 export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [
-      node.id,
-      node.type,
-      'provider' in node ? node.provider ?? null : null,
-    ]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
   });
+}
+
+export function authoringWorkflowNodeAgentIds(
+  workflow: Pick<WorkflowDsl, 'nodes'>,
+  modelBindings: WorkflowModelBindings,
+): Record<string, string> {
+  const bindingBySlot = new Map(
+    modelBindings.bindings.map((binding) => [binding.executionSlotId, binding.agentId]),
+  );
+  return Object.fromEntries(workflow.nodes.flatMap((node) => {
+    if (node.type === 'worker') {
+      const agentId = node.executionSlotId ? bindingBySlot.get(node.executionSlotId) : undefined;
+      return agentId ? [[node.id, agentId]] : [];
+    }
+    const agentId = node.agentStrategy.mode === 'fixed'
+      ? node.agentStrategy.provider
+      : node.agentStrategy.bootstrapProvider;
+    return agentId ? [[node.id, agentId]] : [];
+  }));
 }
 
 function stringSetSignature(values: Set<string>): string {
@@ -1973,33 +2702,81 @@ function normalizeWorkflowEntryFromTopology(workflow: WorkflowDsl): WorkflowDsl 
   return workflow.entry === entry ? workflow : { ...workflow, entry };
 }
 
-function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, selectedEdgeId: string | null, invalidNodeIds: Set<string>, visibleTerminalIds: Set<string>, agentIconKeys: ReadonlyMap<string, string>, t: (key: string) => string): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
+export type AuthoringGraphLayout = {
+  items: Array<{ id: string; terminal: boolean }>;
+  layoutPositions: Map<string, { x: number; y: number }>;
+  branchRouteByEdgeIndex: Map<number, WorkflowGraphBranchRoute>;
+  entryCandidateIds: Set<string>;
+};
+
+export function createAuthoringGraphLayout(workflow: WorkflowDsl, visibleTerminalIds: ReadonlySet<string> = new Set()): AuthoringGraphLayout {
   const collectedNodes = collectAuthoringNodes(workflow);
   const collectedIds = new Set(collectedNodes.map((node) => node.id));
-  const allNodes = [
+  const items = [
     ...collectedNodes,
     ...Array.from(visibleTerminalIds).filter((id) => !collectedIds.has(id)).map((id) => ({ id, terminal: true })),
   ];
-  const nodeIds = new Set(allNodes.map((n) => n.id));
+  const nodeIds = new Set(items.map((node) => node.id));
   const entryCandidateIds = new Set(deriveWorkflowEntryCandidateIds(workflow));
   const nodeOrder = workflowSuccessTopologyOrder(workflow);
-  const retryLaneByEdgeIndex = computeBackwardLanes(workflow.edges as Array<{ from: string; to: string; on: string }>, nodeOrder);
+  const nodeSpecs = items.map((node) => ({ id: node.id, width: node.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: node.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT }));
   const layoutPositions = layoutSuccessPath(
-    allNodes.map((n) => ({ id: n.id, width: n.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH, height: n.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT })),
+    nodeSpecs,
     workflow.edges.map((e) => ({ from: e.from, to: e.to, on: e.on })),
     nodeIds,
     nodeOrder,
   );
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const branchRouteByEdgeIndex = routeWorkflowBranchEdges(
+    nodeSpecs,
+    layoutPositions,
+    workflow.edges.map((edge, index) => {
+      const sourceNode = nodeById.get(edge.from);
+      const sourceYOffset = nodeSupportsFailureOutcome(sourceNode)
+        ? NODE_HEIGHT * (WORKFLOW_NODE_SPLIT_OUTCOME_RATIO[edge.on === 'failure' ? 'failure' : 'success'] - 0.5)
+        : 0;
+      return {
+        index,
+        sourceId: edge.from,
+        targetId: edge.to,
+        sourceYOffset,
+        branch: edge.on !== 'success' || isBackwardEdge(edge.from, edge.to, nodeOrder),
+      };
+    }),
+  );
+  return { items, layoutPositions, branchRouteByEdgeIndex, entryCandidateIds };
+}
 
-  const nodes: Node<EditorNodeData>[] = allNodes.map((item) => {
-    const pos = layoutPositions.get(item.id) ?? { x: 0, y: 0 };
+export function authoringWorkflowTopologySignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
+  return JSON.stringify({
+    entry: workflow.entry,
+    nodeIds: workflow.nodes.map((node) => node.id),
+    edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
+  });
+}
+
+export function createAuthoringFlowProjection(
+  workflow: WorkflowDsl,
+  layout: AuthoringGraphLayout,
+  selectedNodeId: string | null,
+  selectedEdgeId: string | null,
+  invalidNodeIds: ReadonlySet<string>,
+  nodeIconKeys: ReadonlyMap<string, string>,
+  t: (key: string) => string,
+  onQuickAdd: (nodeId: string, outcome: EdgeOutcome) => void = () => undefined,
+  onDeleteNode: (nodeId: string) => void = () => undefined,
+  selectedTerminalId: string | null = null,
+): { nodes: Node<EditorNodeData>[]; edges: Edge[] } {
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const nodes: Node<EditorNodeData>[] = layout.items.map((item) => {
+    const pos = layout.layoutPositions.get(item.id) ?? { x: 0, y: 0 };
     const width = item.terminal ? TERMINAL_NODE_WIDTH : NODE_WIDTH;
     const height = item.terminal ? TERMINAL_NODE_HEIGHT : NODE_HEIGHT;
-    const node = workflow.nodes.find((n) => n.id === item.id);
-    const detail = node && 'goal' in node ? node.goal ?? '' : node?.type ?? item.id;
+    const node = nodeById.get(item.id);
     const invalid = !item.terminal && invalidNodeIds.has(item.id);
-    const provider = node && 'provider' in node ? node.provider : undefined;
-    const iconKey = provider ? agentIconKeys.get(provider) : undefined;
+    const iconKey = node ? nodeIconKeys.get(node.id) : undefined;
+    const supportsFailureOutcome = nodeSupportsFailureOutcome(node);
+    const selected = item.terminal ? item.id === selectedTerminalId : item.id === selectedNodeId;
     return {
       id: item.id,
       type: 'editorCanvas',
@@ -2009,14 +2786,21 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
       data: {
         label: workflowNodeLabel(item.id, item.terminal, node?.type, t),
         kind: item.terminal ? 'terminal' : node?.type ?? 'node',
-        detail,
         terminal: item.terminal,
         iconKey,
-        entryCandidate: !item.terminal && entryCandidateIds.has(item.id),
+        entryCandidate: !item.terminal && layout.entryCandidateIds.has(item.id),
         entryLabel: t('workflowEditor.entryBadge'),
+        selected,
+        supportsFailureOutcome,
+        successLabel: t('workflowEditor.edgeLabels.success'),
+        failureLabel: t('workflowEditor.edgeLabels.failure'),
+        quickAddLabel: t('workflowEditor.quickAddSuccessor'),
+        deleteLabel: t('workflowEditor.deleteNode'),
+        onQuickAdd: item.terminal ? undefined : (outcome) => onQuickAdd(item.id, outcome),
+        onDelete: item.terminal ? undefined : () => onDeleteNode(item.id),
       },
-      className: cn(!item.terminal && item.id === selectedNodeId && 'workflow-node-selected', invalid && 'ring-1 ring-destructive'),
-      selected: !item.terminal && item.id === selectedNodeId,
+      className: cn(selected && 'workflow-node-selected', item.terminal && 'workflow-terminal-node', invalid && 'ring-1 ring-destructive'),
+      selected,
       draggable: false,
       selectable: true,
       connectable: true,
@@ -2026,24 +2810,24 @@ function workflowToFlow(workflow: WorkflowDsl, selectedNodeId: string | null, se
 
   const edges: Edge<WorkflowEdgeData>[] = workflow.edges.map((edge, index) => {
     const id = edgeId(edge, index);
-    const retryLane = retryLaneByEdgeIndex.get(index);
+    const branchRoute = layout.branchRouteByEdgeIndex.get(index);
     const color = authoringEdgeColor(edge.on);
+    const sourceNode = nodeById.get(edge.from);
+    const sourceHandle = edge.on === 'failure' && !nodeSupportsFailureOutcome(sourceNode) ? 'success' : edge.on;
     return {
       id,
       source: edge.from,
       target: edge.to,
+      sourceHandle,
       label: workflowEdgeLabel(edge.on, t),
-      type: retryLane === undefined && edge.on === 'success' ? 'smoothstep' : 'workflowRouted',
+      type: 'workflowRouted',
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color },
       style: { stroke: color, strokeWidth: edge.on === 'success' ? 2.2 : 2, strokeDasharray: '3 17' },
-      className: cn('workflow-edge-flow', (edge.on !== 'success' || retryLane !== undefined) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
+      className: cn('workflow-edge-flow', (edge.on !== 'success' || branchRoute !== undefined) && 'workflow-edge-branch', id === selectedEdgeId && 'workflow-edge-selected'),
       selected: id === selectedEdgeId,
-      labelStyle: { fill: color, fontSize: 11, fontWeight: 600 },
-      labelBgStyle: { fill: 'var(--background)', fillOpacity: 0.86 },
-      labelShowBg: false,
-      data: { outcome: edge.on, lane: retryLane },
-      zIndex: retryLane === undefined ? 0 : 2,
+      data: { outcome: edge.on, route: branchRoute },
+      zIndex: 0,
     };
   });
 
@@ -2079,6 +2863,29 @@ export function parseWorkflowJson(json?: string | null): WorkflowDsl | null {
   } catch {
     return null;
   }
+}
+
+export function normalizeWorkflowExecutionSlots(
+  nextWorkflow: WorkflowDsl,
+  previousWorkflow: WorkflowDsl,
+  createSlotId: () => string = () => crypto.randomUUID(),
+): WorkflowDsl {
+  const previousSlotsByNodeId = new Map(
+    previousWorkflow.nodes.flatMap((node) => {
+      if (node.type !== 'worker' || !node.executionSlotId?.trim()) return [];
+      return [[node.id, node.executionSlotId] as const];
+    }),
+  );
+  return {
+    ...nextWorkflow,
+    nodes: nextWorkflow.nodes.map((node) => {
+      if (node.type !== 'worker' || node.executionSlotId?.trim()) return node;
+      return {
+        ...node,
+        executionSlotId: previousSlotsByNodeId.get(node.id) ?? createSlotId(),
+      };
+    }),
+  };
 }
 
 function uniqueNodeId(workflow: WorkflowDsl, base: string) {
@@ -2275,17 +3082,21 @@ type PathSegment = { type: 'key'; key: string } | { type: 'index'; index: number
 
 export function validateWorkflowForSave(
   workflow: WorkflowDsl,
-  profiles: ProfileVm[],
+  profileCatalog: WorkflowProfileCatalogState,
   agents: ManagedAgentVm[],
   t: (key: string, options?: Record<string, unknown>) => string,
   workflowTemplates: WorkflowTemplateStore | null = null,
   currentTemplateId: string | null = null,
   currentTemplateName: string | null = null,
   validateTemplateDuplicateId = true,
+  modelBindings: WorkflowModelBindings = emptyWorkflowModelBindings(),
+  validateModelBindings = true,
 ): WorkflowValidationResult {
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
   const fieldErrors: Record<string, string[]> = {};
+  const profiles = profileCatalog.profiles;
+  const profileCatalogReady = profileCatalog.status === 'ready';
   const profileIds = new Set(profiles.map((profile) => profile.id));
   const agentById = new Map(agents.map((agent) => [agent.agentType, agent]));
   const agentIds = new Set(agentById.keys());
@@ -2296,6 +3107,7 @@ export function validateWorkflowForSave(
     : [];
   const duplicateConflictTemplates = duplicateWorkflowTemplates.filter((template) => template.id !== currentTemplateId);
   const nodeIds = new Set(workflow.nodes.map((node) => node.id).filter(Boolean));
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const entryCandidateIds = deriveWorkflowEntryCandidateIds(sanitizedWorkflow);
   sanitizedWorkflow.entry = entryCandidateIds.length === 1 ? entryCandidateIds[0] : '';
   const outgoingEdgeCounts = workflow.edges.reduce<Record<string, number>>((counts, edge) => {
@@ -2316,6 +3128,12 @@ export function validateWorkflowForSave(
     counts[node.id] = (counts[node.id] ?? 0) + 1;
     return counts;
   }, {});
+  const bindingBySlot = new Map(modelBindings.bindings.map((binding) => [binding.executionSlotId, binding]));
+  const slotNodeIds = new Map<string, string[]>();
+  workflow.nodes.forEach((node) => {
+    if (node.type !== 'worker' || !node.executionSlotId?.trim()) return;
+    slotNodeIds.set(node.executionSlotId, [...(slotNodeIds.get(node.executionSlotId) ?? []), node.id]);
+  });
 
   const addIssue = (message: string, fieldKey?: string, nodeId?: string, edgeIndex?: number, nodeIds?: string[]) => {
     issues.push({ message, fieldKey, nodeId, edgeIndex, nodeIds });
@@ -2358,22 +3176,36 @@ export function validateWorkflowForSave(
     }
 
     if (node.type === 'ai-dynamic') {
-      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, agentIds, agentById, nodeField, addIssue, t);
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, profileCatalogReady, agentIds, agentById, nodeField, addIssue, t);
       return;
     }
-    if (!node.provider?.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (!agentIds.has(node.provider)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
-    else if (node.permission_mode?.trim()) {
-      const supportedModeIds = new Set((agentById.get(node.provider)?.supportedModes ?? []).map((mode) => mode.id));
-      if (supportedModeIds.size > 0 && !supportedModeIds.has(node.permission_mode)) {
+    const slotId = node.executionSlotId?.trim();
+    const binding = slotId ? bindingBySlot.get(slotId) : null;
+    if (!slotId) addIssue(t('workflowEditor.validationSlotRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if ((slotNodeIds.get(slotId)?.length ?? 0) > 1) addIssue(t('workflowEditor.validationSlotDuplicate', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && !binding?.agentId.trim()) addIssue(t('workflowEditor.validationNodeProviderRequired', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && binding && !agentIds.has(binding.agentId)) addIssue(t('workflowEditor.validationNodeProviderUnavailable', { node: nodeLabel }), nodeField(node, 'provider'), node.id);
+    else if (validateModelBindings && binding) {
+      const agent = agentById.get(binding.agentId);
+      if (binding.modelId?.trim() && !(agent?.supportedModels ?? []).some((model) => model.id === binding.modelId)) {
+        addIssue(t('workflowEditor.validationModelUnavailable', { node: nodeLabel }), nodeField(node, 'model'), node.id);
+      }
+      const supportedModeIds = new Set((agent?.supportedModes ?? []).map((mode) => mode.id));
+      if (binding.permissionModeId?.trim() && !supportedModeIds.has(binding.permissionModeId)) {
         addIssue(t('workflowEditor.validationPermissionModeUnavailable', { node: nodeLabel }), nodeField(node, 'permission_mode'), node.id);
       }
+      Object.entries(binding.configOptions ?? {}).forEach(([optionId, value]) => {
+        const option = agent?.configOptions?.find((item) => item.id === optionId);
+        if (!option?.options.some((item) => item.value === value)) {
+          addIssue(t('workflowEditor.validationConfigOptionUnavailable', { node: nodeLabel, option: optionId }), nodeField(node, 'model'), node.id);
+        }
+      });
     }
 
     const workerNode = node as WorkflowWorkerNodeDsl;
     if (!workerNode.profile?.trim()) {
       addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
-    } else if (!profileIds.has(workerNode.profile)) {
+    } else if (profileCatalogReady && !profileIds.has(workerNode.profile)) {
       addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
       const sanitized = sanitizedWorkflow.nodes[nodeIndex];
       if (sanitized && sanitized.type === 'worker') sanitized.profile = null;
@@ -2409,6 +3241,9 @@ export function validateWorkflowForSave(
     if (!edge.to.trim()) addIssue(t('workflowEditor.validationEdgeTargetRequired', { index: index + 1 }), edgeField(index, 'to'), undefined, index);
     else if (![END_NODE, NEW_ROUND_NODE].includes(edge.to) && !nodeIds.has(edge.to)) addIssue(t('workflowEditor.validationEdgeTargetMissing', { node: edge.to }), edgeField(index, 'to'), edge.to, index);
     if (!['success', 'failure'].includes(edge.on)) addIssue(t('workflowEditor.validationEdgeOutcomeRequired', { index: index + 1 }), edgeField(index, 'on'), undefined, index);
+    else if (edge.on === 'failure' && !nodeSupportsFailureOutcome(nodeById.get(edge.from))) {
+      addIssue(t('workflowEditor.validationFailureOutcomeRequiresOutputValidation', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
+    }
     else if (edge.on === 'success' && edge.to === NEW_ROUND_NODE) {
       addIssue(t('workflowEditor.validationSuccessNewRoundTarget', { node: edge.from }), edgeField(index, 'to'), edge.from, index);
     } else if (edge.from.trim()) {
@@ -2439,6 +3274,7 @@ function validateAiDynamicNodeForSave(
   nodeLabel: string,
   workflowTemplates: WorkflowTemplateStore | null | undefined,
   profiles: ProfileVm[],
+  profileCatalogReady: boolean,
   agentIds: Set<string>,
   agentById: Map<string, ManagedAgentVm>,
   nodeField: (node: WorkflowNodeDsl, field: string) => string,
@@ -2504,7 +3340,7 @@ function validateAiDynamicNodeForSave(
       return;
     }
     seenProfiles.add(value);
-    if (!knownProfileIds.has(value)) {
+    if (profileCatalogReady && !knownProfileIds.has(value)) {
       addIssue(t('workflowEditor.validationAllowedProfileMissing', { node: nodeLabel, profile: value }), nodeField(node, 'allowedProfiles'), node.id);
     }
   });

@@ -25,8 +25,10 @@ import type {
 } from './types';
 import { FALLBACK_WORKSPACE_FILES } from './components/workspace/workspace-layout';
 import { createDefaultAvatarPreferences } from './lib/avatar';
+import { createDefaultWallpaperPreferences } from './lib/wallpaper';
+import { defaultPersonalizationPreference } from './theme';
 
-const preferences: PreferencesVm = { theme: 'system', language: 'zh-cn', font: 'app-default', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences() };
+const preferences: PreferencesVm = { appearance: { schemaVersion: 2, themeId: 'builtin.gold-band', colorScheme: 'system', visualQualityByTheme: {} }, personalization: defaultPersonalizationPreference, language: 'zh-cn', useLocalClaude: false, verboseLogging: false, avatars: createDefaultAvatarPreferences(), wallpapers: createDefaultWallpaperPreferences() };
 export const mockAppInfo = {
   channel: 'default',
   feedbackEnabled: false,
@@ -92,17 +94,19 @@ const requirement = '重写 Tauri 桌面端的核心窗口管理逻辑，确保 
 const defaultWorkflow: WorkflowDsl = {
   version: '0.1',
   id: 'task-workflow',
-  entry: 'plan',
-  control: {},
+  entry: 'interview',
+  control: { max_attempts: 10, max_rounds: 3 },
   nodes: [
-    { type: 'worker', id: 'plan', provider: 'claude-acp', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', permission_mode: 'bypassPermissions', manual_check: true },
-    { type: 'worker', id: 'dev', provider: 'claude-acp', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.', permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'review', provider: 'claude-acp', profile: 'pf-builtin-review', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'test', provider: 'claude-acp', profile: 'pf-builtin-test', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'accept', provider: 'claude-acp', profile: 'pf-builtin-accept', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' }, permission_mode: 'bypassPermissions' },
-    { type: 'worker', id: 'cleanup', provider: 'claude-acp', profile: 'pf-builtin-cleanup', goal: 'Clean up resources, finalize handoff notes, clean up Git workspace', permission_mode: 'bypassPermissions' },
+    { type: 'worker', id: 'interview', executionSlotId: 'builtin:default:interview', profile: 'pf-builtin-interview', goal: 'Clarify the requirement.' },
+    { type: 'worker', id: 'plan', executionSlotId: 'builtin:default:plan', profile: 'pf-builtin-plan', goal: 'Analyze the imported requirement and produce an implementation plan.', manual_check: true },
+    { type: 'worker', id: 'dev', executionSlotId: 'builtin:default:dev', profile: 'pf-builtin-dev', goal: 'Implement the requirement in the workspace.' },
+    { type: 'worker', id: 'review', executionSlotId: 'builtin:default:review', profile: 'pf-builtin-review', goal: 'Review the implementation and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'review-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'test', executionSlotId: 'builtin:default:test', profile: 'pf-builtin-test', goal: 'Run or describe verification and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'test-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'accept', executionSlotId: 'builtin:default:accept', profile: 'pf-builtin-accept', goal: 'Validate acceptance and return JSON with result and reason fields.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+    { type: 'worker', id: 'cleanup', executionSlotId: 'builtin:default:cleanup', profile: 'pf-builtin-cleanup', goal: 'Clean up resources, finalize handoff notes, clean up Git workspace' },
   ],
   edges: [
+    { from: 'interview', to: 'plan', on: 'success' },
     { from: 'plan', to: 'dev', on: 'success' },
     { from: 'dev', to: 'review', on: 'success' },
     { from: 'review', to: 'test', on: 'success' },
@@ -111,26 +115,61 @@ const defaultWorkflow: WorkflowDsl = {
     { from: 'test', to: 'dev', on: 'failure', session: 'continue' },
     { from: 'accept', to: 'cleanup', on: 'success' },
     { from: 'cleanup', to: '$end', on: 'success' },
-    { from: 'accept', to: '$new-round', on: 'failure' },
+    { from: 'accept', to: '$new-round', on: 'failure', new_round_entry: 'dev' },
   ],
 };
+
+const lightweightWorkflow: WorkflowDsl = {
+  version: '0.1',
+  id: 'task-workflow-lightweight',
+  entry: 'grill',
+  control: { max_attempts: 10, max_rounds: 3 },
+  nodes: [
+    { type: 'worker', id: 'grill', executionSlotId: 'builtin:default-lightweight:grill', profile: 'pf-builtin-grill', goal: 'Challenge the requirement until shared understanding is reached.' },
+    { type: 'worker', id: 'dev-test', executionSlotId: 'builtin:default-lightweight:dev-test', profile: 'pf-builtin-dev-test', goal: 'Implement the requirement and run automated verification.' },
+    { type: 'worker', id: 'accept', executionSlotId: 'builtin:default-lightweight:accept', profile: 'pf-builtin-accept', goal: 'Validate acceptance.', output: { kind: 'json', artifact: 'accept-result', schema: { reason: 'String', result: 'boolean' } }, success_condition: { expression: '$.result == true' } },
+  ],
+  edges: [
+    { from: 'grill', to: 'dev-test', on: 'success' },
+    { from: 'dev-test', to: 'accept', on: 'success' },
+    { from: 'accept', to: '$end', on: 'success' },
+    { from: 'accept', to: '$new-round', on: 'failure', new_round_entry: 'dev-test' },
+  ],
+};
+
+function mockBindings(workflow: WorkflowDsl) {
+  return {
+    definitionRevision: 'browser-preview',
+    bindingRevision: 1,
+    bindings: workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId ? [{
+      executionSlotId: node.executionSlotId,
+      agentId: 'claude-acp',
+      permissionModeId: 'bypassPermissions',
+    }] : []),
+  };
+}
 
 export const mockWorkflowTemplates: WorkflowTemplateStore = {
   version: '0.1',
   lastUsedTemplateId: 'default',
   lastCreatedWorkflow: null,
-  templates: [{ id: 'default', name: '默认工作流', workflow: defaultWorkflow, createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' }],
+  templates: [
+    { id: 'default', name: '默认完整工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'interview', labelKey: 'conversation.home.includeInterview', defaultEnabled: true }, workflow: defaultWorkflow, modelBindings: mockBindings(defaultWorkflow), createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
+    { id: 'default-lightweight', name: '默认轻量工作流', isBuiltIn: true, optionalEntryStage: { nodeId: 'grill', labelKey: 'conversation.home.includeGrill', defaultEnabled: true }, workflow: lightweightWorkflow, modelBindings: mockBindings(lightweightWorkflow), createdAt: '2026-05-17T00:00:00Z', updatedAt: '2026-05-17T00:00:00Z' },
+  ],
 };
 
 export const mockProfileList: ProfileListVm = {
   profiles: [
     { id: 'pf-builtin-plan', name: '方案', summary: '方案角色，用于需求分析和实施方案设计。', content: '## 方案角色\n\n后续补充完整角色说明。', dynamicTemplate: true, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/plan' },
     { id: 'pf-builtin-dev', name: '开发', summary: '开发角色，用于实现需求并维护代码质量。', content: '## 开发角色\n\n后续补充完整角色说明。', dynamicTemplate: true, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/dev' },
+    { id: 'pf-builtin-dev-test', name: '开发测试', summary: '开发测试角色，用于在同一节点完成需求实现、自动化测试与必要回归。', content: '## 开发测试角色\n\n实现需求并完成自动化验证。', dynamicTemplate: true, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/dev-test' },
     { id: 'pf-builtin-review', name: '审查', summary: '审查角色，用于检查实现质量、风险和一致性。', content: '## 审查角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/review' },
     { id: 'pf-builtin-test', name: '测试', summary: '测试角色，用于执行验证并反馈质量结果。', content: '## 测试角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/test' },
     { id: 'pf-builtin-accept', name: '验收', summary: '验收角色，用于对照需求判断交付是否满足目标。', content: '## 验收角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/accept' },
     { id: 'pf-builtin-cleanup', name: '清理', summary: '清理角色，用于验收成功后的资源释放、收尾和环境清理。', content: '## 清理角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/cleanup' },
     { id: 'pf-builtin-interview', name: '访谈', summary: '访谈角色，用于需求澄清，通过深度访谈把模糊需求转化为清晰规格。', content: '## 访谈角色\n\n后续补充完整角色说明。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/interview' },
+    { id: 'pf-builtin-grill', name: '拷问', summary: '拷问角色，用于深入质疑需求并形成共同理解。', content: '## 拷问角色\n\n产出 grill-consensus.md。', dynamicTemplate: false, scope: 'built-in', isBuiltIn: true, createdAt: profileTimestamp, updatedAt: profileTimestamp, path: 'builtin://profiles/grill' },
   ],
 };
 
@@ -188,7 +227,13 @@ const errorBlockedGraph = {
 
 const errorBlockedLifecycle = {
   runtime: { status: 'paused', outcome: null, pauseReason: 'error-blocked', resumable: false, current: true, active: false, continuable: false, phase: 'paused' },
-  acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+  control: { mode: 'non-runtime-controlled' as const },
+  acp: {
+    sessionAvailability: 'restorable' as const,
+    liveTurnActivity: 'idle' as const,
+    latestTurnStatus: 'cancelled' as const,
+    stopping: false,
+  },
   displayStatus: 'paused',
   runtimeDisplay: runtimeDisplay('paused', null, true, 'error-blocked'),
   continueKind: null,
@@ -228,8 +273,6 @@ export const mockErrorBlockedConversationRun: ConversationRunVm = {
   projectId: 'default',
   taskId: 'mock-task',
   runId: 'run-051',
-  title: '错误阻塞预览',
-  autoTitle: true,
   runMode: 'workflow',
   workflowTemplateId: 'default',
   runStatus: 'paused',
@@ -320,6 +363,15 @@ const mockNodeDetail: NodeDetailVm = {
     stopReason: null,
     systemPromptAppend: '你正在 Gold Band runtime 中执行一个工作流节点。\n\n当前是：\n- Project: mock-project\n- Node: dev\n\nGold Band 文件规则：\n- 当前节点所需上下文已在本 prompt 中给出。',
     diagnostics: { rawFrameCount: 18, eventCount: 7, errorCount: 0, lastError: null, lastErrorTimestamp: null },
+    usage: {
+      used: 25_400,
+      size: 258_400,
+      inputTokens: 18_760,
+      outputTokens: 2_140,
+      cachedReadTokens: 4_200,
+      cachedWriteTokens: 300,
+      totalTokens: 25_400,
+    },
     eventPage: { loadedCount: 5, total: 7, oldestSeq: 1, newestSeq: 5, hasOlder: false, hasNewer: false },
     pendingPermissions: [
       {
@@ -426,6 +478,9 @@ export const mockBootstrap: AppBootstrapVm = {
   appConfig: {
     acpSessionTitleRefreshEnabled: false,
     acpChatEventPageSize: 360,
+    conversationInlineContentMaxBytes: 64_000,
+    conversationInlineImageMaxBytes: 4 * 1024 * 1024,
+    conversationInlineImageMaxDimension: 2_560,
     turnFiles: { cardPreviewLimit: 3 },
     workspaceLayout: {
       shellMinWidth: 480,
@@ -435,7 +490,6 @@ export const mockBootstrap: AppBootstrapVm = {
         defaultWidth: 440,
         maxWidth: 1440,
         file: {
-          preferredWidth: 760,
           splitMinWidth: 500,
           treeDefaultWidth: 280,
           treeMinWidth: 200,
@@ -577,6 +631,7 @@ export const mockWorkflow: WorkflowVm = {
     ...Array.from({ length: 8 }, (_, index) => ({ run: { ...latestRun, id: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure', resumable: false, currentNode: null }, rounds: rounds.map((round) => ({ ...round, id: `${round.id}-${index}`, runId: `run-${String(index + 10).padStart(3, '0')}`, status: 'completed', outcome: index % 2 === 0 ? 'success' : 'failure' })) })),
   ],
   workflowJson: JSON.stringify(defaultWorkflow, null, 2),
+  modelBindings: mockBindings(defaultWorkflow),
 };
 
 export const mockRunDetail: RunDetailVm = {

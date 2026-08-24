@@ -40,6 +40,8 @@ provider adapter 是 provider-specific 差异的隔离层。
 - `supports_system_prompt`：是否接受 `session/new` 的 system prompt（claude-acp 支持，codex-acp 不支持）；
 - `supports_raw_stream`：是否支持 raw frame / transcript；
 - MCP transport 能力属于 MCP/Agent capability 领域，应以当前 ACP `initialize` 返回的 `agentCapabilities.mcpCapabilities` 为运行时事实源；provider adapter 不维护按 provider ID 硬编码的 transport 列表。Gold Band 在 `session/new|load` 前统一准备 MCP server：`stdio` 直接接受，HTTP/SSE 对明确声明为 `false` 的 transport 做过滤，Agent 未声明 `mcpCapabilities` 时保持原列表而不猜测。被过滤项以 `acp.mcp-transport-unsupported` 和结构化参数写入当前 attempt 的 `acp.diagnostics.jsonl`，实际请求只包含 accepted server，禁止静默丢弃。
+- prompt attachment 先由统一 projection policy 生成 `Image / Resource / ResourceLink` 意图，再由当前连接的 `promptCapabilities.image / embeddedContext` 投影协议块。`ResourceLink` 是终态意图，即使 Agent 支持可选内联能力也不得重新读取或展开；不支持可选能力的 Agent 始终收到原文件 link。文本大小使用 UTF-8 字节边界，图片使用独立的编码字节与最长边边界，禁止按 Agent ID、扩展名个案或 UI 来源维护第二套阈值。
+- 浏览器 `File`、剪贴板和拖放附件在进入 runtime 前先物化为不可变快照。物化接口不接收选择时缓存的文件大小；Base64 解码后的实际字节是快照大小的唯一事实源，空文件、单文件上限和总量上限均据此校验，返回的 `AttachmentFileVm.size` 也必须使用该值。源文件在选择与读取之间增长或缩小时，保存本次实际读取到的完整快照，不得因陈旧元数据拒绝。
 
 - Agent 的 `configOptions` 是会随 adapter 升级变化的能力目录。前端使用纯函数对已保存 override 做交集规范化，保留仍存在且 value 有效的项，返回被删除的 option id；校验函数不得修改 React/persisted 输入对象，也不得把 stale override 当成阻塞会话的错误。Direct/AUTO 在提交前使用规范化结果，并在能力目录刷新后同步清理当前配置。
 - `isDefault`
@@ -98,7 +100,8 @@ provider adapter 是 provider-specific 差异的隔离层。
 - provider 不负责把 `outputArtifact.content` parse 成语义对象
 - `sessionEvents` 保持 ACP session event 语义，用于会话详情可视化，不再转换为 Gold Band 自研 `progress.events.jsonl`
 - `rawSession` 只用于 raw viewer / 排障，不作为 UI 主协议
-- 流式正文、思考和计划只有在 provider 稳定身份一致时才能累计到同一 timeline item；两个显式 `messageId` 不同的相邻文本必须切分。对于不提供消息身份的 ACP adapter，仅允许在同 kind 的连续流内使用本地 fallback 身份，不能据此推断跨事件身份
+- 流式正文、思考和计划按每条事件实际携带的 provider identity 管理，不在 `initialize` 或 Agent Catalog 中推断整段会话是否支持身份。带稳定 `messageId` / provider history identity 的流按 `branchId + identity` 累计，工具、usage、无 ID warning 等其他 identity 的事件不得终止或覆盖它；新的稳定 identity 或下一条用户 prompt 才关闭旧稳定流。没有稳定 identity 的 ACP 文本只在同 kind 的连续事件段内使用本地 fallback identity，工具等非文本事件关闭该匿名段，后续匿名文本创建新 timeline item。不得按 Agent 类型特判，也不得根据文案、时间或位置伪造 message identity
+- Agent 正文或思考 chunk 若为空字符串，或整段仅包含 Unicode `Format` 类不可见控制字符，则只参与当前流的增量累计，不单独写入 canonical timeline、prompt final output 或 live UI；原始 provider frame 仍完整保存在 `acp.raw.jsonl`。后续同一流出现可见文本时，必须保留累计正文中的原始字符并正常发布。UI 对历史旧 timeline 采用同一语义可见性规则隐藏空行和头像，不得按 Agent 类型或具体字符文案特判，也不得删除真实文本内部的格式字符、普通空格或换行
 - provider diagnostic 必须写入 `acp.diagnostics.jsonl`，至少保存稳定 `code`、`level`、原始 message 和 provider/update 上下文；它不参与 assistant `final_text`、`final_outputs` 或聊天消息渲染
 - 若当前节点未声明 `output`，则 `resultPayload` 可以为空或缺省；runtime 不因此报错
 
@@ -125,7 +128,7 @@ Provider 只有在归约结果为 `Success` 或可接受中断结果时才提取
 
 - 内置 `codex-acp` preset 使用维护中的 `@agentclientprotocol/codex-acp`，不再使用会丢失 Codex event/item 身份的 `@zed-industries/codex-acp`
 - `@agentclientprotocol/codex-acp` 的正常 agent text delta 必须携带 `messageId=itemId`；同一 ID 的 delta 累计，不同 ID 的 delta 分离
-- 该 adapter 把 Codex warning 映射为无 `messageId` 的 `agent_message_chunk`。Gold Band 只在确认当前运行的是上述 adapter 实现时，将这种无作用域文本归一化为 `codex_acp.warning` 诊断；不得按英文前缀、具体警告文案或时间间隔过滤
+- 该 adapter 的正常正文通常携带 `messageId`，部分 warning 或兼容文本可能以无 ID `agent_message_chunk` 到达。所有 Agent 文本都进入 canonical timeline：无 ID 文本作为独立匿名连续段展示，不并入、截断或覆盖同时存在的稳定正文。warning 是否代表 prompt failure 只依据结构化 terminal failure，不按 adapter ID、英文前缀、具体文案或时间间隔过滤
 - Codex `_meta.codex.error` 中 `willRetry=true` 仅记录为本轮候选错误信号；若后续恢复正常则不判失败。出现 `willRetry=false` 或 `_meta.codex.threadStatus.type=systemError` 时提升为本轮 terminal failure；后者应携带最近一次错误详情，供统一错误归一化识别 high demand、连接断开等可恢复异常
 - 自定义 ACP adapter 或旧 adapter 不得套用“无 `messageId` 即 warning”的 Codex 专属规则，避免误隐藏正常回答
 

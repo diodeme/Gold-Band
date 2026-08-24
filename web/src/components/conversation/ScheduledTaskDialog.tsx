@@ -469,7 +469,7 @@ export function ScheduledTaskDialog({
           <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4">
             <div>
               <strong className="block text-xs font-medium text-foreground">{t('scheduled.dialog.queueProtection')}</strong>
-              <span className="text-[11px] text-muted-foreground">{t('scheduled.dialog.queueProtectionDescription')}</span>
+              <span className="text-ui-caption text-muted-foreground">{t('scheduled.dialog.queueProtectionDescription')}</span>
             </div>
             <Switch checked={queueProtection} onCheckedChange={setQueueProtection} aria-label={t('scheduled.dialog.queueProtection')} />
           </div>
@@ -477,7 +477,7 @@ export function ScheduledTaskDialog({
             <div className="flex items-center justify-between gap-5 border-t border-border/60 pt-4">
               <div>
                 <strong className="block text-xs font-medium text-foreground">{t('scheduled.dialog.sessionPolicy')}</strong>
-                <span className="text-[11px] text-muted-foreground">{t('scheduled.dialog.directMode')}</span>
+                <span className="text-ui-caption text-muted-foreground">{t('scheduled.dialog.directMode')}</span>
               </div>
               <div className="flex rounded-md bg-secondary p-1">
                 <Button type="button" variant={sessionPolicy === 'new' ? 'default' : 'ghost'} size="sm" className="h-7 px-3 text-xs" onClick={() => setSessionPolicy('new')}>{t('scheduled.session.new')}</Button>

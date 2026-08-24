@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { isAllowedAttachment, isImageMime, useAttachmentExtensions } from './attachments';
 import { materializeConversationAttachments, pickAttachmentFiles } from '@/api';
-import type { MaterializeAttachmentFileInput } from '@/api/client';
+import type { AttachmentFileRef, MaterializeAttachmentFileInput } from '@/api/client';
 import { isTauriRuntime } from '@/api/shared';
 
 // ── Types ──
@@ -16,9 +16,16 @@ export interface AttachmentItem {
   path?: string;
   /** Object URL for browser-mode image preview. Call URL.revokeObjectURL when done. */
   previewUrl?: string;
+  /** Revision-bound URL for lazy, read-only text loading on desktop. */
+  contentUrl?: string;
   /** Raw File object for browser-mode content reading. */
   file?: File;
-  source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file';
+  source: 'dialog' | 'drag-drop' | 'paste' | 'browser-file' | 'generated';
+}
+
+export interface SerializedAttachmentFileInput extends MaterializeAttachmentFileInput {
+  /** Selection-time size retained only for APIs whose own contract requires it. */
+  size: number;
 }
 
 // ── Constants ──
@@ -89,6 +96,27 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+export function attachmentItemsFromPaths(
+  paths: readonly string[],
+  fileRefs: readonly AttachmentFileRef[] = [],
+): AttachmentItem[] {
+  const refsByPath = new Map(fileRefs.map((file) => [file.path, file]));
+  return paths.map((path, index) => {
+    const file = refsByPath.get(path);
+    const name = file?.name || path.split(/[\\/]/).pop() || path;
+    return {
+      id: `queued-${generateId()}-${index}`,
+      name,
+      size: file?.size ?? 0,
+      mime: guessMimeFromExtension(name),
+      path,
+      previewUrl: file?.previewUrl ?? undefined,
+      contentUrl: file?.contentUrl ?? undefined,
+      source: 'dialog' as const,
+    };
+  });
+}
+
 function filesToItems(files: File[], source: AttachmentItem['source']): AttachmentItem[] {
   return files.map((file) => ({
     ...fileToItem(file, source),
@@ -107,6 +135,29 @@ function fileToItem(file: File, source: AttachmentItem['source']): AttachmentIte
     file,
     source,
   };
+}
+
+function createTextAttachmentItem(content: string, name: string): AttachmentItem {
+  return fileToItem(
+    new File([content], name, { type: 'text/plain;charset=utf-8' }),
+    'generated',
+  );
+}
+
+export function createLongPasteAttachmentItem(
+  content: string,
+  thresholdBytes: number,
+): AttachmentItem | null {
+  if (new TextEncoder().encode(content).byteLength <= thresholdBytes) return null;
+  return createTextAttachmentItem(content, `pasted-text-${generateId()}.txt`);
+}
+
+export async function readAttachmentText(item: AttachmentItem): Promise<string> {
+  if (item.file) return item.file.text();
+  if (!item.contentUrl) throw new Error('attachment.content-unavailable');
+  const response = await fetch(item.contentUrl, { cache: 'no-store' });
+  if (!response.ok) throw new Error('attachment.content-unavailable');
+  return response.text();
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -131,6 +182,8 @@ export interface UseAttachmentPickerOptions {
   maxCount?: number;
   maxTotalSize?: number;
   maxFileSize?: number;
+  /** UTF-8 byte threshold above which a plain-text paste becomes an attachment. */
+  inlineContentMaxBytes?: number;
   attachments?: AttachmentStateController;
   /**
    * When set, only items whose guessed MIME starts with this prefix are
@@ -172,6 +225,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   const maxCount = options.maxCount ?? MAX_ATTACHMENT_COUNT;
   const maxTotalSize = options.maxTotalSize ?? MAX_ATTACHMENT_TOTAL;
   const maxFileSize = options.maxFileSize;
+  const inlineContentMaxBytes = options.inlineContentMaxBytes;
   const acceptMimePrefix = options.acceptMimePrefix;
   const acceptedMimes = options.acceptedMimes;
 
@@ -261,6 +315,8 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
           size: f.size,
           mime: guessMimeFromExtension(f.name),
           path: f.path,
+          previewUrl: f.previewUrl ?? undefined,
+          contentUrl: f.contentUrl ?? undefined,
           source: 'dialog' as const,
         }));
         validateAndAdd(items);
@@ -321,15 +377,16 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   };
 
   // ── Clipboard paste ──
-  const extractPasteFiles = useCallback(
+  const handlePaste = useCallback(
     (e: React.ClipboardEvent): boolean => {
       const items = e.clipboardData?.items;
-      if (!items) return false;
       const files: File[] = [];
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].kind === 'file') {
-          const file = items[i].getAsFile();
-          if (file) files.push(file);
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].kind === 'file') {
+            const file = items[i].getAsFile();
+            if (file) files.push(file);
+          }
         }
       }
       if (files.length > 0) {
@@ -337,9 +394,21 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
         validateAndAdd(filesToItems(files, 'paste'));
         return true;
       }
+
+      const longPasteAttachment = inlineContentMaxBytes === undefined
+        ? null
+        : createLongPasteAttachmentItem(
+          e.clipboardData?.getData('text/plain') ?? '',
+          inlineContentMaxBytes,
+        );
+      if (longPasteAttachment) {
+        e.preventDefault();
+        validateAndAdd([longPasteAttachment]);
+        return true;
+      }
       return false;
     },
-    [validateAndAdd],
+    [inlineContentMaxBytes, validateAndAdd],
   );
 
   // ── Remove / Clear ──
@@ -397,7 +466,6 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
         pendingFiles.map(async (item) => ({
           name: item.name,
           mime: item.mime,
-          size: item.size,
           dataBase64: await fileToBase64(item.file!),
         })),
       );
@@ -420,7 +488,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
   // Serialize browser/native File objects without materializing them to a local
   // path. Security-sensitive upload flows use this to keep filesystem paths out
   // of their command contract.
-  const resolveAttachmentInputs = useCallback(async (): Promise<MaterializeAttachmentFileInput[]> => {
+  const resolveAttachmentInputs = useCallback(async (): Promise<SerializedAttachmentFileInput[]> => {
     if (attachments.some((item) => !item.file)) {
       const message = t('conversation.attachmentMaterializeFailed');
       showTransientFileError(message);
@@ -468,7 +536,7 @@ export function useAttachmentPicker(options: UseAttachmentPickerOptions = {}) {
     resolveAttachmentPaths,
     resolveAttachmentInputs,
     dropZoneHandlers,
-    extractPasteFiles,
+    handlePaste,
     previewImage,
     setPreviewImage,
     textPreview,

@@ -1,15 +1,24 @@
+mod support;
+
 use camino::Utf8PathBuf;
 use gold_band::app::{App, is_run_continuable};
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode, VERSION};
 use gold_band::dsl::WorkflowDsl;
 use gold_band::provider::{
     DoctorResult, OutputArtifactPayload, ProviderAdapter, ProviderCapabilities, ProviderInfo,
-    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, SessionRef, UserPromptRenderMode,
-    WorkerInvocation,
+    ProviderResultPayload, ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, SessionRef,
+    UserPromptRenderMode, WorkerInvocation,
 };
-use gold_band::runtime::{RunState, WorkerRefState};
+use gold_band::runtime::{NodeState, RoundState, RunState, WorkerRefState};
+use gold_band::workflow_model_binding::TaskAuthoringWorkflow;
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::tempdir;
+
+use support::app_with_available_claude_provider;
+
+fn app_with_provider(repo_root: Utf8PathBuf, provider: Box<dyn ProviderAdapter>) -> App {
+    app_with_available_claude_provider(repo_root, provider)
+}
 
 #[derive(Clone, Default)]
 struct RecordingProvider {
@@ -525,6 +534,19 @@ impl ProviderAdapter for MultiAttemptContinueProvider {
         })
     }
 
+    fn run_worker_with_callbacks(
+        &self,
+        req: WorkerInvocation,
+        _live_update: Option<gold_band::provider::AcpLiveUpdate<'_>>,
+        _session_update: Option<gold_band::provider::AcpSessionUpdate<'_>>,
+        prompt_accepted: Option<gold_band::provider::AcpPromptAccepted<'_>>,
+    ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
+        self.run_worker(req)
+    }
+
     fn open_session(&self, _worker_ref: &gold_band::domain::SessionRef) -> anyhow::Result<()> {
         Ok(())
     }
@@ -605,6 +627,303 @@ impl ProviderAdapter for OneRepairProvider {
     }
 }
 
+#[derive(Clone, Default)]
+struct RepairExhaustionProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+impl ProviderAdapter for RepairExhaustionProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let session_mode = req.session_mode;
+        let invocation_count = {
+            let mut invocations = self.invocations.lock().unwrap();
+            invocations.push(req);
+            invocations.len()
+        };
+        let content = if invocation_count <= 4 {
+            "unexpected status 502 Bad Gateway".to_string()
+        } else {
+            r#"{"result":true,"reason":"fixed by user guidance"}"#.to_string()
+        };
+
+        Ok(ProviderRunResult {
+            status: ProviderRunStatus::Success,
+            exit_code: Some(0),
+            result_payload: Some(ProviderResultPayload {
+                output_artifact: Some(OutputArtifactPayload {
+                    name: "accept-result".to_string(),
+                    content,
+                }),
+            }),
+            worker_ref_seed: Some(SessionRef {
+                provider: "claude-acp".to_string(),
+                mode: session_mode,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(serde_json::json!({"sessionId":"repair-session"})),
+                open_command: Some("claude -c repair-session".to_string()),
+            }),
+            stream_path: None,
+            runtime_error: None,
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(&self, worker_ref: &SessionRef) -> anyhow::Result<Option<String>> {
+        Ok(worker_ref.open_command.clone())
+    }
+}
+
+#[derive(Clone, Default)]
+struct TerminalMessageAnomalyProvider {
+    invocations: Arc<Mutex<Vec<WorkerInvocation>>>,
+}
+
+impl ProviderAdapter for TerminalMessageAnomalyProvider {
+    fn describe_provider(&self) -> ProviderInfo {
+        RecordingProvider::default().describe_provider()
+    }
+
+    fn doctor(&self) -> DoctorResult {
+        RecordingProvider::default().doctor()
+    }
+
+    fn run_worker(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        let session_mode = req.session_mode;
+        self.invocations.lock().unwrap().push(req);
+        Ok(ProviderRunResult {
+            status: ProviderRunStatus::Failure,
+            exit_code: None,
+            result_payload: None,
+            worker_ref_seed: Some(SessionRef {
+                provider: "claude-acp".to_string(),
+                mode: session_mode,
+                supports_open_session: true,
+                supports_continue_session: true,
+                continue_ref: Some(serde_json::json!({"sessionId":"terminal-anomaly-session"})),
+                open_command: Some("claude -c terminal-anomaly-session".to_string()),
+            }),
+            stream_path: None,
+            runtime_error: Some(gold_band::runtime_error::manual_runtime_error_info(
+                gold_band::runtime_error::RuntimeErrorDomain::Provider,
+                "provider.acp-terminal-message-unidentified",
+                "ACP prompt ended with anonymous Agent text after producing a stable Agent message",
+                serde_json::json!({
+                    "observedStableMessage": true,
+                    "terminalMessageHasStableId": false,
+                }),
+            )),
+        })
+    }
+
+    fn open_session(&self, _worker_ref: &SessionRef) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn build_continue_command(&self, worker_ref: &SessionRef) -> anyhow::Result<Option<String>> {
+        Ok(worker_ref.open_command.clone())
+    }
+}
+
+#[test]
+fn terminal_message_identity_anomaly_pauses_without_artifact_repair() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-terminal-message-anomaly";
+    let provider = TerminalMessageAnomalyProvider::default();
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Do not repair an untrusted terminal message",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "terminal-message-anomaly-flow",
+          "entry": "accept",
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        format!(r#"{{"version":"0.1","id":"{task_id}"}}"#),
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.outcome, None);
+    assert_eq!(paused.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    assert!(is_run_continuable(&paused));
+    assert_eq!(
+        provider.invocations.lock().unwrap().len(),
+        1,
+        "manual terminal anomaly must not enter invalid-output repair"
+    );
+    let events = app.run_events(task_id, "run-001").unwrap().unwrap();
+    assert!(events.contains("provider.acp-terminal-message-unidentified"));
+    assert!(!events.contains("runtime_auto_retry"));
+    assert!(!events.contains("invalid_output_repair_requested"));
+}
+
+#[test]
+fn invalid_output_repair_exhaustion_pauses_as_resumable_runtime_abnormal() {
+    let temp = tempdir().unwrap();
+    let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+    let task_id = "task-invalid-output-repair";
+    let provider = RepairExhaustionProvider::default();
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
+
+    std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
+    let accept_profile = app
+        .profiles()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.name == "验收")
+        .unwrap()
+        .id;
+    std::fs::write(
+        app.paths.requirement_file(task_id).as_std_path(),
+        "Check repair exhaustion",
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.workflow_file(task_id).as_std_path(),
+        format!(
+            r#"{{
+          "version": "0.1",
+          "id": "invalid-output-repair-flow",
+          "entry": "accept",
+          "nodes": [
+            {{"id":"accept","type":"worker","provider":"claude-acp","profile":"{}","output":{{"kind":"json","artifact":"accept-result","schema":{{"result":"boolean","reason":"String"}}}},"success_condition":{{"expression":"$.result == true"}}}}
+          ],
+          "edges": [
+            {{"from":"accept","to":"$end","on":"success"}}
+          ]
+        }}"#,
+            accept_profile
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.paths.task_file(task_id).as_std_path(),
+        format!(r#"{{"version":"0.1","id":"{task_id}"}}"#),
+    )
+    .unwrap();
+
+    let paused = app.run_start(task_id, None).unwrap();
+
+    assert_eq!(paused.status, RunStatus::Paused);
+    assert_eq!(paused.outcome, None);
+    assert_eq!(paused.pause_reason, Some(PauseReason::RuntimeAbnormal));
+    assert!(is_run_continuable(&paused));
+    let round: RoundState =
+        gold_band::storage::read_json(&app.paths.round_file(task_id, "run-001", "round-001"))
+            .unwrap();
+    assert_eq!(round.status, RunStatus::Paused);
+    assert_eq!(round.outcome, None);
+    let node: NodeState = gold_band::storage::read_json(&app.paths.node_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "accept",
+        "attempt-001",
+    ))
+    .unwrap();
+    assert_eq!(node.status, RunStatus::Paused);
+    assert_eq!(node.outcome, None);
+    assert_eq!(node.runtime_execution_id, None);
+
+    {
+        let invocations = provider.invocations.lock().unwrap();
+        assert_eq!(invocations.len(), 4, "initial turn plus three repair turns");
+        assert_eq!(
+            invocations[0].user_prompt_render_mode,
+            UserPromptRenderMode::RequirementTask
+        );
+        assert!(invocations[1..].iter().all(|invocation| {
+            invocation.user_prompt_render_mode == UserPromptRenderMode::RuntimeRepair
+        }));
+    }
+
+    let completed = app
+        .run_continue(
+            task_id,
+            "run-001",
+            Some("user-repair-001".to_string()),
+            Some("请重新生成符合 schema 的结果".to_string()),
+        )
+        .unwrap();
+
+    let durable = app.run_status(task_id, "run-001").unwrap();
+    let resumed_node: NodeState = gold_band::storage::read_json(&app.paths.node_file(
+        task_id,
+        "run-001",
+        "round-001",
+        "accept",
+        "attempt-001",
+    ))
+    .unwrap();
+    assert_eq!(
+        completed.status,
+        RunStatus::Completed,
+        "durable={:?}/{:?}, node={:?}/{:?}, invocations={}",
+        durable.status,
+        durable.outcome,
+        resumed_node.status,
+        resumed_node.outcome,
+        provider.invocations.lock().unwrap().len()
+    );
+    assert_eq!(completed.outcome, Some(RunOutcome::Success));
+    let invocations = provider.invocations.lock().unwrap();
+    assert_eq!(invocations.len(), 5);
+    assert_eq!(
+        invocations[4].user_prompt_render_mode,
+        UserPromptRenderMode::UserMessage
+    );
+    assert!(
+        invocations[4]
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("请重新生成符合 schema 的结果")
+    );
+}
+
 #[test]
 fn run_start_executes_entry_worker_and_persists_outputs() {
     let temp = tempdir().unwrap();
@@ -612,7 +931,7 @@ fn run_start_executes_entry_worker_and_persists_outputs() {
     let task_id = "task-001";
 
     let provider = RecordingProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -694,7 +1013,7 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
     let temp = tempdir().unwrap();
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-pause-worker";
-    let app = App::with_provider(repo_root, Box::new(RecordingProvider::default()));
+    let app = app_with_provider(repo_root, Box::new(RecordingProvider::default()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -704,6 +1023,7 @@ fn run_pause_keeps_current_worker_paused_not_killed() {
         gold_band::storage::read_json(&app.paths.run_file(task_id, "run-001")).unwrap();
     running_run.status = RunStatus::Running;
     running_run.outcome = None;
+    running_run.execution.phase = gold_band::runtime::RuntimeExecutionPhase::RunningNode;
     gold_band::storage::write_json(&app.paths.run_file(task_id, "run-001"), &running_run).unwrap();
     let node_path = app
         .paths
@@ -736,7 +1056,7 @@ fn stopped_attempt_success_does_not_complete_workflow() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-stop-race";
     let provider = BlockingSuccessProvider::new(2);
-    let app = Arc::new(App::with_provider(repo_root, Box::new(provider.clone())));
+    let app = Arc::new(app_with_provider(repo_root, Box::new(provider.clone())));
     write_dev_only_workflow(&app, task_id);
 
     let runner = {
@@ -781,7 +1101,7 @@ fn run_continue_ignores_cancelled_session_snapshot() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-after-cancel";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -825,7 +1145,7 @@ fn run_continue_ignores_stale_provider_pid_metadata() {
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-stale-pid";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
 
     let run = app.run_start(task_id, None).unwrap();
@@ -851,7 +1171,7 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
     let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
     let task_id = "task-continue-user-message";
     let provider = InterruptedThenContinueProvider::default();
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = app_with_provider(repo_root, Box::new(provider.clone()));
     write_dev_only_workflow(&app, task_id);
     let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
@@ -862,8 +1182,8 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
     assert_eq!(run.status, RunStatus::Paused);
     assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
 
-    let continued = app
-        .run_continue(
+    let accepted = app
+        .run_continue_background(
             task_id,
             "run-001",
             Some("resume-user-001".to_string()),
@@ -871,6 +1191,19 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
         )
         .unwrap();
 
+    assert_eq!(accepted.status, RunStatus::Running);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let continued = loop {
+        let current = app.run_status(task_id, "run-001").unwrap();
+        if current.status != RunStatus::Running {
+            break current;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "runtime continue did not reach a terminal state"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(continued.status, RunStatus::Completed);
     let invocations = provider.invocations.lock().unwrap();
     assert_eq!(invocations.len(), 2);
@@ -879,13 +1212,28 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
         invocations[1].user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
+    let resume_prompt = invocations[1].resume_prompt.as_deref().unwrap();
+    assert!(resume_prompt.starts_with("请继续检查这个会话"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
+    assert!(resume_prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+    assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
+    assert!(!resume_prompt.contains("当前输出契约（如有）重新生效"));
     assert_eq!(
-        invocations[1].resume_prompt.as_deref(),
+        invocations[1]
+            .prompt_display
+            .as_ref()
+            .map(|input| input.display_text.as_str()),
         Some("请继续检查这个会话")
     );
     assert_eq!(
         invocations[1].resume_prompt_id.as_deref(),
         Some("resume-user-001")
+    );
+    assert_eq!(
+        invocations[1].runtime_control_intent,
+        RuntimeControlIntent::Resume
     );
 }
 
@@ -896,7 +1244,7 @@ fn run_start_background_allocates_from_max_run_id_under_concurrency() {
     let task_id = "task-concurrent-rerun";
 
     let provider = BlockingSuccessProvider::new(2);
-    let app = Arc::new(App::with_provider(
+    let app = Arc::new(app_with_provider(
         repo_root.clone(),
         Box::new(provider.clone()),
     ));
@@ -993,7 +1341,7 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     let task_id = "task-continue";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1053,8 +1401,8 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
     )
     .unwrap();
 
-    let manual_prompt = app
-        .acp_prompt_bundle_for_attempt(
+    let prepared_prompt = app
+        .prepare_acp_prompt_for_attempt(
             task_id,
             "run-001",
             "round-001",
@@ -1065,6 +1413,9 @@ fn run_continue_sends_localized_resume_prompt_to_existing_session() {
             Some(serde_json::json!({"acpSessionId":"session-123"})),
         )
         .unwrap();
+    assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
+    assert_eq!(prepared_prompt.session_workspace_dir, app.paths.repo_root);
+    let manual_prompt = prepared_prompt.prompt;
     assert!(manual_prompt.system_prompt.contains("Run: run-001"));
     assert!(manual_prompt.system_prompt.contains("用户主动打断当前工作"));
     assert!(
@@ -1125,7 +1476,7 @@ fn run_continue_model_override_uses_current_acp_session_model() {
     let task_id = "task-continue-model";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1218,7 +1569,7 @@ fn run_continue_permission_override_uses_explicit_gold_band_override() {
     let task_id = "task-continue-permission";
 
     let provider = InterruptThenSuccessProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1315,7 +1666,7 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     let task_id = "task-continue-lineage";
 
     let provider = MultiAttemptContinueProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1370,6 +1721,21 @@ fn transition_continue_uses_latest_target_attempt_ref() {
     assert_eq!(dev_invocations.len(), 3);
     assert_eq!(dev_invocations[1].session_mode, SessionMode::Continue);
     assert_eq!(
+        dev_invocations[1].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[1].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
+    assert!(
+        !dev_invocations[1]
+            .resume_prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("用户已选择将当前节点重新交由 Runtime 控制")
+    );
+    assert_eq!(
         dev_invocations[1]
             .continue_ref
             .as_ref()
@@ -1378,6 +1744,14 @@ fn transition_continue_uses_latest_target_attempt_ref() {
         Some("dev-attempt-001"),
     );
     assert_eq!(dev_invocations[2].session_mode, SessionMode::Continue);
+    assert_eq!(
+        dev_invocations[2].user_prompt_render_mode,
+        UserPromptRenderMode::WorkflowResume
+    );
+    assert_eq!(
+        dev_invocations[2].runtime_control_intent,
+        RuntimeControlIntent::Unchanged
+    );
     assert_eq!(
         dev_invocations[2]
             .continue_ref
@@ -1395,7 +1769,7 @@ fn max_attempts_allows_one_repair_loop_then_forward_success() {
     let task_id = "task-max-attempts-success";
 
     let provider = OneRepairProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1458,7 +1832,7 @@ fn max_attempts_fails_when_repair_budget_is_exceeded() {
     let task_id = "task-max-attempts";
 
     let provider = MultiAttemptContinueProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let dev_profile = app
@@ -1521,7 +1895,7 @@ fn max_rounds_fails_workflow_when_new_round_limit_is_exceeded() {
     let task_id = "task-max-rounds";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1577,7 +1951,7 @@ fn run_start_normalizes_legacy_new_round_entry_in_snapshot_only() {
     let task_id = "task-legacy-new-round-entry";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let accept_profile = app
@@ -1625,9 +1999,11 @@ fn run_start_normalizes_legacy_new_round_entry_in_snapshot_only() {
     assert_eq!(run.new_rounds_opened, 1);
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
 
-    let authoring: WorkflowDsl = gold_band::storage::read_json(&app.paths.workflow_file(task_id))
-        .expect("authoring workflow should remain readable");
+    let authoring: TaskAuthoringWorkflow =
+        gold_band::storage::read_json(&app.paths.workflow_file(task_id))
+            .expect("authoring workflow should remain readable");
     let authoring_new_round = authoring
+        .workflow
         .edges
         .iter()
         .find(|edge| edge.to == "$new-round")
@@ -1655,7 +2031,7 @@ fn new_round_starts_from_configured_entry_node() {
     let task_id = "task-new-round-entry";
 
     let provider = AlwaysFailAcceptanceProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let profiles = app.profiles().unwrap().profiles;
@@ -1723,7 +2099,7 @@ fn new_round_predecessor_context_uses_stable_prefix_and_current_round() {
     let task_id = "task-new-round-scoped-context";
 
     let provider = NewRoundScopedContextProvider::default();
-    let app = App::with_provider(repo_root.clone(), Box::new(provider.clone()));
+    let app = app_with_provider(repo_root.clone(), Box::new(provider.clone()));
 
     std::fs::create_dir_all(app.paths.task_dir(task_id).join("authoring").as_std_path()).unwrap();
     let profiles = app.profiles().unwrap().profiles;
@@ -1874,6 +2250,8 @@ fn error_blocked_run_is_not_continuable() {
         task_uuid: None,
         uuid: None,
         last_executed_node: None,
+        worktree: None,
+        execution: Default::default(),
     };
 
     assert!(!is_run_continuable(&run));

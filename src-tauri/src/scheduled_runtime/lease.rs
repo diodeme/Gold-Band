@@ -20,6 +20,7 @@ pub(crate) struct OccurrenceExecutionGuard {
 trait OccurrenceLeaseStore: Send + Sync + 'static {
     fn renew_lease(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
         now: DateTime<Utc>,
@@ -28,6 +29,7 @@ trait OccurrenceLeaseStore: Send + Sync + 'static {
 
     fn release_owned_occurrence_for_retry(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
         now: DateTime<Utc>,
@@ -35,6 +37,7 @@ trait OccurrenceLeaseStore: Send + Sync + 'static {
 
     fn occurrence_lease_state(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
     ) -> anyhow::Result<OccurrenceLeaseState>;
@@ -43,6 +46,7 @@ trait OccurrenceLeaseStore: Send + Sync + 'static {
 impl OccurrenceLeaseStore for ScheduledTaskDatabase {
     fn renew_lease(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
         now: DateTime<Utc>,
@@ -50,6 +54,7 @@ impl OccurrenceLeaseStore for ScheduledTaskDatabase {
     ) -> anyhow::Result<bool> {
         Ok(ScheduledTaskDatabase::renew_lease(
             self,
+            project_id,
             occurrence_id,
             owner_id,
             now,
@@ -59,12 +64,14 @@ impl OccurrenceLeaseStore for ScheduledTaskDatabase {
 
     fn release_owned_occurrence_for_retry(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
         now: DateTime<Utc>,
     ) -> anyhow::Result<bool> {
         Ok(ScheduledTaskDatabase::release_owned_occurrence_for_retry(
             self,
+            project_id,
             occurrence_id,
             owner_id,
             now,
@@ -73,10 +80,11 @@ impl OccurrenceLeaseStore for ScheduledTaskDatabase {
 
     fn occurrence_lease_state(
         &self,
+        project_id: &str,
         occurrence_id: &str,
         owner_id: &str,
     ) -> anyhow::Result<OccurrenceLeaseState> {
-        let state = match ScheduledTaskDatabase::get_occurrence(self, occurrence_id)? {
+        let state = match ScheduledTaskDatabase::get_occurrence(self, project_id, occurrence_id)? {
             Some(occurrence) if occurrence.status.is_terminal() => OccurrenceLeaseState::Terminal,
             Some(occurrence)
                 if occurrence.status == OccurrenceStatus::Running
@@ -109,6 +117,7 @@ enum HeartbeatAction {
 impl OccurrenceExecutionGuard {
     pub(crate) fn start<F>(
         database: ScheduledTaskDatabase,
+        project_id: String,
         occurrence_id: String,
         owner_id: String,
         config: LeaseConfig,
@@ -117,11 +126,19 @@ impl OccurrenceExecutionGuard {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        Self::start_with_store(database, occurrence_id, owner_id, config, on_lease_lost)
+        Self::start_with_store(
+            database,
+            project_id,
+            occurrence_id,
+            owner_id,
+            config,
+            on_lease_lost,
+        )
     }
 
     fn start_with_store<S, F>(
         store: S,
+        project_id: String,
         occurrence_id: String,
         owner_id: String,
         config: LeaseConfig,
@@ -138,6 +155,7 @@ impl OccurrenceExecutionGuard {
         let first_heartbeat_at = tokio::time::Instant::now() + heartbeat_interval;
         Self::start_with_store_at(
             store,
+            project_id,
             occurrence_id,
             owner_id,
             config,
@@ -148,6 +166,7 @@ impl OccurrenceExecutionGuard {
 
     fn start_with_store_at<S, F>(
         store: S,
+        project_id: String,
         occurrence_id: String,
         owner_id: String,
         config: LeaseConfig,
@@ -181,6 +200,7 @@ impl OccurrenceExecutionGuard {
                         }
                         let action = heartbeat_step(
                             store.clone(),
+                            project_id.clone(),
                             occurrence_id.clone(),
                             owner_id.clone(),
                             config,
@@ -258,6 +278,7 @@ impl Drop for OccurrenceExecutionGuard {
 
 async fn heartbeat_step(
     store: Arc<dyn OccurrenceLeaseStore>,
+    project_id: String,
     occurrence_id: String,
     owner_id: String,
     config: LeaseConfig,
@@ -269,6 +290,7 @@ async fn heartbeat_step(
         if release_pending {
             resolve_failed_renewal(
                 store.as_ref(),
+                &project_id,
                 &occurrence_id,
                 &owner_id,
                 cancellation_requested.as_ref(),
@@ -276,6 +298,7 @@ async fn heartbeat_step(
         } else {
             heartbeat_action(
                 store.as_ref(),
+                &project_id,
                 &occurrence_id,
                 &owner_id,
                 config,
@@ -295,6 +318,7 @@ async fn heartbeat_step(
 
 fn heartbeat_action(
     store: &dyn OccurrenceLeaseStore,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     config: LeaseConfig,
@@ -304,7 +328,13 @@ fn heartbeat_action(
         return HeartbeatAction::Stop;
     }
     let now = Utc::now();
-    let renewed = store.renew_lease(occurrence_id, owner_id, now, config.lease_until(now));
+    let renewed = store.renew_lease(
+        project_id,
+        occurrence_id,
+        owner_id,
+        now,
+        config.lease_until(now),
+    );
     if cancellation_requested.load(Ordering::Acquire) {
         return HeartbeatAction::Stop;
     }
@@ -312,17 +342,30 @@ fn heartbeat_action(
         Ok(true) => HeartbeatAction::ContinueRenewing,
         Ok(false) => {
             warn!(%occurrence_id, "scheduled occurrence lease was not renewed");
-            resolve_failed_renewal(store, occurrence_id, owner_id, cancellation_requested)
+            resolve_failed_renewal(
+                store,
+                project_id,
+                occurrence_id,
+                owner_id,
+                cancellation_requested,
+            )
         }
         Err(error) => {
             warn!(%error, %occurrence_id, "scheduled occurrence lease renewal failed");
-            resolve_failed_renewal(store, occurrence_id, owner_id, cancellation_requested)
+            resolve_failed_renewal(
+                store,
+                project_id,
+                occurrence_id,
+                owner_id,
+                cancellation_requested,
+            )
         }
     }
 }
 
 fn resolve_failed_renewal(
     store: &dyn OccurrenceLeaseStore,
+    project_id: &str,
     occurrence_id: &str,
     owner_id: &str,
     cancellation_requested: &AtomicBool,
@@ -330,7 +373,8 @@ fn resolve_failed_renewal(
     if cancellation_requested.load(Ordering::Acquire) {
         return HeartbeatAction::Stop;
     }
-    let released = store.release_owned_occurrence_for_retry(occurrence_id, owner_id, Utc::now());
+    let released =
+        store.release_owned_occurrence_for_retry(project_id, occurrence_id, owner_id, Utc::now());
     if cancellation_requested.load(Ordering::Acquire) {
         return HeartbeatAction::Stop;
     }
@@ -343,7 +387,7 @@ fn resolve_failed_renewal(
             if cancellation_requested.load(Ordering::Acquire) {
                 return HeartbeatAction::Stop;
             }
-            match store.occurrence_lease_state(occurrence_id, owner_id) {
+            match store.occurrence_lease_state(project_id, occurrence_id, owner_id) {
                 Ok(OccurrenceLeaseState::Terminal) => HeartbeatAction::Stop,
                 Ok(OccurrenceLeaseState::OwnedRunning) => HeartbeatAction::RetryRelease,
                 Ok(OccurrenceLeaseState::NoLongerOwned) => HeartbeatAction::NotifyLeaseLost,
@@ -477,6 +521,7 @@ mod tests {
     impl OccurrenceLeaseStore for ScriptedLeaseStore {
         fn renew_lease(
             &self,
+            _project_id: &str,
             _occurrence_id: &str,
             _owner_id: &str,
             _now: DateTime<Utc>,
@@ -515,6 +560,7 @@ mod tests {
 
         fn release_owned_occurrence_for_retry(
             &self,
+            _project_id: &str,
             _occurrence_id: &str,
             _owner_id: &str,
             _now: DateTime<Utc>,
@@ -535,6 +581,7 @@ mod tests {
 
         fn occurrence_lease_state(
             &self,
+            _project_id: &str,
             _occurrence_id: &str,
             _owner_id: &str,
         ) -> anyhow::Result<OccurrenceLeaseState> {
@@ -584,14 +631,24 @@ mod tests {
         let owner_id = "lease-guard-owner";
         assert!(matches!(
             database
-                .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::hours(1),)
+                .claim_occurrence(
+                    "project-a",
+                    &occurrence.id,
+                    owner_id,
+                    now,
+                    now + Duration::hours(1),
+                )
                 .unwrap(),
             ClaimResult::Claimed(_)
         ));
-        let before = database.get_occurrence(&occurrence.id).unwrap().unwrap();
+        let before = database
+            .get_occurrence("project-a", &occurrence.id)
+            .unwrap()
+            .unwrap();
 
         let guard = OccurrenceExecutionGuard::start(
             database.clone(),
+            "project-a".to_string(),
             occurrence.id.clone(),
             owner_id.to_string(),
             gold_band::scheduler::occurrence::LeaseConfig {
@@ -607,7 +664,10 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let after = database.get_occurrence(&occurrence.id).unwrap().unwrap();
+        let after = database
+            .get_occurrence("project-a", &occurrence.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(after.heartbeat_at, before.heartbeat_at);
         assert_eq!(after.lease_until, before.lease_until);
     }
@@ -640,13 +700,20 @@ mod tests {
         let owner_id = "lease-guard-owner";
         assert!(matches!(
             database
-                .claim_occurrence(&occurrence.id, owner_id, now, now + Duration::hours(1),)
+                .claim_occurrence(
+                    "project-a",
+                    &occurrence.id,
+                    owner_id,
+                    now,
+                    now + Duration::hours(1),
+                )
                 .unwrap(),
             ClaimResult::Claimed(_)
         ));
         assert!(
             database
                 .finish_occurrence(
+                    "project-a",
                     &occurrence.id,
                     owner_id,
                     OccurrenceStatus::AttentionRequired,
@@ -659,6 +726,7 @@ mod tests {
         let lost_for_guard = lost.clone();
         let _guard = OccurrenceExecutionGuard::start(
             database.clone(),
+            "project-a".to_string(),
             occurrence.id.clone(),
             owner_id.to_string(),
             LeaseConfig {
@@ -675,7 +743,10 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let occurrence = database.get_occurrence(&occurrence.id).unwrap().unwrap();
+        let occurrence = database
+            .get_occurrence("project-a", &occurrence.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(lost.load(Ordering::SeqCst), 0);
         assert_eq!(occurrence.status, OccurrenceStatus::AttentionRequired);
     }
@@ -688,6 +759,7 @@ mod tests {
         let lost_for_guard = lost.clone();
         let _guard = OccurrenceExecutionGuard::start(
             database,
+            "project-a".to_string(),
             "missing-occurrence".to_string(),
             "lease-guard-owner".to_string(),
             LeaseConfig {
@@ -721,6 +793,7 @@ mod tests {
         let lost_notify_for_guard = lost_notify.clone();
         let _guard = OccurrenceExecutionGuard::start_with_store(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -760,6 +833,7 @@ mod tests {
         let lost_notify_for_guard = lost_notify.clone();
         let _guard = OccurrenceExecutionGuard::start_with_store(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -806,6 +880,7 @@ mod tests {
         store.wait_for_async_executor(executor_notify, executor_progress, observed);
         let guard = OccurrenceExecutionGuard::start_with_store_at(
             store,
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -830,6 +905,7 @@ mod tests {
         let lost_for_guard = lost.clone();
         let guard = OccurrenceExecutionGuard::start_with_store_at(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -868,6 +944,7 @@ mod tests {
         let lost_for_guard = lost.clone();
         let guard = OccurrenceExecutionGuard::start_with_store_at(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -903,6 +980,7 @@ mod tests {
         let lost_for_guard = lost.clone();
         let guard = OccurrenceExecutionGuard::start_with_store_at(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -934,6 +1012,7 @@ mod tests {
         store.block_next_renewal(renew_started, renew_barrier.clone());
         let guard = OccurrenceExecutionGuard::start_with_store_at(
             store.clone(),
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {
@@ -958,6 +1037,7 @@ mod tests {
         let mut calls = store.observe_calls();
         let guard = OccurrenceExecutionGuard::start_with_store(
             store,
+            "project-a".to_string(),
             "occurrence-a".to_string(),
             "owner-a".to_string(),
             LeaseConfig {

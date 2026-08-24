@@ -1,7 +1,12 @@
 "use client"
 
 import { Textarea } from "@/components/ui/textarea"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useLeadingAdornmentTextIndent } from "@/hooks/useLeadingAdornmentTextIndent"
 import React, {
@@ -63,6 +68,8 @@ const PROMPT_INPUT_INTERACTIVE_SELECTOR = [
   '[role="button"]',
   '[role="combobox"]',
   '[role="menuitem"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
   '[contenteditable="true"]',
   "[data-prompt-input-interactive]",
 ].join(",")
@@ -135,6 +142,8 @@ function PromptInput({
             className
           )}
           {...props}
+          data-slot="prompt-input"
+          data-theme-role="composer"
         >
           {children}
         </div>
@@ -211,13 +220,16 @@ function PromptInputTextarea({
     <Textarea
       ref={handleRef}
       value={textareaValue}
-      style={{ ...style, ...leadingAdornmentLayout.textareaStyle }}
+      style={{
+        ...style,
+        ...leadingAdornmentLayout.textareaStyle,
+      }}
       onChange={handleChange}
       onKeyDown={handleKeyDown}
       className={cn(
         "text-primary min-h-[44px] min-w-0 flex-1 resize-none border-none bg-transparent shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent",
-        hasLeadingAdornment && "px-0 py-0",
-        className
+        className,
+        hasLeadingAdornment && "px-0"
       )}
       rows={1}
       disabled={effectiveDisabled}
@@ -230,11 +242,11 @@ function PromptInputTextarea({
   return (
     <div
       data-slot="prompt-input-textarea-with-adornment"
-      className={cn("relative min-w-0 px-3 py-2", containerClassName)}
+      className={cn("relative min-w-0 px-2.5", containerClassName)}
     >
       <span
         ref={leadingAdornmentLayout.adornmentRef}
-        className="absolute left-3 top-2 z-10 inline-flex"
+        className="absolute left-2.5 top-2 z-10 inline-flex"
       >
         {leadingAdornment}
       </span>
@@ -267,27 +279,25 @@ export type PromptInputActionProps = {
 function PromptInputAction({
   tooltip,
   children,
-  className: _className,
-  side: _side = "top",
-  ..._props
+  className,
+  side = "top",
+  ...props
 }: PromptInputActionProps) {
-  const title = promptInputActionTitle(tooltip)
-
   return (
-    <span
-      data-slot="prompt-input-action"
-      className="inline-flex"
-      title={title}
-      onClick={(event) => event.stopPropagation()}
-    >
-      {children}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          data-slot="prompt-input-action"
+          className={cn("inline-flex", className)}
+          onClick={(event) => event.stopPropagation()}
+          {...props}
+        >
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side={side}>{tooltip}</TooltipContent>
+    </Tooltip>
   )
-}
-
-function promptInputActionTitle(node: React.ReactNode) {
-  if (typeof node === "string" || typeof node === "number") return String(node)
-  return undefined
 }
 
 export {
@@ -295,5 +305,4 @@ export {
   PromptInputTextarea,
   PromptInputActions,
   PromptInputAction,
-  promptInputActionTitle,
 }

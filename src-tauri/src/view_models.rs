@@ -1,23 +1,23 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     str::FromStr,
-    sync::{LazyLock, Mutex},
-    time::{Instant, SystemTime},
+    time::Instant,
 };
 
 use anyhow::Result;
 use gold_band::acp::client::PromptActivity;
 use gold_band::app::{App, LogSource, TaskSummary, is_run_continuable};
 use gold_band::config::{
-    DesktopAvailableUpdate, DesktopFontPreference, DesktopLanguage, DesktopThemePreference,
-    DesktopUpdateBadgeState, ManagedAgentConfig, ManagedAgentId, McpServerState, RuntimeConfig,
+    AppearancePreference, DesktopAvailableUpdate, DesktopLanguage, DesktopUpdateBadgeState,
+    ManagedAgentConfig, ManagedAgentId, McpServerState, PersonalizationPreference, RuntimeConfig,
     RuntimeLogLevel,
 };
 use gold_band::domain::{NodeType, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::DynamicGraphState;
+use gold_band::dynamic::{DynamicGraphState, WorkspaceKind};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::provider::{
     attachment_meta_for_path, mcp_capabilities_from_capabilities,
     select_config_options_from_capabilities, supported_models_from_capabilities,
@@ -35,17 +35,19 @@ use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::avatar::{AvatarPreferencesVm, load_avatar_preferences};
+use crate::avatar::{AvatarPreferencesVm, load_resolved_avatar_preferences};
+use crate::wallpaper::{WallpaperPreferencesVm, load_resolved_wallpaper_preferences};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferencesVm {
-    pub theme: DesktopThemePreference,
+    pub appearance: AppearancePreference,
+    pub personalization: PersonalizationPreference,
     pub language: DesktopLanguage,
-    pub font: DesktopFontPreference,
     pub use_local_claude: bool,
     pub verbose_logging: bool,
     pub avatars: AvatarPreferencesVm,
+    pub wallpapers: WallpaperPreferencesVm,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +89,9 @@ pub struct AppBootstrapVm {
 pub struct AppConfigVm {
     pub acp_session_title_refresh_enabled: bool,
     pub acp_chat_event_page_size: usize,
+    pub conversation_inline_content_max_bytes: u64,
+    pub conversation_inline_image_max_bytes: u64,
+    pub conversation_inline_image_max_dimension: u32,
     pub turn_files: TurnFilesVm,
     pub workspace_layout: WorkspaceLayoutVm,
     pub workspace_files: WorkspaceFilesVm,
@@ -142,7 +147,6 @@ pub struct RightWorkspaceLayoutVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileWorkspaceLayoutVm {
-    pub preferred_width: u32,
     pub split_min_width: u32,
     pub tree_default_width: u32,
     pub tree_min_width: u32,
@@ -363,6 +367,7 @@ pub struct WorkflowVm {
     pub runs: Vec<RunGroupVm>,
     pub control: Option<WorkflowControlVm>,
     pub workflow_json: Option<String>,
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -750,6 +755,8 @@ pub struct AcpSessionVm {
     pub adapter_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter_icon_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -883,6 +890,7 @@ pub struct AcpEventPageVm {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionConfigVm {
+    pub catalog_observed_at: Option<String>,
     pub model_override_id: Option<String>,
     pub permission_mode_override_id: Option<String>,
     pub config_option_overrides: std::collections::BTreeMap<String, String>,
@@ -1171,20 +1179,22 @@ pub enum RoundSelectionInput {
 }
 
 pub fn preferences_vm(
-    theme: DesktopThemePreference,
+    appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
     use_local_claude: bool,
     log_level: RuntimeLogLevel,
     avatars: AvatarPreferencesVm,
+    wallpapers: WallpaperPreferencesVm,
 ) -> PreferencesVm {
     PreferencesVm {
-        theme,
+        appearance,
+        personalization,
         language,
-        font,
         use_local_claude,
         verbose_logging: matches!(log_level, RuntimeLogLevel::Debug | RuntimeLogLevel::Trace),
         avatars,
+        wallpapers,
     }
 }
 
@@ -1224,6 +1234,9 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
     AppConfigVm {
         acp_session_title_refresh_enabled: config.acp_session_title_refresh_enabled,
         acp_chat_event_page_size: config.acp_chat_event_page_size,
+        conversation_inline_content_max_bytes: config.conversation_inline_content_max_bytes,
+        conversation_inline_image_max_bytes: config.conversation_inline_image_max_bytes,
+        conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
         turn_files: TurnFilesVm {
             card_preview_limit: config.turn_files.card_preview_limit,
         },
@@ -1235,7 +1248,6 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
                 default_width: right_workspace.default_width,
                 max_width: right_workspace.max_width,
                 file: FileWorkspaceLayoutVm {
-                    preferred_width: right_workspace.file.preferred_width,
                     split_min_width: right_workspace.file.split_min_width,
                     tree_default_width: right_workspace.file.tree_default_width,
                     tree_min_width: right_workspace.file.tree_min_width,
@@ -1293,12 +1305,18 @@ pub fn bootstrap_vm(
         repo_root: app.paths.repo_root.to_string(),
         recent_workspaces,
         preferences: preferences_vm(
-            app.config.desktop_theme,
+            app.config.appearance.clone(),
+            app.config.personalization.clone(),
             app.config.desktop_language,
-            app.config.desktop_font.clone(),
             app.config.use_local_claude,
             app.config.log_level,
-            load_avatar_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
+            load_resolved_avatar_preferences(
+                &app.paths.user_gold_band_dir(),
+                &app.config.personalization,
+            )
+            .unwrap_or_default(),
+            load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir())
+                .unwrap_or_default(),
         ),
         updater_settings: updater_settings(&app.config),
         metrics_settings: metrics_settings(&app.config),
@@ -1528,8 +1546,13 @@ pub fn task_detail_vm(app: &App, task_id: &str) -> Result<TaskDetailVm> {
 pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
     let summary = app.task_summary(task_id)?;
     let task = task_row_vm(app, &summary)?;
-    let workflow_json = read_optional_text(&app.paths.workflow_file(task_id))?;
-    let workflow = read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)).ok();
+    let authoring = app.task_authoring_workflow(task_id).ok();
+    let workflow = authoring
+        .as_ref()
+        .map(|authoring| authoring.workflow.clone());
+    let workflow_json = workflow
+        .as_ref()
+        .and_then(|workflow| serde_json::to_string_pretty(workflow).ok());
     let graph = workflow
         .as_ref()
         .map(|workflow| workflow_graph_vm(app, workflow))
@@ -1545,11 +1568,20 @@ pub fn workflow_vm(app: &App, task_id: &str) -> Result<WorkflowVm> {
         runs,
         control,
         workflow_json,
+        model_bindings: authoring
+            .map(|authoring| authoring.model_bindings)
+            .unwrap_or_default(),
     })
 }
 
 pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetailVm> {
     let run = app.run_status(task_id, run_id)?;
+    let progress = app.run_progress(task_id, run_id)?.filter(|progress| {
+        progress
+            .get("runtimeRevision")
+            .and_then(serde_json::Value::as_u64)
+            == Some(run.execution.revision)
+    });
     let rounds = app
         .round_list(task_id, run_id)?
         .into_iter()
@@ -1559,7 +1591,7 @@ pub fn run_detail_vm(app: &App, task_id: &str, run_id: &str) -> Result<RunDetail
         run: run_summary_vm(run),
         rounds,
         events: app.run_events(task_id, run_id)?,
-        progress: app.run_progress(task_id, run_id)?,
+        progress,
     })
 }
 
@@ -1819,13 +1851,6 @@ pub(crate) fn latest_control_failure_vm(
             .or_else(|| {
                 summary.and_then(|summary| control_failure_from_summary(summary, data, &event))
             });
-    }
-    if latest.is_none() {
-        if let Some(progress) = app.run_progress(task_id, run_id)? {
-            if let Some(summary) = progress.get("summary").and_then(|value| value.as_str()) {
-                latest = control_failure_from_summary(summary, &progress, &serde_json::Value::Null);
-            }
-        }
     }
     Ok(latest)
 }
@@ -2489,7 +2514,7 @@ fn dynamic_graph_state_optional(
         .paths
         .dynamic_graph_file(task_id, run_id, round_id, node_id, attempt_id);
     path.exists()
-        .then(|| read_json::<DynamicGraphState>(&path).ok())
+        .then(|| load_dynamic_graph(&path, &app.paths.repo_root).ok())
         .flatten()
 }
 
@@ -3563,7 +3588,6 @@ pub fn dynamic_acp_session_vm(
     let timeline_path = attempt_dir.join("acp.timeline.jsonl");
     let events_path = attempt_dir.join("acp.events.jsonl");
     let raw_path = attempt_dir.join("acp.raw.jsonl");
-    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = attempt_dir.join("acp.diagnostics.jsonl");
     let has_preloaded = preloaded_session_json.is_some();
     if !has_preloaded
@@ -3576,12 +3600,12 @@ pub fn dynamic_acp_session_vm(
     {
         return Ok(None);
     }
-    let mut session = if let Some(json) = preloaded_session_json {
-        json
+    let session = if let Some(json) = preloaded_session_json {
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -3594,14 +3618,6 @@ pub fn dynamic_acp_session_vm(
         node_id,
         attempt_id,
     );
-    let node_path = app.paths.dynamic_node_file(
-        task_id,
-        run_id,
-        round_id,
-        outer_node_id,
-        outer_attempt_id,
-        node_id,
-    );
     let worker_ref = if worker_ref_path.exists() {
         read_json::<WorkerRefState>(&worker_ref_path).ok()
     } else {
@@ -3610,27 +3626,19 @@ pub fn dynamic_acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
-    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
-        &snapshot_path,
-        &timeline_path,
-        &raw_path,
-        &prompt_usage_path,
-        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
-    )?;
+    let diagnostics = AcpDiagnosticsScan {
+        error_count: 0,
+        last_error: None,
+        last_error_timestamp: None,
+    };
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| extract_system_prompt_append(&raw_path));
-    apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
+        .map(str::to_string);
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
@@ -3641,7 +3649,12 @@ pub fn dynamic_acp_session_vm(
         .and_then(|query| query.branch_id.clone())
         .unwrap_or_else(|| gold_band::acp::branches::ROOT_BRANCH_ID.to_string());
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    gold_band::acp::branches::prepare_agent_timeline_storage(&attempt_dir)?;
+    let agent_index = if gold_band::acp::timeline::timeline_has_agent_launches(&timeline_path)? {
+        gold_band::acp::branches::indexed_agent_index(&attempt_dir, &root_status)?
+    } else {
+        Vec::new()
+    };
     let branch_record = conversation_branch_record(&agent_index, &branch_id);
     let status = conversation_branch_status(&root_status, &branch_id, branch_record);
     let stopping = is_acp_session_stopping_status(&status);
@@ -3726,6 +3739,17 @@ pub fn dynamic_acp_session_vm(
         .and_then(|value| value.as_str())
         .map(str::to_string)
         .or_else(|| Some(attempt_dir.to_string()));
+    let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
+    let dynamic_graph = dynamic_graph_state_optional(
+        app,
+        task_id,
+        run_id,
+        round_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let worktree_path =
+        session_worktree_path(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3758,6 +3782,7 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
+        worktree_path,
         cwd,
         provider_cwd,
         status,
@@ -3812,7 +3837,6 @@ pub fn dynamic_acp_session_vm(
                 u.cost_amount_usd = session.get("totalCostUsd").and_then(|v| v.as_f64());
             }
             apply_persisted_attempt_token_totals(&mut u, &session);
-            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -3858,10 +3882,7 @@ pub fn dynamic_acp_session_status(
     );
     apply_stale_session_completion_fuse_dynamic(&attempt_dir, &node_path, &mut session)?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -3899,7 +3920,6 @@ pub fn acp_session_vm(
     let raw_path = app
         .paths
         .acp_raw_file(task_id, run_id, round_id, node_id, attempt_id);
-    let prompt_usage_path = attempt_dir.join("acp.prompt-usage.jsonl");
     let diagnostics_path = app
         .paths
         .acp_diagnostics_file(task_id, run_id, round_id, node_id, attempt_id);
@@ -3924,12 +3944,12 @@ pub fn acp_session_vm(
         return Ok(None);
     }
 
-    let mut session = if let Some(json) = preloaded_session_json {
-        json
+    let session = if let Some(json) = preloaded_session_json {
+        normalize_preloaded_session_metadata(json)
     } else if snapshot_path.exists() {
-        read_json::<serde_json::Value>(&snapshot_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&snapshot_path).unwrap_or_else(|| serde_json::json!({}))
     } else if session_path.exists() {
-        read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({}))
+        load_session_metadata_value(&session_path).unwrap_or_else(|| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -3971,66 +3991,49 @@ pub fn acp_session_vm(
     let continue_ref = worker_ref
         .as_ref()
         .and_then(|state| state.continue_ref.as_ref());
-    let node_path = app
-        .paths
-        .node_file(task_id, run_id, round_id, node_id, attempt_id);
-    let diagnostics = scan_acp_diagnostics(&diagnostics_path)?;
+    let diagnostics = AcpDiagnosticsScan {
+        error_count: 0,
+        last_error: None,
+        last_error_timestamp: None,
+    };
     trace_acp_session_query(
         &mut query_trace,
         "diagnostics",
         serde_json::json!({ "diagnosticBytes": diagnostics_path.metadata().ok().map(|metadata| metadata.len()) }),
-    );
-    let recovered_attempt_usage = gold_band::acp::usage::repair_attempt_usage(
-        &snapshot_path,
-        &timeline_path,
-        &raw_path,
-        &prompt_usage_path,
-        gold_band::acp::client::prompt_activity(&attempt_dir).is_none(),
-    )?;
-    trace_acp_session_query(
-        &mut query_trace,
-        "attempt-usage-repair",
-        serde_json::json!({ "promptUsageBytes": prompt_usage_path.metadata().ok().map(|metadata| metadata.len()) }),
     );
     let system_prompt_append = session
         .get("systemPromptAppend")
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| extract_system_prompt_append(&raw_path));
+        .map(str::to_string);
     trace_acp_session_query(
         &mut query_trace,
         "system-prompt",
         serde_json::json!({ "found": system_prompt_append.is_some() }),
     );
-    apply_stale_session_completion_fuse(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        &node_path,
-        &mut session,
-    )?;
     trace_acp_session_query(
         &mut query_trace,
         "lifecycle-fuse",
-        serde_json::json!({ "status": session.get("status").and_then(Value::as_str) }),
+        serde_json::json!({
+            "availability": session.get("availability").and_then(Value::as_str),
+            "latestTurnStatus": session.get("latestTurnStatus").and_then(Value::as_str),
+        }),
     );
     let config = acp_session_config_vm(&session);
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
+    let metadata_status = session_metadata_status(&session);
     let root_status = effective_acp_session_status(
         metadata_status,
         gold_band::acp::client::prompt_activity(&attempt_dir),
     );
     let default_event_limit = app.config.acp_chat_event_page_size;
     gold_band::acp::branches::validate_conversation_branch_id(&branch_id)?;
-    let agent_index = gold_band::acp::branches::rebuild_agent_index(&attempt_dir, &root_status)?;
+    gold_band::acp::branches::prepare_agent_timeline_storage(&attempt_dir)?;
+    let agent_index = if gold_band::acp::timeline::timeline_has_agent_launches(&timeline_path)? {
+        gold_band::acp::branches::indexed_agent_index(&attempt_dir, &root_status)?
+    } else {
+        Vec::new()
+    };
     trace_acp_session_query(
         &mut query_trace,
         "agent-index",
@@ -4065,6 +4068,32 @@ pub fn acp_session_vm(
             "semanticTotal": event_scan.event_page.total,
         }),
     );
+    let session_id = continue_ref
+        .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            session
+                .get("acpSessionId")
+                .or_else(|| session.get("sessionId"))
+                .and_then(|value| value.as_str())
+        })
+        .map(str::to_string);
+    let has_displayable_timeline_event = event_scan
+        .events
+        .iter()
+        .any(|event| !is_hidden_from_chat(event) && is_session_timeline_event(event));
+    if session.get("availability").and_then(Value::as_str) == Some("unavailable")
+        && session_id.is_none()
+        && !has_displayable_timeline_event
+        && branch_record.is_none()
+    {
+        trace_acp_session_query(
+            &mut query_trace,
+            "session-not-materialized",
+            serde_json::json!({ "availability": "unavailable" }),
+        );
+        return Ok(None);
+    }
     apply_agent_index_projection(
         &mut event_scan.timeline_projection,
         &agent_index,
@@ -4132,22 +4161,15 @@ pub fn acp_session_vm(
         .and_then(|value| value.as_str())
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
+    let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
+    let worktree_path = session_worktree_path(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
         read_only: branch_id != gold_band::acp::branches::ROOT_BRANCH_ID,
         branch_execution: branch_record.map(agent_execution_vm),
-        session_id: continue_ref
-            .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
-            .and_then(|value| value.as_str())
-            .or_else(|| {
-                session
-                    .get("acpSessionId")
-                    .or_else(|| session.get("sessionId"))
-                    .and_then(|value| value.as_str())
-            })
-            .map(str::to_string),
+        session_id,
         title: session
             .get("title")
             .and_then(|value| value.as_str())
@@ -4165,6 +4187,7 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
+        worktree_path,
         cwd,
         provider_cwd,
         status,
@@ -4218,7 +4241,6 @@ pub fn acp_session_vm(
             // Token breakdown shown in conversation UI is always the cumulative
             // ACP-attempt total, never the latest prompt response or timeline sample.
             apply_persisted_attempt_token_totals(&mut u, &session);
-            apply_recovered_attempt_token_totals(&mut u, &recovered_attempt_usage);
             Some(u)
         },
         diagnostics: AcpDiagnosticsVm {
@@ -4274,10 +4296,7 @@ pub fn acp_session_status(
         &mut session,
     )?;
     Ok(Some(effective_acp_session_status(
-        session
-            .get("status")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown"),
+        session_metadata_status(&session),
         gold_band::acp::client::prompt_activity(&attempt_dir),
     )))
 }
@@ -4299,15 +4318,10 @@ fn session_metadata_from_attempt_dir(attempt_dir: &camino::Utf8Path) -> Option<s
         return None;
     }
     if snapshot_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&snapshot_path)
-                .unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&snapshot_path).unwrap_or_default());
     }
     if session_path.exists() {
-        return Some(
-            read_json::<serde_json::Value>(&session_path).unwrap_or_else(|_| serde_json::json!({})),
-        );
+        return Some(load_session_metadata_value(&session_path).unwrap_or_default());
     }
     Some(serde_json::json!({}))
 }
@@ -4462,70 +4476,6 @@ struct AcpActivityDetailCandidateVm {
     started_seq: u64,
 }
 
-// --- timeline scan cache ---
-
-const TIMELINE_CACHE_MAX_ENTRIES: usize = 16;
-
-struct CachedTimeline {
-    file_signature: Option<TimelineFileSignature>,
-    all_events: Vec<AcpUiEventVm>,
-    event_count: usize,
-    session_elapsed_seconds: Option<u64>,
-    latest_permission_events: HashMap<String, AcpUiEventVm>,
-    available_commands: Option<Vec<serde_json::Value>>,
-    usage: Option<AcpUsageVm>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TimelineFileSignature {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-struct TimelineCache {
-    entries: HashMap<String, CachedTimeline>,
-    order: VecDeque<String>,
-}
-
-static TIMELINE_CACHE: LazyLock<Mutex<TimelineCache>> = LazyLock::new(|| {
-    Mutex::new(TimelineCache {
-        entries: HashMap::new(),
-        order: VecDeque::new(),
-    })
-});
-
-fn timeline_cache_key(path: &camino::Utf8Path) -> String {
-    path.as_str().to_string()
-}
-
-fn timeline_file_signature(path: &camino::Utf8Path) -> Result<Option<TimelineFileSignature>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let metadata = fs::metadata(path.as_std_path())?;
-    Ok(Some(TimelineFileSignature {
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-    }))
-}
-
-fn touch_timeline_cache(cache: &mut TimelineCache, key: &str) {
-    if let Some(pos) = cache.order.iter().position(|k| k == key) {
-        cache.order.remove(pos);
-    }
-    cache.order.push_back(key.to_string());
-}
-
-fn evict_timeline_cache(cache: &mut TimelineCache) {
-    while cache.order.len() > TIMELINE_CACHE_MAX_ENTRIES {
-        if let Some(oldest) = cache.order.pop_front() {
-            cache.entries.remove(&oldest);
-        }
-    }
-}
-
-// --- end timeline scan cache ---
-
 fn scan_acp_timeline(
     path: &camino::Utf8Path,
     query: Option<AcpSessionQueryInput>,
@@ -4560,83 +4510,99 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let file_signature = timeline_file_signature(path)?;
-
-    // Completed sessions may still receive a final timeline flush shortly after
-    // the snapshot flips terminal, so cache only while the file signature matches.
-    let cache_key = timeline_cache_key(path);
-    let (
-        all_events,
-        event_count,
-        session_elapsed_seconds,
-        latest_permission_events,
-        available_commands,
-        usage,
-    ) = if !session_active {
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        if let Some(cached) = cache
-            .entries
-            .get(&cache_key)
-            .filter(|cached| cached.file_signature == file_signature)
-        {
-            let all_events = cached.all_events.clone();
-            let event_count = cached.event_count;
-            let session_elapsed_seconds = cached.session_elapsed_seconds;
-            let latest_permission_events = cached.latest_permission_events.clone();
-            let available_commands = cached.available_commands.clone();
-            let usage = cached.usage.clone();
-            touch_timeline_cache(&mut cache, &cache_key);
-            return paginate_timeline(
-                path,
-                &all_events,
-                event_count,
-                session_elapsed_seconds,
-                &latest_permission_events,
-                available_commands.as_ref(),
-                usage.as_ref(),
-                session_active,
-                after_seq,
-                before_seq,
-                limit,
-            );
-        }
-        drop(cache);
-        let result = parse_timeline_file(path, session_active)?;
-        let mut cache = TIMELINE_CACHE.lock().unwrap();
-        cache.entries.insert(
-            cache_key.clone(),
-            CachedTimeline {
-                file_signature,
-                all_events: result.0.clone(),
-                event_count: result.1,
-                session_elapsed_seconds: result.2,
-                latest_permission_events: result.3.clone(),
-                available_commands: result.4.clone(),
-                usage: result.5.clone(),
-            },
-        );
-        touch_timeline_cache(&mut cache, &cache_key);
-        evict_timeline_cache(&mut cache);
-        result
-    } else {
-        parse_timeline_file(path, session_active)?
-    };
-
-    paginate_timeline(
-        path,
-        &all_events,
-        event_count,
-        session_elapsed_seconds,
-        &latest_permission_events,
-        available_commands.as_ref(),
-        usage.as_ref(),
-        session_active,
-        after_seq,
-        before_seq,
-        limit,
-    )
+    let indexed =
+        gold_band::acp::timeline::read_indexed_timeline_page(path, before_seq, after_seq, limit)?;
+    indexed_timeline_page_to_scan(path, indexed, session_active)
 }
 
+fn indexed_timeline_page_to_scan(
+    timeline_path: &camino::Utf8Path,
+    indexed: gold_band::acp::timeline::TimelineIndexedPage,
+    session_active: bool,
+) -> Result<AcpEventScan> {
+    let mut events = indexed
+        .events
+        .into_iter()
+        .map(|event| serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for event in &mut events {
+        normalize_turn_file_change_set_position(event);
+        if event.kind != "permissionRequest" && event.kind != "activitySummary" {
+            *event = compact_event_for_session(event.clone());
+        }
+    }
+    let latest_permission_events = indexed
+        .pending_permissions
+        .into_iter()
+        .map(|event| {
+            let event = serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)?;
+            Ok((permission_request_id_from_event(&event), event))
+        })
+        .collect::<Result<HashMap<_, _>>>()?;
+    include_latest_permission_events(&mut events, &latest_permission_events);
+    order_provider_history_by_prompt_anchors_vm(&mut events);
+    hydrate_timeline_events(timeline_path, &mut events)?;
+
+    let pending_elicitations = if session_active {
+        indexed
+            .pending_elicitations
+            .into_iter()
+            .map(|event| {
+                serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?)
+                    .map(|event| elicitation_vm_from_event(&event))
+                    .map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let projection_events = indexed
+        .latest_plan
+        .into_iter()
+        .map(|event| serde_json::from_value::<AcpUiEventVm>(serde_json::to_value(event)?))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let timeline_projection = build_acp_timeline_projection(
+        &projection_events,
+        &latest_permission_events,
+        session_active,
+    );
+    let session_timing = indexed
+        .timing
+        .map(|timing| serde_json::from_value::<AcpSessionTimingVm>(serde_json::to_value(timing)?))
+        .transpose()?;
+    let session_elapsed_seconds = session_timing
+        .as_ref()
+        .map(|timing| timing.session_elapsed_seconds);
+    let usage = indexed.usage.map(|usage| AcpUsageVm {
+        used: usage.used,
+        size: usage.size,
+        cost_amount_usd: usage.cost_amount_usd,
+        ..AcpUsageVm::default()
+    });
+    Ok(AcpEventScan {
+        events,
+        event_page: AcpEventPageVm {
+            loaded_count: indexed.loaded_semantic_blocks,
+            total: indexed.total_semantic_blocks,
+            oldest_seq: indexed.oldest_seq,
+            newest_seq: indexed.newest_seq,
+            has_older: indexed.has_older,
+            has_newer: indexed.has_newer,
+            oldest_cursor: indexed.oldest_seq.map(format_timeline_cursor),
+            newest_cursor: indexed.newest_seq.map(format_timeline_cursor),
+        },
+        timeline_projection,
+        event_count: indexed.event_count,
+        session_elapsed_seconds,
+        session_timing,
+        latest_permission_events,
+        pending_elicitations,
+        available_commands: indexed.available_commands,
+        usage,
+    })
+}
+
+#[cfg(test)]
 fn merge_confirmed_usage_observation(
     usage: &mut Option<AcpUsageVm>,
     used: Option<u64>,
@@ -4673,6 +4639,7 @@ fn apply_persisted_attempt_token_totals(usage: &mut AcpUsageVm, session: &serde_
         .and_then(|value| value.as_u64());
 }
 
+#[cfg(test)]
 fn apply_recovered_attempt_token_totals(
     usage: &mut AcpUsageVm,
     recovery: &gold_band::acp::usage::AcpAttemptUsageRecovery,
@@ -4687,6 +4654,7 @@ fn apply_recovered_attempt_token_totals(
     usage.total_tokens = recovery.totals.total_tokens;
 }
 
+#[cfg(test)]
 fn parse_timeline_file(
     path: &camino::Utf8Path,
     session_active: bool,
@@ -4881,6 +4849,7 @@ fn raw_equal_ignoring_history_placement_vm(
     without_placement(existing) == without_placement(incoming)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProviderHistoryTurnKeyVm {
     session_id: Option<String>,
@@ -4907,6 +4876,7 @@ struct PlacedProviderHistoryGroupVm {
     items: Vec<AcpUiEventVm>,
 }
 
+#[cfg(test)]
 fn remove_reclassified_local_provider_history_vm(items: &mut Vec<AcpUiEventVm>) {
     let mut local_prompts = HashMap::<Option<String>, Vec<String>>::new();
     for item in items
@@ -4959,6 +4929,7 @@ fn remove_reclassified_local_provider_history_vm(items: &mut Vec<AcpUiEventVm>) 
     });
 }
 
+#[cfg(test)]
 fn has_provider_history_placement_vm(raw: Option<&Value>) -> bool {
     raw.and_then(|raw| raw.get("historyPlacement"))
         .and_then(Value::as_object)
@@ -4976,6 +4947,7 @@ fn is_provider_history_event_vm(event: &AcpUiEventVm) -> bool {
         == Some("providerHistory")
 }
 
+#[cfg(test)]
 fn provider_history_turn_key_vm(event: &AcpUiEventVm) -> Option<ProviderHistoryTurnKeyVm> {
     let raw = event.raw.as_ref()?;
     if raw.get("source").and_then(|value| value.as_str()) != Some("providerHistory") {
@@ -4994,6 +4966,7 @@ fn provider_history_turn_key_vm(event: &AcpUiEventVm) -> Option<ProviderHistoryT
     })
 }
 
+#[cfg(test)]
 fn normalize_provider_history_prompt(value: &str) -> String {
     value
         .replace("\r\n", "\n")
@@ -5176,6 +5149,7 @@ fn provider_history_item_index_vm(event: &AcpUiEventVm) -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn paginate_timeline(
     timeline_path: &camino::Utf8Path,
     all_events: &[AcpUiEventVm],
@@ -5304,6 +5278,7 @@ fn hydrate_timeline_events(
     Ok(())
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct ConversationSemanticBlockRange {
     start: usize,
@@ -5312,6 +5287,7 @@ struct ConversationSemanticBlockRange {
     newest_seq: u64,
 }
 
+#[cfg(test)]
 fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSemanticBlockRange> {
     let mut blocks = Vec::<ConversationSemanticBlockRange>::new();
     let mut activity_start: Option<usize> = None;
@@ -5349,6 +5325,7 @@ fn conversation_semantic_blocks(events: &[AcpUiEventVm]) -> Vec<ConversationSema
 
 const ACTIVITY_DETAIL_INITIAL_LIMIT: usize = 40;
 
+#[cfg(test)]
 fn compact_selected_semantic_blocks(
     events: &[AcpUiEventVm],
     blocks: &[ConversationSemanticBlockRange],
@@ -5372,6 +5349,7 @@ fn compact_selected_semantic_blocks(
     selected
 }
 
+#[cfg(test)]
 fn activity_summary_event(
     block: &ConversationSemanticBlockRange,
     audit_events: &[&AcpUiEventVm],
@@ -5713,6 +5691,7 @@ pub fn acp_tool_detail_vm_for_attempt(
     Ok(AcpToolDetailVm { event: detail })
 }
 
+#[cfg(test)]
 fn semantic_block_range(
     events: &[AcpUiEventVm],
     start: usize,
@@ -5735,6 +5714,7 @@ fn semantic_block_range(
     }
 }
 
+#[cfg(test)]
 fn is_conversation_semantic_event(
     event: &AcpUiEventVm,
     resolved_elicitation_ids: &HashSet<String>,
@@ -5761,6 +5741,7 @@ fn is_conversation_semantic_event(
     )
 }
 
+#[cfg(test)]
 fn elicitation_id_from_event(event: &AcpUiEventVm) -> Option<String> {
     event
         .raw
@@ -5788,6 +5769,7 @@ fn is_conversation_activity_event(event: &AcpUiEventVm) -> bool {
 #[derive(Debug, Clone, Default)]
 struct AgentEventMetaVm {
     agent_launch: bool,
+    #[cfg(test)]
     tool_name: Option<String>,
 }
 
@@ -5804,6 +5786,7 @@ fn agent_event_meta_vm(event: &AcpUiEventVm) -> AgentEventMetaVm {
             .get("launchedAgentExecutionId")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| !value.is_empty()),
+        #[cfg(test)]
         tool_name: conversation
             .get("toolName")
             .and_then(serde_json::Value::as_str)
@@ -5930,6 +5913,7 @@ fn build_acp_timeline_projection(
     }
 }
 
+#[cfg(test)]
 fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde_json::Value>> {
     let raw = event.raw.as_ref()?.as_object()?;
     let container = raw
@@ -5943,6 +5927,7 @@ fn tool_raw_input(event: &AcpUiEventVm) -> Option<&serde_json::Map<String, serde
         .or_else(|| raw.get("rawInput").and_then(serde_json::Value::as_object))
 }
 
+#[cfg(test)]
 fn structured_tool_paths(event: &AcpUiEventVm) -> Vec<String> {
     let mut paths = Vec::<String>::new();
     if let Some(input) = tool_raw_input(event) {
@@ -5969,6 +5954,7 @@ fn structured_tool_paths(event: &AcpUiEventVm) -> Vec<String> {
     paths
 }
 
+#[cfg(test)]
 fn normalize_metric_path(path: &str) -> String {
     path.trim()
         .replace('\\', "/")
@@ -5976,6 +5962,7 @@ fn normalize_metric_path(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn latest_session_timing_from_events(all_events: &[AcpUiEventVm]) -> Option<AcpSessionTimingVm> {
     all_events.iter().rev().find_map(|event| {
         event.timing.as_ref().map(|timing| AcpSessionTimingVm {
@@ -6166,15 +6153,9 @@ fn apply_stale_session_completion_fuse_common(
     if prompt_active {
         return Ok(false);
     }
-    let metadata_status = session
-        .get("status")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown");
-    if !is_acp_session_active_status(metadata_status) {
-        return Ok(false);
-    }
     if raw_has_successful_session_close(raw_path) {
-        session["status"] = serde_json::json!("cancelled");
+        session["availability"] = serde_json::json!("established");
+        session["latestTurnStatus"] = serde_json::json!("cancelled");
         session["stopReason"] = serde_json::json!("cancelled");
         session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
         return Ok(true);
@@ -6185,10 +6166,13 @@ fn apply_stale_session_completion_fuse_common(
     if !node_completed {
         return Ok(false);
     }
+    if !matches!(session_metadata_status(session), "idle" | "unknown") {
+        return Ok(false);
+    }
     if node_completed && pid_path.exists() {
         let _ = fs::remove_file(pid_path.as_std_path());
     }
-    session["status"] = serde_json::json!("completed");
+    session["latestTurnStatus"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
         session["stopReason"] = serde_json::json!("end_turn");
     }
@@ -6249,6 +6233,7 @@ fn parse_epoch_timestamp(value: &str) -> Option<u64> {
     value.trim_end_matches('Z').parse::<u64>().ok()
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct AcpSessionElapsedState {
     elapsed_seconds: u64,
@@ -6261,6 +6246,7 @@ struct AcpSessionElapsedState {
     user_wait_seconds: u64,
 }
 
+#[cfg(test)]
 impl AcpSessionElapsedState {
     fn observe_event(&mut self, event: &AcpUiEventVm) {
         if is_gold_band_user_prompt_event(event) {
@@ -6416,6 +6402,7 @@ impl AcpSessionElapsedState {
     }
 }
 
+#[cfg(test)]
 fn compacted_wait_started_at(event: &AcpUiEventVm, ended_at: u64) -> Option<u64> {
     let started_at = event
         .started_at
@@ -6434,6 +6421,7 @@ fn is_gold_band_user_prompt_event(event: &AcpUiEventVm) -> bool {
             == Some("goldBandPrompt")
 }
 
+#[cfg(test)]
 fn is_session_elapsed_progress_event(event: &AcpUiEventVm) -> bool {
     let session_update = event
         .raw
@@ -6513,6 +6501,7 @@ fn is_session_timeline_event(event: &AcpUiEventVm) -> bool {
     )
 }
 
+#[cfg(test)]
 fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
     let mut error_count = 0usize;
     let mut last_error = None;
@@ -6553,6 +6542,7 @@ fn scan_acp_diagnostics(path: &camino::Utf8Path) -> Result<AcpDiagnosticsScan> {
 
 /// Extract system prompt append from the beginning of the raw ACP frame file.
 /// Only reads the first 500 lines — system prompt is carried by the first session lifecycle frame.
+#[cfg(test)]
 fn extract_system_prompt_append(path: &camino::Utf8Path) -> Option<String> {
     if !path.exists() {
         return None;
@@ -6769,6 +6759,120 @@ fn effective_acp_session_status(
     }
 }
 
+fn session_metadata_status(session: &serde_json::Value) -> &str {
+    let availability = session
+        .get("availability")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    if availability.eq_ignore_ascii_case("closing") {
+        return "closing";
+    }
+    match session
+        .get("latestTurnStatus")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+    {
+        "completed" => "completed",
+        "cancelled" => "cancelled",
+        "failed" => "failed",
+        _ if matches!(availability, "established" | "restorable") => "idle",
+        _ => "unknown",
+    }
+}
+
+fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
+    gold_band::acp::events::load_session_metadata_value(path, None).ok()
+}
+
+fn run_worktree_state_optional(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+) -> Result<Option<gold_band::runtime::RunWorktreeState>> {
+    let path = app.paths.run_file(task_id, run_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(read_json::<RunState>(&path)?.worktree)
+}
+
+fn session_worktree_path(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    dynamic_graph: Option<&DynamicGraphState>,
+    dynamic_node_id: Option<&str>,
+) -> Option<String> {
+    let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
+        (None, None) => return run_worktree.map(|worktree| worktree.path.to_string()),
+        (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
+        _ => return None,
+    };
+    let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
+    workspace_worktree_path_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+}
+
+fn workspace_worktree_path_by_id(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    workspaces: &[gold_band::dynamic::WorkspaceState],
+    workspace_id: &str,
+) -> Option<String> {
+    let workspace = workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)?;
+    workspace_worktree_path(run_worktree, workspace)
+}
+
+fn workspace_worktree_path(
+    run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
+    workspace: &gold_band::dynamic::WorkspaceState,
+) -> Option<String> {
+    match workspace.kind {
+        WorkspaceKind::Worktree
+            if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
+        {
+            Some(workspace.path.to_string())
+        }
+        WorkspaceKind::Worktree => None,
+        WorkspaceKind::Main => run_worktree
+            .filter(|worktree| {
+                gold_band::storage::normalize_workspace_path(&worktree.path)
+                    == gold_band::storage::normalize_workspace_path(&workspace.path)
+            })
+            .map(|worktree| worktree.path.to_string()),
+    }
+}
+
+fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
+    let legacy_status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(status) = legacy_status else {
+        return session;
+    };
+    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
+    let session_established = session
+        .get("sessionId")
+        .or_else(|| session.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    session["availability"] = serde_json::json!(match normalized.as_str() {
+        "closing" | "cancelling" | "cancel-requested" => "closing",
+        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
+        _ if session_established => "established",
+        _ => "unavailable",
+    });
+    session["latestTurnStatus"] = serde_json::json!(match normalized.as_str() {
+        "completed" | "complete" => "completed",
+        "cancelled" | "canceled" => "cancelled",
+        "failed" | "failure" | "error" | "killed" => "failed",
+        _ => "none",
+    });
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session
+}
+
 fn is_acp_session_stopping_status(status: &str) -> bool {
     matches!(
         status
@@ -6781,6 +6885,10 @@ fn is_acp_session_stopping_status(status: &str) -> bool {
 }
 
 fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfigVm> {
+    let catalog_observed_at = session
+        .get("configCatalogObservedAt")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     let models = session.get("models").cloned();
     let modes = session.get("modes").cloned();
     let config_options = session.get("configOptions").cloned();
@@ -6839,6 +6947,7 @@ fn acp_session_config_vm(session: &serde_json::Value) -> Option<AcpSessionConfig
     }
 
     Some(AcpSessionConfigVm {
+        catalog_observed_at,
         model_override_id,
         permission_mode_override_id,
         config_option_overrides,
@@ -6922,6 +7031,7 @@ fn mode_display_name(modes: Option<&serde_json::Value>, mode_id: &str) -> Option
         .map(str::to_string)
 }
 
+#[cfg(test)]
 fn is_session_update(event: &AcpUiEventVm, session_update: &str) -> bool {
     event
         .raw
@@ -6950,6 +7060,7 @@ fn canonical_permission_request_id(value: &str) -> String {
     current.to_string()
 }
 
+#[cfg(test)]
 fn insert_latest_permission_event(
     latest_permission_events: &mut HashMap<String, AcpUiEventVm>,
     event: &AcpUiEventVm,
@@ -7017,6 +7128,7 @@ fn permission_vm_from_event(event: &AcpUiEventVm) -> AcpPermissionRequestVm {
     }
 }
 
+#[cfg(test)]
 fn pending_elicitation_vms(
     events: &[AcpUiEventVm],
     session_active: bool,
@@ -7547,7 +7659,7 @@ fn count_round_outputs(
 
 fn workflow_node_labels(app: &App, task_id: &str, run_id: &str) -> HashMap<String, String> {
     read_json::<WorkflowDsl>(&app.paths.workflow_snapshot_file(task_id, run_id))
-        .or_else(|_| read_json::<WorkflowDsl>(&app.paths.workflow_file(task_id)))
+        .or_else(|_| app.task_workflow(task_id))
         .map(|workflow| {
             workflow
                 .nodes
@@ -7733,13 +7845,19 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use gold_band::app::App;
+    use gold_band::domain::{PauseReason, RunStatus, VERSION};
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn app_config_vm_exposes_workspace_layout_contract() {
         let vm = app_config_vm(&RuntimeConfig::default());
         let value = serde_json::to_value(vm).unwrap();
 
+        assert_eq!(value["conversationInlineContentMaxBytes"], 64_000);
+        assert_eq!(value["conversationInlineImageMaxBytes"], 4 * 1024 * 1024);
+        assert_eq!(value["conversationInlineImageMaxDimension"], 2_560);
         assert_eq!(value["workspaceLayout"]["shellMinWidth"], 480);
         assert_eq!(value["workspaceLayout"]["shellMinHeight"], 680);
         assert_eq!(value["workspaceLayout"]["rightWorkspace"]["minWidth"], 288);
@@ -7751,7 +7869,6 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["rightWorkspace"]["file"],
             json!({
-                "preferredWidth": 760,
                 "splitMinWidth": 500,
                 "treeDefaultWidth": 280,
                 "treeMinWidth": 200,
@@ -7765,6 +7882,61 @@ mod tests {
         assert_eq!(
             value["workspaceLayout"]["workflowCanvas"]["windowMinWidth"],
             640
+        );
+    }
+
+    #[test]
+    fn run_detail_only_exposes_progress_for_the_authoritative_runtime_revision() {
+        let temp = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "t0".to_string(),
+            updated_at: "t1".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: None,
+            current_node: None,
+            current_attempt: None,
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::ProcessInterrupted),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: RuntimeExecutionState {
+                revision: 7,
+                phase: RuntimeExecutionPhase::Paused,
+                locator: None,
+                recovery_candidate_token: None,
+                updated_at: "t1".to_string(),
+            },
+        };
+        write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 6, "status": "running" }),
+        )
+        .unwrap();
+
+        let stale = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert!(stale.progress.is_none());
+
+        write_json(
+            &app.paths.run_progress_file("task-001", "run-001"),
+            &json!({ "runtimeRevision": 7, "status": "paused" }),
+        )
+        .unwrap();
+        let current = run_detail_vm(&app, "task-001", "run-001").unwrap();
+        assert_eq!(
+            current
+                .progress
+                .as_ref()
+                .and_then(|value| value["status"].as_str()),
+            Some("paused")
         );
     }
 
@@ -8159,7 +8331,11 @@ mod tests {
         )
     }
 
-    fn plan_permission_event_at(request_id: &str, status: &str, timestamp: u64) -> AcpUiEventVm {
+    fn multi_option_permission_event_at(
+        request_id: &str,
+        status: &str,
+        timestamp: u64,
+    ) -> AcpUiEventVm {
         acp_event_at(
             request_id,
             "permissionRequest",
@@ -8168,8 +8344,8 @@ mod tests {
             Some(json!({
                 "requestId": request_id,
                 "options": [
-                    { "optionId": "keep-planning", "name": "继续规划", "kind": "keep_planning" },
-                    { "optionId": "accept-plan", "name": "Accept plan", "kind": "accept" }
+                    { "optionId": "allow-once", "name": "Allow once", "kind": "allow_once" },
+                    { "optionId": "reject-once", "name": "Reject", "kind": "reject_once" }
                 ]
             })),
         )
@@ -8355,7 +8531,7 @@ mod tests {
             &app.paths
                 .dynamic_graph_file(task_id, run_id, round_id, "ai-dynamic1", "attempt-001"),
             &json!({
-                "version": "0.1",
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": {
                     "version": "0.1",
                     "id": "dynamic-run-001",
@@ -8472,11 +8648,8 @@ mod tests {
 
     #[test]
     fn round_graph_connects_ai_dynamic_exit_to_next_workflow_node() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-dynamic-round-graph-test-{}",
-            std::process::id()
-        ));
-        let repo_root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let directory = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
         let app = App::new(repo_root);
         seed_dynamic_round_graph_fixture(&app);
 
@@ -8517,8 +8690,6 @@ mod tests {
             dynamic_exit_sequence < accept_sequence,
             "AI-DYNAMIC exit should rank before the next workflow node"
         );
-
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -8532,7 +8703,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8545,7 +8716,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("completed")
         );
         assert!(!pid_path.exists());
@@ -8563,7 +8736,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8575,7 +8748,7 @@ mod tests {
         .unwrap();
 
         assert!(!fused);
-        assert_eq!(session["status"], "running");
+        assert_eq!(session["latestTurnStatus"], "none");
         assert!(session["stopReason"].is_null());
 
         fs::remove_dir_all(dir).unwrap();
@@ -8607,7 +8780,7 @@ mod tests {
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
         fs::write(pid_path.as_std_path(), "12345").unwrap();
-        let mut session = json!({ "status": "running" });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8620,8 +8793,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 
@@ -8638,7 +8813,7 @@ mod tests {
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
         let pid_path = attempt_dir.join("provider.pid");
         let raw_path = attempt_dir.join("acp.raw.jsonl");
-        let mut session = json!({ "status": "failed" });
+        let mut session = json!({ "availability": "restorable", "latestTurnStatus": "failed" });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8651,7 +8826,9 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("failed")
         );
 
@@ -8777,7 +8954,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8790,7 +8967,9 @@ mod tests {
 
         assert!(fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(
@@ -8825,7 +9004,7 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
-        let mut session = json!({ "status": "running", "stopReason": null });
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
 
         let fused = apply_stale_session_completion_fuse_common(
             &pid_path,
@@ -8838,8 +9017,10 @@ mod tests {
 
         assert!(!fused);
         assert_eq!(
-            session.get("status").and_then(|value| value.as_str()),
-            Some("running")
+            session
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
+            Some("none")
         );
         assert!(pid_path.exists());
 
@@ -9284,8 +9465,8 @@ mod tests {
         let elapsed = elapsed_for(
             vec![
                 gold_band_prompt_at(100),
-                plan_permission_event_at("plan-permission-1", "pending", 110),
-                plan_permission_event_at("plan-permission-1", "selected", 160),
+                multi_option_permission_event_at("permission-1", "pending", 110),
+                multi_option_permission_event_at("permission-1", "selected", 160),
                 text_event_at(180),
             ],
             false,
@@ -10002,6 +10183,149 @@ mod tests {
     }
 
     #[test]
+    fn session_worktree_projection_uses_the_current_physical_workspace() {
+        let outer_path = Utf8PathBuf::from("C:/GoldBand/worktrees/outer");
+        let child_path = Utf8PathBuf::from("D:/repo/.gold-band/worktrees/child");
+        let run_worktree = gold_band::runtime::RunWorktreeState {
+            path: outer_path.clone(),
+            branch: "gb-conversation-outer".to_string(),
+            fork_commit: "abc123".to_string(),
+        };
+        let workspace = |id: &str, kind, path: Utf8PathBuf| gold_band::dynamic::WorkspaceState {
+            version: VERSION.to_string(),
+            id: id.to_string(),
+            dynamic_run_id: "dynamic-run-001".to_string(),
+            kind,
+            ownership: match kind {
+                WorkspaceKind::Main => gold_band::dynamic::WorkspaceOwnership::User,
+                WorkspaceKind::Worktree => gold_band::dynamic::WorkspaceOwnership::Runtime,
+            },
+            repo_root: Utf8PathBuf::from("D:/repo"),
+            path,
+            branch: (kind == WorkspaceKind::Worktree).then(|| "gb-dynamic-child".to_string()),
+            parent_workspace_id: (kind == WorkspaceKind::Worktree)
+                .then(|| "workspace-main".to_string()),
+            created_by_group_id: (kind == WorkspaceKind::Worktree).then(|| "group-001".to_string()),
+            fork_commit: "abc123".to_string(),
+            checkpoint_commit: None,
+            status: gold_band::dynamic::WorkspaceStatus::Active,
+            created_at: "t0".to_string(),
+            updated_at: "t0".to_string(),
+        };
+
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace(
+                    "workspace-child",
+                    WorkspaceKind::Worktree,
+                    child_path.clone()
+                ),
+            )
+            .as_deref(),
+            Some(child_path.as_str()),
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
+            )
+            .as_deref(),
+            Some(outer_path.as_str()),
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                Some(&run_worktree),
+                &workspace(
+                    "workspace-main",
+                    WorkspaceKind::Main,
+                    Utf8PathBuf::from("D:/repo")
+                ),
+            ),
+            None,
+        );
+        assert_eq!(
+            workspace_worktree_path(
+                None,
+                &workspace(
+                    "workspace-main",
+                    WorkspaceKind::Main,
+                    Utf8PathBuf::from("D:/repo")
+                ),
+            ),
+            None,
+        );
+        assert_eq!(
+            workspace_worktree_path_by_id(
+                Some(&run_worktree),
+                &[
+                    workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
+                    workspace(
+                        "workspace-child",
+                        WorkspaceKind::Worktree,
+                        child_path.clone()
+                    ),
+                ],
+                "workspace-child",
+            )
+            .as_deref(),
+            Some(child_path.as_str()),
+        );
+        let mut released_child = workspace(
+            "workspace-child",
+            WorkspaceKind::Worktree,
+            child_path.clone(),
+        );
+        released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
+        assert_eq!(
+            workspace_worktree_path(Some(&run_worktree), &released_child),
+            None,
+        );
+        assert_eq!(
+            session_worktree_path(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            None,
+        );
+    }
+
+    #[test]
+    fn acp_session_vm_ignores_unavailable_runtime_control_placeholder() {
+        let dir = tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap());
+        let snapshot_path = app.paths.acp_snapshot_file(
+            "task-placeholder",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+        );
+        write_json(
+            &snapshot_path,
+            &json!({
+                "availability": "unavailable",
+                "latestTurnStatus": "none",
+                "restored": false,
+                "createdAt": "1787036946Z",
+                "runtimeControlTimelineScanComplete": true
+            }),
+        )
+        .unwrap();
+
+        let session = acp_session_vm(
+            &app,
+            "task-placeholder",
+            "run-001",
+            "round-001",
+            "direct-agent",
+            "attempt-001",
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(session.is_none(), "unexpected ACP session VM: {session:#?}");
+    }
+
+    #[test]
     fn dynamic_acp_session_vm_keeps_attempt_cwd_separate_from_provider_cwd() {
         let dir =
             std::env::temp_dir().join(format!("gb-dynamic-session-cwd-{}", std::process::id()));
@@ -10458,6 +10782,9 @@ mod tests {
                     "_meta": { "goldBandConversation": {
                         "branchId": "root",
                         "launchedAgentExecutionId": agent_execution_id,
+                        "toolName": "Agent"
+                    }, "agentTranscript": {
+                        "agentLaunch": true,
                         "toolName": "Agent"
                     } },
                     "rawInput": { "run_in_background": true, "description": id }

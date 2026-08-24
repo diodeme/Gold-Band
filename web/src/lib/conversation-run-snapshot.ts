@@ -240,9 +240,10 @@ export function isConversationActiveStatus(status?: string | null) {
 }
 
 export function isConversationActiveLifecycle(lifecycle?: ConversationAttemptLifecycleVm | null) {
-  return Boolean(lifecycle?.runtime.active || lifecycle?.acp.active || lifecycle?.acp.stopping)
-    || isConversationActiveStatus(lifecycle?.runtime.status)
-    || isConversationActiveStatus(lifecycle?.acp.status);
+  if (!lifecycle) return false;
+  return lifecycle.runtime.active
+    || lifecycle.acp.liveTurnActivity !== 'idle'
+    || lifecycle.acp.stopping;
 }
 
 function isConversationActiveLeaf(leaf: ConversationSessionLeafVm) {

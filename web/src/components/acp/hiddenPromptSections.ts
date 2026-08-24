@@ -1,6 +1,14 @@
+import type { AcpUiEventVm } from "@/types";
+
 export type ParsedPromptPart =
   | { type: "visible"; text: string }
-  | { type: "hidden"; title?: string; text: string };
+  | { type: "hidden"; title?: string; text: string; show: boolean };
+
+export interface HiddenPromptEventSectionLocator {
+  eventId: string;
+  eventSeq: number;
+  partIndex: number;
+}
 
 const HIDDEN_CLOSE = "</hidden>";
 
@@ -48,11 +56,25 @@ export function parseGoldBandHiddenSections(content: string): ParsedPromptPart[]
       type: "hidden",
       title: hiddenTitleFromTag(openingTag),
       text: content.slice(openEnd + 1, closeStart).replace(/<\\\/hidden>/g, HIDDEN_CLOSE),
+      show: hiddenShowFromTag(openingTag),
     });
     cursor = closeEnd;
   }
 
   return parts.length > 0 ? parts : [{ type: "visible", text: content }];
+}
+
+export function resolveGoldBandHiddenSection(
+  events: AcpUiEventVm[],
+  locator: HiddenPromptEventSectionLocator,
+) {
+  const event = events.find((candidate) => (
+    candidate.id === locator.eventId
+    && (candidate.endedSeq ?? candidate.seq) === locator.eventSeq
+  ));
+  if (!event?.content) return null;
+  const part = parseGoldBandHiddenSections(event.content)[locator.partIndex];
+  return part?.type === "hidden" ? part : null;
 }
 
 function pushVisible(parts: ParsedPromptPart[], text: string) {
@@ -69,4 +91,8 @@ function hiddenTitleFromTag(tag: string): string | undefined {
   const match = tag.match(/\btitle\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
   const title = match?.[1] ?? match?.[2];
   return title?.trim() || undefined;
+}
+
+function hiddenShowFromTag(tag: string) {
+  return !/\bshow\s*=\s*(?:"false"|'false'|false)(?=\s|>)/i.test(tag);
 }

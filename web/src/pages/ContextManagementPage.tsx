@@ -20,6 +20,7 @@ import { EntitySection } from '@/components/EntitySection';
 import { McpServerCard } from '@/components/McpServerCard';
 import { EmptyState, Page, PageContent, PageHeader } from '@/components/PageScaffold';
 import { SkillAgentOverflow } from '@/components/SkillAgentOverflow';
+import { SkillSyncTargetSelector } from '@/components/SkillSyncTargetSelector';
 import { Markdown } from '@/components/prompt-kit/markdown';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -709,7 +710,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
             ]}
             actions={
               <>
-                <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <span className="flex items-center gap-1.5 text-ui-caption text-muted-foreground">
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-green-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'healthy').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-yellow-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'auth_required').length}</span>
                   <span className="flex items-center gap-0.5"><span className="size-1.5 rounded-full bg-red-500" />{mcpServers.filter((s) => mcpHealth[s.id]?.status === 'unhealthy').length}</span>
@@ -884,16 +885,16 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-semibold">{skill.name}</span>
-                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
+                            <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">{skill.agentSource || '.gold-band'}</Badge>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{skill.description || <span className="italic text-muted-foreground/50">{t('contextManagement.skills.noDescription', '无描述')}</span>}</p>
                         </div>
-                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
+                        <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{skill.source === 'global' ? t('contextManagement.skills.globalBadge', 'Global') : t('contextManagement.skills.projectBadge', 'Project')}</Badge>
                       </div>
                     </div>
                     <div className="mt-auto flex h-16 shrink-0 items-center justify-between gap-2 border-t border-border/30 px-2 py-1">
                       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden px-2">
-                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-[11px] text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
+                        {sourceAgents.length === 0 ? <span className="max-w-20 shrink-0 truncate text-ui-caption text-muted-foreground">{skill.agentSource || '.gold-band'}</span> : null}
                         <SkillAgentOverflow
                           sourceAgents={sourceAgents}
                           syncAgents={syncAgents}
@@ -1037,7 +1038,7 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
           <SheetHeader className="border-b px-5 py-4">
             <SheetTitle className="flex items-center gap-2">
               <span className="truncate">{toolsSheetServer?.name ?? ''}</span>
-              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
+              <Badge variant="secondary" className="shrink-0 px-1.5 py-0 text-ui-micro font-normal">{toolsSheetServer?.transport === 'stdio' ? 'Stdio' : toolsSheetServer?.transport === 'sse' ? 'SSE' : 'HTTP'}</Badge>
             </SheetTitle>
           </SheetHeader>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
@@ -1066,8 +1067,8 @@ export function ContextManagementPage({ agentRegistry, onAgentRegistryChange }: 
                       </div>
                       {tool.inputSchema && typeof tool.inputSchema === 'object' && Object.keys(tool.inputSchema as Record<string, unknown>).length > 0 && (
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
-                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-[11px] leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
+                          <summary className="cursor-pointer text-ui-caption text-muted-foreground hover:text-foreground">{t('contextManagement.mcp.parameterSchema', '参数 Schema')}</summary>
+                          <pre className="mt-1.5 overflow-x-auto rounded-md bg-muted/50 px-3 py-2 font-mono text-ui-caption leading-relaxed">{JSON.stringify(tool.inputSchema, null, 2)}</pre>
                         </details>
                       )}
                     </div>
@@ -1239,32 +1240,36 @@ function SkillSheet({
             </div>
           ) : (
             <>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
-                <select
-                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              <div className="space-y-1">
+                <span id="skill-scope-label" className="text-sm font-medium">{t('contextManagement.scope', 'Scope')}</span>
+                <Select
                   value={mode === 'edit' && editWorkspacePath ? `project:${editWorkspacePath}` : form.source}
-                  onChange={(event) => setForm((current) => ({ ...current, source: event.target.value }))}
+                  onValueChange={(source) => setForm((current) => ({ ...current, source }))}
                   disabled={mode === 'edit'}
                 >
-                  {mode === 'edit' && editWorkspacePath ? (
-                    <option value={`project:${editWorkspacePath}`}>
-                      {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
-                    </option>
-                  ) : (
-                    <>
-                      {workspaces.map((workspace) => (
-                        <option key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</option>
-                      ))}
-                      <option value="global">{t('contextManagement.skills.globalBadge', 'Global')}</option>
-                      {workspaces.length === 0 && <option value="project">{t('contextManagement.skills.projectBadge', 'Project')}</option>}
-                    </>
-                  )}
-                </select>
+                  <SelectTrigger className="h-10 w-full" aria-labelledby="skill-scope-label">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {mode === 'edit' && editWorkspacePath ? (
+                      <SelectItem value={`project:${editWorkspacePath}`}>
+                        {t('contextManagement.skills.projectOption', { name: workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath, defaultValue: `${workspaces.find((workspace) => workspace.workspacePath === editWorkspacePath)?.name ?? editWorkspacePath} (project)` })}
+                      </SelectItem>
+                    ) : (
+                      <>
+                        {workspaces.map((workspace) => (
+                          <SelectItem key={workspace.projectId} value={`project:${workspace.workspacePath}`}>{t('contextManagement.skills.projectOption', { name: workspace.name, defaultValue: `${workspace.name} (project)` })}</SelectItem>
+                        ))}
+                        <SelectItem value="global">{t('contextManagement.skills.globalBadge', 'Global')}</SelectItem>
+                        {workspaces.length === 0 && <SelectItem value="project">{t('contextManagement.skills.projectBadge', 'Project')}</SelectItem>}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
                 <p className="text-xs text-muted-foreground">
                   {currentSkillStorageHint}
                 </p>
-              </label>
+              </div>
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.name', '名称')}</span>
                 <input className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
@@ -1273,24 +1278,7 @@ function SkillSheet({
                 <span className="text-sm font-medium">{t('contextManagement.skills.description', '描述')}</span>
                 <Textarea className="min-h-24 text-sm leading-relaxed" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
               </label>
-              <label className="block space-y-1">
-                <span className="text-sm font-medium">{t('contextManagement.skills.syncTargets', '同步到')}</span>
-                {availableSyncAgents.length > 0 ? (
-                  <div className="flex flex-wrap gap-x-4 gap-y-2">
-                    {availableSyncAgents.map((agent) => (
-                      <label key={agent.agentType} className="flex items-center gap-1.5">
-                        <input type="checkbox" checked={syncTargets.includes(agent.agentType)} onChange={(event) => {
-                          setSyncTargets((current) => event.target.checked ? [...current, agent.agentType] : current.filter((target) => target !== agent.agentType));
-                        }} />
-                        <img src={agentIconSrc(agent.iconKey)} alt="" className={agentIconClass(agent.iconKey, 'size-4')} />
-                        <span className="text-sm">{agent.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">{t('contextManagement.skills.noConfiguredAgents', 'No configured agent available for sync.')}</p>
-                )}
-              </label>
+              <SkillSyncTargetSelector agents={availableSyncAgents} value={syncTargets} onValueChange={setSyncTargets} />
               <label className="block space-y-1">
                 <span className="text-sm font-medium">{t('contextManagement.skills.body', '正文 (Markdown)')}</span>
                 <textarea className="min-h-72 w-full rounded-md border bg-muted/30 p-3 text-sm leading-relaxed" value={form.body} onChange={(event) => setForm((current) => ({ ...current, body: event.target.value }))} />
@@ -1638,7 +1626,7 @@ function ImportResultContent({ result, error, onClose, onEdit }: {
                       {record.fallbacks.length ? (
                         <div className="mt-1 flex flex-wrap gap-1">
                           {record.fallbacks.map((fb) => (
-                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+                            <Badge key={fb} variant="outline" className="px-1.5 py-0 text-ui-micro font-normal text-muted-foreground">
                               {t(`contextManagement.importFallback.${fb}`)}
                             </Badge>
                           ))}

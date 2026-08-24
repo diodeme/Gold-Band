@@ -1,8 +1,6 @@
 use anyhow::{Result, anyhow};
 use serde::de::DeserializeOwned;
 
-const JSON_ARTIFACT_OUTPUT_SEARCH_LIMIT: usize = 5;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonArtifactSpan {
     pub json_text: String,
@@ -18,14 +16,8 @@ pub fn artifact_uses_json_output(name: &str) -> bool {
     name.ends_with("-result")
 }
 
-pub fn json_artifact_text_from_outputs(outputs: &[String], fallback: &str) -> Option<String> {
-    outputs
-        .iter()
-        .rev()
-        .filter(|output| !output.trim().is_empty())
-        .take(JSON_ARTIFACT_OUTPUT_SEARCH_LIMIT)
-        .find_map(|output| json_object_text(output))
-        .or_else(|| json_object_text(fallback))
+pub fn json_artifact_text(content: &str) -> Option<String> {
+    json_object_text(content)
 }
 
 pub fn json_artifact_span(content: &str) -> Option<JsonArtifactSpan> {
@@ -254,8 +246,7 @@ fn has_same_display_span(span: &JsonArtifactSpan, spans: &[JsonArtifactSpan]) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        json_artifact_display_span, json_artifact_span, json_artifact_text_from_outputs,
-        parse_json_artifact,
+        json_artifact_display_span, json_artifact_span, json_artifact_text, parse_json_artifact,
     };
 
     #[derive(Debug, serde::Deserialize)]
@@ -275,15 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn extracts_json_from_outputs_before_fallback() {
-        let outputs = vec![
-            "noise".to_string(),
-            "{\"result\":false}".to_string(),
-            "{\"result\":true}".to_string(),
-        ];
-
+    fn extracts_json_from_single_runtime_message() {
         assert_eq!(
-            json_artifact_text_from_outputs(&outputs, "{\"result\":false}"),
+            json_artifact_text("explanation\n{\"result\":true}"),
             Some("{\"result\":true}".to_string())
         );
     }
@@ -381,12 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_json_text_extraction_ignores_invalid_json() {
-        let outputs = vec!["hello\n{\"a\":\"unterminated}".to_string()];
-
-        assert_eq!(
-            json_artifact_text_from_outputs(&outputs, "{\"result\":false}"),
-            Some("{\"result\":false}".to_string())
-        );
+    fn runtime_json_text_extraction_rejects_invalid_final_message() {
+        assert_eq!(json_artifact_text("hello\n{\"a\":\"unterminated}"), None);
     }
 }

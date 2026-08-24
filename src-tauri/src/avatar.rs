@@ -3,12 +3,16 @@ use std::fs;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
+use gold_band::config::{
+    AvatarPreference, AvatarShapePreference, PersonalizationAvatarShape, PersonalizationPreference,
+};
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-const AVATAR_STORE_VERSION: u32 = 1;
+const AVATAR_STORE_VERSION: u32 = 2;
+const PERSONALIZATION_AVATAR_STORE_VERSION: u32 = 2;
 const MAX_RECENT_AVATARS: usize = 10;
 const MAX_AVATAR_BYTES: usize = 1024 * 1024;
 
@@ -139,6 +143,79 @@ impl AvatarStore {
 pub fn load_avatar_preferences(root: &Utf8Path) -> Result<AvatarPreferencesVm, AvatarError> {
     let store = load_store(root)?;
     Ok(avatar_preferences_vm(root, &store))
+}
+
+pub fn load_resolved_avatar_preferences(
+    root: &Utf8Path,
+    personalization: &PersonalizationPreference,
+) -> Result<AvatarPreferencesVm, AvatarError> {
+    let mut preferences = load_avatar_preferences(root)?;
+    resolve_avatar_profile(&mut preferences.agent, &personalization.avatars.agent);
+    resolve_avatar_profile(&mut preferences.user, &personalization.avatars.user);
+    Ok(preferences)
+}
+
+pub fn legacy_avatar_personalization(
+    root: &Utf8Path,
+    personalization: &mut PersonalizationPreference,
+) -> Result<bool, AvatarError> {
+    let store = load_store(root)?;
+    if store.version >= PERSONALIZATION_AVATAR_STORE_VERSION {
+        return Ok(false);
+    }
+    migrate_legacy_avatar_profile(&store.agent, &mut personalization.avatars.agent);
+    migrate_legacy_avatar_profile(&store.user, &mut personalization.avatars.user);
+    Ok(true)
+}
+
+pub fn complete_legacy_avatar_personalization(root: &Utf8Path) -> Result<(), AvatarError> {
+    let mut store = load_store(root)?;
+    store.version = PERSONALIZATION_AVATAR_STORE_VERSION;
+    persist_store(root, &store)
+}
+
+fn migrate_legacy_avatar_profile(
+    profile: &AvatarProfileStore,
+    personalization: &mut gold_band::config::AvatarPersonalization,
+) {
+    personalization.image =
+        profile
+            .selected_avatar_id
+            .as_ref()
+            .map_or(AvatarPreference::Theme, |asset_id| AvatarPreference::User {
+                asset_id: asset_id.clone(),
+            });
+    personalization.shape = AvatarShapePreference::Custom {
+        value: personalization_shape(profile.shape),
+    };
+}
+
+fn resolve_avatar_profile(
+    profile: &mut AvatarProfileVm,
+    personalization: &gold_band::config::AvatarPersonalization,
+) {
+    profile.selected_avatar_id = match &personalization.image {
+        AvatarPreference::Theme => None,
+        AvatarPreference::User { asset_id } => profile
+            .recent_avatars
+            .iter()
+            .any(|avatar| &avatar.id == asset_id)
+            .then(|| asset_id.clone()),
+    };
+    profile.shape = match personalization.shape {
+        AvatarShapePreference::Theme => AvatarShape::Circle,
+        AvatarShapePreference::Custom { value } => match value {
+            PersonalizationAvatarShape::Circle => AvatarShape::Circle,
+            PersonalizationAvatarShape::Square => AvatarShape::Square,
+        },
+    };
+}
+
+fn personalization_shape(shape: AvatarShape) -> PersonalizationAvatarShape {
+    match shape {
+        AvatarShape::Circle => PersonalizationAvatarShape::Circle,
+        AvatarShape::Square => PersonalizationAvatarShape::Square,
+    }
 }
 
 pub fn save_avatar_image(

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -88,11 +88,16 @@ vi.mock('@/components/workspace/source-control/source-control-store', async () =
   };
 });
 
-import { RightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { RightWorkspaceProvider as BaseRightWorkspaceProvider } from '@/components/workspace/right-workspace-context';
 import { SourceControlWorkspacePanel } from '@/components/workspace/source-control/SourceControlWorkspacePanel';
 import { sourceControlStore } from '@/components/workspace/source-control/source-control-store';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function RightWorkspaceProvider({ children }: { children: ReactNode }) {
+  return <TooltipProvider><BaseRightWorkspaceProvider>{children}</BaseRightWorkspaceProvider></TooltipProvider>;
+}
 
 beforeEach(() => {
   sessionRuntime.listeners.clear();
@@ -107,6 +112,28 @@ afterEach(() => {
 });
 
 describe('source control history cache presentation', () => {
+  it('renders workspace numstat beside each tracked changed file', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<RightWorkspaceProvider><SourceControlWorkspacePanel resource={{
+        kind: 'source-control', key: 'source-control:project-1:main', scopeKey: 'draft:default', title: 'Source control', attention: false, projectId: 'project-1', workspacePath: 'D:/repo',
+      }} /></RightWorkspaceProvider>));
+
+      const rows = container.querySelectorAll('[data-source-control-diff-file-row="true"]');
+      expect(rows).toHaveLength(2);
+      expect(rows[0].textContent).toContain('src/app.ts');
+      expect(rows[0].textContent).toContain('+1');
+      expect(rows[0].textContent).toContain('-0');
+      expect(rows[1].textContent).toContain('src/other.ts');
+      expect(rows[1].textContent).toContain('+2');
+      expect(rows[1].textContent).toContain('-1');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('centers the clean workspace state in the remaining Changes area with subdued text', async () => {
     const container = document.createElement('div');
     document.body.append(container);

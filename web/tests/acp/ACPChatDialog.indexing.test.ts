@@ -6,8 +6,10 @@ import {
   latestLiveSessionTimingFromEvents,
   limitAcpEvents,
   mergeAcpEvents,
+  mergeOptimisticSession,
   nextLiveStreamingMarkdownTarget,
   objectiveActivityDescriptor,
+  optimisticUserEvent,
   planAcpStopResponse,
   queryBlocksFromTool,
   restoreAcpLoadedEvents,
@@ -15,8 +17,9 @@ import {
   stabilizeTimelineItems,
   storeAcpLoadedEvents,
   timelineEventKey,
+  timelineRenderKey,
 } from '../../src/components/acp/ACPChatDialog';
-import type { AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
+import type { AcpSessionVm, AcpTimelineProjectionVm, AcpUiEventVm } from '../../src/types';
 
 function event(partial: Partial<AcpUiEventVm> & Pick<AcpUiEventVm, 'id' | 'seq' | 'timestamp' | 'kind'>): AcpUiEventVm {
   return {
@@ -92,6 +95,30 @@ describe('ACPChatDialog branch timeline helpers', () => {
 
     const tool = event({ id: 'tool-1', seq: 12, timestamp: '12Z', kind: 'toolCall', toolCallId: 'tool-1' });
     expect(nextLiveStreamingMarkdownTarget(target, tool, 10)).toBeNull();
+  });
+
+  it('does not start Markdown playback for semantically empty Agent chunks', () => {
+    const placeholder = event({
+      id: 'placeholder',
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'textDelta',
+      content: '\u200b',
+    });
+
+    expect(nextLiveStreamingMarkdownTarget(null, placeholder, 10)).toBeNull();
+  });
+
+  it('omits empty and format-control-only Agent events without stripping visible text', () => {
+    const timeline = buildAcpTimeline([
+      event({ id: 'zero-width', seq: 1, timestamp: '1Z', kind: 'textDelta', content: '\u200b' }),
+      event({ id: 'empty-thought', seq: 2, timestamp: '2Z', kind: 'thoughtDelta', content: '' }),
+      event({ id: 'answer', seq: 3, timestamp: '3Z', kind: 'textDelta', content: 'he\u200bllo' }),
+    ]);
+
+    expect(timeline.map(timelineEventKey)).toEqual(['textDelta-answer']);
+    const answer = timeline[0];
+    expect(answer && !('events' in answer) ? answer.content : null).toBe('he\u200bllo');
   });
 
   it('uses the semantic activity start cursor as the stable activity key', () => {
@@ -229,6 +256,40 @@ describe('ACPChatDialog branch timeline helpers', () => {
     expect(timeline[2]?.kind === 'activityBatch' ? timeline[2].live : null).toBe(true);
   });
 
+  it('scopes message render identity to the conversation event window', () => {
+    const message = event({
+      id: 'provider-reused-id',
+      seq: 1,
+      timestamp: '1Z',
+      kind: 'textDelta',
+      content: 'first session',
+    });
+
+    expect(timelineRenderKey('session-a:root', message)).not.toBe(
+      timelineRenderKey('session-b:root', message),
+    );
+  });
+
+  it('keeps an archived activity terminal when a stale active snapshot arrives after stop', () => {
+    const events = [
+      event({ id: 'thought-1', seq: 1, timestamp: '1Z', kind: 'thoughtDelta', content: 'inspect' }),
+      event({ id: 'read-1', seq: 2, timestamp: '2Z', kind: 'toolCall', toolCallId: 'read-1', status: 'completed', title: 'Read file' }),
+    ];
+    const live = buildAcpTimelineProjection(events, 'running').timeline;
+    const archived = stabilizeTimelineItems(
+      buildAcpTimelineProjection(events, 'cancelled').timeline,
+      live,
+    );
+    const staleActive = stabilizeTimelineItems(
+      buildAcpTimelineProjection(events, 'running').timeline,
+      archived,
+    );
+
+    expect(live[0]?.kind === 'activityBatch' ? live[0].live : null).toBe(true);
+    expect(archived[0]?.kind === 'activityBatch' ? archived[0].live : null).toBe(false);
+    expect(staleActive[0]?.kind === 'activityBatch' ? staleActive[0].live : null).toBe(false);
+  });
+
   it('keeps permission records out of activity audit rows', () => {
     const timeline = buildAcpTimelineProjection([
       event({ id: 'failed', seq: 1, timestamp: '1Z', kind: 'toolCall', toolCallId: 'failed', status: 'failed', title: 'Glob' }),
@@ -325,5 +386,59 @@ describe('ACPChatDialog finite branch event cache', () => {
     storeAcpLoadedEvents(oldKey, [makeEvent('old-event', 'deleted task content')], 360);
     expect(restoreAcpLoadedEvents(newKey, [], 360)).toEqual([]);
     expect(restoreAcpLoadedEvents(oldKey, [], 360)).toHaveLength(1);
+  });
+});
+
+describe('ACPChatDialog optimistic prompt placement', () => {
+  it('keeps a pending prompt at its captured canonical boundary when a response arrives first', () => {
+    const previous = event({
+      id: 'previous-answer',
+      seq: 10,
+      timestamp: '10Z',
+      kind: 'textDelta',
+      content: 'previous turn',
+    });
+    const response = event({
+      id: 'current-answer',
+      seq: 12,
+      timestamp: '12Z',
+      kind: 'textDelta',
+      content: 'current turn response',
+    });
+    const optimistic = optimisticUserEvent('current prompt', 'prompt-1', [], 10);
+    const session = { events: [previous, response] } as AcpSessionVm;
+
+    expect(mergeOptimisticSession(session, [optimistic])?.events.map((item) => item.id)).toEqual([
+      'previous-answer',
+      optimistic.id,
+      'current-answer',
+    ]);
+  });
+
+  it('replaces the anchored optimistic prompt with its canonical promptId without moving the turn', () => {
+    const optimistic = optimisticUserEvent('same prompt text', 'prompt-1', [], 10);
+    const canonical = event({
+      id: 'canonical-prompt',
+      seq: 11,
+      timestamp: '11Z',
+      kind: 'userTextDelta',
+      content: 'same prompt text',
+      raw: { source: 'goldBandPrompt', promptId: 'prompt-1' },
+    });
+    const response = event({
+      id: 'current-answer',
+      seq: 12,
+      timestamp: '12Z',
+      kind: 'textDelta',
+      content: 'current turn response',
+    });
+    const session = { events: [canonical, response] } as AcpSessionVm;
+
+    const merged = mergeOptimisticSession(session, [optimistic]);
+    expect(merged).toBe(session);
+    expect(merged?.events.map((item) => item.id)).toEqual([
+      'canonical-prompt',
+      'current-answer',
+    ]);
   });
 });

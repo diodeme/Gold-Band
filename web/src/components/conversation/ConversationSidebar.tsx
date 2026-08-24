@@ -1,4 +1,4 @@
-import { Pin, PinOff, MessageSquare, Search, Bot, Settings, Globe, Library, Route, AlarmClock, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Pin, PinOff, MessageSquare, Search, Bot, Library, Route, AlarmClock, Globe, Settings, ChevronDown, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, ConversationWorkspaceVm } from '../../types';
@@ -14,6 +14,14 @@ import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
+
+export function conversationSidebarTerminalResultDotClass(
+  kind: NonNullable<ConversationTaskRowVm['unreadTerminalResult']>['kind'],
+) {
+  if (kind === 'completed') return 'bg-gold-success';
+  if (kind === 'stopped') return 'bg-gold-warning';
+  return 'bg-gold-danger';
+}
 
 export type ConversationSidebarNavigationKey =
   | 'quick-chat'
@@ -45,7 +53,8 @@ export function conversationSidebarNavigationKey(page: ConversationPage): Conver
 interface ConversationSidebarProps {
   vm: ConversationSidebarVm;
   active: ConversationPage;
-  activeWorkspaceId?: string | null;
+  defaultExpandedWorkspaceId?: string | null;
+  workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
@@ -56,7 +65,7 @@ interface ConversationSidebarProps {
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
   onDeleteTask: (projectId: string, taskId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
-  onNewConversationInWorkspace: (projectId: string) => void;
+  onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
 }
@@ -64,7 +73,8 @@ interface ConversationSidebarProps {
 export const ConversationSidebar = memo(function ConversationSidebar({
   vm,
   active,
-  activeWorkspaceId,
+  defaultExpandedWorkspaceId,
+  workspaceRevealRequest,
   onSelect,
   onNewConversation,
   onSearch,
@@ -111,33 +121,31 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     if (typeof pref === 'boolean') setPinnedCollapsed(pref);
   }, [vm.preferences]);
 
-  const prevExpandTargetRef = useRef<string | null>(null);
+  const workspaceExpansionInitializedRef = useRef(false);
+  const handledWorkspaceRevealRequestRef = useRef(workspaceRevealRequest?.requestId ?? null);
   const runListInteractionScopeRef = useRef<ConversationSidebarRunListScope | null>(null);
+  const initialWorkspaceId = active.kind === 'conversation-run'
+    ? active.projectId
+    : (defaultExpandedWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
 
   useEffect(() => {
-    const targetWorkspaceId: string | null = active.kind === 'conversation-run'
-      ? active.projectId
-      : (activeWorkspaceId ?? vm.lastActiveWorkspaceId ?? null);
+    const initialize = !workspaceExpansionInitializedRef.current && vm.workspaces.length > 0;
+    setExpandedWorkspaces((current) => reconcileConversationSidebarExpandedWorkspaces(
+      current,
+      vm.workspaces.map((workspace) => workspace.projectId),
+      initialize ? initialWorkspaceId : null,
+    ));
+    if (initialize) workspaceExpansionInitializedRef.current = true;
+  }, [initialWorkspaceId, vm.workspaces]);
 
-    const prevTarget = prevExpandTargetRef.current;
-    prevExpandTargetRef.current = targetWorkspaceId;
-    const targetChanged = targetWorkspaceId !== prevTarget;
-
-    setExpandedWorkspaces((prev) => {
-      const next: Record<string, boolean> = {};
-      vm.workspaces.forEach((ws) => {
-        if (!targetChanged && prev[ws.projectId] != null) {
-          next[ws.projectId] = prev[ws.projectId];
-          return;
-        }
-        next[ws.projectId] = ws.projectId === targetWorkspaceId || targetWorkspaceId == null;
-      });
-      if (targetWorkspaceId && next[targetWorkspaceId] === false) {
-        next[targetWorkspaceId] = true;
-      }
-      return next;
-    });
-  }, [active, activeWorkspaceId, vm.workspaces, vm.lastActiveWorkspaceId]);
+  useEffect(() => {
+    if (!workspaceRevealRequest
+      || handledWorkspaceRevealRequestRef.current === workspaceRevealRequest.requestId) return;
+    handledWorkspaceRevealRequestRef.current = workspaceRevealRequest.requestId;
+    setExpandedWorkspaces((current) => current[workspaceRevealRequest.projectId]
+      ? current
+      : { ...current, [workspaceRevealRequest.projectId]: true });
+  }, [workspaceRevealRequest]);
 
   const togglePinnedCollapsed = () => {
     setPinnedCollapsed((prev) => {
@@ -210,7 +218,8 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   return (
     <TooltipProvider>
       <>
-        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-3 text-sidebar-foreground">
+        <aside className="flex min-h-0 h-full flex-col gap-0.5 bg-sidebar px-3 py-2.5 text-sidebar-foreground">
+        <div data-conversation-sidebar-region="fixed-navigation" className="shrink-0">
         {/* Quick actions */}
         <div className="flex flex-col gap-0.5">
           <SidebarButton
@@ -226,10 +235,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
           />
         </div>
 
-        <Separator className="mx-1 my-0 opacity-45" />
+        <Separator className="mx-1 my-1 opacity-45" />
 
         {/* Navigation */}
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-0.5">
           <SidebarButton
             compact
             active={activeNavigationKey === 'agents'}
@@ -262,24 +271,30 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             compact
             active={activeNavigationKey === 'scheduled-tasks'}
             icon={<AlarmClock />}
-            label="定时任务"
+            label={t('scheduled.management.title')}
             onClick={() => onSelect({ kind: 'scheduled-tasks' })}
           />
         </div>
+        </div>
 
-        {/* Pinned section — fixed, collapsible, outside scroll */}
+        {/* Pinned and workspace sections share the conversation scroll region. */}
+        <ScrollArea
+          data-conversation-sidebar-region="scrollable-conversations"
+          className="min-h-0 flex-1"
+        >
         {vm.pinnedTasks.length > 0 ? (
-          <div className="shrink-0 border-y border-border/55 py-1">
+          <div className="my-1.5 border-y border-border/55 py-2">
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[14px] font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
+              data-conversation-sidebar-heading="pinned"
+              className="sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1 text-left text-sm font-medium text-sidebar-foreground hover:text-sidebar-accent-foreground"
               onClick={togglePinnedCollapsed}
             >
               <ChevronDown className={cn('size-3 transition-transform', pinnedCollapsed && '-rotate-90')} />
               {t('conversation.sidebar.pinned')}
             </button>
             {!pinnedCollapsed ? (
-              <div>
+              <div className="mt-1 space-y-3">
                 {Object.entries(pinnedTasksByWorkspace).map(([projectId, tasks]) => {
                   const ws = workspacesByProjectId.get(projectId);
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
@@ -287,14 +302,14 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                     <div key={`pinned-ws-${projectId}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-0.75 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground"
+                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
                         onClick={() => togglePinnedWorkspace(projectId)}
                       >
                         <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
                         <span className="truncate">{ws?.name ?? projectId}</span>
                       </button>
                       {!isWsCollapsed ? (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {tasks.map((task) => (
                             <TaskRow
                               key={`pinned-${task.projectId}-${task.taskId}`}
@@ -326,101 +341,107 @@ export const ConversationSidebar = memo(function ConversationSidebar({
             ) : null}
           </div>
         ) : (
-          <Separator className="mx-1 my-0.75 opacity-45" />
+          <Separator className="mx-1 my-1.5 opacity-45" />
         )}
 
-        {/* Main task list — local workspaces + local tasks（远程任务独立成 multica-tasks 页） */}
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="pt-2.5">
+        {/* Workspace sections — scrollable with sticky headers */}
+          <div className="pt-2">
             {vm.workspaces.map((ws) => (
-                <div key={ws.projectId} className="mb-2.5">
-                  <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-0.75">
-                    <button
-                      type="button"
-                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-semibold uppercase tracking-[0.12em] text-sidebar-foreground hover:text-sidebar-accent-foreground group-hover:pr-11"
-                      onClick={() => toggleWorkspace(ws.projectId)}
-                    >
-                      <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
-                      <span className="truncate">{ws.name}</span>
-                    </button>
-                    <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
-                      {onNewConversationInWorkspace ? (
-                        <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
-                          <Plus className="size-3" />
-                        </Button>
-                      ) : null}
-                      {onRemoveWorkspace ? (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-5 text-muted-foreground transition-transform hover:text-destructive active:scale-90"
-                          aria-label={t('conversation.sidebar.removeWorkspaceNamed', { name: ws.name })}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setWorkspaceRemovalPending(false);
-                            setWorkspaceToRemove(ws);
-                          }}
-                        >
-                          <Trash2 className="size-3" />
-                        </Button>
-                      ) : null}
-                    </span>
+              <div
+                key={ws.projectId}
+                data-conversation-workspace-group={ws.projectId}
+                className="mb-2"
+              >
+                <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
+                  <button
+                    type="button"
+                    data-conversation-workspace-id={ws.projectId}
+                    aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
+                    onClick={() => toggleWorkspace(ws.projectId)}
+                  >
+                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
+                    <span className="truncate">{ws.name}</span>
+                  </button>
+                  <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+                    {onNewConversationInWorkspace ? (
+                      <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>
+                        <Plus className="size-3" />
+                      </Button>
+                    ) : null}
+                    {onRemoveWorkspace ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-5 text-muted-foreground transition-transform hover:text-destructive active:scale-90"
+                        aria-label={t('conversation.sidebar.removeWorkspaceNamed', { name: ws.name })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setWorkspaceRemovalPending(false);
+                          setWorkspaceToRemove(ws);
+                        }}
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    ) : null}
+                  </span>
+                </div>
+                {expandedWorkspaces[ws.projectId] ? (
+                  <div className="space-y-0.5">
+                    {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
+                      <TaskRow
+                        key={`${task.projectId}-${task.taskId}`}
+                        task={task}
+                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
+                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                        activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
+                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
+                        onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                        onSelectRun={(runId) => {
+                          markRunListInteraction('workspace');
+                          onSelectRun(task.projectId, task.taskId, runId);
+                        }}
+                        onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
+                        onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
+                        onPin={() => onPinTask(task.projectId, task.taskId)}
+                        onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
+                        onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
+                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                        onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
+                        t={t}
+                      />
+                    ))}
+                    {(!vm.tasksByWorkspace[ws.projectId] || vm.tasksByWorkspace[ws.projectId].length === 0) ? (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
+                    ) : null}
                   </div>
-                  {expandedWorkspaces[ws.projectId] ? (
-                    <div className="space-y-1">
-                      {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
-                        <TaskRow
-                          key={`${task.projectId}-${task.taskId}`}
-                          task={task}
-                          pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
-                          isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
-                          activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
-                          expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                          onSelect={() => onSelectTask(task.projectId, task.taskId)}
-                          onSelectRun={(runId) => {
-                            markRunListInteraction('workspace');
-                            onSelectRun(task.projectId, task.taskId, runId);
-                          }}
-                          onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
-                          onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
-                          onPin={() => onPinTask(task.projectId, task.taskId)}
-                          onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
-                          onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                          onDelete={() => onDeleteTask(task.projectId, task.taskId)}
-                          onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
-                          t={t}
-                        />
-                      ))}
-                      {(!vm.tasksByWorkspace[ws.projectId] || vm.tasksByWorkspace[ws.projectId].length === 0) ? (
-                        <div className="px-3 py-2 text-xs text-muted-foreground">{t('conversation.noConversations')}</div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+                ) : null}
+              </div>
+            ))}
 
-              {/* Add workspace button */}
-              {onAddWorkspace ? (
-                <button
-                  type="button"
-                  className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[14px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                  onClick={onAddWorkspace}
-                >
-                  <Plus className="size-3.5" />
-                  <span>{t('conversation.sidebar.addWorkspace')}</span>
-                </button>
-              ) : null}
+            {/* Add workspace button */}
+            {onAddWorkspace ? (
+              <button
+                type="button"
+                className="mt-1.5 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                onClick={onAddWorkspace}
+              >
+                <Plus className="size-3.5" />
+                <span>{t('conversation.sidebar.addWorkspace')}</span>
+              </button>
+            ) : null}
 
-              {vm.workspaces.length === 0 ? (
-                <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                  {t('conversation.sidebar.noWorkspaces')}
-                </div>
-              ) : null}
-            </div>
-          </ScrollArea>
+            {vm.workspaces.length === 0 ? (
+              <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                {t('conversation.sidebar.noWorkspaces')}
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
+
 
         {/* Settings */}
-        <Separator className="mx-1 my-0.75 opacity-45" />
+        <Separator className="mx-1 my-1.5 opacity-45" />
         <SidebarButton icon={<Settings />} label={t('conversation.sidebar.settings')} onClick={() => onSelect({ kind: 'settings' })} />
         </aside>
 
@@ -620,6 +641,10 @@ function TaskRow({
   const isDirect = task.runMode === 'direct';
   const useAgentIdentity = conversationSidebarIdentityKind(task) === 'agent-icon';
   const showActivity = shouldShowConversationSidebarActivity(task);
+  const unreadTerminalResult = isDirect ? task.unreadTerminalResult ?? null : null;
+  const unreadTerminalResultLabel = unreadTerminalResult
+    ? t(`conversation.sidebar.terminalResult.${unreadTerminalResult.kind}`)
+    : null;
   const latestColor = latestRun ? conversationSidebarRunStatusClass(latestRun) : 'bg-muted-foreground/30';
   const relativeTimeSource = task.lastActivityAt;
   const relativeTime = relativeTimeSource && (isDirect || latestRun?.status !== 'running')
@@ -671,21 +696,45 @@ function TaskRow({
   const taskRow = (
     <div
       className={cn(
-        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer',
-        isActive ? 'bg-sidebar-accent/70' : 'hover:bg-sidebar-accent',
+        'group relative flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-sidebar-foreground cursor-pointer',
+        isActive ? 'bg-sidebar-accent/70 font-medium text-sidebar-accent-foreground' : 'hover:bg-sidebar-accent',
       )}
       onClick={handleRowClick}
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
         {useAgentIdentity && task.agentIdentity ? (
-          <span className="relative flex size-4 items-center justify-center" data-conversation-activity={showActivity ? task.activity?.phase : undefined}>
-            <img
-              src={agentIconSrc(task.agentIdentity.iconKey)}
-              alt=""
-              title={task.agentIdentity.displayName}
-              className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
-            />
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className="relative flex size-4 items-center justify-center"
+                data-conversation-activity={showActivity ? task.activity?.phase : undefined}
+                data-conversation-terminal-result={unreadTerminalResult?.kind}
+                aria-label={unreadTerminalResultLabel
+                  ? `${task.agentIdentity.displayName} · ${unreadTerminalResultLabel}`
+                  : task.agentIdentity.displayName}
+              >
+                <img
+                  src={agentIconSrc(task.agentIdentity.iconKey)}
+                  alt=""
+                  className={agentIconClass(task.agentIdentity.iconKey, cn('size-3', showActivity && conversationSidebarActivityIconClass))}
+                />
+                {unreadTerminalResult ? (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      'absolute -right-0.5 -top-0.5 size-2 rounded-full ring-1 ring-sidebar',
+                      conversationSidebarTerminalResultDotClass(unreadTerminalResult.kind),
+                    )}
+                  />
+                ) : null}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {unreadTerminalResultLabel
+                ? `${task.agentIdentity.displayName} · ${unreadTerminalResultLabel}`
+                : task.agentIdentity.displayName}
+            </TooltipContent>
+          </Tooltip>
         ) : (
           <span className={cn('size-1.5 rounded-full', latestColor)} />
         )}
@@ -694,7 +743,7 @@ function TaskRow({
         {editing ? (
           <input
             ref={editInputRef}
-            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-[13px] outline-none"
+            className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1 py-0 text-sm outline-none"
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitRename}
@@ -702,13 +751,13 @@ function TaskRow({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-[13px]">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-sm">
             {task.scheduledTaskId ? <AlarmClock className="size-3 shrink-0 text-foreground" aria-label={t('scheduled.conversationMarker')} /> : null}
             <span className="truncate">{task.title}</span>
           </span>
         )}
         {relativeTime ? (
-          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{relativeTime}</span>
+          <span className="shrink-0 text-ui-caption font-normal leading-4 tabular-nums text-muted-foreground/55">{relativeTime}</span>
         ) : null}
       </div>
       <span className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-1 group-hover:flex group-hover:pointer-events-auto">
@@ -757,7 +806,7 @@ function TaskRow({
               >
                 <div
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs',
+                    'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
                     isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
@@ -773,9 +822,9 @@ function TaskRow({
                   }}
                 >
                   <span className={cn('size-1.5 shrink-0 rounded-full', color)} />
-                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{run.runId}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground/75">{run.runId}</span>
                   {runTime ? (
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{runTime}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground/55">{runTime}</span>
                   ) : null}
                 </div>
               </RunStopMenu>
@@ -823,8 +872,8 @@ function SidebarButton({
     <Button
       variant="ghost"
       className={cn(
-        compact ? 'h-7 gap-2 justify-start rounded-md px-2 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
-          : 'h-7 justify-start gap-2.5 rounded-lg px-2.5 text-[14px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+        compact ? 'h-6.5 gap-2 justify-start rounded-md px-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'
+          : 'h-6.5 justify-start gap-2.5 rounded-lg px-2.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
         active && 'bg-sidebar-accent text-sidebar-accent-foreground',
       )}
       onClick={onClick}
@@ -845,6 +894,28 @@ export function prioritizeConversationSidebarWorkspace(sidebar: ConversationSide
     ...sidebar.workspaces.slice(workspaceIndex + 1),
   ];
   return { ...sidebar, workspaces, lastActiveWorkspaceId: projectId };
+}
+
+export interface ConversationSidebarWorkspaceRevealRequest {
+  projectId: string;
+  requestId: number;
+}
+
+export function reconcileConversationSidebarExpandedWorkspaces(
+  current: Record<string, boolean>,
+  projectIds: string[],
+  initialWorkspaceId: string | null,
+): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  let changed = Object.keys(current).length !== projectIds.length;
+  for (const projectId of projectIds) {
+    const expanded = Object.prototype.hasOwnProperty.call(current, projectId)
+      ? current[projectId]
+      : initialWorkspaceId == null || projectId === initialWorkspaceId;
+    next[projectId] = expanded;
+    if (current[projectId] !== expanded) changed = true;
+  }
+  return changed ? next : current;
 }
 
 export function conversationSidebarTaskKey(projectId: string, taskId: string) {

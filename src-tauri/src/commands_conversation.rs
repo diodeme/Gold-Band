@@ -1,3 +1,4 @@
+use base64::Engine;
 use camino::Utf8PathBuf;
 use gold_band::app::App;
 use gold_band::config::{
@@ -5,6 +6,7 @@ use gold_band::config::{
     ConversationDynamicAgentRef, ConversationDynamicControl, ConversationPin, ConversationRunMode,
     ConversationRunModeEntry, ConversationWorkspaceEntry, DesktopUiMode,
 };
+use gold_band::storage::GoldBandPaths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -17,15 +19,18 @@ use uuid::Uuid;
 
 use crate::commands::{
     CommandErrorVm, CommandResult, command_error, configure_conversation_runtime_callbacks,
-    spawn_blocking_command,
+    resolve_command_app, spawn_blocking_command,
+};
+use crate::conversation_attention::{
+    ConversationTerminalResultAcknowledgementVm, acknowledge_terminal_result, remove_task_attention,
 };
 use crate::conversation_workspace::{
     app_for_workspace, project_id_for_workspace, project_ids_match, remove_workspace_from_state,
     workspace_entry_for_project,
 };
-use crate::state::DesktopContext;
-use crate::state::DesktopState;
+use crate::state::{DesktopContext, DesktopState, provision_project_manifest_for_desktop};
 use crate::view_models::ContentVm;
+use crate::workspace_files::WorkspaceFileRuntime;
 
 fn scheduled_service_error(
     error: crate::scheduled_service::ScheduledServiceError,
@@ -38,7 +43,6 @@ fn scheduled_service_error(
     }
     CommandErrorVm::new(error.code.to_string(), params)
 }
-
 fn validate_scheduled_runtime_settings_input(
     input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
 ) -> crate::scheduled_service::ScheduledServiceResult<()> {
@@ -114,7 +118,8 @@ pub fn save_scheduled_runtime_settings(
 pub struct ConversationRunModeSettingsVm {
     pub mode: ConversationRunMode,
     pub workflow_template_id: Option<String>,
-    pub include_interview: Option<bool>,
+    #[serde(default)]
+    pub optional_entry_preferences: std::collections::HashMap<String, bool>,
     pub direct_config: Option<crate::view_models_conversation::ConversationDirectConfigVm>,
     #[serde(default)]
     pub direct_preferences: std::collections::HashMap<
@@ -149,6 +154,7 @@ fn validate_direct_capabilities(
                 code: "direct.agent.unavailable".to_string(),
                 label: "Selected Direct Agent is unavailable".to_string(),
                 recovery_path: "/chat/agents".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let models =
@@ -166,6 +172,7 @@ fn validate_direct_capabilities(
                 code: "direct.model.not-found".to_string(),
                 label: "Selected model is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     let modes =
@@ -183,6 +190,7 @@ fn validate_direct_capabilities(
                 code: "direct.permission.not-found".to_string(),
                 label: "Selected permission mode is not supported by this Agent".to_string(),
                 recovery_path: "/chat".to_string(),
+                params: serde_json::json!({}),
             });
     }
     result.valid = result.missing_items.is_empty();
@@ -223,6 +231,35 @@ pub async fn get_conversation_sidebar(
     result
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeConversationTerminalResultInput {
+    project_id: String,
+    task_id: String,
+    event_id: String,
+}
+
+#[tauri::command]
+pub fn acknowledge_conversation_terminal_result(
+    state: State<'_, DesktopState>,
+    input: AcknowledgeConversationTerminalResultInput,
+) -> CommandResult<ConversationTerminalResultAcknowledgementVm> {
+    let app = resolve_command_app(&state, Some(&input.project_id))?;
+    app.task_show(&input.task_id).map_err(|_| {
+        CommandErrorVm::new(
+            "task.not-found",
+            serde_json::json!({
+                "projectId": input.project_id,
+                "taskId": input.task_id,
+            }),
+        )
+    })?;
+    let _write_guard = state
+        .conversation_attention_write_guard()
+        .map_err(command_error)?;
+    acknowledge_terminal_result(&app, &input.task_id, &input.event_id).map_err(command_error)
+}
+
 #[tauri::command]
 pub fn list_scheduled_tasks(
     state: State<'_, DesktopState>,
@@ -233,14 +270,15 @@ pub fn list_scheduled_tasks(
         .list(project_id.as_deref())
         .map_err(scheduled_service_error)?
         .into_iter()
-        .map(|definition| {
+        .map(|record| {
             let workspace_name = service
-                .workspace_name(&definition.project_id)
+                .workspace_name(&record.definition.project_id)
                 .map_err(scheduled_service_error)?;
             Ok(
                 crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
-                    &definition,
+                    &record.definition,
                     &workspace_name,
+                    record.next_run_at,
                 ),
             )
         })
@@ -252,18 +290,60 @@ pub fn list_scheduled_task_occurrences(
     state: State<'_, DesktopState>,
     project_id: String,
     scheduled_task_id: String,
-    limit: Option<u32>,
-) -> CommandResult<Vec<crate::view_models_conversation::ScheduledOccurrenceVm>> {
+    cursor: Option<String>,
+    status: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ScheduledOccurrencePageVm> {
+    let cursor = cursor
+        .as_deref()
+        .map(decode_occurrence_cursor)
+        .transpose()?;
+    let status = status
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| invalid_occurrence_query("status", "invalid-status"))?;
     state
         .scheduled_service()
         .map_err(command_error)?
-        .list_occurrences(
-            &project_id,
-            &scheduled_task_id,
-            limit.unwrap_or(50).clamp(1, 200) as usize,
+        .list_occurrence_page(&project_id, &scheduled_task_id, status, cursor.as_ref())
+        .map(
+            |page| crate::view_models_conversation::ScheduledOccurrencePageVm {
+                items: scheduled_occurrence_vms_from_occurrences(&page.items),
+                next_cursor: page.next_cursor.as_ref().map(encode_occurrence_cursor),
+            },
         )
-        .map(|occurrences| scheduled_occurrence_vms_from_occurrences(&occurrences))
         .map_err(scheduled_service_error)
+}
+
+fn encode_occurrence_cursor(cursor: &gold_band::scheduler::db::OccurrencePageCursor) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(cursor).expect("occurrence cursor serialization is infallible"))
+}
+
+fn decode_occurrence_cursor(
+    cursor: &str,
+) -> CommandResult<gold_band::scheduler::db::OccurrencePageCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+                serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+            serde_json::json!({ "field": "cursor", "reason": "invalid-cursor" }),
+        )
+    })
+}
+
+fn invalid_occurrence_query(field: &str, reason: &str) -> CommandErrorVm {
+    CommandErrorVm::new(
+        gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+        serde_json::json!({ "field": field, "reason": reason }),
+    )
 }
 
 fn scheduled_occurrence_vms_from_occurrences(
@@ -285,13 +365,14 @@ pub fn get_scheduled_task_diagnostics(
     let record = service
         .get(&project_id, &scheduled_task_id)
         .map_err(scheduled_service_error)?;
-    let occurrences = service
-        .list_occurrences(&project_id, &scheduled_task_id, 200)
+    let (run_count, occurrences) = service
+        .occurrence_diagnostics(&project_id, &scheduled_task_id)
         .map_err(scheduled_service_error)?;
     Ok(scheduled_task_diagnostics_vm(
         project_id,
         scheduled_task_id,
         record,
+        run_count,
         occurrences,
     ))
 }
@@ -300,12 +381,9 @@ fn scheduled_task_diagnostics_vm(
     project_id: String,
     scheduled_task_id: String,
     record: gold_band::scheduler::db::ScheduledJobRecord,
+    run_count: u64,
     occurrences: Vec<gold_band::scheduler::occurrence::ScheduledOccurrence>,
 ) -> crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
-    let run_count = occurrences
-        .iter()
-        .filter(|occurrence| occurrence.run_id.is_some())
-        .count() as u64;
     crate::view_models_conversation::ScheduledTaskDiagnosticsVm {
         scheduled_task_id,
         project_id,
@@ -378,6 +456,7 @@ pub fn set_scheduled_task_enabled(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }
@@ -396,6 +475,7 @@ pub fn create_scheduled_task(
         crate::view_models_conversation::ScheduledTaskVm::from_definition_in_workspace(
             &record.definition,
             &workspace_name,
+            record.next_run_at,
         ),
     )
 }
@@ -546,7 +626,8 @@ pub async fn create_conversation_run(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
-) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationCreateResultVm> {
+    let _ = state.record_heartbeat_activity();
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
@@ -613,6 +694,7 @@ pub fn rerun_conversation_task(
     project_id: String,
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationRunVm> {
+    let _ = state.record_heartbeat_activity();
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -685,7 +767,7 @@ pub async fn update_task_metadata(
     task_id: String,
     title: String,
     description: Option<String>,
-) -> CommandResult<()> {
+) -> CommandResult<crate::view_models_conversation::ConversationTaskRowVm> {
     let context = state.context().map_err(command_error)?;
     let global_app = context.app();
     let app_state = global_app.load_state().map_err(command_error)?;
@@ -697,6 +779,12 @@ pub async fn update_task_metadata(
             serde_json::json!({ "projectId": project_id }),
         ));
     };
+    let pin = app_state
+        .conversation_pins
+        .iter()
+        .find(|pin| pin.project_id == resolved_project_id && pin.task_id == task_id);
+    let pinned = pin.is_some();
+    let pin_order = pin.map(|pin| pin.order);
     let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::view_models_conversation::update_task_metadata_vm(
@@ -705,6 +793,8 @@ pub async fn update_task_metadata(
             &task_id,
             &title,
             description.as_deref(),
+            pinned,
+            pin_order,
         )
     })
     .await
@@ -1022,7 +1112,7 @@ pub fn get_conversation_run_mode(
             |entry| crate::view_models_conversation::ConversationRunModeVm {
                 mode: entry.mode.as_str().to_string(),
                 workflow_template_id: entry.workflow_template_id.clone(),
-                include_interview: entry.include_interview,
+                optional_entry_preferences: entry.optional_entry_preferences.clone(),
                 direct_config: entry.direct_config.as_ref().map(|config| {
                     crate::view_models_conversation::ConversationDirectConfigVm {
                         agent_type: config.agent_type.clone(),
@@ -1123,7 +1213,7 @@ pub fn save_conversation_run_mode(
         ConversationRunModeEntry {
             mode: settings.mode,
             workflow_template_id: settings.workflow_template_id,
-            include_interview: settings.include_interview,
+            optional_entry_preferences: settings.optional_entry_preferences,
             direct_config: settings
                 .direct_config
                 .map(|config| ConversationDirectConfig {
@@ -1233,19 +1323,36 @@ pub async fn add_conversation_workspace(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace_path_str.clone());
-        let project_id = project_id_for_workspace(&workspace_path_str);
+        let selected_paths = GoldBandPaths::new(workspace_path.clone());
+        let project_id = selected_paths.project_id.clone();
         let mut state = gold_band_app.load_state().map_err(command_error)?;
 
         if state
             .conversation_workspaces
             .iter()
-            .any(|workspace| project_ids_match(&workspace.project_id, &project_id))
+            .any(|workspace| {
+                GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path))
+                    .normalized_repo_root
+                    == selected_paths.normalized_repo_root
+            })
         {
             return Err(CommandErrorVm::new(
                 "workspace.already-exists",
                 serde_json::json!({ "name": name }),
             ));
         }
+        if state
+            .conversation_workspaces
+            .iter()
+            .any(|workspace| workspace.project_id == project_id)
+        {
+            return Err(CommandErrorVm::new(
+                "workspace.project-id-collision",
+                serde_json::json!({ "projectId": project_id }),
+            ));
+        }
+
+        provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
 
         state
             .conversation_workspaces
@@ -1318,14 +1425,27 @@ pub async fn sync_conversation_workspace(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace_path.clone());
-        let project_id = project_id_for_workspace(&workspace_path);
+        let selected_paths = GoldBandPaths::new(Utf8PathBuf::from(&workspace_path));
+        let project_id = selected_paths.project_id.clone();
         let mut state = app.load_state().map_err(command_error)?;
 
-        let resolved_project_id = if let Some((_, resolved_project_id)) =
-            workspace_entry_for_project(&state, &project_id)
+        let existing_path = state.conversation_workspaces.iter().find(|workspace| {
+            GoldBandPaths::new(Utf8PathBuf::from(&workspace.workspace_path)).normalized_repo_root
+                == selected_paths.normalized_repo_root
+        });
+        let resolved_project_id = if let Some(workspace) = existing_path {
+            workspace.project_id.clone()
+        } else if state
+            .conversation_workspaces
+            .iter()
+            .any(|workspace| workspace.project_id == project_id)
         {
-            resolved_project_id
+            return Err(CommandErrorVm::new(
+                "workspace.project-id-collision",
+                serde_json::json!({ "projectId": project_id }),
+            ));
         } else {
+            provision_project_manifest_for_desktop(&selected_paths).map_err(command_error)?;
             state
                 .conversation_workspaces
                 .push(ConversationWorkspaceEntry {
@@ -1358,6 +1478,7 @@ pub async fn delete_conversation_task(
     task_id: String,
 ) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
     let context = state.context().map_err(command_error)?;
+    let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
         let app = context.app();
         let mut app_state = app.load_state().map_err(command_error)?;
@@ -1394,6 +1515,15 @@ pub async fn delete_conversation_task(
             )
         })?;
         gold_band::storage::sqlite::delete_task(&task_dir);
+        {
+            let _attention_guard = conversation_attention_write_lock.lock().map_err(|_| {
+                CommandErrorVm::new(
+                    "conversation.attention-write-lock-failed",
+                    serde_json::json!({ "taskId": task_id }),
+                )
+            })?;
+            remove_task_attention(&workspace_app, &task_id).map_err(command_error)?;
+        }
         app_state
             .conversation_pins
             .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
@@ -1452,6 +1582,10 @@ pub struct AttachmentFileVm {
     pub path: String,
     pub name: String,
     pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1460,7 +1594,6 @@ pub struct MaterializeAttachmentFileInput {
     pub name: String,
     #[serde(default)]
     pub mime: Option<String>,
-    pub size: u64,
     pub data_base64: String,
 }
 
@@ -1471,35 +1604,85 @@ pub struct MaterializeConversationAttachmentsInput {
 }
 
 #[tauri::command]
-pub fn stat_attachment_files(paths: Vec<String>) -> CommandResult<Vec<AttachmentFileVm>> {
-    let files: Vec<AttachmentFileVm> = paths
-        .into_iter()
-        .filter_map(|p| {
-            let path = Path::new(&p);
-            let name = path.file_name()?.to_str()?.to_string();
-            let size = path.metadata().ok()?.len();
-            Some(AttachmentFileVm {
-                path: p,
-                name,
-                size,
+pub async fn stat_attachment_files(
+    runtime: State<'_, WorkspaceFileRuntime>,
+    paths: Vec<String>,
+) -> CommandResult<Vec<AttachmentFileVm>> {
+    let runtime = runtime.inner().clone();
+    spawn_blocking_command(move || {
+        Ok(paths
+            .into_iter()
+            .filter_map(|p| {
+                let path = Path::new(&p);
+                let name = path.file_name()?.to_str()?.to_string();
+                let size = path.metadata().ok()?.len();
+                let ext = path
+                    .extension()
+                    .and_then(|value| value.to_str())?
+                    .to_ascii_lowercase();
+                let mime = attachment_mime_for_ext(&ext);
+                let preview_url = mime
+                    .starts_with("image/")
+                    .then(|| {
+                        let revision = crate::workspace_files::revision_for_preview(path).ok()?;
+                        runtime
+                            .issue_attachment_preview(
+                                "attachment-picker".to_string(),
+                                path.to_path_buf(),
+                                revision,
+                                mime.to_string(),
+                                60 * 60,
+                            )
+                            .ok()
+                            .map(|grant| grant.token)
+                    })
+                    .flatten();
+                let content_url = (attachment_text_previewable_mime(mime)
+                    && size <= crate::view_models_conversation::MAX_ATTACHMENT_PER_FILE)
+                    .then(|| {
+                        let revision = crate::workspace_files::revision_for_preview(path).ok()?;
+                        runtime
+                            .issue_attachment_preview(
+                                "attachment-picker".to_string(),
+                                path.to_path_buf(),
+                                revision,
+                                mime.to_string(),
+                                60 * 60,
+                            )
+                            .ok()
+                            .map(|grant| grant.token)
+                    })
+                    .flatten();
+                Some(AttachmentFileVm {
+                    path: p,
+                    name,
+                    size,
+                    preview_url,
+                    content_url,
+                })
             })
-        })
-        .collect();
-    Ok(files)
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
 pub fn materialize_conversation_attachments(
-    state: State<'_, DesktopState>,
+    _state: State<'_, DesktopState>,
     input: MaterializeConversationAttachmentsInput,
 ) -> CommandResult<Vec<AttachmentFileVm>> {
-    let app = state.app().map_err(command_error)?;
-    let root = app
-        .paths
-        .user_gold_band_dir()
-        .join("temp")
-        .join("conversation-attachments")
-        .join(Uuid::new_v4().to_string());
+    let root = Utf8PathBuf::from_path_buf(
+        std::env::temp_dir()
+            .join("gold-band")
+            .join("conversation-attachments")
+            .join(Uuid::new_v4().to_string()),
+    )
+    .map_err(|path| {
+        CommandErrorVm::new(
+            "conversation.attachment-materialize-failed",
+            serde_json::json!({ "path": path.display().to_string() }),
+        )
+    })?;
     materialize_attachment_files_to_dir(&root, &input.files)
 }
 
@@ -1722,6 +1905,10 @@ fn attachment_mime_for_ext(ext: &str) -> &'static str {
     }
 }
 
+fn attachment_text_previewable_mime(mime: &str) -> bool {
+    mime.starts_with("text/") || matches!(mime, "application/json" | "application/xml")
+}
+
 fn materialize_attachment_files_to_dir(
     dir: &camino::Utf8Path,
     files: &[MaterializeAttachmentFileInput],
@@ -1766,7 +1953,7 @@ fn materialize_attachment_files_to_dir(
             )
         })?;
         let size = bytes.len() as u64;
-        if size == 0 || size != file.size {
+        if size == 0 {
             return Err(CommandErrorVm::new(
                 "conversation.attachment-unreadable",
                 serde_json::json!({ "name": file.name }),
@@ -1798,6 +1985,8 @@ fn materialize_attachment_files_to_dir(
             path: path.to_string(),
             name,
             size,
+            preview_url: None,
+            content_url: None,
         });
     }
 
@@ -1942,21 +2131,40 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, materialize_attachment_files_to_dir,
-        message_attachment_content_from_attempt_dir, scheduled_occurrence_vms_from_occurrences,
-        scheduled_runtime_settings_vm, scheduled_service_error,
-        validate_scheduled_runtime_settings_input,
+        conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
+        materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
+        scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
+        scheduled_service_error, validate_scheduled_runtime_settings_input,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
     use gold_band::config::{ConversationWorkspaceEntry, StateConfig};
-    use gold_band::domain::{RunStatus, VERSION};
-    use gold_band::runtime::{RunState, TaskState};
+    use gold_band::domain::{RunOutcome, RunStatus, VERSION};
+    use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState};
     use gold_band::scheduler::occurrence::ScheduledErrorCode;
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
 
     use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
+
+    #[test]
+    fn occurrence_cursor_round_trips_and_rejects_invalid_input() {
+        use chrono::{TimeZone, Utc};
+
+        let cursor = gold_band::scheduler::db::OccurrencePageCursor {
+            scheduled_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2026, 8, 13, 9, 30, 1).unwrap(),
+            id: "occurrence-20".to_string(),
+        };
+
+        assert_eq!(
+            decode_occurrence_cursor(&encode_occurrence_cursor(&cursor)).unwrap(),
+            cursor
+        );
+        let error = decode_occurrence_cursor("not-a-cursor").unwrap_err();
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "cursor");
+    }
 
     #[test]
     fn scheduled_occurrence_list_keeps_skipped_and_missed_history() {
@@ -2130,6 +2338,7 @@ mod tests {
             "project-a".to_string(),
             "scheduled-a".to_string(),
             record,
+            0,
             Vec::new(),
         );
 
@@ -2167,7 +2376,7 @@ mod tests {
                 task_id: task_id.to_string(),
                 task_uuid: None,
                 status: RunStatus::Completed,
-                outcome: None,
+                outcome: Some(RunOutcome::Success),
                 started_at: "2026-07-24T00:00:00Z".to_string(),
                 updated_at: "2026-07-24T00:01:00Z".to_string(),
                 workflow_snapshot: "workflow.snapshot.json".to_string(),
@@ -2178,6 +2387,12 @@ mod tests {
                 pause_reason: None,
                 uuid: None,
                 last_executed_node: None,
+                worktree: None,
+                execution: RuntimeExecutionState::new(
+                    RuntimeExecutionPhase::Terminal,
+                    None,
+                    "2026-07-24T00:01:00Z",
+                ),
             },
         )
         .unwrap();
@@ -2229,7 +2444,7 @@ mod tests {
     }
 
     #[test]
-    fn materializes_memory_attachments_with_unique_names() {
+    fn materializes_memory_attachments_from_canonical_decoded_bytes() {
         let root = Utf8PathBuf::from_path_buf(
             std::env::temp_dir()
                 .join("gold-band-materialize-test")
@@ -2240,13 +2455,11 @@ mod tests {
             MaterializeAttachmentFileInput {
                 name: "shot.png".to_string(),
                 mime: Some("image/png".to_string()),
-                size: 4,
                 data_base64: base64_encode(&[1, 2, 3, 4]),
             },
             MaterializeAttachmentFileInput {
                 name: "nested\\shot.png".to_string(),
                 mime: Some("image/png".to_string()),
-                size: 3,
                 data_base64: base64_encode(&[5, 6, 7]),
             },
         ];
@@ -2256,6 +2469,8 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "shot.png");
         assert_eq!(result[1].name, "shot-2.png");
+        assert_eq!(result[0].size, 4);
+        assert_eq!(result[1].size, 3);
         assert_eq!(std::fs::read(&result[0].path).unwrap(), vec![1, 2, 3, 4]);
         assert_eq!(std::fs::read(&result[1].path).unwrap(), vec![5, 6, 7]);
 
@@ -2273,7 +2488,6 @@ mod tests {
         let files = vec![MaterializeAttachmentFileInput {
             name: "archive.exe".to_string(),
             mime: None,
-            size: 2,
             data_base64: base64_encode(&[1, 2]),
         }];
 
@@ -2294,6 +2508,7 @@ mod tests {
         let user_inputs = root.join("user-inputs");
         std::fs::create_dir_all(user_inputs.as_std_path()).unwrap();
         std::fs::write(user_inputs.join("image.png").as_std_path(), [1_u8, 2, 3]).unwrap();
+        std::fs::write(user_inputs.join("notes.txt").as_std_path(), "runtime notes").unwrap();
 
         let content = message_attachment_content_from_attempt_dir(
             &root,
@@ -2306,6 +2521,16 @@ mod tests {
         assert_eq!(content.title, "image.png");
         assert!(content.content.starts_with("data:image/png;base64,"));
         assert_eq!(content.content, "data:image/png;base64,AQID");
+
+        let text_content = message_attachment_content_from_attempt_dir(
+            &root,
+            "notes.txt",
+            "user-inputs/notes.txt",
+        )
+        .unwrap();
+        assert_eq!(text_content.kind, "message-attachment");
+        assert_eq!(text_content.title, "notes.txt");
+        assert_eq!(text_content.content, "runtime notes");
         let _ = std::fs::remove_dir_all(root.as_std_path());
     }
 
@@ -2339,7 +2564,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_entry_does_not_implicitly_resolve_desktop_workspace() {
+    fn workspace_entry_does_not_implicitly_resolve_desktop_context() {
         let state = gold_band::config::StateConfig::default();
 
         let result = super::workspace_entry_for_project(&state, "desktop-workspace");
@@ -2368,7 +2593,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn workspace_entry_matches_legacy_project_id_case_insensitively() {
+    fn workspace_entry_rejects_noncanonical_project_id_case() {
         let mut state = gold_band::config::StateConfig::default();
         state
             .conversation_workspaces
@@ -2379,16 +2604,14 @@ mod tests {
                 added_at: "2025-01-01T00:00:00Z".to_string(),
             });
 
-        let result =
-            super::workspace_entry_for_project(&state, "D--Projects-code-ai-claude-code").unwrap();
+        let result = super::workspace_entry_for_project(&state, "D--Projects-code-ai-claude-code");
 
-        assert_eq!(result.0, "D:\\Projects\\code\\ai\\claude code");
-        assert_eq!(result.1, "d--projects-code-ai-claude-code");
+        assert!(result.is_none());
     }
 
     #[cfg(windows)]
     #[test]
-    fn indexed_task_path_resolves_legacy_workspace_without_dropping_search_result() {
+    fn indexed_legacy_task_path_does_not_use_a_runtime_alias() {
         let mut state = gold_band::config::StateConfig::default();
         state
             .conversation_workspaces
@@ -2402,11 +2625,11 @@ mod tests {
 
         let (indexed_project_id, workspace_name) =
             super::extract_project_from_task_path(task_path, &state);
-        let resolved = super::workspace_entry_for_project(&state, &indexed_project_id).unwrap();
+        let resolved = super::workspace_entry_for_project(&state, &indexed_project_id);
 
         assert_eq!(indexed_project_id, "D--Projects-code-ai-claude-code");
-        assert_eq!(workspace_name, "claude code");
-        assert_eq!(resolved.1, "d--projects-code-ai-claude-code");
+        assert_eq!(workspace_name, indexed_project_id);
+        assert!(resolved.is_none());
     }
 
     #[test]
@@ -2456,7 +2679,7 @@ mod tests {
             gold_band::config::ConversationRunModeEntry {
                 mode: gold_band::config::ConversationRunMode::Auto,
                 workflow_template_id: None,
-                include_interview: None,
+                optional_entry_preferences: Default::default(),
                 direct_config: None,
                 direct_preferences: Default::default(),
                 auto_config: None,

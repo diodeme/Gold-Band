@@ -398,3 +398,34 @@ RoundDetailPage → resolveNodeTokenUsage(多会话多attempt累加) → InfoGri
 - 会话 VM 即使同时拿到最后一轮字段和 attempt 累计字段，也必须只向聊天 UI 投影 attempt 累计字段。
 - 模拟在 raw response 已追加、`promptCompleted` 与 snapshot 尚未写入时崩溃，重开后 totals 必须补齐；再次重开不得重复累计。
 - 模拟 journal 尾部半行后继续追加，新记录必须保持为独立合法 JSONL；旧 snapshot 没有 `attempt*` 时，迁移 baseline 不得把已有显示降为 0。
+
+---
+
+## 九、2026-08-15 会话信息栏上下文圆环
+
+### 展示收敛
+
+- composer 上方的信息栏只保留“会话累计 + 上下文窗口圆环”，移除横排的处理状态、上下文数值和 Token 明细；处理状态统一回到 composer 内既有状态位。
+- 圆环收敛为 24px 紧凑尺寸，环宽与中央字号同步缩小，进度弧使用主题状态色。中央只显示整数占用数字，不显示 `%`，避免 `30%`、`100%` 在内圈拥挤；无障碍标签继续包含完整百分比。`used=0` 仍视为 compact reset 瞬时采样，显示未知而不是确认的 `0`。
+- 圆环复用 shadcn/Radix Tooltip。第一行只展示占用数值，不重复圆环已有的百分比；后续按行展示已上报的输入、输出、缓存读、缓存写和总量，触发器支持 hover 与键盘 focus。
+
+### 颜色阈值
+
+- Provider 的真实 compaction 阈值并非统一百分比。Anthropic 服务端 compaction 使用可配置的绝对 Token 阈值，官方默认值为 150K；Gold Band 当前 canonical usage 只有 `used / size`，因此颜色不得宣称为 Provider 压缩预测。
+- 参考 Grafana Gauge 的阈值表达方式与通用状态色语义，采用宽松的静态辅助分段：`<60%` 为绿色 `gold-success`，`60%–<75%` 为蓝色 `gold-running`，`75%–<90%` 为黄色 `gold-warning`，`≥90%` 为红色 `gold-danger`；未知值继续使用 `muted-foreground`。
+- 精确数字与无障碍标签始终保留，颜色只作辅助，不单独承担状态信息。阈值集中定义为组件级常量，由整数显示百分比通过 O(1) 纯函数映射，不散落硬编码条件。
+
+### 更新与性能边界
+
+- 不修改 `AcpUsageVm`、ACP runtime 或 snapshot 结构，继续由现有 usage snapshot/live event 更新圆环。
+- 不新增轮询、定时器、事件订阅、缓存或跨层 identity。信息栏只比较会话秒数及 7 个 usage 语义字段，普通 text/thought/tool 流式更新不得触发其重渲染。
+- 百分比计算、钳制、颜色分段和 Tooltip 行生成均为固定字段的 O(1) 计算；Tooltip 内容仅在交互时由 Radix 挂载。
+
+### 验收
+
+- `used=1,000, size=100,000` 时 24px 圆环显示 `1`，Tooltip 第一行只显示 `1.0K / 100.0K`，不显示百分比。
+- `30%` 与 `100%` 的占用分别在圆环内显示为 `30` 与 `100`，不能溢出内圈；触发器无障碍标签仍包含 `%`。
+- 颜色边界固定为 `59=绿色、60=蓝色、74=蓝色、75=黄色、89=黄色、90=红色`；未知值为灰色，浅色与深色主题均消费现有状态 token。
+- 超过窗口容量的异常采样视觉数字钳制为 `100`，无障碍语义仍为 `100%`；缺少确认 `used` 或有效 `size` 时显示 `--`。
+- Tooltip 对 Provider 已上报的 token 项逐行显示，数值 `0` 不被误判为缺失；未上报字段不创建空行。
+- 中英文、浅色/深色、正常宽度/窄窗口、hover/focus 交互均通过实际页面验证；前端单元测试、类型检查与生产构建通过。

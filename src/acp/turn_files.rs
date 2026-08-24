@@ -435,6 +435,31 @@ impl TurnFileStore {
         .ok_or_else(|| anyhow!(CHANGE_SET_NOT_FOUND))
     }
 
+    pub fn load_change_sets_for_turn(
+        &self,
+        turn_id: Option<&str>,
+    ) -> Result<Vec<TurnFileChangeSet>> {
+        let directory = self.attempt_dir.join("turn-file-change-sets");
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut paths = std::fs::read_dir(directory.as_std_path())?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+        paths.sort();
+        let mut change_sets = Vec::with_capacity(paths.len());
+        for path in paths {
+            let content = std::fs::read_to_string(&path)?;
+            let change_set = serde_json::from_str::<TurnFileChangeSet>(&content)
+                .with_context(|| format!("invalid turn file change set {}", path.display()))?;
+            if turn_id.is_none_or(|turn_id| change_set.turn_id == turn_id) {
+                change_sets.push(change_set);
+            }
+        }
+        Ok(change_sets)
+    }
+
     pub fn comparison(&self, change_set_id: &str, change_id: &str) -> Result<FileComparison> {
         let change_set = self.load_change_set(change_set_id)?;
         let change = change_set
@@ -915,6 +940,41 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn loads_structured_change_sets_for_only_the_requested_turn() {
+        let (_dir, store) = store();
+        for (turn_id, path) in [("turn-a", "a.txt"), ("turn-b", "b.txt")] {
+            store
+                .capture_event_diffs(
+                    turn_id,
+                    &format!("prompt-{turn_id}"),
+                    "root",
+                    "edit",
+                    2,
+                    "2Z",
+                    &raw(serde_json::json!([{
+                        "type": "diff",
+                        "path": path,
+                        "oldText": "before\n",
+                        "newText": "after\nextra\n"
+                    }])),
+                )
+                .unwrap();
+            store
+                .finalize_turn_branch(turn_id, &format!("prompt-{turn_id}"), "root", "1Z", "3Z")
+                .unwrap()
+                .unwrap();
+        }
+
+        let selected = store.load_change_sets_for_turn(Some("turn-b")).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].turn_id, "turn-b");
+        assert_eq!(selected[0].changes[0].logical_path, "b.txt");
+        assert_eq!(selected[0].changes[0].added_lines, Some(2));
+        assert_eq!(selected[0].changes[0].deleted_lines, Some(1));
+        assert_eq!(store.load_change_sets_for_turn(None).unwrap().len(), 2);
     }
 
     #[test]

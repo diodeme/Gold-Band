@@ -3149,12 +3149,6 @@ fn task_title(app: &App, task_id: &str) -> Option<String> {
     app.task_show(task_id).ok().and_then(|t| t.title)
 }
 
-fn metrics_user_id() -> String {
-    std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".into())
-}
-
 fn metrics_pause_reason(reason: PauseReason) -> super::observability::MetricsPauseReason {
     use super::observability::MetricsPauseReason as M;
     match reason {
@@ -3215,7 +3209,7 @@ fn emit_run_metrics_fact(
     app: &App,
     run: &RunState,
     event_type: super::observability::LifecycleEventType,
-    _event_id: String,
+    event_id: String,
     occurred_at: String,
     pause_reason: Option<PauseReason>,
     intervention_kind: Option<RuntimeInterventionKind>,
@@ -3238,20 +3232,16 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let state = app.update_observability_state(&task_uuid, path.clone(), |state| {
-        state.next_revision();
-
-        if event_type == super::observability::LifecycleEventType::ExecutionPaused {
-            state.record_pause(true);
-        }
-        if event_type == super::observability::LifecycleEventType::ExecutionResumed {
-            let cause = state
-                .take_pending_resume_cause()
-                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery);
-            state.record_resume(true, cause);
-        }
-    });
-    let revision = state.event_revision;
+    let mut resume_cause = None;
+    if event_type == super::observability::LifecycleEventType::ExecutionResumed {
+        app.update_observability_state(&task_uuid, path, |state| {
+            resume_cause = Some(
+                state
+                    .take_pending_resume_cause()
+                    .unwrap_or(super::observability::ResumeCause::AutomaticRecovery),
+            );
+        });
+    }
     let current_node_state = run
         .current_round
         .as_deref()
@@ -3283,73 +3273,158 @@ fn emit_run_metrics_fact(
             | super::observability::LifecycleEventType::ExecutionResumed
             | super::observability::LifecycleEventType::InterventionRequested
     );
-    let mut fact = super::observability::MetricsLifecycleFact::new(
+    let Some(round_id) = run.current_round.clone() else {
+        tracing::warn!(
+            code = "METRICS_RUNTIME_LOCATOR_MISSING",
+            task_id = %run.task_id,
+            run_id = %run.id,
+            "metrics fact requires a durable round locator"
+        );
+        return;
+    };
+    let session_mode = if is_auto {
+        super::observability::MetricsSessionMode::Auto
+    } else {
+        super::observability::MetricsSessionMode::Workflow
+    };
+    let subject = if is_intermediate {
+        let Some(node) = current_node_state.as_ref() else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no active attempt"
+            );
+            return;
+        };
+        let Some(round_index) = current_round_index else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %run.task_id,
+                run_id = %run.id,
+                "metrics intermediate fact has no round index"
+            );
+            return;
+        };
+        if is_auto {
+            let Some(subject) = active_auto_metrics_subject(app, run, node, &round_id, round_index)
+            else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "AUTO metrics intermediate fact has no unique active unit"
+                );
+                return;
+            };
+            subject
+        } else {
+            let (Some(attempt_id), Some(attempt_index)) = (
+                node.uuid.clone(),
+                super::observability::attempt_index_from_local_id(&node.attempt_id),
+            ) else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %run.task_id,
+                    run_id = %run.id,
+                    "Workflow metrics intermediate fact has no canonical attempt identity"
+                );
+                return;
+            };
+            let node_id = super::observability::derive_execution_id(
+                &run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+            .unwrap_or_else(|| attempt_id.clone());
+            super::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: node_label(node),
+            }
+        }
+    } else if is_auto {
+        super::observability::MetricsSubject::AutoOuterRun
+    } else {
+        super::observability::MetricsSubject::WorkflowRun
+    };
+    let mut fact = app.pending_metrics_fact(
+        &run.task_id,
+        task_uuid.clone(),
+        run.id.clone(),
+        round_id,
         event_type,
-        revision,
         occurred_at,
-        metrics_user_id(),
-        app.paths.repo_root.to_string(),
-        if is_auto {
-            super::observability::MetricsSessionMode::Auto
-        } else {
-            super::observability::MetricsSessionMode::Workflow
-        },
-        task_uuid.clone(),
-        if is_auto {
-            super::observability::ExecutionKind::OuterRun
-        } else {
-            super::observability::ExecutionKind::Run
-        },
-        task_uuid.clone(),
+        session_mode,
+        subject,
     );
-    fact.task_title = task_title(app, &run.task_id);
-    fact.pause_reason = pause_reason.map(metrics_pause_reason);
-    fact.previous_pause_reason =
+    fact.payload.pause_reason = pause_reason.map(metrics_pause_reason);
+    fact.payload.previous_pause_reason =
         if event_type == super::observability::LifecycleEventType::ExecutionResumed {
             pause_reason.map(metrics_pause_reason)
         } else {
             None
         };
-    fact.intervention_kind = intervention_kind.map(metrics_intervention_kind);
-    fact.collection_state_recovered = state.collection_state_recovered;
-    if is_intermediate {
-        if let Some(node) = &current_node_state {
-            fact.round_index = current_round_index;
-            fact.role_name = Some(node_label(node));
-            fact.attempt_index =
-                super::observability::attempt_index_from_local_id(&node.attempt_id);
-            if is_auto {
-                fact.node_id = node.uuid.clone();
-                fact.attempt_id = node.uuid.as_ref().and_then(|uuid| {
-                    super::observability::derive_attempt_id(uuid, &node.attempt_id)
-                });
-            } else {
-                let logical = current_round_index
-                    .and_then(|round_index| {
-                        super::observability::derive_execution_id(
-                            &run_uuid,
-                            &format!("round:{round_index}:node:{}", node.node_id),
-                        )
-                    })
-                    .or_else(|| node.uuid.clone());
-                fact.node_id = logical;
-                fact.attempt_id = node.uuid.clone();
+    fact.payload.intervention_kind = intervention_kind.map(metrics_intervention_kind);
+    fact.transition = match event_type {
+        super::observability::LifecycleEventType::ExecutionPaused => {
+            super::observability::MetricsTransition::Paused {
+                transition_id: event_id,
             }
         }
-    }
+        super::observability::LifecycleEventType::ExecutionResumed => {
+            let action = match resume_cause
+                .unwrap_or(super::observability::ResumeCause::AutomaticRecovery)
+            {
+                super::observability::ResumeCause::ManualContinue => {
+                    super::observability::UserExecutionAction::ManualContinue
+                }
+                super::observability::ResumeCause::PermissionResolved => {
+                    super::observability::UserExecutionAction::PermissionResponse
+                }
+                super::observability::ResumeCause::ElicitationResolved => {
+                    super::observability::UserExecutionAction::ElicitationResponse
+                }
+                super::observability::ResumeCause::AutomaticRecovery => {
+                    super::observability::UserExecutionAction::AutomaticRecovery
+                }
+            };
+            super::observability::MetricsTransition::Resumed {
+                transition_id: event_id,
+                action,
+            }
+        }
+        super::observability::LifecycleEventType::InterventionRequested => {
+            match intervention_kind {
+                Some(RuntimeInterventionKind::PermissionRequested) => {
+                    super::observability::MetricsTransition::PermissionRequested {
+                        request_id: event_id,
+                    }
+                }
+                Some(RuntimeInterventionKind::ElicitationRequested) => {
+                    super::observability::MetricsTransition::ElicitationRequested {
+                        request_id: event_id,
+                    }
+                }
+                _ => super::observability::MetricsTransition::None,
+            }
+        }
+        _ => super::observability::MetricsTransition::None,
+    };
     if let Some(outcome) = outcome {
-        fact.outcome = Some(match outcome {
+        fact.payload.outcome = Some(match outcome {
             RunOutcome::Success => super::observability::ExecutionOutcome::Success,
             RunOutcome::Failure => super::observability::ExecutionOutcome::Failure,
             RunOutcome::Killed => super::observability::ExecutionOutcome::Killed,
         });
-        fact.terminal_reason = Some(match outcome {
+        fact.payload.terminal_reason = Some(match outcome {
             RunOutcome::Success => super::observability::TerminalReason::Completed,
             RunOutcome::Failure => super::observability::TerminalReason::ExecutionFailed,
             RunOutcome::Killed => super::observability::TerminalReason::ProcessKilled,
         });
         if !is_auto {
-            fact.round_count = Some(run.new_rounds_opened.saturating_add(1));
+            fact.payload.round_count = Some(run.new_rounds_opened.saturating_add(1));
         }
         if outcome != RunOutcome::Success {
             let outer_attempt = run
@@ -3372,19 +3447,19 @@ fn emit_run_metrics_fact(
                 })
                 .and_then(|graph| failed_dynamic_metrics_unit(&graph).cloned());
             if let Some(node) = failed_unit {
-                fact.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
+                fact.payload.failed_attempt_id = node.uuid.as_deref().and_then(|execution_id| {
                     super::observability::derive_attempt_id(
                         execution_id,
                         &dynamic_attempt_id(&node),
                     )
                 });
-                fact.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
-                fact.terminal_reason_code = node
+                fact.payload.terminal_reason = Some(dynamic_metrics_terminal_reason(&node));
+                fact.payload.terminal_reason_code = node
                     .runtime_error
                     .as_ref()
                     .map(|error| error.code_str().to_string());
             } else {
-                fact.failed_attempt_id =
+                fact.payload.failed_attempt_id =
                     outer_attempt.and_then(|((round_id, node_id), attempt_id)| {
                         read_json::<NodeState>(&app.paths.node_file(
                             &run.task_id,
@@ -3398,12 +3473,64 @@ fn emit_run_metrics_fact(
                     });
             }
         }
-        fact.counters = Some(state.counters.clone());
     }
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
-    if outcome.is_some() {
-        app.release_observability_state(&task_uuid);
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+}
+
+fn active_auto_metrics_subject(
+    app: &App,
+    run: &RunState,
+    outer: &NodeState,
+    round_id: &str,
+    round_index: u32,
+) -> Option<super::observability::MetricsSubject> {
+    let graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+        &run.task_id,
+        &run.id,
+        round_id,
+        &outer.node_id,
+        &outer.attempt_id,
+    ))
+    .ok()?;
+    let mut candidates = graph
+        .nodes
+        .iter()
+        .filter(|node| graph.run.current_node_ids.contains(&node.id))
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        candidates = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.status,
+                    DynamicNodeStatus::Running | DynamicNodeStatus::Paused
+                ) && node.outcome.is_none()
+            })
+            .collect();
     }
+    let [node] = candidates.as_slice() else {
+        return None;
+    };
+    let node_id = node.uuid.clone()?;
+    let attempt_id = super::observability::derive_attempt_id(&node_id, &dynamic_attempt_id(node))?;
+    let attempt_index =
+        super::observability::attempt_index_from_local_id(&dynamic_attempt_id(node))?;
+    Some(super::observability::MetricsSubject::AutoUnitAttempt {
+        node_id,
+        attempt_id,
+        attempt_index,
+        round_index,
+        role_name: node.title.clone(),
+        unit_kind: match node.kind {
+            DynamicNodeKind::Worker => super::observability::UnitKind::Worker,
+            DynamicNodeKind::WorkflowInvocation => {
+                super::observability::UnitKind::WorkflowInvocation
+            }
+            DynamicNodeKind::Merge => super::observability::UnitKind::Merge,
+            DynamicNodeKind::Acceptance => super::observability::UnitKind::Acceptance,
+        },
+    })
 }
 
 fn emit_run_paused_lifecycle_event(
@@ -13295,21 +13422,6 @@ mod tests {
     }
 
     #[test]
-    fn metrics_resume_cause_is_consumed_without_pause_reason_inference() {
-        let mut state = crate::app::observability::ExecutionObservabilityState::default();
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::PermissionResolved);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 1);
-        assert_eq!(state.counters.manual_continue_count, 0);
-        state.set_pending_resume_cause(crate::app::observability::ResumeCause::ManualContinue);
-        let cause = state.take_pending_resume_cause().unwrap();
-        state.record_resume(true, cause);
-        assert_eq!(state.counters.resume_count, 2);
-        assert_eq!(state.counters.manual_continue_count, 1);
-    }
-
-    #[test]
     fn run_intermediate_metrics_carry_current_workflow_node_context() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
@@ -13321,7 +13433,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
@@ -13415,18 +13527,28 @@ mod tests {
         let facts = seen.lock().unwrap();
         assert_eq!(facts.len(), 2);
         for fact in facts.iter() {
-            assert_eq!(fact.round_index, Some(1));
-            assert_eq!(fact.attempt_index, Some(1));
-            assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
-            assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+            let crate::app::observability::MetricsSubject::WorkflowNodeAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name,
+            } = &fact.subject
+            else {
+                panic!("expected workflow node attempt subject")
+            };
+            assert_eq!(*round_index, 1);
+            assert_eq!(*attempt_index, 1);
+            assert_eq!(attempt_id, &node_uuid);
+            assert_eq!(role_name, "Planner");
             assert_eq!(
-                fact.node_id.as_deref(),
-                crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
-                    .as_deref()
+                node_id,
+                &crate::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                    .unwrap()
             );
         }
         assert_eq!(
-            facts[1].previous_pause_reason,
+            facts[1].payload.previous_pause_reason,
             Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
         );
     }

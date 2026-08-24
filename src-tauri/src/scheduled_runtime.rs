@@ -267,10 +267,13 @@ struct WorkspaceRegistration {
 
 fn scheduled_task_context_info(
     definition: &ScheduledTaskDefinition,
+    occurrence_id: &str,
     trigger_kind: &str,
     triggered_at: chrono::DateTime<chrono::Utc>,
 ) -> gold_band::provider::ScheduledTaskContextInfo {
     gold_band::provider::ScheduledTaskContextInfo {
+        scheduled_task_id: definition.id.clone(),
+        scheduled_occurrence_id: occurrence_id.to_string(),
         title: definition
             .instruction
             .lines()
@@ -2694,7 +2697,7 @@ fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccur
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => None,
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => None,
     }
 }
 
@@ -2816,7 +2819,7 @@ pub(crate) fn finish_occurrence_for_event(
         | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => return Ok(None),
     };
     if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, links, error)? {
         return Ok(None);
@@ -3260,6 +3263,7 @@ pub(super) fn execute_definition_with_action(
                     .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
                     .with_scheduled_task_context(Some(scheduled_task_context_info(
                         definition,
+                        occurrence_id,
                         trigger_kind,
                         scheduled_at,
                     )));
@@ -3327,6 +3331,7 @@ pub(super) fn execute_definition_with_action(
                 .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
                 .with_scheduled_task_context(Some(scheduled_task_context_info(
                     definition,
+                    occurrence_id,
                     trigger_kind,
                     scheduled_at,
                 )));
@@ -3380,6 +3385,7 @@ pub(super) fn execute_definition_with_action(
         .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
         .with_scheduled_task_context(Some(scheduled_task_context_info(
             definition,
+            occurrence_id,
             trigger_kind,
             scheduled_at,
         )));

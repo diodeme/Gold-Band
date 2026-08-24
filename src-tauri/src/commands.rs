@@ -528,12 +528,12 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
 enum DirectMetricsJob {
     TurnStarted {
         locator: AttemptLocator,
+        turn_id: String,
         repo_root: String,
     },
     TurnFinished {
         locator: AttemptLocator,
         turn_id: String,
-        agent_label: String,
         outcome: AcpTurnOutcome,
         repo_root: String,
     },
@@ -568,14 +568,19 @@ fn init_direct_metrics_worker(app: App) {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut scoped_app = app.clone_for_background();
                     match &job {
-                        DirectMetricsJob::TurnStarted { locator, repo_root } => {
+                        DirectMetricsJob::TurnStarted {
+                            locator,
+                            turn_id,
+                            repo_root,
+                        } => {
                             scoped_app.paths = gold_band::storage::GoldBandPaths::new(
                                 camino::Utf8PathBuf::from(repo_root),
                             );
-                            build_direct_turn_metrics_fact(&scoped_app, locator, None);
+                            build_direct_turn_metrics_fact(&scoped_app, locator, turn_id, None);
                         }
                         DirectMetricsJob::TurnFinished {
                             locator,
+                            turn_id,
                             outcome,
                             repo_root,
                             ..
@@ -583,7 +588,12 @@ fn init_direct_metrics_worker(app: App) {
                             scoped_app.paths = gold_band::storage::GoldBandPaths::new(
                                 camino::Utf8PathBuf::from(repo_root),
                             );
-                            build_direct_turn_metrics_fact(&scoped_app, locator, Some(*outcome));
+                            build_direct_turn_metrics_fact(
+                                &scoped_app,
+                                locator,
+                                turn_id,
+                                Some(*outcome),
+                            );
                         }
                         DirectMetricsJob::InterventionRequested {
                             context,
@@ -645,17 +655,17 @@ fn emit_acp_turn_finished(
         let _ = sender.try_send(DirectMetricsJob::TurnFinished {
             locator: locator.clone(),
             turn_id: turn_id.to_string(),
-            agent_label: agent_label.to_string(),
             outcome,
             repo_root: app.paths.repo_root.to_string(),
         });
     }
 }
 
-fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
+fn emit_direct_turn_started(app: &App, locator: &AttemptLocator, turn_id: &str) {
     if let Some(sender) = direct_metrics_sender() {
         let _ = sender.try_send(DirectMetricsJob::TurnStarted {
             locator: locator.clone(),
+            turn_id: turn_id.to_string(),
             repo_root: app.paths.repo_root.to_string(),
         });
     }
@@ -664,6 +674,7 @@ fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
 fn build_direct_turn_metrics_fact(
     app: &App,
     locator: &AttemptLocator,
+    turn_id: &str,
     outcome: Option<AcpTurnOutcome>,
 ) {
     if !app.metrics_collection_enabled() {
@@ -677,18 +688,18 @@ fn build_direct_turn_metrics_fact(
     };
     let Some(task_uuid) = task.uuid else { return };
     let attempt_dir = locator.attempt_dir(app);
-    let occurred_at = current_timestamp();
-    let execution_id = task_uuid.clone();
-    let attempt_key = format!("direct:{task_uuid}");
     let attempt_path = app
         .paths
         .run_dir(&locator.task_id, &locator.run_id)
         .join("observability")
-        .join(&execution_id)
-        .join(&execution_id)
+        .join(&task_uuid)
+        .join(&task_uuid)
         .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+    let occurred_at = current_timestamp();
+    let execution_id = task_uuid.clone();
+    let attempt_key = format!("direct:{task_uuid}");
     let is_follow_up = if outcome.is_none() {
-        app.direct_metrics_is_follow_up(&attempt_key, Some(attempt_dir.as_path()), &attempt_path)
+        app.direct_metrics_is_follow_up(&attempt_key, Some(attempt_dir.as_path()))
     } else {
         false
     };
@@ -720,9 +731,6 @@ fn build_direct_turn_metrics_fact(
         app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
             if outcome.is_none() {
                 state.record_started_at(occurred_at.clone());
-                if is_follow_up {
-                    state.record_follow_up();
-                }
             }
             if outcome.is_some() {
                 let segments = gold_band::app::App::direct_usage_segments_after(
@@ -756,38 +764,40 @@ fn build_direct_turn_metrics_fact(
                     );
                 }
             }
-            state.next_revision();
         });
-    let direct_revision = attempt_state.event_revision;
     let event_type = if outcome.is_some() {
         gold_band::app::observability::LifecycleEventType::ExecutionCompleted
     } else {
         gold_band::app::observability::LifecycleEventType::ExecutionStarted
     };
-    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-        event_type,
-        direct_revision,
-        occurred_at.clone(),
-        crate::metrics::get_system_username(),
-        app.paths.repo_root.to_string(),
-        gold_band::app::observability::MetricsSessionMode::Direct,
+    let mut fact = app.pending_metrics_fact(
+        &locator.task_id,
         task_uuid,
-        gold_band::app::observability::ExecutionKind::Turn,
-        active_turn.execution_id.clone(),
+        locator.run_id.clone(),
+        locator.round_id.clone(),
+        event_type,
+        occurred_at.clone(),
+        gold_band::app::observability::MetricsSessionMode::Direct,
+        gold_band::app::observability::MetricsSubject::DirectTurn {
+            attempt_id: active_turn.attempt_id.clone(),
+            attempt_index: active_turn.attempt_index,
+        },
     );
-    fact.task_title = task.title.clone();
-    fact.attempt_id = Some(active_turn.attempt_id.clone());
-    fact.attempt_index = Some(active_turn.attempt_index);
-    fact.provider = provider;
-    fact.model = model;
-    fact.collection_state_recovered = attempt_state.collection_state_recovered;
+    fact.payload.task_title = task.title.clone();
+    fact.payload.provider = provider;
+    fact.payload.model = model;
+    if is_follow_up {
+        fact.transition = gold_band::app::observability::MetricsTransition::FollowUp {
+            action_id: turn_id.to_string(),
+        };
+    }
     if let Some(outcome) = outcome {
-        fact.outcome = Some(match outcome {
+        fact.payload.outcome = Some(match outcome {
             AcpTurnOutcome::Completed => gold_band::app::observability::ExecutionOutcome::Completed,
             AcpTurnOutcome::Failed => gold_band::app::observability::ExecutionOutcome::Failed,
             AcpTurnOutcome::Cancelled => gold_band::app::observability::ExecutionOutcome::Cancelled,
         });
-        fact.terminal_reason = Some(match outcome {
+        fact.payload.terminal_reason = Some(match outcome {
             AcpTurnOutcome::Completed => gold_band::app::observability::TerminalReason::Completed,
             AcpTurnOutcome::Failed => gold_band::app::observability::TerminalReason::ProviderError,
             AcpTurnOutcome::Cancelled => {
@@ -810,15 +820,15 @@ fn build_direct_turn_metrics_fact(
                 })
         };
         if !usages.is_empty() {
-            fact.usage = Some(gold_band::app::observability::TokenUsage {
+            fact.payload.usage = Some(gold_band::app::observability::TokenUsage {
                 input_tokens: sum(|u| u.input_tokens),
                 output_tokens: sum(|u| u.output_tokens),
                 cache_read_tokens: sum(|u| u.cache_read_tokens),
                 total_tokens: sum(|u| u.total_tokens),
             });
-            fact.model_usages = Some(usages);
+            fact.payload.model_usages = Some(usages);
         }
-        fact.timing = Some(gold_band::app::observability::LifecycleTiming {
+        fact.payload.timing = Some(gold_band::app::observability::LifecycleTiming {
             started_at: attempt_state
                 .started_at
                 .clone()
@@ -826,9 +836,12 @@ fn build_direct_turn_metrics_fact(
             ended_at: Some(occurred_at),
             acp_session_elapsed_ms: elapsed_sum,
         });
-        fact.counters = Some(attempt_state.counters.clone());
+        fact.payload.code_change_delta = Some(gold_band::app::App::metrics_code_change_delta(
+            attempt_dir.as_path(),
+            Some(turn_id),
+        ));
     }
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
     if outcome.is_some() {
         app.release_observability_state(&active_turn.execution_id);
         app.end_metrics_turn(&attempt_key);
@@ -3893,82 +3906,50 @@ fn build_request_intervention_metrics(
     } else {
         None
     };
-    let execution_id = active_turn
-        .as_ref()
-        .map(|turn| turn.execution_id.clone())
-        .unwrap_or_else(|| task_uuid.clone());
-    let event_revision;
-    let collection_state_recovered;
-    let _state = if let Some(active_turn) = active_turn.as_ref() {
-        let attempt_path = app
-            .paths
-            .run_dir(&context.task_id, &context.run_id)
-            .join("observability")
-            .join(&execution_id)
-            .join(&active_turn.attempt_id)
-            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
-        let attempt_state =
-            app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
-                match kind {
-                    RuntimeInterventionKind::PermissionRequested => {
-                        state.record_permission(request_id)
-                    }
-                    RuntimeInterventionKind::ElicitationRequested => {
-                        state.record_elicitation(request_id)
-                    }
-                    _ => {}
-                }
-                state.next_revision();
-            });
-        event_revision = attempt_state.event_revision;
-        collection_state_recovered = attempt_state.collection_state_recovered;
-        attempt_state
+    let subject = if is_direct {
+        let Some(turn) = active_turn else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %context.task_id,
+                run_id = %context.run_id,
+                "Direct intervention has no active metrics turn"
+            );
+            return;
+        };
+        gold_band::app::observability::MetricsSubject::DirectTurn {
+            attempt_id: turn.attempt_id,
+            attempt_index: turn.attempt_index,
+        }
     } else {
-        let path = app
-            .paths
-            .run_dir(&context.task_id, &context.run_id)
-            .join("observability")
-            .join(&execution_id)
-            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
-        let state = app.update_observability_state(&execution_id, path, |state| {
-            match kind {
-                RuntimeInterventionKind::PermissionRequested => state.record_permission(request_id),
-                RuntimeInterventionKind::ElicitationRequested => {
-                    state.record_elicitation(request_id)
-                }
-                _ => {}
-            }
-            state.next_revision();
-        });
-        event_revision = state.event_revision;
-        collection_state_recovered = state.collection_state_recovered;
-        state
+        let Some(subject) = intervention_metrics_subject(app, context, &run_uuid, is_auto) else {
+            tracing::warn!(
+                code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                task_id = %context.task_id,
+                run_id = %context.run_id,
+                "intervention has no canonical metrics attempt"
+            );
+            return;
+        };
+        subject
     };
-    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-        gold_band::app::observability::LifecycleEventType::InterventionRequested,
-        event_revision,
-        current_timestamp(),
-        crate::metrics::get_system_username(),
-        app.paths.repo_root.to_string(),
-        if is_direct {
-            gold_band::app::observability::MetricsSessionMode::Direct
-        } else if is_auto {
-            gold_band::app::observability::MetricsSessionMode::Auto
-        } else {
-            gold_band::app::observability::MetricsSessionMode::Workflow
-        },
+    let session_mode = if is_direct {
+        gold_band::app::observability::MetricsSessionMode::Direct
+    } else if is_auto {
+        gold_band::app::observability::MetricsSessionMode::Auto
+    } else {
+        gold_band::app::observability::MetricsSessionMode::Workflow
+    };
+    let mut fact = app.pending_metrics_fact(
+        &context.task_id,
         task_uuid,
-        if is_direct {
-            gold_band::app::observability::ExecutionKind::Turn
-        } else if is_auto {
-            gold_band::app::observability::ExecutionKind::OuterRun
-        } else {
-            gold_band::app::observability::ExecutionKind::Run
-        },
-        execution_id.clone(),
+        context.run_id.clone(),
+        context.round_id.clone(),
+        gold_band::app::observability::LifecycleEventType::InterventionRequested,
+        current_timestamp(),
+        session_mode,
+        subject,
     );
-    fact.task_title = app.task_show(&context.task_id).ok().and_then(|t| t.title);
-    fact.intervention_kind = Some(match kind {
+    fact.payload.intervention_kind = Some(match kind {
         RuntimeInterventionKind::PermissionRequested => {
             gold_band::app::observability::MetricsInterventionKind::Permission
         }
@@ -3988,40 +3969,42 @@ fn build_request_intervention_metrics(
             gold_band::app::observability::MetricsInterventionKind::ProcessInterrupted
         }
     });
-    if is_direct {
-        if let Some(turn) = active_turn {
-            fact.attempt_id = Some(turn.attempt_id.clone());
-            fact.attempt_index = Some(turn.attempt_index);
+    fact.transition = match kind {
+        RuntimeInterventionKind::PermissionRequested => {
+            gold_band::app::observability::MetricsTransition::PermissionRequested {
+                request_id: request_id.to_string(),
+            }
         }
-    } else {
-        apply_intervention_node_context(app, context, &run_uuid, &mut fact, is_auto);
-    }
-    fact.collection_state_recovered = collection_state_recovered;
-    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+        RuntimeInterventionKind::ElicitationRequested => {
+            gold_band::app::observability::MetricsTransition::ElicitationRequested {
+                request_id: request_id.to_string(),
+            }
+        }
+        _ => gold_band::app::observability::MetricsTransition::None,
+    };
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
 }
 
-fn apply_intervention_node_context(
+fn intervention_metrics_subject(
     app: &App,
     context: &gold_band::app::AcpLiveEventContext,
     run_uuid: &str,
-    fact: &mut gold_band::app::observability::MetricsLifecycleFact,
     is_auto: bool,
-) {
+) -> Option<gold_band::app::observability::MetricsSubject> {
     let round_index = read_json::<gold_band::runtime::RoundState>(&app.paths.round_file(
         &context.task_id,
         &context.run_id,
         &context.round_id,
     ))
     .ok()
-    .map(|round| round.index);
-    fact.round_index = round_index;
+    .map(|round| round.index)?;
 
     if is_auto {
         let (Some(outer_node_id), Some(outer_attempt_id)) = (
             context.outer_node_id.as_deref(),
             context.outer_attempt_id.as_deref(),
         ) else {
-            return;
+            return None;
         };
         let Ok(graph) =
             read_json::<gold_band::dynamic::DynamicGraphState>(&app.paths.dynamic_graph_file(
@@ -4032,20 +4015,39 @@ fn apply_intervention_node_context(
                 outer_attempt_id,
             ))
         else {
-            return;
+            return None;
         };
         let Some(dynamic_node) = graph.nodes.iter().find(|node| node.id == context.node_id) else {
-            return;
+            return None;
         };
-        fact.attempt_index =
-            gold_band::app::observability::attempt_index_from_local_id(&context.attempt_id);
-        fact.role_name = Some(dynamic_node.title.clone());
-        if let Some(node_uuid) = dynamic_node.uuid.as_deref() {
-            fact.node_id = Some(node_uuid.to_string());
-            fact.attempt_id =
-                gold_band::app::observability::derive_attempt_id(node_uuid, &context.attempt_id);
-        }
-        return;
+        let node_id = dynamic_node.uuid.clone()?;
+        let attempt_id =
+            gold_band::app::observability::derive_attempt_id(&node_id, &context.attempt_id)?;
+        let attempt_index =
+            gold_band::app::observability::attempt_index_from_local_id(&context.attempt_id)?;
+        return Some(
+            gold_band::app::observability::MetricsSubject::AutoUnitAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: dynamic_node.title.clone(),
+                unit_kind: match dynamic_node.kind {
+                    gold_band::dynamic::DynamicNodeKind::Worker => {
+                        gold_band::app::observability::UnitKind::Worker
+                    }
+                    gold_band::dynamic::DynamicNodeKind::WorkflowInvocation => {
+                        gold_band::app::observability::UnitKind::WorkflowInvocation
+                    }
+                    gold_band::dynamic::DynamicNodeKind::Merge => {
+                        gold_band::app::observability::UnitKind::Merge
+                    }
+                    gold_band::dynamic::DynamicNodeKind::Acceptance => {
+                        gold_band::app::observability::UnitKind::Acceptance
+                    }
+                },
+            },
+        );
     }
 
     let Ok(node) = read_json::<NodeState>(&app.paths.node_file(
@@ -4055,24 +4057,25 @@ fn apply_intervention_node_context(
         &context.node_id,
         &context.attempt_id,
     )) else {
-        return;
+        return None;
     };
-    fact.attempt_index =
-        gold_band::app::observability::attempt_index_from_local_id(&node.attempt_id);
-    fact.role_name = Some(node_intervention_role_name(&node));
-    let Some(node_uuid) = node.uuid.as_deref() else {
-        return;
-    };
-    let logical = round_index
-        .and_then(|round_index| {
-            gold_band::app::observability::derive_execution_id(
-                run_uuid,
-                &format!("round:{round_index}:node:{}", node.node_id),
-            )
-        })
-        .unwrap_or_else(|| node_uuid.to_string());
-    fact.node_id = Some(logical);
-    fact.attempt_id = Some(node_uuid.to_string());
+    let attempt_index =
+        gold_band::app::observability::attempt_index_from_local_id(&node.attempt_id)?;
+    let attempt_id = node.uuid.clone()?;
+    let node_id = gold_band::app::observability::derive_execution_id(
+        run_uuid,
+        &format!("round:{round_index}:node:{}", node.node_id),
+    )
+    .unwrap_or_else(|| attempt_id.clone());
+    Some(
+        gold_band::app::observability::MetricsSubject::WorkflowNodeAttempt {
+            node_id,
+            attempt_id,
+            attempt_index,
+            round_index,
+            role_name: node_intervention_role_name(&node),
+        },
+    )
 }
 
 fn node_intervention_role_name(node: &NodeState) -> String {
@@ -5026,7 +5029,7 @@ pub(crate) async fn send_acp_prompt_with_configured_app(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
-    emit_direct_turn_started(&app, &locator);
+    emit_direct_turn_started(&app, &locator, &turn_id);
     let preflight = ensure_conversation_prompt_available(&app, &locator);
     finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
@@ -11442,7 +11445,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
@@ -11469,14 +11472,24 @@ mod tests {
             fact.event_type,
             gold_band::app::observability::LifecycleEventType::InterventionRequested
         );
-        assert_eq!(fact.round_index, Some(1));
-        assert_eq!(fact.attempt_index, Some(1));
-        assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
-        assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+        let gold_band::app::observability::MetricsSubject::WorkflowNodeAttempt {
+            node_id,
+            attempt_id,
+            attempt_index,
+            round_index,
+            role_name,
+        } = &fact.subject
+        else {
+            panic!("expected workflow node attempt subject")
+        };
+        assert_eq!(*round_index, 1);
+        assert_eq!(*attempt_index, 1);
+        assert_eq!(attempt_id, &node_uuid);
+        assert_eq!(role_name, "Planner");
         assert_eq!(
-            fact.node_id.as_deref(),
-            gold_band::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
-                .as_deref()
+            node_id,
+            &gold_band::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                .unwrap()
         );
         drop(facts);
         let _ = std::fs::remove_dir_all(temp);
@@ -11623,7 +11636,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_for_handler = seen.clone();
         bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_for_handler.lock().unwrap().push(fact);
             }
         }));
@@ -11650,19 +11663,27 @@ mod tests {
             fact.session_mode,
             gold_band::app::observability::MetricsSessionMode::Auto
         );
+        let gold_band::app::observability::MetricsSubject::AutoUnitAttempt {
+            node_id,
+            attempt_id,
+            attempt_index,
+            round_index,
+            role_name,
+            unit_kind,
+        } = &fact.subject
+        else {
+            panic!("expected AUTO unit attempt subject")
+        };
+        assert_eq!(*round_index, 1);
+        assert_eq!(*attempt_index, 1);
+        assert_eq!(node_id, &dynamic_node_uuid);
+        assert_eq!(role_name, "Bootstrap");
         assert_eq!(
-            fact.execution_kind,
-            gold_band::app::observability::ExecutionKind::OuterRun
+            attempt_id,
+            &gold_band::app::observability::derive_attempt_id(&dynamic_node_uuid, "attempt-001")
+                .unwrap()
         );
-        assert_eq!(fact.round_index, Some(1));
-        assert_eq!(fact.attempt_index, Some(1));
-        assert_eq!(fact.node_id.as_deref(), Some(dynamic_node_uuid.as_str()));
-        assert_eq!(fact.role_name.as_deref(), Some("Bootstrap"));
-        assert_eq!(
-            fact.attempt_id.as_deref(),
-            gold_band::app::observability::derive_attempt_id(&dynamic_node_uuid, "attempt-001")
-                .as_deref()
-        );
+        assert_eq!(*unit_kind, gold_band::app::observability::UnitKind::Worker);
         drop(facts);
         let _ = std::fs::remove_dir_all(temp);
     }

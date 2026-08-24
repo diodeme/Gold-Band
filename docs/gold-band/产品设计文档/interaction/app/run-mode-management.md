@@ -77,6 +77,7 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 运行模式管理的工作流模板编辑区、旧 UI 创建任务抽屉、任务工作流页必须复用同一个 `WorkflowEditor` 组件；各入口只允许保留不同的外层模板选择/保存编排
 - 工作流模板“新增模板”必须创建可编辑的空 `WorkflowDsl` 草稿并立即进入 `WorkflowEditor`；选择器显示“新增模板（未保存）”。空态只用于模板 store 不可用或没有可编辑草稿，不用于新增模板流程。
 - 工作流模板编辑器必须区分完整 `WorkflowDsl` 草稿和画布投影：右侧 Inspector 的目标、模型、角色、权限、校验 schema、表达式、动态路由 prompt、动态控制等配置字段输入只更新编辑草稿，不应触发画布节点/边投影重算；只有节点增删、节点 id/type、边 from/to/on、选中态、校验高亮和终点显隐等会改变画布呈现的字段才刷新 ReactFlow。
+- 工作流编辑器的实时校验必须显式区分 profile catalog 的加载状态与已加载空集合。目录加载期间继续执行 DSL 结构、必填项和拓扑校验，但不得把尚未解析的 profile 引用报告为“角色不存在或已删除”；目录成功到达后自动恢复完整引用校验。运行模式页在目录就绪前禁用工作流模板的“保存修改”和“另存为新的工作流”，避免使用未知目录生成错误验收结论。
 - 普通 Worker 节点必须复用 Direct 的 ACP 模型复合选择器，并把 Agent、模型、权限及 Agent capability 声明的全部 session config options 写入独立本机模型绑定；作者态 `WorkflowDsl` 中对应执行字段保持为空。思考强度使用 Agent 返回的真实 option id，不得硬编码 `reasoning_effort` 等 provider 专用字段；切换 Agent 时清空旧模型、权限和 option overrides，避免跨 Agent 污染。
 - AI-DYNAMIC 及其内部动态节点不使用普通 Worker 模型绑定或执行槽位，继续由现有 AUTO / AI-DYNAMIC 运行时统一配置与解析。
 - 每个普通 Worker 使用内部、不可编辑的 `executionSlotId` 关联绑定。修改 node id 保留槽位与绑定；内置 Worker 使用跨版本固定 ID；新建自定义 Worker 使用 UUID；复制 Worker 生成新槽位并复制完整模型绑定。
@@ -88,12 +89,20 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 - 工作流模板存储在用户目录 `~/.gold-band/context/workflows.json`，属于用户级跨 workspace 模板；若新路径不存在且当前 workspace 仍存在旧版 `authoring/workflows.json`，首次读取时会复制迁移到用户级 context
 - 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store；另存成功后以保存结果中的模板身份更新当前运行模式和编辑选择，新模板应立刻出现在模板选择器中并保持显示保存后的模板名，不能回退到默认工作流
 
+### Profile catalog 生命周期（Phase 73）
+
+- 所有复用 `WorkflowEditor` 的入口必须传入同一三态 `profileCatalog` 契约：`loading`、`ready` 或 `error`；`profiles: []` 只表示已成功加载且目录为空，不能表达未加载或失败。
+- `loading` 时继续执行不依赖角色目录的 DSL 结构、必填项和拓扑校验，但不生成角色缺失错误，也不允许保存；`ready` 后才执行普通 Worker 与 AI-DYNAMIC `allowedProfiles` 的引用存在性校验。
+- `error` 必须在编辑区域展示结构化错误文案和“重新加载”操作；保存/另存按钮保持禁用直到重试成功，不能静默失败或永久无入口。
+- 目录请求由入口自身管理，使用请求代次忽略卸载、切换和重试产生的迟到响应；不使用全局缓存、自动轮询或名称反查。
+
 ## 校验规则
 
 创建新会话时校验：
 - workspace 已选择
 - AUTO 模式：固定策略要求 agent；动态策略要求 bootstrap agent 和至少一个可用 agent；决策指南为空时，每个可用 agent 必须配置模型
 - WORKFLOW 模式：workflow 模板存在且定义合法；每个普通 Worker 都必须绑定可用 Agent，显式模型、权限和 config options 必须通过最新权威 doctor 缓存校验。AI-DYNAMIC 不计入普通 Worker 模型绑定校验。
+- profile catalog 尚未加载完成属于 `unknown`，不等于角色已删除；只有权威目录成功返回后，才允许产生 profile 引用缺失错误。显式保存与创建会话仍必须执行完整引用校验，不得把加载期的局部校验结果当作可执行性结论。
 - 校验失败时阻断创建 Task / Run；后端结构化错误 `params` 返回 `workflowTemplateId`、`nodeId` 与 `executionSlotId`，前端据此 deep link 到运行模式管理页的目标工作流并聚焦第一个问题普通 Worker。不进入首次运行向导，不显示步骤进度，不保留启动意图，也不在保存后自动续跑。用户保存修复后自行再次发起运行。
 - 校验失败时在 composer 下方持续展示错误和修复入口，直到用户重新发送或页面重新加载；不使用短暂消失的顶部 toast 承载阻断错误
 - 工作流模板保存/另存被 DSL 校验或后端校验拦截时，必须在模板编辑区域展示错误原因，不允许表现为按钮无反应

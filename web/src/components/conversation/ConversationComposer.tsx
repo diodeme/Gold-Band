@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
 import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
@@ -56,12 +56,15 @@ interface ConversationComposerProps {
   busy: boolean;
   inlineContentMaxBytes: number;
   initialScheduledMode?: boolean;
+  scheduledTaskCreated?: boolean;
   workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
   onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
+  onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
+  onOpenScheduledTasks: () => void;
   onOpenRunModeSettings: () => void;
   onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
@@ -81,6 +84,25 @@ const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground t
 const CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX = '0 0 48 28';
 const CONVERSATION_WORKSPACE_INFO_CURVE_PATH = 'M0 28L20.14 4Q23.497 0 29.497 0H48V28Z';
 
+export function ScheduledTaskCreatedNotice({ onOpenScheduledTasks }: { onOpenScheduledTasks: () => void }) {
+  return (
+    <div className="px-3 text-xs text-muted-foreground" role="status">
+      <Trans i18nKey="scheduled.composer.created" components={{
+        tasks: (
+          <a
+            href="/chat/scheduled-tasks"
+            className="rounded-sm font-medium text-link underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onOpenScheduledTasks();
+            }}
+          />
+        ),
+      }} />
+    </div>
+  );
+}
 export function ConversationWorkspaceControl({
   projectId,
   workspaceName,
@@ -341,12 +363,15 @@ export function ConversationComposer({
   busy,
   inlineContentMaxBytes,
   initialScheduledMode = false,
+  scheduledTaskCreated = false,
   workLocation,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
   onCreateScheduledTask,
+  onScheduledTaskCreated,
   onOpenAgentManagement,
+  onOpenScheduledTasks,
   onOpenRunModeSettings,
   onWorkflowRepairTargetChange,
   onWorkspaceChange,
@@ -493,6 +518,7 @@ export function ConversationComposer({
     if (!rightWorkspace) return;
     return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
   }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
+
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
@@ -767,6 +793,7 @@ export function ConversationComposer({
       await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
       attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
+      onScheduledTaskCreated?.();
       exitScheduledMode();
       setRunModeError(null);
     } catch (error) {
@@ -975,6 +1002,8 @@ export function ConversationComposer({
         {fileError ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{fileError}</div>
         ) : null}
+
+        {scheduledTaskCreated ? <ScheduledTaskCreatedNotice onOpenScheduledTasks={onOpenScheduledTasks} /> : null}
 
         {/* Run mode selector */}
         <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName}>

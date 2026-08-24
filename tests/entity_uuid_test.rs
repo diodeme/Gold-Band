@@ -144,6 +144,7 @@ fn round_state_backward_compat_no_uuid() {
 fn node_state_with_uuid() {
     let node = NodeState {
         version: "1".into(),
+        acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         node_id: "node-1".into(),
         node_type: NodeType::Worker,
         run_id: "run-001".into(),

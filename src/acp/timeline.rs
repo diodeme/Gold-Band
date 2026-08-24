@@ -1392,10 +1392,15 @@ fn timeline_item_locator(
         item.kind.as_str(),
         "thoughtDelta" | "toolCall" | "toolCallUpdate" | "error"
     ) && !agent_launch;
-    let standalone = matches!(
-        item.kind.as_str(),
-        "userTextDelta" | "textDelta" | "fileChangeSet" | "attemptSeparator" | "contextCompaction"
-    ) || agent_launch
+    let standalone = agent_launch
+        || matches!(
+            item.kind.as_str(),
+            "userTextDelta"
+                | "textDelta"
+                | "fileChangeSet"
+                | "attemptSeparator"
+                | "contextCompaction"
+        )
         || (item.kind == "permissionRequest" && item.status.as_deref() == Some("pending"))
         || (item.kind == "elicitationRequest"
             && item.status.as_deref().unwrap_or("pending") == "pending");

@@ -73,6 +73,7 @@ import { formatLocalDateTime } from '@/lib/datetime';
 import { DEFAULT_AGENT_ICON_KEY, agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { GraphControls } from '@/components/GraphControls';
 import { normalizeWorkflowModelBindings } from '@/lib/workflow-model-bindings';
+import type { WorkflowProfileCatalogState } from '@/lib/workflow-profile-catalog';
 
 export function workflowAgentIconKeys(agents: readonly ManagedAgentVm[]): ReadonlyMap<string, string> {
   return new Map(agents.map((agent) => [agent.agentType, agent.iconKey?.trim() || DEFAULT_AGENT_ICON_KEY]));
@@ -391,7 +392,7 @@ interface WorkflowEditorProps {
   value: WorkflowDsl;
   modelBindings?: WorkflowModelBindings;
   agentRegistry: AgentRegistryVm | null;
-  profiles?: ProfileVm[];
+  profileCatalog: WorkflowProfileCatalogState;
   onOpenProfileManagement?: () => void;
   onSave: (workflow: WorkflowDsl, modelBindings: WorkflowModelBindings) => Promise<void> | void;
   onChange?: (workflow: WorkflowDsl) => void;
@@ -412,7 +413,7 @@ interface WorkflowEditorProps {
   onSessionDraftChange?: (draft: WorkflowEditorSessionDraft) => void;
 }
 
-export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profiles = [], onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
@@ -468,10 +469,11 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const agents = useMemo(() => workflowEditorSupportedAgents(agentRegistry), [agentRegistry]);
   const agentIconKeys = useMemo(() => workflowAgentIconKeys(agents), [agents]);
   const doctorReadyAgents = useMemo(() => agents.filter(isWorkflowAgentDoctorReady), [agents]);
+  const profiles = profileCatalog.profiles;
   const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) ?? null : null;
   const selectedEdgeIndex = selectedEdgeId ? Number(selectedEdgeId.split(':').at(-1)) : -1;
   const selectedEdge = selectedEdgeIndex >= 0 ? workflow.edges[selectedEdgeIndex] ?? null : null;
-  const canSave = workflow.nodes.length > 0 && workflow.entry.trim() !== '' && doctorReadyAgents.length > 0;
+  const canSave = profileCatalog.status === 'ready' && workflow.nodes.length > 0 && workflow.entry.trim() !== '' && doctorReadyAgents.length > 0;
   const workflowTopologySignature = useMemo(() => authoringWorkflowTopologySignature(workflow), [workflow]);
   const workflowGraphSignature = useMemo(() => authoringWorkflowGraphSignature(workflow), [workflow]);
   const invalidNodeSignature = useMemo(() => stringSetSignature(invalidNodeIds), [invalidNodeIds]);
@@ -520,10 +522,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setLiveValidation(validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings));
+      setLiveValidation(validateWorkflowForSave(workflow, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings));
     }, 320);
     return () => window.clearTimeout(timer);
-  }, [currentTemplateId, currentTemplateName, doctorReadyAgents, modelBindings, profiles, t, validateModelBindings, validateTemplateDuplicateId, workflow, workflowTemplates]);
+  }, [currentTemplateId, currentTemplateName, doctorReadyAgents, modelBindings, profileCatalog, t, validateModelBindings, validateTemplateDuplicateId, workflow, workflowTemplates]);
 
   useEffect(() => () => {
     if (externalChangeTimerRef.current) {
@@ -569,13 +571,13 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   }, [focusNodeId, workflow.nodes]);
 
   useEffect(() => {
-    if (validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
+    if (profileCatalog.status !== 'ready' || validationRequestId <= 0 || handledValidationRequestIdRef.current === validationRequestId) return;
     handledValidationRequestIdRef.current = validationRequestId;
-    const validation = validateWorkflowForSave(workflow, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
+    const validation = validateWorkflowForSave(workflow, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (validation.valid) return;
     setPendingValidation(validation);
     setValidationDialogOpen(true);
-  }, [doctorReadyAgents, modelBindings, profiles, t, validationRequestId, workflow, workflowTemplates]);
+  }, [doctorReadyAgents, modelBindings, profileCatalog, t, validationRequestId, workflow, workflowTemplates]);
 
   useEffect(() => {
     if (!pendingFocusNodeId || !flowInstance) return;
@@ -722,7 +724,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       setNewRoundEntryDrafts(newRoundEntryDraftsFromWorkflow(workflowToSave));
       queueExternalChange(workflowToSave);
     }
-    const validation = validateWorkflowForSave(workflowToSave, profiles, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
+    if (profileCatalog.status !== 'ready') return;
+    const validation = validateWorkflowForSave(workflowToSave, profileCatalog, doctorReadyAgents, t, workflowTemplates ?? null, currentTemplateId, currentTemplateName, validateTemplateDuplicateId, modelBindings, validateModelBindings);
     if (!validation.valid) {
       setPendingValidation(validation);
       setValidationDialogOpen(true);
@@ -1115,6 +1118,23 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
       <CardContent className="min-h-0 flex-1 p-0">
         <ScrollArea className="size-full">
           <div className="space-y-4 p-4">
+            {profileCatalog.status === 'loading' ? (
+              <Alert>
+                <AlertCircle />
+                <AlertTitle>{t('workflowEditor.profileCatalogLoading')}</AlertTitle>
+                <AlertDescription>{t('workflowEditor.profileCatalogLoadingDescription')}</AlertDescription>
+              </Alert>
+            ) : null}
+            {profileCatalog.status === 'error' ? (
+              <Alert variant="destructive" className="bg-destructive/5">
+                <AlertCircle />
+                <AlertTitle>{t('workflowEditor.profileCatalogLoadFailed')}</AlertTitle>
+                <AlertDescription className="space-y-2">
+                  <p>{profileCatalog.error.message}</p>
+                  <Button type="button" variant="outline" size="sm" onClick={profileCatalog.retry}>{t('workflowEditor.profileCatalogRetry')}</Button>
+                </AlertDescription>
+              </Alert>
+            ) : null}
             {validationIssues.length > 0 && liveValidation ? (
               <Alert variant="destructive" className="bg-destructive/5">
                 <AlertCircle />
@@ -3084,7 +3104,7 @@ type PathSegment = { type: 'key'; key: string } | { type: 'index'; index: number
 
 export function validateWorkflowForSave(
   workflow: WorkflowDsl,
-  profiles: ProfileVm[],
+  profileCatalog: WorkflowProfileCatalogState,
   agents: ManagedAgentVm[],
   t: (key: string, options?: Record<string, unknown>) => string,
   workflowTemplates: WorkflowTemplateStore | null = null,
@@ -3097,6 +3117,8 @@ export function validateWorkflowForSave(
   const sanitizedWorkflow = normalizeWorkflowSchemas(cloneWorkflow(workflow));
   const issues: WorkflowValidationIssue[] = [];
   const fieldErrors: Record<string, string[]> = {};
+  const profiles = profileCatalog.profiles;
+  const profileCatalogReady = profileCatalog.status === 'ready';
   const profileIds = new Set(profiles.map((profile) => profile.id));
   const agentById = new Map(agents.map((agent) => [agent.agentType, agent]));
   const agentIds = new Set(agentById.keys());
@@ -3176,7 +3198,7 @@ export function validateWorkflowForSave(
     }
 
     if (node.type === 'ai-dynamic') {
-      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, agentIds, agentById, nodeField, addIssue, t);
+      validateAiDynamicNodeForSave(node, nodeLabel, workflowTemplates, profiles, profileCatalogReady, agentIds, agentById, nodeField, addIssue, t);
       return;
     }
     const slotId = node.executionSlotId?.trim();
@@ -3205,7 +3227,7 @@ export function validateWorkflowForSave(
     const workerNode = node as WorkflowWorkerNodeDsl;
     if (!workerNode.profile?.trim()) {
       addIssue(t('workflowEditor.validationNodeProfileRequired', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
-    } else if (!profileIds.has(workerNode.profile)) {
+    } else if (profileCatalogReady && !profileIds.has(workerNode.profile)) {
       addIssue(t('workflowEditor.validationNodeProfileVisibilityChanged', { node: nodeLabel }), nodeField(workerNode, 'profile'), workerNode.id);
       const sanitized = sanitizedWorkflow.nodes[nodeIndex];
       if (sanitized && sanitized.type === 'worker') sanitized.profile = null;
@@ -3274,6 +3296,7 @@ function validateAiDynamicNodeForSave(
   nodeLabel: string,
   workflowTemplates: WorkflowTemplateStore | null | undefined,
   profiles: ProfileVm[],
+  profileCatalogReady: boolean,
   agentIds: Set<string>,
   agentById: Map<string, ManagedAgentVm>,
   nodeField: (node: WorkflowNodeDsl, field: string) => string,
@@ -3339,7 +3362,7 @@ function validateAiDynamicNodeForSave(
       return;
     }
     seenProfiles.add(value);
-    if (!knownProfileIds.has(value)) {
+    if (profileCatalogReady && !knownProfileIds.has(value)) {
       addIssue(t('workflowEditor.validationAllowedProfileMissing', { node: nodeLabel, profile: value }), nodeField(node, 'allowedProfiles'), node.id);
     }
   });

@@ -17,7 +17,7 @@ const acpComposerSource = readFileSync(
 const promptInputSource = readFileSync(
   fileURLToPath(new URL('../src/components/prompt-kit/prompt-input.tsx', import.meta.url)),
   'utf8',
-);
+).replace(/\r\n/g, '\n');
 const composerLayoutSource = readFileSync(
   fileURLToPath(new URL('../src/lib/conversation-composer-layout.ts', import.meta.url)),
   'utf8',

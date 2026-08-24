@@ -461,7 +461,6 @@ export const desktopApi: RuntimeApi = {
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
     return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
   },
-<<<<<<< HEAD
   getMulticaSettings() {
     return invokeCommand<MulticaSettingsVm>('get_multica_settings');
   },
@@ -478,7 +477,7 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<RemoteTaskVm>('get_multica_task_requirement', { taskId, workspaceId });
   },
   startMulticaConversationRun(input, remoteTaskId, workspaceId) {
-    return invokeCommand<ConversationRunVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
+    return invokeCommand<ConversationCreateResultVm>('start_multica_conversation_run', { input, remoteTaskId, workspaceId });
   },
   cancelMulticaTask(taskId: string) {
     return invokeCommand<void>('cancel_multica_task', { taskId });

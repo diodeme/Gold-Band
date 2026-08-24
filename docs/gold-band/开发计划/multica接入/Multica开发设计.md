@@ -1855,7 +1855,29 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
-## 附录 A：CLAUDE.md 合规自检
+### 12.31 改动二十九：二次合并 origin/main——会话创建契约对齐 + composer chip 重新集成（M5-as，2026-08-24）
+
+**背景**：feature_multica 自 M5-ag 合并后再落后 origin/main 约 200 commit（main 重构了会话创建契约、心跳机制、个性化偏好、壁纸系统、composer/工作区信息条 UI 等）；feature 领先 22 commit（multica M5-ah…M5-ar）。用户要求同 M5-ag 策略：冲突优先保 main，合并后在结果上修复 multica 功能。
+
+**安全网**：合并前在 `3e195328` 打备份分支 `feature_multica_premerge_20260824` / `feature_multica_premerge_backup`；合并提交 `79ba1e26`。
+
+**main 重构吸收（multica 侧适配点）**：
+- `create_conversation_run_vm` 返回值由单 VM 改为 `ConversationCreateResultVm { task, run }`（main 新契约：创建即回任务行 + run 快照，侧栏即时刷新）。
+- 心跳机制重构：`metrics::start_heartbeat_polling` 删除，改为 RuntimeLifecycleBus metrics subscriber + `DesktopState::reevaluate_heartbeat_config`（main.rs：`start_multica_loop` 后跟 `reevaluate_heartbeat_config`，顺序不变）。
+- `WorkerNode` 增 `execution_slot_id`；`RunState` 增 `worktree`/`execution`（multica 测试构造补 `None`/`Default::default()`）。
+- `DesktopThemePreference`/`DesktopFontPreference` 删除（→ PersonalizationPreference 体系），desktop.ts 类型 import 随之更新。
+
+**冲突解决**：14 文件——import/注册类并集（commands.rs 两个 lifecycle subscriber：`desktop.multica` + main 的 `desktop.conversation-terminal-result`；main.rs 命令表 + multica 命令块 + 恢复链 `recover_interrupted_running_sessions` + `recover_multica_work_dir_sessions`）；重度重构文件取 main 全量再回插 multica 增量（ConversationSidebar：Globe 图标 + nav-key case + SidebarButton；ConversationComposer：见下）。
+
+**合并诱发的 multica 修复（二次修复阶段）**：
+- Rust：`dsl/presets.rs` 补 `execution_slot_id: None`；`view_models_conversation.rs` 回插 `PromptEnvelopeMode`/`WorkerNode` import（main 内联构造需要）；**`multica/commands.rs` 契约适配**——`start_multica_conversation_run` 返回 `ConversationCreateResultVm`：Fresh 分支簿记（register_active_run/with_state）改用 `created.run.task_id`/`run_id`，Resume 分支由 `conversation_run_vm` + `conversation_task_row_vm` 组装 `{task, run}`；`multica/mod.rs` 删除无消费者的 `normalize_multica_base_url` 再导出。
+- 前端：`startMulticaConversationRun` 返回类型改 `Promise<ConversationCreateResultVm>`（client/desktop/browser 三处，browser 桩补全参数签名——其 createConversationRun 桩本就返回 `{task, run}`）；App.tsx 发送流两路径同契约解构 `{task, run}` + `applyConversationTask(task)` 刷侧栏，导航/快照链完全复用。
+- **composer chip 重新集成（main 重构后结构）**：onSubmit 第二参 `multica?` 恢复；canSubmit 补 `!(multicaActive && !hasLocalWorkspaces)` 门；chip 复用 main 的 leading-adornment 缩进机制（`committedInputLayout`，与 slash tag 同 `top-2` 定位、互斥 slash 优先）；`handleUnbindMultica` + `shouldBackspaceClearMulticaBinding` 接入 handleKeyDown；**决策 d 落点迁移**——main 把工作区控件重构为 `ConversationWorkspaceControl`（info bar 内），增 `forceSelector` prop 实现单工作区强制下拉；**决策 e 落点迁移**——`ConversationWorkspaceInfoBar` 增 `emptyWorkspaceHint`，0 工作区 + multica 绑定时以虚线提示替代控件。main 已把草稿改为跨页持久（切工作区不再 reset），采纳 main 行为、原「multica 时跳过 reset」守卫随之作废。
+- 文案合规：main 新增 `scheduled-task-i18n` 测试禁止实现文件含中文（对客文案与注释分离），composer 内新增注释改英文。
+
+**warning 分诊**：合并后余量 warning 逐一比对 `git diff origin/main`——全部位于与 main 完全一致的文件（orchestrator/scheduled_runtime/state/conversation_attention/desktop_lifecycle/metrics/notifications 等），为 main 既有技术债，按「保 main 完整性」策略不动；唯一合并诱发项（multica/mod.rs 未用再导出）已修。
+
+**验证**：`cargo check --workspace --all-targets` 零错误；`tsc -p web/tsconfig.build.json` 零错；`web:build` 成功；vitest 全量（multica 4 套件 + composer 4 套件 + sidebar 2 套件定向全绿，全量套件结果见任务记录）；`cargo test --workspace` 结果见任务记录。
 
 ---
 

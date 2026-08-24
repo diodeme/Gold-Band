@@ -29,8 +29,8 @@ use crate::multica::state::{ActiveRemoteRun, SharedMulticaState};
 use crate::multica::vm::{RemoteConversationSidebarVm, RemoteTaskVm};
 use crate::state::DesktopState;
 use crate::view_models_conversation::{
-    ConversationCreateInputVm, ConversationRunVm, conversation_run_vm, create_conversation_run_vm,
-    validate_conversation_create_vm,
+    ConversationCreateInputVm, ConversationCreateResultVm, conversation_run_vm,
+    conversation_task_row_vm, create_conversation_run_vm, validate_conversation_create_vm,
 };
 
 /// 远程任务列表（按 workspace 分组，对齐 `ConversationSidebarVm` 形状）。
@@ -619,7 +619,7 @@ pub async fn start_multica_conversation_run(
     input: ConversationCreateInputVm,
     remote_task_id: String,
     workspace_id: String,
-) -> CommandResult<ConversationRunVm> {
+) -> CommandResult<ConversationCreateResultVm> {
     let context = state.context().map_err(command_error)?;
     if !multica_settings(&context.config).connected {
         return Err(command_error(MulticaError::NotConfigured.into()));
@@ -723,8 +723,8 @@ pub async fn start_multica_conversation_run(
         let resume_home_app = context.app();
         // clone_for_background 保留全部字段（含 ACP emitter）→ 续跑事件仍流向前端；原 `app` 留给 Fresh 兜底。
         let resume_app = app.clone_for_background();
-        let join =
-            tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<ConversationRunVm> {
+        let join = tauri::async_runtime::spawn_blocking(
+            move || -> anyhow::Result<ConversationCreateResultVm> {
                 // 纯续跑：prompt=None，接着被中断的编排往下跑（不新增一轮用户消息、不换模型/模式）。
                 resume_app.run_continue_background(&prior_task_id, &prior_run_id, None, None)?;
                 // 续跑成功 → 迁移续跑索引到子任务（断点续跑方案 §3.3）：子任务 T' 续的是父 T 的本地
@@ -740,17 +740,27 @@ pub async fn start_multica_conversation_run(
                         );
                     }
                 }
-                // 从既有 run 还原 VM（导航到既有会话，非新建）。
-                conversation_run_vm(
+                // 从既有 run 还原 VM（导航到既有会话，非新建）+ 任务的 canonical 行投影，
+                // 对齐 create_conversation_run_vm 的 {task, run} 返回契约。
+                let run = conversation_run_vm(
                     &resume_app,
                     &resume_project_id,
                     &prior_task_id,
                     &prior_run_id,
                     None,
-                )
-            })
-            .await
-            .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+                )?;
+                let task = conversation_task_row_vm(
+                    &resume_app,
+                    &resume_project_id,
+                    &prior_task_id,
+                    false,
+                    None,
+                )?;
+                Ok(ConversationCreateResultVm { task, run })
+            },
+        )
+        .await
+        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
 
         match join {
             Ok(vm) => {
@@ -840,9 +850,10 @@ pub async fn start_multica_conversation_run(
     let ctx_clone = context.clone();
 
     // ⑤ 复用 create_conversation_run_vm（建工作流 + 建任务 + 写 conversation.json + 启动 run）+ 叠加簿记。
-    let result =
-        tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<ConversationRunVm> {
-            let run = create_conversation_run_vm(&app, &input)?;
+    let result = tauri::async_runtime::spawn_blocking(
+        move || -> anyhow::Result<ConversationCreateResultVm> {
+            let created = create_conversation_run_vm(&app, &input)?;
+            let run = &created.run;
             // 登记 active_run（真实 run.id，先于 NodeCompleted/RunCompleted 归属反查）。
             if let Ok(mut guard) = shared_clone.lock() {
                 guard.register_active_run(
@@ -881,13 +892,14 @@ pub async fn start_multica_conversation_run(
                 state.multica_task_conversations = Some(conversations);
                 true
             })?;
-            Ok(run)
-        })
-        .await
-        .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
+            Ok(created)
+        },
+    )
+    .await
+    .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?;
 
     match result {
-        Ok(run) => {
+        Ok(created) => {
             // 本地 run 已登记 → 通知 server dispatched→running。
             // composer 流总是 fresh（与本地「+」一致；断点续跑由 server 重派 + bridge 兜底，不在此分支）。
             if let Err(start_err) = client.start_task(&remote_task_id, false).await {
@@ -904,7 +916,7 @@ pub async fn start_multica_conversation_run(
                     // start 实际成功（响应丢失）：本地 run 正在执行、server running，一致 → 继续。
                     mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
                     crate::multica::bridge::emit_multica_task_updated(&app_handle);
-                    return Ok(run);
+                    return Ok(created);
                 }
                 // 未生效（release）或无法确认（fail）→ 回滚 server，再本地 teardown。
                 match action {
@@ -924,8 +936,8 @@ pub async fn start_multica_conversation_run(
                     shared.inner(),
                     &home_app,
                     &remote_task_id,
-                    &run.task_id,
-                    &run.run_id,
+                    &created.run.task_id,
+                    &created.run.run_id,
                 );
                 crate::multica::bridge::emit_multica_task_updated(&app_handle);
                 return Err(command_error(start_err.into()));
@@ -934,7 +946,7 @@ pub async fn start_multica_conversation_run(
             mark_issue_in_progress(&client, &workspace_id, issue_id.as_deref()).await;
             // 通知侧栏刷新：active_runs 已登记，前端即时显示 running 行（改动七）。
             crate::multica::bridge::emit_multica_task_updated(&app_handle);
-            Ok(run)
+            Ok(created)
         }
         Err(error) => {
             // 本地建 run 失败：release 回滚（dispatched→queued），任务回可领取态供重试（替代 fail_task 终态化——
@@ -1267,6 +1279,8 @@ mod tests {
             pause_reason,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         }
     }
 

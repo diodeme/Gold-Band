@@ -1012,6 +1012,12 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **方案（修正过时值）**：wb 渠道本属 maling 生态（appName MALING、updater/metrics/内置 MCP 均指向 maling.weoa.com），multica 地址同生态，直接把 `multicaBaseUrl`/`multicaAppUrl` 改为 `http://maling.weoa.com:5005`（前后端同入口，消除前端 API 地址硬编码 localhost 隐患、无 CORS）；`browser_login` 的 `cli_callback` 仍走 Gold-Band 本机 127.0.0.1，nginx 透传 multica 后端登录成功的 302，跨机器 connect 不受影响（§3.2.6）。服务端 nginx 入口已由用户确认就绪。
   - **验证**：`GOLD_BAND_RELEASE_CHANNEL=wb cargo check -p gold-band-desktop` 绿——build.rs 正确解析 wb.json 新值、编译期 env 生效 `maling.weoa.com:5005`；default 渠道无回归。纯渠道配置值修正，无运行时逻辑变化、无性能影响。
 
+- [x] **M5-as**（本轮）二次合并 origin/main——会话创建契约对齐 + composer chip 重新集成（开发设计 §12.31）：
+  - **背景**：feature 自 M5-ag 后再落后 main 约 200 commit（main 重构会话创建契约/心跳/个性化/composer UI），feature 领先 22 commit。策略同 M5-ag：冲突保 main，合并后修复 multica。备份分支 `feature_multica_premerge_20260824`，合并提交 `79ba1e26`。
+  - **契约影响（对外行为不变，内部对齐 main）**：main 的 `create_conversation_run_vm` 改返回 `ConversationCreateResultVm {task, run}`——`start_multica_conversation_run` 同步该契约（Fresh 透传 / Resume 由 `conversation_run_vm` + `conversation_task_row_vm` 组装）；前端 `startMulticaConversationRun` 同改，App.tsx 两路径（远程/本地）同契约解构，侧栏刷新与导航链完全复用。claim-at-send 事务边界、终态桥接、断点续跑等 multica 语义零变化。
+  - **composer chip 重新集成**：main 重构 composer（工作区控件迁入 info bar `ConversationWorkspaceControl`）后 chip 全量回插——绑定 chip（Globe Badge + × 解绑）+ Backspace 删除契约（`shouldBackspaceClearMulticaBinding`）+ 预填保留；决策 d 落 `forceSelector`（单工作区强制下拉）、决策 e 落 `emptyWorkspaceHint`（0 工作区虚线提示 + canSubmit 禁发）。
+  - **验证**：`cargo check --workspace --all-targets` 零错误（余量 warning 均为 main 既有，逐文件比对 origin/main 确认）；tsc src 零错；`web:build` 成功；vitest 全量 **1559/1559**（multica 4 套件 + composer chip/draft 含 clearMultica 语义全过）；`cargo test --workspace` 全过。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

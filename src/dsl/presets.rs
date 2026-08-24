@@ -35,6 +35,7 @@ pub fn direct_workflow(
         control: WorkflowControl::default(),
         nodes: vec![NodeDsl::Worker(WorkerNode {
             id: "direct-agent".to_string(),
+            execution_slot_id: None,
             provider: Some(provider),
             model,
             profile: None,

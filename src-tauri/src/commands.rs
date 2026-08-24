@@ -83,7 +83,6 @@ use crate::multica::{
     MulticaClient, MulticaError, MulticaSettingsVm, clear_multica_session,
     clear_multica_state_indices, clear_multica_workspace_bindings, ensure_daemon_id,
     multica_account_changed, multica_app_url, multica_base_url, multica_settings,
-    normalize_multica_base_url,
 };
 use crate::state::{
     DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
@@ -1143,7 +1142,6 @@ fn create_conversation_terminal_result_subscriber(
             );
         }
     })
->>>>>>> origin/main
 }
 
 fn create_conversation_run_state_subscriber(

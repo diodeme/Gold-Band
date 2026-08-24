@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use walkdir::WalkDir;
 
+use crate::acp::usage::{AcpPromptTokenUsage, AcpPromptUsageJournalEntry};
+
 pub mod index;
 
 pub const PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION: &str = "2.2.0";
@@ -26,7 +28,6 @@ const CANONICAL_JSON_NAMES: &[&str] = &[
     "run.json",
     "round.json",
     "node.json",
-    "turn.json",
     "acp.snapshot.json",
     "dynamic-run.json",
     "graph.json",
@@ -100,7 +101,7 @@ pub struct PersonalAnalyticsProgress {
 pub struct PersonalAnalyticsSnapshot {
     pub operation: Option<PersonalAnalyticsOperation>,
     #[serde(default)]
-    pub insight_operation: Option<PersonalAnalyticsOperation>,
+    pub insight_operation: Option<AgentInsightOperation>,
     pub latest_report: Option<PersonalAnalyticsReport>,
 }
 
@@ -124,6 +125,55 @@ pub struct PersonalAnalyticsOperation {
     pub progress: PersonalAnalyticsProgress,
     pub source_watermark: String,
     pub report_id: Option<String>,
+    pub error: Option<PersonalAnalyticsError>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentInsightOperationStatus {
+    Queued,
+    Analyzing,
+    ValidatingReport,
+    Cancelling,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AgentInsightOperationStatus {
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Queued | Self::Analyzing | Self::ValidatingReport | Self::Cancelling
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentInsightProgress {
+    pub stage: AgentInsightOperationStatus,
+    pub processed_units: u64,
+    pub total_units: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentInsightOperation {
+    pub operation_id: String,
+    pub generation: u64,
+    pub agent_type: String,
+    pub range: index::PersonalAnalyticsDateRange,
+    pub schema_version: String,
+    pub index_revision: u64,
+    pub status: AgentInsightOperationStatus,
+    pub revision: u64,
+    pub progress: AgentInsightProgress,
+    pub source_watermark: String,
+    pub report_id: String,
     pub error: Option<PersonalAnalyticsError>,
     pub created_at: String,
     pub updated_at: String,
@@ -380,7 +430,7 @@ struct TokenCounters {
     total: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RunFact {
     task_key: String,
     run_key: String,
@@ -397,10 +447,10 @@ struct RunFact {
 struct TaskFact {
     title: String,
     mode: String,
+    navigation_run: Option<RunFact>,
     agent_names: BTreeSet<String>,
     token_usage: TokenCounters,
-    last_activity_epoch: Option<i64>,
-    last_activity_at: Option<String>,
+    scoped_activity_epoch: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -411,6 +461,35 @@ struct NodeFact {
     group_key: String,
     node_id: String,
     outcome: Option<String>,
+    child_run_key: Option<String>,
+}
+
+#[derive(Debug)]
+struct DirectReplyFact {
+    task_key: String,
+    status: String,
+    evidence_locator: String,
+    count: u64,
+}
+
+#[derive(Debug)]
+struct PromptTurnFact {
+    status: String,
+    activity_epoch: i64,
+}
+
+#[derive(Debug, Default)]
+struct PromptUsageFacts {
+    recognized_lines: u64,
+    completed_usages: Vec<TokenCounters>,
+    turns: Vec<PromptTurnFact>,
+}
+
+#[derive(Debug, Default)]
+struct PromptTurnState {
+    started_epoch: Option<i64>,
+    completed_epoch: Option<i64>,
+    usage: Option<TokenCounters>,
 }
 
 #[derive(Default)]
@@ -424,11 +503,7 @@ struct ProjectionAccumulator {
     runs: Vec<RunFact>,
     nodes: Vec<NodeFact>,
     session_duration_seconds_by_attempt: BTreeMap<String, u64>,
-    direct_started: u64,
-    direct_completed: u64,
-    direct_failed: u64,
-    direct_cancelled: u64,
-    direct_unknown: u64,
+    direct_replies: Vec<DirectReplyFact>,
     token_usage: AnalyticsTokenUsage,
     pause_count: u64,
     resume_count: u64,
@@ -584,7 +659,9 @@ where
         let result = if CANONICAL_JSON_NAMES.contains(&file_name) {
             accumulator.coverage.eligible_files += 1;
             process_json_file(path, &relative, file_name, &mut accumulator)
-        } else if CANONICAL_JSONL_NAMES.contains(&file_name) {
+        } else if CANONICAL_JSONL_NAMES.contains(&file_name)
+            && (file_name != "acp.prompt-usage.jsonl" || is_current_attempt_usage(&relative))
+        {
             accumulator.coverage.eligible_files += 1;
             process_jsonl_file(path, &relative, file_name, &mut accumulator)
         } else if SEMANTIC_TEXT_NAMES.contains(&file_name) {
@@ -646,11 +723,10 @@ fn process_json_file(
                 if let Some(raw) = string_at(&value, &["/lastActivityAt", "/createdAt"])
                     && let Some(epoch) = timestamp_epoch(raw)
                     && task
-                        .last_activity_epoch
+                        .scoped_activity_epoch
                         .is_none_or(|current| epoch > current)
                 {
-                    task.last_activity_epoch = Some(epoch);
-                    task.last_activity_at = normalized_timestamp(epoch);
+                    task.scoped_activity_epoch = Some(epoch);
                 }
             }
         }
@@ -685,10 +761,7 @@ fn process_json_file(
         "node.json" => {
             accumulator.attempt_count += 1;
             let task_key = task_key(relative).unwrap_or_default();
-            if let Some(provider) = value
-                .pointer("/resolved_config/provider")
-                .and_then(Value::as_str)
-            {
+            if let Some(provider) = node_provider(relative, &value) {
                 accumulator
                     .tasks
                     .entry(task_key.clone())
@@ -705,15 +778,12 @@ fn process_json_file(
                 run_key: run_key(relative).unwrap_or_default(),
                 attempt_key: attempt_key(relative).unwrap_or_default(),
                 group_key: node_group_key(relative).unwrap_or_else(|| relative.to_string()),
-                node_id: value
-                    .get("node_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
+                node_id: node_id(relative, &value).unwrap_or("unknown").to_string(),
                 outcome: value
                     .get("outcome")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                child_run_key: child_run_key(relative, &value),
             });
         }
         "acp.snapshot.json" => {
@@ -733,7 +803,6 @@ fn process_json_file(
                     .or_insert(seconds);
             }
         }
-        "turn.json" => observe_turn(&value, relative, accumulator),
         "observability.snapshot.json" => observe_observability(&value, accumulator),
         _ => {}
     }
@@ -750,45 +819,32 @@ fn process_jsonl_file(
     let reader = BufReader::new(File::open(path)?);
     let mut valid_lines = 0u64;
     if file_name == "acp.prompt-usage.jsonl" {
-        let mut turns = BTreeMap::<String, TokenCounters>::new();
-        let mut legacy_totals = None;
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: Value = serde_json::from_str(&line)?;
-            valid_lines += 1;
-            if let Some(usage) = value.get("usage") {
-                let key = value
-                    .get("turn_id")
-                    .or_else(|| value.get("turnId"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string();
-                turns.insert(key, token_counters(usage));
-            } else if let Some(totals) = value.get("totals") {
-                legacy_totals = Some(token_counters(totals));
-            }
-        }
-        let task_key = task_key(relative);
-        let usages = if !turns.is_empty() {
-            turns.into_values().collect::<Vec<_>>()
-        } else {
-            legacy_totals.into_iter().collect::<Vec<_>>()
+        let Some(task_key) = task_key(relative) else {
+            return Ok(());
         };
-        for usage in usages {
+        if run_key(relative).is_none() {
+            return Ok(());
+        }
+        let usage_facts = parse_prompt_usage(reader)?;
+        valid_lines = usage_facts.recognized_lines;
+        for usage in usage_facts.completed_usages {
             add_usage(&mut accumulator.token_usage, usage);
-            if let Some(task_key) = task_key.as_ref() {
-                add_token_counters(
-                    &mut accumulator
-                        .tasks
-                        .entry(task_key.clone())
-                        .or_default()
-                        .token_usage,
-                    usage,
-                );
-            }
+            add_token_counters(
+                &mut accumulator
+                    .tasks
+                    .entry(task_key.clone())
+                    .or_default()
+                    .token_usage,
+                usage,
+            );
+        }
+        for turn in usage_facts.turns {
+            accumulator.direct_replies.push(DirectReplyFact {
+                task_key: task_key.clone(),
+                status: turn.status,
+                evidence_locator: relative.to_string(),
+                count: 1,
+            });
         }
     } else {
         for line in reader.lines() {
@@ -840,14 +896,7 @@ fn process_semantic_file(
     {
         return Ok(());
     }
-    let mut content = String::new();
-    File::open(path)?
-        .take((PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS * 4) as u64)
-        .read_to_string(&mut content)?;
-    let content = content
-        .chars()
-        .take(PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS)
-        .collect::<String>();
+    let content = read_bounded_utf8_prefix(path, PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS)?;
     if content.trim().is_empty() {
         return Ok(());
     }
@@ -870,14 +919,59 @@ fn finalize_projection(
     mut accumulator: ProjectionAccumulator,
     source_watermark: String,
 ) -> PersonalAnalyticsProjectionOutput {
+    let child_run_keys = accumulator
+        .nodes
+        .iter()
+        .filter_map(|node| node.child_run_key.clone())
+        .collect::<BTreeSet<_>>();
+    for run in &mut accumulator.runs {
+        run.unit_type = match accumulator
+            .tasks
+            .get(&run.task_key)
+            .map(|task| task.mode.as_str())
+        {
+            Some("direct") => "direct-session",
+            Some("auto")
+                if run.unit_type == "auto-child-run" || child_run_keys.contains(&run.run_key) =>
+            {
+                "auto-child-run"
+            }
+            Some("auto") => "auto-outer-run",
+            _ => "workflow-run",
+        }
+        .to_string();
+    }
+    let mut direct_started = 0;
+    let mut direct_completed = 0;
+    let mut direct_failed = 0;
+    let mut direct_cancelled = 0;
+    let mut direct_unknown = 0;
+    let mut direct_evidence = BTreeSet::new();
+    for reply in &accumulator.direct_replies {
+        if accumulator
+            .tasks
+            .get(&reply.task_key)
+            .is_none_or(|task| task.mode != "direct")
+        {
+            continue;
+        }
+        direct_started += reply.count;
+        direct_evidence.insert(reply.evidence_locator.clone());
+        match reply.status.as_str() {
+            "completed" => direct_completed += reply.count,
+            "failed" => direct_failed += reply.count,
+            "cancelled" | "canceled" => direct_cancelled += reply.count,
+            _ => direct_unknown += reply.count,
+        }
+    }
     let mut workflow_started = 0;
     let mut workflow_success = 0;
     let mut auto_started = 0;
     let mut auto_success = 0;
     let mut workflow_unknown = 0;
     let mut auto_unknown = 0;
-    let mut failed_count = accumulator.direct_failed;
-    let mut cancelled_count = accumulator.direct_cancelled;
+    let mut failed_count = direct_failed;
+    let mut cancelled_count = direct_cancelled;
     let mut non_terminal_count = 0;
     let mut terminal_active_duration_total = 0u64;
     let mut terminal_active_duration_count = 0u64;
@@ -899,6 +993,9 @@ fn finalize_projection(
         }
     }
     for run in &accumulator.runs {
+        if run.unit_type == "auto-child-run" {
+            continue;
+        }
         let mode = accumulator
             .tasks
             .get(&run.task_key)
@@ -956,13 +1053,13 @@ fn finalize_projection(
                 .or_default() += 1;
         }
     }
-    if accumulator.direct_failed > 0 {
-        terminal_signals.insert("direct.failed".to_string(), accumulator.direct_failed);
+    if direct_failed > 0 {
+        terminal_signals.insert("direct.failed".to_string(), direct_failed);
     }
-    if accumulator.direct_cancelled > 0 {
-        terminal_signals.insert("direct.cancelled".to_string(), accumulator.direct_cancelled);
+    if direct_cancelled > 0 {
+        terminal_signals.insert("direct.cancelled".to_string(), direct_cancelled);
     }
-    non_terminal_count += accumulator.direct_unknown;
+    non_terminal_count += direct_unknown;
 
     let mut group_counts = BTreeMap::<String, (String, u64, bool)>::new();
     for node in &accumulator.nodes {
@@ -1032,6 +1129,12 @@ fn finalize_projection(
     });
     node_aggregates.truncate(12);
 
+    let tasks_with_in_range_runs = accumulator
+        .runs
+        .iter()
+        .filter(|run| run.unit_type != "auto-child-run")
+        .map(|run| run.task_key.as_str())
+        .collect::<BTreeSet<_>>();
     let mut task_summaries = accumulator
         .tasks
         .iter()
@@ -1047,7 +1150,10 @@ fn finalize_projection(
         .collect::<Vec<_>>();
     let mut recent_tasks = task_summaries
         .iter()
-        .filter(|task| matches!(task.mode.as_str(), "workflow" | "auto"))
+        .filter(|task| {
+            matches!(task.mode.as_str(), "workflow" | "auto")
+                && tasks_with_in_range_runs.contains(task.task_locator.as_str())
+        })
         .cloned()
         .collect::<Vec<_>>();
     recent_tasks.sort_by(|left, right| {
@@ -1072,28 +1178,13 @@ fn finalize_projection(
             .then_with(|| left.task_locator.cmp(&right.task_locator))
     });
     let top_token_tasks = task_summaries.iter().take(10).cloned().collect::<Vec<_>>();
-    let direct_evidence = accumulator
-        .evidence
-        .iter()
-        .filter(|locator| locator.ends_with("turn.json"))
-        .take(24)
-        .cloned()
-        .collect();
+    let direct_evidence = direct_evidence.into_iter().take(24).collect();
     let run_evidence = accumulator
         .runs
         .iter()
         .map(|run| run.locator.clone())
         .take(24)
         .collect::<Vec<_>>();
-    if accumulator.direct_started < accumulator.conversation_count {
-        accumulator.warnings.push(PersonalAnalyticsWarning {
-            code: "analytics.direct-turn-coverage-limited".to_string(),
-            params: json!({
-                "observedTurns": accumulator.direct_started,
-                "conversationCount": accumulator.conversation_count,
-            }),
-        });
-    }
     if accumulator.coverage.corrupt_files > 0 {
         accumulator.warnings.push(PersonalAnalyticsWarning {
             code: "analytics.source-partially-corrupt".to_string(),
@@ -1121,7 +1212,7 @@ fn finalize_projection(
             task_count: accumulator.task_count,
             conversation_count: accumulator.conversation_count,
             run_count: accumulator.runs.len() as u64,
-            turn_count: accumulator.direct_started,
+            turn_count: direct_started,
             attempt_count: accumulator.attempt_count,
             earliest_at: accumulator.earliest_epoch.and_then(normalized_timestamp),
             latest_at: accumulator.latest_epoch.and_then(normalized_timestamp),
@@ -1130,9 +1221,9 @@ fn finalize_projection(
         reliability: AnalyticsReliability {
             direct_reply_completion_rate: rate_metric(
                 "direct.reply_completion_rate",
-                accumulator.direct_completed,
-                accumulator.direct_started,
-                accumulator.direct_unknown,
+                direct_completed,
+                direct_started,
+                direct_unknown,
                 direct_evidence,
             ),
             workflow_run_terminal_success_rate: rate_metric(
@@ -1204,18 +1295,6 @@ fn finalize_projection(
             items: accumulator.semantic_items,
         },
     }
-}
-
-fn observe_turn(value: &Value, relative: &str, accumulator: &mut ProjectionAccumulator) {
-    let data = value.pointer("/record/data").unwrap_or(value);
-    accumulator.direct_started += 1;
-    match data.get("status").and_then(Value::as_str) {
-        Some("completed") => accumulator.direct_completed += 1,
-        Some("failed") => accumulator.direct_failed += 1,
-        Some("cancelled" | "canceled") => accumulator.direct_cancelled += 1,
-        _ => accumulator.direct_unknown += 1,
-    }
-    accumulator.evidence.insert(relative.to_string());
 }
 
 fn observe_observability(value: &Value, accumulator: &mut ProjectionAccumulator) {
@@ -1303,6 +1382,80 @@ fn add_usage(target: &mut AnalyticsTokenUsage, usage: TokenCounters) {
     target.observed_prompt_count += 1;
 }
 
+fn parse_prompt_usage(reader: impl BufRead) -> Result<PromptUsageFacts> {
+    let mut states = BTreeMap::<String, PromptTurnState>::new();
+    let mut recognized_lines = 0u64;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<AcpPromptUsageJournalEntry>(&line) else {
+            continue;
+        };
+        recognized_lines += 1;
+        match entry {
+            AcpPromptUsageJournalEntry::AttemptBaseline { .. } => {}
+            AcpPromptUsageJournalEntry::PromptStarted {
+                turn_id, timestamp, ..
+            } => {
+                let state = states.entry(turn_id).or_default();
+                if let Some(epoch) = timestamp_epoch(&timestamp) {
+                    state.started_epoch = Some(
+                        state
+                            .started_epoch
+                            .map_or(epoch, |current| current.max(epoch)),
+                    );
+                }
+            }
+            AcpPromptUsageJournalEntry::PromptCompleted {
+                turn_id,
+                timestamp,
+                usage,
+                ..
+            } => {
+                let state = states.entry(turn_id).or_default();
+                if let Some(epoch) = timestamp_epoch(&timestamp) {
+                    state.completed_epoch = Some(
+                        state
+                            .completed_epoch
+                            .map_or(epoch, |current| current.max(epoch)),
+                    );
+                }
+                state.usage = Some(prompt_token_counters(&usage));
+            }
+        }
+    }
+
+    let mut facts = PromptUsageFacts {
+        recognized_lines,
+        ..PromptUsageFacts::default()
+    };
+    for (_, state) in states {
+        let completed = state.usage.is_some();
+        if let Some(usage) = state.usage {
+            facts.completed_usages.push(usage);
+        }
+        if let Some(activity_epoch) = state.completed_epoch.or(state.started_epoch) {
+            facts.turns.push(PromptTurnFact {
+                status: if completed { "completed" } else { "started" }.to_string(),
+                activity_epoch,
+            });
+        }
+    }
+    Ok(facts)
+}
+
+fn prompt_token_counters(usage: &AcpPromptTokenUsage) -> TokenCounters {
+    TokenCounters {
+        input: usage.input_tokens.unwrap_or(0),
+        output: usage.output_tokens.unwrap_or(0),
+        cache_read: usage.cached_read_tokens.unwrap_or(0),
+        cache_write: usage.cached_write_tokens.unwrap_or(0),
+        total: usage.effective_total_tokens().unwrap_or(0),
+    }
+}
+
 fn add_token_counters(target: &mut TokenCounters, usage: TokenCounters) {
     target.input = target.input.saturating_add(usage.input);
     target.output = target.output.saturating_add(usage.output);
@@ -1317,30 +1470,6 @@ fn add_token_counters(target: &mut TokenCounters, usage: TokenCounters) {
             .saturating_add(usage.cache_read)
             .saturating_add(usage.cache_write)
     });
-}
-
-fn token_counters(value: &Value) -> TokenCounters {
-    TokenCounters {
-        input: u64_at(value, &["/inputTokens", "/input_tokens"]),
-        output: u64_at(value, &["/outputTokens", "/output_tokens"]),
-        cache_read: u64_at(
-            value,
-            &[
-                "/cachedReadTokens",
-                "/cacheReadTokens",
-                "/cached_read_tokens",
-            ],
-        ),
-        cache_write: u64_at(
-            value,
-            &[
-                "/cachedWriteTokens",
-                "/cacheWriteTokens",
-                "/cached_write_tokens",
-            ],
-        ),
-        total: u64_at(value, &["/totalTokens", "/total_tokens"]),
-    }
 }
 
 fn normalized_tool_name(item: &Value) -> String {
@@ -1463,16 +1592,99 @@ fn run_key(relative: &str) -> Option<String> {
     (index + 1 < components.len()).then(|| components[..=index + 1].join("/"))
 }
 
+fn child_run_key(relative: &str, value: &Value) -> Option<String> {
+    let child_run_id = string_at(value, &["/childRunId", "/child_run_id"])?;
+    if child_run_id.trim().is_empty()
+        || child_run_id.contains('/')
+        || child_run_id.contains('\\')
+        || matches!(child_run_id, "." | "..")
+    {
+        return None;
+    }
+    let outer_run_key = run_key(relative)?;
+    let (runs_key, _) = outer_run_key.rsplit_once('/')?;
+    Some(format!("{runs_key}/{child_run_id}"))
+}
+
 fn attempt_key(relative: &str) -> Option<String> {
+    if let Some(locator) = dynamic_leaf_locator(relative) {
+        return Some(locator);
+    }
     relative
         .rsplit_once('/')
         .map(|(parent, _)| parent.to_string())
 }
 
+fn is_current_attempt_usage(relative: &str) -> bool {
+    if run_key(relative).is_none() || !relative.ends_with("/acp.prompt-usage.jsonl") {
+        return false;
+    }
+    relative.rsplit_once('/').is_some_and(|(parent, _)| {
+        parent
+            .rsplit('/')
+            .next()
+            .is_some_and(is_attempt_directory_name)
+    })
+}
+
 fn node_group_key(relative: &str) -> Option<String> {
+    if let Some(locator) = dynamic_leaf_locator(relative) {
+        return Some(locator);
+    }
     let marker = "/attempt-";
     let index = relative.rfind(marker)?;
     Some(relative[..index].to_string())
+}
+
+fn dynamic_leaf_locator(relative: &str) -> Option<String> {
+    let components = relative.split('/').collect::<Vec<_>>();
+    let dynamic_index = components
+        .windows(2)
+        .rposition(|pair| pair == ["dynamic", "nodes"])?;
+    if dynamic_index == 0 || !is_attempt_directory_name(components[dynamic_index - 1]) {
+        return None;
+    }
+    let leaf_index = dynamic_index + 2;
+    let leaf_id = *components.get(leaf_index)?;
+    if leaf_id.is_empty() {
+        return None;
+    }
+    let suffix = &components[leaf_index + 1..];
+    let is_leaf_source = suffix.is_empty()
+        || suffix == ["node.json"]
+        || (suffix.len() == 2
+            && is_attempt_directory_name(suffix[0])
+            && matches!(suffix[1], "acp.snapshot.json" | "acp.prompt-usage.jsonl"));
+    is_leaf_source.then(|| components[..=leaf_index].join("/"))
+}
+
+fn is_attempt_directory_name(name: &str) -> bool {
+    name.strip_prefix("attempt-").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
+fn is_dynamic_node_state(relative: &str) -> bool {
+    dynamic_leaf_locator(relative).is_some_and(|locator| relative == format!("{locator}/node.json"))
+}
+
+fn node_id<'a>(relative: &str, value: &'a Value) -> Option<&'a str> {
+    let field = if is_dynamic_node_state(relative) {
+        "id"
+    } else {
+        "node_id"
+    };
+    value.get(field).and_then(Value::as_str)
+}
+
+fn node_provider<'a>(relative: &str, value: &'a Value) -> Option<&'a str> {
+    if is_dynamic_node_state(relative) {
+        value.get("provider").and_then(Value::as_str)
+    } else {
+        value
+            .pointer("/resolved_config/provider")
+            .and_then(Value::as_str)
+    }
 }
 
 fn task_summary(
@@ -1486,20 +1698,21 @@ fn task_summary(
         .iter()
         .filter(|run| run.task_key == task_key)
         .collect::<Vec<_>>();
-    let latest = task_runs.iter().copied().max_by(|left, right| {
-        left.updated_epoch
-            .cmp(&right.updated_epoch)
-            .then_with(|| left.locator.cmp(&right.locator))
-    })?;
-    let navigation_run = task_runs
+    let latest_in_range = task_runs
         .iter()
         .copied()
-        .filter(|run| matches!(run.unit_type.as_str(), "workflow-run" | "auto-outer-run"))
+        .filter(|run| {
+            matches!(
+                run.unit_type.as_str(),
+                "workflow-run" | "auto-outer-run" | "direct-session"
+            )
+        })
         .max_by(|left, right| {
             left.updated_epoch
                 .cmp(&right.updated_epoch)
                 .then_with(|| left.locator.cmp(&right.locator))
-        })?;
+        });
+    let latest = latest_in_range.or(task.navigation_run.as_ref())?;
     let task_nodes = nodes
         .iter()
         .filter(|node| node.task_key == task_key)
@@ -1514,12 +1727,17 @@ fn task_summary(
         .copied()
         .sum();
     let last_activity_epoch = task
-        .last_activity_epoch
+        .scoped_activity_epoch
         .into_iter()
-        .chain(task_runs.iter().filter_map(|run| run.updated_epoch))
+        .chain(
+            task_runs
+                .iter()
+                .filter(|run| run.unit_type != "auto-child-run")
+                .filter_map(|run| run.updated_epoch),
+        )
         .max();
     let (project_id, task_id) = task_key.split_once('/')?;
-    let latest_run_id = navigation_run.locator.rsplit('/').next()?.to_string();
+    let latest_run_id = latest.locator.rsplit('/').next()?.to_string();
     Some(AnalyticsTaskSummary {
         task_locator: task_key.to_string(),
         project_id: Some(project_id.to_string()),
@@ -1544,6 +1762,24 @@ fn task_summary(
         terminal_node: latest.terminal_node.clone(),
         last_activity_at: last_activity_epoch.and_then(normalized_timestamp),
     })
+}
+
+fn read_bounded_utf8_prefix(path: &Utf8Path, max_chars: usize) -> Result<String> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(max_chars.saturating_mul(4) as u64)
+        .read_to_end(&mut bytes)?;
+    match std::str::from_utf8(&bytes) {
+        Ok(content) => Ok(content.chars().take(max_chars).collect()),
+        Err(error) => {
+            let valid_prefix = std::str::from_utf8(&bytes[..error.valid_up_to()])
+                .expect("UTF-8 error valid prefix must be valid");
+            if valid_prefix.chars().count() < max_chars {
+                bail!("semantic source contains invalid UTF-8")
+            }
+            Ok(valid_prefix.chars().take(max_chars).collect())
+        }
+    }
 }
 
 fn timestamp_epoch(value: &str) -> Option<i64> {
@@ -1639,12 +1875,14 @@ mod tests {
             );
         }
         write(
-            &project.join("tasks/task-direct/turns/turn-1/turn.json"),
-            r#"{"record":{"data":{"status":"completed","startedAt":"2026-08-17T10:00:00Z","finishedAt":"2026-08-17T10:00:05Z"}}}"#,
-        );
-        write(
-            &project.join("tasks/task-direct/turns/turn-2/turn.json"),
-            r#"{"record":{"data":{"status":"cancelled"}}}"#,
+            &project.join("tasks/task-direct/runs/run-001/rounds/round-001/nodes/direct-agent/attempt-001/acp.prompt-usage.jsonl"),
+            concat!(
+                r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-17T10:00:01Z"}"#,
+                "\n",
+                r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-17T10:00:05Z","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}"#,
+                "\n",
+                r#"{"kind":"promptStarted","turn_id":"turn-2","turn_seq":2,"timestamp":"2026-08-17T10:00:06Z"}"#,
+            ),
         );
         write(
             &project.join("tasks/task-direct/runs/run-001/acp.raw.jsonl"),

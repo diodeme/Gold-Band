@@ -1,4 +1,4 @@
-import type { PersonalAnalyticsSnapshotVm } from '@/types';
+import type { AgentInsightOperationVm, PersonalAnalyticsSnapshotVm } from '@/types';
 
 export function mergePersonalAnalyticsSnapshot(
   current: PersonalAnalyticsSnapshotVm | null,
@@ -10,12 +10,10 @@ export function mergePersonalAnalyticsSnapshot(
     && operation.revision < current.operation.revision) {
     operation = current.operation;
   }
-  let insightOperation = incoming.insightOperation ?? current?.insightOperation ?? null;
-  if (current?.insightOperation && insightOperation
-    && insightOperation.operationId === current.insightOperation.operationId
-    && insightOperation.revision < current.insightOperation.revision) {
-    insightOperation = current.insightOperation;
-  }
+  const insightOperation = mergeInsightOperation(
+    current?.insightOperation ?? null,
+    incoming.insightOperation,
+  );
   const incomingReport = incoming.latestReport;
   const currentReport = current?.latestReport ?? null;
   const incomingReportIsStale = incomingReport !== null
@@ -28,6 +26,23 @@ export function mergePersonalAnalyticsSnapshot(
     ? currentReport
     : incomingReport ?? fallback.latestReport;
   return { operation, insightOperation, latestReport };
+}
+
+function mergeInsightOperation(
+  current: AgentInsightOperationVm | null,
+  incoming: AgentInsightOperationVm | null,
+): AgentInsightOperationVm | null {
+  if (!incoming) return current;
+  if (!current || incoming.generation > current.generation) return incoming;
+  if (incoming.generation < current.generation) return current;
+  if (incoming.operationId !== current.operationId) return current;
+  if (incoming.revision < current.revision) return current;
+  if (isTerminalStatus(current.status) && !isTerminalStatus(incoming.status)) return current;
+  return incoming;
+}
+
+function isTerminalStatus(status: AgentInsightOperationVm['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
 }
 
 function sameRange(

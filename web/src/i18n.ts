@@ -317,7 +317,10 @@ const resources = {
             "scan-failed": "历史数据扫描失败。",
             "agent-unavailable": "所选 Agent 当前不可用。",
             "operation-conflict": "已有个人数据分析正在运行。",
+            "operation-stale": "洞察流程状态已变化，请等待界面同步后重试。",
+            "task-join-failed": "后台洞察任务启动失败。",
             "execution-failed": "Agent 分析执行失败。",
+            "report-query-failed": "无法读取当前日期范围的分析报告。",
             "report-invalid": "Agent 返回的报告无法通过校验。",
             "execution-interrupted": "上次分析因客户端退出而中断。",
           },
@@ -325,7 +328,6 @@ const resources = {
         },
         warningCodes: {
           analytics: {
-            "direct-turn-coverage-limited": "Direct 历史覆盖有限：当前观察到 {{observedTurns}} 条 turn，历史会话为 {{conversationCount}} 条；完成率不能代表全部 Direct 会话。",
             "source-partially-corrupt": "有 {{count}} 个历史文件无法解析，其余数据仍已纳入报告。",
             "duration-zero-filled": "有 {{count}} 条终局 Run 缺少可解析耗时，已按 0 纳入统计。",
           },
@@ -2632,7 +2634,10 @@ const resources = {
             "scan-failed": "History scanning failed.",
             "agent-unavailable": "The selected Agent is unavailable.",
             "operation-conflict": "Another personal analytics operation is already running.",
+            "operation-stale": "The insight operation state changed. Wait for the view to synchronize and try again.",
+            "task-join-failed": "The background insight task could not be started.",
             "execution-failed": "Agent analysis failed.",
+            "report-query-failed": "The analytics report for the current date range could not be loaded.",
             "report-invalid": "The Agent report did not pass validation.",
             "execution-interrupted": "The previous analysis was interrupted when the client exited.",
           },
@@ -2640,7 +2645,6 @@ const resources = {
         },
         warningCodes: {
           analytics: {
-            "direct-turn-coverage-limited": "Direct history coverage is limited: {{observedTurns}} turns were observed across {{conversationCount}} historical conversations. The completion rate does not represent every Direct conversation.",
             "source-partially-corrupt": "{{count}} history files could not be parsed; all other eligible data remains included.",
             "duration-zero-filled": "{{count}} terminal runs had no parseable duration and were included as zero.",
           },

@@ -6,8 +6,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{Duration, Local, TimeZone};
 use gold_band::personal_analytics::{
     AnalyticsInsightConfidence, AnalyticsInsightSection, PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION,
-    PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS, PersonalAnalyticsInsight,
-    PersonalAnalyticsNarrative, build_personal_analytics_projection,
+    PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS, PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS,
+    PersonalAnalyticsInsight, PersonalAnalyticsNarrative, build_personal_analytics_projection,
     index::PersonalAnalyticsDateRange, index::PersonalAnalyticsIndex,
     personal_analytics_narrative_schema,
 };
@@ -53,12 +53,14 @@ fn mode_specific_metrics_exclude_raw_frames() {
         );
     }
     write(
-        &project.join("tasks/task-direct/turns/turn-1/turn.json"),
-        r#"{"record":{"data":{"status":"completed"}}}"#,
-    );
-    write(
-        &project.join("tasks/task-direct/turns/turn-2/turn.json"),
-        r#"{"record":{"data":{"status":"cancelled"}}}"#,
+        &project.join("tasks/task-direct/runs/run-001/rounds/round-001/nodes/direct-agent/attempt-001/acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-17T10:00:01Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-17T10:00:05Z","usage":{"inputTokens":10,"outputTokens":5,"totalTokens":15}}"#,
+            "\n",
+            r#"{"kind":"promptStarted","turn_id":"turn-2","turn_seq":2,"timestamp":"2026-08-17T10:00:06Z"}"#,
+        ),
     );
     write(
         &project.join("tasks/task-direct/runs/run-001/acp.raw.jsonl"),
@@ -80,6 +82,14 @@ fn mode_specific_metrics_exclude_raw_frames() {
             .direct_reply_completion_rate
             .denominator,
         2
+    );
+    assert_eq!(
+        output
+            .projection
+            .reliability
+            .direct_reply_completion_rate
+            .numerator,
+        1
     );
     assert_eq!(
         output
@@ -116,7 +126,7 @@ fn corrupt_files_are_isolated_and_semantic_content_is_bounded() {
     write(&project.join("authoring/task.json"), "{broken");
     write(
         &project.join("authoring/requirement.md"),
-        &"x".repeat(PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS + 500),
+        &format!("{}你{}", "x".repeat(4_799), "y".repeat(500)),
     );
 
     let output = build_personal_analytics_projection(
@@ -131,6 +141,20 @@ fn corrupt_files_are_isolated_and_semantic_content_is_bounded() {
     assert_eq!(output.semantic_batch.items.len(), 1);
     assert_eq!(
         output.semantic_batch.items[0].content.chars().count(),
+        PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let (report, semantic_items) = index
+        .report_with_semantic_batch(&PersonalAnalyticsDateRange::default(), "semantic".into())
+        .unwrap();
+    assert_eq!(report.source_coverage.corrupt_files, 1);
+    assert_eq!(semantic_items.len(), 1);
+    assert_eq!(
+        semantic_items[0].content.chars().count(),
         PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS
     );
     assert!(personal_analytics_narrative_schema().is_object());
@@ -250,7 +274,7 @@ fn bilingual_prompts_render_with_attachment_only_boundary() {
 }
 
 #[test]
-fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
+fn sqlite_index_syncs_reopens_incrementally_and_queries_date_ranges() {
     let root = tempdir().unwrap();
     let task = root.path().join("project-a/tasks/task-1");
     write(
@@ -266,20 +290,25 @@ fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
         &run.join("run.json"),
         r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
     );
+    let attempt = run.join("attempt-1");
     write(
-        &run.join("attempt-1/node.json"),
+        &attempt.join("node.json"),
         r#"{"version":"1.0","node_id":"plan","resolved_config":{"provider":"agent-a"}}"#,
     );
     write(
-        &run.join("attempt-1/acp.snapshot.json"),
+        &attempt.join("acp.snapshot.json"),
         r#"{"version":"1.0","timing":{"sessionElapsedSeconds":60}}"#,
     );
     write(
-        &task.join("acp.prompt-usage.jsonl"),
-        r#"{"usage":{"inputTokens":100,"outputTokens":50,"totalTokens":150}}"#,
+        &attempt.join("acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z","usage":{"inputTokens":100,"outputTokens":50,"totalTokens":150}}"#,
+        ),
     );
     write(
-        &task.join("acp.timeline.jsonl"),
+        &attempt.join("acp.timeline.jsonl"),
         r#"{"item":{"kind":"toolCall","raw":{"name":"read_file"}}}"#,
     );
     let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
@@ -296,7 +325,19 @@ fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
     );
     assert_eq!(all.efficiency.observed_terminal_run_active_seconds, 60);
     assert_eq!(all.token_usage.total_tokens, 150);
+    assert_eq!(all.overview.conversation_count, 1);
     assert_eq!(all.index_revision, first.index_revision);
+    drop(index);
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let reopened_state = index.state().unwrap();
+    assert_eq!(reopened_state.schema_version, 7);
+    assert_eq!(reopened_state.index_revision, first.index_revision);
+    let reopened = index
+        .report(&PersonalAnalyticsDateRange::default(), "reopened".into())
+        .unwrap();
+    assert_eq!(reopened.overview.task_count, 1);
+    assert_eq!(reopened.token_usage.total_tokens, 150);
+    assert_eq!(reopened.index_revision, first.index_revision);
     let january = index
         .report(
             &PersonalAnalyticsDateRange {
@@ -322,7 +363,7 @@ fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
         &root.path().join("project-a/project.json"),
         r#"{"version":"2.0","name":"Future project"}"#,
     );
-    write(&task.join("turn.json"), "{ not json");
+    write(&run.join("attempt-2/node.json"), "{ not json");
     let degraded = index.sync(&projects, |_, _| {}, || false).unwrap();
     assert_eq!(degraded.reparsed_files, 2);
     assert!(degraded.index_revision > first.index_revision);
@@ -345,7 +386,7 @@ fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
                 "unknown-version".to_string()
             ),
             (
-                "project-a/tasks/task-1/turn.json".to_string(),
+                "project-a/tasks/task-1/runs/run-1/attempt-2/node.json".to_string(),
                 "corrupt".to_string()
             ),
         ]
@@ -383,6 +424,800 @@ fn sqlite_index_syncs_incrementally_and_queries_date_ranges() {
     assert_eq!(
         counters,
         vec![("tool".to_string(), "read_file".to_string(), 1)]
+    );
+}
+
+#[test]
+fn bounded_task_activity_uses_only_facts_inside_the_requested_range() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-1");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","title":"Scoped activity"}"#,
+    );
+    write(
+        &task.join("conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow","lastActivityAt":"2026-08-20T12:00:00Z"}"#,
+    );
+    let in_range_run = task.join("runs/run-1");
+    write(
+        &in_range_run.join("run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
+    );
+    let attempt = in_range_run.join("attempt-1");
+    write(
+        &attempt.join("node.json"),
+        r#"{"version":"1.0","node_id":"plan","resolved_config":{"provider":"agent-a"}}"#,
+    );
+    write(
+        &attempt.join("acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z","usage":{"totalTokens":10}}"#,
+        ),
+    );
+    write(
+        &task.join("runs/run-2/run.json"),
+        r#"{"version":"1.0","status":"failed","outcome":"failure","updated_at":"2026-08-20T13:00:00Z"}"#,
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange {
+                start: Some("2026-08-18".into()),
+                end: Some("2026-08-18".into()),
+            },
+            "scoped-activity".into(),
+        )
+        .unwrap();
+
+    let task = report
+        .recent_tasks
+        .first()
+        .expect("task has in-range activity");
+    assert_eq!(task.latest_run_id.as_deref(), Some("run-1"));
+    assert_eq!(task.status, "completed");
+    assert_eq!(
+        task.last_activity_at.as_deref(),
+        Some("2026-08-18T02:00:02Z")
+    );
+}
+
+#[test]
+fn sqlite_direct_metrics_use_current_run_and_prompt_journal_model() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-direct");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","id":"task-direct","title":"Current direct task"}"#,
+    );
+    write(
+        &task.join("authoring/conversation.json"),
+        r#"{"version":"3","runMode":"direct","createdAt":"2026-08-18T01:00:00Z"}"#,
+    );
+    let run = task.join("runs/run-001");
+    write(
+        &run.join("run.json"),
+        r#"{"version":"0.1","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
+    );
+    let attempt = run.join("rounds/round-001/nodes/direct-agent/attempt-001");
+    write(
+        &attempt.join("node.json"),
+        r#"{"version":"0.1","node_id":"direct-agent","status":"completed","outcome":"success","resolved_config":{"provider":"claude-acp"}}"#,
+    );
+    write(
+        &attempt.join("acp.snapshot.json"),
+        r#"{"version":"0.1","timing":{"sessionElapsedSeconds":30}}"#,
+    );
+    write(
+        &attempt.join("acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z","usage":{"inputTokens":100,"outputTokens":50,"totalTokens":150}}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-2","turn_seq":2,"timestamp":"2026-08-18T02:00:03Z","usage":{"inputTokens":30,"outputTokens":20,"totalTokens":50}}"#,
+            "\n",
+            r#"{"kind":"promptStarted","turn_id":"turn-3","turn_seq":3,"timestamp":"2026-08-18T02:00:04Z"}"#,
+        ),
+    );
+    write(
+        &task.join("turns/legacy-turn/turn.json"),
+        r#"{"record":{"data":{"status":"completed"}}}"#,
+    );
+    write(
+        &task.join("acp.prompt-usage.jsonl"),
+        r#"{"usage":{"inputTokens":9000,"outputTokens":1000,"totalTokens":10000}}"#,
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "direct-current".into(),
+        )
+        .unwrap();
+
+    assert_eq!(report.overview.run_count, 1);
+    assert_eq!(report.overview.turn_count, 3);
+    assert_eq!(
+        report.reliability.direct_reply_completion_rate.denominator,
+        3
+    );
+    assert_eq!(report.reliability.direct_reply_completion_rate.numerator, 2);
+    assert_eq!(
+        report
+            .reliability
+            .direct_reply_completion_rate
+            .unknown_count,
+        1
+    );
+    assert_eq!(
+        report
+            .reliability
+            .workflow_run_terminal_success_rate
+            .denominator,
+        0
+    );
+    assert_eq!(report.token_usage.total_tokens, 200);
+    assert!(report.recent_tasks.is_empty());
+    assert_eq!(report.token_usage.top_token_tasks[0].mode, "direct");
+    assert_eq!(
+        report.token_usage.top_token_tasks[0].latest_run_id,
+        Some("run-001".to_string())
+    );
+    let unit_type: String = Connection::open(db.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT unitType FROM analytics_runs WHERE taskLocator='project-a/task-direct'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unit_type, "direct-session");
+    let legacy_source: (String, String) = Connection::open(db.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT sourceType, parseStatus FROM analytics_sources
+             WHERE sourcePath='project-a/tasks/task-direct/acp.prompt-usage.jsonl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(legacy_source, ("other".to_string(), "skipped".to_string()));
+}
+
+#[test]
+fn sqlite_direct_started_only_reply_is_scoped_by_its_own_date() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-direct");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","id":"task-direct","title":"Cross-date direct task"}"#,
+    );
+    write(
+        &task.join("authoring/conversation.json"),
+        r#"{"version":"3","runMode":"direct"}"#,
+    );
+    write(
+        &task.join("runs/run-001/run.json"),
+        r#"{"version":"0.1","status":"completed","outcome":"success","updated_at":"2026-08-17T02:00:00Z"}"#,
+    );
+    write(
+        &task.join(
+            "runs/run-001/rounds/round-001/nodes/direct-agent/attempt-001/acp.prompt-usage.jsonl",
+        ),
+        r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:00Z"}"#,
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange {
+                start: Some("2026-08-18".into()),
+                end: Some("2026-08-18".into()),
+            },
+            "direct-started-only".into(),
+        )
+        .unwrap();
+
+    assert_eq!(report.overview.task_count, 1);
+    assert_eq!(report.overview.run_count, 0);
+    assert_eq!(report.overview.turn_count, 1);
+    assert_eq!(
+        report.reliability.direct_reply_completion_rate.denominator,
+        1
+    );
+    assert_eq!(report.reliability.direct_reply_completion_rate.numerator, 0);
+    assert_eq!(
+        report
+            .reliability
+            .direct_reply_completion_rate
+            .unknown_count,
+        1
+    );
+}
+
+#[test]
+fn sqlite_cross_date_tokens_use_navigation_run_without_changing_range_metrics() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-workflow");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","id":"task-workflow","title":"Cross-date workflow task"}"#,
+    );
+    write(
+        &task.join("authoring/conversation.json"),
+        r#"{"version":"3","runMode":"workflow"}"#,
+    );
+    write(
+        &task.join("runs/run-001/run.json"),
+        r#"{"version":"0.1","status":"completed","outcome":"success","updated_at":"2026-08-19T02:00:00Z"}"#,
+    );
+    write(
+        &task.join("runs/run-001/rounds/round-001/nodes/dev/attempt-001/acp.prompt-usage.jsonl"),
+        r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:00Z","usage":{"inputTokens":200,"outputTokens":100,"totalTokens":300}}"#,
+    );
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange {
+                start: Some("2026-08-18".into()),
+                end: Some("2026-08-18".into()),
+            },
+            "cross-date-tokens".into(),
+        )
+        .unwrap();
+
+    assert_eq!(report.overview.run_count, 0);
+    assert_eq!(
+        report
+            .reliability
+            .workflow_run_terminal_success_rate
+            .denominator,
+        0
+    );
+    assert_eq!(report.token_usage.total_tokens, 300);
+    assert_eq!(report.token_usage.top_token_tasks.len(), 1);
+    assert_eq!(
+        report.token_usage.top_token_tasks[0].latest_run_id,
+        Some("run-001".to_string())
+    );
+    assert!(report.recent_tasks.is_empty());
+}
+
+#[test]
+fn sqlite_counter_ranges_follow_each_event_timestamp_and_latest_revision() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-1");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","title":"Cross-date counters"}"#,
+    );
+    write(
+        &task.join("conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow"}"#,
+    );
+    let first_day = Local
+        .with_ymd_and_hms(2026, 8, 18, 12, 0, 0)
+        .single()
+        .unwrap();
+    let second_day = first_day + Duration::days(1);
+    write(
+        &task.join("runs/run-1/run.json"),
+        &format!(
+            r#"{{"version":"1.0","status":"completed","outcome":"success","updated_at":"{}"}}"#,
+            second_day.to_rfc3339()
+        ),
+    );
+    let timeline = [
+        json!({
+            "patchType": "timelinePatch",
+            "itemId": "tool-read",
+            "revision": 1,
+            "op": "upsert",
+            "item": {
+                "id": "tool-read",
+                "seq": 1,
+                "timestamp": first_day.to_rfc3339(),
+                "kind": "toolCall",
+                "status": "completed",
+                "raw": { "name": "read_file" }
+            }
+        }),
+        json!({
+            "patchType": "timelinePatch",
+            "itemId": "tool-write",
+            "revision": 1,
+            "op": "upsert",
+            "item": {
+                "id": "tool-write",
+                "seq": 2,
+                "timestamp": second_day.to_rfc3339(),
+                "kind": "toolCall",
+                "status": "processing",
+                "raw": { "name": "write_file" }
+            }
+        }),
+        json!({
+            "patchType": "timelinePatch",
+            "itemId": "tool-write",
+            "revision": 2,
+            "op": "upsert",
+            "item": {
+                "id": "tool-write",
+                "seq": 2,
+                "timestamp": second_day.to_rfc3339(),
+                "kind": "toolCall",
+                "status": "completed",
+                "raw": { "name": "write_file" }
+            }
+        }),
+    ]
+    .into_iter()
+    .map(|record| record.to_string())
+    .collect::<Vec<_>>()
+    .join("\n");
+    write(&task.join("acp.timeline.jsonl"), &timeline);
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+
+    let second_day_report = index
+        .report(
+            &PersonalAnalyticsDateRange {
+                start: Some("2026-08-19".into()),
+                end: Some("2026-08-19".into()),
+            },
+            "second-day".into(),
+        )
+        .unwrap();
+    assert_eq!(second_day_report.context_and_tools.tool_call_count, 1);
+    assert_eq!(second_day_report.context_and_tools.top_tools.len(), 1);
+    assert_eq!(
+        second_day_report.context_and_tools.top_tools[0].name,
+        "write_file"
+    );
+    assert_eq!(second_day_report.context_and_tools.top_tools[0].count, 1);
+}
+
+#[test]
+fn sqlite_semantic_batch_reports_full_eligibility_and_enforces_character_budget() {
+    let root = tempdir().unwrap();
+    for task_number in 0..125 {
+        write(
+            &root.path().join(format!(
+                "project-a/tasks/task-{task_number:03}/authoring/requirement.md"
+            )),
+            &"x".repeat(PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS),
+        );
+    }
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+
+    let (report, semantic_items) = index
+        .report_with_semantic_batch(&PersonalAnalyticsDateRange::default(), "semantic".into())
+        .unwrap();
+    let sampled_chars = semantic_items
+        .iter()
+        .map(|item| item.content.chars().count())
+        .sum::<usize>();
+
+    assert_eq!(report.source_coverage.semantic_eligible_items, 125);
+    assert_eq!(report.source_coverage.semantic_sampled_items, 60);
+    assert_eq!(semantic_items.len(), 60);
+    assert!(sampled_chars <= PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS);
+    assert_eq!(
+        semantic_items.len() as u64,
+        report.source_coverage.semantic_sampled_items
+    );
+}
+
+#[test]
+fn sqlite_excludes_auto_child_runs_and_preserves_retry_outcomes() {
+    let root = tempdir().unwrap();
+    let auto_task = root.path().join("project-a/tasks/task-auto");
+    write(
+        &auto_task.join("authoring/task.json"),
+        r#"{"version":"1.0","title":"AUTO task"}"#,
+    );
+    write(
+        &auto_task.join("authoring/conversation.json"),
+        r#"{"version":"1.0","runMode":"auto"}"#,
+    );
+    write(
+        &auto_task.join("runs/run-outer/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"failure","updated_at":"2026-08-18T02:00:00Z"}"#,
+    );
+    write(
+        &auto_task.join("runs/run-child/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T03:00:00Z"}"#,
+    );
+    write(
+        &auto_task.join(
+            "runs/run-outer/rounds/round-1/nodes/ai-dynamic/attempt-1/dynamic/nodes/invoke-child/node.json",
+        ),
+        r#"{"version":"1.0","id":"invoke-child","kind":"workflow-invocation","outcome":"success","childRunId":"run-child"}"#,
+    );
+
+    let retry_task = root.path().join("project-a/tasks/task-retry");
+    write(
+        &retry_task.join("authoring/task.json"),
+        r#"{"version":"1.0","title":"Retry task"}"#,
+    );
+    write(
+        &retry_task.join("authoring/conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow"}"#,
+    );
+    write(
+        &retry_task.join("runs/run-1/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T04:00:00Z"}"#,
+    );
+    for (attempt, outcome) in [("attempt-1", "failure"), ("attempt-2", "success")] {
+        write(
+            &retry_task.join(format!(
+                "runs/run-1/rounds/round-1/nodes/plan/{attempt}/node.json"
+            )),
+            &format!(r#"{{"version":"1.0","node_id":"plan","outcome":"{outcome}"}}"#),
+        );
+    }
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "run-identity".into(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        report
+            .reliability
+            .auto_outer_run_terminal_success_rate
+            .denominator,
+        1
+    );
+    assert_eq!(
+        report
+            .reliability
+            .auto_outer_run_terminal_success_rate
+            .numerator,
+        0
+    );
+    assert_eq!(report.quality.retry_reentry_rate.numerator, 1);
+    assert_eq!(report.quality.recovered_after_retry_count, 1);
+    let auto_summary = report
+        .recent_tasks
+        .iter()
+        .find(|task| task.task_id.as_deref() == Some("task-auto"))
+        .unwrap();
+    assert_eq!(auto_summary.latest_run_id.as_deref(), Some("run-outer"));
+    assert_eq!(auto_summary.outcome.as_deref(), Some("failure"));
+
+    let child_type: String = Connection::open(db.as_std_path())
+        .unwrap()
+        .query_row(
+            "SELECT unitType FROM analytics_runs WHERE runLocator LIKE '%/runs/run-child'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(child_type, "auto-child-run");
+}
+
+#[test]
+fn auto_dynamic_leaf_sources_share_one_canonical_attempt_identity() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-auto");
+    write(
+        &task.join("authoring/task.json"),
+        r#"{"version":"1.0","title":"Dynamic identity"}"#,
+    );
+    write(
+        &task.join("authoring/conversation.json"),
+        r#"{"version":"1.0","runMode":"auto"}"#,
+    );
+    write(
+        &task.join("runs/run-1/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
+    );
+    let dynamic_nodes =
+        task.join("runs/run-1/rounds/round-1/nodes/ai-dynamic/attempt-1/dynamic/nodes");
+    for (leaf, provider, seconds, tokens) in [
+        ("worker-a", "agent-a", 11, 15),
+        ("worker-b", "agent-b", 13, 25),
+    ] {
+        let leaf_root = dynamic_nodes.join(leaf);
+        write(
+            &leaf_root.join("node.json"),
+            &format!(
+                r#"{{"version":"1.0","id":"{leaf}","provider":"{provider}","outcome":"success"}}"#
+            ),
+        );
+        write(
+            &leaf_root.join("attempt-001/acp.snapshot.json"),
+            &format!(r#"{{"version":"1.0","timing":{{"sessionElapsedSeconds":{seconds}}}}}"#),
+        );
+        write(
+            &leaf_root.join("attempt-001/acp.prompt-usage.jsonl"),
+            &format!(
+                r#"{{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z","usage":{{"inputTokens":{tokens},"totalTokens":{tokens}}}}}"#
+            ),
+        );
+    }
+
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let projection = build_personal_analytics_projection(
+        &projects,
+        "dynamic-projection".into(),
+        |_, _| {},
+        || false,
+    )
+    .unwrap()
+    .projection;
+    assert_eq!(projection.overview.attempt_count, 2);
+    assert_eq!(projection.quality.retry_reentry_rate.numerator, 0);
+    assert_eq!(
+        projection.efficiency.observed_terminal_run_active_seconds,
+        24
+    );
+    assert_eq!(projection.token_usage.total_tokens, 40);
+
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let connection = Connection::open(db.as_std_path()).unwrap();
+    let row_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM analytics_attempts
+             WHERE attemptLocator LIKE '%/dynamic/nodes/%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(row_count, 2);
+    let worker_a = connection
+        .query_row(
+            "SELECT attemptLocator, nodeSourcePath, snapshotSourcePath, usageSourcePath,
+                    nodeId, agent, outcome, sessionElapsedSeconds, totalTokens
+             FROM analytics_attempts WHERE attemptLocator LIKE '%/dynamic/nodes/worker-a'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert!(worker_a.0.ends_with("/dynamic/nodes/worker-a"));
+    assert!(worker_a.1.is_some());
+    assert!(worker_a.2.is_some());
+    assert!(worker_a.3.is_some());
+    assert_eq!(worker_a.4, "worker-a");
+    assert_eq!(worker_a.5.as_deref(), Some("agent-a"));
+    assert_eq!(worker_a.6.as_deref(), Some("success"));
+    assert_eq!(worker_a.7, Some(11));
+    assert_eq!(worker_a.8, 15);
+
+    let report = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "dynamic-index".into(),
+        )
+        .unwrap();
+    assert_eq!(report.overview.attempt_count, 2);
+    assert_eq!(report.quality.retry_reentry_rate.numerator, 0);
+    assert_eq!(report.efficiency.observed_terminal_run_active_seconds, 24);
+    assert_eq!(report.efficiency.active_duration_zero_filled_count, 0);
+    assert_eq!(report.token_usage.total_tokens, 40);
+    assert_eq!(
+        report
+            .efficiency
+            .node_aggregates
+            .iter()
+            .map(|node| node.node_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["worker-b", "worker-a"]
+    );
+
+    drop(connection);
+    drop(index);
+    let legacy = Connection::open(db.as_std_path()).unwrap();
+    legacy
+        .execute(
+            "UPDATE analytics_index_state SET schemaVersion = 6 WHERE singleton = 1",
+            [],
+        )
+        .unwrap();
+    drop(legacy);
+
+    let mut migrated = PersonalAnalyticsIndex::open(&db).unwrap();
+    let migrated_state = migrated.state().unwrap();
+    assert_eq!(migrated_state.schema_version, 7);
+    assert_eq!(migrated_state.index_revision, 0);
+    let migrated_stats = migrated.sync(&projects, |_, _| {}, || false).unwrap();
+    assert!(migrated_stats.reparsed_files > 0);
+    let migrated_report = migrated
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "dynamic-migrated".into(),
+        )
+        .unwrap();
+    assert_eq!(migrated_report.overview.attempt_count, 2);
+    assert_eq!(migrated_report.quality.retry_reentry_rate.numerator, 0);
+}
+
+#[test]
+fn sqlite_usage_journals_update_attempts_without_inventing_nodes() {
+    let root = tempdir().unwrap();
+    let task = root.path().join("project-a/tasks/task-1");
+    write(
+        &task.join("task.json"),
+        r#"{"version":"1.0","title":"Usage task"}"#,
+    );
+    write(
+        &task.join("conversation.json"),
+        r#"{"version":"1.0","runMode":"workflow"}"#,
+    );
+    let attempt = task.join("runs/run-1/attempt-1");
+    write(
+        &task.join("runs/run-1/run.json"),
+        r#"{"version":"1.0","status":"completed","outcome":"success","updated_at":"2026-08-18T02:00:00Z"}"#,
+    );
+    write(
+        &attempt.join("node.json"),
+        r#"{"version":"1.0","node_id":"plan","resolved_config":{"provider":"agent-a"}}"#,
+    );
+    write(
+        &attempt.join("acp.snapshot.json"),
+        r#"{"version":"1.0","timing":{"sessionElapsedSeconds":60}}"#,
+    );
+    write(
+        &attempt.join("acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:00Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z","usage":{"inputTokens":100,"outputTokens":50,"totalTokens":150}}"#,
+            "\n",
+            r#"{"kind":"promptStarted","turn_id":"turn-2","turn_seq":2,"timestamp":"2026-08-18T02:00:01Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-2","turn_seq":2,"timestamp":"2026-08-18T02:00:02Z","usage":{"inputTokens":60,"outputTokens":40,"totalTokens":100}}"#,
+        ),
+    );
+    let projects = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+
+    let connection = Connection::open(db.as_std_path()).unwrap();
+    let attempt_row = connection
+        .query_row(
+            "SELECT nodeSourcePath IS NOT NULL, snapshotSourcePath IS NOT NULL,
+                    usageSourcePath IS NOT NULL, totalTokens
+             FROM analytics_attempts",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(attempt_row, (true, true, true, 250));
+    let all = index
+        .report(&PersonalAnalyticsDateRange::default(), "usage-all".into())
+        .unwrap();
+    assert_eq!(all.overview.attempt_count, 1);
+    assert_eq!(all.quality.retry_reentry_rate.numerator, 0);
+    assert_eq!(all.token_usage.observed_prompt_count, 2);
+    assert_eq!(all.token_usage.total_tokens, 250);
+    assert_eq!(all.efficiency.observed_terminal_run_active_seconds, 60);
+    assert_eq!(all.efficiency.active_duration_zero_filled_count, 0);
+
+    write(
+        &attempt.join("acp.prompt-usage.jsonl"),
+        concat!(
+            r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z"}"#,
+            "\n",
+            r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:03Z","usage":{"inputTokens":120,"outputTokens":80,"totalTokens":200}}"#,
+        ),
+    );
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let updated_usage = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "usage-updated".into(),
+        )
+        .unwrap();
+    assert_eq!(updated_usage.token_usage.total_tokens, 200);
+    assert_eq!(updated_usage.token_usage.observed_prompt_count, 1);
+    assert_eq!(updated_usage.overview.attempt_count, 1);
+
+    write(
+        &attempt.join("acp.snapshot.json"),
+        r#"{"version":"1.0","timing":{"sessionElapsedSeconds":90}}"#,
+    );
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let updated_snapshot = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "snapshot-updated".into(),
+        )
+        .unwrap();
+    assert_eq!(
+        updated_snapshot
+            .efficiency
+            .observed_terminal_run_active_seconds,
+        90
+    );
+    assert_eq!(updated_snapshot.token_usage.total_tokens, 200);
+
+    write(
+        &attempt.join("node.json"),
+        r#"{"version":"1.0","node_id":"plan-v2","resolved_config":{"provider":"agent-b"}}"#,
+    );
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let updated_node = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "node-updated".into(),
+        )
+        .unwrap();
+    assert_eq!(updated_node.overview.attempt_count, 1);
+    assert_eq!(
+        updated_node.efficiency.observed_terminal_run_active_seconds,
+        90
+    );
+    assert_eq!(updated_node.token_usage.total_tokens, 200);
+
+    fs::remove_file(attempt.join("acp.prompt-usage.jsonl")).unwrap();
+    index.sync(&projects, |_, _| {}, || false).unwrap();
+    let usage_removed = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "usage-removed".into(),
+        )
+        .unwrap();
+    assert_eq!(usage_removed.token_usage.total_tokens, 0);
+    assert_eq!(usage_removed.overview.attempt_count, 1);
+    assert_eq!(
+        usage_removed
+            .efficiency
+            .observed_terminal_run_active_seconds,
+        90
     );
 }
 
@@ -458,14 +1293,33 @@ fn real_history_sqlite_index_and_range_query_baseline() {
             "performance-range".into(),
         )
         .unwrap();
+    let all_report = index
+        .report(
+            &PersonalAnalyticsDateRange::default(),
+            "performance-all".into(),
+        )
+        .unwrap();
     println!(
-        "sqlite_full_ms={} sqlite_full_index_revision={} sqlite_increment_ms={} sqlite_increment_reparsed={} sqlite_range_ms={} sqlite_range_runs={}",
+        "sqlite_full_ms={} sqlite_full_index_revision={} sqlite_increment_ms={} sqlite_increment_reparsed={} sqlite_range_ms={} sqlite_range_runs={} attempts={} direct_started={} direct_completed={} direct_unknown={}",
         full_started.elapsed().as_millis(),
         full.index_revision,
         increment_started.elapsed().as_millis(),
         increment.reparsed_files,
         range_started.elapsed().as_millis(),
         report.overview.run_count,
+        all_report.overview.attempt_count,
+        all_report
+            .reliability
+            .direct_reply_completion_rate
+            .denominator,
+        all_report
+            .reliability
+            .direct_reply_completion_rate
+            .numerator,
+        all_report
+            .reliability
+            .direct_reply_completion_rate
+            .unknown_count,
     );
     assert!(increment.reparsed_files < full.reparsed_files);
     if increment.reparsed_files == 0 {
@@ -573,7 +1427,7 @@ fn date_ranges_use_inclusive_local_natural_days() {
 fn insight_cache_is_identity_scoped_and_bounded() {
     let root = tempdir().unwrap();
     let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
-    let index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
     let narrative = PersonalAnalyticsNarrative {
         schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
         insights: Vec::new(),
@@ -581,14 +1435,9 @@ fn insight_cache_is_identity_scoped_and_bounded() {
     for revision in 1..=68 {
         let identity = insight_identity(revision);
         index
-            .begin_insight(&identity, &format!("2026-08-18T00:{revision:02}:00Z"))
-            .unwrap();
-        index
-            .finish_insight(
-                &identity.operation_id,
+            .store_completed_insight(
+                &identity,
                 &narrative,
-                "completed",
-                None,
                 &format!("2026-08-18T00:{revision:02}:01Z"),
             )
             .unwrap();
@@ -613,82 +1462,15 @@ fn insight_cache_is_identity_scoped_and_bounded() {
     );
 
     let completed_narrative = cached_narrative();
+    let identity = insight_identity(68);
     index
-        .finish_insight(
-            "operation-68",
-            &completed_narrative,
-            "completed",
-            None,
-            "2026-08-18T01:00:00Z",
-        )
+        .store_completed_insight(&identity, &completed_narrative, "2026-08-18T01:00:00Z")
         .unwrap();
     let mut cache_hit_identity = insight_identity(68);
     cache_hit_identity.operation_id = "operation-cache-hit".into();
-    index
-        .begin_insight(&cache_hit_identity, "2026-08-18T01:00:01Z")
-        .unwrap();
     assert_eq!(
         index.completed_insight(&cache_hit_identity).unwrap(),
         Some(completed_narrative.clone())
-    );
-
-    let failed_identity = insight_identity(70);
-    index
-        .begin_insight(&failed_identity, "2026-08-18T01:00:02Z")
-        .unwrap();
-    index
-        .finish_insight(
-            &failed_identity.operation_id,
-            &PersonalAnalyticsNarrative {
-                schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
-                insights: Vec::new(),
-            },
-            "failed",
-            Some("analytics.report-invalid"),
-            "2026-08-18T01:00:03Z",
-        )
-        .unwrap();
-    assert!(index.completed_insight(&failed_identity).unwrap().is_none());
-    let mut retry_identity = failed_identity;
-    retry_identity.operation_id = "operation-retry".into();
-    index
-        .begin_insight(&retry_identity, "2026-08-18T01:00:04Z")
-        .unwrap();
-    index
-        .finish_insight(
-            &retry_identity.operation_id,
-            &completed_narrative,
-            "completed",
-            None,
-            "2026-08-18T01:00:05Z",
-        )
-        .unwrap();
-    assert_eq!(
-        index.completed_insight(&retry_identity).unwrap(),
-        Some(cached_narrative())
-    );
-
-    let cancelled_identity = insight_identity(71);
-    index
-        .begin_insight(&cancelled_identity, "2026-08-18T01:00:06Z")
-        .unwrap();
-    index
-        .finish_insight(
-            &cancelled_identity.operation_id,
-            &PersonalAnalyticsNarrative {
-                schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
-                insights: Vec::new(),
-            },
-            "cancelled",
-            None,
-            "2026-08-18T01:00:07Z",
-        )
-        .unwrap();
-    assert!(
-        index
-            .completed_insight(&cancelled_identity)
-            .unwrap()
-            .is_none()
     );
     let deterministic_report = index
         .report(
@@ -700,7 +1482,7 @@ fn insight_cache_is_identity_scoped_and_bounded() {
 
     let connection = Connection::open(db.as_std_path()).unwrap();
     let retained: i64 = connection
-        .query_row("SELECT COUNT(*) FROM analytics_insight_runs", [], |row| {
+        .query_row("SELECT COUNT(*) FROM analytics_insight_cache", [], |row| {
             row.get(0)
         })
         .unwrap();
@@ -710,7 +1492,43 @@ fn insight_cache_is_identity_scoped_and_bounded() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(insight_view_count, 2);
+    assert_eq!(insight_view_count, 1);
+}
+
+#[test]
+fn insight_cache_lookup_never_creates_a_parallel_lifecycle_row() {
+    let root = tempdir().unwrap();
+    let db = Utf8PathBuf::from_path_buf(root.path().join("gold-band.db")).unwrap();
+    let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
+    let mut identity = insight_identity(1);
+    identity.operation_id = "operation-1".into();
+    assert!(index.completed_insight(&identity).unwrap().is_none());
+    index
+        .store_completed_insight(&identity, &cached_narrative(), "2026-08-20T00:00:01Z")
+        .unwrap();
+
+    identity.operation_id = "operation-cache-hit".into();
+    assert_eq!(
+        index.completed_insight(&identity).unwrap(),
+        Some(cached_narrative())
+    );
+    let connection = Connection::open(db.as_std_path()).unwrap();
+    let run_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM analytics_insight_cache
+             WHERE rangeStart IS ?1 AND rangeEnd IS ?2 AND schemaVersion = ?3
+               AND indexRevision = ?4 AND agentType = ?5",
+            rusqlite::params![
+                identity.range_start,
+                identity.range_end,
+                identity.schema_version,
+                identity.index_revision,
+                identity.agent_type
+            ],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(run_count, 1);
 }
 
 fn cached_narrative() -> PersonalAnalyticsNarrative {

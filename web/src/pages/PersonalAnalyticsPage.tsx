@@ -46,8 +46,10 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [rangeQuerying, setRangeQuerying] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
   const [insightSubmitting, setInsightSubmitting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const range = useMemo(() => rangeValue(rangePreset, customStart, customEnd), [rangePreset, customStart, customEnd]);
   const availableAgents = useMemo(
     () => agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [],
     [agentRegistry],
@@ -78,30 +80,28 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
 
   const operation = snapshot?.operation ?? null;
   const insightOperation = snapshot?.insightOperation ?? null;
-  const report = snapshot?.latestReport ?? null;
+  const report = snapshot?.latestReport && sameAnalyticsRange(snapshot.latestReport.range, range.value)
+    ? snapshot.latestReport
+    : null;
   const active = isPersonalAnalyticsActive(snapshot);
   const insightActive = insightOperation?.status === 'queued' || insightOperation?.status === 'analyzing'
     || insightOperation?.status === 'validating-report' || insightOperation?.status === 'cancelling';
-  const autoSyncedRef = useRef(false);
-  const syncedRangeRef = useRef<string | null>(null);
-  const range = useMemo(() => rangeValue(rangePreset, customStart, customEnd), [rangePreset, customStart, customEnd]);
-  const rangeKey = JSON.stringify(range.value);
+  const initialSyncRequestedRef = useRef(false);
+  const reportRequestRef = useRef(0);
   useEffect(() => {
-    if (loading || snapshot === null || range.invalid) return;
+    if (loading || snapshot === null) return;
     if (active || submitting) {
-      autoSyncedRef.current = true;
-      syncedRangeRef.current = rangeKey;
+      initialSyncRequestedRef.current = true;
       return;
     }
-    if (autoSyncedRef.current && syncedRangeRef.current === rangeKey) return;
-    autoSyncedRef.current = true;
-    syncedRangeRef.current = rangeKey;
+    if (initialSyncRequestedRef.current) return;
+    initialSyncRequestedRef.current = true;
     setSubmitting(true);
     void syncPersonalAnalytics()
       .then((next) => setSnapshot((current) => mergePersonalAnalyticsSnapshot(current, next)))
       .catch(() => undefined)
       .finally(() => setSubmitting(false));
-  }, [active, loading, range.invalid, rangeKey, snapshot === null, submitting]);
+  }, [active, loading, snapshot === null, submitting]);
 
   const progress = operation?.progress.totalUnits
     ? Math.min(100, (operation.progress.processedUnits / operation.progress.totalUnits) * 100)
@@ -112,15 +112,25 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   useEffect(() => {
     if (loading || snapshot === null || range.invalid) return;
     let disposed = false;
+    const requestId = ++reportRequestRef.current;
     setRangeQuerying(true);
+    setRangeError(null);
     void queryPersonalAnalyticsReport(range.value, selectedAgentType || undefined)
       .then((next) => {
-        if (!disposed) setSnapshot((current) => ({ ...(current ?? snapshot), latestReport: next }));
+        if (!disposed && reportRequestRef.current === requestId) {
+          setSnapshot((current) => ({ ...(current ?? snapshot), latestReport: next }));
+        }
       })
-      .catch(() => undefined)
-      .finally(() => { if (!disposed) setRangeQuerying(false); });
+      .catch((error) => {
+        if (!disposed && reportRequestRef.current === requestId) {
+          setRangeError(personalAnalyticsErrorMessage(t, error));
+        }
+      })
+      .finally(() => {
+        if (!disposed && reportRequestRef.current === requestId) setRangeQuerying(false);
+      });
     return () => { disposed = true; };
-  }, [loading, range, selectedAgentType, snapshot === null]);
+  }, [loading, range, selectedAgentType, snapshot === null, t]);
 
   const activeOperationsRef = useRef({ sync: false, insight: false });
   const operationRevision = operation?.revision ?? null;
@@ -133,15 +143,25 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
     const insightCompleted = previous.insight && !insightActive;
     if (!syncCompleted && !insightCompleted) return;
     let disposed = false;
+    const requestId = ++reportRequestRef.current;
     setRangeQuerying(true);
+    setRangeError(null);
     void queryPersonalAnalyticsReport(range.value, selectedAgentType || undefined)
       .then((next) => {
-        if (!disposed) setSnapshot((current) => ({ ...(current ?? snapshot), latestReport: next }));
+        if (!disposed && reportRequestRef.current === requestId) {
+          setSnapshot((current) => ({ ...(current ?? snapshot), latestReport: next }));
+        }
       })
-      .catch(() => undefined)
-      .finally(() => { if (!disposed) setRangeQuerying(false); });
+      .catch((error) => {
+        if (!disposed && reportRequestRef.current === requestId) {
+          setRangeError(personalAnalyticsErrorMessage(t, error));
+        }
+      })
+      .finally(() => {
+        if (!disposed && reportRequestRef.current === requestId) setRangeQuerying(false);
+      });
     return () => { disposed = true; };
-  }, [active, insightActive, insightRevision, loading, operationRevision, range, selectedAgentType, snapshot === null]);
+  }, [active, insightActive, insightRevision, loading, operationRevision, range, selectedAgentType, snapshot === null, t]);
   const start = async () => {
     if (active || submitting) return;
     setSubmitting(true);
@@ -162,7 +182,11 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
     setStartError(null);
     try {
       const next = await startPersonalAnalyticsInsights(selectedAgentType, range.value);
-      setSnapshot((current) => ({ ...(current ?? snapshot!), insightOperation: next }));
+      setSnapshot((current) => mergePersonalAnalyticsSnapshot(current, {
+        operation: null,
+        insightOperation: next,
+        latestReport: null,
+      }));
     } catch (error) {
       setStartError(personalAnalyticsErrorMessage(t, error));
     } finally {
@@ -173,7 +197,11 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
   const cancelInsights = async () => {
     if (!insightOperation || !insightActive) return;
     const next = await cancelPersonalAnalyticsInsights(insightOperation.operationId);
-    setSnapshot((current) => ({ ...(current ?? snapshot!), insightOperation: next }));
+    setSnapshot((current) => mergePersonalAnalyticsSnapshot(current, {
+      operation: null,
+      insightOperation: next,
+      latestReport: null,
+    }));
   };
 
   const cancel = async () => {
@@ -257,7 +285,8 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
             </section>
           ) : null}
 
-          {rangeQuerying && report ? <p className="border-b border-border/70 py-3 text-sm text-muted-foreground" role="status">{t('personalAnalytics.querying')}</p> : null}
+          {rangeQuerying ? <p className="border-b border-border/70 py-3 text-sm text-muted-foreground" role="status">{t('personalAnalytics.querying')}</p> : null}
+          {rangeError ? <p className="border-b border-border/70 py-3 text-sm text-destructive" role="alert">{rangeError}</p> : null}
 
           {insightOperation ? (
             <section className="border-b border-border/70 py-4" aria-live="polite">
@@ -272,7 +301,7 @@ export function PersonalAnalyticsPage({ agentRegistry, onOpenAgentManagement, on
           ) : null}
 
           {loading && !report ? <LoadingState label={t('personalAnalytics.loading')} /> : null}
-          {!loading && !report ? <EmptyState /> : null}
+          {!loading && !report && !rangeQuerying && !rangeError ? <EmptyState /> : null}
           {report ? <ReportContent report={report} number={number} locale={locale} onOpenTask={onOpenTask} /> : null}
         </div>
       </ScrollArea>
@@ -284,8 +313,8 @@ function ReportContent({ report, number, locale, onOpenTask }: { report: Persona
   const { t } = useTranslation();
   const sections = [
     ['overview', t('personalAnalytics.overview')],
-    ['recent-tasks', t('personalAnalytics.recentTasks')],
     ['reliability', t('personalAnalytics.reliability')],
+    ['recent-tasks', t('personalAnalytics.recentTasks')],
     ['quality', t('personalAnalytics.quality')],
     ['efficiency', t('personalAnalytics.efficiency')],
     ['token-usage', t('personalAnalytics.tokens')],
@@ -310,19 +339,16 @@ function ReportContent({ report, number, locale, onOpenTask }: { report: Persona
           <SummaryValue label={t('personalAnalytics.averageRunDuration')} value={formatDuration(report.efficiency.averageTerminalRunActiveSeconds)} />
           <SummaryValue label={t('personalAnalytics.summary.historyRange')} value={report.overview.earliestAt && report.overview.latestAt ? `${formatDate(report.overview.earliestAt, locale)} - ${formatDate(report.overview.latestAt, locale)}` : '-'} />
         </div>
-        <div className="mt-6 grid gap-3 lg:grid-cols-3">
-          {metrics.map(([key, metric]) => <RateMetric key={key} label={t(`personalAnalytics.metrics.${key}`)} metric={metric} number={number} />)}
-        </div>
-      </ReportSection>
-
-      <ReportSection id="recent-tasks" icon={<ListChecks className="size-4" />} title={t('personalAnalytics.recentTasks')}>
-        <TaskTable tasks={report.recentTasks} locale={locale} emptyLabel={t('personalAnalytics.noRecentTasks')} onOpenTask={onOpenTask} />
       </ReportSection>
 
       <ReportSection id="reliability" icon={<ShieldCheck className="size-4" />} title={t('personalAnalytics.reliability')}>
         <div className="grid gap-3 lg:grid-cols-3">
           {metrics.map(([key, metric]) => <RateMetric key={key} label={t(`personalAnalytics.metrics.${key}`)} metric={metric} number={number} />)}
         </div>
+      </ReportSection>
+
+      <ReportSection id="recent-tasks" icon={<ListChecks className="size-4" />} title={t('personalAnalytics.recentTasks')}>
+        <TaskTable tasks={report.recentTasks} locale={locale} emptyLabel={t('personalAnalytics.noRecentTasks')} onOpenTask={onOpenTask} />
       </ReportSection>
 
       <ReportSection id="quality" icon={<ShieldCheck className="size-4" />} title={t('personalAnalytics.quality')}>
@@ -423,6 +449,13 @@ function rangeValue(preset: 'all' | 'today' | 'last7' | 'last30' | 'custom', cus
   const start = new Date(today);
   start.setDate(start.getDate() - (preset === 'today' ? 0 : preset === 'last7' ? 6 : 29));
   return { value: { start: localDate(start), end }, invalid: false };
+}
+
+function sameAnalyticsRange(
+  left: { start: string | null; end: string | null },
+  right: { start: string | null; end: string | null },
+) {
+  return left.start === right.start && left.end === right.end;
 }
 
 function SectionNav({ sections }: { sections: ReadonlyArray<readonly [string, string]> }) {

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -8,23 +8,26 @@ use std::thread;
 use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::{Local, NaiveDate, TimeZone, Utc};
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::acp::events::{AcpTimelineItem, AcpTimelinePatch};
+
 use super::{
-    NodeFact, PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION, PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS,
-    PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS, PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS,
-    PersonalAnalyticsNarrative, PersonalAnalyticsReport, PersonalAnalyticsSemanticItem,
-    ProjectionAccumulator, RunFact, TaskFact, TokenCounters, attempt_key,
-    canonicalize_personal_analytics_report, finalize_projection, is_excluded, node_group_key,
-    normalized_tool_name, run_key, safe_relative_path, string_at, task_key, timestamp_epoch,
-    token_counters, u64_at_optional,
+    DirectReplyFact, NodeFact, PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION,
+    PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS, PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS,
+    PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS, PersonalAnalyticsNarrative, PersonalAnalyticsReport,
+    PersonalAnalyticsSemanticItem, ProjectionAccumulator, RunFact, TaskFact, TokenCounters,
+    attempt_key, canonicalize_personal_analytics_report, child_run_key, finalize_projection,
+    is_current_attempt_usage, is_excluded, node_group_key, node_id, node_provider,
+    normalized_tool_name, parse_prompt_usage, read_bounded_utf8_prefix, run_key,
+    safe_relative_path, string_at, task_key, timestamp_epoch, u64_at_optional,
 };
 
-const ANALYTICS_INDEX_SCHEMA_VERSION: i64 = 1;
-const ANALYTICS_INSIGHT_RUNS_RETAINED: i64 = 64;
+const ANALYTICS_INDEX_SCHEMA_VERSION: i64 = 7;
+const ANALYTICS_INSIGHT_CACHE_RETAINED: i64 = 64;
 #[cfg(test)]
 const ANALYTICS_PHYSICAL_TABLES: [&str; 8] = [
     "analytics_sources",
@@ -34,7 +37,7 @@ const ANALYTICS_PHYSICAL_TABLES: [&str; 8] = [
     "analytics_attempts",
     "analytics_counters",
     "analytics_semantic_samples",
-    "analytics_insight_runs",
+    "analytics_insight_cache",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
@@ -113,15 +116,26 @@ struct IndexedAttempt {
     task_locator: String,
     node_id: String,
     agent: Option<String>,
+    outcome: Option<String>,
+    child_run_locator: Option<String>,
     session_elapsed_seconds: Option<u64>,
     activity_epoch: i64,
     token_usage: TokenCounters,
+    observed_prompt_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttemptSourceRole {
+    Node,
+    Snapshot,
+    Usage,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct IndexedCounter {
     owner_locator: String,
     owner_type: &'static str,
+    activity_epoch: i64,
     kind: &'static str,
     name: String,
     count: u64,
@@ -234,7 +248,7 @@ impl PersonalAnalyticsIndex {
             CREATE TABLE IF NOT EXISTS analytics_runs (
                 runLocator TEXT PRIMARY KEY,
                 taskLocator TEXT NOT NULL,
-                unitType TEXT NOT NULL CHECK (unitType IN ('workflow-run','auto-outer-run','direct-reply')),
+                unitType TEXT NOT NULL CHECK (unitType IN ('workflow-run','auto-outer-run','auto-child-run','direct-session')),
                 status TEXT NOT NULL,
                 outcome TEXT,
                 activityEpoch INTEGER NOT NULL,
@@ -247,11 +261,17 @@ impl PersonalAnalyticsIndex {
                 attemptLocator TEXT PRIMARY KEY,
                 runLocator TEXT NOT NULL,
                 taskLocator TEXT NOT NULL,
+                nodeSourcePath TEXT,
+                snapshotSourcePath TEXT,
+                usageSourcePath TEXT,
                 nodeId TEXT NOT NULL,
                 agent TEXT,
+                outcome TEXT,
+                childRunLocator TEXT,
                 sessionElapsedSeconds INTEGER,
                 zeroFilled INTEGER NOT NULL,
                 activityEpoch INTEGER NOT NULL,
+                observedPromptCount INTEGER NOT NULL DEFAULT 0,
                 inputTokens INTEGER NOT NULL,
                 outputTokens INTEGER NOT NULL,
                 cacheReadTokens INTEGER NOT NULL,
@@ -259,16 +279,19 @@ impl PersonalAnalyticsIndex {
                 totalTokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS analytics_attempts_range_idx ON analytics_attempts(activityEpoch, runLocator, taskLocator);
+            CREATE INDEX IF NOT EXISTS analytics_attempts_child_run_idx ON analytics_attempts(taskLocator, childRunLocator)
+                WHERE childRunLocator IS NOT NULL;
             CREATE TABLE IF NOT EXISTS analytics_counters (
                 sourcePath TEXT NOT NULL,
                 ownerType TEXT NOT NULL CHECK (ownerType IN ('run','attempt','task')),
                 ownerLocator TEXT NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('tool','permission','elicitation','pause','resume','manual-continue','skill','event','agent','direct-status')),
+                activityEpoch INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('tool','permission','elicitation','pause','resume','manual-continue','skill','event','agent','prompt-status')),
                 name TEXT NOT NULL,
                 count INTEGER NOT NULL,
-                PRIMARY KEY (sourcePath, ownerType, ownerLocator, kind, name)
+                PRIMARY KEY (sourcePath, ownerType, ownerLocator, activityEpoch, kind, name)
             );
-            CREATE INDEX IF NOT EXISTS analytics_counters_owner_idx ON analytics_counters(ownerLocator, kind, name);
+            CREATE INDEX IF NOT EXISTS analytics_counters_range_idx ON analytics_counters(activityEpoch, kind, name);
             CREATE TABLE IF NOT EXISTS analytics_semantic_samples (
                 sourcePath TEXT PRIMARY KEY,
                 locator TEXT NOT NULL UNIQUE,
@@ -276,23 +299,21 @@ impl PersonalAnalyticsIndex {
                 content TEXT NOT NULL,
                 activityEpoch INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS analytics_insight_runs (
-                operationId TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS analytics_insight_cache (
+                sourceOperationId TEXT PRIMARY KEY,
                 rangeStart TEXT,
                 rangeEnd TEXT,
                 schemaVersion TEXT NOT NULL,
                 indexRevision INTEGER NOT NULL,
                 agentType TEXT NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('processing','completed','failed','cancelled')),
-                errorCode TEXT,
                 insightsJson TEXT NOT NULL,
-                createdAt TEXT NOT NULL,
-                updatedAt TEXT NOT NULL
+                completedAt TEXT NOT NULL
             );
-            DROP INDEX IF EXISTS analytics_insight_cache_idx;
-            CREATE UNIQUE INDEX IF NOT EXISTS analytics_insight_completed_cache_idx
-                ON analytics_insight_runs(rangeStart, rangeEnd, schemaVersion, indexRevision, agentType)
-                WHERE status = 'completed';
+            CREATE UNIQUE INDEX IF NOT EXISTS analytics_insight_cache_identity_idx
+                ON analytics_insight_cache(
+                    COALESCE(rangeStart, ''), COALESCE(rangeEnd, ''),
+                    schemaVersion, indexRevision, agentType
+                );
             CREATE VIEW IF NOT EXISTS analytics_projects AS
                 SELECT projectLocator, projectName, COUNT(DISTINCT taskLocator) AS taskCount,
                        MIN(lastActivityEpoch) AS firstActivityEpoch, MAX(lastActivityEpoch) AS lastActivityEpoch
@@ -300,16 +321,22 @@ impl PersonalAnalyticsIndex {
             CREATE VIEW IF NOT EXISTS analytics_usage AS
                 SELECT taskLocator, SUM(inputTokens) AS inputTokens, SUM(outputTokens) AS outputTokens,
                        SUM(cacheReadTokens) AS cacheReadTokens, SUM(cacheWriteTokens) AS cacheWriteTokens,
-                       SUM(totalTokens) AS totalTokens, COUNT(*) AS attemptCount
+                       SUM(totalTokens) AS totalTokens,
+                       COUNT(*) FILTER (WHERE nodeSourcePath IS NOT NULL OR snapshotSourcePath IS NOT NULL) AS attemptCount,
+                       SUM(observedPromptCount) AS observedPromptCount
                 FROM analytics_attempts GROUP BY taskLocator;
             CREATE VIEW IF NOT EXISTS analytics_event_counts AS
-                SELECT kind, name, SUM(count) AS count FROM analytics_counters GROUP BY kind, name;
+                SELECT kind, name, SUM(count) AS count FROM analytics_counters
+                WHERE kind != 'prompt-status' GROUP BY kind, name;
             CREATE VIEW IF NOT EXISTS analytics_insights AS
-                SELECT operationId, value->>'$.section' AS section, value->>'$.title' AS title
-                FROM analytics_insight_runs, json_each(insightsJson, '$.insights');
-            INSERT OR IGNORE INTO analytics_index_state(singleton, schemaVersion, indexRevision, syncStatus)
-                VALUES (1, 1, 0, 'idle');
+                SELECT sourceOperationId, value->>'$.section' AS section, value->>'$.title' AS title
+                FROM analytics_insight_cache, json_each(insightsJson, '$.insights');
             "#,
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO analytics_index_state(singleton, schemaVersion, indexRevision, syncStatus)
+             VALUES (1, ?1, 0, 'idle')",
+            [ANALYTICS_INDEX_SCHEMA_VERSION],
         )?;
         tx.commit()
     }
@@ -389,8 +416,9 @@ impl PersonalAnalyticsIndex {
         }
         let tx = self.conn.transaction()?;
         mark_sync(&tx, "syncing", None)?;
+        let mut run_type_tasks = BTreeSet::new();
         for path in &deleted_files {
-            delete_source_facts(&tx, path)?;
+            run_type_tasks.extend(delete_source_facts(&tx, path)?);
             tx.execute(
                 "DELETE FROM analytics_sources WHERE sourcePath = ?1",
                 [path],
@@ -398,6 +426,9 @@ impl PersonalAnalyticsIndex {
         }
         for (source, facts) in &replacements {
             upsert_source(&tx, source, facts)?;
+        }
+        for task_locator in run_type_tasks {
+            refresh_run_types(&tx, &task_locator)?;
         }
         let index_revision = if replacements.is_empty() && deleted_files.is_empty() {
             current_revision(&tx)?
@@ -502,15 +533,52 @@ impl PersonalAnalyticsIndex {
         range: &PersonalAnalyticsDateRange,
         report_id: String,
     ) -> Result<PersonalAnalyticsReport> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let (report, _) = Self::report_in_transaction(&transaction, range, report_id)?;
+        transaction.commit()?;
+        Ok(report)
+    }
+
+    pub fn report_with_semantic_batch(
+        &self,
+        range: &PersonalAnalyticsDateRange,
+        report_id: String,
+    ) -> Result<(PersonalAnalyticsReport, Vec<PersonalAnalyticsSemanticItem>)> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let (report, semantic_items) = Self::report_in_transaction(&transaction, range, report_id)?;
+        transaction.commit()?;
+        Ok((report, semantic_items))
+    }
+
+    fn report_in_transaction(
+        transaction: &Transaction<'_>,
+        range: &PersonalAnalyticsDateRange,
+        report_id: String,
+    ) -> Result<(PersonalAnalyticsReport, Vec<PersonalAnalyticsSemanticItem>)> {
         let bounds = range_bounds(range)?;
-        let state = self.state()?;
+        let state = transaction
+            .query_row(
+                "SELECT indexRevision, schemaVersion, syncStatus, syncedAt, lastErrorCode
+                 FROM analytics_index_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(AnalyticsIndexState {
+                        index_revision: row.get(0)?,
+                        schema_version: row.get(1)?,
+                        sync_status: row.get(2)?,
+                        synced_at: row.get(3)?,
+                        last_error_code: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(anyhow::Error::from)?;
         let mut accumulator = ProjectionAccumulator::default();
-        load_tasks(&self.conn, bounds, &mut accumulator)?;
-        load_runs(&self.conn, bounds, &mut accumulator)?;
-        load_attempts(&self.conn, bounds, &mut accumulator)?;
-        load_counters(&self.conn, bounds, &mut accumulator)?;
-        load_semantic(&self.conn, bounds, &mut accumulator)?;
-        load_coverage(&self.conn, &mut accumulator)?;
+        load_tasks(transaction, bounds, &mut accumulator)?;
+        load_runs(transaction, bounds, &mut accumulator)?;
+        load_attempts(transaction, bounds, &mut accumulator)?;
+        load_counters(transaction, bounds, &mut accumulator)?;
+        load_semantic(transaction, bounds, &mut accumulator)?;
+        load_coverage(transaction, &mut accumulator)?;
         let output = finalize_projection(accumulator, state.index_revision.to_string());
         let narrative = PersonalAnalyticsNarrative {
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
@@ -524,48 +592,26 @@ impl PersonalAnalyticsIndex {
         );
         report.index_revision = state.index_revision;
         report.range = range.clone();
-        Ok(report)
-    }
-
-    pub fn semantic_batch(
-        &self,
-        range: &PersonalAnalyticsDateRange,
-    ) -> Result<Vec<PersonalAnalyticsSemanticItem>> {
-        let bounds = range_bounds(range)?;
-        let mut statement = self.conn.prepare(
-            "SELECT locator, kind, content FROM analytics_semantic_samples
-             WHERE activityEpoch BETWEEN ?1 AND ?2 ORDER BY activityEpoch DESC, locator LIMIT ?3",
-        )?;
-        let items = statement
-            .query_map(
-                rusqlite::params![
-                    bounds.start(),
-                    bounds.end(),
-                    PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS
-                ],
-                |row| {
-                    Ok(PersonalAnalyticsSemanticItem {
-                        locator: row.get(0)?,
-                        kind: row.get(1)?,
-                        content: row.get(2)?,
-                    })
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(items)
+        Ok((report, output.semantic_batch.items))
     }
 
     pub fn completed_insight(
         &self,
         identity: &InsightIdentity,
     ) -> rusqlite::Result<Option<PersonalAnalyticsNarrative>> {
-        let payload = self
-            .conn
+        Self::completed_insight_in_transaction(&self.conn, identity)
+    }
+
+    fn completed_insight_in_transaction(
+        conn: &Connection,
+        identity: &InsightIdentity,
+    ) -> rusqlite::Result<Option<PersonalAnalyticsNarrative>> {
+        let payload = conn
             .query_row(
-                "SELECT insightsJson FROM analytics_insight_runs
+                "SELECT insightsJson FROM analytics_insight_cache
                  WHERE rangeStart IS ?1 AND rangeEnd IS ?2 AND schemaVersion = ?3
-                   AND indexRevision = ?4 AND agentType = ?5 AND status = 'completed'
-                 ORDER BY updatedAt DESC LIMIT 1",
+                   AND indexRevision = ?4 AND agentType = ?5
+                 ORDER BY completedAt DESC LIMIT 1",
                 rusqlite::params![
                     identity.range_start,
                     identity.range_end,
@@ -584,12 +630,22 @@ impl PersonalAnalyticsIndex {
             .transpose()
     }
 
-    pub fn begin_insight(&self, identity: &InsightIdentity, now: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO analytics_insight_runs
-             (operationId, rangeStart, rangeEnd, schemaVersion, indexRevision, agentType,
-              status, errorCode, insightsJson, createdAt, updatedAt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'processing', NULL, '{}', ?7, ?7)",
+    pub fn store_completed_insight(
+        &mut self,
+        identity: &InsightIdentity,
+        narrative: &PersonalAnalyticsNarrative,
+        now: &str,
+    ) -> rusqlite::Result<()> {
+        let payload = serde_json::to_string(narrative)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let transaction = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO analytics_insight_cache
+             (sourceOperationId, rangeStart, rangeEnd, schemaVersion, indexRevision, agentType,
+              insightsJson, completedAt)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 identity.operation_id,
                 identity.range_start,
@@ -597,43 +653,12 @@ impl PersonalAnalyticsIndex {
                 identity.schema_version,
                 identity.index_revision,
                 identity.agent_type,
+                payload,
                 now
             ],
         )?;
-        self.prune_insight_runs(Some(&identity.operation_id))?;
-        Ok(())
-    }
-
-    pub fn finish_insight(
-        &self,
-        operation_id: &str,
-        narrative: &PersonalAnalyticsNarrative,
-        status: &'static str,
-        error_code: Option<&str>,
-        now: &str,
-    ) -> rusqlite::Result<()> {
-        let payload = serde_json::to_string(narrative)
-            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-        self.conn.execute(
-            "UPDATE analytics_insight_runs
-             SET status = ?2, errorCode = ?3, insightsJson = ?4, updatedAt = ?5
-             WHERE operationId = ?1",
-            rusqlite::params![operation_id, status, error_code, payload, now],
-        )?;
-        self.prune_insight_runs(None)?;
-        Ok(())
-    }
-
-    fn prune_insight_runs(&self, keep_operation_id: Option<&str>) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM analytics_insight_runs
-             WHERE (?1 IS NULL OR operationId != ?1)
-               AND operationId NOT IN (
-                   SELECT operationId FROM analytics_insight_runs
-                   ORDER BY updatedAt DESC LIMIT ?2
-               )",
-            rusqlite::params![keep_operation_id, ANALYTICS_INSIGHT_RUNS_RETAINED],
-        )?;
+        prune_insight_cache_in_transaction(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -643,6 +668,18 @@ impl PersonalAnalyticsIndex {
     }
 }
 
+fn prune_insight_cache_in_transaction(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM analytics_insight_cache
+         WHERE sourceOperationId NOT IN (
+               SELECT sourceOperationId FROM analytics_insight_cache
+               ORDER BY completedAt DESC, sourceOperationId DESC LIMIT ?1
+           )",
+        [ANALYTICS_INSIGHT_CACHE_RETAINED],
+    )?;
+    Ok(())
+}
+
 fn drop_analytics_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
         "DROP VIEW IF EXISTS analytics_projects;
@@ -650,6 +687,7 @@ fn drop_analytics_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
          DROP VIEW IF EXISTS analytics_event_counts;
          DROP VIEW IF EXISTS analytics_insights;
          DROP TABLE IF EXISTS analytics_insight_runs;
+         DROP TABLE IF EXISTS analytics_insight_cache;
          DROP TABLE IF EXISTS analytics_semantic_samples;
          DROP TABLE IF EXISTS analytics_counters;
          DROP TABLE IF EXISTS analytics_attempts;
@@ -710,7 +748,7 @@ fn upsert_source(
             source.modified_epoch
         ],
     )?;
-    delete_source_facts(tx, &source.relative)?;
+    task_locators.extend(delete_source_facts(tx, &source.relative)?);
     if let Some(update) = &facts.task_update {
         let project_locator = update
             .task_locator
@@ -765,50 +803,27 @@ fn upsert_source(
         )?;
         task_locators.insert(run.task_locator.clone());
     }
+    for attempt in &facts.attempts {
+        let role = match source.file_type {
+            "node" => AttemptSourceRole::Node,
+            "snapshot" => AttemptSourceRole::Snapshot,
+            "usage" => AttemptSourceRole::Usage,
+            _ => continue,
+        };
+        upsert_attempt(tx, source, attempt, role)?;
+        task_locators.insert(attempt.task_locator.clone());
+    }
     for task_locator in task_locators {
         refresh_run_types(tx, &task_locator)?;
     }
-    for attempt in &facts.attempts {
-        let zero_filled = attempt.session_elapsed_seconds.is_none();
-        tx.execute(
-            "INSERT INTO analytics_attempts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(attemptLocator) DO UPDATE SET
-               runLocator = excluded.runLocator,
-               taskLocator = excluded.taskLocator,
-               nodeId = CASE WHEN excluded.nodeId = 'unknown' THEN analytics_attempts.nodeId ELSE excluded.nodeId END,
-               agent = COALESCE(excluded.agent, analytics_attempts.agent),
-               sessionElapsedSeconds = CASE WHEN excluded.sessionElapsedSeconds IS NOT NULL THEN excluded.sessionElapsedSeconds ELSE analytics_attempts.sessionElapsedSeconds END,
-               zeroFilled = CASE WHEN excluded.sessionElapsedSeconds IS NOT NULL THEN 0 ELSE analytics_attempts.zeroFilled END,
-               activityEpoch = excluded.activityEpoch,
-               inputTokens = analytics_attempts.inputTokens + excluded.inputTokens,
-               outputTokens = analytics_attempts.outputTokens + excluded.outputTokens,
-               cacheReadTokens = analytics_attempts.cacheReadTokens + excluded.cacheReadTokens,
-               cacheWriteTokens = analytics_attempts.cacheWriteTokens + excluded.cacheWriteTokens,
-               totalTokens = analytics_attempts.totalTokens + excluded.totalTokens",
-            rusqlite::params![
-                attempt.attempt_locator,
-                attempt.run_locator,
-                attempt.task_locator,
-                attempt.node_id,
-                attempt.agent,
-                attempt.session_elapsed_seconds,
-                zero_filled,
-                attempt.activity_epoch,
-                attempt.token_usage.input,
-                attempt.token_usage.output,
-                attempt.token_usage.cache_read,
-                attempt.token_usage.cache_write,
-                attempt.token_usage.total
-            ],
-        )?;
-    }
     for counter in &facts.counters {
         tx.execute(
-            "INSERT OR REPLACE INTO analytics_counters VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO analytics_counters VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 source.relative,
                 counter.owner_type,
                 counter.owner_locator,
+                counter.activity_epoch,
                 counter.kind,
                 counter.name,
                 counter.count
@@ -830,21 +845,144 @@ fn upsert_source(
     Ok(())
 }
 
-fn delete_source_facts(tx: &Transaction<'_>, source_path: &str) -> rusqlite::Result<()> {
+fn upsert_attempt(
+    tx: &Transaction<'_>,
+    source: &SourceFile,
+    attempt: &IndexedAttempt,
+    role: AttemptSourceRole,
+) -> rusqlite::Result<()> {
+    match role {
+        AttemptSourceRole::Node => tx.execute(
+            "INSERT INTO analytics_attempts
+             (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
+              usageSourcePath, nodeId, agent, outcome, childRunLocator,
+              sessionElapsedSeconds, zeroFilled, activityEpoch,
+              inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, NULL, 1, ?9, 0, 0, 0, 0, 0)
+             ON CONFLICT(attemptLocator) DO UPDATE SET
+               runLocator = excluded.runLocator,
+               taskLocator = excluded.taskLocator,
+               nodeSourcePath = excluded.nodeSourcePath,
+               nodeId = excluded.nodeId,
+               agent = excluded.agent,
+               outcome = excluded.outcome,
+               childRunLocator = excluded.childRunLocator,
+               activityEpoch = MAX(analytics_attempts.activityEpoch, excluded.activityEpoch)",
+            rusqlite::params![
+                attempt.attempt_locator,
+                attempt.run_locator,
+                attempt.task_locator,
+                source.relative,
+                attempt.node_id,
+                attempt.agent,
+                attempt.outcome,
+                attempt.child_run_locator,
+                attempt.activity_epoch
+            ],
+        ),
+        AttemptSourceRole::Snapshot => tx.execute(
+            "INSERT INTO analytics_attempts
+             (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
+              usageSourcePath, nodeId, agent, outcome, childRunLocator,
+              sessionElapsedSeconds, zeroFilled, activityEpoch,
+              inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens)
+             VALUES (?1, ?2, ?3, NULL, ?4, NULL, 'unknown', NULL, NULL, NULL, ?5, ?6, ?7, 0, 0, 0, 0, 0)
+             ON CONFLICT(attemptLocator) DO UPDATE SET
+               runLocator = excluded.runLocator,
+               taskLocator = excluded.taskLocator,
+               snapshotSourcePath = excluded.snapshotSourcePath,
+               sessionElapsedSeconds = excluded.sessionElapsedSeconds,
+               zeroFilled = excluded.zeroFilled,
+               activityEpoch = MAX(analytics_attempts.activityEpoch, excluded.activityEpoch)",
+            rusqlite::params![
+                attempt.attempt_locator,
+                attempt.run_locator,
+                attempt.task_locator,
+                source.relative,
+                attempt.session_elapsed_seconds,
+                attempt.session_elapsed_seconds.is_none(),
+                attempt.activity_epoch
+            ],
+        ),
+        AttemptSourceRole::Usage => tx.execute(
+            "INSERT INTO analytics_attempts
+             (attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
+              usageSourcePath, nodeId, agent, outcome, childRunLocator,
+              sessionElapsedSeconds, zeroFilled, activityEpoch,
+              observedPromptCount, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens)
+             VALUES (?1, ?2, ?3, NULL, NULL, ?4, 'unknown', NULL, NULL, NULL, NULL, 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(attemptLocator) DO UPDATE SET
+               runLocator = excluded.runLocator,
+               taskLocator = excluded.taskLocator,
+               usageSourcePath = excluded.usageSourcePath,
+               activityEpoch = MAX(analytics_attempts.activityEpoch, excluded.activityEpoch),
+               observedPromptCount = excluded.observedPromptCount,
+               inputTokens = excluded.inputTokens,
+               outputTokens = excluded.outputTokens,
+               cacheReadTokens = excluded.cacheReadTokens,
+               cacheWriteTokens = excluded.cacheWriteTokens,
+               totalTokens = excluded.totalTokens",
+            rusqlite::params![
+                attempt.attempt_locator,
+                attempt.run_locator,
+                attempt.task_locator,
+                source.relative,
+                attempt.activity_epoch,
+                attempt.observed_prompt_count,
+                attempt.token_usage.input,
+                attempt.token_usage.output,
+                attempt.token_usage.cache_read,
+                attempt.token_usage.cache_write,
+                attempt.token_usage.total
+            ],
+        ),
+    }?;
+    Ok(())
+}
+
+fn delete_source_facts(
+    tx: &Transaction<'_>,
+    source_path: &str,
+) -> rusqlite::Result<BTreeSet<String>> {
+    let mut run_type_tasks = BTreeSet::new();
     tx.execute(
         "DELETE FROM analytics_runs WHERE sourcePath = ?1",
         [source_path],
     )?;
-    tx.execute(
-        "DELETE FROM analytics_attempts
-         WHERE attemptLocator = ?1 OR attemptLocator LIKE ?1 || '#usage-%'",
-        [source_path],
-    )?;
-    tx.execute(
-        "UPDATE analytics_attempts SET sessionElapsedSeconds = NULL, zeroFilled = 1
-         WHERE attemptLocator = REPLACE(?1, '/acp.snapshot.json', '')",
-        [source_path],
-    )?;
+    if source_path.ends_with("/node.json") {
+        let mut statement = tx.prepare(
+            "SELECT DISTINCT taskLocator FROM analytics_attempts
+             WHERE nodeSourcePath = ?1 AND childRunLocator IS NOT NULL",
+        )?;
+        run_type_tasks.extend(
+            statement
+                .query_map([source_path], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        tx.execute(
+            "UPDATE analytics_attempts
+             SET nodeSourcePath = NULL, nodeId = 'unknown', agent = NULL,
+                 outcome = NULL, childRunLocator = NULL
+             WHERE nodeSourcePath = ?1",
+            [source_path],
+        )?;
+    } else if source_path.ends_with("/acp.snapshot.json") {
+        tx.execute(
+            "UPDATE analytics_attempts
+             SET snapshotSourcePath = NULL, sessionElapsedSeconds = NULL, zeroFilled = 1
+             WHERE snapshotSourcePath = ?1",
+            [source_path],
+        )?;
+    } else if source_path.ends_with("/acp.prompt-usage.jsonl") {
+        tx.execute(
+            "UPDATE analytics_attempts
+             SET usageSourcePath = NULL, inputTokens = 0, outputTokens = 0,
+                 cacheReadTokens = 0, cacheWriteTokens = 0, totalTokens = 0,
+                 observedPromptCount = 0
+             WHERE usageSourcePath = ?1",
+            [source_path],
+        )?;
+    }
     tx.execute(
         "DELETE FROM analytics_counters WHERE sourcePath = ?1",
         [source_path],
@@ -852,6 +990,11 @@ fn delete_source_facts(tx: &Transaction<'_>, source_path: &str) -> rusqlite::Res
     tx.execute(
         "DELETE FROM analytics_semantic_samples WHERE sourcePath = ?1",
         [source_path],
+    )?;
+    tx.execute(
+        "DELETE FROM analytics_attempts
+         WHERE nodeSourcePath IS NULL AND snapshotSourcePath IS NULL AND usageSourcePath IS NULL",
+        [],
     )?;
     tx.execute(
         "UPDATE analytics_tasks SET title = taskLocator, taskSourcePath = NULL WHERE taskSourcePath = ?1",
@@ -869,13 +1012,18 @@ fn delete_source_facts(tx: &Transaction<'_>, source_path: &str) -> rusqlite::Res
            AND NOT EXISTS (SELECT 1 FROM analytics_attempts WHERE taskLocator = analytics_tasks.taskLocator)",
         [],
     )?;
-    Ok(())
+    Ok(run_type_tasks)
 }
 
 fn refresh_run_types(tx: &Transaction<'_>, task_locator: &str) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE analytics_runs SET unitType = CASE
-           WHEN unitType = 'direct-reply' THEN 'direct-reply'
+           WHEN (SELECT mode FROM analytics_tasks WHERE taskLocator = ?1) = 'direct' THEN 'direct-session'
+           WHEN (SELECT mode FROM analytics_tasks WHERE taskLocator = ?1) = 'auto'
+             AND EXISTS (
+               SELECT 1 FROM analytics_attempts a
+               WHERE a.taskLocator = ?1 AND a.childRunLocator = analytics_runs.runLocator
+             ) THEN 'auto-child-run'
            WHEN (SELECT mode FROM analytics_tasks WHERE taskLocator = ?1) = 'auto' THEN 'auto-outer-run'
            ELSE 'workflow-run'
          END WHERE taskLocator = ?1",
@@ -910,7 +1058,7 @@ fn discover_sources(root: &Utf8Path) -> Result<Vec<SourceFile>> {
                     .unwrap_or((0, 0))
             })
             .unwrap_or((0, 0));
-        let file_type = source_type(file_name);
+        let file_type = source_type(&relative, file_name);
         files.push(SourceFile {
             path,
             relative,
@@ -930,17 +1078,16 @@ fn discover_sources(root: &Utf8Path) -> Result<Vec<SourceFile>> {
     Ok(files)
 }
 
-fn source_type(file_name: &str) -> &'static str {
+fn source_type(relative: &str, file_name: &str) -> &'static str {
     match file_name {
         "project.json" => "project",
         "task.json" => "task",
         "conversation.json" => "conversation",
         "run.json" => "run",
         "node.json" => "node",
-        "turn.json" => "turn",
         "acp.snapshot.json" => "snapshot",
         "observability.snapshot.json" => "observability",
-        "acp.prompt-usage.jsonl" => "usage",
+        "acp.prompt-usage.jsonl" if is_current_attempt_usage(relative) => "usage",
         "acp.timeline.jsonl" => "timeline",
         "requirement.md" => "semantic",
         _ => "other",
@@ -1044,43 +1191,6 @@ fn parse_json(source: &SourceFile) -> Result<SourceFacts> {
                     .map(str::to_string),
             });
         }
-        "turn" => {
-            let task_locator = task_locator.unwrap_or_default();
-            let run_locator = format!(
-                "{task_locator}/direct/{}",
-                source.relative.rsplit('/').next().unwrap_or("turn")
-            );
-            let data = value.pointer("/record/data").unwrap_or(&value);
-            let status = data
-                .get("status")
-                .and_then(|status| status.as_str())
-                .unwrap_or("unknown");
-            facts.runs.push(IndexedRun {
-                run_locator: run_locator.clone(),
-                task_locator,
-                unit_type: "direct-reply".to_string(),
-                status: status.to_string(),
-                outcome: data
-                    .get("outcome")
-                    .and_then(|outcome| outcome.as_str())
-                    .map(str::to_string),
-                activity_epoch: string_at(
-                    &value,
-                    &["/record/data/finishedAt", "/record/updatedAt", "/updatedAt"],
-                )
-                .and_then(timestamp_epoch)
-                .unwrap_or(source.modified_epoch),
-                terminal_node: None,
-                pause_reason: None,
-            });
-            facts.counters.push(IndexedCounter {
-                owner_locator: run_locator,
-                owner_type: "run",
-                kind: "direct-status",
-                name: status.to_string(),
-                count: 1,
-            });
-        }
         "node" => {
             let task_locator = task_locator.unwrap_or_default();
             facts.attempts.push(IndexedAttempt {
@@ -1088,18 +1198,19 @@ fn parse_json(source: &SourceFile) -> Result<SourceFacts> {
                     .unwrap_or_else(|| source.relative.clone()),
                 run_locator: run_key(&source.relative).unwrap_or_default(),
                 task_locator,
-                node_id: value
-                    .get("node_id")
-                    .and_then(|node| node.as_str())
+                node_id: node_id(&source.relative, &value)
                     .unwrap_or("unknown")
                     .to_string(),
-                agent: value
-                    .pointer("/resolved_config/provider")
-                    .and_then(|agent| agent.as_str())
+                agent: node_provider(&source.relative, &value).map(str::to_string),
+                outcome: value
+                    .get("outcome")
+                    .and_then(|outcome| outcome.as_str())
                     .map(str::to_string),
+                child_run_locator: child_run_key(&source.relative, &value),
                 session_elapsed_seconds: None,
                 activity_epoch: source.modified_epoch,
                 token_usage: TokenCounters::default(),
+                observed_prompt_count: 0,
             });
         }
         "snapshot" => {
@@ -1110,12 +1221,15 @@ fn parse_json(source: &SourceFile) -> Result<SourceFacts> {
                 task_locator: task_locator.unwrap_or_default(),
                 node_id: "unknown".to_string(),
                 agent: None,
+                outcome: None,
+                child_run_locator: None,
                 session_elapsed_seconds: u64_at_optional(
                     &value,
                     &["/timing/sessionElapsedSeconds"],
                 ),
                 activity_epoch: source.modified_epoch,
                 token_usage: TokenCounters::default(),
+                observed_prompt_count: 0,
             });
         }
         "observability" => {
@@ -1132,6 +1246,7 @@ fn parse_json(source: &SourceFile) -> Result<SourceFacts> {
                     facts.counters.push(IndexedCounter {
                         owner_locator: task_locator.clone().unwrap_or_default(),
                         owner_type: "task",
+                        activity_epoch: source.modified_epoch,
                         kind,
                         name: kind.to_string(),
                         count,
@@ -1152,53 +1267,131 @@ fn parse_jsonl(source: &SourceFile) -> Result<SourceFacts> {
     };
     let task_locator = task_key(&source.relative);
     if source.file_type == "usage" {
-        for (index, line) in reader.lines().enumerate() {
-            let value: serde_json::Value = serde_json::from_str(&line?)?;
-            let Some(usage) = value.get("usage") else {
-                continue;
-            };
-            let turn = value
-                .get("turn_id")
-                .or_else(|| value.get("turnId"))
-                .and_then(|turn| turn.as_str())
-                .unwrap_or("unknown");
-            let mut counters = token_counters(usage);
-            counters.total = effective_total(counters);
+        let Some(task_locator) = task_locator else {
+            return Ok(facts);
+        };
+        let Some(attempt_locator) = attempt_key(&source.relative) else {
+            return Ok(facts);
+        };
+        let Some(run_locator) = run_key(&source.relative) else {
+            return Ok(facts);
+        };
+        let usage_facts = parse_prompt_usage(reader)?;
+        let mut counters = TokenCounters::default();
+        for usage in &usage_facts.completed_usages {
+            counters.input = counters.input.saturating_add(usage.input);
+            counters.output = counters.output.saturating_add(usage.output);
+            counters.cache_read = counters.cache_read.saturating_add(usage.cache_read);
+            counters.cache_write = counters.cache_write.saturating_add(usage.cache_write);
+            counters.total = counters.total.saturating_add(effective_total(*usage));
+        }
+        let activity_epoch = usage_facts
+            .turns
+            .iter()
+            .map(|turn| turn.activity_epoch)
+            .max();
+        if !usage_facts.completed_usages.is_empty() {
             facts.attempts.push(IndexedAttempt {
-                attempt_locator: format!("{}#usage-{index}", source.relative),
-                run_locator: format!("{}/direct/{turn}", task_locator.clone().unwrap_or_default()),
-                task_locator: task_locator.clone().unwrap_or_default(),
-                node_id: "direct-reply".to_string(),
+                attempt_locator: attempt_locator.clone(),
+                run_locator,
+                task_locator: task_locator.clone(),
+                node_id: "unknown".to_string(),
                 agent: None,
+                outcome: None,
+                child_run_locator: None,
                 session_elapsed_seconds: None,
-                activity_epoch: string_at(&value, &["/timestamp", "/recordedAt"])
-                    .and_then(timestamp_epoch)
-                    .unwrap_or(source.modified_epoch),
+                activity_epoch: activity_epoch.unwrap_or(source.modified_epoch),
                 token_usage: counters,
+                observed_prompt_count: usage_facts.completed_usages.len() as u64,
+            });
+        }
+        let mut direct_counts = BTreeMap::<(i64, String), u64>::new();
+        for turn in usage_facts.turns {
+            *direct_counts
+                .entry((turn.activity_epoch, turn.status))
+                .or_default() += 1;
+        }
+        for ((activity_epoch, status), count) in direct_counts {
+            facts.counters.push(IndexedCounter {
+                owner_locator: task_locator.clone(),
+                owner_type: "task",
+                activity_epoch,
+                kind: "prompt-status",
+                name: status,
+                count,
             });
         }
     } else {
-        let mut aggregate = BTreeMap::<(&'static str, String), u64>::new();
+        let mut aggregate = BTreeMap::<(i64, &'static str, String), u64>::new();
+        let mut latest_by_item = BTreeMap::<String, (u64, IndexedCounter)>::new();
         for line in reader.lines() {
             let value: serde_json::Value = serde_json::from_str(&line?)?;
+            if value.get("patchType").is_some() {
+                let patch: AcpTimelinePatch = serde_json::from_value(value)?;
+                if patch.patch_type != "timelinePatch" || patch.op != "upsert" {
+                    continue;
+                }
+                let item = serde_json::to_value(&patch.item)?;
+                let counter = timeline_counter(
+                    &item,
+                    task_locator.as_deref().unwrap_or_default(),
+                    source.modified_epoch,
+                );
+                let should_replace = latest_by_item
+                    .get(&patch.item_id)
+                    .map(|(revision, _)| patch.revision >= *revision)
+                    .unwrap_or(true);
+                if should_replace {
+                    latest_by_item.insert(patch.item_id, (patch.revision, counter));
+                }
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_value::<AcpTimelineItem>(value.clone())
+                && !entry.item.id.is_empty()
+            {
+                let item_id = entry.item.id.clone();
+                let should_replace = latest_by_item
+                    .get(&item_id)
+                    .map(|(revision, _)| *revision == 0)
+                    .unwrap_or(true);
+                if should_replace {
+                    let item = serde_json::to_value(&entry.item)?;
+                    latest_by_item.insert(
+                        item_id,
+                        (
+                            0,
+                            timeline_counter(
+                                &item,
+                                task_locator.as_deref().unwrap_or_default(),
+                                source.modified_epoch,
+                            ),
+                        ),
+                    );
+                }
+                continue;
+            }
             let item = value.get("item").unwrap_or(&value);
-            let event_kind = item
-                .get("kind")
-                .and_then(|kind| kind.as_str())
-                .unwrap_or("unknown");
-            let (kind, name) = match event_kind {
-                "toolCall" => ("tool", normalized_tool_name(item)),
-                "permissionRequest" => ("permission", event_kind.to_string()),
-                "elicitationRequest" => ("elicitation", event_kind.to_string()),
-                "skillInvocation" => ("skill", normalized_tool_name(item)),
-                _ => ("event", event_kind.to_string()),
-            };
-            *aggregate.entry((kind, name)).or_default() += 1;
+            let counter = timeline_counter(
+                item,
+                task_locator.as_deref().unwrap_or_default(),
+                string_at(&value, &["/timestamp", "/recordedAt"])
+                    .and_then(timestamp_epoch)
+                    .unwrap_or(source.modified_epoch),
+            );
+            *aggregate
+                .entry((counter.activity_epoch, counter.kind, counter.name))
+                .or_default() += 1;
         }
-        for ((kind, name), count) in aggregate {
+        for (_, counter) in latest_by_item.into_values() {
+            *aggregate
+                .entry((counter.activity_epoch, counter.kind, counter.name))
+                .or_default() += 1;
+        }
+        for ((activity_epoch, kind, name), count) in aggregate {
             facts.counters.push(IndexedCounter {
                 owner_locator: task_locator.clone().unwrap_or_default(),
                 owner_type: "task",
+                activity_epoch,
                 kind,
                 name,
                 count,
@@ -1208,23 +1401,45 @@ fn parse_jsonl(source: &SourceFile) -> Result<SourceFacts> {
     Ok(facts)
 }
 
+fn timeline_counter(
+    item: &serde_json::Value,
+    task_locator: &str,
+    fallback_activity_epoch: i64,
+) -> IndexedCounter {
+    let activity_epoch = string_at(item, &["/timestamp", "/recordedAt"])
+        .and_then(timestamp_epoch)
+        .unwrap_or(fallback_activity_epoch);
+    let event_kind = item
+        .get("kind")
+        .and_then(|kind| kind.as_str())
+        .unwrap_or("unknown");
+    let (kind, name) = match event_kind {
+        "toolCall" => ("tool", normalized_tool_name(item)),
+        "permissionRequest" => ("permission", event_kind.to_string()),
+        "elicitationRequest" => ("elicitation", event_kind.to_string()),
+        "skillInvocation" => ("skill", normalized_tool_name(item)),
+        _ => ("event", event_kind.to_string()),
+    };
+    IndexedCounter {
+        owner_locator: task_locator.to_string(),
+        owner_type: "task",
+        activity_epoch,
+        kind,
+        name,
+        count: 1,
+    }
+}
+
 fn parse_semantic(source: &SourceFile) -> SourceFacts {
-    let mut content = String::new();
-    let read = File::open(&source.path).and_then(|file| {
-        file.take((PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS * 4) as u64)
-            .read_to_string(&mut content)
-    });
-    if read.is_err() {
+    let Ok(content) =
+        read_bounded_utf8_prefix(&source.path, PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS)
+    else {
         return SourceFacts {
             status: "corrupt",
             error_code: Some("analytics.source-corrupt".to_string()),
             ..SourceFacts::default()
         };
-    }
-    let content = content
-        .chars()
-        .take(PERSONAL_ANALYTICS_SEMANTIC_ITEM_MAX_CHARS)
-        .collect::<String>();
+    };
     SourceFacts {
         status: "parsed",
         semantic: Some(IndexedSemantic {
@@ -1290,12 +1505,51 @@ fn load_tasks(
     accumulator: &mut ProjectionAccumulator,
 ) -> rusqlite::Result<()> {
     let mut statement = conn.prepare(
-        "SELECT DISTINCT t.taskLocator, t.title, t.mode, t.projectLocator, t.lastActivityEpoch
-         FROM analytics_tasks t
-         WHERE EXISTS (SELECT 1 FROM analytics_runs r
-                       WHERE r.taskLocator=t.taskLocator AND r.activityEpoch BETWEEN ?1 AND ?2)
-            OR EXISTS (SELECT 1 FROM analytics_attempts a
-                       WHERE a.taskLocator=t.taskLocator AND a.activityEpoch BETWEEN ?1 AND ?2)",
+        "WITH task_activity(taskLocator, activityEpoch) AS (
+             SELECT taskLocator, lastActivityEpoch FROM analytics_tasks
+             WHERE lastActivityEpoch BETWEEN ?1 AND ?2
+             UNION ALL
+             SELECT taskLocator, activityEpoch FROM analytics_runs
+             WHERE activityEpoch BETWEEN ?1 AND ?2
+             UNION ALL
+             SELECT taskLocator, activityEpoch FROM analytics_attempts
+             WHERE activityEpoch BETWEEN ?1 AND ?2
+             UNION ALL
+             SELECT ownerLocator, activityEpoch FROM analytics_counters
+             WHERE ownerType = 'task' AND activityEpoch BETWEEN ?1 AND ?2
+             UNION ALL
+             SELECT r.taskLocator, c.activityEpoch
+             FROM analytics_counters c
+             JOIN analytics_runs r ON c.ownerType = 'run' AND c.ownerLocator = r.runLocator
+             WHERE c.activityEpoch BETWEEN ?1 AND ?2
+             UNION ALL
+             SELECT a.taskLocator, c.activityEpoch
+             FROM analytics_counters c
+             JOIN analytics_attempts a
+               ON c.ownerType = 'attempt' AND c.ownerLocator = a.attemptLocator
+             WHERE c.activityEpoch BETWEEN ?1 AND ?2
+         ), scoped_tasks AS (
+             SELECT t.taskLocator, t.title, t.mode, t.projectLocator,
+                    MAX(a.activityEpoch) AS scopedActivityEpoch, t.conversationSourcePath
+             FROM analytics_tasks t
+             JOIN task_activity a ON a.taskLocator = t.taskLocator
+             GROUP BY t.taskLocator, t.title, t.mode, t.projectLocator, t.conversationSourcePath
+         ), ranked_runs AS (
+             SELECT r.runLocator, r.taskLocator, r.unitType, r.status, r.outcome,
+                    r.activityEpoch, r.terminalNode, r.pauseReason,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY r.taskLocator
+                        ORDER BY r.activityEpoch DESC, r.runLocator DESC
+                    ) AS rank
+             FROM analytics_runs r
+             JOIN scoped_tasks t ON t.taskLocator=r.taskLocator
+             WHERE r.unitType IN ('workflow-run', 'auto-outer-run', 'direct-session')
+         )
+         SELECT t.taskLocator, t.title, t.mode, t.projectLocator, t.scopedActivityEpoch,
+                t.conversationSourcePath, r.runLocator, r.unitType, r.status, r.outcome,
+                r.activityEpoch, r.terminalNode, r.pauseReason
+         FROM scoped_tasks t
+         LEFT JOIN ranked_runs r ON r.taskLocator=t.taskLocator AND r.rank=1",
     )?;
     let rows = statement.query_map(rusqlite::params![bounds.start(), bounds.end()], |row| {
         Ok((
@@ -1304,27 +1558,61 @@ fn load_tasks(
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<i64>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
         ))
     })?;
     let mut projects = BTreeSet::new();
+    let mut conversation_count = 0;
     for row in rows {
-        let (locator, title, mode, project, last_activity) = row?;
+        let (
+            locator,
+            title,
+            mode,
+            project,
+            last_activity,
+            conversation_source,
+            run_locator,
+            run_unit_type,
+            run_status,
+            run_outcome,
+            run_activity,
+            run_terminal,
+            run_pause,
+        ) = row?;
         projects.insert(project);
+        conversation_count += u64::from(conversation_source.is_some());
         let mut task = TaskFact {
             title,
             mode,
             ..TaskFact::default()
         };
-        task.last_activity_epoch = last_activity;
+        task.scoped_activity_epoch = last_activity;
+        task.navigation_run = match (run_locator, run_unit_type, run_status) {
+            (Some(run_locator), Some(unit_type), Some(status)) => Some(RunFact {
+                task_key: locator.clone(),
+                run_key: run_locator.clone(),
+                unit_type,
+                status,
+                outcome: run_outcome,
+                updated_epoch: run_activity,
+                terminal_node: run_terminal,
+                pause_reason: run_pause,
+                locator: run_locator,
+            }),
+            _ => None,
+        };
         accumulator.tasks.insert(locator, task);
     }
     accumulator.project_count = projects.len() as u64;
     accumulator.task_count = accumulator.tasks.len() as u64;
-    accumulator.conversation_count = accumulator
-        .tasks
-        .values()
-        .filter(|task| task.mode == "direct")
-        .count() as u64;
+    accumulator.conversation_count = conversation_count;
     Ok(())
 }
 
@@ -1351,15 +1639,6 @@ fn load_runs(
     })?;
     for row in rows {
         let (locator, task, unit_type, status, outcome, epoch, terminal, pause) = row?;
-        if unit_type == "direct-reply" {
-            accumulator.direct_started += 1;
-            match status.as_str() {
-                "completed" => accumulator.direct_completed += 1,
-                "failed" => accumulator.direct_failed += 1,
-                "cancelled" | "canceled" => accumulator.direct_cancelled += 1,
-                _ => accumulator.direct_unknown += 1,
-            }
-        }
         accumulator.runs.push(RunFact {
             task_key: task,
             run_key: locator.clone(),
@@ -1371,10 +1650,16 @@ fn load_runs(
             pause_reason: pause,
             locator,
         });
-        accumulator.earliest_epoch =
-            Some(accumulator.earliest_epoch.unwrap_or(epoch)).filter(|value| *value <= epoch);
-        accumulator.latest_epoch =
-            Some(accumulator.latest_epoch.unwrap_or(epoch)).filter(|value| *value >= epoch);
+        accumulator.earliest_epoch = Some(
+            accumulator
+                .earliest_epoch
+                .map_or(epoch, |current| current.min(epoch)),
+        );
+        accumulator.latest_epoch = Some(
+            accumulator
+                .latest_epoch
+                .map_or(epoch, |current| current.max(epoch)),
+        );
     }
     Ok(())
 }
@@ -1384,6 +1669,12 @@ fn load_semantic(
     bounds: RangeBounds,
     accumulator: &mut ProjectionAccumulator,
 ) -> rusqlite::Result<()> {
+    accumulator.coverage.semantic_eligible_items = conn.query_row(
+        "SELECT COUNT(*) FROM analytics_semantic_samples
+         WHERE activityEpoch BETWEEN ?1 AND ?2",
+        rusqlite::params![bounds.start(), bounds.end()],
+        |row| row.get(0),
+    )?;
     let mut statement = conn.prepare(
         "SELECT locator, kind, content FROM analytics_semantic_samples
          WHERE activityEpoch BETWEEN ?1 AND ?2 ORDER BY activityEpoch DESC, locator LIMIT ?3",
@@ -1403,12 +1694,16 @@ fn load_semantic(
         },
     )?;
     for row in rows {
-        let item = row?;
-        accumulator.coverage.semantic_eligible_items += 1;
-        let chars = item.content.chars().count();
+        let mut item = row?;
         if accumulator.semantic_items.len() >= PERSONAL_ANALYTICS_SEMANTIC_MAX_ITEMS
-            || accumulator.semantic_chars + chars > PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS
+            || accumulator.semantic_chars >= PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS
         {
+            break;
+        }
+        let remaining = PERSONAL_ANALYTICS_SEMANTIC_MAX_CHARS - accumulator.semantic_chars;
+        item.content = item.content.chars().take(remaining).collect();
+        let chars = item.content.chars().count();
+        if chars == 0 {
             continue;
         }
         accumulator.semantic_chars += chars;
@@ -1498,16 +1793,129 @@ mod tests {
             r#"{"version":"1.0","timing":{"sessionElapsedSeconds":60}}"#,
         );
         write(
-            &task.join("acp.prompt-usage.jsonl"),
-            r#"{"usage":{"inputTokens":100,"outputTokens":50,"cachedReadTokens":10,"totalTokens":160}}"#,
+            &attempt.join("acp.prompt-usage.jsonl"),
+            concat!(
+                r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:01Z"}"#,
+                "\n",
+                r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z","usage":{"inputTokens":100,"outputTokens":50,"cachedReadTokens":10,"totalTokens":160}}"#,
+            ),
         );
         write(
-            &task.join("acp.timeline.jsonl"),
+            &attempt.join("acp.timeline.jsonl"),
             r#"{"item":{"kind":"toolCall","raw":{"name":"read_file"}}}"#,
         );
         write(
             &task.join("authoring/requirement.md"),
             "Build the indexed analytics report.",
+        );
+    }
+
+    #[test]
+    fn report_reads_state_and_facts_from_one_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Utf8PathBuf::from_path_buf(temp.path().join("gold-band.db")).unwrap();
+        let index = PersonalAnalyticsIndex::open(&db).unwrap();
+        let transaction = index.conn.unchecked_transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO analytics_tasks VALUES (
+                     'project-a/task-target', 'project-a', 'project', 'Snapshot before',
+                     'workflow', NULL, NULL, 0)",
+                [],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO analytics_runs VALUES (
+                     'project-a/task-target/run-1', 'project-a/task-target', 'workflow-run',
+                     'completed', 'success', 0, NULL, NULL, 'target')",
+                [],
+            )
+            .unwrap();
+        for task_number in 0..512 {
+            let task_locator = format!("project-a/task-{task_number:03}");
+            transaction
+                .execute(
+                    "INSERT INTO analytics_tasks VALUES (
+                         ?1, 'project-a', 'project', ?2, 'workflow', NULL, NULL, 0)",
+                    rusqlite::params![task_locator, format!("Task {task_number:03}")],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO analytics_runs VALUES (
+                         ?1, ?2, 'workflow-run', 'completed', 'success', 0, NULL, NULL, ?3)",
+                    rusqlite::params![
+                        format!("{task_locator}/run-1"),
+                        task_locator,
+                        format!("source-{task_number:03}")
+                    ],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+
+        let writer = Connection::open(db.as_std_path()).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA busy_timeout=5000;
+                 BEGIN IMMEDIATE;
+                 UPDATE analytics_tasks
+                 SET title = 'Snapshot after'
+                 WHERE taskLocator = 'project-a/task-target';
+                 UPDATE analytics_index_state SET indexRevision = 1 WHERE singleton = 1;",
+            )
+            .unwrap();
+        let writer_slot = Mutex::new(Some(writer));
+        let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handler_committed = committed.clone();
+        index.conn.progress_handler(
+            100,
+            Some(move || {
+                if !handler_committed.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    writer_slot
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .execute_batch("COMMIT")
+                        .unwrap();
+                }
+                false
+            }),
+        );
+        let snapshot = index
+            .report(&PersonalAnalyticsDateRange::default(), "snapshot".into())
+            .unwrap();
+        index.conn.progress_handler(100, None::<fn() -> bool>);
+        assert!(committed.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(snapshot.index_revision, 0);
+        assert_eq!(snapshot.overview.task_count, 513);
+        assert!(
+            snapshot
+                .recent_tasks
+                .iter()
+                .any(|task| task.title == "Snapshot before")
+        );
+        assert!(
+            !snapshot
+                .recent_tasks
+                .iter()
+                .any(|task| task.title == "Snapshot after")
+        );
+
+        let updated = index
+            .report(
+                &PersonalAnalyticsDateRange::default(),
+                "snapshot-updated".into(),
+            )
+            .unwrap();
+        assert_eq!(updated.index_revision, 1);
+        assert!(
+            updated
+                .recent_tasks
+                .iter()
+                .any(|task| task.title == "Snapshot after")
         );
     }
 
@@ -1644,10 +2052,14 @@ mod tests {
         assert_eq!(unchanged.index_revision, first.index_revision);
         let usage = projects
             .as_std_path()
-            .join("project-a/tasks/task-1/acp.prompt-usage.jsonl");
+            .join("project-a/tasks/task-1/runs/run-1/attempt-1/acp.prompt-usage.jsonl");
         write(
             &usage,
-            r#"{"usage":{"inputTokens":300,"outputTokens":100,"totalTokens":400}}"#,
+            concat!(
+                r#"{"kind":"promptStarted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:02Z"}"#,
+                "\n",
+                r#"{"kind":"promptCompleted","turn_id":"turn-1","turn_seq":1,"timestamp":"2026-08-18T02:00:03Z","usage":{"inputTokens":300,"outputTokens":100,"totalTokens":400}}"#,
+            ),
         );
         let changed = index.sync(&projects, |_, _| {}, || false).unwrap();
         assert_eq!(changed.reparsed_files, 1);
@@ -1688,12 +2100,47 @@ mod tests {
     }
 
     #[test]
-    fn counter_constraints_and_insight_cache_are_enforced() {
+    fn report_history_bounds_use_min_max_for_out_of_order_runs() {
         let temp = tempfile::tempdir().unwrap();
         let db = Utf8PathBuf::from_path_buf(temp.path().join("gold-band.db")).unwrap();
         let index = PersonalAnalyticsIndex::open(&db).unwrap();
+        index
+            .connection()
+            .execute(
+                "INSERT INTO analytics_tasks VALUES ('project-a/task-1','project-a','Project A','Task 1','workflow',NULL,NULL,NULL)",
+                [],
+            )
+            .unwrap();
+        for (locator, epoch) in [("run-middle", 20), ("run-early", 10), ("run-late", 30)] {
+            index
+                .connection()
+                .execute(
+                    "INSERT INTO analytics_runs VALUES (?1,'project-a/task-1','workflow-run','completed','success',?2,NULL,NULL,?1)",
+                    rusqlite::params![locator, epoch],
+                )
+                .unwrap();
+        }
+
+        let report = index
+            .report(&PersonalAnalyticsDateRange::default(), "bounds".into())
+            .unwrap();
+        assert_eq!(
+            report.overview.earliest_at,
+            Some("1970-01-01T00:00:10Z".to_string())
+        );
+        assert_eq!(
+            report.overview.latest_at,
+            Some("1970-01-01T00:00:30Z".to_string())
+        );
+    }
+
+    #[test]
+    fn counter_constraints_and_insight_cache_are_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Utf8PathBuf::from_path_buf(temp.path().join("gold-band.db")).unwrap();
+        let mut index = PersonalAnalyticsIndex::open(&db).unwrap();
         assert!(index.connection().execute(
-            "INSERT INTO analytics_counters VALUES ('source','run','run','unsupported-kind','name',1)", []
+            "INSERT INTO analytics_counters VALUES ('source','run','run',0,'unsupported-kind','name',1)", []
         ).is_err());
         let identity = InsightIdentity {
             operation_id: "operation-1".into(),
@@ -1703,21 +2150,12 @@ mod tests {
             index_revision: 1,
             agent_type: "agent-a".into(),
         };
-        index
-            .begin_insight(&identity, "2026-08-18T00:00:00Z")
-            .unwrap();
         let narrative = PersonalAnalyticsNarrative {
             schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.into(),
             insights: Vec::new(),
         };
         index
-            .finish_insight(
-                "operation-1",
-                &narrative,
-                "completed",
-                None,
-                "2026-08-18T00:01:00Z",
-            )
+            .store_completed_insight(&identity, &narrative, "2026-08-18T00:01:00Z")
             .unwrap();
         assert!(index.completed_insight(&identity).unwrap().is_some());
         let view_count: i64 = index
@@ -1736,9 +2174,10 @@ fn load_attempts(
     accumulator: &mut ProjectionAccumulator,
 ) -> rusqlite::Result<()> {
     let mut statement = conn.prepare(
-        "SELECT attemptLocator, runLocator, taskLocator, nodeId, agent,
-                sessionElapsedSeconds, activityEpoch, inputTokens, outputTokens,
-                cacheReadTokens, cacheWriteTokens, totalTokens
+        "SELECT attemptLocator, runLocator, taskLocator, nodeSourcePath, snapshotSourcePath,
+                nodeId, agent, outcome, childRunLocator, sessionElapsedSeconds, activityEpoch,
+                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens,
+                observedPromptCount
          FROM analytics_attempts WHERE activityEpoch BETWEEN ?1 AND ?2",
     )?;
     let rows = statement.query_map(rusqlite::params![bounds.start(), bounds.end()], |row| {
@@ -1746,15 +2185,20 @@ fn load_attempts(
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-            row.get::<_, i64>(6)?,
-            row.get::<_, i64>(7)?,
-            row.get::<_, i64>(8)?,
-            row.get::<_, i64>(9)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i64>>(9)?,
             row.get::<_, i64>(10)?,
             row.get::<_, i64>(11)?,
+            row.get::<_, i64>(12)?,
+            row.get::<_, i64>(13)?,
+            row.get::<_, i64>(14)?,
+            row.get::<_, i64>(15)?,
+            row.get::<_, i64>(16)?,
         ))
     })?;
     for row in rows {
@@ -1762,8 +2206,12 @@ fn load_attempts(
             attempt,
             run,
             task,
+            node_source,
+            snapshot_source,
             node_id,
             agent,
+            outcome,
+            child_run_key,
             seconds,
             _epoch,
             input,
@@ -1771,8 +2219,12 @@ fn load_attempts(
             cache_read,
             cache_write,
             total,
+            observed_prompt_count,
         ) = row?;
-        accumulator.attempt_count += 1;
+        let execution_attempt = node_source.is_some() || snapshot_source.is_some();
+        if execution_attempt {
+            accumulator.attempt_count += 1;
+        }
         if let Some(agent) = agent {
             accumulator
                 .tasks
@@ -1782,14 +2234,17 @@ fn load_attempts(
                 .insert(agent.clone());
             *accumulator.agent_counts.entry(agent).or_default() += 1;
         }
-        accumulator.nodes.push(NodeFact {
-            task_key: task.clone(),
-            run_key: run,
-            attempt_key: attempt.clone(),
-            group_key: node_group_key(&attempt).unwrap_or_else(|| attempt.clone()),
-            node_id,
-            outcome: None,
-        });
+        if node_source.is_some() {
+            accumulator.nodes.push(NodeFact {
+                task_key: task.clone(),
+                run_key: run,
+                attempt_key: attempt.clone(),
+                group_key: node_group_key(&attempt).unwrap_or_else(|| attempt.clone()),
+                node_id,
+                outcome,
+                child_run_key,
+            });
+        }
         if let Some(seconds) = seconds.map(|value| value.max(0) as u64) {
             accumulator
                 .session_duration_seconds_by_attempt
@@ -1802,12 +2257,22 @@ fn load_attempts(
             cache_write: cache_write.max(0) as u64,
             total: total.max(0) as u64,
         };
-        add_index_usage(accumulator, task, usage);
+        add_index_usage(
+            accumulator,
+            task,
+            usage,
+            observed_prompt_count.max(0) as u64,
+        );
     }
     Ok(())
 }
 
-fn add_index_usage(accumulator: &mut ProjectionAccumulator, task: String, usage: TokenCounters) {
+fn add_index_usage(
+    accumulator: &mut ProjectionAccumulator,
+    task: String,
+    usage: TokenCounters,
+    observed_prompt_count: u64,
+) {
     let total = effective_total(usage);
     let target = accumulator.tasks.entry(task).or_default();
     target.token_usage.input += usage.input;
@@ -1820,7 +2285,7 @@ fn add_index_usage(accumulator: &mut ProjectionAccumulator, task: String, usage:
     accumulator.token_usage.cache_read_tokens += usage.cache_read;
     accumulator.token_usage.cache_write_tokens += usage.cache_write;
     accumulator.token_usage.total_tokens += total;
-    accumulator.token_usage.observed_prompt_count += 1;
+    accumulator.token_usage.observed_prompt_count += observed_prompt_count;
 }
 
 fn load_counters(
@@ -1828,13 +2293,28 @@ fn load_counters(
     bounds: RangeBounds,
     accumulator: &mut ProjectionAccumulator,
 ) -> rusqlite::Result<()> {
+    let mut direct_statement = conn.prepare(
+        "SELECT c.ownerLocator, c.name, c.sourcePath, c.count
+         FROM analytics_counters c
+         JOIN analytics_tasks t ON t.taskLocator = c.ownerLocator
+         WHERE c.kind = 'prompt-status' AND t.mode = 'direct'
+           AND c.activityEpoch BETWEEN ?1 AND ?2",
+    )?;
+    let direct_rows =
+        direct_statement.query_map(rusqlite::params![bounds.start(), bounds.end()], |row| {
+            Ok(DirectReplyFact {
+                task_key: row.get(0)?,
+                status: row.get(1)?,
+                evidence_locator: row.get(2)?,
+                count: row.get::<_, i64>(3)?.max(0) as u64,
+            })
+        })?;
+    for row in direct_rows {
+        accumulator.direct_replies.push(row?);
+    }
     let mut statement = conn.prepare(
         "SELECT c.kind, c.name, SUM(c.count) FROM analytics_counters c
-         WHERE EXISTS (SELECT 1 FROM analytics_runs r
-                       WHERE (r.runLocator=c.ownerLocator OR r.taskLocator=c.ownerLocator)
-                         AND r.activityEpoch BETWEEN ?1 AND ?2)
-            OR EXISTS (SELECT 1 FROM analytics_attempts a
-                       WHERE a.attemptLocator=c.ownerLocator AND a.activityEpoch BETWEEN ?1 AND ?2)
+         WHERE c.kind != 'prompt-status' AND c.activityEpoch BETWEEN ?1 AND ?2
          GROUP BY c.kind, c.name",
     )?;
     let rows = statement.query_map(rusqlite::params![bounds.start(), bounds.end()], |row| {

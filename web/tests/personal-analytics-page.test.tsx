@@ -18,7 +18,7 @@ vi.mock('@/api', () => api);
 
 import '../src/i18n';
 import { PersonalAnalyticsPage } from '../src/pages/PersonalAnalyticsPage';
-import type { AgentRegistryVm, PersonalAnalyticsOperationStatus, PersonalAnalyticsReportVm, PersonalAnalyticsSnapshotVm } from '../src/types';
+import type { AgentInsightOperationStatus, AgentInsightOperationVm, AgentRegistryVm, PersonalAnalyticsOperationStatus, PersonalAnalyticsReportVm, PersonalAnalyticsSnapshotVm } from '../src/types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,9 +49,9 @@ beforeEach(() => {
   api.getPersonalAnalytics.mockResolvedValue(snapshot(null));
   api.syncPersonalAnalytics.mockResolvedValue(snapshot('queued', 2));
   api.cancelPersonalAnalytics.mockResolvedValue(snapshot('cancelled', 2));
-  api.queryPersonalAnalyticsReport.mockImplementation(() => Promise.resolve(report()));
-  api.startPersonalAnalyticsInsights.mockResolvedValue(snapshot('queued', 2).operation!);
-  api.cancelPersonalAnalyticsInsights.mockResolvedValue(snapshot('cancelled', 2).operation!);
+  api.queryPersonalAnalyticsReport.mockImplementation((range) => Promise.resolve(report([], range)));
+  api.startPersonalAnalyticsInsights.mockResolvedValue(insightOperation('queued', 2));
+  api.cancelPersonalAnalyticsInsights.mockResolvedValue(insightOperation('cancelled', 2));
   api.subscribePersonalAnalyticsUpdates.mockResolvedValue(() => {});
 });
 
@@ -197,6 +197,20 @@ describe('PersonalAnalyticsPage', () => {
     expect(container.textContent).toContain('0.4K');
     expect(container.textContent).toContain('0K');
     expect(Array.from(container.querySelectorAll('th')).filter((cell) => cell.textContent === 'Token')).toHaveLength(3);
+    expect(container.querySelector('#overview')?.textContent).not.toContain('Direct 回复完成率');
+    expect(container.querySelector('#reliability')?.textContent).toContain('Direct 回复完成率');
+    expect(container.querySelector('#reliability')?.textContent).toContain('Workflow run 终局成功率');
+    expect(container.querySelector('#reliability')?.textContent).toContain('AUTO outer run 终局成功率');
+    expect(
+      Array.from(container.querySelectorAll('[data-personal-analytics-report="true"] section[id]'))
+        .slice(0, 3)
+        .map((section) => section.id),
+    ).toEqual(['overview', 'reliability', 'recent-tasks']);
+    expect(
+      Array.from(container.querySelectorAll('[data-personal-analytics-nav="true"] button'))
+        .slice(0, 3)
+        .map((button) => button.textContent),
+    ).toEqual(['使用概览', '终局可靠性', '最近任务']);
   });
 
   it('queries SQLite reports for custom ranges without invoking the Agent', async () => {
@@ -228,7 +242,7 @@ describe('PersonalAnalyticsPage', () => {
     expect(container.querySelectorAll('[data-personal-analytics-nav="true"] button')).toHaveLength(8);
   });
 
-  it('automatically syncs a changed range without invoking the Agent', async () => {
+  it('queries a changed range without rescanning history or invoking the Agent', async () => {
     api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
     const container = await renderPage(registry(true));
     expect(api.syncPersonalAnalytics).toHaveBeenCalledTimes(1);
@@ -248,8 +262,87 @@ describe('PersonalAnalyticsPage', () => {
     });
     await act(async () => { await Promise.resolve(); });
 
-    expect(api.syncPersonalAnalytics).toHaveBeenCalledTimes(2);
+    expect(api.syncPersonalAnalytics).toHaveBeenCalledTimes(1);
+    expect(api.queryPersonalAnalyticsReport).toHaveBeenLastCalledWith(
+      { start: '2026-08-01', end: '2026-08-18' },
+      'agent-a',
+    );
     expect(api.startPersonalAnalyticsInsights).not.toHaveBeenCalled();
+  });
+
+  it('does not display a previous range report when the selected range query fails', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    api.queryPersonalAnalyticsReport.mockImplementation((range: { start: string | null }) => (
+      range.start
+        ? Promise.reject({ code: 'analytics.report-query-failed' })
+        : Promise.resolve(report())
+    ));
+    const container = await renderPage(registry(false));
+
+    await act(async () => {
+      buttonByText(container, '自定义')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const [start, end] = Array.from(container.querySelectorAll('input[type="date"]')) as HTMLInputElement[];
+    const setValue = (input: HTMLInputElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+    };
+    await act(async () => {
+      setValue(start, '2026-08-01');
+      start.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => {
+      setValue(end, '2026-08-18');
+      end.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.textContent).not.toContain('Workflow task');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('无法读取当前日期范围的分析报告');
+  });
+
+  it('ignores a stale range response after a newer report request', async () => {
+    let resolveStale: ((value: PersonalAnalyticsReportVm) => void) | undefined;
+    const staleReport = report();
+    staleReport.recentTasks[0].title = 'Stale report';
+    const latestReport = report([], { start: '2026-08-01', end: '2026-08-18' });
+    latestReport.recentTasks[0].title = 'Latest report';
+    api.getPersonalAnalytics.mockResolvedValueOnce({
+      ...snapshot('completed', 6),
+      latestReport: staleReport,
+    });
+    api.queryPersonalAnalyticsReport.mockReturnValueOnce(
+      new Promise<PersonalAnalyticsReportVm>((resolve) => {
+        resolveStale = resolve;
+      }),
+    );
+    api.queryPersonalAnalyticsReport.mockReturnValueOnce(Promise.resolve(latestReport));
+    const container = await renderPage(registry(false));
+
+    await act(async () => {
+      buttonByText(container, '自定义')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const customInputs = Array.from(container.querySelectorAll('input[type="date"]')) as HTMLInputElement[];
+    const setValue = (input: HTMLInputElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value);
+    };
+    await act(async () => {
+      setValue(customInputs[0], '2026-08-01');
+      customInputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => {
+      setValue(customInputs[1], '2026-08-18');
+      customInputs[1].dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain('Latest report');
+
+    await act(async () => {
+      resolveStale?.(staleReport);
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain('Stale report');
+    expect(container.textContent).toContain('Latest report');
   });
 
   it('re-queries the selected range after an insight operation completes', async () => {
@@ -265,7 +358,7 @@ describe('PersonalAnalyticsPage', () => {
     let queryCount = 0;
     api.getPersonalAnalytics.mockResolvedValueOnce({
       ...snapshot('completed', 6),
-      insightOperation: snapshot('analyzing', 2).operation,
+      insightOperation: insightOperation('analyzing', 2),
       latestReport: report(),
     });
     api.queryPersonalAnalyticsReport.mockImplementation(() => {
@@ -285,7 +378,7 @@ describe('PersonalAnalyticsPage', () => {
     await act(async () => {
       emit?.({
         ...snapshot('completed', 6),
-        insightOperation: snapshot('completed', 3).operation,
+        insightOperation: insightOperation('completed', 3),
         latestReport: report(),
       });
       await Promise.resolve();
@@ -362,10 +455,65 @@ describe('PersonalAnalyticsPage', () => {
     expect(container.textContent).toContain('Workflow task');
   });
 
+  it('does not let a late start response overwrite a completed insight event', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({ ...snapshot('completed', 6), latestReport: report() });
+    let emit: ((next: PersonalAnalyticsSnapshotVm) => void) | undefined;
+    api.subscribePersonalAnalyticsUpdates.mockImplementation((listener: (next: PersonalAnalyticsSnapshotVm) => void) => {
+      emit = listener;
+      return Promise.resolve(() => {});
+    });
+    let resolveStart: ((operation: AgentInsightOperationVm) => void) | undefined;
+    api.startPersonalAnalyticsInsights.mockReturnValueOnce(new Promise((resolve) => { resolveStart = resolve; }));
+    const container = await renderPage(registry(true));
+    await act(async () => {});
+
+    await act(async () => {
+      (container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emit?.({ operation: null, insightOperation: insightOperation('completed', 3), latestReport: null });
+      resolveStart?.(insightOperation('queued', 1));
+      await Promise.resolve();
+    });
+
+    expect(buttonByText(container, '取消洞察')).toBeUndefined();
+    expect((container.querySelector('[data-personal-analytics-insight="true"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not let a late cancel response overwrite a cancelled insight event', async () => {
+    api.getPersonalAnalytics.mockResolvedValueOnce({
+      ...snapshot('completed', 6),
+      insightOperation: insightOperation('analyzing', 2),
+      latestReport: report(),
+    });
+    let emit: ((next: PersonalAnalyticsSnapshotVm) => void) | undefined;
+    api.subscribePersonalAnalyticsUpdates.mockImplementation((listener: (next: PersonalAnalyticsSnapshotVm) => void) => {
+      emit = listener;
+      return Promise.resolve(() => {});
+    });
+    let resolveCancel: ((operation: AgentInsightOperationVm) => void) | undefined;
+    api.cancelPersonalAnalyticsInsights.mockReturnValueOnce(new Promise((resolve) => { resolveCancel = resolve; }));
+    const container = await renderPage(registry(true));
+
+    await act(async () => {
+      buttonByText(container, '取消洞察')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      emit?.({ operation: null, insightOperation: insightOperation('cancelled', 4), latestReport: null });
+      resolveCancel?.(insightOperation('cancelling', 3));
+      await Promise.resolve();
+    });
+
+    expect(buttonByText(container, '取消洞察')).toBeUndefined();
+  });
+
   it('allows an active insight to be cancelled independently', async () => {
     api.getPersonalAnalytics.mockResolvedValueOnce({
       ...snapshot('completed', 6),
-      insightOperation: snapshot('analyzing', 2).operation,
+      insightOperation: insightOperation('analyzing', 2),
       latestReport: report(),
     });
     const container = await renderPage(registry(true));
@@ -374,7 +522,7 @@ describe('PersonalAnalyticsPage', () => {
     await act(async () => {
       cancelButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(api.cancelPersonalAnalyticsInsights).toHaveBeenCalledWith('operation-1');
+    expect(api.cancelPersonalAnalyticsInsights).toHaveBeenCalledWith('insight-operation-1');
     expect(api.cancelPersonalAnalytics).not.toHaveBeenCalled();
   });
 });
@@ -438,7 +586,36 @@ function snapshot(
   };
 }
 
-function report(insights: PersonalAnalyticsReportVm['insights'] = []): PersonalAnalyticsReportVm {
+function insightOperation(
+  status: AgentInsightOperationStatus,
+  revision: number,
+  generation = 1,
+): AgentInsightOperationVm {
+  return {
+    operationId: 'insight-operation-1',
+    generation,
+    agentType: 'agent-a',
+    range: { start: null, end: null },
+    schemaVersion: '2.2.0',
+    indexRevision: 1,
+    status,
+    revision,
+    progress: { stage: status, processedUnits: 0, totalUnits: 1 },
+    sourceWatermark: '1',
+    reportId: 'report-1',
+    error: null,
+    createdAt: '2026-08-18T00:00:00Z',
+    updatedAt: '2026-08-18T00:00:00Z',
+    completedAt: status === 'completed' || status === 'failed' || status === 'cancelled'
+      ? '2026-08-18T00:01:00Z'
+      : null,
+  };
+}
+
+function report(
+  insights: PersonalAnalyticsReportVm['insights'] = [],
+  range: PersonalAnalyticsReportVm['range'] = { start: null, end: null },
+): PersonalAnalyticsReportVm {
   const task = {
     taskLocator: 'project-a/task-workflow', projectId: 'project-a', taskId: 'task-workflow', latestRunId: 'run-1', title: 'Workflow task', mode: 'workflow', status: 'completed', outcome: 'success',
     agentNames: ['Agent A'], totalTokens: 1200, activeDurationSeconds: 60, activeDurationZeroFilled: false,
@@ -446,7 +623,7 @@ function report(insights: PersonalAnalyticsReportVm['insights'] = []): PersonalA
   };
   const rate = (metricId: string) => ({ metricId, numerator: 1, denominator: 1, unknownCount: 0, rate: 1, evidenceLocators: ['project-a/task-workflow/run.json'] });
   return {
-    schemaVersion: '2.2.0', reportId: 'report-1', generatedAt: '2026-08-18T00:01:00Z', sourceWatermark: 'watermark', indexRevision: 1, range: { start: null, end: null },
+    schemaVersion: '2.2.0', reportId: 'report-1', generatedAt: '2026-08-18T00:01:00Z', sourceWatermark: 'watermark', indexRevision: 1, range,
     sourceCoverage: { discoveredFiles: 10, eligibleFiles: 8, parsedFiles: 8, skippedFiles: 2, corruptFiles: 0, unknownVersionFiles: 0, discoveredBytes: 1024, semanticEligibleItems: 1, semanticSampledItems: 1 },
     overview: { projectCount: 1, taskCount: 1, conversationCount: 1, runCount: 1, turnCount: 0, attemptCount: 1, earliestAt: '2026-08-18T00:00:00Z', latestAt: '2026-08-18T00:01:00Z' },
     recentTasks: [task],

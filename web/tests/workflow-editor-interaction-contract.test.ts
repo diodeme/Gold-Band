@@ -14,6 +14,7 @@ import {
   validateWorkflowForSave,
 } from '@/components/WorkflowEditor';
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import {
   NODE_HEIGHT,
   NODE_WIDTH,
@@ -214,12 +215,81 @@ describe('workflow editor interaction contracts', () => {
       nodes: value.nodes,
       edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }],
     });
-    const manualValidation = validateWorkflowForSave(manualFailure, [], [], t);
+    const manualValidation = validateWorkflowForSave(manualFailure, readyWorkflowProfileCatalog([]), [], t);
     expect(manualValidation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(false);
 
     const invalid = workflow({ edges: [...value.edges, { from: 'build', to: 'plan', on: 'failure' }] });
-    const validation = validateWorkflowForSave(invalid, [], [], t);
+    const validation = validateWorkflowForSave(invalid, readyWorkflowProfileCatalog([]), [], t);
     expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(true);
+  });
+
+  it('defers only profile reference validation while the profile catalog is loading', () => {
+    const value = workflow({
+      id: '',
+      nodes: [
+        worker('plan', { executionSlotId: 'slot-plan', profile: 'missing-profile' }),
+        worker('build', { executionSlotId: 'slot-build' }),
+        worker('review', {
+          executionSlotId: 'slot-review',
+          output: { kind: 'json', artifact: 'review-result' },
+          success_condition: { expression: '$.result == true' },
+        }),
+      ],
+    });
+
+    const loadingValidation = validateWorkflowForSave(
+      value,
+      { status: 'loading', profiles: [] },
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+    );
+    const readyValidation = validateWorkflowForSave(
+      value,
+      readyWorkflowProfileCatalog([]),
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+    );
+
+    expect(loadingValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationWorkflowIdRequired');
+    expect(loadingValidation.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+    expect(readyValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+
+    const dynamicValue = workflow({
+      nodes: [{
+        id: 'dynamic',
+        type: 'ai-dynamic',
+        agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
+        allowedProfiles: ['missing-profile'],
+        allowedWorkflows: [],
+        control: {
+          maxDynamicNodes: 20,
+          maxFanout: 5,
+          maxDepth: 6,
+          maxParallel: 3,
+          maxGroupDepth: 1,
+          maxWorkflowInvocations: 10,
+          allowNestedDynamic: false,
+        },
+      }],
+      edges: [{ from: 'dynamic', to: '$end', on: 'success' }],
+    });
+    const dynamicLoading = validateWorkflowForSave(dynamicValue, { status: 'loading', profiles: [] }, [], t);
+    const dynamicReady = validateWorkflowForSave(dynamicValue, readyWorkflowProfileCatalog([]), [], t);
+
+    expect(dynamicLoading.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationAllowedProfileMissing');
+    expect(dynamicReady.issues.map((issue) => issue.message)).toContain('workflowEditor.validationAllowedProfileMissing');
   });
 
   it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {

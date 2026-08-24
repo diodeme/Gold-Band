@@ -96,7 +96,9 @@ fn replayed_provider_history_does_not_pollute_the_visible_timeline() {
     assert_eq!(items[2].seq, 5);
     assert_eq!(items[2].timestamp, "5Z");
     assert_eq!(latest_timeline_source_seq(&path), 5);
-    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 5);
+    // Timeline patches are compacted into their canonical item at write time;
+    // replayed provider history must not leave duplicate patch rows behind.
+    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
 }
 
 #[test]

@@ -31,7 +31,7 @@ const DEFAULT_STORAGE_PATH_CONFIG: StoragePathConfig = StoragePathConfig {
 };
 
 static STORAGE_PATH_CONFIG: OnceLock<RwLock<StoragePathConfig>> = OnceLock::new();
-static JSONL_FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+static STORAGE_FILE_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
 pub fn configure_storage_paths(config: StoragePathConfig) {
     *storage_path_config_lock()
@@ -1059,26 +1059,30 @@ pub fn with_jsonl_file_lock<T>(
     path: &Utf8Path,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    let lock = jsonl_file_lock_for(path)?;
+    with_file_lock(path, operation)
+}
+
+pub fn with_file_lock<T>(path: &Utf8Path, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let lock = storage_file_lock_for(path)?;
     let _guard = lock
         .lock()
-        .map_err(|_| anyhow!("jsonl file lock poisoned"))?;
+        .map_err(|_| anyhow!("storage file lock poisoned"))?;
     operation()
 }
 
-fn jsonl_file_lock_for(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
-    let key = jsonl_file_lock_key(path);
-    let mut locks = JSONL_FILE_LOCKS
+fn storage_file_lock_for(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
+    let key = storage_file_lock_key(path);
+    let mut locks = STORAGE_FILE_LOCKS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .map_err(|_| anyhow!("jsonl file lock registry poisoned"))?;
+        .map_err(|_| anyhow!("storage file lock registry poisoned"))?;
     Ok(locks
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone())
 }
 
-fn jsonl_file_lock_key(path: &Utf8Path) -> String {
+fn storage_file_lock_key(path: &Utf8Path) -> String {
     let normalized = std::fs::canonicalize(path.as_std_path())
         .ok()
         .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())

@@ -4,6 +4,7 @@ use std::io::Write;
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::app::App;
 use gold_band::config::{ConversationWorkspaceEntry, StateConfig};
+use gold_band::git::{GitWorkspaceManager, WorktreeRegistrationStatus};
 use gold_band::storage::core_state::{CoreStateDatabase, WORKSPACE_IDENTITY_SCHEMA_VERSION};
 use gold_band::storage::sqlite::SearchIndex;
 use gold_band::storage::{
@@ -77,6 +78,11 @@ pub(crate) fn remove_workspace_from_state(
 pub(crate) struct WorkspaceIdentityMigrationReport {
     pub migrated_directory_count: usize,
     pub already_migrated_directory_count: usize,
+    pub migrated_dynamic_graph_count: usize,
+    pub dynamic_graph_migration_failure_count: usize,
+    pub repaired_worktree_count: usize,
+    pub worktree_repair_failure_count: usize,
+    pub retry_required: bool,
     pub state_changed: bool,
 }
 
@@ -235,7 +241,12 @@ impl<'a> WorkspaceIdentityMigrator<'a> {
                 paths
                     .replace_project_manifest_for_migration()
                     .map_err(WorkspaceIdentityMigrationError::Storage)?;
-                rewrite_runtime_locators(item)?;
+                let locator_report = rewrite_runtime_locators(item)?;
+                report.migrated_dynamic_graph_count += locator_report.migrated_dynamic_graph_count;
+                report.dynamic_graph_migration_failure_count +=
+                    locator_report.dynamic_graph_migration_failure_count;
+                report.retry_required |= locator_report.retry_required;
+                repair_migrated_worktrees(item, locator_report.worktree_paths, &mut report);
             }
         }
 
@@ -252,7 +263,15 @@ impl<'a> WorkspaceIdentityMigrator<'a> {
         search
             .rebuild_from_disk(&self.base_paths.projects_dir())
             .map_err(WorkspaceIdentityMigrationError::Search)?;
-        self.core_state.mark_workspace_identity_migrated()?;
+        if report.retry_required {
+            tracing::warn!(
+                dynamic_graph_migration_failure_count =
+                    report.dynamic_graph_migration_failure_count,
+                "workspace identity migration remains pending after isolated retryable failures"
+            );
+        } else {
+            self.core_state.mark_workspace_identity_migrated()?;
+        }
         Ok(report)
     }
 
@@ -513,10 +532,20 @@ fn migration_alias_matches(left: &str, right: &str) -> bool {
     }
 }
 
+#[derive(Debug, Default)]
+struct RuntimeLocatorRewriteReport {
+    worktree_paths: HashSet<Utf8PathBuf>,
+    migrated_dynamic_graph_count: usize,
+    dynamic_graph_migration_failure_count: usize,
+    retry_required: bool,
+}
+
 fn rewrite_runtime_locators(
     item: &WorkspaceIdentityPlanItem,
-) -> Result<(), WorkspaceIdentityMigrationError> {
+) -> Result<RuntimeLocatorRewriteReport, WorkspaceIdentityMigrationError> {
     let mut pending = vec![item.new_runtime_root.clone()];
+    let managed_worktrees_root = item.new_runtime_root.join("worktrees");
+    let mut report = RuntimeLocatorRewriteReport::default();
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(directory.as_std_path())? {
             let entry = entry?;
@@ -526,15 +555,15 @@ fn rewrite_runtime_locators(
                     path: Utf8PathBuf::from(path.to_string_lossy().into_owned()),
                 }
             })?;
-            if file_type.is_dir() && !file_type.is_symlink() {
+            if file_type.is_dir() && !file_type.is_symlink() && path != managed_worktrees_root {
                 pending.push(path);
             } else if file_type.is_file() {
                 match path.file_name().unwrap_or_default() {
-                    "run.json" => rewrite_json_locator_fields(
-                        &path,
-                        item,
-                        &[&["worktree", "path"], &["last_executed_node", "attemptDir"]],
-                    )?,
+                    "run.json" => {
+                        if let Some(worktree_path) = rewrite_run_locators(&path, item)? {
+                            report.worktree_paths.insert(worktree_path);
+                        }
+                    }
                     "worker-ref.json" => rewrite_json_locator_fields(
                         &path,
                         item,
@@ -551,12 +580,216 @@ fn rewrite_runtime_locators(
                     {
                         rewrite_turn_file_change_set(&path, item)?
                     }
+                    "graph.json"
+                        if path.parent().and_then(Utf8Path::file_name) == Some("dynamic") =>
+                    {
+                        match rewrite_dynamic_graph_workspace_locators(&path, item) {
+                            DynamicGraphRewriteOutcome::Changed => {
+                                report.migrated_dynamic_graph_count += 1
+                            }
+                            DynamicGraphRewriteOutcome::Unchanged => {}
+                            DynamicGraphRewriteOutcome::Skipped => {
+                                report.dynamic_graph_migration_failure_count += 1
+                            }
+                            DynamicGraphRewriteOutcome::RetryRequired => {
+                                report.dynamic_graph_migration_failure_count += 1;
+                                report.retry_required = true;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
-    Ok(())
+    Ok(report)
+}
+
+fn rewrite_run_locators(
+    path: &Utf8Path,
+    item: &WorkspaceIdentityPlanItem,
+) -> Result<Option<Utf8PathBuf>, WorkspaceIdentityMigrationError> {
+    let mut value: serde_json::Value =
+        read_json(path).map_err(|_| WorkspaceIdentityMigrationError::RuntimeStateInvalid {
+            path: path.to_path_buf(),
+        })?;
+    let changed = rewrite_json_locator(&mut value, &["worktree", "path"], item)
+        | rewrite_json_locator(&mut value, &["last_executed_node", "attemptDir"], item);
+    if changed {
+        write_json(path, &value).map_err(WorkspaceIdentityMigrationError::Storage)?;
+    }
+    Ok(value
+        .pointer("/worktree/path")
+        .and_then(serde_json::Value::as_str)
+        .map(Utf8PathBuf::from))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DynamicGraphRewriteOutcome {
+    Changed,
+    Unchanged,
+    Skipped,
+    RetryRequired,
+}
+
+fn rewrite_dynamic_graph_workspace_locators(
+    path: &Utf8Path,
+    item: &WorkspaceIdentityPlanItem,
+) -> DynamicGraphRewriteOutcome {
+    let mut graph: serde_json::Value = match read_json(path) {
+        Ok(graph) => graph,
+        Err(error) => {
+            let retryable = error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some());
+            tracing::warn!(
+                graph_path = %path,
+                workspace_path = %item.workspace_path,
+                retryable,
+                %error,
+                "AI-DYNAMIC workspace locator migration could not read one graph"
+            );
+            return if retryable {
+                DynamicGraphRewriteOutcome::RetryRequired
+            } else {
+                DynamicGraphRewriteOutcome::Skipped
+            };
+        }
+    };
+    let Some(workspaces) = graph
+        .get_mut("workspaces")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return DynamicGraphRewriteOutcome::Unchanged;
+    };
+    let mut changed = false;
+    let mut belongs_to_migrated_runtime = false;
+    for workspace in workspaces.iter_mut() {
+        changed = rewrite_json_locator(workspace, &["path"], item) || changed;
+        belongs_to_migrated_runtime |= workspace
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|locator| {
+                locator_has_root(locator, &item.old_runtime_root)
+                    || locator_has_root(locator, &item.new_runtime_root)
+            });
+    }
+    let workspace_projections = workspaces.clone();
+    if !belongs_to_migrated_runtime {
+        return DynamicGraphRewriteOutcome::Unchanged;
+    }
+    let mut workspace_ids = Vec::with_capacity(workspace_projections.len());
+    for workspace in &workspace_projections {
+        let Some(id) = workspace
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| valid_dynamic_workspace_id(id))
+        else {
+            tracing::warn!(
+                graph_path = %path,
+                workspace_path = %item.workspace_path,
+                "AI-DYNAMIC workspace locator migration skipped for invalid workspace id"
+            );
+            return DynamicGraphRewriteOutcome::Skipped;
+        };
+        workspace_ids.push(id.to_string());
+    }
+    if changed {
+        if let Err(error) = write_json(path, &graph) {
+            tracing::warn!(
+                graph_path = %path,
+                workspace_path = %item.workspace_path,
+                %error,
+                "AI-DYNAMIC workspace locator migration graph write deferred"
+            );
+            return DynamicGraphRewriteOutcome::RetryRequired;
+        }
+    }
+
+    let Some(dynamic_root) = path.parent() else {
+        return DynamicGraphRewriteOutcome::Skipped;
+    };
+    let projection_root = dynamic_root.join("workspaces");
+    let mut projection_retry_required = false;
+    for (workspace, id) in workspace_projections.iter().zip(workspace_ids) {
+        let projection_path = projection_root.join(format!("{id}.json"));
+        if let Err(error) = write_json(&projection_path, workspace) {
+            projection_retry_required = true;
+            tracing::warn!(
+                graph_path = %path,
+                projection_path = %projection_path,
+                workspace_path = %item.workspace_path,
+                %error,
+                "AI-DYNAMIC workspace projection migration write deferred"
+            );
+        }
+    }
+    if projection_retry_required {
+        return DynamicGraphRewriteOutcome::RetryRequired;
+    }
+    if changed {
+        DynamicGraphRewriteOutcome::Changed
+    } else {
+        DynamicGraphRewriteOutcome::Unchanged
+    }
+}
+
+fn valid_dynamic_workspace_id(id: &str) -> bool {
+    !id.is_empty() && id != "." && id != ".." && !id.contains('/') && !id.contains('\\')
+}
+
+fn locator_has_root(locator: &str, root: &Utf8Path) -> bool {
+    let locator = locator.replace('\\', "/");
+    let root = root.as_str().replace('\\', "/");
+    let prefix_matches = if cfg!(windows) {
+        locator
+            .get(..root.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&root))
+    } else {
+        locator.starts_with(&root)
+    };
+    prefix_matches
+        && locator
+            .as_bytes()
+            .get(root.len())
+            .is_none_or(|separator| *separator == b'/')
+}
+
+fn repair_migrated_worktrees(
+    item: &WorkspaceIdentityPlanItem,
+    worktree_paths: HashSet<Utf8PathBuf>,
+    report: &mut WorkspaceIdentityMigrationReport,
+) {
+    let manager = GitWorkspaceManager::default();
+    for path in worktree_paths {
+        let Some(path) = managed_migrated_worktree_path(item, &path) else {
+            continue;
+        };
+        match manager.ensure_worktree_registration(&item.workspace_path, &path) {
+            Ok(WorktreeRegistrationStatus::Repaired) => report.repaired_worktree_count += 1,
+            Ok(WorktreeRegistrationStatus::AlreadyRegistered) => {}
+            Err(error) => {
+                report.worktree_repair_failure_count += 1;
+                tracing::warn!(
+                    repository_root = %item.workspace_path,
+                    worktree_path = %path,
+                    %error,
+                    "migrated conversation worktree registration repair deferred"
+                );
+            }
+        }
+    }
+}
+
+fn managed_migrated_worktree_path(
+    item: &WorkspaceIdentityPlanItem,
+    path: &Utf8Path,
+) -> Option<Utf8PathBuf> {
+    let root = std::fs::canonicalize(item.new_runtime_root.join("worktrees").as_std_path()).ok()?;
+    let path = std::fs::canonicalize(path.as_std_path()).ok()?;
+    let root = Utf8PathBuf::from_path_buf(root).ok()?;
+    let path = Utf8PathBuf::from_path_buf(path).ok()?;
+    (path != root && path.starts_with(&root)).then_some(path)
 }
 
 fn rewrite_json_locator_fields(
@@ -708,6 +941,7 @@ mod tests {
     use gold_band::config::{
         ConversationDirectConfig, ConversationRunMode, ConversationRunModeEntry,
     };
+    use gold_band::git::GitCommandRunner;
     use gold_band::storage::StoragePathConfig;
     use tempfile::tempdir;
 
@@ -1002,6 +1236,32 @@ mod tests {
             serde_json::to_string(old_worktree.as_str()).unwrap()
         );
         std::fs::write(attempt_dir.join("acp.raw.jsonl").as_std_path(), &raw_audit).unwrap();
+        let dynamic_dir = attempt_dir.join("dynamic");
+        let repository_dynamic_worktree = workspace.join(".gold-band/worktrees/dynamic-child");
+        let dynamic_graph = serde_json::json!({
+            "version": "0.2",
+            "workspaces": [
+                {
+                    "id": "workspace-main",
+                    "repoRoot": workspace,
+                    "path": old_worktree
+                },
+                {
+                    "id": "workspace-child",
+                    "repoRoot": workspace,
+                    "path": repository_dynamic_worktree
+                }
+            ]
+        });
+        write_json(&dynamic_dir.join("graph.json"), &dynamic_graph).unwrap();
+        write_json(
+            &dynamic_dir.join("workspaces/workspace-main.json"),
+            &dynamic_graph["workspaces"][0],
+        )
+        .unwrap();
+        let broken_graph = attempt_dir.join("broken-attempt/dynamic/graph.json");
+        std::fs::create_dir_all(broken_graph.parent().unwrap()).unwrap();
+        std::fs::write(broken_graph.as_std_path(), "{not-json").unwrap();
 
         let mut state = StateConfig::default();
         state
@@ -1030,6 +1290,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(report.migrated_directory_count, 1);
+        assert_eq!(report.migrated_dynamic_graph_count, 1);
+        assert_eq!(report.dynamic_graph_migration_failure_count, 1);
+        assert_eq!(report.repaired_worktree_count, 0);
+        assert_eq!(report.worktree_repair_failure_count, 1);
         assert!(!old_root.exists());
         assert!(paths.runtime_root.is_dir());
         assert_eq!(
@@ -1125,6 +1389,22 @@ mod tests {
             std::fs::read_to_string(migrated_attempt.join("acp.raw.jsonl").as_std_path()).unwrap(),
             raw_audit
         );
+        let migrated_graph: serde_json::Value =
+            read_json(&migrated_attempt.join("dynamic/graph.json")).unwrap();
+        assert_eq!(
+            migrated_graph["workspaces"][0]["path"],
+            migrated_worktree.as_str().replace('\\', "/")
+        );
+        assert_eq!(
+            migrated_graph["workspaces"][1]["path"],
+            repository_dynamic_worktree.as_str()
+        );
+        let main_workspace_projection: serde_json::Value =
+            read_json(&migrated_attempt.join("dynamic/workspaces/workspace-main.json")).unwrap();
+        assert_eq!(
+            main_workspace_projection["path"],
+            migrated_worktree.as_str().replace('\\', "/")
+        );
         let manifest: ProjectManifest = read_json(&paths.project_manifest_file()).unwrap();
         assert_eq!(manifest.project_id, paths.project_id);
 
@@ -1145,6 +1425,207 @@ mod tests {
             .execute(Some(workspace.as_path()), &mut state)
             .unwrap();
         assert_eq!(second, WorkspaceIdentityMigrationReport::default());
+        unsafe { std::env::remove_var(path_config.home_env_var) };
+    }
+
+    #[test]
+    fn migrator_repairs_real_linked_worktree_registration_after_runtime_move() {
+        let directory = tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(directory.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(workspace.as_std_path()).unwrap();
+        let runner = GitCommandRunner::default();
+        assert!(runner.run(&workspace, &["init"]).unwrap().success);
+        std::fs::write(workspace.join("README.md"), "initial\n").unwrap();
+        assert!(
+            runner
+                .run(&workspace, &["add", "README.md"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(
+                    &workspace,
+                    &[
+                        "-c",
+                        "user.name=Gold Band Test",
+                        "-c",
+                        "user.email=test@gold-band.local",
+                        "commit",
+                        "--no-verify",
+                        "-m",
+                        "initial",
+                    ],
+                )
+                .unwrap()
+                .success
+        );
+
+        let test_home = directory.path().join("user-home");
+        let path_config = StoragePathConfig {
+            app_key: "gold-band-identity-git-repair-test",
+            config_dir_name: ".gold-band-identity-git-repair-test",
+            home_env_var: "GOLD_BAND_IDENTITY_GIT_REPAIR_TEST_HOME",
+        };
+        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
+        let paths = GoldBandPaths::new_with_path_config(workspace.clone(), path_config);
+        let old_project_id = legacy_project_id_for_workspace(&workspace);
+        let old_root = paths.projects_dir().join(&old_project_id);
+        let old_worktree = old_root.join("worktrees/conversation");
+        GitWorkspaceManager::default()
+            .create_worktree(
+                &workspace,
+                &old_worktree,
+                "gold-band/test-migration-repair",
+                "HEAD",
+            )
+            .unwrap();
+        std::fs::write(old_worktree.join("dirty.txt"), "preserve me\n").unwrap();
+        std::fs::rename(old_root.as_std_path(), paths.runtime_root.as_std_path()).unwrap();
+        let migrated_worktree = paths.runtime_root.join("worktrees/conversation");
+        write_json(
+            &paths.project_manifest_file(),
+            &ProjectManifest {
+                version: gold_band::domain::VERSION.to_string(),
+                project_id: paths.project_id.clone(),
+                repo_root: workspace.to_string(),
+                normalized_repo_root: paths.normalized_repo_root.clone(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &paths.runtime_root.join("migration-fixture/run.json"),
+            &serde_json::json!({
+                "worktree": {
+                    "path": migrated_worktree,
+                    "branch": "gold-band/test-migration-repair",
+                    "forkCommit": "HEAD"
+                }
+            }),
+        )
+        .unwrap();
+        let connection = rusqlite::Connection::open(paths.core_db_path().as_std_path()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE core_schema (
+                    component TEXT PRIMARY KEY NOT NULL,
+                    version INTEGER NOT NULL
+                 );
+                 INSERT INTO core_schema(component, version)
+                 VALUES ('workspace_identity', 2);",
+            )
+            .unwrap();
+        drop(connection);
+        let mut state = StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: paths.project_id.clone(),
+                workspace_path: workspace.to_string(),
+                name: "workspace".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            });
+
+        let report = WorkspaceIdentityMigrator::new(&paths)
+            .execute(Some(workspace.as_path()), &mut state)
+            .unwrap();
+
+        assert_eq!(report.migrated_directory_count, 0);
+        assert_eq!(report.already_migrated_directory_count, 1);
+        assert_eq!(report.repaired_worktree_count, 1);
+        assert_eq!(report.worktree_repair_failure_count, 0);
+        assert_eq!(
+            GitWorkspaceManager::default()
+                .ensure_worktree_registration(&workspace, &migrated_worktree)
+                .unwrap(),
+            WorktreeRegistrationStatus::AlreadyRegistered
+        );
+        assert_eq!(
+            std::fs::read_to_string(migrated_worktree.join("dirty.txt")).unwrap(),
+            "preserve me\n"
+        );
+        assert_eq!(
+            CoreStateDatabase::new(paths.core_db_path())
+                .workspace_identity_version()
+                .unwrap(),
+            Some(WORKSPACE_IDENTITY_SCHEMA_VERSION)
+        );
+        unsafe { std::env::remove_var(path_config.home_env_var) };
+    }
+
+    #[test]
+    fn migrator_keeps_v3_pending_when_dynamic_projection_write_is_retryable() {
+        let directory = tempdir().unwrap();
+        let workspace = Utf8PathBuf::from_path_buf(directory.path().join("workspace")).unwrap();
+        std::fs::create_dir_all(workspace.as_std_path()).unwrap();
+        let test_home = directory.path().join("user-home");
+        let path_config = StoragePathConfig {
+            app_key: "gold-band-identity-dynamic-io-retry-test",
+            config_dir_name: ".gold-band-identity-dynamic-io-retry-test",
+            home_env_var: "GOLD_BAND_IDENTITY_DYNAMIC_IO_RETRY_TEST_HOME",
+        };
+        unsafe { std::env::set_var(path_config.home_env_var, &test_home) };
+        let paths = GoldBandPaths::new_with_path_config(workspace.clone(), path_config);
+        let old_project_id = legacy_project_id_for_workspace(&workspace);
+        let old_root = paths.projects_dir().join(&old_project_id);
+        write_json(
+            &old_root.join("project.json"),
+            &ProjectManifest {
+                version: gold_band::domain::VERSION.to_string(),
+                project_id: old_project_id.clone(),
+                repo_root: workspace.to_string(),
+                normalized_repo_root: paths.normalized_repo_root.clone(),
+            },
+        )
+        .unwrap();
+        let dynamic_dir = old_root.join("fixture/dynamic");
+        write_json(
+            &dynamic_dir.join("graph.json"),
+            &serde_json::json!({
+                "workspaces": [{
+                    "id": "workspace-main",
+                    "path": old_root.join("worktrees/conversation")
+                }]
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            dynamic_dir.join("workspaces").as_std_path(),
+            "not-a-directory",
+        )
+        .unwrap();
+        let mut state = StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(ConversationWorkspaceEntry {
+                project_id: old_project_id,
+                workspace_path: workspace.to_string(),
+                name: "workspace".to_string(),
+                added_at: "2026-01-01T00:00:00Z".to_string(),
+            });
+
+        let report = WorkspaceIdentityMigrator::new(&paths)
+            .execute(Some(workspace.as_path()), &mut state)
+            .unwrap();
+
+        assert!(report.retry_required);
+        assert_eq!(report.dynamic_graph_migration_failure_count, 1);
+        assert_eq!(
+            CoreStateDatabase::new(paths.core_db_path())
+                .workspace_identity_version()
+                .unwrap(),
+            None
+        );
+        let graph: serde_json::Value =
+            read_json(&paths.runtime_root.join("fixture/dynamic/graph.json")).unwrap();
+        assert_eq!(
+            graph["workspaces"][0]["path"],
+            paths
+                .runtime_root
+                .join("worktrees/conversation")
+                .as_str()
+                .replace('\\', "/")
+        );
         unsafe { std::env::remove_var(path_config.home_env_var) };
     }
 

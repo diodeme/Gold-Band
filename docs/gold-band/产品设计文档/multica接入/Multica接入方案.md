@@ -1016,7 +1016,14 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **背景**：feature 自 M5-ag 后再落后 main 约 200 commit（main 重构会话创建契约/心跳/个性化/composer UI），feature 领先 22 commit。策略同 M5-ag：冲突保 main，合并后修复 multica。备份分支 `feature_multica_premerge_20260824`，合并提交 `79ba1e26`。
   - **契约影响（对外行为不变，内部对齐 main）**：main 的 `create_conversation_run_vm` 改返回 `ConversationCreateResultVm {task, run}`——`start_multica_conversation_run` 同步该契约（Fresh 透传 / Resume 由 `conversation_run_vm` + `conversation_task_row_vm` 组装）；前端 `startMulticaConversationRun` 同改，App.tsx 两路径（远程/本地）同契约解构，侧栏刷新与导航链完全复用。claim-at-send 事务边界、终态桥接、断点续跑等 multica 语义零变化。
   - **composer chip 重新集成**：main 重构 composer（工作区控件迁入 info bar `ConversationWorkspaceControl`）后 chip 全量回插——绑定 chip（Globe Badge + × 解绑）+ Backspace 删除契约（`shouldBackspaceClearMulticaBinding`）+ 预填保留；决策 d 落 `forceSelector`（单工作区强制下拉）、决策 e 落 `emptyWorkspaceHint`（0 工作区虚线提示 + canSubmit 禁发）。
-  - **验证**：`cargo check --workspace --all-targets` 零错误（余量 warning 均为 main 既有，逐文件比对 origin/main 确认）；tsc src 零错；`web:build` 成功；vitest 全量 **1559/1559**（multica 4 套件 + composer chip/draft 含 clearMultica 语义全过）；`cargo test --workspace` 全过。
+  - **验证**：`cargo check --workspace --all-targets` 零错误（余量 warning 均为 main 既有，逐文件比对 origin/main 确认）；tsc src 零错；`web:build` 成功；vitest 全量 **1559/1559**（multica 4 套件 + composer chip/draft 含 clearMultica 语义全过）；`cargo test --workspace` 该轮运行被后续合并中止，最终态测试以 M5-at 记录为准。
+
+- [x] **M5-at**（本轮）三次合并 origin/main——draft 双维度 union（submission × multica 互斥）（开发设计 §12.32）：
+  - **背景**：main 新增 29 commit（ACP 生命周期收敛、worktree 迁移、composer draft 提交意图模式 `4a19b1d7` 等），与 multica 触面重叠 6 文件冲突。策略同前：冲突保 main，合并后修复。备份分支 `feature_multica_premerge2_20260824`（`634bfbe1`）。
+  - **核心语义决策（draft 状态机 union + 互斥）**：main 给 draft 增加 `submission`（send | scheduled-task）维度并与 multica `multica` 绑定维度合并为 `{content, attachments, multica, submission}`；两者是**竞争性提交意图**，在 reducer 层显式互斥——`prefill`（远程任务点执行）产生全新 send 意图草稿（即使先前处于排程模式）；`enterScheduledTask`（点排程按钮）本地丢弃 multica 绑定（任务仍在服务端 queued，可重新点执行恢复）。杜绝「带远程绑定发送却走排程」的混合态；新增 2 条互斥语义固化测试。
+  - **composer 采纳 main 派生式**：scheduledMode/scheduledConfig 改从 `draft.submission` 直读（canonical 状态进 draft、跨卸载存活）；canSubmit 叠加决策 e 门（multica 绑定 + 0 本地工作区禁发）；multica chip / Backspace 解绑契约 / 决策 d `forceSelector` / 决策 e `emptyWorkspaceHint` 全部经自动合并存活，零回插。
+  - **契约影响（对外行为不变）**：claim-at-send 事务边界、终态桥接、断点续跑、App.tsx 双路径发送流均零变化；仅 main 改名 `ConversationSessionSwitchVm` → `ConversationSessionTreeVm` 等类型对齐。
+  - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；定向 vitest 24/24（draft union + 互斥语义 + i18n 合规）；全量 vitest / `web:build` / `cargo test --workspace` 结果见开发设计 §12.32 任务记录。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

@@ -170,34 +170,33 @@ pub fn write_permission_response_if_pending(
     if permission_response_file(attempt_dir, request_id).exists() {
         return Ok(false);
     }
+    // The provider waiter is the control-plane consumer. Persist its response
+    // before attempting to settle the timeline projection: the permission
+    // event can still be between the pending-file write and timeline/index
+    // persistence when the user responds.
     let pending: PendingPermissionState = read_json(&pending_path)?;
-    let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? else {
-        return Ok(false);
-    };
-    if indexed.event.status.as_deref() != Some("pending") {
-        return Ok(false);
-    }
-    let timeline_path =
-        crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
-    let outcome = settle_permission_item(
-        &timeline_path,
-        &identity.item_id,
-        Some(indexed.revision),
-        request_id,
-        option_id.clone(),
-        cancelled,
-        decided_at.clone(),
-    )?;
-    if outcome != TimelineSettleOutcome::Applied {
-        return Ok(false);
-    }
     write_permission_response(
         attempt_dir,
         request_id,
         option_id.clone(),
         cancelled,
-        decided_at,
+        decided_at.clone(),
     )?;
+    if let Some((identity, indexed)) = resolve_permission_identity(attempt_dir, &pending)? {
+        if indexed.event.status.as_deref() == Some("pending") {
+            let timeline_path =
+                crate::acp::branches::branch_timeline_path(attempt_dir, &identity.branch_id);
+            let _ = settle_permission_item(
+                &timeline_path,
+                &identity.item_id,
+                Some(indexed.revision),
+                request_id,
+                option_id,
+                cancelled,
+                decided_at,
+            );
+        }
+    }
     Ok(true)
 }
 
@@ -349,10 +348,35 @@ mod tests {
     };
     use tempfile::tempdir;
 
-    #[test]
-    fn permission_wait_returns_cancelled_when_turn_cancel_is_requested() {
+    fn test_attempt_dir(storage_version: u32) -> (tempfile::TempDir, Utf8PathBuf) {
         let dir = tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        write_json(
+            &attempt_dir.join("node.json"),
+            &serde_json::json!({
+                "version": crate::domain::VERSION,
+                "acp_storage_schema_version": storage_version,
+                "node_id": "worker",
+                "node_type": "worker",
+                "run_id": "run-001",
+                "round_id": "round-001",
+                "attempt_id": "attempt-001",
+                "status": "running",
+                "outcome": null,
+                "started_at": "1Z",
+                "finished_at": null,
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        (dir, attempt_dir)
+    }
+
+    #[test]
+    fn permission_wait_returns_cancelled_when_turn_cancel_is_requested() {
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let checks = std::cell::Cell::new(0_u8);
 
         let response =
@@ -371,8 +395,8 @@ mod tests {
 
     #[test]
     fn permission_cancel_wins_over_a_simultaneous_user_response() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         write_permission_response(
             &attempt_dir,
             "permission-race",
@@ -392,8 +416,8 @@ mod tests {
 
     #[test]
     fn cancel_pending_permission_updates_timeline_status() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "42";
         write_pending_permission(
             &attempt_dir,
@@ -439,8 +463,8 @@ mod tests {
 
     #[test]
     fn cancel_pending_permission_preserves_event_context() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "context";
         write_pending_permission(
             &attempt_dir,
@@ -501,8 +525,7 @@ mod tests {
 
     #[test]
     fn cancel_pending_permission_migrates_legacy_audit_without_writing_it() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) = test_attempt_dir(0);
         let request_id = "legacy";
         write_pending_permission(
             &attempt_dir,
@@ -531,8 +554,8 @@ mod tests {
 
     #[test]
     fn cancel_pending_permission_keeps_selected_permission_unchanged() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "selected";
         write_pending_permission(
             &attempt_dir,
@@ -559,8 +582,8 @@ mod tests {
 
     #[test]
     fn write_permission_response_if_pending_updates_timeline_status() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "allow";
         write_pending_permission(
             &attempt_dir,
@@ -633,8 +656,8 @@ mod tests {
 
     #[test]
     fn write_permission_response_if_pending_does_not_revive_cancelled_permission() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "cancelled";
         write_pending_permission(
             &attempt_dir,
@@ -672,8 +695,8 @@ mod tests {
 
     #[test]
     fn remove_permission_signal_files_removes_request_and_response() {
-        let dir = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        let (_dir, attempt_dir) =
+            test_attempt_dir(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
         let request_id = "cleanup";
         write_pending_permission(
             &attempt_dir,

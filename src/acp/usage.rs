@@ -6,7 +6,7 @@ use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::acp::events::{AcpRawFrame, AcpUiEvent, load_timeline_items};
+use crate::acp::events::AcpRawFrame;
 use crate::storage::{append_jsonl_durable, append_jsonl_durable_unlocked, with_jsonl_file_lock};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,23 +218,21 @@ pub fn repair_attempt_usage(
     recover_missing_from_raw: bool,
 ) -> Result<AcpAttemptUsageRecovery> {
     let baseline = ensure_attempt_baseline(snapshot_path, journal_path)?;
-    let timeline_items = load_timeline_items(timeline_path)?;
     let mut starts = prompt_starts_from_journal(journal_path)?;
     let known_start_ids = starts
         .iter()
         .map(|start| start.turn_id.clone())
         .collect::<HashSet<_>>();
-    for event in timeline_items
-        .iter()
-        .filter(|event| is_gold_band_prompt(event))
+    for (turn_id, turn_seq, timestamp) in
+        crate::acp::timeline::read_indexed_prompt_starts(timeline_path)?
     {
-        if known_start_ids.contains(&event.id) {
+        if known_start_ids.contains(&turn_id) {
             continue;
         }
         starts.push(PromptTurnStart {
-            turn_id: event.id.clone(),
-            turn_seq: event.seq,
-            timestamp: event.timestamp.clone(),
+            turn_id,
+            turn_seq,
+            timestamp,
             provider: None,
             model: None,
         });
@@ -246,7 +244,10 @@ pub fn repair_attempt_usage(
     let has_uncompleted_turn = starts
         .iter()
         .any(|start| !completed.contains_key(&start.turn_id));
-    if recover_missing_from_raw && has_uncompleted_turn {
+    if recover_missing_from_raw
+        && has_uncompleted_turn
+        && should_recover_missing_usage_from_raw(snapshot_path)
+    {
         let transactions = raw_prompt_transactions(raw_path)?;
         let assignments = assign_transactions_to_turns(&starts, &transactions);
         for (start, transaction) in assignments {
@@ -299,6 +300,49 @@ pub fn repair_attempt_usage(
         completed_turns: ordered.len() + usize::from(baseline_has_usage),
         recovered_turns,
     })
+}
+
+/// Raw recovery is only needed for a currently active durable turn. Once a
+/// session is terminal, an old missing journal completion must not make every
+/// follow-up scan the entire raw frame log. Metadata-less legacy fixtures keep
+/// the historical recovery behavior.
+fn should_recover_missing_usage_from_raw(snapshot_path: &Utf8Path) -> bool {
+    let attempt_dir = snapshot_path.parent().unwrap_or(snapshot_path);
+    let mut found_metadata = false;
+    for path in [
+        snapshot_path.to_path_buf(),
+        attempt_dir.join("acp.session.json"),
+    ] {
+        let Ok(value) = crate::storage::read_json::<Value>(&path) else {
+            continue;
+        };
+        found_metadata = true;
+        let activity = value
+            .get("liveTurnActivity")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if matches!(
+            activity,
+            "starting" | "accepted" | "running" | "cancelRequested" | "cancelling"
+        ) {
+            return true;
+        }
+        if value
+            .pointer("/promptRetry/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "processing" | "running"))
+        {
+            return true;
+        }
+        if value
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "processing" | "running" | "cancelling"))
+        {
+            return true;
+        }
+    }
+    !found_metadata
 }
 
 fn ensure_attempt_baseline(
@@ -568,16 +612,6 @@ fn read_journal_unlocked(path: &Utf8Path) -> Result<Vec<AcpPromptUsageJournalEnt
     Ok(entries)
 }
 
-fn is_gold_band_prompt(event: &AcpUiEvent) -> bool {
-    event.kind == "userTextDelta"
-        && event
-            .raw
-            .as_ref()
-            .and_then(|raw| raw.get("source"))
-            .and_then(Value::as_str)
-            == Some("goldBandPrompt")
-}
-
 fn raw_prompt_transactions(path: &Utf8Path) -> Result<Vec<RawPromptTransaction>> {
     let Ok(file) = std::fs::File::open(path.as_std_path()) else {
         return Ok(Vec::new());
@@ -690,10 +724,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use crate::acp::events::{AcpAttemptPaths, write_timeline_items};
+    use crate::acp::events::{AcpAttemptPaths, AcpUiEvent, write_timeline_items};
     use crate::storage::append_jsonl;
 
     fn prompt_event(seq: u64, timestamp: &str) -> AcpUiEvent {
+        prompt_event_with_id(seq, timestamp, None)
+    }
+
+    fn prompt_event_with_id(seq: u64, timestamp: &str, prompt_id: Option<&str>) -> AcpUiEvent {
+        let mut raw = json!({ "source": "goldBandPrompt" });
+        if let Some(prompt_id) = prompt_id {
+            raw["promptId"] = json!(prompt_id);
+        }
         AcpUiEvent {
             id: format!("gold-band-user-prompt-{seq}"),
             seq,
@@ -709,7 +751,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             timing: None,
-            raw: Some(json!({ "source": "goldBandPrompt" })),
+            raw: Some(raw),
         }
     }
 
@@ -896,6 +938,50 @@ mod tests {
     }
 
     #[test]
+    fn indexed_prompt_repair_uses_logical_prompt_id_instead_of_timeline_item_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir.clone());
+        let prompt = prompt_event_with_id(1, "100Z", Some("logical-turn-1"));
+        write_timeline_items(&paths.timeline, &[prompt]).unwrap();
+        append_jsonl(
+            &paths.raw,
+            &raw_frame(
+                "100Z",
+                "outbound",
+                json!({"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{}}),
+            ),
+        )
+        .unwrap();
+        append_jsonl(
+            &paths.raw,
+            &raw_frame(
+                "110Z",
+                "inbound",
+                json!({
+                    "jsonrpc":"2.0",
+                    "id":1,
+                    "result":{"usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}
+                }),
+            ),
+        )
+        .unwrap();
+
+        repair_attempt_usage(
+            &paths.snapshot,
+            &paths.timeline,
+            &paths.raw,
+            &paths.prompt_usage,
+            true,
+        )
+        .unwrap();
+
+        let segments = read_prompt_usage_segments(&attempt_dir);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].turn_id, "logical-turn-1");
+    }
+
+    #[test]
     fn recovers_task_118_crash_pattern_across_reused_rpc_ids() {
         let temp = tempfile::tempdir().unwrap();
         let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
@@ -1043,5 +1129,38 @@ mod tests {
         assert_eq!(recovered.totals.output_tokens, Some(7_513));
         assert_eq!(recovered.totals.cached_read_tokens, Some(559_616));
         assert_eq!(recovered.totals.total_tokens, Some(657_383));
+    }
+
+    #[test]
+    fn terminal_session_does_not_scan_raw_log_for_old_missing_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = camino::Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let paths = AcpAttemptPaths::from_attempt_dir(attempt_dir);
+        write_timeline_items(&paths.timeline, &[prompt_event(1, "100Z")]).unwrap();
+        crate::storage::write_json(
+            &paths.snapshot,
+            &json!({
+                "sessionId": "session-1",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "completed"
+            }),
+        )
+        .unwrap();
+        // Invalid UTF-8 makes an attempted raw-log scan fail. A terminal
+        // session must instead leave historical missing usage for explicit
+        // repair and complete startup without touching the raw log.
+        std::fs::write(paths.raw.as_std_path(), [0xff]).unwrap();
+
+        let recovered = repair_attempt_usage(
+            &paths.snapshot,
+            &paths.timeline,
+            &paths.raw,
+            &paths.prompt_usage,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(recovered.recovered_turns, 0);
+        assert_eq!(recovered.completed_turns, 0);
     }
 }

@@ -844,6 +844,7 @@ Conversation VM 本来就读取 `run.json`，直接从同一对象获得 executi
 - 2026-08-15 合并回归确认 provider 测试替身必须在模拟 prompt 接受时触发 `prompt_accepted`，保证 `StartingNode -> RunningNode -> AwaitingManualCheck` 与真实 adapter 使用同一状态机合约，不放宽生产转换。
 - 2026-08-17 修复 AI-DYNAMIC 子工作流暂停后的父级聚合收敛：outer CAS 改为校验稳定 outer attempt 归属，允许同一 attempt 内 inner locator 合法推进；父 `node/round/run` 同步暂停并清空 active execution ID，接口回归覆盖暂停后立即读取一致、显式继续完成和测试 Provider 的 accepted 合约。
 - 2026-08-19 修复 AI-DYNAMIC 并行 leaf 共享父 execution phase 的作用域缺陷：leaf execution phase/revision/generation 下沉到 `DynamicNodeState`，父 execution 固定为 outer 聚合与 workspace 阶段；Conversation dynamic leaf lifecycle 改读 leaf 权威状态。回归覆盖 finalizing leaf 与 sibling start 并行、单 leaf stop 保持父 Running、最后 active leaf stop 聚合暂停，以及旧 execution 迟到 phase/result 不能覆盖新 generation。
+- 2026-08-19 修复 ACP 停止后 composer 持续“发送中”的 turn 作用域缺陷：prompt command 改为持久化 `Starting + turnId + operationId + acpRevision` 后返回 `acp-session-started`，provider turn 在后台继续；失败只按同一 turn 提交 terminal。Web submission 改为按 lifecycle `turnId` 收敛，旧 turn terminal 保留新 submission，同 turn cancelled/failed/completed 立即解除发送和等待状态；删除 attempt 级 pending 对 canonical terminal 的遮蔽。接口回归覆盖 admission 幂等/并发拒绝、迟到失败隔离、cancel-requested 压制迟到 running、A terminal + B submission 与 B terminal + B pending。
 
 验证与实际 UI deep-link 结果记录在本次实现验收中；若产品运行环境没有可复用测试会话，则以 production build、接口测试和浏览器可达页面验证为最低交付门槛。
 

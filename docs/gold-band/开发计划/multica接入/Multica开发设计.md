@@ -1881,6 +1881,26 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 ---
 
+### 12.32 改动三十：三次合并 origin/main——draft 双维度 union（submission × multica 互斥）（M5-at，2026-08-24）
+
+**背景**：M5-as 修复提交（`634bfbe1`）后 origin/main 又新增 29 commit（`7e599f62..8c0e69bd`，173 文件 +15020/−2827）：ACP 生命周期收敛（`797b9929`/`34c614db`）、scheduler 修复（`e3405d91`）、长消息折叠（`6a614db3`）、worktree 修复与动态路径迁移（`a6cf0d3a`）、**composer draft 提交意图模式**（`4a19b1d7` 等：draft 增 `submission` 维度 `send | scheduled-task`，scheduled 配置从组件本地 useState 上提进 draft canonical 状态，切工作区不重置）。用户要求同前两次策略：冲突优先保 main，合并后在结果上修复 multica。
+
+**安全网**：合并前在 `634bfbe1` 打备份分支 `feature_multica_premerge2_20260824`。
+
+**冲突（6 文件）与解决**：
+- `src-tauri/src/main.rs`（1 处，import 字母序重排）：main 已删除 `cancel_acp_session`（ACP 生命周期统一，全树零引用），取 main 侧并集、仅按字母序回插 `connect_multica`。
+- `web/src/App.tsx`（1 处，纯注释差异）：功能代码两侧一致（main 的「切工作区保留草稿」新设计与 multica 决策 d 天然兼容），取 main 侧（删过期注释）。
+- `web/src/api/desktop.ts`（1 处，超长单行 type import）：取 HEAD 行（= main 行 + 5 个 multica 类型按字母序插入的并集）；另适配 main 改名 `ConversationSessionSwitchVm` → `ConversationSessionTreeVm`。
+- `web/src/lib/conversation-composer-draft.ts`（6 处，**本次合并的核心语义决策**）：draft 状态双维度 union——`{ content, attachments, multica, submission }`，reducer/action/context/owner-hook 全并集。**互斥语义**（multica 绑定与 scheduled-task 是竞争性提交意图，在状态机层显式互斥，杜绝「带远程绑定点发送却走排程」的混合态）：`prefill` 为覆盖式新草稿——绑定 multica 且 `submission` 重置为 `send`（声明本草稿为远程执行草稿）；`enterScheduledTask` 丢弃 multica 绑定（任务仍在服务端 queued，纯本地解绑，同 `clearMultica` 语义），用户可重新点「执行」恢复。
+- `web/tests/conversation-composer-draft.test.ts`（6 处）：两侧测试全保留，状态字面量补齐双字段；main 的 exit/reset 断言扩 `multica: null`；**新增 2 条互斥语义固化测试**（prefill from scheduled-task → send 意图；enterScheduledTask → 丢绑定）。
+- `web/src/components/conversation/ConversationComposer.tsx`（5 处）：**scheduledMode/scheduledConfig 取 main 派生式**（`composerDraft.draft.submission` 直读，canonical 状态进 draft、跨卸载存活——优于 feature 旧本地 useState）；canSubmit 在 main 基础上叠加决策 e 条件 `!(multicaActive && !hasLocalWorkspaces)`；其余（最后一处两侧字节相同的平凡冲突取一侧）。**multica 表面（chip 渲染/`handleUnbindMultica`/Backspace 键盘契约/决策 d `forceSelector`/决策 e `emptyWorkspaceHint`）全部经自动合并存活，零回插**。
+
+**warning 分诊**：合并后 cargo check 余量 warning（orchestrator.rs 三个 dead fn、conversation_attention.rs `pub fn unread_terminal_result`、commands.rs 字段、metrics/identity.rs 枚举变体等）逐一在 origin/main blob 上定位到同名符号同位置——全部为 main 既有技术债，按「保 main 完整性」策略不动；无合并诱发项。
+
+**验证**：`cargo check --workspace --all-targets` exit 0 零错误；`tsc -p web/tsconfig.build.json` 零错；定向 vitest（draft + i18n）24/24；全量 vitest 与 `web:build` 结果见任务记录（首次全量 vitest 因与 cargo check 并发抢 CPU 出现 worker 启动超时——1570 测试 0 失败、4 文件未跑，机器空闲后重跑全量）。
+
+---
+
 ## 附录 A：CLAUDE.md 合规自检
 
 - ✅ 先定数据（2.2）→ 再定接口（2.8/第 7 章）→ 再补实现（2.3–2.7/第 4 章）

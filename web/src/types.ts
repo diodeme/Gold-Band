@@ -1537,6 +1537,7 @@ export interface AcpSessionQueryInput {
   branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
+  afterRevision?: number;
   beforeCursor?: string;
   afterCursor?: string;
   eventLimit?: number;
@@ -1544,6 +1545,9 @@ export interface AcpSessionQueryInput {
 }
 
 export interface AcpEventPageVm {
+  generation?: number;
+  coveredRevision?: number;
+  newestRevision?: number | null;
   loadedCount: number;
   total: number;
   oldestSeq?: number | null;
@@ -2297,6 +2301,7 @@ export interface ConversationSessionLeafVm {
   finishedAt?: string | null;
   sessionId?: string | null;
   sessionEstablished?: boolean;
+  worktreePath?: string | null;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2349,8 +2354,28 @@ export interface ConversationRunVm {
   resumable: boolean;
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
+  runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ScheduledTaskConfig {
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+}
+
+export interface RuntimeErrorInfoVm {
+  code: {
+    domain: string;
+    code: string;
+  };
+  domain: string;
+  recovery: string;
+  retryPolicy?: unknown | null;
+  params?: Record<string, unknown> | null;
+  diagnostic: string;
+  raw?: unknown | null;
 }
 
 export interface ConversationCreateResultVm {
@@ -2368,10 +2393,6 @@ export interface ConversationRunWorktreeVm {
   path: string;
   branch: string;
   forkCommit: string;
-}
-
-export interface ConversationSessionSwitchVm {
-  selectedSession?: AcpSessionVm | null;
 }
 
 export interface ConversationActiveSessionVm {

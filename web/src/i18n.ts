@@ -470,6 +470,7 @@ const resources = {
           "task-delete-failed": "删除会话失败：{{message}}",
           "workspace-not-found": "找不到该工作空间。",
           "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
+          "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。",
           "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
           "prompt-empty": "请输入要发送的内容。",
           "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
@@ -483,6 +484,9 @@ const resources = {
           "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
           "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
           "prompt-queue-session-busy": "当前会话仍在运行，请停止后再手动使用。",
+          "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
+          "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
+          "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
           "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
         },
         workflow: {
@@ -1215,8 +1219,8 @@ const resources = {
         validationEdgeTargetRequired: "第 {{index}} 条边缺少目标节点。",
         validationEdgeTargetMissing: "边的目标节点 {{node}} 不存在。",
         validationEdgeOutcomeRequired: "第 {{index}} 条边类型无效。",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} 只有开启 AI 输出验证后才能配置失败分支。",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} 只有开启 AI 输出验证或人工 check 后才能配置失败分支。",
         validationDuplicateEdgeOutcome:
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
@@ -1656,6 +1660,8 @@ const resources = {
         hiddenStableSystemPrompt: "隐藏系统提示",
         hiddenPromptCharacters: "{{count}} 字符",
         hiddenPromptUnavailable: "无法读取这段隐藏提示",
+        userMessageShowMore: "查看更多",
+        userMessageCollapse: "收起",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -2141,6 +2147,14 @@ const resources = {
           runtimeErrorBlocked: "当前运行因错误阻塞，请查看错误原因",
           pauseReasonWaitingForUserInput: "等待用户输入",
           pauseReasonFallback: "已暂停",
+          sessionConfigThoughtLevelUnsupported:
+            "当前选择的模型不支持思考强度，请清除思考强度或更换模型后重试",
+          sessionConfigThoughtLevelValueUnavailable:
+            "思考强度 {{value}} 不可用，可选：{{values}}",
+          sessionConfigValueUnavailable:
+            "配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
           launchingNextNode: "拉起下一节点中",
           preparingDevelopmentEnvironment: "正在准备开发环境…",
           worktree: "工作树",
@@ -2164,7 +2178,7 @@ const resources = {
           useOtherWorkflow: "使用其他工作流",
           useMainWorkspace: "使用主工作区",
           initialize: "初始化仓库",
-          openDownloads: "打开 Git 下载页面",
+          openSourceControl: "打开源码管理",
           checking: "检测中…",
           recheck: "重新检测",
         },
@@ -2700,6 +2714,7 @@ const resources = {
           "task-delete-failed": "Failed to delete conversation: {{message}}",
           "workspace-not-found": "This workspace could not be found.",
           "session-restore-unsupported": "This Agent cannot restore an existing session.",
+          "session-restore-reference-missing": "This session is missing its Provider session reference.",
           "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
           "prompt-empty": "Enter a message to send.",
           "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -2713,6 +2728,9 @@ const resources = {
           "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
           "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
           "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+          "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
+          "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
+          "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
           "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
         },
         workflow: {
@@ -3483,8 +3501,8 @@ const resources = {
         validationEdgeTargetMissing:
           "Edge target node {{node}} does not exist.",
         validationEdgeOutcomeRequired: "Edge {{index}} has an invalid outcome.",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} can only have a failure branch when AI output validation is enabled.",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} can only have a failure branch when AI output validation or manual check is enabled.",
         validationDuplicateEdgeOutcome:
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:
@@ -3926,6 +3944,8 @@ const resources = {
         hiddenStableSystemPrompt: "Hidden system prompt",
         hiddenPromptCharacters: "{{count}} characters",
         hiddenPromptUnavailable: "This hidden prompt section is unavailable",
+        userMessageShowMore: "Show more",
+        userMessageCollapse: "Collapse",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:
@@ -4421,6 +4441,14 @@ const resources = {
             "The current run is blocked by an error. Review the reason.",
           pauseReasonWaitingForUserInput: "Waiting for user input",
           pauseReasonFallback: "Paused",
+          sessionConfigThoughtLevelUnsupported:
+            "The selected model does not support reasoning effort. Clear the reasoning effort or switch models, then retry.",
+          sessionConfigThoughtLevelValueUnavailable:
+            "Reasoning effort {{value}} is unavailable. Available: {{values}}",
+          sessionConfigValueUnavailable:
+            "Config option {{configId}} does not support value {{value}}. Available: {{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
           launchingNextNode: "Launching next node",
           preparingDevelopmentEnvironment: "Preparing development environment…",
           worktree: "worktree",
@@ -4444,7 +4472,7 @@ const resources = {
           useOtherWorkflow: "Use another workflow",
           useMainWorkspace: "Use main workspace",
           initialize: "Initialize repository",
-          openDownloads: "Open Git downloads",
+          openSourceControl: "Open source control",
           checking: "Checking…",
           recheck: "Check again",
         },

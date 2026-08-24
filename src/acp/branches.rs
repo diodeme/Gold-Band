@@ -16,16 +16,19 @@ use crate::acp::events::{
     AcpUiEvent, AgentTranscriptRelation, agent_transcript_tool_output,
     extract_agent_transcript_relation, load_timeline_items, write_timeline_items,
 };
+use crate::runtime::{CURRENT_ACP_STORAGE_SCHEMA_VERSION, advance_node_acp_storage_schema_version};
 #[cfg(test)]
 use crate::storage::atomic_write_file;
 #[cfg(test)]
 use crate::storage::ensure_parent_dir;
+use crate::storage::read_json;
+#[cfg(test)]
 use crate::storage::write_json;
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
-const BRANCH_TIMELINE_MIGRATION_MARKER: &str = ".acp-branch-timeline-migration-v1";
-const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v2";
+const BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION: u32 = 1;
+const AGENT_RESULT_STORAGE_SCHEMA_VERSION: u32 = 2;
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
 #[cfg(test)]
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
@@ -120,6 +123,85 @@ pub fn stable_agent_execution_id(session_id: &str, launch_tool_call_id: &str) ->
         "agent-{}",
         Uuid::new_v5(&AGENT_NAMESPACE, name.as_bytes()).simple()
     )
+}
+
+#[cfg(test)]
+fn prompt_turn_projection_from_events(
+    events: &[AcpUiEvent],
+) -> Vec<crate::acp::timeline::TimelinePromptTurnProjection> {
+    let mut turns = events
+        .iter()
+        .filter(|event| event_branch_id(event) == ROOT_BRANCH_ID)
+        .filter_map(crate::acp::timeline::prompt_turn_projection)
+        .collect::<Vec<_>>();
+    turns.sort_by_key(|turn| turn.started_seq);
+    turns
+}
+
+fn owning_prompt_turn_index(
+    launch: &AcpUiEvent,
+    launches_by_execution_id: &HashMap<String, AcpUiEvent>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+) -> Option<(usize, u64)> {
+    let mut root_launch = launch;
+    let mut visited = HashSet::new();
+    loop {
+        let parent_branch_id = event_branch_id(root_launch);
+        if parent_branch_id == ROOT_BRANCH_ID {
+            break;
+        }
+        if !visited.insert(parent_branch_id.clone()) {
+            return None;
+        }
+        let Some(parent_launch) = launches_by_execution_id.get(&parent_branch_id) else {
+            break;
+        };
+        root_launch = parent_launch;
+    }
+    let launch_seq = root_launch.started_seq.unwrap_or(root_launch.seq);
+    let turn_index = prompt_turns
+        .partition_point(|turn| turn.started_seq <= launch_seq)
+        .checked_sub(1)?;
+    Some((turn_index, launch_seq))
+}
+
+fn prompt_turn_is_terminal(
+    ownership: Option<(usize, u64)>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+    session_active: bool,
+) -> bool {
+    ownership
+        .and_then(|(index, launch_seq)| {
+            prompt_turns
+                .get(index)
+                .map(|turn| (index, launch_seq, turn))
+        })
+        .map(|(index, launch_seq, turn)| {
+            turn.terminal_status.is_some()
+                && turn
+                    .terminal_seq
+                    .is_some_and(|terminal_seq| terminal_seq >= launch_seq)
+                || index + 1 < prompt_turns.len()
+                || !session_active
+        })
+        .unwrap_or(!session_active)
+}
+
+fn prompt_turn_ended_at(
+    ownership: Option<(usize, u64)>,
+    prompt_turns: &[crate::acp::timeline::TimelinePromptTurnProjection],
+) -> Option<String> {
+    let (index, launch_seq) = ownership?;
+    let turn = prompt_turns.get(index)?;
+    let explicit_terminal_at = turn
+        .terminal_seq
+        .filter(|terminal_seq| *terminal_seq >= launch_seq)
+        .and_then(|_| turn.terminal_at.clone());
+    explicit_terminal_at.or_else(|| {
+        prompt_turns
+            .get(index + 1)
+            .map(|next| next.started_at.clone())
+    })
 }
 
 pub fn validate_conversation_branch_id(branch_id: &str) -> Result<()> {
@@ -758,24 +840,67 @@ fn normalize_legacy_timeline_identity(event: &mut AcpUiEvent) -> bool {
     true
 }
 
-/// Establishes the branch/index storage boundary once per attempt. Runtime
-/// startup calls this before the first event is written; old attempts pay the
-/// full migration cost once and then use the marker as the bounded fast path.
+/// Establishes the branch/index storage boundary once per legacy attempt.
+/// New attempts declare the current schema in node.json and never scan history.
 pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
-    let marker = attempt_dir.join(BRANCH_TIMELINE_MIGRATION_MARKER);
-    if marker.exists() {
+    let node_path = attempt_storage_state_path(attempt_dir)?;
+    let initial = attempt_storage_schema_version(&node_path)?;
+    if initial > CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+        anyhow::bail!("acp.storage-schema-version-unsupported");
+    }
+    if initial == CURRENT_ACP_STORAGE_SCHEMA_VERSION {
         return Ok(false);
     }
     let _guard = branch_timeline_migration_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if marker.exists() {
+    let current = attempt_storage_schema_version(&node_path)?;
+    if current > CURRENT_ACP_STORAGE_SCHEMA_VERSION {
+        anyhow::bail!("acp.storage-schema-version-unsupported");
+    }
+    if current == CURRENT_ACP_STORAGE_SCHEMA_VERSION {
         return Ok(false);
     }
-    let mut changed = migrate_legacy_agent_timeline(attempt_dir)?;
-    changed |= migrate_legacy_agent_results(attempt_dir)?;
-    write_json(&marker, &json!({ "version": 1 }))?;
+    let mut changed = false;
+    if current < BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION {
+        changed |= migrate_legacy_agent_timeline(attempt_dir)?;
+        advance_node_acp_storage_schema_version(
+            &node_path,
+            BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION,
+        )?;
+    }
+    if current < AGENT_RESULT_STORAGE_SCHEMA_VERSION {
+        changed |= migrate_legacy_agent_results(attempt_dir)?;
+        advance_node_acp_storage_schema_version(&node_path, AGENT_RESULT_STORAGE_SCHEMA_VERSION)?;
+    }
     Ok(changed)
+}
+
+fn attempt_storage_state_path(attempt_dir: &Utf8Path) -> Result<Utf8PathBuf> {
+    let direct = attempt_dir.join("node.json");
+    if direct.exists() {
+        return Ok(direct);
+    }
+    let dynamic_leaf = attempt_dir
+        .parent()
+        .map(|parent| parent.join("node.json"))
+        .filter(|path| path.exists());
+    dynamic_leaf.ok_or_else(|| anyhow::anyhow!("acp.attempt-state-missing"))
+}
+
+fn attempt_storage_schema_version(path: &Utf8Path) -> Result<u32> {
+    let state = read_json::<Value>(path)?;
+    let version = state
+        .get("acp_storage_schema_version")
+        .or_else(|| state.get("acpStorageSchemaVersion"))
+        .map(|version| {
+            version
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-invalid"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    u32::try_from(version).map_err(|_| anyhow::anyhow!("acp.storage-schema-version-unsupported"))
 }
 
 pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -800,11 +925,6 @@ pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>>
 /// One-time repair for conversations written before Agent launch prompts and
 /// valid foreground results were materialized in the launched branch.
 fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
-    let marker = attempt_dir.join(AGENT_RESULT_MIGRATION_MARKER);
-    if marker.exists() {
-        return Ok(false);
-    }
-
     let mut timeline_paths = vec![branch_timeline_path(attempt_dir, ROOT_BRANCH_ID)];
     let agents_dir = attempt_dir.join("agents");
     if agents_dir.exists() {
@@ -901,7 +1021,6 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
         changed = true;
     }
 
-    write_json(&marker, &json!({ "version": 2 }))?;
     Ok(changed)
 }
 
@@ -913,10 +1032,6 @@ pub fn rebuild_agent_index(
     let session_active = matches!(
         session_status,
         "running" | "active" | "starting" | "cancelling" | "stopping"
-    );
-    let session_interrupted = matches!(
-        session_status,
-        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
     );
     migrate_legacy_agent_timeline(attempt_dir)?;
     migrate_legacy_agent_results(attempt_dir)?;
@@ -944,6 +1059,18 @@ pub fn rebuild_agent_index(
             launches.insert(tool_call_id.clone(), event.clone());
         }
     }
+    let prompt_turns = prompt_turn_projection_from_events(&all_events);
+    let launches_by_execution_id = launches
+        .values()
+        .map(|launch| {
+            let session_id = launch.session_id.as_deref().unwrap_or("unknown-session");
+            let launch_tool_call_id = launch.tool_call_id.as_deref().unwrap_or_default();
+            (
+                stable_agent_execution_id(session_id, launch_tool_call_id),
+                launch.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut records = launches
         .into_iter()
         .map(|(launch_tool_call_id, launch)| {
@@ -952,11 +1079,9 @@ pub fn rebuild_agent_index(
                 .clone()
                 .unwrap_or_else(|| "unknown-session".to_string());
             let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
-            let relation = agent_relation(&launch).unwrap_or_default();
-            let parent_agent_execution_id = relation
-                .parent_tool_call_id
-                .as_deref()
-                .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
+            let parent_branch_id = event_branch_id(&launch);
+            let parent_agent_execution_id =
+                (parent_branch_id != ROOT_BRANCH_ID).then_some(parent_branch_id);
             let branch_events =
                 load_timeline_items(&branch_timeline_path(attempt_dir, &agent_execution_id))
                     .unwrap_or_default();
@@ -984,24 +1109,20 @@ pub fn rebuild_agent_index(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
-            let has_attention = branch_has_pending_interaction(&branch_events);
+            let owning_turn =
+                owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
+            let owning_turn_terminal =
+                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let has_attention =
+                branch_has_pending_interaction(&branch_events) && !owning_turn_terminal;
             let status = if failed {
                 "failed"
             } else if has_agent_completion_evidence(&execution_events) {
                 "completed"
-            } else if has_attention && session_active {
+            } else if owning_turn_terminal {
+                "interrupted"
+            } else if has_attention {
                 "waiting_permission"
-            } else if !session_active {
-                if session_interrupted {
-                    "interrupted"
-                } else if matches!(
-                    launch_status.as_str(),
-                    "completed" | "success" | "succeeded"
-                ) {
-                    "completed"
-                } else {
-                    "interrupted"
-                }
             } else if execution_events.is_empty() {
                 "queued"
             } else {
@@ -1014,13 +1135,17 @@ pub fn rebuild_agent_index(
                 .and_then(|input| input.get("description"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            let updated_at = latest_timestamp.unwrap_or_else(|| {
-                launch
-                    .ended_at
-                    .clone()
-                    .or_else(|| launch.started_at.clone())
-                    .unwrap_or_else(|| launch.timestamp.clone())
-            });
+            let updated_at = (status == "interrupted")
+                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .flatten()
+                .or(latest_timestamp)
+                .unwrap_or_else(|| {
+                    launch
+                        .ended_at
+                        .clone()
+                        .or_else(|| launch.started_at.clone())
+                        .unwrap_or_else(|| launch.timestamp.clone())
+                });
             let ended_at = matches!(status.as_str(), "completed" | "failed" | "interrupted")
                 .then(|| updated_at.clone());
             AgentExecutionRecord {
@@ -1070,14 +1195,11 @@ pub fn indexed_agent_index(
         session_status,
         "running" | "active" | "starting" | "cancelling" | "stopping"
     );
-    let session_interrupted = matches!(
-        session_status,
-        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
-    );
     let root = crate::acp::timeline::read_indexed_timeline_projection(&branch_timeline_path(
         attempt_dir,
         ROOT_BRANCH_ID,
     ))?;
+    let prompt_turns = root.prompt_turns;
     let mut pending_launches = VecDeque::from(root.agent_launches);
     let mut launches = HashMap::<String, AcpUiEvent>::new();
     let mut projections = HashMap::new();
@@ -1107,6 +1229,18 @@ pub fn indexed_agent_index(
         projections.insert(agent_execution_id, projection);
     }
 
+    let launches_by_execution_id = launches
+        .values()
+        .map(|launch| {
+            let session_id = launch.session_id.as_deref().unwrap_or("unknown-session");
+            let launch_tool_call_id = launch.tool_call_id.as_deref().unwrap_or_default();
+            (
+                stable_agent_execution_id(session_id, launch_tool_call_id),
+                launch.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
     let mut records = launches
         .into_iter()
         .map(|(launch_tool_call_id, launch)| {
@@ -1115,11 +1249,9 @@ pub fn indexed_agent_index(
                 .clone()
                 .unwrap_or_else(|| "unknown-session".to_string());
             let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
-            let relation = agent_relation(&launch).unwrap_or_default();
-            let parent_agent_execution_id = relation
-                .parent_tool_call_id
-                .as_deref()
-                .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
+            let parent_branch_id = event_branch_id(&launch);
+            let parent_agent_execution_id =
+                (parent_branch_id != ROOT_BRANCH_ID).then_some(parent_branch_id);
             let projection = projections.get(&agent_execution_id);
             let launch_status = launch
                 .status
@@ -1127,25 +1259,21 @@ pub fn indexed_agent_index(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             let failed = matches!(launch_status.as_str(), "failed" | "error");
-            let has_attention =
-                projection.is_some_and(|projection| projection.has_pending_interaction);
+            let owning_turn =
+                owning_prompt_turn_index(&launch, &launches_by_execution_id, &prompt_turns);
+            let owning_turn_terminal =
+                prompt_turn_is_terminal(owning_turn, &prompt_turns, session_active);
+            let has_attention = projection
+                .is_some_and(|projection| projection.has_pending_interaction)
+                && !owning_turn_terminal;
             let status = if failed {
                 "failed"
             } else if projection.is_some_and(|projection| projection.has_completion_evidence) {
                 "completed"
-            } else if has_attention && session_active {
+            } else if owning_turn_terminal {
+                "interrupted"
+            } else if has_attention {
                 "waiting_permission"
-            } else if !session_active {
-                if session_interrupted {
-                    "interrupted"
-                } else if matches!(
-                    launch_status.as_str(),
-                    "completed" | "success" | "succeeded"
-                ) {
-                    "completed"
-                } else {
-                    "interrupted"
-                }
             } else if projection.is_none_or(|projection| projection.execution_event_count == 0) {
                 "queued"
             } else {
@@ -1153,8 +1281,10 @@ pub fn indexed_agent_index(
             }
             .to_string();
             let input = launch.raw.as_ref().and_then(tool_raw_input);
-            let updated_at = projection
-                .and_then(|projection| projection.latest_timestamp.clone())
+            let updated_at = (status == "interrupted")
+                .then(|| prompt_turn_ended_at(owning_turn, &prompt_turns))
+                .flatten()
+                .or_else(|| projection.and_then(|projection| projection.latest_timestamp.clone()))
                 .unwrap_or_else(|| {
                     launch
                         .ended_at
@@ -1558,6 +1688,7 @@ fn tool_raw_input(raw: &Value) -> Option<&Value> {
 mod tests {
     use super::*;
     use crate::acp::events::append_ui_event;
+    use crate::runtime::NodeState;
 
     fn event_at(
         id: &str,
@@ -1603,11 +1734,73 @@ mod tests {
         )
     }
 
+    fn prompt_turn_event(id: &str, started_seq: u64, terminal: Option<(&str, u64)>) -> AcpUiEvent {
+        let mut event = event_at(
+            id,
+            started_seq,
+            "userTextDelta",
+            None,
+            Some(terminal.map(|(status, _)| status).unwrap_or("completed")),
+            json!({}),
+            None,
+        );
+        event.raw = Some(json!({ "source": "goldBandPrompt", "promptId": id }));
+        if let Some((_, ended_seq)) = terminal {
+            event.ended_seq = Some(ended_seq);
+            event.ended_at = Some(format!("{ended_seq}Z"));
+        }
+        event
+    }
+
     fn temp_attempt(label: &str) -> Utf8PathBuf {
         let path =
             std::env::temp_dir().join(format!("gold-band-agent-branch-{label}-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         Utf8PathBuf::from_path_buf(path).unwrap()
+    }
+
+    fn write_node_storage_version(attempt_dir: &Utf8Path, version: Option<u32>) {
+        let mut node = json!({
+            "version": crate::domain::VERSION,
+            "node_id": "worker",
+            "node_type": "worker",
+            "run_id": "run-001",
+            "round_id": "round-001",
+            "attempt_id": "attempt-001",
+            "status": "running",
+            "outcome": null,
+            "started_at": "1Z",
+            "finished_at": null,
+            "manual_check_pending": false,
+            "runtime_execution_id": "runtime-execution-001",
+            "resolved_config": {}
+        });
+        if let Some(version) = version {
+            node["acp_storage_schema_version"] = json!(version);
+        }
+        write_json(&attempt_dir.join("node.json"), &node).unwrap();
+    }
+
+    fn write_dynamic_node_storage_version(attempt_dir: &Utf8Path, version: Option<u32>) {
+        let node_dir = attempt_dir.parent().unwrap();
+        let mut node = json!({
+            "version": crate::domain::VERSION,
+            "id": "worker",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Worker",
+            "task": "Run worker",
+            "status": "running",
+            "chainId": "worker",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "sessionMode": "new"
+        });
+        if let Some(version) = version {
+            node["acpStorageSchemaVersion"] = json!(version);
+        }
+        write_json(&node_dir.join("node.json"), &node).unwrap();
     }
 
     fn persist_partitioned(attempt_dir: &Utf8Path, events: Vec<AcpUiEvent>) {
@@ -1633,6 +1826,142 @@ mod tests {
         for (branch_id, events) in by_branch {
             write_timeline_items(&branch_timeline_path(attempt_dir, &branch_id), &events).unwrap();
         }
+    }
+
+    #[test]
+    fn current_attempt_storage_schema_skips_legacy_scan_and_marker_files() {
+        let attempt = temp_attempt("current-storage-schema");
+        write_node_storage_version(&attempt, Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION));
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        assert!(!attempt.join(".acp-branch-timeline-migration-v1").exists());
+        assert!(!attempt.join(".acp-agent-result-migration-v2").exists());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn current_dynamic_leaf_storage_schema_uses_parent_node_and_skips_legacy_scan() {
+        let root = temp_attempt("current-dynamic-storage-schema");
+        let attempt = root.join("worker").join("attempt-001");
+        std::fs::create_dir_all(attempt.as_std_path()).unwrap();
+        write_dynamic_node_storage_version(&attempt, Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION));
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        assert!(!attempt.join("node.json").exists());
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_dynamic_leaf_advances_parent_node_storage_schema() {
+        let root = temp_attempt("legacy-dynamic-storage-schema");
+        let attempt = root.join("worker").join("attempt-001");
+        std::fs::create_dir_all(attempt.as_std_path()).unwrap();
+        write_dynamic_node_storage_version(&attempt, None);
+
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        let node = read_json::<Value>(&root.join("worker").join("node.json")).unwrap();
+        assert_eq!(
+            node.get("acpStorageSchemaVersion").and_then(Value::as_u64),
+            Some(u64::from(CURRENT_ACP_STORAGE_SCHEMA_VERSION))
+        );
+        assert!(node.get("acp_storage_schema_version").is_none());
+        assert!(!attempt.join("node.json").exists());
+
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        std::fs::remove_dir_all(root.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn future_attempt_storage_schema_is_rejected_without_scanning_timeline() {
+        let attempt = temp_attempt("future-storage-schema");
+        write_node_storage_version(
+            &attempt,
+            Some(CURRENT_ACP_STORAGE_SCHEMA_VERSION.saturating_add(1)),
+        );
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+
+        let error = prepare_agent_timeline_storage(&attempt).unwrap_err();
+        assert_eq!(error.to_string(), "acp.storage-schema-version-unsupported");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_attempt_ignores_markers_and_advances_canonical_node_schema() {
+        let attempt = temp_attempt("legacy-storage-schema");
+        write_node_storage_version(&attempt, None);
+        std::fs::write(
+            attempt
+                .join(".acp-branch-timeline-migration-v1")
+                .as_std_path(),
+            b"ignored",
+        )
+        .unwrap();
+        std::fs::write(
+            attempt.join(".acp-agent-result-migration-v2").as_std_path(),
+            b"ignored",
+        )
+        .unwrap();
+        let launch = event_at(
+            "launch",
+            1,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "description": "child" })),
+        );
+        write_timeline_items(&branch_timeline_path(&attempt, ROOT_BRANCH_ID), &[launch]).unwrap();
+
+        prepare_agent_timeline_storage(&attempt).unwrap();
+        let node = read_json::<NodeState>(&attempt.join("node.json")).unwrap();
+        assert_eq!(
+            node.acp_storage_schema_version,
+            CURRENT_ACP_STORAGE_SCHEMA_VERSION
+        );
+        assert!(attempt.join(".acp-branch-timeline-migration-v1").exists());
+        assert!(attempt.join(".acp-agent-result-migration-v2").exists());
+
+        std::fs::write(
+            branch_timeline_path(&attempt, ROOT_BRANCH_ID).as_std_path(),
+            b"malformed timeline",
+        )
+        .unwrap();
+        assert!(!prepare_agent_timeline_storage(&attempt).unwrap());
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn failed_schema_step_does_not_advance_node_version() {
+        let attempt = temp_attempt("failed-storage-schema-step");
+        write_node_storage_version(&attempt, Some(BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION));
+        std::fs::write(attempt.join("agents").as_std_path(), b"not a directory").unwrap();
+
+        assert!(prepare_agent_timeline_storage(&attempt).is_err());
+        let node = read_json::<NodeState>(&attempt.join("node.json")).unwrap();
+        assert_eq!(
+            node.acp_storage_schema_version,
+            BRANCH_TIMELINE_STORAGE_SCHEMA_VERSION
+        );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
     #[test]
@@ -2020,7 +2349,7 @@ mod tests {
     }
 
     #[test]
-    fn background_agent_with_streaming_text_remains_running_until_session_terminal() {
+    fn background_agent_with_streaming_text_is_interrupted_without_agent_result() {
         let attempt = temp_attempt("background-running");
         let launch = event_at(
             "launch",
@@ -2053,7 +2382,7 @@ mod tests {
         assert!(running[0].ended_at.is_none());
         assert_eq!(
             rebuild_agent_index(&attempt, "completed").unwrap()[0].status,
-            "completed"
+            "interrupted"
         );
         assert_eq!(
             rebuild_agent_index(&attempt, "stopped").unwrap()[0].status,
@@ -2063,6 +2392,124 @@ mod tests {
             rebuild_agent_index(&attempt, "failed").unwrap()[0].status,
             "interrupted"
         );
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn cancelled_parent_turn_stays_interrupted_when_a_later_turn_is_active() {
+        let attempt = temp_attempt("cancelled-parent-turn");
+        let first_prompt = prompt_turn_event("turn-1", 1, Some(("cancelled", 4)));
+        let first_launch = event_at(
+            "launch-1",
+            2,
+            "toolCall",
+            Some("provider-child-1"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        let first_child_event = event_at(
+            "child-thought",
+            3,
+            "thoughtDelta",
+            None,
+            None,
+            json!({ "parentToolCallId": "provider-child-1" }),
+            None,
+        );
+        let nested_launch = event_at(
+            "nested-launch",
+            4,
+            "toolCall",
+            Some("provider-nested"),
+            Some("completed"),
+            json!({ "agentLaunch": true, "parentToolCallId": "provider-child-1" }),
+            Some(json!({ "run_in_background": true, "description": "nested" })),
+        );
+        let mut first_prompt = first_prompt;
+        first_prompt.ended_seq = Some(5);
+        first_prompt.ended_at = Some("5Z".to_string());
+        let second_prompt = prompt_turn_event("turn-2", 6, None);
+        persist_partitioned(
+            &attempt,
+            vec![
+                first_prompt,
+                first_launch,
+                first_child_event,
+                nested_launch,
+                second_prompt,
+            ],
+        );
+
+        let rebuilt = rebuild_agent_index(&attempt, "running").unwrap();
+        let indexed = indexed_agent_index(&attempt, "running").unwrap();
+        assert_eq!(indexed, rebuilt);
+        assert_eq!(indexed.len(), 2);
+        assert!(indexed.iter().all(|record| record.status == "interrupted"));
+        assert!(
+            indexed
+                .iter()
+                .all(|record| record.ended_at.as_deref() == Some("5Z"))
+        );
+        assert!(indexed.iter().all(|record| !record.has_attention));
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn same_agent_description_in_a_new_turn_creates_a_distinct_execution() {
+        let attempt = temp_attempt("new-turn-new-execution");
+        let first_prompt = prompt_turn_event("turn-1", 1, Some(("cancelled", 3)));
+        let first_launch = event_at(
+            "launch-1",
+            2,
+            "toolCall",
+            Some("provider-child-1"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "same child" })),
+        );
+        let second_prompt = prompt_turn_event("turn-2", 4, None);
+        let second_launch = event_at(
+            "launch-2",
+            5,
+            "toolCall",
+            Some("provider-child-2"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "same child" })),
+        );
+        persist_partitioned(
+            &attempt,
+            vec![first_prompt, first_launch, second_prompt, second_launch],
+        );
+
+        let records = indexed_agent_index(&attempt, "running").unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0].agent_execution_id, records[1].agent_execution_id);
+        assert_eq!(records[0].status, "interrupted");
+        assert_eq!(records[1].status, "queued");
+        std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
+    }
+
+    #[test]
+    fn completed_parent_turn_does_not_treat_async_launch_ack_as_agent_completion() {
+        let attempt = temp_attempt("completed-parent-with-launch-ack");
+        let prompt = prompt_turn_event("turn-1", 1, Some(("completed", 3)));
+        let launch = event_at(
+            "launch",
+            2,
+            "toolCall",
+            Some("provider-child"),
+            Some("completed"),
+            json!({ "agentLaunch": true }),
+            Some(json!({ "run_in_background": true, "description": "child" })),
+        );
+        persist_partitioned(&attempt, vec![prompt, launch]);
+
+        let rebuilt = rebuild_agent_index(&attempt, "completed").unwrap();
+        assert_eq!(indexed_agent_index(&attempt, "completed").unwrap(), rebuilt);
+        assert_eq!(rebuilt[0].status, "interrupted");
+        assert_eq!(rebuilt[0].ended_at.as_deref(), Some("3Z"));
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 
@@ -2167,7 +2614,6 @@ mod tests {
         let branch = load_timeline_items(&branch_timeline_path(&attempt, &branch_id)).unwrap();
         assert!(!branch.iter().any(is_agent_result_event));
         assert!(branch.iter().any(is_agent_prompt_event));
-        assert!(attempt.join(AGENT_RESULT_MIGRATION_MARKER).exists());
         std::fs::remove_dir_all(attempt.as_std_path()).unwrap();
     }
 

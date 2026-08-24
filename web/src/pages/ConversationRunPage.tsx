@@ -21,6 +21,7 @@ import { canViewConversationRuntimeWorkflow, conversationSessionLeafForGraphNode
 import { conversationPageForSession } from '@/lib/conversation-navigation';
 import { findConversationLeafByKey } from '@/lib/conversation-run-snapshot';
 import { acpProviderConfigCatalog } from '@/lib/acp-session-config';
+import { acpRuntimeErrorBannerCopy } from '@/lib/acp-runtime-error';
 import {
   conversationRunCacheKey,
   type ConversationSessionTreeExpansion,
@@ -140,6 +141,7 @@ export function ConversationRunPage({
     const normalizedDetails = details?.trim();
     return normalizedDetails ? `${message}：${normalizedDetails}` : message;
   };
+  const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
   const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
@@ -274,8 +276,9 @@ export function ConversationRunPage({
   const selectedRuntimeCode = selectedLeaf?.runtimeDisplay?.code ?? null;
   const showLaunchingSession = isRunning && !selectedLeaf;
   const selectedContentIdentity = selectedLeaf
-    ? createAcpEventWindowCacheKey({
+      ? createAcpEventWindowCacheKey({
         cacheNamespace: run.taskUuid ?? `${run.projectId}:${run.taskId}`,
+        projectId: run.projectId,
         taskId: run.taskId,
         runId: run.runId,
         roundId: selectedLeaf.roundId,
@@ -407,10 +410,11 @@ export function ConversationRunPage({
     [agentRegistry, selectedSession?.provider],
   );
   const selectedSessionDisplay = selectedLeaf?.runtimeDisplay;
-  const selectedSessionRuntimeControlError = run.runtimeErrorMessage && !(
+  const runtimeControlErrorBase = localizedRuntimeErrorMessage ?? run.runtimeErrorMessage;
+  const selectedSessionRuntimeControlError = runtimeControlErrorBase && !(
     selectedLeaf?.lifecycle?.composer.mode === 'runtime-error' || selectedSessionDisplay?.code === 'error-blocked'
   )
-    ? run.runtimeErrorMessage
+    ? runtimeControlErrorBase
     : null;
   const selectedSessionErrorDetails = run.runtimeErrorMessage ?? selectedSession?.diagnostics.lastError ?? null;
   const selectedSessionPauseReason = selectedSessionDisplay?.reasonCode ?? run.pauseReason;
@@ -549,7 +553,7 @@ export function ConversationRunPage({
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}
             allowEventOnlySessionShell={false}
             wallpaperSurface
-            worktreePath={selectedSession?.worktreePath}
+            worktreePath={selectedLeaf.worktreePath}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

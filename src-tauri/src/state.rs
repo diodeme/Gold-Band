@@ -28,7 +28,7 @@ use gold_band::storage::{
     GoldBandPaths, active_storage_path_config, load_settings_file, read_json, write_json,
 };
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::avatar::{complete_legacy_avatar_personalization, legacy_avatar_personalization};
 use crate::conversation_workspace::WorkspaceIdentityMigrator;
@@ -722,6 +722,14 @@ impl DesktopState {
         Ok(())
     }
 
+    pub fn pending_update_path(&self) -> Result<Option<Utf8PathBuf>> {
+        Ok(self
+            .pending_critical_update
+            .lock()
+            .map_err(|_| anyhow::anyhow!("desktop state lock poisoned"))?
+            .clone())
+    }
+
     pub fn take_pending_update(&self) -> Option<Utf8PathBuf> {
         self.pending_critical_update
             .lock()
@@ -999,6 +1007,11 @@ impl DesktopState {
             .into_iter()
             .filter(|agent_id| !scheduled.contains(agent_id))
             .collect::<Vec<_>>();
+        debug!(
+            agent_count = to_probe.len(),
+            scheduled_count = scheduled.len(),
+            "periodic agent diagnostics started"
+        );
         if to_probe.is_empty() {
             return self.prune_agent_diagnostics();
         }
@@ -1011,7 +1024,18 @@ impl DesktopState {
             for agent_id in &to_probe {
                 let agent_id = agent_id.clone();
                 s.spawn(move || {
-                    let _ = self.refresh_background_agent_diagnostic_unlocked(&agent_id);
+                    match self.refresh_background_agent_diagnostic_unlocked(&agent_id) {
+                        Ok(diagnostic) => debug!(
+                            agent_type = agent_id.as_str(),
+                            available = diagnostic.available,
+                            "periodic agent diagnostic completed"
+                        ),
+                        Err(error) => warn!(
+                            agent_type = agent_id.as_str(),
+                            %error,
+                            "periodic agent diagnostic infrastructure failed"
+                        ),
+                    }
                 });
             }
         });
@@ -1159,8 +1183,16 @@ impl DesktopState {
         let app = App::with_config(workspace.clone(), config);
         let agent_ids = app.managed_agents().keys().cloned().collect::<Vec<_>>();
         for agent_id in agent_ids {
-            let _ = self
-                .refresh_agent_command_catalog_for_workspace_unlocked(&agent_id, workspace.clone());
+            if let Err(error) = self
+                .refresh_agent_command_catalog_for_workspace_unlocked(&agent_id, workspace.clone())
+            {
+                warn!(
+                    agent_type = agent_id.as_str(),
+                    %workspace,
+                    %error,
+                    "periodic agent command catalog refresh failed"
+                );
+            }
         }
         Ok(())
     }
@@ -1447,6 +1479,16 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn pending_update_path_reads_without_consuming_install_work() {
+        let (_root, state) = desktop_state();
+        let path = Utf8PathBuf::from("D:/Temp/gold-band-update/update-0.13.2.pkg");
+        state.store_pending_update(path.clone()).unwrap();
+
+        assert_eq!(state.pending_update_path().unwrap(), Some(path.clone()));
+        assert_eq!(state.take_pending_update(), Some(path));
+    }
+
     fn write_completed_attempt_with_running_run(app: &App, candidate_token: Option<String>) {
         app.paths.provision_project_manifest().unwrap();
         let mut execution = RuntimeExecutionState::new(
@@ -1495,6 +1537,7 @@ mod tests {
         };
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "worker".to_string(),
             node_type: NodeType::Worker,
             run_id: "run-001".to_string(),
@@ -1593,6 +1636,98 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn startup_recovery_consumes_core_db_candidate_once_across_desktop_state_instances() {
+        let root = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(root.path().to_path_buf()).unwrap();
+        let context = DesktopContext {
+            repo_root,
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        };
+
+        let persisted_candidate = {
+            let first_state = DesktopState::new(context.clone());
+            let first_app = first_state.app().unwrap();
+            first_state
+                .runtime_recovery()
+                .complete_startup_recovery(std::collections::HashSet::new())
+                .unwrap();
+            let registration = first_state
+                .runtime_recovery()
+                .begin(&first_app.paths, "task-001", "run-001")
+                .unwrap();
+            let candidate_token = registration.token().to_string();
+            registration.commit();
+            write_completed_attempt_with_running_run(&first_app, Some(candidate_token));
+
+            assert!(first_app.paths.core_db_path().is_file());
+            let candidates = first_state
+                .runtime_recovery()
+                .list_persisted_candidates()
+                .unwrap();
+            assert_eq!(candidates.len(), 1);
+            candidates[0].clone()
+        };
+
+        let recovered_run = {
+            let second_state = DesktopState::new(context.clone());
+            assert_eq!(
+                second_state
+                    .runtime_recovery()
+                    .list_persisted_candidates()
+                    .unwrap(),
+                vec![persisted_candidate]
+            );
+
+            let report = second_state
+                .recover_interrupted_conversation_workspaces()
+                .unwrap();
+            assert_eq!(report.candidate_count, 1);
+            assert_eq!(report.recovered_run_count, 1, "{report:?}");
+            assert!(report.failures.is_empty());
+            second_state
+                .runtime_recovery()
+                .complete_startup_recovery(report.blocked_project_ids.iter().cloned().collect())
+                .unwrap();
+            assert!(
+                second_state
+                    .runtime_recovery()
+                    .list_persisted_candidates()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let run = second_state
+                .app()
+                .unwrap()
+                .run_status("task-001", "run-001")
+                .unwrap();
+            assert_eq!(run.status, RunStatus::Paused);
+            assert_eq!(run.pause_reason, Some(PauseReason::ProcessInterrupted));
+            assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
+            run
+        };
+
+        let third_state = DesktopState::new(context);
+        let report = third_state
+            .recover_interrupted_conversation_workspaces()
+            .unwrap();
+        assert_eq!(report.candidate_count, 0);
+        assert_eq!(report.recovered_run_count, 0);
+        assert_eq!(report.consumed_candidate_count, 0);
+        let unchanged = third_state
+            .app()
+            .unwrap()
+            .run_status("task-001", "run-001")
+            .unwrap();
+        assert_eq!(unchanged.status, recovered_run.status);
+        assert_eq!(unchanged.pause_reason, recovered_run.pause_reason);
+        assert_eq!(unchanged.execution.phase, recovered_run.execution.phase);
+        assert_eq!(unchanged.updated_at, recovered_run.updated_at);
     }
 
     #[test]

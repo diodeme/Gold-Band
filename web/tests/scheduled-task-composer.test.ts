@@ -32,11 +32,22 @@ describe('scheduled task composer entry', () => {
     const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
     const home = readFileSync(fileURLToPath(new URL('../src/pages/ConversationHomePage.tsx', import.meta.url)), 'utf8');
     const app = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
-    expect(composer).toContain('useState(initialScheduledMode)');
+    expect(composer).toContain("composerDraft.draft.submission.kind === 'scheduled-task'");
+    expect(composer).toContain('composerDraft.enterScheduledTask();');
     expect(composer).toContain('openScheduledConfig();');
     expect(home).toContain('initialScheduledMode={initialScheduledMode}');
     expect(app).toContain("onCreate={() => onSelectConversation({ kind: 'scheduled-task-create' })}");
     expect(app).toContain("initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}");
+  });
+
+  it('keeps scheduled mode and configuration in the shared composer draft owner', () => {
+    const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
+    const draft = readFileSync(fileURLToPath(new URL('../src/lib/conversation-composer-draft.ts', import.meta.url)), 'utf8');
+
+    expect(composer).toContain('composerDraft.setScheduledTaskConfig(config)');
+    expect(composer).toContain('composerDraft.exitScheduledTask()');
+    expect(composer).not.toContain('useState<ScheduledTaskConfig | null>');
+    expect(draft).toContain("{ kind: 'scheduled-task'; config: ScheduledTaskConfig | null }");
   });
 
   it('shows an inline scheduled-task link after creation succeeds', () => {

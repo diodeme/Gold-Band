@@ -80,3 +80,7 @@ run 持久化为 `Paused / Completed` 后，使用该 run 中的 token 条件删
 旧启动路径为 `O(W + Σ(tasks + runs))`，历史数据持续累计时启动时间无上限。新路径为 `O(C)`，其中 `C <= 4096` 且正常情况下只等于崩溃前可能非终态的 run 数量；没有候选时只打开一次用户级 SQLite 并执行一条有索引的小查询。
 
 恢复按候选顺序执行有限本地 I/O，不启动无界任务、不扫描 timeline、不调用 provider，也不引入轮询或无界缓存。
+
+## 8. 回归验收
+
+持久化与启动清理必须使用生产入口做进程边界等价测试：第一个 `DesktopState` 将候选写入隔离的物理 `core.db` 并持久化 token 匹配的 Running `run.json` 后销毁；第二个 `DesktopState` 重新打开同一路径，只通过 `recover_interrupted_conversation_workspaces` 将 run 收敛为 `Paused + ProcessInterrupted` 并删除候选；第三个 `DesktopState` 再次打开时必须读取到零候选，且不得再次改写 run。该测试同时固定“SQLite durable、启动消费、用完即删、后续启动 no-op”四个接口不变量，不使用进程内 mock 表替代数据库。

@@ -1979,6 +1979,7 @@ mod tests {
     use crate::agent_catalog::builtin_agent_catalog;
     use std::collections::BTreeMap;
     use std::str::FromStr;
+    use tracing::Level;
 
     fn custom_personalization(
         ui_family: &str,
@@ -1997,6 +1998,13 @@ mod tests {
         personalization.typography.editor.font_size =
             FontSizePreference::Custom { px: editor_size };
         personalization
+    }
+
+    #[test]
+    fn detailed_logging_gate_keeps_periodic_debug_out_of_default_runtime_log() {
+        assert!(RuntimeLogLevel::Info.allows(&Level::INFO));
+        assert!(!RuntimeLogLevel::Info.allows(&Level::DEBUG));
+        assert!(RuntimeLogLevel::Debug.allows(&Level::DEBUG));
     }
 
     #[test]

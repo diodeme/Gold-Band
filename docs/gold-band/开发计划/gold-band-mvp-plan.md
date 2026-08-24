@@ -6,6 +6,12 @@
 - 验收：Rust 回归固定 `worker_ref.mode=New + continue_ref=Some` 的既有 attempt 用户 turn 仍解析为 Continue，并固定 Continue 缺少 Provider session identity 时返回 blocked 结构化错误；恢复能力选择继续沿用 resume 优先、load fallback、strict unsupported 不得 StartNew 的既有测试。取消尾部 chunk 投影由独立修改负责，本项不改变其 terminal watermark、quiet drain 或 10 秒 deadline。
 - 性能与过度设计评审：复用现有 `SessionMode`、worker continue ref、attached runtime shutdown 与 capability-driven resume/load，不新增状态机、持久字段、缓存、队列、锁或网络等待。新增工作仅为 O(1) session identity 校验与既有 worker-ref 常数级写入，不扫描 Timeline/raw，不改变正常首轮、attached reuse 或流式热路径复杂度，无需专项 benchmark。
 
+## 2026-08-24：ACP 取消尾部输出按 prompt terminal 收敛
+
+- 根因与实现：早期 durable cancel 实现把 `CancelRequested` 同时当作控制意图和正文截断点，导致已经进入 session route、甚至位于 outbound cancel 之前的 text/thought/tool update 只写入 raw 而不进入 Timeline；后续已有的原 `session/prompt` response watermark、200 ms quiet drain 和统一 10 秒 deadline 实际已经提供了正确终态屏障，但旧过滤没有随设计演进删除。本次删除该旁路过滤，取消期间继续有界投影 terminal 收敛前的当前 turn 内容，cancelled 仍拥有终态优先级；deadline 内正常确认取消后继续保留 attached session，只有超时未收敛才隔离 live route。
+- 验收：Rust 回归固定 `ProviderControl=CancelRequested` 时 terminal drain 仍观察并保留正文 chunk，同时沿用既有 response watermark 顺序、route generation 隔离、200 ms quiet drain、10 秒总 deadline、超时 cancelled outcome 和 cancel redelivery 测试；Direct、Workflow、AUTO、AI-DYNAMIC 与 NonRuntime follow-up 继续共用同一 ACP prompt 入口，不增加模式特判。
+- 性能与过度设计评审：复用现有 pending response watermark、event pump 和 terminal drain，不新增状态、持久字段、缓存、队列、锁或跨线程事务，也不扫描 Timeline/raw。取消低频路径只为本来已经读取、解析并写 raw 的 terminal 前尾部事件补齐必要的 Timeline 投影，仍受 64 帧/25 ms 排空时间片、既有队列上限和统一 10 秒 deadline 约束；正常 prompt 与正常取消后的 session reuse 路径复杂度不变，无需专项 benchmark。
+
 ## 2026-08-19：品牌 Logo 统一替换
 
 - 实现：将用户提供的 `gold-band-logo-final-v6-transparent.svg` 作为唯一品牌矢量源复制到 `web/public/logo.svg`，以同一路径生成 `src-tauri/icons/logo-source.svg` 的 2048 正方形投影，并通过 Tauri 官方 icon generator 重建 Windows、macOS、PNG、Android 与 iOS 图标；README 中英文头标改为直接引用 `web/public/logo.svg`。

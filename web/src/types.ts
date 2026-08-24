@@ -2301,6 +2301,12 @@ export interface ConversationRunVm {
   worktree?: ConversationRunWorktreeVm | null;
 }
 
+export interface ScheduledTaskConfig {
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+}
+
 export interface RuntimeErrorInfoVm {
   code: {
     domain: string;

@@ -11,7 +11,7 @@ import {
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from '../src/lib/attachment-service';
 
 /**
- * 回归测试：会话发起 composer 的未提交草稿（正文 + 附件）在离开
+ * 回归测试：会话发起 composer 的未提交草稿（正文、附件与提交模式）在离开
  * 会话主页再返回后必须保留。
  *
  * 真实场景里，跳转运行模式管理、设置页或其他会话窗口都会卸载
@@ -40,25 +40,25 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('initial draft is empty', () => {
-    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [] });
+    expect(createInitialConversationComposerDraft()).toEqual({ content: '', attachments: [], submission: { kind: 'send' } });
   });
 
   it('setContent stores text without losing attachments', () => {
-    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')] };
+    const state: ConversationComposerDraftState = { content: '', attachments: [makeAttachment('a1')], submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'hello' });
     expect(next.content).toBe('hello');
     expect(next.attachments).toHaveLength(1);
   });
 
   it('setAttachments stores attachments without losing text', () => {
-    const state: ConversationComposerDraftState = { content: 'hello', attachments: [] };
+    const state: ConversationComposerDraftState = { content: 'hello', attachments: [], submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setAttachments', attachments: [makeAttachment('a1'), makeAttachment('a2')] });
     expect(next.content).toBe('hello');
     expect(next.attachments.map((a) => a.id)).toEqual(['a1', 'a2']);
   });
 
   it('setContent with identical value is a no-op (stable reference)', () => {
-    const state: ConversationComposerDraftState = { content: 'same', attachments: [] };
+    const state: ConversationComposerDraftState = { content: 'same', attachments: [], submission: { kind: 'send' } };
     const next = conversationComposerDraftReducer(state, { type: 'setContent', content: 'same' });
     expect(next).toBe(state);
   });
@@ -86,10 +86,44 @@ describe('ConversationComposer draft cross-page retention', () => {
     expect(state.attachments[0].id).toBe('img');
   });
 
+  it('retains scheduled-task mode and its configured schedule across a simulated unmount/remount', () => {
+    let state = createInitialConversationComposerDraft();
+    state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
+    state = conversationComposerDraftReducer(state, {
+      type: 'setScheduledTaskConfig',
+      config: {
+        schedule: { kind: 'Repeat', preset: 'Daily', hour: 9, minute: 0, timezone: 'Asia/Hong_Kong' },
+        overlapPolicy: 'skip_when_running',
+        sessionPolicy: 'new',
+      },
+    });
+
+    expect(state.submission).toEqual({
+      kind: 'scheduled-task',
+      config: {
+        schedule: { kind: 'Repeat', preset: 'Daily', hour: 9, minute: 0, timezone: 'Asia/Hong_Kong' },
+        overlapPolicy: 'skip_when_running',
+        sessionPolicy: 'new',
+      },
+    });
+
+    state = conversationComposerDraftReducer(state, { type: 'setContent', content: '返回后继续编辑' });
+    expect(state.submission.kind).toBe('scheduled-task');
+  });
+
+  it('exits scheduled-task mode without clearing the ordinary composer payload', () => {
+    let state = createInitialConversationComposerDraft();
+    state = conversationComposerDraftReducer(state, { type: 'setContent', content: '保留正文' });
+    state = conversationComposerDraftReducer(state, { type: 'enterScheduledTask' });
+    state = conversationComposerDraftReducer(state, { type: 'exitScheduledTask' });
+
+    expect(state).toEqual({ content: '保留正文', attachments: [], submission: { kind: 'send' } });
+  });
+
   it('does not revoke image preview URLs during ordinary cross-page retention', () => {
     const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const attachment = makeImageAttachment('img');
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment] };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [attachment], submission: { kind: 'send' } };
 
     state = conversationComposerDraftReducer(state, { type: 'setContent', content: 'x after navigation' });
 
@@ -107,9 +141,9 @@ describe('ConversationComposer draft cross-page retention', () => {
   });
 
   it('reset clears content and attachments (used after successful create)', () => {
-    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')] };
+    let state: ConversationComposerDraftState = { content: 'x', attachments: [makeAttachment('a1')], submission: { kind: 'scheduled-task', config: null } };
     state = conversationComposerDraftReducer(state, { type: 'reset' });
-    expect(state).toEqual({ content: '', attachments: [] });
+    expect(state).toEqual({ content: '', attachments: [], submission: { kind: 'send' } });
   });
 
   it('does not reset the shared draft from either workspace selector path', () => {
@@ -124,6 +158,9 @@ describe('ConversationComposer draft cross-page retention', () => {
       draft: createInitialConversationComposerDraft(),
       setContent: vi.fn(),
       setAttachments: vi.fn(),
+      enterScheduledTask: vi.fn(),
+      setScheduledTaskConfig: vi.fn(),
+      exitScheduledTask: vi.fn(),
       reset,
     });
 

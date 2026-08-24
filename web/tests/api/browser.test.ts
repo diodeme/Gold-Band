@@ -68,6 +68,19 @@ describe('browserApi', () => {
     });
   });
 
+  it('preserves the requested identity in preview analytics range reports', async () => {
+    const range = { start: '2026-08-01', end: '2026-08-18' };
+
+    await expect(browserApi.queryPersonalAnalyticsReport(range)).resolves.toMatchObject({ range });
+    await expect(browserApi.startPersonalAnalyticsInsights('agent-a', range)).resolves.toMatchObject({
+      agentType: 'agent-a',
+      range,
+      generation: 1,
+      schemaVersion: '2.2.0',
+      indexRevision: 6,
+    });
+  });
+
   it('keeps built-in profiles readonly in preview mode', async () => {
     const builtIn = (await browserApi.getProfiles()).profiles.find((profile) => profile.isBuiltIn);
 

@@ -8,11 +8,14 @@ use gold_band::artifacts::json_artifact_text;
 use gold_band::config::ManagedAgentId;
 use gold_band::domain::{SessionMode, TurnControlMode};
 use gold_band::personal_analytics::{
+    AgentInsightOperation, AgentInsightOperationStatus, AgentInsightProgress,
     PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION, PersonalAnalyticsError, PersonalAnalyticsNarrative,
     PersonalAnalyticsOperation, PersonalAnalyticsOperationStatus, PersonalAnalyticsProgress,
-    PersonalAnalyticsProjection, PersonalAnalyticsSemanticBatch, PersonalAnalyticsSnapshot,
-    canonicalize_personal_analytics_report, index::PersonalAnalyticsDateRange,
-    index::PersonalAnalyticsIndex, personal_analytics_narrative_schema,
+    PersonalAnalyticsProjection, PersonalAnalyticsReport, PersonalAnalyticsSemanticBatch,
+    PersonalAnalyticsSemanticItem, PersonalAnalyticsSnapshot,
+    canonicalize_personal_analytics_report, index::InsightIdentity,
+    index::PersonalAnalyticsDateRange, index::PersonalAnalyticsIndex,
+    personal_analytics_narrative_schema,
 };
 use gold_band::prompts::{
     PERSONAL_ANALYTICS_REPAIR_SYSTEM_EN, PERSONAL_ANALYTICS_REPAIR_SYSTEM_ZH_CN,
@@ -83,13 +86,46 @@ pub struct PersonalAnalyticsRuntime {
 
 #[derive(Default)]
 struct InsightRuntimeInner {
-    operation: Option<PersonalAnalyticsOperation>,
+    operation: Option<AgentInsightOperation>,
     cancellation: Option<CancellationState>,
 }
 
 #[derive(Clone, Default)]
 pub struct PersonalAnalyticsInsightRuntime {
     inner: Arc<Mutex<InsightRuntimeInner>>,
+}
+
+fn operation_transition_allowed(
+    current: PersonalAnalyticsOperationStatus,
+    next: PersonalAnalyticsOperationStatus,
+) -> bool {
+    current != PersonalAnalyticsOperationStatus::Cancelling
+        || matches!(
+            next,
+            PersonalAnalyticsOperationStatus::Cancelling
+                | PersonalAnalyticsOperationStatus::Cancelled
+        )
+}
+
+fn insight_transition_allowed(
+    current: AgentInsightOperationStatus,
+    next: AgentInsightOperationStatus,
+) -> bool {
+    use AgentInsightOperationStatus as Status;
+    current == next
+        || matches!(
+            (current, next),
+            (
+                Status::Queued,
+                Status::Analyzing | Status::Cancelling | Status::Failed
+            ) | (
+                Status::Analyzing,
+                Status::ValidatingReport | Status::Cancelling | Status::Failed
+            ) | (
+                Status::ValidatingReport,
+                Status::Analyzing | Status::Completed | Status::Cancelling | Status::Failed
+            ) | (Status::Cancelling, Status::Cancelled)
+        )
 }
 
 impl PersonalAnalyticsRuntime {
@@ -123,16 +159,15 @@ impl PersonalAnalyticsRuntime {
             ));
         }
         let requested = Arc::new(AtomicBool::new(false));
-        let snapshot = guard.snapshot.get_or_insert_with(Default::default);
-        snapshot.operation = Some(operation.clone());
-        let persisted = snapshot.clone();
+        let mut persisted = guard.snapshot.clone().unwrap_or_default();
+        persisted.operation = Some(operation.clone());
+        persist_snapshot(analytics_root, &persisted)?;
+        guard.snapshot = Some(persisted.clone());
         guard.cancellation = Some(CancellationState {
             operation_id: operation.operation_id,
             requested: requested.clone(),
             attempt_dir,
         });
-        drop(guard);
-        persist_snapshot(analytics_root, &persisted)?;
         Ok((persisted, requested))
     }
 
@@ -143,30 +178,30 @@ impl PersonalAnalyticsRuntime {
         update: impl FnOnce(&mut PersonalAnalyticsOperation, &mut PersonalAnalyticsSnapshot),
     ) -> CommandResult<Option<PersonalAnalyticsSnapshot>> {
         let mut guard = self.lock()?;
-        let Some(mut snapshot) = guard.snapshot.take() else {
+        let Some(mut snapshot) = guard.snapshot.clone() else {
             return Ok(None);
         };
-        let Some(mut operation) = snapshot.operation.take() else {
-            guard.snapshot = Some(snapshot);
+        let Some(mut operation) = snapshot.operation.clone() else {
             return Ok(None);
         };
         if operation.operation_id != operation_id || !operation.status.is_active() {
-            snapshot.operation = Some(operation);
-            guard.snapshot = Some(snapshot);
+            return Ok(None);
+        }
+        let current_status = operation.status;
+        update(&mut operation, &mut snapshot);
+        if !operation_transition_allowed(current_status, operation.status) {
             return Ok(None);
         }
         operation.revision = operation.revision.saturating_add(1);
         operation.updated_at = timestamp();
-        update(&mut operation, &mut snapshot);
         let terminal = !operation.status.is_active();
         snapshot.operation = Some(operation);
         let persisted = snapshot.clone();
-        guard.snapshot = Some(snapshot);
+        persist_snapshot(analytics_root, &persisted)?;
+        guard.snapshot = Some(persisted.clone());
         if terminal {
             guard.cancellation = None;
         }
-        drop(guard);
-        persist_snapshot(analytics_root, &persisted)?;
         Ok(Some(persisted))
     }
 
@@ -175,7 +210,7 @@ impl PersonalAnalyticsRuntime {
         analytics_root: &Utf8Path,
         operation_id: &str,
     ) -> CommandResult<(PersonalAnalyticsSnapshot, Option<Utf8PathBuf>)> {
-        let (attempt_dir, already_terminal) = {
+        let (attempt_dir, requested, already_terminal) = {
             let mut guard = self.lock()?;
             if guard.snapshot.is_none() {
                 guard.snapshot = Some(load_snapshot(analytics_root));
@@ -201,11 +236,13 @@ impl PersonalAnalyticsRuntime {
                 .cancellation
                 .as_ref()
                 .filter(|state| state.operation_id == operation_id)
-                .map(|state| {
-                    state.requested.store(true, Ordering::Release);
-                    state.attempt_dir.clone()
-                });
-            (attempt_dir, already_terminal)
+                .map(|state| state.attempt_dir.clone());
+            let requested = guard
+                .cancellation
+                .as_ref()
+                .filter(|state| state.operation_id == operation_id)
+                .map(|state| state.requested.clone());
+            (attempt_dir, requested, already_terminal)
         };
         if already_terminal {
             return Ok((self.snapshot(analytics_root)?, None));
@@ -216,7 +253,18 @@ impl PersonalAnalyticsRuntime {
                 operation.progress.stage = PersonalAnalyticsOperationStatus::Cancelling;
             })?
             .unwrap_or(self.snapshot(analytics_root)?);
-        Ok((snapshot, attempt_dir))
+        let cancellation_accepted = snapshot.operation.as_ref().is_some_and(|operation| {
+            operation.status == PersonalAnalyticsOperationStatus::Cancelling
+        });
+        if cancellation_accepted {
+            if let Some(requested) = requested {
+                requested.store(true, Ordering::Release);
+            }
+        }
+        Ok((
+            snapshot,
+            cancellation_accepted.then_some(attempt_dir).flatten(),
+        ))
     }
 
     fn lock(&self) -> CommandResult<std::sync::MutexGuard<'_, RuntimeInner>> {
@@ -230,10 +278,14 @@ impl PersonalAnalyticsRuntime {
 }
 
 impl PersonalAnalyticsInsightRuntime {
-    fn operation(&self, root: &Utf8Path) -> CommandResult<Option<PersonalAnalyticsOperation>> {
+    fn operation(
+        &self,
+        root: &Utf8Path,
+        database_path: &Utf8Path,
+    ) -> CommandResult<Option<AgentInsightOperation>> {
         let mut guard = self.lock()?;
         if guard.operation.is_none() {
-            guard.operation = load_insight_operation(root);
+            guard.operation = load_insight_operation(root, database_path);
         }
         Ok(guard.operation.clone())
     }
@@ -241,13 +293,18 @@ impl PersonalAnalyticsInsightRuntime {
     fn begin(
         &self,
         root: &Utf8Path,
-        operation: PersonalAnalyticsOperation,
+        mut operation: AgentInsightOperation,
         attempt_dir: Utf8PathBuf,
-    ) -> CommandResult<(PersonalAnalyticsOperation, Arc<AtomicBool>)> {
+        database_path: &Utf8Path,
+    ) -> CommandResult<(AgentInsightOperation, Arc<AtomicBool>)> {
         let mut guard = self.lock()?;
         if guard.operation.is_none() {
-            guard.operation = load_insight_operation(root);
+            guard.operation = load_insight_operation(root, database_path);
         }
+        operation.generation = guard
+            .operation
+            .as_ref()
+            .map_or(1, |current| current.generation.saturating_add(1));
         if guard
             .operation
             .as_ref()
@@ -259,13 +316,13 @@ impl PersonalAnalyticsInsightRuntime {
             ));
         }
         let requested = Arc::new(AtomicBool::new(false));
+        write_json(&root.join("insight-state.json"), &operation).map_err(storage_error)?;
         guard.operation = Some(operation.clone());
         guard.cancellation = Some(CancellationState {
             operation_id: operation.operation_id.clone(),
             requested: requested.clone(),
             attempt_dir,
         });
-        write_json(&root.join("insight-state.json"), &guard.operation).map_err(storage_error)?;
         Ok((operation, requested))
     }
 
@@ -273,8 +330,8 @@ impl PersonalAnalyticsInsightRuntime {
         &self,
         root: &Utf8Path,
         operation_id: &str,
-        update: impl FnOnce(&mut PersonalAnalyticsOperation),
-    ) -> CommandResult<Option<PersonalAnalyticsOperation>> {
+        update: impl FnOnce(&mut AgentInsightOperation),
+    ) -> CommandResult<Option<AgentInsightOperation>> {
         let mut guard = self.lock()?;
         let Some(mut operation) = guard.operation.clone() else {
             return Ok(None);
@@ -282,14 +339,59 @@ impl PersonalAnalyticsInsightRuntime {
         if operation.operation_id != operation_id || !operation.status.is_active() {
             return Ok(None);
         }
+        let current_status = operation.status;
+        update(&mut operation);
+        if !insight_transition_allowed(current_status, operation.status) {
+            return Ok(None);
+        }
         operation.revision = operation.revision.saturating_add(1);
         operation.updated_at = timestamp();
-        update(&mut operation);
+        write_json(&root.join("insight-state.json"), &operation).map_err(storage_error)?;
         if !operation.status.is_active() {
             guard.cancellation = None;
         }
         guard.operation = Some(operation.clone());
-        write_json(&root.join("insight-state.json"), &guard.operation).map_err(storage_error)?;
+        Ok(Some(operation))
+    }
+
+    fn complete_with_cache(
+        &self,
+        root: &Utf8Path,
+        operation_id: &str,
+        index: &mut PersonalAnalyticsIndex,
+        identity: &InsightIdentity,
+        narrative: &PersonalAnalyticsNarrative,
+    ) -> CommandResult<Option<AgentInsightOperation>> {
+        let mut guard = self.lock()?;
+        let Some(mut operation) = guard.operation.clone() else {
+            return Ok(None);
+        };
+        if operation.operation_id != operation_id
+            || operation.status != AgentInsightOperationStatus::ValidatingReport
+        {
+            return Ok(None);
+        }
+        let completed_at = timestamp();
+        index
+            .store_completed_insight(identity, narrative, &completed_at)
+            .map_err(|error| {
+                analytics_error(
+                    "analytics.storage-failed",
+                    json!({ "reason": error.to_string() }),
+                )
+            })?;
+        operation.status = AgentInsightOperationStatus::Completed;
+        operation.progress.stage = AgentInsightOperationStatus::Completed;
+        operation.revision = operation.revision.saturating_add(1);
+        operation.updated_at = completed_at.clone();
+        operation.completed_at = Some(completed_at);
+        operation.error = None;
+
+        // The completed cache is the durable commit marker. If the JSON projection cannot be
+        // replaced, startup recovery reconstructs this terminal state from that cache entry.
+        let _ = write_json(&root.join("insight-state.json"), &operation);
+        guard.operation = Some(operation.clone());
+        guard.cancellation = None;
         Ok(Some(operation))
     }
 
@@ -297,10 +399,11 @@ impl PersonalAnalyticsInsightRuntime {
         &self,
         root: &Utf8Path,
         operation_id: &str,
-    ) -> CommandResult<(PersonalAnalyticsOperation, Option<Utf8PathBuf>)> {
+        database_path: &Utf8Path,
+    ) -> CommandResult<(AgentInsightOperation, Option<Utf8PathBuf>)> {
         let mut guard = self.lock()?;
         if guard.operation.is_none() {
-            guard.operation = load_insight_operation(root);
+            guard.operation = load_insight_operation(root, database_path);
         }
         let Some(mut operation) = guard.operation.clone() else {
             return Err(analytics_error(
@@ -317,20 +420,21 @@ impl PersonalAnalyticsInsightRuntime {
         if !operation.status.is_active() {
             return Ok((operation.clone(), None));
         }
-        let attempt_dir = guard
+        let cancellation = guard
             .cancellation
             .as_ref()
             .filter(|state| state.operation_id == operation_id)
-            .map(|state| {
-                state.requested.store(true, Ordering::Release);
-                state.attempt_dir.clone()
-            });
-        operation.status = PersonalAnalyticsOperationStatus::Cancelling;
-        operation.progress.stage = PersonalAnalyticsOperationStatus::Cancelling;
+            .map(|state| (state.requested.clone(), state.attempt_dir.clone()));
+        operation.status = AgentInsightOperationStatus::Cancelling;
+        operation.progress.stage = AgentInsightOperationStatus::Cancelling;
         operation.revision = operation.revision.saturating_add(1);
         operation.updated_at = timestamp();
+        write_json(&root.join("insight-state.json"), &operation).map_err(storage_error)?;
         guard.operation = Some(operation.clone());
-        write_json(&root.join("insight-state.json"), &guard.operation).map_err(storage_error)?;
+        if let Some((requested, _)) = &cancellation {
+            requested.store(true, Ordering::Release);
+        }
+        let attempt_dir = cancellation.map(|(_, attempt_dir)| attempt_dir);
         Ok((operation, attempt_dir))
     }
 
@@ -368,8 +472,10 @@ pub fn get_personal_analytics(
         )
     })?;
     let mut snapshot = runtime.snapshot(&analytics_root(&app.paths.user_gold_band_dir()))?;
-    snapshot.insight_operation =
-        insight_runtime.operation(&analytics_root(&app.paths.user_gold_band_dir()))?;
+    snapshot.insight_operation = insight_runtime.operation(
+        &analytics_root(&app.paths.user_gold_band_dir()),
+        &app.paths.sqlite_db_path(),
+    )?;
     Ok(snapshot)
 }
 
@@ -451,6 +557,7 @@ pub fn query_personal_analytics_report(
                 json!({ "reason": error.to_string() }),
             )
         })?;
+    let report_index_revision = report.index_revision;
     if let Some(agent_type) = input.agent_type.as_deref() {
         let identity = gold_band::personal_analytics::index::InsightIdentity {
             operation_id: String::new(),
@@ -472,15 +579,7 @@ pub fn query_personal_analytics_report(
                 report.report_id.clone(),
                 report.generated_at.clone(),
             );
-            report.index_revision = index
-                .state()
-                .map_err(|error| {
-                    analytics_error(
-                        "analytics.storage-failed",
-                        json!({ "reason": error.to_string() }),
-                    )
-                })?
-                .index_revision;
+            report.index_revision = report_index_revision;
             report.range = input.range;
         }
     }
@@ -493,7 +592,7 @@ pub async fn start_personal_analytics_insights(
     state: State<'_, DesktopState>,
     runtime: State<'_, PersonalAnalyticsInsightRuntime>,
     input: StartPersonalAnalyticsInsightsInput,
-) -> CommandResult<PersonalAnalyticsOperation> {
+) -> CommandResult<AgentInsightOperation> {
     let app = state.app().map_err(|error| {
         analytics_error(
             "analytics.source-unavailable",
@@ -529,28 +628,57 @@ pub async fn start_personal_analytics_insights(
     })?;
     let agent_config = agent_config.clone();
     let root = analytics_root(&app.paths.user_gold_band_dir());
+    let database_path = app.paths.sqlite_db_path();
+    let report_range = input.range.clone();
+    let report_database_path = database_path.clone();
+    let (report, semantic_items) = tauri::async_runtime::spawn_blocking(move || {
+        let index = PersonalAnalyticsIndex::open(&report_database_path).map_err(|error| {
+            analytics_error(
+                "analytics.storage-failed",
+                json!({ "reason": error.to_string() }),
+            )
+        })?;
+        index
+            .report_with_semantic_batch(&report_range, Uuid::new_v4().to_string())
+            .map_err(|error| {
+                analytics_error(
+                    "analytics.report-query-failed",
+                    json!({ "reason": error.to_string() }),
+                )
+            })
+    })
+    .await
+    .map_err(|_| analytics_error("analytics.task-join-failed", json!({})))??;
     let operation_id = Uuid::new_v4().to_string();
     let operation_dir = root.join("operations").join(&operation_id);
     let now = timestamp();
-    let operation = PersonalAnalyticsOperation {
+    let operation = AgentInsightOperation {
         operation_id: operation_id.clone(),
+        generation: 0,
         agent_type: input.agent_type.clone(),
-        status: PersonalAnalyticsOperationStatus::Queued,
+        range: input.range,
+        schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
+        index_revision: report.index_revision,
+        status: AgentInsightOperationStatus::Queued,
         revision: 1,
-        progress: PersonalAnalyticsProgress {
-            stage: PersonalAnalyticsOperationStatus::Queued,
+        progress: AgentInsightProgress {
+            stage: AgentInsightOperationStatus::Queued,
             processed_units: 0,
             total_units: 0,
         },
-        source_watermark: now.clone(),
-        report_id: None,
+        source_watermark: report.source_watermark.clone(),
+        report_id: report.report_id.clone(),
         error: None,
         created_at: now.clone(),
         updated_at: now,
         completed_at: None,
     };
-    let (operation, cancellation) =
-        runtime.begin(&root, operation, operation_dir.join("analysis-attempt"))?;
+    let (operation, cancellation) = runtime.begin(
+        &root,
+        operation,
+        operation_dir.join("analysis-attempt"),
+        &database_path,
+    )?;
     emit_snapshot(
         &app_handle,
         &PersonalAnalyticsSnapshot {
@@ -560,6 +688,7 @@ pub async fn start_personal_analytics_insights(
     );
     let runtime = runtime.inner.clone();
     let handle = app_handle.clone();
+    let worker_operation = operation.clone();
     tauri::async_runtime::spawn_blocking(move || {
         run_insight_operation(
             &handle,
@@ -568,9 +697,9 @@ pub async fn start_personal_analytics_insights(
             &agent_config,
             &root,
             &operation_dir,
-            &operation_id,
-            &input.agent_type,
-            &input.range,
+            &worker_operation,
+            report,
+            semantic_items,
             &cancellation,
         );
     });
@@ -583,7 +712,7 @@ pub fn cancel_personal_analytics_insights(
     state: State<'_, DesktopState>,
     runtime: State<'_, PersonalAnalyticsInsightRuntime>,
     input: CancelPersonalAnalyticsInput,
-) -> CommandResult<PersonalAnalyticsOperation> {
+) -> CommandResult<AgentInsightOperation> {
     let app = state.app().map_err(|error| {
         analytics_error(
             "analytics.source-unavailable",
@@ -591,7 +720,8 @@ pub fn cancel_personal_analytics_insights(
         )
     })?;
     let root = analytics_root(&app.paths.user_gold_band_dir());
-    let (operation, attempt_dir) = runtime.request_cancel(&root, &input.operation_id)?;
+    let (operation, attempt_dir) =
+        runtime.request_cancel(&root, &input.operation_id, &app.paths.sqlite_db_path())?;
     if let Some(attempt_dir) = attempt_dir {
         client::request_prompt_cancel(&attempt_dir);
     }
@@ -670,6 +800,7 @@ fn run_sync_operation_inner(
             operation.progress.stage = PersonalAnalyticsOperationStatus::Scanning;
         },
     )?;
+    ensure_not_cancelled(cancellation)?;
     let mut index = PersonalAnalyticsIndex::open(&app.paths.sqlite_db_path()).map_err(|error| {
         analytics_error(
             "analytics.storage-failed",
@@ -703,6 +834,7 @@ fn run_sync_operation_inner(
                 )
             }
         })?;
+    ensure_not_cancelled(cancellation)?;
     let report = index
         .report(
             &PersonalAnalyticsDateRange::default(),
@@ -714,7 +846,9 @@ fn run_sync_operation_inner(
                 json!({ "reason": error.to_string() }),
             )
         })?;
+    ensure_not_cancelled(cancellation)?;
     write_json(&analytics_root.join("latest-report.json"), &report).map_err(storage_error)?;
+    ensure_not_cancelled(cancellation)?;
     transition_and_emit(
         app_handle,
         runtime,
@@ -740,9 +874,9 @@ fn run_insight_operation(
     agent_config: &gold_band::config::ManagedAgentConfig,
     analytics_root: &Utf8Path,
     operation_dir: &Utf8Path,
-    operation_id: &str,
-    agent_type: &str,
-    range: &PersonalAnalyticsDateRange,
+    operation: &AgentInsightOperation,
+    report: PersonalAnalyticsReport,
+    semantic_items: Vec<PersonalAnalyticsSemanticItem>,
     cancellation: &AtomicBool,
 ) {
     let result = run_insight_operation_inner(
@@ -752,24 +886,22 @@ fn run_insight_operation(
         agent_config,
         analytics_root,
         operation_dir,
-        operation_id,
-        agent_type,
-        range,
+        operation,
+        report,
+        semantic_items,
         cancellation,
     );
     if cancellation.load(Ordering::Acquire) {
-        finish_insight_database_operation(app, operation_id, "cancelled", None);
-        finish_insight_cancelled(app_handle, runtime, analytics_root, operation_id);
+        finish_insight_cancelled(app_handle, runtime, analytics_root, &operation.operation_id);
     } else if let Err(error) = result {
-        finish_insight_database_operation(app, operation_id, "failed", Some(error.code.clone()));
         let _ = transition_insight_and_emit(
             app_handle,
             runtime,
             analytics_root,
-            operation_id,
+            &operation.operation_id,
             |operation| {
-                operation.status = PersonalAnalyticsOperationStatus::Failed;
-                operation.progress.stage = PersonalAnalyticsOperationStatus::Failed;
+                operation.status = AgentInsightOperationStatus::Failed;
+                operation.progress.stage = AgentInsightOperationStatus::Failed;
                 operation.error = Some(error);
                 operation.completed_at = Some(timestamp());
             },
@@ -785,152 +917,185 @@ fn run_insight_operation_inner(
     agent_config: &gold_band::config::ManagedAgentConfig,
     analytics_root: &Utf8Path,
     operation_dir: &Utf8Path,
-    operation_id: &str,
-    agent_type: &str,
-    range: &PersonalAnalyticsDateRange,
+    operation: &AgentInsightOperation,
+    report: PersonalAnalyticsReport,
+    semantic_items: Vec<PersonalAnalyticsSemanticItem>,
     cancellation: &AtomicBool,
 ) -> CommandResult<()> {
+    let operation_id = &operation.operation_id;
     transition_insight_and_emit(
         app_handle,
         runtime,
         analytics_root,
         operation_id,
         |operation| {
-            operation.status = PersonalAnalyticsOperationStatus::Analyzing;
-            operation.progress.stage = PersonalAnalyticsOperationStatus::Analyzing;
+            operation.status = AgentInsightOperationStatus::Analyzing;
+            operation.progress.stage = AgentInsightOperationStatus::Analyzing;
         },
     )?;
-    let index = PersonalAnalyticsIndex::open(&app.paths.sqlite_db_path()).map_err(|error| {
+    ensure_not_cancelled(cancellation)?;
+    let mut index = PersonalAnalyticsIndex::open(&app.paths.sqlite_db_path()).map_err(|error| {
         analytics_error(
             "analytics.storage-failed",
             json!({ "reason": error.to_string() }),
         )
     })?;
-    let report = index
-        .report(range, Uuid::new_v4().to_string())
-        .map_err(|error| {
-            analytics_error(
-                "analytics.report-query-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })?;
-    let identity = gold_band::personal_analytics::index::InsightIdentity {
+    let identity = InsightIdentity {
         operation_id: operation_id.to_string(),
-        range_start: range.start.clone(),
-        range_end: range.end.clone(),
-        schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
-        index_revision: report.index_revision,
-        agent_type: agent_type.to_string(),
+        range_start: operation.range.start.clone(),
+        range_end: operation.range.end.clone(),
+        schema_version: operation.schema_version.clone(),
+        index_revision: operation.index_revision,
+        agent_type: operation.agent_type.clone(),
     };
-    index
-        .begin_insight(&identity, &timestamp())
-        .map_err(|error| {
-            analytics_error(
-                "analytics.storage-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })?;
-    let narrative = if let Some(cached) = index.completed_insight(&identity).map_err(|error| {
+    let cached_narrative = index.completed_insight(&identity).map_err(|error| {
         analytics_error(
             "analytics.storage-failed",
             json!({ "reason": error.to_string() }),
         )
-    })? {
-        cached
-    } else {
-        let projection = projection_from_report(&report);
-        let semantic_items = index.semantic_batch(range).map_err(|error| {
-            analytics_error(
-                "analytics.storage-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })?;
-        let semantic_batch = PersonalAnalyticsSemanticBatch {
-            schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
-            items: semantic_items,
-        };
-        std::fs::create_dir_all(operation_dir).map_err(|error| {
-            analytics_error(
-                "analytics.storage-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })?;
-        let projection_path = operation_dir.join("projection.json");
-        let semantic_path = operation_dir.join("semantic-batch.json");
-        let content_manifest_path = operation_dir.join("content-manifest.json");
-        write_json(&projection_path, &projection).map_err(storage_error)?;
-        write_json(&semantic_path, &semantic_batch).map_err(storage_error)?;
-        write_json(&content_manifest_path, &content_manifest(&semantic_batch))
-            .map_err(storage_error)?;
-        let candidate = invoke_agent(
-            app,
-            agent_config,
-            agent_type,
-            operation_id,
-            operation_dir,
-            &projection_path,
-            &content_manifest_path,
-            &semantic_path,
-            &projection,
-            report.index_revision,
-            &serde_json::to_string(range).unwrap_or_default(),
-            false,
-            None,
-        )?;
-        match serde_json::from_str::<PersonalAnalyticsNarrative>(&candidate) {
-            Ok(narrative) => narrative,
-            Err(first_error) => {
-                let invalid_path = operation_dir.join("invalid-report.json");
-                std::fs::write(&invalid_path, candidate).map_err(storage_error)?;
-                runtime.set_attempt_dir(operation_id, operation_dir.join("repair-attempt"));
-                let repaired = invoke_agent(
-                    app,
-                    agent_config,
-                    agent_type,
-                    operation_id,
-                    operation_dir,
-                    &projection_path,
-                    &content_manifest_path,
-                    &semantic_path,
-                    &projection,
-                    report.index_revision,
-                    &serde_json::to_string(range).unwrap_or_default(),
-                    true,
-                    Some((&invalid_path, first_error.to_string())),
-                )?;
-                serde_json::from_str(&repaired).map_err(|error| {
-                    analytics_error(
-                        "analytics.report-invalid",
-                        json!({ "reason": error.to_string() }),
-                    )
-                })?
+    })?;
+    ensure_not_cancelled(cancellation)?;
+    let cache_hit = cached_narrative.is_some();
+    let narrative = match cached_narrative {
+        Some(cached) => cached,
+        None => {
+            let projection = projection_from_report(&report);
+            let semantic_batch = PersonalAnalyticsSemanticBatch {
+                schema_version: operation.schema_version.clone(),
+                items: semantic_items,
+            };
+            std::fs::create_dir_all(operation_dir).map_err(|error| {
+                analytics_error(
+                    "analytics.storage-failed",
+                    json!({ "reason": error.to_string() }),
+                )
+            })?;
+            let projection_path = operation_dir.join("projection.json");
+            let semantic_path = operation_dir.join("semantic-batch.json");
+            let content_manifest_path = operation_dir.join("content-manifest.json");
+            write_json(&projection_path, &projection).map_err(storage_error)?;
+            write_json(&semantic_path, &semantic_batch).map_err(storage_error)?;
+            write_json(&content_manifest_path, &content_manifest(&semantic_batch))
+                .map_err(storage_error)?;
+            ensure_not_cancelled(cancellation)?;
+            let candidate = invoke_agent(
+                app,
+                agent_config,
+                &operation.agent_type,
+                operation_id,
+                operation_dir,
+                &projection_path,
+                &content_manifest_path,
+                &semantic_path,
+                &projection,
+                operation.index_revision,
+                &serde_json::to_string(&operation.range).unwrap_or_default(),
+                false,
+                None,
+            )?;
+            transition_insight_and_emit(
+                app_handle,
+                runtime,
+                analytics_root,
+                operation_id,
+                |operation| {
+                    operation.status = AgentInsightOperationStatus::ValidatingReport;
+                    operation.progress.stage = AgentInsightOperationStatus::ValidatingReport;
+                },
+            )?;
+            match parse_personal_analytics_narrative(&candidate) {
+                Ok(narrative) => narrative,
+                Err(first_error) => {
+                    let invalid_path = operation_dir.join("invalid-report.json");
+                    std::fs::write(&invalid_path, candidate).map_err(storage_error)?;
+                    runtime.set_attempt_dir(operation_id, operation_dir.join("repair-attempt"));
+                    ensure_not_cancelled(cancellation)?;
+                    transition_insight_and_emit(
+                        app_handle,
+                        runtime,
+                        analytics_root,
+                        operation_id,
+                        |operation| {
+                            operation.status = AgentInsightOperationStatus::Analyzing;
+                            operation.progress.stage = AgentInsightOperationStatus::Analyzing;
+                        },
+                    )?;
+                    let repaired = invoke_agent(
+                        app,
+                        agent_config,
+                        &operation.agent_type,
+                        operation_id,
+                        operation_dir,
+                        &projection_path,
+                        &content_manifest_path,
+                        &semantic_path,
+                        &projection,
+                        operation.index_revision,
+                        &serde_json::to_string(&operation.range).unwrap_or_default(),
+                        true,
+                        Some((&invalid_path, first_error)),
+                    )?;
+                    transition_insight_and_emit(
+                        app_handle,
+                        runtime,
+                        analytics_root,
+                        operation_id,
+                        |operation| {
+                            operation.status = AgentInsightOperationStatus::ValidatingReport;
+                            operation.progress.stage =
+                                AgentInsightOperationStatus::ValidatingReport;
+                        },
+                    )?;
+                    parse_personal_analytics_narrative(&repaired).map_err(|error| {
+                        analytics_error("analytics.report-invalid", json!({ "reason": error }))
+                    })?
+                }
             }
         }
     };
-    if cancellation.load(Ordering::Acquire) {
-        return Err(analytics_error("analytics.cancelled", json!({})));
+    if cache_hit {
+        transition_insight_and_emit(
+            app_handle,
+            runtime,
+            analytics_root,
+            operation_id,
+            |operation| {
+                operation.status = AgentInsightOperationStatus::ValidatingReport;
+                operation.progress.stage = AgentInsightOperationStatus::ValidatingReport;
+            },
+        )?;
     }
-    index
-        .finish_insight(operation_id, &narrative, "completed", None, &timestamp())
-        .map_err(|error| {
-            analytics_error(
-                "analytics.storage-failed",
-                json!({ "reason": error.to_string() }),
-            )
-        })?;
-    transition_insight_and_emit(
-        app_handle,
-        runtime,
+    ensure_not_cancelled(cancellation)?;
+    let completed = runtime.complete_with_cache(
         analytics_root,
         operation_id,
-        |operation| {
-            operation.status = PersonalAnalyticsOperationStatus::Completed;
-            operation.progress.stage = PersonalAnalyticsOperationStatus::Completed;
-            operation.report_id = Some(report.report_id.clone());
-            operation.completed_at = Some(timestamp());
-        },
+        &mut index,
+        &identity,
+        &narrative,
     )?;
+    let Some(completed) = completed else {
+        ensure_not_cancelled(cancellation)?;
+        return Err(analytics_error(
+            "analytics.operation-stale",
+            json!({ "operationId": operation_id }),
+        ));
+    };
+    emit_snapshot(
+        app_handle,
+        &PersonalAnalyticsSnapshot {
+            insight_operation: Some(completed),
+            ..PersonalAnalyticsSnapshot::default()
+        },
+    );
     Ok(())
+}
+
+fn ensure_not_cancelled(cancellation: &AtomicBool) -> CommandResult<()> {
+    if cancellation.load(Ordering::Acquire) {
+        Err(analytics_error("analytics.cancelled", json!({})))
+    } else {
+        Ok(())
+    }
 }
 
 fn transition_insight_and_emit(
@@ -938,7 +1103,7 @@ fn transition_insight_and_emit(
     runtime: &PersonalAnalyticsInsightRuntime,
     root: &Utf8Path,
     operation_id: &str,
-    update: impl FnOnce(&mut PersonalAnalyticsOperation),
+    update: impl FnOnce(&mut AgentInsightOperation),
 ) -> CommandResult<()> {
     if let Some(operation) = runtime.transition(root, operation_id, update)? {
         emit_snapshot(
@@ -952,28 +1117,6 @@ fn transition_insight_and_emit(
     Ok(())
 }
 
-fn finish_insight_database_operation(
-    app: &gold_band::app::App,
-    operation_id: &str,
-    status: &'static str,
-    error_code: Option<String>,
-) {
-    let Ok(index) = PersonalAnalyticsIndex::open(&app.paths.sqlite_db_path()) else {
-        return;
-    };
-    let narrative = PersonalAnalyticsNarrative {
-        schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
-        insights: Vec::new(),
-    };
-    let _ = index.finish_insight(
-        operation_id,
-        &narrative,
-        status,
-        error_code.as_deref(),
-        &timestamp(),
-    );
-}
-
 fn finish_insight_cancelled(
     app_handle: &AppHandle,
     runtime: &PersonalAnalyticsInsightRuntime,
@@ -981,8 +1124,8 @@ fn finish_insight_cancelled(
     operation_id: &str,
 ) {
     let _ = transition_insight_and_emit(app_handle, runtime, root, operation_id, |operation| {
-        operation.status = PersonalAnalyticsOperationStatus::Cancelled;
-        operation.progress.stage = PersonalAnalyticsOperationStatus::Cancelled;
+        operation.status = AgentInsightOperationStatus::Cancelled;
+        operation.progress.stage = AgentInsightOperationStatus::Cancelled;
         operation.error = Some(analytics_error("analytics.cancelled", json!({})));
         operation.completed_at = Some(timestamp());
     });
@@ -1172,6 +1315,20 @@ fn content_manifest(batch: &PersonalAnalyticsSemanticBatch) -> ContentManifest {
     }
 }
 
+fn parse_personal_analytics_narrative(
+    payload: &str,
+) -> std::result::Result<PersonalAnalyticsNarrative, String> {
+    let narrative: PersonalAnalyticsNarrative =
+        serde_json::from_str(payload).map_err(|error| error.to_string())?;
+    if narrative.schema_version != PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION {
+        return Err(format!(
+            "schemaVersion must be {}",
+            PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION
+        ));
+    }
+    Ok(narrative)
+}
+
 fn projection_from_report(
     report: &gold_band::personal_analytics::PersonalAnalyticsReport,
 ) -> PersonalAnalyticsProjection {
@@ -1247,22 +1404,49 @@ fn analytics_root(user_root: &Utf8Path) -> Utf8PathBuf {
     user_root.join("analytics")
 }
 
-fn load_insight_operation(root: &Utf8Path) -> Option<PersonalAnalyticsOperation> {
+fn load_insight_operation(
+    root: &Utf8Path,
+    database_path: &Utf8Path,
+) -> Option<AgentInsightOperation> {
     let state_path = root.join("insight-state.json");
-    let mut operation = read_json::<PersonalAnalyticsOperation>(&state_path).ok()?;
-    if operation.status.is_active() {
-        operation.status = PersonalAnalyticsOperationStatus::Failed;
-        operation.progress.stage = PersonalAnalyticsOperationStatus::Failed;
-        operation.revision = operation.revision.saturating_add(1);
-        operation.updated_at = timestamp();
-        operation.completed_at = Some(operation.updated_at.clone());
-        operation.error = Some(analytics_error(
-            "analytics.execution-interrupted",
-            json!({ "operationId": operation.operation_id }),
-        ));
-        let _ = write_json(&state_path, &operation);
+    let operation = read_json::<AgentInsightOperation>(&state_path).ok()?;
+    if !operation.status.is_active() {
+        return Some(operation);
     }
-    Some(operation)
+    let mut recovered = operation.clone();
+    let identity = InsightIdentity {
+        operation_id: recovered.operation_id.clone(),
+        range_start: recovered.range.start.clone(),
+        range_end: recovered.range.end.clone(),
+        schema_version: recovered.schema_version.clone(),
+        index_revision: recovered.index_revision,
+        agent_type: recovered.agent_type.clone(),
+    };
+    let cache_committed = PersonalAnalyticsIndex::open(database_path)
+        .and_then(|index| index.completed_insight(&identity))
+        .ok()
+        .flatten()
+        .is_some();
+    recovered.status = if cache_committed {
+        AgentInsightOperationStatus::Completed
+    } else {
+        AgentInsightOperationStatus::Failed
+    };
+    recovered.progress.stage = recovered.status;
+    recovered.revision = recovered.revision.saturating_add(1);
+    recovered.updated_at = timestamp();
+    recovered.completed_at = Some(recovered.updated_at.clone());
+    recovered.error = (!cache_committed).then(|| {
+        analytics_error(
+            "analytics.execution-interrupted",
+            json!({ "operationId": recovered.operation_id }),
+        )
+    });
+    Some(if write_json(&state_path, &recovered).is_ok() {
+        recovered
+    } else {
+        operation
+    })
 }
 
 fn load_snapshot(root: &Utf8Path) -> PersonalAnalyticsSnapshot {
@@ -1272,8 +1456,9 @@ fn load_snapshot(root: &Utf8Path) -> PersonalAnalyticsSnapshot {
     if report_path.is_file() {
         snapshot.latest_report = read_json(&report_path).ok();
     }
+    let mut recovered_snapshot = snapshot.clone();
     let mut recovered = false;
-    if let Some(operation) = snapshot.operation.as_mut() {
+    if let Some(operation) = recovered_snapshot.operation.as_mut() {
         if operation.status.is_active() {
             recovered = true;
             operation.status = PersonalAnalyticsOperationStatus::Failed;
@@ -1287,10 +1472,11 @@ fn load_snapshot(root: &Utf8Path) -> PersonalAnalyticsSnapshot {
             ));
         }
     }
-    if recovered {
-        let _ = write_json(&state_path, &snapshot);
+    if recovered && write_json(&state_path, &recovered_snapshot).is_ok() {
+        recovered_snapshot
+    } else {
+        snapshot
     }
-    snapshot
 }
 
 fn persist_snapshot(root: &Utf8Path, snapshot: &PersonalAnalyticsSnapshot) -> CommandResult<()> {
@@ -1377,6 +1563,14 @@ mod tests {
         assert_eq!(personal_analytics_artifact_text(&output), None);
     }
 
+    #[test]
+    fn narrative_parser_rejects_mismatched_schema_version() {
+        let payload = r#"{"schemaVersion":"0.0.0","insights":[]}"#;
+        let error = parse_personal_analytics_narrative(&payload)
+            .expect_err("narrative schema version must match the report contract");
+        assert!(error.contains(PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION));
+    }
+
     fn operation(id: &str) -> PersonalAnalyticsOperation {
         PersonalAnalyticsOperation {
             operation_id: id.to_string(),
@@ -1398,21 +1592,25 @@ mod tests {
     }
 
     fn insight_operation(
-        status: PersonalAnalyticsOperationStatus,
+        status: AgentInsightOperationStatus,
         revision: u64,
-    ) -> PersonalAnalyticsOperation {
-        PersonalAnalyticsOperation {
+    ) -> AgentInsightOperation {
+        AgentInsightOperation {
             operation_id: format!("operation-{revision}"),
+            generation: 1,
             agent_type: "agent-a".to_string(),
+            range: PersonalAnalyticsDateRange::default(),
+            schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
+            index_revision: 1,
             status,
             revision,
-            progress: PersonalAnalyticsProgress {
+            progress: AgentInsightProgress {
                 stage: status,
                 processed_units: 0,
                 total_units: 0,
             },
             source_watermark: "1".to_string(),
-            report_id: None,
+            report_id: "report-1".to_string(),
             error: None,
             created_at: "2026-08-18T00:00:00Z".to_string(),
             updated_at: "2026-08-18T00:00:00Z".to_string(),
@@ -1472,41 +1670,289 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_sync_operation_only_allows_cancelled_terminal_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let runtime = PersonalAnalyticsRuntime::default();
+        runtime
+            .begin(&root, operation("one"), root.join("one"))
+            .unwrap();
+        let cancelling = runtime
+            .transition(&root, "one", |operation, _| {
+                operation.status = PersonalAnalyticsOperationStatus::Cancelling;
+            })
+            .unwrap()
+            .unwrap()
+            .operation
+            .unwrap();
+
+        assert!(
+            runtime
+                .transition(&root, "one", |operation, _| {
+                    operation.status = PersonalAnalyticsOperationStatus::Completed;
+                })
+                .unwrap()
+                .is_none()
+        );
+        let unchanged = runtime.snapshot(&root).unwrap().operation.unwrap();
+        assert_eq!(
+            unchanged.status,
+            PersonalAnalyticsOperationStatus::Cancelling
+        );
+        assert_eq!(unchanged.revision, cancelling.revision);
+
+        let cancelled = runtime
+            .transition(&root, "one", |operation, _| {
+                operation.status = PersonalAnalyticsOperationStatus::Cancelled;
+            })
+            .unwrap()
+            .unwrap()
+            .operation
+            .unwrap();
+        assert_eq!(
+            cancelled.status,
+            PersonalAnalyticsOperationStatus::Cancelled
+        );
+        assert_eq!(cancelled.revision, cancelling.revision + 1);
+    }
+
+    #[test]
+    fn cancelling_insight_operation_only_allows_cancelled_terminal_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let database_path = root.join("gold-band.db");
+        let runtime = PersonalAnalyticsInsightRuntime::default();
+        let initial = insight_operation(AgentInsightOperationStatus::Queued, 1);
+        let operation_id = initial.operation_id.clone();
+        runtime
+            .begin(
+                &root,
+                initial,
+                root.join("analysis-attempt"),
+                &database_path,
+            )
+            .unwrap();
+        let cancelling = runtime
+            .transition(&root, &operation_id, |operation| {
+                operation.status = AgentInsightOperationStatus::Cancelling;
+            })
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            runtime
+                .transition(&root, &operation_id, |operation| {
+                    operation.status = AgentInsightOperationStatus::Completed;
+                })
+                .unwrap()
+                .is_none()
+        );
+        let unchanged = runtime.operation(&root, &database_path).unwrap().unwrap();
+        assert_eq!(unchanged.status, AgentInsightOperationStatus::Cancelling);
+        assert_eq!(unchanged.revision, cancelling.revision);
+
+        let cancelled = runtime
+            .transition(&root, &operation_id, |operation| {
+                operation.status = AgentInsightOperationStatus::Cancelled;
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.status, AgentInsightOperationStatus::Cancelled);
+        assert_eq!(cancelled.revision, cancelling.revision + 1);
+    }
+
+    #[test]
+    fn cancellation_wins_before_the_completed_cache_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let database_path = root.join("gold-band.db");
+        let runtime = PersonalAnalyticsInsightRuntime::default();
+        let initial = insight_operation(AgentInsightOperationStatus::Queued, 1);
+        let operation_id = initial.operation_id.clone();
+        let (accepted, _) = runtime
+            .begin(
+                &root,
+                initial,
+                root.join("analysis-attempt"),
+                &database_path,
+            )
+            .unwrap();
+        runtime
+            .transition(&root, &operation_id, |operation| {
+                operation.status = AgentInsightOperationStatus::Analyzing;
+            })
+            .unwrap();
+        runtime
+            .transition(&root, &operation_id, |operation| {
+                operation.status = AgentInsightOperationStatus::ValidatingReport;
+            })
+            .unwrap();
+        runtime
+            .request_cancel(&root, &operation_id, &database_path)
+            .unwrap();
+        let identity = InsightIdentity {
+            operation_id,
+            range_start: accepted.range.start,
+            range_end: accepted.range.end,
+            schema_version: accepted.schema_version,
+            index_revision: accepted.index_revision,
+            agent_type: accepted.agent_type,
+        };
+        let narrative = PersonalAnalyticsNarrative {
+            schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
+            insights: Vec::new(),
+        };
+        let mut index = PersonalAnalyticsIndex::open(&database_path).unwrap();
+
+        assert!(
+            runtime
+                .complete_with_cache(
+                    &root,
+                    &identity.operation_id,
+                    &mut index,
+                    &identity,
+                    &narrative
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(index.completed_insight(&identity).unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_snapshot_persistence_does_not_advance_memory_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let runtime = PersonalAnalyticsRuntime::default();
+        runtime
+            .begin(&root, operation("one"), root.join("one"))
+            .unwrap();
+        let state_path = root.join("state.json");
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+
+        let error = runtime
+            .transition(&root, "one", |operation, _| {
+                operation.status = PersonalAnalyticsOperationStatus::Completed;
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "analytics.storage-failed");
+        let current = runtime.snapshot(&root).unwrap().operation.unwrap();
+        assert_eq!(current.status, PersonalAnalyticsOperationStatus::Queued);
+        assert_eq!(current.revision, 1);
+    }
+
+    #[test]
+    fn failed_insight_persistence_does_not_advance_memory_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let database_path = root.join("gold-band.db");
+        let runtime = PersonalAnalyticsInsightRuntime::default();
+        let initial = insight_operation(AgentInsightOperationStatus::Queued, 1);
+        let operation_id = initial.operation_id.clone();
+        runtime
+            .begin(
+                &root,
+                initial,
+                root.join("analysis-attempt"),
+                &database_path,
+            )
+            .unwrap();
+        let state_path = root.join("insight-state.json");
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+
+        let error = runtime
+            .transition(&root, &operation_id, |operation| {
+                operation.status = AgentInsightOperationStatus::Analyzing;
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "analytics.storage-failed");
+        let current = runtime.operation(&root, &database_path).unwrap().unwrap();
+        assert_eq!(current.status, AgentInsightOperationStatus::Queued);
+        assert_eq!(current.revision, 1);
+    }
+
+    #[test]
     fn interrupted_insight_operation_recovers_as_failed_and_allows_restart() {
         let temp = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let database_path = root.join("gold-band.db");
         std::fs::create_dir_all(&root).unwrap();
         write_json(
             &root.join("insight-state.json"),
-            &insight_operation(PersonalAnalyticsOperationStatus::Analyzing, 2),
+            &insight_operation(AgentInsightOperationStatus::Analyzing, 2),
         )
         .unwrap();
 
         let runtime = PersonalAnalyticsInsightRuntime::default();
         let recovered = runtime
-            .operation(&root)
+            .operation(&root, &database_path)
             .unwrap()
             .expect("operation is persisted");
-        assert_eq!(recovered.status, PersonalAnalyticsOperationStatus::Failed);
+        assert_eq!(recovered.status, AgentInsightOperationStatus::Failed);
         assert_eq!(recovered.revision, 3);
         assert_eq!(
             recovered.error.expect("recovery error").code,
             "analytics.execution-interrupted"
         );
 
-        let restarted = insight_operation(PersonalAnalyticsOperationStatus::Queued, 1);
+        let restarted = insight_operation(AgentInsightOperationStatus::Queued, 1);
         let operation_id = restarted.operation_id.clone();
         let (accepted, _) = runtime
             .begin(
                 &root,
                 restarted,
                 root.join("operations").join(operation_id.clone()),
+                &database_path,
             )
             .unwrap();
-        assert_eq!(accepted.status, PersonalAnalyticsOperationStatus::Queued);
+        assert_eq!(accepted.status, AgentInsightOperationStatus::Queued);
+        assert_eq!(accepted.generation, 2);
         assert_eq!(
-            runtime.operation(&root).unwrap().unwrap().operation_id,
+            runtime
+                .operation(&root, &database_path)
+                .unwrap()
+                .unwrap()
+                .operation_id,
             operation_id
         );
+    }
+
+    #[test]
+    fn interrupted_insight_recovers_completed_after_cache_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let database_path = root.join("gold-band.db");
+        std::fs::create_dir_all(&root).unwrap();
+        let operation = insight_operation(AgentInsightOperationStatus::ValidatingReport, 4);
+        let identity = InsightIdentity {
+            operation_id: operation.operation_id.clone(),
+            range_start: operation.range.start.clone(),
+            range_end: operation.range.end.clone(),
+            schema_version: operation.schema_version.clone(),
+            index_revision: operation.index_revision,
+            agent_type: operation.agent_type.clone(),
+        };
+        let mut index = PersonalAnalyticsIndex::open(&database_path).unwrap();
+        index
+            .store_completed_insight(
+                &identity,
+                &PersonalAnalyticsNarrative {
+                    schema_version: PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION.to_string(),
+                    insights: Vec::new(),
+                },
+                "2026-08-18T00:01:00Z",
+            )
+            .unwrap();
+        write_json(&root.join("insight-state.json"), &operation).unwrap();
+
+        let recovered = PersonalAnalyticsInsightRuntime::default()
+            .operation(&root, &database_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, AgentInsightOperationStatus::Completed);
+        assert_eq!(recovered.revision, 5);
+        assert!(recovered.error.is_none());
     }
 }

@@ -509,6 +509,37 @@ export interface PersonalAnalyticsOperationVm {
   completedAt: string | null;
 }
 
+export type AgentInsightOperationStatus =
+  | 'queued'
+  | 'analyzing'
+  | 'validating-report'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface AgentInsightOperationVm {
+  operationId: string;
+  generation: number;
+  agentType: string;
+  range: { start: string | null; end: string | null };
+  schemaVersion: string;
+  indexRevision: number;
+  status: AgentInsightOperationStatus;
+  revision: number;
+  progress: {
+    stage: AgentInsightOperationStatus;
+    processedUnits: number;
+    totalUnits: number;
+  };
+  sourceWatermark: string;
+  reportId: string;
+  error: PersonalAnalyticsErrorVm | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export interface PersonalAnalyticsRateMetricVm {
   metricId: string;
   numerator: number;
@@ -631,7 +662,7 @@ export interface PersonalAnalyticsReportVm {
 
 export interface PersonalAnalyticsSnapshotVm {
   operation: PersonalAnalyticsOperationVm | null;
-  insightOperation: PersonalAnalyticsOperationVm | null;
+  insightOperation: AgentInsightOperationVm | null;
   latestReport: PersonalAnalyticsReportVm | null;
 }
 

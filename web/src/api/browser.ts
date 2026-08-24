@@ -1,4 +1,4 @@
-import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFramePageVm, AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AgentInsightOperationVm, AgentRegistryVm, AppearancePreference, AppBootstrapVm, AutoTemplate, ContentVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, FileRevisionVm, GitStateChangedEventVm, LocalClaudeStatusVm, LogPageVm, LogQueryInput, ManagedAgentInput, PersonalAnalyticsSnapshotVm, PersonalizationPreference, PreferencesVm, ProfileInput, ProfileVm, RoundDetailVm, RoundSelection, RunDetailVm, RunSummaryVm, RunScheduledTaskResultVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm, TaskDetailVm, TaskListVm, UpdateBadgeStateVm, UpdateScheduledTaskInput, UpdateStatusVm, UpdaterSettingsVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm, WorkspaceFileChangedEventVm } from '../types';
 import { mockAgentRegistry, mockBootstrap, mockContent, mockErrorBlockedConversationRun, mockErrorBlockedConversationSession, mockLogPage, mockRoundDetail, mockRunDetail, mockTaskDetail, mockTaskList, mockWorkflow, mockWorkflowTemplates } from '../mockData';
 import type { ImageActionInput, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import type { GitCommitVm, GitHubOperationVm, GitOperationVm } from '../types';
@@ -157,6 +157,24 @@ const browserPersonalAnalytics: PersonalAnalyticsSnapshotVm = {
     }],
     warnings: [{ code: 'analytics.active-duration-zero-filled', params: { count: 2 } }],
   },
+};
+
+const browserInsightOperation: AgentInsightOperationVm = {
+  operationId: 'browser-insight-preview',
+  generation: 1,
+  agentType: 'codex-acp',
+  range: { start: null, end: null },
+  schemaVersion: '2.2.0',
+  indexRevision: 6,
+  status: 'completed',
+  revision: 3,
+  progress: { stage: 'completed', processedUnits: 1, totalUnits: 1 },
+  sourceWatermark: '6',
+  reportId: 'preview-report',
+  error: null,
+  createdAt: '2026-08-17T12:02:18Z',
+  updatedAt: '2026-08-17T12:02:19Z',
+  completedAt: '2026-08-17T12:02:19Z',
 };
 
 function resolveBrowserOptionalEntry(
@@ -1095,14 +1113,21 @@ export const browserApi: RuntimeApi = {
   syncPersonalAnalytics() {
     return Promise.resolve(browserPersonalAnalytics);
   },
-  queryPersonalAnalyticsReport(_range: { start?: string | null; end?: string | null }) {
-    return Promise.resolve(browserPersonalAnalytics.latestReport!);
+  queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }) {
+    return Promise.resolve({
+      ...browserPersonalAnalytics.latestReport!,
+      range: { start: range.start ?? null, end: range.end ?? null },
+    });
   },
-  startPersonalAnalyticsInsights(_agentType: string, _range: { start?: string | null; end?: string | null }) {
-    return Promise.resolve(browserPersonalAnalytics.operation!);
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }) {
+    return Promise.resolve({
+      ...browserInsightOperation,
+      agentType,
+      range: { start: range.start ?? null, end: range.end ?? null },
+    });
   },
   cancelPersonalAnalyticsInsights(_operationId: string) {
-    return Promise.resolve(browserPersonalAnalytics.operation!);
+    return Promise.resolve(browserInsightOperation);
   },
   cancelPersonalAnalytics(_operationId: string) {
     return Promise.resolve(browserPersonalAnalytics);

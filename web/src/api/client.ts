@@ -6,6 +6,7 @@ import type {
   AcpUiEventVm,
   ActiveSessionStopVm,
   AgentRegistryVm,
+  AgentInsightOperationVm,
   AppBootstrapVm,
   AppExitRequestVm,
   AutoTemplate,
@@ -251,8 +252,8 @@ export interface RuntimeApi {
   getPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
   syncPersonalAnalytics(): Promise<PersonalAnalyticsSnapshotVm>;
   queryPersonalAnalyticsReport(range: { start?: string | null; end?: string | null }, agentType?: string): Promise<PersonalAnalyticsReportVm>;
-  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }): Promise<PersonalAnalyticsOperationVm>;
-  cancelPersonalAnalyticsInsights(operationId: string): Promise<PersonalAnalyticsOperationVm>;
+  startPersonalAnalyticsInsights(agentType: string, range: { start?: string | null; end?: string | null }): Promise<AgentInsightOperationVm>;
+  cancelPersonalAnalyticsInsights(operationId: string): Promise<AgentInsightOperationVm>;
   cancelPersonalAnalytics(operationId: string): Promise<PersonalAnalyticsSnapshotVm>;
   subscribePersonalAnalyticsUpdates?(listener: (snapshot: PersonalAnalyticsSnapshotVm) => void): Promise<() => void>;
   getAgentCommandCatalog(agentType: string, workspacePath: string): Promise<import('../types').AcpCommandCatalogVm | null>;

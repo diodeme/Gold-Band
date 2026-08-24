@@ -443,6 +443,7 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 可编辑会话标题的悬浮提示统一使用项目内置 shadcn Tooltip，禁止使用 HTML `title` 触发 Windows/WebView 原生 tooltip；鼠标悬浮与键盘聚焦共享主题化提示样式
 - Workflow/AUTO 的第二行作为元信息层，视觉权重需低于第一行：更小字号、更轻字重、更弱对比度，不与任务标题竞争主次；Direct 使用下述单层组合页头
 - 运行标题栏与 ACP session header 统一消费独立的 `content-header` token 并只保留轻量底部分隔线；四套主题当前都将该 token 映射为 `var(--sidebar)`，使标题栏与侧边栏组成连续应用框架，并与消息阅读区明确分层。保留独立 token 是为了未来可只改色板映射，不改变组件接口；标题栏不得增加独立卡片、投影或嵌套灰块。
+- 多个 session 并行运行时，标题栏与 ACP session header 之间的活动会话选择条继续消费同一实色 `content-header` token，不透出壁纸或消息区背景；选择条使用紧凑单行纵向留白和轻量底分隔，session 较多时保留自然换行，不改变 canonical locator、状态点或会话选择行为。
 - 用户消息气泡使用独立的 `message-user` / `message-user-foreground` 语义 token，不复用 `primary` 混色。科技灰下采用 `#f3f3f3` 浅灰底与 `#202020` 深色正文，不显示可感知边框和投影；长消息仍应保持轻盈，不能形成大面积中灰实体面板。深色主题使用同源的中性高层 surface 与高对比文字。
 - assistant 自然语言正文直接显示在页面背景上，使用实色 `foreground`，不再包裹白色卡片、灰色边框或投影。工具、思考、代码块和控制输出仍可使用必要的结构化 surface，从而让主阅读路径保持高白度与高黑度。
 - 两个内置主题共享 `Inter Variable → Gold Band MiSans` 的默认 UI 字体主路径，并由两套 variable font 提供连续真实字重轴。无显式字重的排版基线固定为 330；`font-medium / font-semibold / font-bold` 依次映射为 380、450、520，MiSans 注册范围封顶 520，不提供 Bold 630。正文、行内代码与使用 `font-normal` 的标签保持同一 330 基线，标题和 `strong` 继续通过 380–520 建立层级；不得用 opacity、阴影、伪粗体或静态 Light 冒充中间字重。

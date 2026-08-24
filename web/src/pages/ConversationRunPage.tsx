@@ -493,8 +493,11 @@ export function ConversationRunPage({
 
       {/* Active sessions indicator */}
       {!isDirect && run.activeSessions.length > 1 ? (
-        <div className="shrink-0 border-b bg-muted/5 px-5 py-2">
-          <div className="flex flex-wrap gap-2">
+        <div
+          data-conversation-active-sessions="true"
+          className="shrink-0 border-b border-border/60 bg-content-header px-5 py-1"
+        >
+          <div className="flex flex-wrap gap-1.5">
             {run.activeSessions.map((session) => (
               <button
                 key={`${session.roundId}/${session.nodeId}/${session.attemptId}`}

@@ -1,354 +1,303 @@
-﻿# WB 会话指标采集与批量上报设计
+# WB 会话指标采集与批量上报设计
+
+> 状态：2026-08-21 客户端破坏式合同升级已完成；服务端待外部仓库实现
+>
+> 适用接口：`POST /api/client-report/metrics/batch`
+>
+> 服务端处理合同：[会话指标上报服务端处理技术方案](./metrics-server-processing.md)
 
 ## 1. 目标与边界
 
-本文重新定义 `POST /api/client-report/metrics/batch`。采集覆盖 Direct、Workflow、AUTO 三种会话模式的完整生命周期，并支持执行覆盖、交付终局、产物质量、效率成本、自动化、可靠性、模型质量七类价值追溯。
+Gold Band 对 Direct、Workflow、AUTO 的 lifecycle 事件使用统一的 Task 事件流、Runtime locator 和统计快照合同：
 
-指标系统是 runtime 的观察者，不参与控制流程。指标构造、排队、批量发送和失败重试均不得阻塞或改变会话状态。能力只在 `wb` 渠道启用；其他渠道不创建采集订阅和上报 worker。
+1. `(projectId, executionId)` 唯一定位一个 Task 指标事件流；`eventRevision` 在 Task 全生命周期持久、严格递增。
+2. `runId/roundId/nodeId/attemptId` 定位事件实际描述的 Run、Round 和 attempt；事件主体与 `executionKind` 不得矛盾。
+3. attempt terminal 携带当前 attempt counters；task delivery terminal 携带 Task 累计 counters 和代码变更统计。
+4. Task 创建来源与本次 execution 触发来源分别冻结并逐事件携带。
+5. 已被 collector 接受的事实通过 SQLite transactional outbox 可靠补报；网络与数据库不阻塞 Runtime 热路径。
 
-本次直接替换旧的“节点开始时补报前序节点 + 当前节点”协议，不保留双写、哨兵节点或旧消费路径。
+能力只在 `wb` 渠道、合法 endpoint 和 API Key 同时可用时启用。指标系统只观察 runtime，不参与业务控制；采集失败不得改变 Task、Run、Round、Attempt 或 ACP 状态。
+
+本合同直接替换旧的 run/attempt 局部 revision、内存 reporter、delivery-only counters 和不上传 Run/Round 的协议，不双写、不 fallback。
 
 ## 2. 根因与设计选择
 
-现有问题来自抽象层级不完整，而不是单个字段遗漏：旧模型只描述 Workflow node，无法自然表达 Direct turn、Workflow run、AUTO outer run、pause/resume、干预和 acceptance；终态还依赖下一节点触发补报。
+旧实现把 Task、Run 和 Attempt 的 identity、sequence 与 aggregate 混在 `ExecutionObservabilityState` 中：
 
-因此统一为“执行单元 + 生命周期事件”：runtime 在事实发生并持久化后发布领域事件，采集订阅者只做转换并送入独立批量 worker。沿用项目已有 `RuntimeLifecycleBus`，不引入 OpenTelemetry、Kafka、复杂 schema registry 或 exactly-once 投递。
+- terminal 后释放内存 state，新 Run、follow-up 或进程恢复会重用 revision。
+- Workflow/AUTO 中间态以 `run/outer-run` 为主体，同时夹带 node/unit 字段。
+- task counters 只能得到当前 run 的快照，attempt counters 无法下钻。
+- 发送队列和有限 HTTP 重试在进程退出、断网或 5xx 后会丢事件。
+- 终态缺少 task 代码变更归因，只能错误地扫描 workspace 或 Git。
 
-```mermaid
-flowchart LR
-    D["Direct turn"] --> B["RuntimeLifecycleBus"]
-    W["Workflow run / node attempt"] --> B
-    A["AUTO outer run / unit attempt"] --> B
-    B -->|"wb only / try_send"| C["MetricsCollector"]
-    C --> Q["有界内存队列"]
-    Q --> R["BatchReporter"]
-    R --> API["metrics/batch"]
+因此引入一个单消费者 `MetricsCollector`，复用项目已有 `RuntimeLifecycleBus`、Tokio 有界 MPSC、`rusqlite`、`reqwest`、`TurnFileStore` 和 `similar::TextDiff`：
+
+```text
+Runtime producer
+  -> bounded try_send(PendingMetricsFact)
+  -> MetricsCollector
+  -> one SQLite transaction:
+       load/update TaskMetricsState
+       allocate eventRevision
+       apply typed transition
+       validate/build immutable wire event
+       insert metrics_outbox
+  -> BatchUploader claim/send/ack
+  -> POST /api/client-report/metrics/batch
 ```
 
-| 组件 | 职责 | 不负责 |
-|---|---|---|
-| runtime / ACP | 在状态确定后发布领域事实 | HTTP、重试、JSON 拼装 |
-| `RuntimeLifecycleBus` | 异步分发、隔离 subscriber panic | 指标聚合 |
-| `MetricsCollector` | 领域事件映射、身份与关联字段快照 | 修改 runtime 状态 |
-| `BatchReporter` | 缓冲、批量、有限重试、诊断 | 无限重试、阻塞会话 |
-| 服务端 | 按 `eventId` 幂等接收并聚合 | 推断未上报事实 |
+不引入 OpenTelemetry 业务事件总线、外部消息队列、并发 SQLite writer、无界缓存或服务端空壳。
 
-## 3. 核心数据模型
+## 3. 数据归属与事实源
 
-### 3.1 执行单元
-
-| `executionKind` | 模式 | 含义 | 稳定 `executionId` |
+| 数据 | 权威来源 | 生命周期 | Wire |
 |---|---|---|---|
-| `turn` | Direct | 一次用户消息到回复终态 | `taskId`（同一 task 不变）；attemptId 等于 taskId，attemptIndex 固定为 1 |
-| `run` | Workflow | 一次 Workflow 运行 | `taskId` |
-| `node-attempt` | Workflow | 某节点的一次实际尝试 | `taskId`（所有节点共享）；nodeId 为同一 run/round/node 稳定派生的逻辑节点 UUID，重试不变 |
-| `outer-run` | AUTO | 一次 AUTO 总体交付 | `taskId` |
-| `unit-attempt` | AUTO | worker、workflow invocation、merge、acceptance 的一次尝试 | `taskId`（所有 unit 共享）；nodeId 为 `DynamicNodeState.uuid`，重试不变 |
+| `projectId` | `GoldBandPaths.project_id` | Project 稳定 | 每事件必填 |
+| `executionId` | `TaskState.uuid` | Task 稳定 | 每事件必填 |
+| `runId` | `RunState.id` | 当前 Run | 每事件必填 |
+| `roundId` | `RoundState.id` | 当前 Round | 每事件必填 |
+| `nodeId/attemptId` | durable node/unit state | 当前 attempt | attempt 事件必填 |
+| `eventRevision` | SQLite `TaskMetricsState.last_revision` | 跨 Run/Round/attempt/重启 | 每事件必填 |
+| Task 来源 | Conversation authoring metadata | Task 创建后冻结 | 每事件必填 |
+| execution 触发来源 | scheduler occurrence 或用户动作快照 | 当前 Run/Turn | 每事件必填 |
+| attempt counters | `TaskMetricsState.active_attempts` | attempt started 至 terminal | attempt terminal |
+| task counters | `TaskMetricsState.task_counters` | Task 创建至当前 delivery terminal | delivery terminal |
+| 代码变更 | 已 finalized 的 turn file change set | Task 创建至当前 delivery terminal | delivery terminal |
 
-所有模式的 `executionId` 统一为 `taskId`，不再有 `parentExecutionId`。AUTO 模式下的 workflow wrapper 节点不上报指标。`workflow-invocation` 携带 `childRunId`，用于关联其内部 Workflow run。
+```rust
+struct TaskMetricsKey {
+    project_id: String,
+    execution_id: String,
+}
 
-`eventId`、`executionId`、`nodeId`、`attemptId` 必须为 UUID。所有模式的 `executionId` 统一为 `taskId`。Direct turn 的 attemptId 等于 taskId，attemptIndex 固定为 1。Workflow node 的 `nodeId` 由 run UUID 与 round/node 逻辑键用 UUID v5 稳定派生（重试不变），`attemptId` 使用 NodeState UUID（每次执行新建）。AUTO unit 的 `nodeId` 为 `DynamicNodeState.uuid`（重试不变），`attemptId` 由 nodeId 与本地 attempt 序号用 UUID v5 派生。`attemptIndex` 从本地 `attempt-NNN` 序号产生。started 事件不携带 model（ACP session 尚未启动，真实模型未知）；completed 事件从 `acp.session.json` 解析实际模型名。
+struct AttemptMetricsKey {
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+}
+```
 
-### 3.2 生命周期事件
+`workspace` 只用于诊断与展示，不得代替 `projectId` 参与 state、唯一约束或 JOIN。服务端不得按末级 `runId/roundId/nodeId/attemptId` 全局反查。
 
-| `eventType` | 触发时机 | 关键载荷 |
+## 4. Producer 输入合同
+
+producer 只提交不可变领域事实，不生成 `eventId/eventRevision/reportedAt`，也不维护 task counters：
+
+```rust
+struct PendingMetricsFact {
+    key: TaskMetricsKey,
+    event_type: LifecycleEventType,
+    occurred_at: String,
+    user_id: String,
+    workspace: String,
+    session_mode: MetricsSessionMode,
+    subject: MetricsSubject,
+    runtime_locator: MetricsRuntimeLocator,
+    task_origin: MetricsTaskOrigin,
+    execution_trigger: MetricsExecutionTrigger,
+    transition: MetricsTransition,
+    payload: MetricsPayload,
+}
+```
+
+`MetricsSubject` 是 tagged enum：`DirectTurn`、`WorkflowRun`、`WorkflowNodeAttempt`、`AutoOuterRun`、`AutoUnitAttempt`。`executionKind` 只能由 subject 映射，producer 不接受裸 kind 与平行 node 字段。
+
+`MetricsTransition` 只表达 collector 需要累加的受控动作：pause、带 `UserExecutionAction` 的 resume、permission/elicitation request、follow-up 或 none。重复 request ID、重复 action ID 和未产生状态转换的命令必须幂等。
+
+## 5. Wire 合同
+
+公共字段：
+
+| 字段 | 规则 |
+|---|---|
+| `eventId` | collector 创建的 UUID；outbox 与服务端幂等键 |
+| `eventRevision` | `(projectId, executionId)` 内严格递增，允许缺口，不重复、不回退 |
+| `occurredAt` | 领域事实发生时间 |
+| `reportedAt` | collector 接受并创建 immutable wire event 的时间；重试不变 |
+| `projectId` | Project canonical identity |
+| `executionId` | Task UUID；同一 Task 全生命周期不变 |
+| `runId/roundId` | Runtime 本地 `run-NNN/round-NNN`；所有 lifecycle event 必填 |
+| `workspace/userId/clientVersion` | 在事实创建时冻结 |
+| `taskOrigin/executionTrigger` | 联合类型；逐事件携带 |
+
+`reportedAt` 使用 collector 生成的 Asia/Shanghai 本地毫秒时间。`occurredAt/scheduledAt` 沿用当前 runtime canonical 时间值，可能是 RFC 3339、Asia/Shanghai 本地毫秒时间或 `<unix-seconds>Z`；服务端按处理合同解析后统一存 UTC。该多格式边界属于现有 runtime 时间模型，本次不新增第四种格式。
+
+`eventRevision` 表示 collector 接受顺序，不表示 `occurredAt` 时间顺序。Task delivery terminal 不是事件流吸收态，同一 Task 后续 `run-002` 或 follow-up 继续使用更高 revision。
+
+### 5.1 事件主体矩阵
+
+| sessionMode | executionKind | 必填主体字段 |
 |---|---|---|
-| `execution.started` | 单元真实进入执行 | provider/model、unitKind、startedAt |
-| `execution.completed` | 单元进入不可再运行终态 | outcome、terminalReason、usage、timing |
-| `execution.paused` | runtime 进入 paused | pauseReason、当前 node/unit |
-| `execution.resumed` | paused run 恢复 | previousPauseReason、当前 node/unit |
-| `intervention.requested` | 需要输入、授权或人工决策 | interventionKind、当前 node/unit |
-| `acceptance.completed` | AUTO acceptance 得到一次结果 | passed、acceptanceAttempt、firstPass |
+| Direct | `turn` | `attemptId/attemptIndex` |
+| Workflow delivery | `run` | 无 attempt 字段 |
+| Workflow attempt | `node-attempt` | `nodeId/attemptId/attemptIndex/roundIndex/roleName` |
+| AUTO delivery | `outer-run` | 无 attempt 字段 |
+| AUTO attempt | `unit-attempt` | `nodeId/attemptId/attemptIndex/roundIndex/roleName/unitKind` |
 
-Workflow/AUTO 的 `execution.paused`、`execution.resumed`、`intervention.requested` 必须携带当前执行节点或 unit 的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`。进程中断恢复时不再重复当前节点的 `execution.started`，只发布 `execution.resumed`。
+Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/unit-attempt`。找不到 durable active attempt locator 时不构造事件，记录 `METRICS_ACTIVE_ATTEMPT_MISSING`，业务恢复继续。
 
-事件只能在领域状态完成持久化或 ACP turn 已确认终态后发布，避免上报“将要发生”的状态。不再用虚拟开始/结束节点表达 run 边界，也不在客户端预计算全自动交付率等报表结果。
-
-## 4. 接口协议
+### 5.2 来源联合类型
 
 ```json
 {
-  "events": [{
-    "eventId": "01J...",
-    "eventRevision": 2,
-    "eventType": "execution.completed",
-    "occurredAt": "2026-07-31T13:20:15.120",
-    "reportedAt": "2026-07-31T13:20:16.004",
-    "userId": "raw-system-user",
-    "workspace": "D:\\repo\\gold-band",
-    "clientVersion": "0.1.0",
-    "sessionMode": "workflow",
-    "executionKind": "node-attempt",
-    "executionId": "task-uuid",
-    "taskTitle": "给项目添加 README",
-    "nodeId": "node-uuid",
-    "attemptId": "attempt-uuid",
-    "attemptIndex": 1,
-    "roundIndex": 1,
-    "roleName": "代码审查员",
-    "outcome": "success",
-    "terminalReason": "completed",
-    "provider": "codex-acp",
-    "model": "gpt-5.6-sol",
-    "usage": {"inputTokens": 1200, "outputTokens": 340, "cacheReadTokens": 800, "totalTokens": 1540},
-    "modelUsages": [{
-      "provider": "claude-acp",
-      "model": "claude-sonnet-4-5",
-      "inputTokens": 400,
-      "outputTokens": 100,
-      "cacheReadTokens": 200,
-      "totalTokens": 500,
-      "acpSessionElapsedMs": 20000
-    }, {
-      "provider": "codex-acp",
-      "model": "gpt-5.6-sol",
-      "inputTokens": 800,
-      "outputTokens": 240,
-      "cacheReadTokens": 600,
-      "totalTokens": 1040,
-      "acpSessionElapsedMs": 52120
-    }],
-    "timing": {"startedAt": "2026-07-31T13:19:01.000", "endedAt": "2026-07-31T13:20:15.120", "acpSessionElapsedMs": 72120}
-  }]
+  "taskOrigin": {"kind": "scheduled-task", "scheduledTaskId": "scheduled-task-001"},
+  "executionTrigger": {
+    "kind": "scheduled-occurrence",
+    "scheduledTaskId": "scheduled-task-001",
+    "scheduledOccurrenceId": "occurrence-001",
+    "triggerKind": "scheduled",
+    "scheduledAt": "2026-08-20T10:00:00Z",
+    "sessionPolicy": "new"
+  }
 }
 ```
 
-请求头继续使用 `X-Maling-Report-Key`。服务端以 `eventId` 幂等接收，重复事件返回成功且不重复计数。客户端单批最多 100 条，以限制内存与请求体。
+- Task 创建来源为 `user/scheduled-task`，创建后不变。
+- execution 触发来源为 `user/scheduled-occurrence`，描述本次 Run/Turn。
+- “立即执行”仍是 scheduled occurrence，`triggerKind=manual`。
+- 定时 Task 后续用户 follow-up 保持 scheduled task origin，但 trigger 改为 user。
+- 当两个对象都是 scheduled 类型时 `scheduledTaskId` 必须相等。
+- 不上传 instruction、标题、cron 文案等可变或敏感来源字段。
 
-### 4.1 公共字段
+## 6. Counters
 
-| 字段 | 类型 | 说明 |
+| 事件 | counters scope | 规则 |
 |---|---|---|
-| `eventId` | string | 全局唯一事件 ID、服务端幂等键 |
-| `eventRevision` | integer | 同一 execution 内从 1 开始严格递增的状态版本；用于异步乱序排序 |
-| `eventType` | enum | 生命周期事实类型 |
-| `occurredAt` | ISO-8601 | 事实真实发生时间，本地时间，精确到毫秒，不带时区偏移量 |
-| `reportedAt` | ISO-8601 | 事件进入待上报队列的时间，本地时间，精确到毫秒，不带时区偏移量；生成后冻结，所有重试保持不变 |
-| `userId` | string | 原始系统用户标识，不哈希、不替换为内部 UUID |
-| `workspace` | string | 原始 workspace 路径/标识，不哈希、不只传目录名 |
-| `clientVersion` | string | 客户端版本 |
-| `sessionMode` | enum | `direct/workflow/auto` |
-| `executionKind` | enum | 当前执行单元类型 |
-| `executionId` | string | 等于 `taskId`（不再单独上报 taskId）；同一 task 所有事件保持一致 |
-| `taskTitle` | string | 任务标题，即工作空间下展示的名称；所有事件携带同一值 |
+| Workflow node `execution.completed` | 当前 attempt | 必填 |
+| AUTO unit `execution.completed` | 当前 attempt | 必填 |
+| Direct turn `execution.completed` | 当前 Task 累计 | 必填 |
+| Workflow run `execution.completed` | 当前 Task 累计 | 必填 |
+| AUTO outer run `execution.completed` | 当前 Task 累计 | 必填 |
+| started/paused/resumed/intervention/acceptance | 无 | 禁止 |
 
-这里的“本地时间”以客户端操作系统当前时区为准，不硬编码 UTC+8；跨平台协议测试必须按运行环境的本地时区计算预期值。传输格式继续按既有服务端契约省略时区偏移量。
+六项 counters：`pauseCount/resumeCount/permissionRequestCount/elicitationCount/manualContinueCount/followUpCount`，均为非负整数。
 
-`userId/workspace` 必须在事件产生时从执行上下文快照，不能在延迟发送时读取当前 workspace，否则切换项目会串数据。
-共享生命周期总线中的 node/unit 事实必须携带事件所属 workspace 的 `repoRoot`。指标 producer 只能使用该事件路径创建作用域化 `GoldBandPaths`，读取 Usage、解析 child run、写 observability snapshot 和生成 `workspace` 字段；禁止使用 producer 注册时捕获的启动工作区路径。
+```rust
+enum UserExecutionAction {
+    ManualContinue,
+    PermissionResponse,
+    ElicitationResponse,
+    FollowUp,
+    AutomaticRecovery,
+}
+```
 
-### 4.2 关联字段
+- ManualContinue：真实 paused -> running 时 `resume + 1`、`manualContinue + 1`。
+- Permission/Elicitation response：真实恢复时只 `resume + 1`。
+- FollowUp：Task 已完成一次交付后接受新目标，只 `task.followUp + 1`。
+- node/unit attempt 的 `followUpCount` 必须为 0。
+- attempt terminal 从 active map 取快照后移除；task counters 不从 attempt terminal 求和。
 
-| 字段 | 适用范围 | 说明 |
-|---|---|---|
-| `nodeId` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 节点稳定标识，重试不变。Workflow 由 run UUID + round/node 派生；AUTO 为 `DynamicNodeState.uuid` |
-| `attemptId` | Direct turn、Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 每次执行尝试唯一。Direct 的 attemptId 等于 executionId；Workflow 使用 NodeState UUID；AUTO 由 nodeId 与本地 attempt 序号派生 |
-| `attemptIndex` | Direct turn、Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 同一节点内的尝试序号，从 1 开始；Direct 固定为 1，Workflow/AUTO 真正重试时严格加一 |
-| `roundIndex` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 从 1 开始的 round 序号；用于首轮/后续轮次分析，不上报无统计价值的 round UUID |
-| `roleName` | Workflow node attempt、AUTO unit attempt、Workflow/AUTO run 中间态 | 执行时节点/unit 的角色或标题快照；只用于展示和分组，不能作为唯一键 |
-| `unitKind` | AUTO unit attempt | `worker/workflow-invocation/merge/acceptance` |
-| `childRunId` | workflow invocation | 被调用 Workflow run UUID |
+## 7. Task 代码变更
 
-### 4.3 结果、质量与可靠性字段
-
-| 字段 | 说明 |
-|---|---|
-| `outcome` | 最终结果是什么。Direct：`completed/failed/cancelled`；run：`success/failure/killed`；attempt：`success/failure/cancelled` |
-| `terminalReason` | 为什么形成该结果。使用稳定分类枚举，不传对客文案 |
-| `roundCount` | Workflow run 终态的总 round 数；`1` 表示首轮交付 |
-| `passed` | acceptance 本次是否通过 |
-| `acceptanceAttempt` | 同一 outer run 的第几次 acceptance，从 `1` 开始 |
-| `firstPass` | `passed && acceptanceAttempt == 1` |
-| `interventionKind` | `manual-decision/elicitation/permission/error-blocked` 等稳定枚举 |
-| `pauseReason` | runtime 结构化暂停原因 |
-| `failedAttemptId` | run/outer 失败时，指向决定终局的 node/unit attempt |
-
-terminal counters 是自动化与恢复指标的唯一权威来源。中间 lifecycle event 用于时间线与当前状态，不进行服务端增量计数；服务端可用事实事件校验 counters，但不能覆盖 terminal 快照。
-
-### 4.4 模型、用量与时间
-
-| 字段 | 说明 |
-|---|---|
-| `provider/model` | attempt 结束时实际使用的最后一个 resolved provider/model，不取当前设置默认值；run/outer-run 不携带 |
-| `usage.input/output/cacheRead/totalTokens` | attempt 粒度的 provider 返回或项目统一口径；不支持的可选值为 `null`；run/outer-run 不携带 |
-| `modelUsages[]` | 在同一 attempt 内按 provider/model 分组的实际用量明细；数组顺序为首次使用顺序；run/outer-run 不携带 |
-| `timing.startedAt/endedAt` | 执行墙钟边界 |
-| `timing.acpSessionElapsedMs` | 来自 ACP timing 的净处理时间，不含用户等待 |
-
-用户在执行过程中切换模型时，不得把切换前的 usage 归到最终模型。Usage 必须读取 ACP attempt totals，而不是 latest prompt 快照；缺失字段保持 `null`。Direct turn 开始保存累计 baseline，终态上报 terminal-baseline；elapsed 使用同一 delta 规则。每次实际 ACP prompt 完成时，以当次 resolved `provider + model` 和 usage delta 形成 segment；同一执行内相同 provider/model 的 segment 合并。累计值重置或出现负 delta 时，该段未知字段写 `null`，禁止猜测为 0。
-
-Usage 的唯一权威粒度是 attempt：Direct turn、Workflow node-attempt、AUTO unit-attempt 分别独立留存；Workflow run 与 AUTO outer-run 只承载交付终态、质量和 counters，不读取最后节点或聚合子 attempt Usage。顶层各 usage 字段等于同一 attempt 的 `modelUsages[]` 中该字段非 null 值之和；未知段不参与求和。顶层 `provider/model` 仅表示该 attempt 的最终模型。删除有歧义的 `billableTokens`；后续成本应基于原始 token 与带生效日期的 provider/model 价格计算。
-
-AUTO `workflow-invocation` 不承接 child Workflow 的 token：child node attempts 是模型 usage 权威来源；invocation 只上报自身独立 ACP 调用开销，没有独立调用时 usage/modelUsages 为 null。
-
-### 4.5 计数字段
-
-`counters` 只出现在交付层的 `execution.completed` 终态事件中：Direct `turn`、Workflow `run`、AUTO `outer-run`。node attempt 和 unit attempt 不携带 counters，避免父子执行重复统计。六个字段全部必填、使用非负整数；没有发生时传 `0`。
+仅 `turn/run/outer-run execution.completed` 携带：
 
 ```json
-"counters": {
-  "pauseCount": 1,
-  "resumeCount": 1,
-  "permissionRequestCount": 2,
-  "elicitationCount": 0,
-  "manualContinueCount": 1,
-  "followUpCount": 0
+{
+  "codeChanges": {
+    "addedLines": 128,
+    "deletedLines": 37,
+    "changedFiles": 9,
+    "completeness": "complete",
+    "limitationCodes": []
+  }
 }
 ```
 
-| 字段 | 适用范围 | 精确定义 |
-|---|---|---|
-| `pauseCount` | turn/run/outer | 状态从非 paused 进入 paused 的次数；重复写 paused 不累加 |
-| `resumeCount` | turn/run/outer | 状态从 paused 回到 running 的次数；必须与真实状态转换对应 |
-| `permissionRequestCount` | turn/run/outer | 新的 permission request ID 首次进入 pending 的次数；同一请求更新不重复计数 |
-| `elicitationCount` | turn/run/outer | 新的 elicitation request ID 首次进入 pending 的次数 |
-| `manualContinueCount` | turn/run/outer | 除 permission/elicitation 外，用户通过 manual check、分支决策、补充内容或继续按钮恢复 runtime 的次数；一次动作只能归入一个 Count |
+- 数据来自已 finalized 的 `TurnFileChangeSet`，复用其 summary、logical path 和 limitation code。
+- 行数表达 Task edit churn，不声称是 workspace 最终净 diff。
+- 同一路径跨 turn 多次编辑时行数累加，`changedFiles` 去重。
+- 完整且无变更为 complete + `0/0/0`；存在 capture limit、non-linear mutation、二进制或缺失标准 diff 为 partial；完全无可信来源为 unavailable + null。
+- collector 只保存数值、去重 path 和 limitation code；wire、日志和服务端均不包含 path、diff 或源码。
+- task terminal 不调用 Git、不扫描 workspace、不读取全部源码。
 
-| `followUpCount` | turn（Direct） | 同一 Direct task 内首轮之后的用户新输入次数；每次用户继续输入时累加，首轮与 permission/elicitation/automatic 等 runtime-continue 不计入 |
+## 8. Usage、模型与质量字段
 
-除 followUpCount 外不增加其他 Count：attempt/retry 可由 attempt 事件追溯，执行/失败单元可由 unit 终态聚合，acceptance 次数已有 `acceptanceAttempt`，人工决策可由 `intervention.requested` 聚合，模型价值由 `modelUsages[]` 体现。`roundCount` 继续作为 Workflow run 的质量字段，不在 counters 中重复保存。
+Usage 的权威粒度仍是 Direct turn、Workflow node attempt 和 AUTO unit attempt。Workflow run/AUTO outer run 不聚合子 attempt Usage。
 
-### 4.6 完整枚举定义
+- started 不携带 model；completed 从 ACP session 与 prompt usage segment 解析真实 provider/model。
+- 同 attempt 内按首次使用顺序合并 `modelUsages[]`；顶层 usage 是非 null segment 的求和。
+- provider counter 回退、session 更换或字段缺失时保持 null，不产生负数、不猜测 0。
+- AUTO workflow invocation 不承接 child Workflow token；没有独立 ACP 调用时 usage 为 null。
+- `roundCount`、acceptance `passed/acceptanceAttempt/firstPass`、`failedAttemptId` 和稳定 terminal reason 继续按既有领域终态生成。
 
-协议中所有 enum 必须使用下列完整集合；新增值必须同时修改客户端、服务端 DTO、本文和 contract 测试。
+## 9. SQLite state 与 outbox
 
-| 枚举字段 | 完整允许值 |
-|---|---|
-| `eventType` | `execution.started`、`execution.completed`、`execution.paused`、`execution.resumed`、`intervention.requested`、`acceptance.completed` |
-| `sessionMode` | `direct`、`workflow`、`auto` |
-| `executionKind` | `turn`、`run`、`node-attempt`、`outer-run`、`unit-attempt` |
-| `unitKind` | `worker`、`workflow-invocation`、`merge`、`acceptance` |
-| `outcome` | `completed`、`failed`、`cancelled`、`success`、`failure`、`killed`；具体执行单元可用范围遵循 4.3 |
-| `terminalReason` | `completed`、`user-cancelled`、`process-killed`、`provider-error`、`runtime-error`、`validation-error`、`execution-failed`、`retry-exhausted`、`acceptance-rejected`、`unknown` |
-| `interventionKind` | `manual-decision`、`elicitation`、`permission`、`runtime-abnormal`、`error-blocked`、`process-interrupted` |
-| `pauseReason` / `previousPauseReason` | `waiting-for-user-input`、`permission-requested`、`runtime-abnormal`、`error-blocked`、`process-interrupted` |
+```rust
+struct TaskMetricsState {
+    last_revision: u64,
+    task_counters: MetricsCounters,
+    active_attempts: HashMap<AttemptMetricsKey, MetricsCounters>,
+    code_changes: TaskCodeChangeAccumulator,
+}
+```
 
-`terminalReasonCode` 是可选结构化内部错误码，不是 enum，不包含对客文案。统计只使用稳定的 `terminalReason` 分类，新增内部错误不要求客户端和服务端同步扩 enum。
+SQLite 至少包含：
 
-所有 `execution.completed` 必须同时携带 `outcome` 和 `terminalReason`；非 terminal 事件二者都不得携带。合法组合为：
+- `metrics_task_state(project_id, execution_id, last_revision, task_counters_json, code_changes_json, updated_at)`；复合主键为 Project/Task。
+- `metrics_attempt_state(project_id, execution_id, run_id, round_id, node_id, attempt_id, counters_json, request_ids_json, updated_at)`。
+- `metrics_outbox(event_id, project_id, execution_id, event_revision, reported_at, payload_json, status, attempt_count, next_attempt_at, lease_owner, lease_until, acked_at, error_code)`。
 
-| 执行范围 | outcome | 常见 terminalReason |
-|---|---|---|
-| Direct turn | `completed` | `completed` |
-| Direct turn | `failed` | `provider-error/runtime-error/validation-error/retry-exhausted/unknown` |
-| Direct turn | `cancelled` | `user-cancelled/process-killed` |
-| Workflow/AUTO run | `success` | `completed` |
-| Workflow/AUTO run | `failure` | `provider-error/runtime-error/validation-error/execution-failed/retry-exhausted/acceptance-rejected/unknown` |
-| Workflow/AUTO run | `killed` | `user-cancelled/process-killed` |
-| node/unit attempt | `success` | `completed` |
-| node/unit attempt | `failure` | `provider-error/runtime-error/validation-error/execution-failed/retry-exhausted/acceptance-rejected/unknown` |
-| node/unit attempt | `cancelled` | `user-cancelled/process-killed` |
+collector 使用单 SQLite writer 和短事务。HTTP 永不位于事务或锁内。pending/过期 in-flight 在事务内 claim；accepted/duplicate ack，逐项 rejected 只拒绝对应行；timeout/429/5xx 回到 pending 并有界退避。401/403 先释放当前 lease 回 pending，再停止当前 uploader，避免无效鉴权持续请求；应用重启或指标子系统按新配置重新初始化后恢复。lease 过期可恢复。
 
-`runId` 不上报：run 自身以 `executionId` 标识。AUTO 模式下所有 unit 共享 outer run 的 `executionId`。`roundId` 不上报，改用有统计价值的 `roundIndex`。`childRunId` 继续用于 AUTO workflow-invocation 关联 child Workflow。
+Task delivery terminal 不删除 state。只有 Task 明确删除/归档且没有未确认 outbox 时，才按统一保留策略清理。
 
-`attemptId/attemptIndex` 对 `turn/node-attempt/unit-attempt` 必填，对 `run/outer-run` 不适用，并作为服务端 Usage 留存和重试顺序依据。Direct 的 executionId/attemptId 等于 task UUID 且 attemptIndex 固定为 1，同一 task 多次输入在同一 attempt 内累加 usage/counters；Workflow/AUTO 满足 `attemptId != executionId`，多个重试 attempt 共享逻辑 node/unit executionId，AUTO unit 的 executionId 等于 outer run 的 `runUuid`，attemptIndex 从 1 严格递增。ACP/provider 在同一 attempt 内部的重连、多次 prompt 或模型切换不创建新的指标 attempt；节点或 unit 真正重试才同时生成新的 attemptId 和 attemptIndex。
-
-## 5. 价值维度覆盖
-
-| 价值维度 | Direct | Workflow | AUTO |
-|---|---|---|---|
-| 执行覆盖 | turn start/terminal | run + node attempt | outer run + unit attempt |
-| 交付终局 | completed/failed/cancelled | success/failure/killed | success/failure/killed |
-| 产物质量 | 不适用 | `roundCount == 1` 首轮交付 | acceptance `firstPass`；workflow invocation 关联 child run |
-| 效率成本 | turn token、ACP 时间 | node-attempt token、ACP 时间 | unit-attempt token、ACP 时间 |
-| 自动化 | turn 干预次数/类型 | 无干预执行率、全自动交付率 | 无干预执行率、全自动交付率 |
-| 可靠性 | failed/cancelled 原因 | pause/resume、终态原因、node 故障 | outer 终态原因、leaf/unit 故障 |
-| 模型质量 | turn provider/model | node attempt provider/model | unitKind + provider/model |
-
-## 6. 三种模式生命周期
+## 10. 生命周期
 
 ### Direct
 
-用户提交并真实进入 ACP prompt 时发布 turn started；回复完成、provider 失败或用户停止时发布且只发布一个 terminal。首轮虽然内部复用单 Worker workflow，指标语义仍是 Direct turn，不得再计为 Workflow run/node。
+每个真实 ACP prompt 发布 turn started/terminal；内部 Worker shell 不产生 Workflow 指标。首轮后新目标由 typed FollowUp transition 计数。`executionId` 为 Task UUID，`runId/roundId` 使用实际 Runtime locator。
 
 ### Workflow
 
-run 进入 running 后发布 started；node attempt 在 provider 调用开始和状态持久化完成后分别发布 started/completed，并快照 `roundIndex/roleName`。pause/resume 属于 run 生命周期，paused/resumed/intervention.requested 中间态必须携带当前节点的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`；进程中断恢复时只发布 resumed，不重复当前节点 started。最终 success/failure/killed 从稳定 `RunState` 发布。run terminal 从已持久化 round 计算 `roundCount`。
+run started/terminal 使用 `run` subject；node started/terminal 及 paused/resumed/intervention 使用真实 `node-attempt`。新 Round 更新 round locator，新 Run 更新 run locator，task revision 不重置。恢复只发 resumed，不重复 started。
 
 ### AUTO
 
-用户启动 AUTO 后发布 outer run started。dynamic worker、workflow invocation、merge、acceptance 均作为 unit attempt 上报真实 `unitKind`。每次 acceptance 完成额外发布结果，修复后再次验收递增 `acceptanceAttempt`。outer run 发布唯一终态，并用 `failedAttemptId` 定位决定终局的 leaf/unit attempt。AUTO 中间态同样携带当前 unit 的 `nodeId/attemptId/attemptIndex/roundIndex/roleName`。
+outer delivery 使用 `outer-run`；dynamic worker/workflow invocation/merge/acceptance 使用 `unit-attempt`。中间态绑定触发它的 durable dynamic leaf；AUTO wrapper 不上报。workflow invocation 用 `childRunId` 关联 child Workflow。
 
-## 7. 非阻塞与失败策略
+## 11. 客户端校验与结构化错误
 
-1. wb 启动时注册唯一订阅 `desktop.metrics`；其他渠道不注册。
-2. subscriber 只做纯映射和 `try_send`，不等待锁、不扫文件、不执行 HTTP。
-3. 队列容量 2048；满时按确认决策直接丢弃新指标并写诊断日志，terminal 也不例外。事实生产队列记录 queue/capacity/eventKind，HTTP 上报队列额外记录 eventId/executionId；worker 断开使用独立原因。snapshot 队列满或断开时记录 path/revision，不输出快照内容。observability 状态更新入口在同一短锁区间内完成内存更新、快照 clone 和非阻塞 `try_send`，不得在锁内或调用线程执行 JSON 序列化、建目录、文件读写或替换。
-4. reporter 每 2 秒或累计 100 条发送一批；按已冻结 `reportedAt` 的年月拆批，跨月事件不得进入同一请求。
-5. 连接超时 3 秒、总超时 10 秒；timeout/5xx 最多重试 2 次，4xx 不重试。
-6. 正常退出最多等待 500 ms 尽力 flush，不阻塞强制退出。
-7. 上报日志继续写入唯一的 `metrics.log`。每次 HTTP attempt 必须打印 requestId、attempt、时间、URL、完整 JSON 请求体；响应记录相同 requestId、时间、status 和响应体，异常记录完整错误。
-8. 完整请求体日志按产品要求包含原始 `userId/workspace`；`X-Maling-Report-Key` 及其他认证头严禁写入日志。日志文件沿用现有追加写入和目录，不新建第二套 metrics 日志。
-9. `metrics.log` 最大 20 MB。下一条完整日志写入后将超限时，先清空文件、写 `log-reset` 时间和原因，再完整写当前记录；单条日志本身超过 20 MB 时只记录 requestId、实际字节数和 `payload-too-large`。日志失败不影响发送。
+collector 构造 wire event 前校验：
 
-本阶段使用有界内存队列，不增加磁盘 outbox。若后续以实际丢失率证明需要离线补报，再单独引入有上限、可清理的 outbox。
+1. Project/Task/Run/Round identity 完整且格式合法。
+2. subject 与 session mode、event type、attempt fields 符合矩阵。
+3. counters/codeChanges 只出现在规定 terminal。
+4. node/unit followUp 为 0。
+5. scheduled 联合类型字段成组出现且 ID 一致；Workflow/AUTO 不允许 continuous。
+6. codeChanges complete 时数值完整，unavailable 时数值为 null。
 
-## 8. WB 门禁
+内部错误使用稳定 code 与结构化 params，不含对客文案：`METRICS_ACTIVE_ATTEMPT_MISSING`、`METRICS_FACT_INVALID`、`METRICS_COLLECTOR_STORAGE_FAILED`、`METRICS_OUTBOX_CLAIM_FAILED`。
 
-采集门禁为：`channel == "wb" && endpoint 有效 && API key 有效`。default 渠道即使残留 metrics 设置也不采集、不排队、不发 HTTP。wb 凭证缺失时安静禁用并写结构化诊断。心跳可复用同一门禁，但不属于会话生命周期事件。
+单条坏事实只丢弃该事实并记录有界诊断，不影响同批其他事实和业务 lifecycle。
 
-## 9. 可维护性约束
+## 12. 性能、背压与隐私
 
-- 领域 enum 放 core crate；HTTP DTO 放 desktop metrics 模块，orchestrator 禁止拼 JSON。
-- `eventType/executionKind/outcome/terminalReason/unitKind` 必须使用 enum，不散落 string。
-- provider/model、分模型 usage、counters、timing 在执行结束处形成不可变快照；subscriber 不扫描 runtime 目录猜状态。
-- 事件到 DTO 的映射必须是纯函数并有单元测试。
-- 新增模式或单元时同步更新采集矩阵、字段表、contract 测试和服务端口径。
+- producer 热路径为 O(1) 有界 `try_send`；队列容量沿用 2048，单批最多 100。
+- SQLite 工作在专用 blocking worker；同一时刻一个 writer，不持锁 await，不把 HTTP 放进事务。
+- active attempt terminal 后移除；changed-file set 沿用 turn capture entry 上限；outbox 有状态、lease 和保留策略。
+- 不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
+- 日志只记录 event/task identity、稳定错误码、队列/批次/状态和大小，不记录 payload 原文。
 
-### 9.1 采集状态所有权
+实现已通过有界队列、单 writer、短事务、lease 恢复和真实 HTTP 部分响应测试完成结构性性能验收。当前没有采样证据表明 CPU 或内存存在热点，因此不增加并发 writer、缓存或微优化；release 压测应覆盖连续事件、混合 100 条 batch、SQLite 慢和网络重试，并记录 lifecycle 延迟、队列丢弃与 batch 吞吐基线。
 
-每个 execution 维护单调 `eventRevision`；六个 Count、permission/elicitation request ID 去重集合和分模型 usage accumulator 由生命周期状态所有者统一管理，metrics subscriber 不自行累加。
+## 13. 接口级验收
 
-采集状态由内存中的 execution state 作为当前进程内的权威事实源，并通过有界后台队列尽力保存到 execution 独立的 `observability.snapshot.json`。writer 复用 `AtomicWriteFile` 的跨平台原子替换语义，Windows 上目标文件已存在时也必须可连续覆盖。队列满、writer 断开、序列化或写入失败只降低指标和重启恢复精度，不得改变 Direct、Workflow、AUTO 的业务状态或推进结果。outer-run 的 counters 与 acceptanceAttempts 仍由同一内存状态管理，不复制第二套 canonical state。
+- 同一 Task 跨 `run-001/round-001 -> round-002 -> run-002/round-001` 以及应用重启，revision 严格递增。
+- state cursor、counters/codeChanges 和 outbox insert 任一步失败都不产生半提交。
+- Workflow/AUTO 中间态使用 attempt subject；缺失 locator 不伪造事件且业务继续。
+- attempt/task counters 在 permission、elicitation、manual continue、follow-up、retry 与重复 request 下符合精确定义。
+- scheduled new/continuous/manual/follow-up 的 origin/trigger 组合正确。
+- code changes 覆盖 complete/partial/unavailable、同路径多 turn 去重与隐私边界。
+- batch 100 条混合多个 Project/Task/Run/Round 不串 state；部分 rejected 不影响 accepted。
+- producer queue 满、SQLite 慢和网络重试不阻塞 Runtime 事件线程。
 
-当前阶段明确以会话非阻塞优先：observability 热路径不从 snapshot 同步恢复，新进程或已释放的 execution 从零状态开始，`collectionStateRecovered` 省略。因此 `eventRevision`、counters、usage 与 request ID 去重只保证当前内存生命周期内连续；跨进程精确恢复属于后续优化，只有能保持热路径零文件 I/O、零等待时才可重新接入。
+## 14. 实施状态
 
-## 10. 验收标准
-
-- 三种模式的正常、失败、取消/kill 均有完整 start/terminal 对。
-- Workflow pause/resume/node failure，AUTO outer/leaf failure 和每次 acceptance 可追溯。
-- Direct 首轮不重复计数；AUTO workflow invocation 与 child Workflow 不重复聚合成本。
-- provider/model、分模型 token、ACP 时间来自真实执行快照；模型切换前后 usage 不串归属。
-- eventRevision 在同一内存 execution 生命周期和异步分发期间保持单调；当前阶段不以牺牲会话非阻塞性保证跨进程连续。
-- 六个 Count 均符合状态转换定义，只出现在交付层终态，父子执行不重复计数。
-- `metrics.log` 包含每次请求的日志时间和完整请求体，且不包含 API Key。
-- 每条事件包含产生时的原始 `userId/workspace`。
-- default 渠道零采集、零排队、零上报。
-- 慢响应、超时、5xx、队列满和 subscriber panic 不影响会话状态与流程。
-
-服务端数据库、月分区、幂等投影与详细统计口径见 `metrics-server-processing.md`。
-
-## 11. 客户端实现状态（2026-07-31）
-
-桌面端已完成旧节点快照协议的破坏式删除，并落地 `events[]` DTO、有界非阻塞队列、批量/按月拆分、有限重试、wb 注册门禁和单文件受限日志。runtime 已发布 Direct、Workflow、AUTO outer/unit、resume、acceptance、分模型 Usage 和持久化 revision 的权威事实；subscriber 只负责校验、纯 DTO 映射和非阻塞入队，不扫描目录推断业务状态。
-
-core 的不可变事实与 `ExecutionObservabilityState` 已实现；状态对象负责 revision、六项 counters、请求 ID 去重和分模型 usage，桌面 subscriber 仅执行纯 DTO 映射与 `try_send`。snapshot 缺失时从零状态开始且不传 `collectionStateRecovered`；已有 snapshot 损坏时从零状态继续并携带 `collectionStateRecovered=false`；后台写失败不回滚业务状态。
-
-截至 2026-08-01，Direct、Workflow、AUTO 的真实发布点均已接入上述事实模型。首次 Direct 内部 Worker 不再产生 Workflow 指标；AUTO dynamic node 明确携带 unitKind，acceptance 维护 outer 级尝试序号；metrics subscriber 只接收 `MetricsFact`，旧通知/UI lifecycle event 不进入上报队列。客户端实现与本文第 10 节可在本仓库固化的验收项一致。
-
-### 11.1 影响性评估后的加固（2026-08-01）
-
-- 采集门禁下沉到 core `App`：default 或 wb 凭证无效时不创建事实生产者，不构造指标、不写 snapshot、不入队，满足“零采集”而不仅是“零 HTTP”。
-- lifecycle 热路径只执行有界 `try_send`；事实派生由单个后台 worker 串行处理。snapshot 同样由单个有界 writer 串行原子写入，避免每事件创建线程及旧 revision 覆盖新 revision。
-- Direct turn 在 started 时生成严格 UUID，并由 attempt 上下文关联 permission/elicitation 和 terminal；终态后释放 observability 与关联状态，避免长时间运行导致状态表无界增长。
-- reporter 的每个请求（含退出 flush）严格不超过 100 条；关闭时总等待上限为 500 ms。subscriber 在 DTO 映射前执行领域事实校验，非法事实只记录诊断并丢弃。
-- 设置采用 wb 启动门禁；当前 wb 发布配置在运行期锁定，因此无需为关闭操作保留动态退订兼容路径。
-
-### 11.2 100% 客户端验收补齐（2026-08-01）
-
-- `acp.prompt-usage.jsonl` 在每次 prompt started/completed 时固化 resolved provider/model 和独立 Usage；node/unit 终态按 segment 聚合，正确支持 A→B→A，旧 journal 缺少 segment 元数据时才使用累计 totals 兼容读取。
-- `resumeCount` 对所有真实 paused→running 转换计数。恢复入口必须显式写入并持久化 `ResumeCause`：`manual-continue`、`permission-resolved`、`elicitation-resolved`、`automatic-recovery`；只有 `manual-continue` 增加 `manualContinueCount`，禁止再根据 `PauseReason` 推断。
-- AUTO outer-run 失败优先关联动态图中最新实际失败的 unit UUID；acceptance、invalid、killed、runtime error 分别映射为 `acceptance-rejected`、`validation-error`、`process-killed`、`runtime-error`，并在存在时携带结构化 `terminalReasonCode`。
-
-
-### 11.3 人工追问次数（2026-08-07）
-
-- Direct 同一 task 的 executionId/attemptId 保持 task UUID；首轮之后的用户新输入在同一 attempt 快照累加 `followUpCount`，usage 与 manualContinueCount 等计数也继续按累计快照上报。active turn 结束后仍通过同 attempt snapshot/usage baseline 识别后续输入，不依赖内存态。
-- `followUpCount` 只统计用户新提交的 Direct prompt；permission/elicitation/automatic recovery 等 runtime-continue 不计入。
-- 服务端 delivery stat 同步增加 `follow_up_count` 列，客户端 DTO 同步输出 `followUpCount`。
-
-### 11.4 Snapshot 非阻塞与 Windows 覆盖加固（2026-08-17）
-
-- 删除 observability 同步持久化入口；状态 mutex 内只更新内存、clone snapshot 并向容量 2048 的单 writer 执行 `try_send`，调用线程不再序列化或访问文件系统。
-- 首次状态更新不再在全局 mutex 内同步加载历史 snapshot；本阶段接受重启后的 revision/counters/usage 精度下降，确保 continue、permission、elicitation 和 lifecycle 推进不等待磁盘。
-- snapshot writer 复用仓库统一的 `storage::write_json` / `AtomicWriteFile::commit()`，支持 Windows 对既有目标文件的原子覆盖；所有失败仅记录诊断。
+- [x] 正式协议、数据归属、服务端文档边界完成评审。
+- [x] typed `PendingMetricsFact` 与 subject/origin/trigger/action 完成。
+- [x] SQLite collector、TaskMetricsState、outbox/uploader 完成。
+- [x] Direct、Workflow、AUTO、scheduler 与 codeChanges producer 完成。
+- [x] 客户端接口测试与真实 batch 部分响应验收完成。
+- [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。

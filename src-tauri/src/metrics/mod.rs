@@ -1,16 +1,12 @@
+mod collector;
 pub mod heartbeat;
 pub mod identity;
+mod uploader;
 
 use std::io::Write;
-use std::sync::Arc;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
 
 use gold_band::app::RuntimeLifecycleEvent;
-use gold_band::app::observability::{
-    LifecycleTiming, MetricsCounters as CoreMetricsCounters, MetricsLifecycleFact, ModelUsage,
-    TokenUsage,
-};
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -18,12 +14,10 @@ use url::Url;
 
 use crate::{channel::current_channel_config, state::DesktopState};
 
-/// Cached log path 鈥?resolved once, avoids env-var lookup + create_dir_all on every log line.
 static METRICS_LOG_PATH: OnceLock<Option<String>> = OnceLock::new();
 pub(crate) const HEARTBEAT_ENDPOINT_PATH: &str = "/api/client-report/heartbeat";
 const NODE_METRICS_ENDPOINT_PATH: &str = "/api/client-report/metrics/batch";
-const METRICS_QUEUE_CAPACITY: usize = 2048;
-const METRICS_BATCH_LIMIT: usize = 100;
+pub(super) const METRICS_BATCH_LIMIT: usize = 100;
 const METRICS_LOG_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
 
 fn metrics_log_path() -> Option<&'static str> {
@@ -38,77 +32,53 @@ fn metrics_log_path() -> Option<&'static str> {
             } else {
                 return None;
             };
-            if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                eprintln!("[metrics] failed to create log dir {}: {}", log_dir, e);
+            if let Err(error) = std::fs::create_dir_all(&log_dir) {
+                eprintln!("[metrics] failed to create log dir {log_dir}: {error}");
                 return None;
             }
-            Some(format!("{}\\metrics.log", log_dir))
+            Some(format!("{log_dir}\\metrics.log"))
         })
         .as_deref()
 }
 
-/// Write a metrics log line to the application data directory.
-/// On Windows this is `%LOCALAPPDATA%\{app_key}\metrics.log`.
-pub(crate) fn metrics_log(msg: &str) {
-    eprintln!("{}", msg);
+pub(crate) fn metrics_log(message: &str) {
+    eprintln!("{message}");
     let Some(log_path) = metrics_log_path() else {
         return;
     };
     let line = format!(
-        "[{}] {}\n",
-        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S"),
-        msg
+        "[{}] {message}\n",
+        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
     );
     let line = if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
         format!(
             "[{}] payload-too-large actualBytes={}\n",
-            chrono::Local::now()
-                .format("%Y-%m-%dT%H:%M:%S%.3f")
-                .to_string(),
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
             line.len()
         )
     } else {
         line
     };
-    if let Ok(metadata) = std::fs::metadata(log_path) {
-        if metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES {
-            let reset = format!(
-                "[{}] log-reset reason=size-limit\n",
-                chrono::Local::now()
-                    .format("%Y-%m-%dT%H:%M:%S%.3f")
-                    .to_string()
-            );
-            if let Err(error) = std::fs::write(log_path, reset) {
-                eprintln!("[metrics] failed to reset log {}: {}", log_path, error);
-            }
+    if let Ok(metadata) = std::fs::metadata(log_path)
+        && metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES
+    {
+        let reset = format!(
+            "[{}] log-reset reason=size-limit\n",
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f")
+        );
+        if let Err(error) = std::fs::write(log_path, reset) {
+            eprintln!("[metrics] failed to reset log {log_path}: {error}");
         }
     }
-    if let Err(e) = std::fs::OpenOptions::new()
+    if let Err(error) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
-        .and_then(|mut f| f.write_all(line.as_bytes()))
+        .and_then(|mut file| file.write_all(line.as_bytes()))
     {
-        eprintln!("[metrics] failed to write log {}: {}", log_path, e);
+        eprintln!("[metrics] failed to write log {log_path}: {error}");
     }
 }
-
-/// Convert a Gold Band internal timestamp (Unix secs like "1780990488Z") to local ISO-8601.
-fn to_iso8601(ts: &str) -> String {
-    let secs: i64 = ts.trim_end_matches('Z').parse().unwrap_or(0);
-    if secs == 0 {
-        return ts.to_string();
-    }
-    if let Some(dt) = chrono::DateTime::from_timestamp(secs, 0) {
-        dt.with_timezone(&chrono::Local)
-            .format("%Y-%m-%dT%H:%M:%S%.3f")
-            .to_string()
-    } else {
-        ts.to_string()
-    }
-}
-
-// 鈹€鈹€ Settings VM 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,7 +88,7 @@ pub struct MetricsSettingsVm {
     pub metrics_base_url: Option<String>,
     pub heartbeat_endpoint: Option<String>,
     pub node_metrics_endpoint: Option<String>,
-    pub api_key_set: bool, // true if api_key is non-empty (never expose the key itself)
+    pub api_key_set: bool,
 }
 
 pub fn normalize_metrics_base_url(raw: &str) -> Option<String> {
@@ -133,18 +103,13 @@ pub fn normalize_metrics_base_url(raw: &str) -> Option<String> {
             break;
         }
     }
-
     let mut url = Url::parse(&value).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return None;
     }
     url.set_query(None);
     url.set_fragment(None);
-    let mut normalized = url.to_string().trim_end_matches('/').to_string();
-    if normalized.is_empty() {
-        normalized = value;
-    }
-    Some(normalized)
+    Some(url.to_string().trim_end_matches('/').to_string())
 }
 
 pub(crate) fn metrics_base_url(config: &RuntimeConfig) -> Option<String> {
@@ -171,18 +136,16 @@ pub fn metrics_settings(config: &RuntimeConfig) -> MetricsSettingsVm {
     let node_metrics_endpoint = metrics_base_url
         .as_deref()
         .and_then(|base_url| endpoint_from_base_url(base_url, NODE_METRICS_ENDPOINT_PATH));
-    let api_key = get_api_key(config);
     MetricsSettingsVm {
         enabled: enabled && metrics_base_url.is_some(),
         toggle_locked: channel_config.metrics_toggle_locked,
         metrics_base_url,
         heartbeat_endpoint,
         node_metrics_endpoint,
-        api_key_set: api_key.is_some(),
+        api_key_set: get_api_key(config).is_some(),
     }
 }
 
-/// Build a `HeartbeatSettings` snapshot from the runtime config.
 pub(crate) fn heartbeat_settings(config: &RuntimeConfig) -> heartbeat::HeartbeatSettings {
     let vm = metrics_settings(config);
     let channel = current_channel_config();
@@ -193,8 +156,6 @@ pub(crate) fn heartbeat_settings(config: &RuntimeConfig) -> heartbeat::Heartbeat
     }
 }
 
-// 鈹€鈹€ Heartbeat 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 fn heartbeat_channel_enabled(channel: &str) -> bool {
     channel == "wb"
 }
@@ -204,307 +165,24 @@ pub(crate) fn get_api_key(config: &RuntimeConfig) -> Option<String> {
     config
         .desktop_metrics_api_key
         .clone()
-        .filter(|s| !s.is_empty())
+        .filter(|value| !value.is_empty())
         .or_else(|| {
-            let k = channel_config.metrics_api_key;
-            if k.is_empty() {
-                None
-            } else {
-                Some(k.to_string())
-            }
+            (!channel_config.metrics_api_key.is_empty())
+                .then(|| channel_config.metrics_api_key.to_string())
         })
 }
 
-/// Resolve the current OS username for reporting (used by feedback and other shared callers).
 pub(crate) fn get_system_username() -> String {
     use identity::UserIdProvider;
-    WhoamiUserIdProvider.username().unwrap_or_default()
-}
-
-use identity::WhoamiUserIdProvider;
-
-// ── Node Metrics ─────────────────────────────────────────────────────────────
-// 鈹€鈹€ Lifecycle Metrics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-pub enum MetricsEventType {
-    #[serde(rename = "execution.started")]
-    ExecutionStarted,
-    #[serde(rename = "execution.completed")]
-    ExecutionCompleted,
-    #[serde(rename = "execution.paused")]
-    ExecutionPaused,
-    #[serde(rename = "intervention.requested")]
-    InterventionRequested,
-    #[serde(rename = "execution.resumed")]
-    ExecutionResumed,
-    #[serde(rename = "acceptance.completed")]
-    AcceptanceCompleted,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum MetricsSessionMode {
-    Direct,
-    Workflow,
-    Auto,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum MetricsExecutionKind {
-    Turn,
-    Run,
-    NodeAttempt,
-    OuterRun,
-    UnitAttempt,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MetricsCounters {
-    pub pause_count: u32,
-    pub resume_count: u32,
-    pub permission_request_count: u32,
-    pub elicitation_count: u32,
-    pub manual_continue_count: u32,
-    pub follow_up_count: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MetricsEventItem {
-    pub event_id: String,
-    pub event_revision: u64,
-    pub event_type: MetricsEventType,
-    pub occurred_at: String,
-    pub reported_at: String,
-    pub user_id: String,
-    pub workspace: String,
-    pub client_version: String,
-    pub session_mode: MetricsSessionMode,
-    pub execution_kind: MetricsExecutionKind,
-    pub execution_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attempt_index: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub round_index: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub counters: Option<MetricsCounters>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub child_run_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_reason_code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_attempt_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub round_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub passed: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub acceptance_attempt: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_pass: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub intervention_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pause_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous_pause_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<TokenUsage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_usages: Option<Vec<ModelUsage>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timing: Option<LifecycleTiming>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub collection_state_recovered: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MetricsEventBatch {
-    events: Vec<MetricsEventItem>,
+    identity::WhoamiUserIdProvider
+        .username()
+        .unwrap_or_default()
 }
 
 fn iso_now() -> String {
     chrono::Local::now()
         .format("%Y-%m-%dT%H:%M:%S%.3f")
         .to_string()
-}
-
-fn map_runtime_event(event: RuntimeLifecycleEvent) -> Option<MetricsEventItem> {
-    match event {
-        RuntimeLifecycleEvent::MetricsFact(fact) => Some(map_metrics_fact(fact, iso_now())),
-        _ => None,
-    }
-}
-fn wire<T: Serialize>(value: T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
-}
-
-fn map_metrics_fact(fact: MetricsLifecycleFact, reported_at: String) -> MetricsEventItem {
-    let event_type = match fact.event_type {
-        gold_band::app::observability::LifecycleEventType::ExecutionStarted => {
-            MetricsEventType::ExecutionStarted
-        }
-        gold_band::app::observability::LifecycleEventType::ExecutionCompleted => {
-            MetricsEventType::ExecutionCompleted
-        }
-        gold_band::app::observability::LifecycleEventType::ExecutionPaused => {
-            MetricsEventType::ExecutionPaused
-        }
-        gold_band::app::observability::LifecycleEventType::ExecutionResumed => {
-            MetricsEventType::ExecutionResumed
-        }
-        gold_band::app::observability::LifecycleEventType::InterventionRequested => {
-            MetricsEventType::InterventionRequested
-        }
-        gold_band::app::observability::LifecycleEventType::AcceptanceCompleted => {
-            MetricsEventType::AcceptanceCompleted
-        }
-    };
-    let session_mode = match fact.session_mode {
-        gold_band::app::observability::MetricsSessionMode::Direct => MetricsSessionMode::Direct,
-        gold_band::app::observability::MetricsSessionMode::Workflow => MetricsSessionMode::Workflow,
-        gold_band::app::observability::MetricsSessionMode::Auto => MetricsSessionMode::Auto,
-    };
-    let execution_kind = match fact.execution_kind {
-        gold_band::app::observability::ExecutionKind::Turn => MetricsExecutionKind::Turn,
-        gold_band::app::observability::ExecutionKind::Run => MetricsExecutionKind::Run,
-        gold_band::app::observability::ExecutionKind::NodeAttempt => {
-            MetricsExecutionKind::NodeAttempt
-        }
-        gold_band::app::observability::ExecutionKind::OuterRun => MetricsExecutionKind::OuterRun,
-        gold_band::app::observability::ExecutionKind::UnitAttempt => {
-            MetricsExecutionKind::UnitAttempt
-        }
-    };
-    MetricsEventItem {
-        event_id: fact.event_id,
-        event_revision: fact.event_revision,
-        event_type,
-        occurred_at: to_iso8601(&fact.occurred_at),
-        reported_at,
-        user_id: fact.user_id,
-        workspace: fact.workspace,
-        client_version: env!("CARGO_PKG_VERSION").into(),
-        session_mode,
-        execution_kind,
-        execution_id: fact.execution_id,
-        task_title: fact.task_title,
-        node_id: fact.node_id,
-        attempt_id: fact.attempt_id,
-        attempt_index: fact.attempt_index,
-        round_index: fact.round_index,
-        role_name: fact.role_name,
-        outcome: fact.outcome.map(wire),
-        terminal_reason: fact.terminal_reason.map(wire),
-        counters: fact.counters.map(|c: CoreMetricsCounters| MetricsCounters {
-            pause_count: c.pause_count,
-            resume_count: c.resume_count,
-            permission_request_count: c.permission_request_count,
-            elicitation_count: c.elicitation_count,
-            manual_continue_count: c.manual_continue_count,
-            follow_up_count: c.follow_up_count,
-        }),
-        unit_kind: fact.unit_kind.map(wire),
-        child_run_id: fact.child_run_id,
-        terminal_reason_code: fact.terminal_reason_code,
-        failed_attempt_id: fact.failed_attempt_id,
-        round_count: fact.round_count,
-        passed: fact.passed,
-        acceptance_attempt: fact.acceptance_attempt,
-        first_pass: fact.first_pass,
-        intervention_kind: fact.intervention_kind.map(wire),
-        pause_reason: fact.pause_reason.map(wire),
-        previous_pause_reason: fact.previous_pause_reason.map(wire),
-        provider: fact.provider,
-        model: fact.model,
-        usage: fact.usage,
-        model_usages: fact.model_usages,
-        timing: fact.timing.map(|t| LifecycleTiming {
-            started_at: to_iso8601(&t.started_at),
-            ended_at: t.ended_at.map(|e| to_iso8601(&e)),
-            acp_session_elapsed_ms: t.acp_session_elapsed_ms,
-        }),
-        collection_state_recovered: fact.collection_state_recovered,
-    }
-}
-
-fn same_report_month(left: &str, right: &str) -> bool {
-    left.get(..7) == right.get(..7)
-}
-
-async fn send_metrics_batch(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    events: Vec<MetricsEventItem>,
-) {
-    let batch = MetricsEventBatch { events };
-    let body = serde_json::to_string(&batch).unwrap_or_default();
-    let request_id = uuid::Uuid::new_v4().to_string();
-    for attempt in 1..=3 {
-        if body.len() as u64 > METRICS_LOG_LIMIT_BYTES {
-            metrics_log(&format!(
-                "[lifecycle-metrics] request requestId={request_id} attempt={attempt} url={endpoint} actualBytes={} payload-too-large",
-                body.len()
-            ));
-        } else {
-            metrics_log(&format!(
-                "[lifecycle-metrics] request requestId={request_id} attempt={attempt} url={endpoint} body={body}"
-            ));
-        }
-        let result = client
-            .post(endpoint)
-            .header("X-Maling-Report-Key", api_key)
-            .header("Content-Type", "application/json;charset=UTF-8")
-            .body(body.clone())
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await;
-        match result {
-            Ok(response) => {
-                let status = response.status();
-                let response_body = response.text().await.unwrap_or_default();
-                metrics_log(&format!(
-                    "[lifecycle-metrics] response requestId={request_id} status={status} body={response_body}"
-                ));
-                if !should_retry_status(status) {
-                    return;
-                }
-            }
-            Err(error) => metrics_log(&format!(
-                "[lifecycle-metrics] error requestId={request_id} attempt={attempt} error={error}"
-            )),
-        }
-    }
-}
-
-fn should_retry_status(status: reqwest::StatusCode) -> bool {
-    status.is_server_error()
 }
 
 fn metrics_collection_enabled(
@@ -529,74 +207,9 @@ pub(crate) fn core_metrics_collection_enabled(config: &RuntimeConfig) -> bool {
     )
 }
 
-async fn run_metrics_reporter(
-    mut receiver: tokio::sync::mpsc::Receiver<MetricsEventItem>,
-    endpoint: String,
-    api_key: String,
-) {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
-        .build()
-        .unwrap_or_default();
-    let mut pending = Vec::with_capacity(METRICS_BATCH_LIMIT);
-    let mut shutdown_deadline = None;
-    loop {
-        if receiver.is_closed() && shutdown_deadline.is_none() {
-            shutdown_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(500));
-        }
-        if pending.is_empty() && shutdown_deadline.is_none() {
-            let deadline = tokio::time::sleep(Duration::from_secs(2));
-            tokio::pin!(deadline);
-            tokio::select! {
-                value = receiver.recv() => match value { Some(event) => pending.push(event), None => continue },
-                _ = &mut deadline => {}
-            }
-        }
-        while pending.len() < METRICS_BATCH_LIMIT
-            && !shutdown_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
-        {
-            match receiver.try_recv() {
-                Ok(event) => pending.push(event),
-                Err(_) => break,
-            }
-        }
-        if pending.is_empty() {
-            if shutdown_deadline.is_some() {
-                break;
-            }
-            continue;
-        }
-        let batch = take_next_batch(&mut pending);
-        if let Some(deadline) = shutdown_deadline {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let _ = tokio::time::timeout(
-                remaining,
-                send_metrics_batch(&client, &endpoint, &api_key, batch),
-            )
-            .await;
-        } else {
-            send_metrics_batch(&client, &endpoint, &api_key, batch).await;
-        }
-    }
-}
-
-fn take_next_batch(pending: &mut Vec<MetricsEventItem>) -> Vec<MetricsEventItem> {
-    let month = pending[0].reported_at.clone();
-    let split = pending
-        .iter()
-        .position(|event| !same_report_month(&month, &event.reported_at))
-        .unwrap_or(pending.len())
-        .min(METRICS_BATCH_LIMIT);
-    pending.drain(..split).collect()
-}
-
 pub fn create_metrics_subscriber<R: Runtime>(
     app: AppHandle<R>,
 ) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
-    let (sender, receiver) = tokio::sync::mpsc::channel(METRICS_QUEUE_CAPACITY);
     let gate = app
         .try_state::<DesktopState>()
         .and_then(|state| state.context().ok())
@@ -615,11 +228,17 @@ pub fn create_metrics_subscriber<R: Runtime>(
                 ))
             })
             .flatten()
-        });
-    if let Some((endpoint, api_key)) = gate {
-        tauri::async_runtime::spawn(run_metrics_reporter(receiver, endpoint, api_key));
-    } else {
-        drop(receiver);
+        })
+        .zip(
+            app.path()
+                .app_data_dir()
+                .ok()
+                .map(|dir| dir.join("metrics").join("metrics.sqlite3")),
+        );
+    let collector = gate.map(|((endpoint, api_key), database_path)| {
+        uploader::start(database_path, endpoint, api_key)
+    });
+    if collector.is_none() {
         metrics_log("[lifecycle-metrics] disabled: requires wb channel, endpoint and api key");
     }
     Arc::new(move |event| {
@@ -629,8 +248,7 @@ pub fn create_metrics_subscriber<R: Runtime>(
             }
             return;
         }
-
-        let RuntimeLifecycleEvent::MetricsFact(fact) = &event else {
+        let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event else {
             return;
         };
         if let Err(error) = fact.validate() {
@@ -639,15 +257,23 @@ pub fn create_metrics_subscriber<R: Runtime>(
             ));
             return;
         }
-        let Some(item) = map_runtime_event(event) else {
+        let Some(sender) = collector.as_ref() else {
             return;
         };
-        if let Err(error) = sender.try_send(item) {
-            let reason = error.to_string();
-            let item = error.into_inner();
+        let execution_id = fact.key.execution_id.clone();
+        let command = collector::CollectorCommand::Fact {
+            fact,
+            reported_at: iso_now(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            now_epoch_seconds: chrono::Utc::now().timestamp(),
+        };
+        if let Err(error) = sender.try_send(command) {
+            let reason = match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => "queue-full",
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => "collector-closed",
+            };
             metrics_log(&format!(
-                "[lifecycle-metrics] dropped event eventId={} executionId={} reason={reason}",
-                item.event_id, item.execution_id,
+                "[lifecycle-metrics] dropped pending fact executionId={execution_id} reason={reason}"
             ));
         }
     })
@@ -674,344 +300,64 @@ fn heartbeat_reason_for_event(event: &RuntimeLifecycleEvent) -> Option<heartbeat
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        METRICS_BATCH_LIMIT, MetricsEventType, MetricsExecutionKind, MetricsSessionMode,
-        heartbeat::HeartbeatReason, heartbeat_channel_enabled, heartbeat_reason_for_event, iso_now,
-        map_metrics_fact, metrics_collection_enabled, metrics_settings, normalize_metrics_base_url,
-        run_metrics_reporter, same_report_month, should_retry_status, take_next_batch, to_iso8601,
-    };
-    use gold_band::app::RuntimeLifecycleEvent;
-    use gold_band::config::{ConversationRunMode, RuntimeConfig};
+    use super::*;
+    use gold_band::config::ConversationRunMode;
 
     #[test]
-    fn normalizes_metrics_base_url_from_service_root_or_known_endpoint() {
+    fn normalizes_service_root_and_known_metrics_endpoints() {
         assert_eq!(
-            normalize_metrics_base_url(" http://maling.weoa.com/ ").as_deref(),
-            Some("http://maling.weoa.com")
-        );
-        assert_eq!(
-            normalize_metrics_base_url("http://maling.weoa.com/api/client-report/heartbeat")
-                .as_deref(),
-            Some("http://maling.weoa.com")
-        );
-        assert_eq!(
-            normalize_metrics_base_url("http://maling.weoa.com/api/client-report/metrics/batch")
-                .as_deref(),
-            Some("http://maling.weoa.com")
-        );
-        assert_eq!(normalize_metrics_base_url("ftp://maling.weoa.com"), None);
-    }
-
-    #[test]
-    fn metrics_settings_derives_fixed_endpoints_from_base_url() {
-        let mut config = RuntimeConfig::default();
-        config.desktop_metrics_enabled = true;
-        config.desktop_metrics_base_url =
-            Some("http://metrics.example.com/api/client-report/metrics/batch".to_string());
-
-        let settings = metrics_settings(&config);
-
-        assert!(settings.enabled);
-        assert_eq!(
-            settings.metrics_base_url.as_deref(),
+            normalize_metrics_base_url(" http://metrics.example.com/ ").as_deref(),
             Some("http://metrics.example.com")
         );
         assert_eq!(
-            settings.heartbeat_endpoint.as_deref(),
-            Some("http://metrics.example.com/api/client-report/heartbeat")
+            normalize_metrics_base_url(
+                "http://metrics.example.com/api/client-report/metrics/batch"
+            )
+            .as_deref(),
+            Some("http://metrics.example.com")
         );
         assert_eq!(
-            settings.node_metrics_endpoint.as_deref(),
-            Some("http://metrics.example.com/api/client-report/metrics/batch")
+            normalize_metrics_base_url("ftp://metrics.example.com"),
+            None
         );
     }
 
     #[test]
-    fn heartbeat_is_restricted_to_wb_channel() {
-        assert!(heartbeat_channel_enabled("wb"));
-        assert!(!heartbeat_channel_enabled("default"));
-        assert!(!heartbeat_channel_enabled("enterprise"));
-    }
-
-    #[test]
-    fn lifecycle_facts_map_to_the_six_heartbeat_reasons() {
-        let run_event = |run_mode| RuntimeLifecycleEvent::ConversationRunStarted {
-            project_id: "project-1".to_string(),
-            task_id: "task-1".to_string(),
-            run_id: "run-1".to_string(),
-            run_mode,
-        };
-
-        assert_eq!(
-            heartbeat_reason_for_event(&RuntimeLifecycleEvent::ApplicationStarted),
-            Some(HeartbeatReason::AppStarted)
-        );
-        assert_eq!(
-            heartbeat_reason_for_event(&RuntimeLifecycleEvent::UserActivityObserved),
-            Some(HeartbeatReason::Activity)
-        );
-        assert_eq!(
-            heartbeat_reason_for_event(&run_event(ConversationRunMode::Direct)),
-            Some(HeartbeatReason::DirectStarted)
-        );
-        assert_eq!(
-            heartbeat_reason_for_event(&run_event(ConversationRunMode::Workflow)),
-            Some(HeartbeatReason::WorkflowStarted)
-        );
-        assert_eq!(
-            heartbeat_reason_for_event(&run_event(ConversationRunMode::Auto)),
-            Some(HeartbeatReason::AutoStarted)
-        );
-        assert_eq!(
-            heartbeat_reason_for_event(&RuntimeLifecycleEvent::ScheduledTaskCreated {
-                project_id: "project-1".to_string(),
-                scheduled_task_id: "scheduled-1".to_string(),
-            }),
-            Some(HeartbeatReason::ScheduledTaskCreated)
-        );
-    }
-
-    #[test]
-    fn lifecycle_contract_enums_use_protocol_values() {
-        assert_eq!(
-            serde_json::to_string(&MetricsEventType::ExecutionCompleted).unwrap(),
-            "\"execution.completed\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MetricsSessionMode::Workflow).unwrap(),
-            "\"workflow\""
-        );
-        assert_eq!(
-            serde_json::to_string(&MetricsExecutionKind::NodeAttempt).unwrap(),
-            "\"node-attempt\""
-        );
-    }
-
-    #[test]
-    fn reporter_groups_by_frozen_report_month_and_caps_batches() {
-        assert!(same_report_month(
-            "2026-07-31T23:59:59+08:00",
-            "2026-07-01T00:00:00+08:00"
-        ));
-        assert!(!same_report_month(
-            "2026-07-31T23:59:59+08:00",
-            "2026-08-01T00:00:00+08:00"
-        ));
-        assert_eq!(METRICS_BATCH_LIMIT, 100);
-    }
-
-    #[test]
-    fn wb_gate_requires_all_credentials_and_default_never_collects() {
+    fn collection_gate_requires_wb_endpoint_and_api_key() {
         assert!(metrics_collection_enabled(
             "wb",
             true,
-            Some("https://metrics.example"),
+            Some("http://metrics.example.com"),
             Some("key")
         ));
         assert!(!metrics_collection_enabled(
-            "default",
+            "stable",
             true,
-            Some("https://metrics.example"),
+            Some("http://metrics.example.com"),
             Some("key")
         ));
         assert!(!metrics_collection_enabled("wb", true, None, Some("key")));
-        assert!(!metrics_collection_enabled(
-            "wb",
-            true,
-            Some("https://metrics.example"),
-            None
-        ));
     }
 
     #[test]
-    fn retry_policy_retries_only_server_failures() {
-        assert!(should_retry_status(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(should_retry_status(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        ));
-        assert!(!should_retry_status(reqwest::StatusCode::BAD_REQUEST));
-        assert!(!should_retry_status(reqwest::StatusCode::OK));
-    }
-
-    #[test]
-    fn iso_timestamp_helpers_emit_local_time_without_offset() {
-        let converted = to_iso8601("1786018481Z");
-        assert!(!converted.contains('+') && !converted.ends_with('Z'));
-        let expected = chrono::DateTime::from_timestamp(1_786_018_481, 0)
-            .unwrap()
-            .with_timezone(&chrono::Local)
-            .format("%Y-%m-%dT%H:%M:%S%.3f")
-            .to_string();
-        assert_eq!(converted, expected);
-        let now = iso_now();
-        assert!(!now.contains('+') && !now.ends_with('Z'));
-    }
-
-    #[tokio::test]
-    async fn bounded_queue_drops_new_event_without_waiting() {
-        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-        sender.try_send(1).unwrap();
-        assert!(matches!(
-            sender.try_send(2),
-            Err(tokio::sync::mpsc::error::TrySendError::Full(2))
-        ));
-    }
-
-    #[test]
-    fn every_shutdown_batch_respects_the_hundred_event_limit() {
-        let mut pending = (0..205)
-            .map(|_| {
-                let fact = gold_band::app::observability::MetricsLifecycleFact::new(
-                    gold_band::app::observability::LifecycleEventType::ExecutionStarted,
-                    1,
-                    "2026-08-01T00:00:00Z".into(),
-                    "user".into(),
-                    "workspace".into(),
-                    gold_band::app::observability::MetricsSessionMode::Workflow,
-                    "task".into(),
-                    gold_band::app::observability::ExecutionKind::Run,
-                    uuid::Uuid::new_v4().to_string(),
-                );
-                map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(take_next_batch(&mut pending).len(), 100);
-        assert_eq!(take_next_batch(&mut pending).len(), 100);
-        assert_eq!(take_next_batch(&mut pending).len(), 5);
-    }
-
-    #[test]
-    fn dto_uses_failed_attempt_id_for_delivery_failure() {
-        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-            gold_band::app::observability::LifecycleEventType::ExecutionCompleted,
-            2,
-            "2026-08-01T00:00:00Z".into(),
-            "user".into(),
-            "workspace".into(),
-            gold_band::app::observability::MetricsSessionMode::Auto,
-            "task".into(),
-            gold_band::app::observability::ExecutionKind::OuterRun,
-            uuid::Uuid::new_v4().to_string(),
+    fn top_level_runs_map_to_heartbeat_reasons() {
+        let event = |run_mode| RuntimeLifecycleEvent::ConversationRunStarted {
+            project_id: "project".to_string(),
+            task_id: "task".to_string(),
+            run_id: "run-001".to_string(),
+            run_mode,
+        };
+        assert_eq!(
+            heartbeat_reason_for_event(&event(ConversationRunMode::Direct)),
+            Some(heartbeat::HeartbeatReason::DirectStarted)
         );
-        fact.outcome = Some(gold_band::app::observability::ExecutionOutcome::Failure);
-        fact.terminal_reason =
-            Some(gold_band::app::observability::TerminalReason::AcceptanceRejected);
-        fact.failed_attempt_id = Some(uuid::Uuid::new_v4().to_string());
-        fact.counters = Some(Default::default());
-        let value =
-            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
-        assert!(value.get("failedAttemptId").is_some());
-        assert!(value.get("failedExecutionId").is_none());
-    }
-
-    #[test]
-    fn dto_serializes_follow_up_count_from_core_counters() {
-        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-            gold_band::app::observability::LifecycleEventType::ExecutionCompleted,
-            2,
-            "2026-08-01T00:00:00Z".into(),
-            "user".into(),
-            "workspace".into(),
-            gold_band::app::observability::MetricsSessionMode::Direct,
-            "task".into(),
-            gold_band::app::observability::ExecutionKind::Turn,
-            uuid::Uuid::new_v4().to_string(),
+        assert_eq!(
+            heartbeat_reason_for_event(&event(ConversationRunMode::Workflow)),
+            Some(heartbeat::HeartbeatReason::WorkflowStarted)
         );
-        fact.outcome = Some(gold_band::app::observability::ExecutionOutcome::Completed);
-        fact.terminal_reason = Some(gold_band::app::observability::TerminalReason::Completed);
-        fact.counters = Some(gold_band::app::observability::MetricsCounters {
-            follow_up_count: 3,
-            ..Default::default()
-        });
-        let value =
-            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
-        assert_eq!(value["counters"]["followUpCount"].as_u64(), Some(3));
-    }
-
-    #[test]
-    fn dto_serializes_attempt_index_only_for_attempt_events() {
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
-            1,
-            "2026-08-01T00:00:00Z".into(),
-            "user".into(),
-            "workspace".into(),
-            gold_band::app::observability::MetricsSessionMode::Direct,
-            "task".into(),
-            gold_band::app::observability::ExecutionKind::Turn,
-            execution_id.clone(),
+        assert_eq!(
+            heartbeat_reason_for_event(&event(ConversationRunMode::Auto)),
+            Some(heartbeat::HeartbeatReason::AutoStarted)
         );
-        fact.attempt_id = Some(uuid::Uuid::new_v4().to_string());
-        fact.attempt_index = Some(1);
-        let value =
-            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
-        assert_eq!(value.get("attemptIndex").and_then(|v| v.as_u64()), Some(1));
-    }
-
-    #[test]
-    fn dto_serializes_task_title_when_set() {
-        let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
-            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
-            1,
-            "2026-08-01T00:00:00Z".into(),
-            "user".into(),
-            "workspace".into(),
-            gold_band::app::observability::MetricsSessionMode::Direct,
-            "task".into(),
-            gold_band::app::observability::ExecutionKind::Turn,
-            uuid::Uuid::new_v4().to_string(),
-        );
-        // task_title defaults to None -- should be skipped in serialized JSON
-        let value_without = serde_json::to_value(map_metrics_fact(
-            fact.clone(),
-            "2026-08-01T00:00:00Z".into(),
-        ))
-        .unwrap();
-        assert!(value_without.get("taskTitle").is_none());
-
-        // When set, it should appear in serialized JSON
-        fact.task_title = Some("给项目添加 README".into());
-        let value_with =
-            serde_json::to_value(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into())).unwrap();
-        assert_eq!(value_with["taskTitle"].as_str(), Some("给项目添加 README"));
-    }
-
-    #[tokio::test]
-    async fn reporter_shutdown_is_bounded_to_five_hundred_milliseconds() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        std::thread::spawn(move || {
-            if let Ok((_stream, _)) = listener.accept() {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-        });
-        let fact = gold_band::app::observability::MetricsLifecycleFact::new(
-            gold_band::app::observability::LifecycleEventType::ExecutionStarted,
-            1,
-            "2026-08-01T00:00:00Z".into(),
-            "user".into(),
-            "workspace".into(),
-            gold_band::app::observability::MetricsSessionMode::Workflow,
-            "task".into(),
-            gold_band::app::observability::ExecutionKind::Run,
-            uuid::Uuid::new_v4().to_string(),
-        );
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        sender
-            .send(map_metrics_fact(fact, "2026-08-01T00:00:00Z".into()))
-            .await
-            .unwrap();
-        drop(sender);
-        let started = std::time::Instant::now();
-        tokio::time::timeout(
-            std::time::Duration::from_millis(900),
-            run_metrics_reporter(receiver, format!("http://{address}"), "key".into()),
-        )
-        .await
-        .expect("reporter must honor the shutdown budget");
-        assert!(started.elapsed() < std::time::Duration::from_millis(900));
     }
 }

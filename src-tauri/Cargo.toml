@@ -27,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fontdb = "0.23"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "native-tls-vendored", "stream"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 open = "5"
@@ -54,7 +55,6 @@ resvg = "0.45"
 notify-rust = { version = "4", optional = true }
 
 [dev-dependencies]
-rusqlite = { version = "0.34", features = ["bundled"] }
 tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }

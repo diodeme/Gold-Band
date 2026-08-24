@@ -1897,7 +1897,9 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **warning 分诊**：合并后 cargo check 余量 warning（orchestrator.rs 三个 dead fn、conversation_attention.rs `pub fn unread_terminal_result`、commands.rs 字段、metrics/identity.rs 枚举变体等）逐一在 origin/main blob 上定位到同名符号同位置——全部为 main 既有技术债，按「保 main 完整性」策略不动；无合并诱发项。
 
-**验证**：`cargo check --workspace --all-targets` exit 0 零错误；`tsc -p web/tsconfig.build.json` 零错；定向 vitest（draft + i18n）24/24；全量 vitest 与 `web:build` 结果见任务记录（首次全量 vitest 因与 cargo check 并发抢 CPU 出现 worker 启动超时——1570 测试 0 失败、4 文件未跑，机器空闲后重跑全量）。
+**验证**：`cargo check --workspace --all-targets` exit 0 零错误；`tsc -p web/tsconfig.build.json` 零错；定向 vitest（draft + i18n）24/24；全量 vitest **1627/1627**（首次与 cargo check 并发出现 worker 启动超时——1570 测试 0 失败、4 文件未跑，机器空闲后重跑全绿）；`web:build` 成功。Rust 测试定向覆盖（本机 `cargo test --workspace` 不可行，见下）：`multica::` **83/83**；desktop crate 除 `updater::` 外 **593/594**——唯一失败 `app_config_vm_exposes_workspace_layout_contract` 经 origin/main blob 比对证明 **main 自身失败**（main 把 `conversationInlineContentMaxBytes` 64000→20000 但断言未同步，view_models.rs/updater.rs 均与 main 字节一致）；lib 侧 feature 差异模块（`config::`/`dsl::`/`app::multica`）**53/53**。
+
+**本机测试环境备注（非代码问题）**：`updater::tests::polling_reuses_one_manifest_check_for_silent_channel` 在本机无限挂起（main 既有，mock server 127.0.0.1，>20min 无进展，需 `-- --skip updater::`）；E 盘 50G 限额被 target/（24G）填满导致编译中断一次，`cargo clean` 后恢复——全量 workspace 测试在本机不可行，以「check 全绿 + 定向模块测试 + 全量 vitest」为合并验收标准。
 
 ---
 

@@ -1023,7 +1023,7 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **核心语义决策（draft 状态机 union + 互斥）**：main 给 draft 增加 `submission`（send | scheduled-task）维度并与 multica `multica` 绑定维度合并为 `{content, attachments, multica, submission}`；两者是**竞争性提交意图**，在 reducer 层显式互斥——`prefill`（远程任务点执行）产生全新 send 意图草稿（即使先前处于排程模式）；`enterScheduledTask`（点排程按钮）本地丢弃 multica 绑定（任务仍在服务端 queued，可重新点执行恢复）。杜绝「带远程绑定发送却走排程」的混合态；新增 2 条互斥语义固化测试。
   - **composer 采纳 main 派生式**：scheduledMode/scheduledConfig 改从 `draft.submission` 直读（canonical 状态进 draft、跨卸载存活）；canSubmit 叠加决策 e 门（multica 绑定 + 0 本地工作区禁发）；multica chip / Backspace 解绑契约 / 决策 d `forceSelector` / 决策 e `emptyWorkspaceHint` 全部经自动合并存活，零回插。
   - **契约影响（对外行为不变）**：claim-at-send 事务边界、终态桥接、断点续跑、App.tsx 双路径发送流均零变化；仅 main 改名 `ConversationSessionSwitchVm` → `ConversationSessionTreeVm` 等类型对齐。
-  - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；定向 vitest 24/24（draft union + 互斥语义 + i18n 合规）；全量 vitest / `web:build` / `cargo test --workspace` 结果见开发设计 §12.32 任务记录。
+  - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；定向 vitest 24/24（draft union + 互斥语义 + i18n 合规）；全量 vitest **1627/1627**；`web:build` 成功；Rust 定向测试 `multica::` 83/83、lib feature 差异模块 53/53、desktop crate（除 updater 挂起外）593/594——唯一失败经 origin/main blob 比对为 **main 自身失败**（配置值 64000→20000 未同步断言），非合并引入；本机测试环境备注（updater 挂起 / E 盘限额）见开发设计 §12.32。
 
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）

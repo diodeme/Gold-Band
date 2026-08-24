@@ -28,13 +28,10 @@ import type {
   ScheduledScheduleInput,
   ScheduledScheduleSpec,
   ScheduledSessionPolicy,
+  ScheduledTaskConfig,
 } from '@/types';
 
-export type ScheduledTaskConfig = {
-  schedule: ScheduledScheduleInput;
-  overlapPolicy: ScheduledOverlapPolicy;
-  sessionPolicy: ScheduledSessionPolicy;
-};
+export type { ScheduledTaskConfig } from '@/types';
 
 export type ScheduledTaskInitialConfig = {
   schedule: ScheduledScheduleSpec;

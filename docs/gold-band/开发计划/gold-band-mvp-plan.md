@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-24：ACP 取消超时后严格恢复原 Provider 会话
+
+- 根因与实现：cancel drain timeout 把“本地 live route/attached runtime 不可安全复用”错误等同为“Provider session identity 不可继续”，通过 `write_worker_ref(..., reusable=false)` 清除了 `continue_ref`；同时既有 attempt 的人工/队列 turn 虽已按 Continue 渲染 PromptBundle，Tauri command 却再次读取首次 worker mode，可能向 ACP client 传入 `New + continue_ref`，恢复失败后便可静默进入 `session/new`。本次拆开两类事实：timeout 继续 shutdown 并隔离本地 runtime，但 worker ref 始终保留原 `acpSessionId`；既有 attempt 的 Direct、停止后追问、节点完成后 non-runtime-controlled 追问、队列派发和 dynamic 人工追问统一以本次执行意图 `SessionMode::Continue` 调用 ACP。公共 prompt 入口校验 Continue 必须携带有效恢复引用，缺失时返回 `acp.session-restore-reference-missing`；恢复按 capability 选择 resume/load，禁止新建 session。首轮节点启动、工作流迁移、dynamic 首轮、显式 runtime resume 和 hidden finalize/repair 仍由 orchestrator 的既有 invocation 规则决定，不建立 command 特判。
+- 验收：Rust 回归固定 `worker_ref.mode=New + continue_ref=Some` 的既有 attempt 用户 turn 仍解析为 Continue，并固定 Continue 缺少 Provider session identity 时返回 blocked 结构化错误；恢复能力选择继续沿用 resume 优先、load fallback、strict unsupported 不得 StartNew 的既有测试。取消尾部 chunk 投影由独立修改负责，本项不改变其 terminal watermark、quiet drain 或 10 秒 deadline。
+- 性能与过度设计评审：复用现有 `SessionMode`、worker continue ref、attached runtime shutdown 与 capability-driven resume/load，不新增状态机、持久字段、缓存、队列、锁或网络等待。新增工作仅为 O(1) session identity 校验与既有 worker-ref 常数级写入，不扫描 Timeline/raw，不改变正常首轮、attached reuse 或流式热路径复杂度，无需专项 benchmark。
+
 ## 2026-08-19：品牌 Logo 统一替换
 
 - 实现：将用户提供的 `gold-band-logo-final-v6-transparent.svg` 作为唯一品牌矢量源复制到 `web/public/logo.svg`，以同一路径生成 `src-tauri/icons/logo-source.svg` 的 2048 正方形投影，并通过 Tauri 官方 icon generator 重建 Windows、macOS、PNG、Android 与 iOS 图标；README 中英文头标改为直接引用 `web/public/logo.svg`。

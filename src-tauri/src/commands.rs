@@ -119,6 +119,15 @@ const QUEUED_PROMPT_ID_PREFIX: &str = "turn-queued-";
 
 pub type CommandResult<T> = Result<T, CommandErrorVm>;
 
+fn existing_attempt_prompt_session_target(
+    worker_ref: Option<WorkerRefState>,
+) -> (SessionMode, Option<serde_json::Value>) {
+    (
+        SessionMode::Continue,
+        worker_ref.and_then(|worker_ref| worker_ref.continue_ref),
+    )
+}
+
 pub(crate) async fn spawn_blocking_command<T, F>(operation: F) -> CommandResult<T>
 where
     T: Send + 'static,
@@ -5832,13 +5841,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 .or_else(|| node.permission_mode.clone());
             let model =
                 current_acp_session_model_override(&attempt_dir).or_else(|| node.model.clone());
-            let (session_mode, continue_ref) = if worker_ref_path.exists() {
-                let worker_ref =
-                    read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
-                (worker_ref.mode, worker_ref.continue_ref)
+            let worker_ref = if worker_ref_path.exists() {
+                Some(read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?)
             } else {
-                (SessionMode::New, None)
+                None
             };
+            let (session_mode, continue_ref) = existing_attempt_prompt_session_target(worker_ref);
             let prepared_prompt = app
                 .prepare_dynamic_acp_prompt_for_attempt(
                     &task_id,
@@ -6005,13 +6013,12 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             .ok_or_else(|| CommandErrorVm::new("acp.missing-provider", serde_json::json!({})))?;
         let (_, agent_config) = app.managed_agent(provider).map_err(command_error)?;
         let permission_mode = current_acp_session_permission_mode_override(&attempt_dir);
-        let (session_mode, continue_ref) = if worker_ref_path.exists() {
-            let worker_ref =
-                read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?;
-            (worker_ref.mode, worker_ref.continue_ref)
+        let worker_ref = if worker_ref_path.exists() {
+            Some(read_json::<WorkerRefState>(&worker_ref_path).map_err(command_error)?)
         } else {
-            (SessionMode::New, None)
+            None
         };
+        let (session_mode, continue_ref) = existing_attempt_prompt_session_target(worker_ref);
         let prepared_prompt = app
             .prepare_acp_prompt_for_attempt(
                 &task_id,
@@ -10439,6 +10446,30 @@ mod tests {
             error.params,
             serde_json::json!({ "capabilities": { "resume": false, "load": false } })
         );
+    }
+
+    #[test]
+    fn existing_attempt_prompt_ignores_worker_creation_mode_and_continues_provider_session() {
+        let continue_ref = serde_json::json!({ "acpSessionId": "session-1" });
+        let worker_ref = WorkerRefState {
+            version: gold_band::domain::VERSION.to_string(),
+            provider: "codex".to_string(),
+            mode: SessionMode::New,
+            supports_open_session: true,
+            supports_continue_session: true,
+            continue_ref: Some(continue_ref.clone()),
+            open_command: None,
+        };
+
+        let (session_mode, resolved_continue_ref) =
+            existing_attempt_prompt_session_target(Some(worker_ref));
+
+        assert_eq!(session_mode, SessionMode::Continue);
+        assert_eq!(resolved_continue_ref, Some(continue_ref));
+
+        let (missing_ref_mode, missing_ref) = existing_attempt_prompt_session_target(None);
+        assert_eq!(missing_ref_mode, SessionMode::Continue);
+        assert_eq!(missing_ref, None);
     }
 
     #[test]

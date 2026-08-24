@@ -406,6 +406,8 @@ const SESSION_EVICTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_SYSTEM_CONTEXT_VERSION: u32 = 1;
 const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
 pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
+pub const ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE: &str =
+    "acp.session-restore-reference-missing";
 pub const ACP_HISTORY_SYNC_UNSUPPORTED_CODE: &str = "acp.history-sync-unsupported";
 pub const ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE: &str = "acp.session-config-value-unavailable";
 
@@ -2038,6 +2040,30 @@ fn session_restore_plan_error(
     ))
 }
 
+fn session_restore_reference_missing_error() -> anyhow::Error {
+    runtime_error(blocked_runtime_error_info(
+        RuntimeErrorDomain::Provider,
+        ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE,
+        "ACP continue requires an existing provider session reference",
+        json!({ "sessionMode": "continue" }),
+    ))
+}
+
+fn validate_session_restore_target(
+    session_mode: SessionMode,
+    continue_ref: Option<&Value>,
+) -> Result<()> {
+    let requires_existing_session = session_mode == SessionMode::Continue;
+    let has_restore_target = continue_ref
+        .and_then(|value| value.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|session_id| !session_id.trim().is_empty());
+    if requires_existing_session && !has_restore_target {
+        return Err(session_restore_reference_missing_error());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpDoctorProbe {
     pub capabilities: Value,
@@ -2161,10 +2187,13 @@ pub fn run_prompt(
     let mut prompt = prompt.clone();
     prepare_runtime_control_prompt(&attempt_dir, &mut prompt)?;
     let prompt = &prompt;
+    validate_session_restore_target(session_mode, continue_ref.as_ref())?;
+    let requires_existing_session = session_mode == SessionMode::Continue;
     let continued_session_id = continue_ref
         .as_ref()
         .and_then(|value| value.get("acpSessionId").or_else(|| value.get("sessionId")))
         .and_then(Value::as_str)
+        .filter(|session_id| !session_id.trim().is_empty())
         .map(str::to_string);
     let mut runtime = AcpRuntime::start(
         provider_id,
@@ -2237,7 +2266,7 @@ pub fn run_prompt(
         Err(error) => return Err(error),
     };
     let mcp_preparation = prepare_acp_mcp_servers(mcp_servers, Some(&capabilities));
-    let strict_continue = session_mode == SessionMode::Continue && continue_ref.is_some();
+    let strict_continue = requires_existing_session;
     let restored = match runtime.setup_session(
         provider_id,
         workspace_dir.clone(),
@@ -2285,14 +2314,7 @@ pub fn run_prompt(
         .session_id
         .clone()
         .ok_or_else(|| anyhow!("ACP session setup did not return a session id"))?;
-    runtime.write_worker_ref(
-        provider_id,
-        &workspace_dir,
-        session_mode,
-        restored,
-        None,
-        true,
-    )?;
+    runtime.write_worker_ref(provider_id, &workspace_dir, session_mode, restored, None)?;
     let prompt_turn = runtime.record_user_prompt_event(provider_id, prompt, restored)?;
     commit_runtime_control_prompt(&runtime.paths.attempt_dir, prompt)?;
     runtime.control.mark_accepted();
@@ -2386,7 +2408,6 @@ pub fn run_prompt(
                 session_mode,
                 restored,
                 Some("error".to_string()),
-                true,
             )?;
             if let Err(capture_error) = runtime.finalize_turn_file_changes(&prompt_turn) {
                 append_structured_diagnostic_best_effort(
@@ -2436,7 +2457,6 @@ pub fn run_prompt(
         session_mode,
         restored,
         stop_reason.clone(),
-        !cancellation.drain_timed_out,
     )?;
     runtime
         .interrupt_active_context_compaction(stop_reason.as_deref().unwrap_or("prompt_finished"))?;
@@ -5748,7 +5768,6 @@ impl<'a> AcpRuntime<'a> {
         session_mode: SessionMode,
         restored: bool,
         stop_reason: Option<String>,
-        reusable: bool,
     ) -> Result<()> {
         let session_id = self
             .session_id
@@ -5759,18 +5778,16 @@ impl<'a> AcpRuntime<'a> {
             provider: provider_id.to_string(),
             mode: session_mode,
             supports_open_session: true,
-            supports_continue_session: reusable,
-            continue_ref: reusable.then(|| {
-                json!({
-                    "acpSessionId": session_id,
-                    "adapterId": self.connection.adapter().adapter_id.clone(),
-                    "adapterDisplayName": self.connection.adapter().display_name.clone(),
-                    "cwd": workspace_dir.as_str(),
-                    "snapshotFile": self.paths.snapshot.as_str(),
-                    "lastStopReason": stop_reason,
-                    "restored": restored,
-                })
-            }),
+            supports_continue_session: true,
+            continue_ref: Some(json!({
+                "acpSessionId": session_id,
+                "adapterId": self.connection.adapter().adapter_id.clone(),
+                "adapterDisplayName": self.connection.adapter().display_name.clone(),
+                "cwd": workspace_dir.as_str(),
+                "snapshotFile": self.paths.snapshot.as_str(),
+                "lastStopReason": stop_reason,
+                "restored": restored,
+            })),
             open_command: None,
         };
         validate_worker_ref_state(&worker_ref)?;
@@ -7324,7 +7341,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use crate::domain::TurnControlMode;
+    use crate::domain::{SessionMode, TurnControlMode};
 
     use super::{
         AcpAttemptUsageRecovery, AcpCancelDrainTimeout, AcpContextCompactionState,
@@ -7357,6 +7374,7 @@ mod tests {
         session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
         take_pending_live_update_for_stream_switch, unregister_provider_control,
+        validate_session_restore_target,
     };
 
     #[test]
@@ -10021,6 +10039,27 @@ mod tests {
         assert_eq!(
             plan_session_restore(SessionRestoreIntent::ContinueOnly, neither, false),
             Ok(SessionRestorePlan::StartNew)
+        );
+    }
+
+    #[test]
+    fn continue_without_provider_session_reference_is_a_structured_blocked_error() {
+        let error = validate_session_restore_target(SessionMode::Continue, None).unwrap_err();
+        let info = normalize_runtime_error(&error);
+
+        assert_eq!(
+            info.code_str(),
+            super::ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE
+        );
+        assert_eq!(info.recovery, RecoveryMode::Blocked);
+        assert_eq!(info.params, json!({ "sessionMode": "continue" }));
+        assert!(validate_session_restore_target(SessionMode::New, None).is_ok());
+        assert!(
+            validate_session_restore_target(
+                SessionMode::Continue,
+                Some(&json!({ "acpSessionId": "session-1" })),
+            )
+            .is_ok()
         );
     }
 

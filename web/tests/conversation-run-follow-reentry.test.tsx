@@ -117,6 +117,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       current: false,
       manualCheckPending: false,
       sessionEstablished: true,
+      worktreePath: 'D:/repo/.gold-band/worktrees/child',
       artifactCount: 0,
       attachmentCount: 0,
     };
@@ -128,22 +129,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       runMode: 'auto',
       activeSessions: [],
       inputAttachments: [],
-      selectedSession: {
-        roundId: leaf.roundId,
-        nodeId: leaf.nodeId,
-        attemptId: leaf.attemptId,
-        outerNodeId: leaf.outerNodeId,
-        outerAttemptId: leaf.outerAttemptId,
-        provider: 'codex-acp',
-        status: 'completed',
-        restored: true,
-        worktreePath: 'D:/repo/.gold-band/worktrees/child',
-        events: [],
-        eventPage: { loadedCount: 0, total: 0, hasOlder: false, hasNewer: false },
-        pendingPermissions: [],
-        pendingElicitations: [],
-        diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
-      },
+      selectedSession: null,
       sessionTree: {
         selectedSessionKey: selectedKey,
         rounds: [{

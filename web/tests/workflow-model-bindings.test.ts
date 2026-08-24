@@ -6,6 +6,7 @@ import { WorkflowEditor } from '@/components/WorkflowEditor';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { normalizeWorkflowModelBindings } from '@/lib/workflow-model-bindings';
 import type { WorkflowDsl, WorkflowModelBindings } from '@/types';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 describe('workflow model bindings boundary', () => {
   it('normalizes an omitted bindings collection to an empty array', () => {
@@ -52,6 +53,7 @@ describe('workflow model bindings boundary', () => {
         value: workflow,
         modelBindings: legacyPayload,
         agentRegistry: null,
+        profileCatalog: readyWorkflowProfileCatalog([]),
         onSave: () => undefined,
       }),
     ))).not.toThrow();

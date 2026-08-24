@@ -1506,9 +1506,6 @@ export const browserApi: RuntimeApi = {
   useConversationQueuedPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _itemId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve({ kind: 'acp-session', session: null, run: null, lifecycle: null });
   },
-  sendAcpPrompt(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _prompt, _promptId, fallback, _outerNodeId, _outerAttemptId, _attachmentPaths) {
-    return Promise.resolve(fallback ?? null);
-  },
   setAcpSessionModel(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _modelId, _outerNodeId, _outerAttemptId) {
     return Promise.resolve(null);
   },
@@ -1523,9 +1520,6 @@ export const browserApi: RuntimeApi = {
   },
   respondElicitation(_projectId: string | null | undefined, _taskId: string, _runId: string, _roundId: string, _nodeId: string, _attemptId: string, _elicitationId: string, _action: string, _content?: Record<string, unknown> | null, _outerNodeId?: string | null, _outerAttemptId?: string | null) {
     return Promise.resolve();
-  },
-  cancelAcpSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, fallback, _outerNodeId, _outerAttemptId) {
-    return Promise.resolve(fallback ?? null);
   },
   getAcpRawFrames(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, query, _outerNodeId, _outerAttemptId) {
     const empty: AcpRawFramePageVm = {
@@ -2029,12 +2023,6 @@ export const browserApi: RuntimeApi = {
       worktree: null,
     };
     return Promise.resolve(run);
-  },
-  switchConversationSession(_projectId, _taskId, _runId, _roundId, _nodeId, _attemptId, _outerNodeId, _outerAttemptId) {
-    if (_runId === 'run-051') return Promise.resolve({ selectedSession: mockErrorBlockedConversationSession });
-    if (_runId === 'run-052') return Promise.resolve({ selectedSession: browserCompletedConversationRun().selectedSession });
-    if (_runId === 'run-053') return Promise.resolve({ selectedSession: browserQueuedConversationRun().selectedSession });
-    return Promise.resolve({ selectedSession: null });
   },
   validateConversationCreate(_input) {
     return Promise.resolve({ valid: true, missingItems: [] });

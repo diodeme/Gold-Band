@@ -23,7 +23,7 @@ use crate::provider::{
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
-    validate_worker_ref_state,
+    validate_worker_ref_state, write_node_state,
 };
 use crate::runtime_error::runtime_error;
 use crate::storage::sqlite::{AttemptIndexContext, index_attempt_with_retry};
@@ -1188,7 +1188,7 @@ pub(crate) fn re_evaluate_attempt(
             node.status = RunStatus::Completed;
             node.outcome = Some(NodeOutcome::Invalid);
             validate_node_state(&node)?;
-            write_json(
+            write_node_state(
                 &app.paths
                     .node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
                 &node,
@@ -1205,7 +1205,7 @@ pub(crate) fn re_evaluate_attempt(
     node.status = RunStatus::Completed;
     node.finished_at = Some(now_rfc3339_like());
     validate_node_state(&node)?;
-    write_json(
+    write_node_state(
         &app.paths
             .node_file(task_id, run_id, round_id, &node.node_id, &node.attempt_id),
         &node,
@@ -1292,6 +1292,7 @@ mod tests {
         );
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "node-001".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: "run-001".to_string(),
@@ -1382,6 +1383,7 @@ mod tests {
         );
         let node = NodeState {
             version: VERSION.to_string(),
+            acp_storage_schema_version: crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
             node_id: "node-001".to_string(),
             node_type: crate::domain::NodeType::Worker,
             run_id: "run-001".to_string(),

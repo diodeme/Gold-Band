@@ -47,7 +47,7 @@ export interface AcpRuntimeComposerStateInput {
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
-  localTurnInFlight?: boolean;
+  localTurnId?: string | null;
   cancelling: boolean;
   stopCommandPending: boolean;
   turnAccepted: boolean;
@@ -87,24 +87,36 @@ export function deriveAcpRuntimeComposerState(
   const backendWorkspacePreparing = backend?.mode === 'runtime-active'
     && backendProcessingKind === 'preparing-workspace';
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
-  const localTurnInFlight = Boolean(input.localTurnInFlight);
   const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
     input.lifecycle?.acp.liveTurnActivity ?? 'idle',
   );
-  const acpTerminal = !localTurnInFlight && !lifecycleAcpRunning && (
-    (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none'
-      || (!input.lifecycle && isSessionTerminalStatus(input.acpStatus))
+  const lifecycleTerminal = !lifecycleAcpRunning
+    && (input.lifecycle?.acp.latestTurnStatus ?? 'none') !== 'none';
+  const lifecycleMatchesLocalTurn = Boolean(
+    input.localTurnId
+      && input.lifecycle?.acp.turnId
+      && input.lifecycle.acp.turnId === input.localTurnId,
   );
-  const acpActive = !acpTerminal && lifecycleAcpRunning;
+  const acpTerminal = lifecycleTerminal
+    ? (!input.localTurnId || lifecycleMatchesLocalTurn)
+    : (!input.lifecycle && !input.localTurnId && isSessionTerminalStatus(input.acpStatus));
   const backendStopping = !acpTerminal && (Boolean(input.lifecycle?.acp.stopping) || backend?.mode === 'stopping');
-  const waitingForPermission = input.waitingForPermission;
+  const stopRequested = input.cancelling || input.stopCommandPending || backendStopping;
+  const localTurnInFlight = !acpTerminal && Boolean(input.localTurnId) && (
+    input.sending || input.awaitingResponse || input.waitingForOptimisticPrompt
+  );
+  const sending = input.sending && !acpTerminal;
+  const acpActive = !acpTerminal && lifecycleAcpRunning;
+  // Stop is a control-plane fact. A stale session snapshot must not win over
+  // it and keep the composer in permission-blocked mode.
+  const waitingForPermission = input.waitingForPermission && !stopRequested;
   const initialTimelinePending = Boolean(input.initialTimelinePending);
-  const staleTerminalSnapshot = acpTerminal && !localTurnInFlight;
+  const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
   const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
   const stopInProgress = cancelling || stopCommandPending || backendStopping;
   const waitingForOptimisticPrompt = !staleTerminalSnapshot && input.waitingForOptimisticPrompt;
-  const turnSubmitting = (input.sending || waitingForOptimisticPrompt) && !input.turnAccepted;
+  const turnSubmitting = (sending || waitingForOptimisticPrompt) && !input.turnAccepted;
   const awaitingResponse = !staleTerminalSnapshot && input.awaitingResponse;
   const runtimeErrorMessage = runtimeErrorMessageFromInput(input);
   const runtimeContinueBlockedByWorkflow = false;
@@ -137,7 +149,7 @@ export function deriveAcpRuntimeComposerState(
   );
   const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
   const activePromptLocked =
-    input.sending ||
+    sending ||
     waitingForOptimisticPrompt ||
     awaitingResponse ||
     initialTimelinePending ||
@@ -160,14 +172,15 @@ export function deriveAcpRuntimeComposerState(
   const canSubmit = (Boolean(input.prompt.trim()) || Boolean(input.hasAttachments))
     && submitTarget !== 'none'
     && !queueAtCapacity
-    && !(input.sending && submitTarget !== 'queue-prompt')
+    && !(sending && submitTarget !== 'queue-prompt')
     && !inputDisabled;
   const processingKind = processingKindForInput(
-    input,
+    { ...input, sending },
     stopInProgress,
     turnSubmitting,
     awaitingResponse,
     backendProcessingKind,
+    acpActive,
   );
   const directTurnHandoff = directQueueFacet
     && acpTerminal
@@ -191,7 +204,7 @@ export function deriveAcpRuntimeComposerState(
       (backendWorkspacePreparing && Boolean(backend?.canStop)) ||
       sessionActive ||
       awaitingResponse ||
-      input.sending ||
+      sending ||
       waitingForOptimisticPrompt ||
       localTurnInFlight ||
       cancelling
@@ -222,6 +235,24 @@ export function shouldKeepLocalRuntimeLifecycleOverride(
 ) {
   if (!local?.runtime.active) return false;
   if (!incoming) return true;
+  const localAcpRevision = local.acp.revision;
+  const incomingAcpRevision = incoming.acp.revision;
+  if (
+    localAcpRevision != null
+    && incomingAcpRevision != null
+    && incomingAcpRevision > localAcpRevision
+  ) {
+    return false;
+  }
+  const localRuntimeRevision = local.runtime.revision;
+  const incomingRuntimeRevision = incoming.runtime.revision;
+  if (
+    localRuntimeRevision != null
+    && incomingRuntimeRevision != null
+    && incomingRuntimeRevision > localRuntimeRevision
+  ) {
+    return false;
+  }
   if (incoming.runtime.active || incoming.acp.liveTurnActivity !== 'idle' || incoming.acp.stopping) {
     return false;
   }
@@ -241,7 +272,84 @@ export function shouldSettleRuntimeContinueSubmission(
 }
 
 export function isAcceptedQueuePromptSubmitKind(kind: string) {
-  return kind === 'queued' || kind === 'acp-session';
+  return kind === 'queued' || kind === 'acp-session' || kind === 'acp-session-started';
+}
+
+export function isAcceptedAcpPromptSubmitKind(kind: string) {
+  return kind === 'acp-session' || kind === 'acp-session-started';
+}
+
+export function isTerminalLifecycleForTurn(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  turnId: string | null | undefined,
+) {
+  return Boolean(
+    turnId
+      && lifecycle?.acp.turnId === turnId
+      && isTerminalAcpFacet(lifecycle.acp),
+  );
+}
+
+/** Lifecycle-only terminal patches settle transient composer state. */
+export function isTerminalAcpLifecycle(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+) {
+  return Boolean(lifecycle && isTerminalAcpFacet(lifecycle.acp));
+}
+
+/**
+ * Pending interaction arrays may lag behind a lifecycle-only stop/terminal
+ * update. The lifecycle is authoritative for the current turn, so the UI
+ * must not keep rendering a permission or elicitation card from that stale
+ * session projection.
+ */
+export function shouldHidePendingAcpInteractions(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  localTurnId: string | null | undefined,
+  cancelling: boolean,
+  stopCommandPending: boolean,
+) {
+  if (cancelling || stopCommandPending || Boolean(lifecycle?.acp.stopping)) {
+    return true;
+  }
+  return isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
+}
+
+/**
+ * Selects the session status used by timeline activity presentation.
+ * A lifecycle-only terminal patch is authoritative over a stale body snapshot,
+ * except while a new local prompt is still being admitted.
+ */
+export function activityProjectionStatus(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  sessionStatus: string | null | undefined,
+  localPromptAdmissionPending: boolean,
+  localTurnId?: string | null,
+) {
+  const terminalLifecycleMatchesTurn = isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
+  if (terminalLifecycleMatchesTurn) return lifecycle!.acp.latestTurnStatus;
+  if (localPromptAdmissionPending) return 'running';
+  if (lifecycle && lifecycle.acp.liveTurnActivity !== 'idle') {
+    return lifecycle.acp.stopping ? 'cancelling' : lifecycle.acp.liveTurnActivity;
+  }
+  return sessionStatus;
+}
+
+/**
+ * Once an ACP lifecycle facet is available, it is authoritative over a
+ * session snapshot. A terminal snapshot may belong to the previous turn
+ * while the lifecycle has already admitted the next one.
+ */
+export function shouldSettleAcpComposerTransientState(
+  lifecycle: ConversationAttemptLifecycleVm | null | undefined,
+  sessionStatus: string | null | undefined,
+  localTurnId: string | null | undefined,
+) {
+  if (!lifecycle) return isSessionTerminalStatus(sessionStatus);
+  return isTerminalAcpLifecycle(lifecycle)
+    && (!localTurnId || lifecycle.acp.turnId === localTurnId);
 }
 
 function shouldRouteDirectSubmissionToQueue(input: {
@@ -273,10 +381,8 @@ export function mergeConversationAttemptLifecycle(
   const localAcpRevision = local?.acp.revision ?? 0;
   const incomingAcpRevision = incoming.acp.revision ?? 0;
   let acp = incoming.acp;
-  let acpFromLocal = false;
   if (local && localAcpRevision > incomingAcpRevision) {
     acp = local.acp;
-    acpFromLocal = true;
   } else if (
     local &&
     localAcpRevision === incomingAcpRevision &&
@@ -285,7 +391,6 @@ export function mergeConversationAttemptLifecycle(
     !isTerminalAcpFacet(incoming.acp)
   ) {
     acp = local.acp;
-    acpFromLocal = true;
   }
 
   const localRuntimeRevision = local?.runtime.revision ?? 0;
@@ -298,16 +403,129 @@ export function mergeConversationAttemptLifecycle(
   const promptQueue = localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)
     ? localQueue
     : incomingQueue;
-  if (local && acpFromLocal && localRuntimeRevision >= incomingRuntimeRevision) {
-    return { ...local, promptQueue };
-  }
   if (acp !== incoming.acp || runtime !== incoming.runtime || promptQueue !== incomingQueue) {
-    return { ...incoming, acp, runtime, promptQueue };
+    const runtimeSource = local && runtime === local.runtime ? local : incoming;
+    return deriveMergedLifecycleProjection({
+      ...incoming,
+      acp,
+      runtime,
+      promptQueue,
+    }, runtimeSource);
   }
   if (localQueue && (!incomingQueue || localQueue.revision > incomingQueue.revision)) {
     return { ...incoming, promptQueue: localQueue };
   }
   return incoming;
+}
+
+function deriveMergedLifecycleProjection(
+  lifecycle: ConversationAttemptLifecycleVm,
+  runtimeSource: ConversationAttemptLifecycleVm,
+): ConversationAttemptLifecycleVm {
+  const acpStopping = lifecycle.acp.stopping || lifecycle.acp.liveTurnActivity === 'cancel-requested';
+  const acpActive = ['starting', 'accepted', 'running'].includes(lifecycle.acp.liveTurnActivity);
+  const runtimeActive = lifecycle.runtime.active;
+  const displayStatus = acpStopping
+    ? 'cancelling'
+    : acpActive && !runtimeActive
+      ? lifecycle.acp.liveTurnActivity === 'starting' ? 'starting' : 'running'
+      : lifecycle.runtime.status || runtimeSource.displayStatus;
+  const runtimeDisplay = deriveRuntimeDisplayFromMergedFacets(
+    lifecycle,
+    displayStatus,
+    runtimeSource.runtimeDisplay,
+  );
+  const preserveSuperseded = runtimeSource.composer.mode === 'session-superseded';
+  const mode = preserveSuperseded
+    ? 'session-superseded'
+    : acpStopping
+      ? 'stopping'
+      : runtimeActive || acpActive
+        ? 'runtime-active'
+        : runtimeDisplay.blockingError
+          ? 'runtime-error'
+          : 'normal';
+  const processingKind = mode === 'stopping'
+    ? 'stopping'
+    : mode === 'runtime-active' && lifecycle.runtime.phase === 'launching-next-node'
+      ? 'launching-next-node'
+      : mode === 'runtime-active' && lifecycle.runtime.phase === 'preparing-workspace'
+        ? 'preparing-workspace'
+        : mode === 'runtime-active' && !runtimeActive && lifecycle.acp.liveTurnActivity === 'starting'
+          ? 'launching'
+          : 'processing';
+  const composer = preserveSuperseded
+    ? runtimeSource.composer
+    : {
+        ...runtimeSource.composer,
+        mode,
+        submitTarget: mode === 'normal' ? 'acp-prompt' : 'none',
+        processingKind,
+        statusKey: mode === 'stopping'
+          ? 'acp.stopping'
+          : mode === 'runtime-active' && lifecycle.runtime.phase === 'launching-next-node'
+            ? 'conversation.runtime.launchingNextNode'
+            : mode === 'runtime-active' && lifecycle.runtime.phase === 'preparing-workspace'
+              ? 'conversation.runtime.preparingDevelopmentEnvironment'
+              : mode === 'runtime-active'
+                ? 'conversation.runtime.runtimeActive'
+                : null,
+        canStop: runtimeActive || acpActive || acpStopping,
+        lockInput: mode !== 'normal',
+      };
+  return {
+    ...lifecycle,
+    displayStatus,
+    runtimeDisplay,
+    continueKind: runtimeSource.continueKind,
+    composer,
+  };
+}
+
+function deriveRuntimeDisplayFromMergedFacets(
+  lifecycle: ConversationAttemptLifecycleVm,
+  displayStatus: string,
+  fallback: ConversationAttemptLifecycleVm['runtimeDisplay'],
+): ConversationAttemptLifecycleVm['runtimeDisplay'] {
+  const status = displayStatus.trim().toLowerCase().replace(/_/g, '-');
+  const outcome = lifecycle.runtime.outcome?.trim().toLowerCase().replace(/_/g, '-') ?? '';
+  const reasonCode = lifecycle.runtime.pauseReason?.trim().toLowerCase().replace(/_/g, '-') ?? null;
+  if (outcome === 'success') {
+    return { code: 'success', tone: 'success', icon: 'check', terminal: true, resumable: false, reasonCode, blockingError: false };
+  }
+  if (['failure', 'failed', 'invalid'].includes(outcome)) {
+    return { code: 'failure', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: false };
+  }
+  if (['killed', 'cancelled', 'canceled'].includes(outcome)) {
+    return { code: 'killed', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
+  }
+  if (['running', 'in-progress', 'active', 'starting', 'sending'].includes(status)) {
+    return { code: 'running', tone: 'running', icon: 'dot', terminal: false, resumable: false, reasonCode, blockingError: false };
+  }
+  if (['cancelling', 'cancel-requested', 'paused'].includes(status)) {
+    const code = reasonCode === 'error-blocked' || reasonCode === 'runtime-abnormal'
+      ? reasonCode
+      : 'paused';
+    return {
+      code,
+      tone: code === 'paused' ? 'warning' : 'danger',
+      icon: code === 'paused' ? 'pause' : 'error',
+      terminal: false,
+      resumable: code === 'paused' && lifecycle.runtime.resumable,
+      reasonCode,
+      blockingError: code !== 'paused',
+    };
+  }
+  if (['completed', 'complete'].includes(status)) {
+    return { code: 'completed', tone: 'neutral', icon: 'dot', terminal: true, resumable: false, reasonCode, blockingError: false };
+  }
+  if (['failed', 'failure', 'error'].includes(status)) {
+    return { code: 'failure', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
+  }
+  if (['cancelled', 'canceled', 'killed'].includes(status)) {
+    return { code: 'killed', tone: 'danger', icon: 'error', terminal: true, resumable: false, reasonCode, blockingError: true };
+  }
+  return fallback;
 }
 
 function isTerminalAcpFacet(acp: ConversationAttemptLifecycleVm['acp']) {
@@ -396,12 +614,20 @@ function processingKindForInput(
   turnSubmitting: boolean,
   awaitingResponse: boolean,
   backendProcessingKind: AcpComposerProcessingKind,
+  acpActive: boolean,
 ): AcpComposerProcessingKind {
   if (stopInProgress) return 'stopping';
   if (turnSubmitting) return 'sending';
   if (backendProcessingKind === 'preparing-workspace') return 'preparing-workspace';
   if (backendProcessingKind === 'launching-next-node') return 'launching-next-node';
   if (awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
+  if (input.initialTimelinePending) return 'launching';
+  // Timeline is a historical data surface. Once the current ACP turn is
+  // terminal, its last textDelta/thought/tool item must not be reused as the
+  // current composer activity. Runtime-controlled work still gets its phase
+  // from the canonical runtime facet; an idle terminal session has no active
+  // processing kind at all (the neutral value is kept for the API shape).
+  if (!acpActive) return 'processing';
   if (!input.hasTimelineItems) {
     if (input.hasEffectiveEvents) return 'processing';
     const lifecycleLaunching = Boolean(

@@ -31,7 +31,7 @@ use crate::metrics::{MetricsSettingsVm, metrics_settings};
 use crate::state::AgentDiagnosticState;
 use crate::updater::{UpdateInfoVm, UpdateStatusVm, UpdaterSettingsVm, updater_settings};
 use crate::window_chrome::{DesktopWindowChromeVm, desktop_window_chrome_vm};
-use gold_band::storage::{read_json, write_json};
+use gold_band::storage::read_json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -811,6 +811,7 @@ pub struct AcpSessionQueryInput {
     pub branch_id: Option<String>,
     pub before_seq: Option<u64>,
     pub after_seq: Option<u64>,
+    pub after_revision: Option<u64>,
     pub before_cursor: Option<String>,
     pub after_cursor: Option<String>,
     pub event_limit: Option<usize>,
@@ -875,6 +876,9 @@ fn trace_acp_session_query(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpEventPageVm {
+    pub generation: u64,
+    pub covered_revision: u64,
+    pub newest_revision: Option<u64>,
     pub loaded_count: usize,
     pub total: usize,
     pub oldest_seq: Option<u64>,
@@ -4490,6 +4494,7 @@ fn scan_acp_timeline(
         branch_id: None,
         before_seq: None,
         after_seq: None,
+        after_revision: None,
         before_cursor: None,
         after_cursor: None,
         event_limit: None,
@@ -4510,8 +4515,13 @@ fn scan_acp_timeline(
         .as_deref()
         .and_then(parse_timeline_cursor)
         .or(query.after_seq);
-    let indexed =
-        gold_band::acp::timeline::read_indexed_timeline_page(path, before_seq, after_seq, limit)?;
+    let indexed = gold_band::acp::timeline::read_indexed_timeline_page(
+        path,
+        before_seq,
+        after_seq,
+        query.after_revision,
+        limit,
+    )?;
     indexed_timeline_page_to_scan(path, indexed, session_active)
 }
 
@@ -4582,6 +4592,9 @@ fn indexed_timeline_page_to_scan(
     Ok(AcpEventScan {
         events,
         event_page: AcpEventPageVm {
+            generation: indexed.generation,
+            covered_revision: indexed.covered_revision,
+            newest_revision: indexed.newest_revision,
             loaded_count: indexed.loaded_semantic_blocks,
             total: indexed.total_semantic_blocks,
             oldest_seq: indexed.oldest_seq,
@@ -5238,6 +5251,9 @@ fn paginate_timeline(
             .rposition(|block| block.newest_seq == selected.newest_seq)
     });
     let event_page = AcpEventPageVm {
+        generation: 0,
+        covered_revision: newest_seq.unwrap_or_default(),
+        newest_revision: newest_seq,
         loaded_count: loaded_semantic_count,
         total,
         oldest_seq,
@@ -6105,12 +6121,10 @@ fn apply_stale_session_completion_fuse(
         )
         .is_some(),
     )?;
-    if fused {
-        let snapshot_path = app
-            .paths
-            .acp_snapshot_file(task_id, run_id, round_id, node_id, attempt_id);
-        let _ = write_json(&snapshot_path, &*session);
-    }
+    // View models are projections, not lifecycle owners. Keep the fused value
+    // in this response only; canonical reconciliation belongs to the runtime
+    // writer and must not race a provider terminal commit from a read path.
+    let _ = fused;
     Ok(())
 }
 
@@ -6136,29 +6150,19 @@ fn apply_stale_session_completion_fuse_dynamic(
         node_completed,
         gold_band::acp::client::prompt_activity(attempt_dir).is_some(),
     )?;
-    if fused {
-        let snapshot_path = attempt_dir.join("acp.snapshot.json");
-        let _ = write_json(&snapshot_path, &*session);
-    }
+    let _ = fused;
     Ok(())
 }
 
 fn apply_stale_session_completion_fuse_common(
     pid_path: &camino::Utf8Path,
-    raw_path: &camino::Utf8Path,
+    _raw_path: &camino::Utf8Path,
     session: &mut serde_json::Value,
     node_completed: bool,
     prompt_active: bool,
 ) -> Result<bool> {
     if prompt_active {
         return Ok(false);
-    }
-    if raw_has_successful_session_close(raw_path) {
-        session["availability"] = serde_json::json!("established");
-        session["latestTurnStatus"] = serde_json::json!("cancelled");
-        session["stopReason"] = serde_json::json!("cancelled");
-        session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
-        return Ok(true);
     }
     if pid_path.exists() && !node_completed {
         return Ok(false);
@@ -6169,64 +6173,12 @@ fn apply_stale_session_completion_fuse_common(
     if !matches!(session_metadata_status(session), "idle" | "unknown") {
         return Ok(false);
     }
-    if node_completed && pid_path.exists() {
-        let _ = fs::remove_file(pid_path.as_std_path());
-    }
     session["latestTurnStatus"] = serde_json::json!("completed");
     if session.get("stopReason").is_none() || session["stopReason"].is_null() {
         session["stopReason"] = serde_json::json!("end_turn");
     }
     session["updatedAt"] = serde_json::json!(current_epoch_timestamp());
     Ok(true)
-}
-
-fn raw_has_successful_session_close(raw_path: &camino::Utf8Path) -> bool {
-    let Ok(content) = fs::read_to_string(raw_path.as_std_path()) else {
-        return false;
-    };
-    let mut close_request_ids = HashSet::new();
-    let mut close_completed_after_last_session_start = false;
-    for line in content.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let Some(frame) = value.get("frame") else {
-            continue;
-        };
-        let method = frame.get("method").and_then(|method| method.as_str());
-        if matches!(
-            method,
-            Some("session/new" | "session/load" | "session/resume" | "session/prompt")
-        ) {
-            close_request_ids.clear();
-            close_completed_after_last_session_start = false;
-        }
-        let is_close_request = method.is_some_and(|method| method == "session/close");
-        let Some(id) = raw_frame_rpc_id_key(frame) else {
-            continue;
-        };
-        if is_close_request {
-            close_request_ids.insert(id);
-            continue;
-        }
-        if frame.get("result").is_some() && close_request_ids.contains(&id) {
-            close_completed_after_last_session_start = true;
-        }
-    }
-    close_completed_after_last_session_start
-}
-
-fn raw_frame_rpc_id_key(frame: &serde_json::Value) -> Option<String> {
-    let id = frame.get("id")?;
-    if let Some(value) = id.as_str() {
-        return Some(format!("s:{value}"));
-    }
-    if let Some(value) = id.as_u64() {
-        return Some(format!("n:{value}"));
-    }
-    id.as_i64()
-        .filter(|value| *value >= 0)
-        .map(|value| format!("n:{value}"))
 }
 
 fn parse_epoch_timestamp(value: &str) -> Option<u64> {
@@ -6764,24 +6716,88 @@ fn session_metadata_status(session: &serde_json::Value) -> &str {
         .get("availability")
         .and_then(Value::as_str)
         .unwrap_or("unavailable");
-    if availability.eq_ignore_ascii_case("closing") {
-        return "closing";
+    let activity = session
+        .get("liveTurnActivity")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if activity.eq_ignore_ascii_case("cancelRequested") {
+        return "cancelling";
     }
-    match session
+    let latest = session
         .get("latestTurnStatus")
         .and_then(Value::as_str)
-        .unwrap_or("none")
-    {
+        .unwrap_or("none");
+    match latest.to_ascii_lowercase().as_str() {
         "completed" => "completed",
-        "cancelled" => "cancelled",
+        "cancelled" | "canceled" => "cancelled",
         "failed" => "failed",
-        _ if matches!(availability, "established" | "restorable") => "idle",
+        _ if availability.eq_ignore_ascii_case("closing") => "closing",
+        _ if matches!(
+            availability.to_ascii_lowercase().as_str(),
+            "established" | "restorable"
+        ) =>
+        {
+            "idle"
+        }
         _ => "unknown",
     }
 }
 
+fn canonical_legacy_availability(
+    normalized_status: &str,
+    session_established: bool,
+) -> &'static str {
+    match normalized_status {
+        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
+        _ if session_established => "established",
+        _ => "unavailable",
+    }
+}
+
+fn canonical_legacy_activity(normalized_status: &str) -> &'static str {
+    match normalized_status {
+        "cancelling" | "cancel-requested" | "closing" => "cancelRequested",
+        _ => "idle",
+    }
+}
+
+fn canonical_legacy_latest_status(normalized_status: &str) -> &'static str {
+    match normalized_status {
+        "completed" | "complete" => "completed",
+        "cancelled" | "canceled" => "cancelled",
+        "failed" | "failure" | "error" | "killed" => "failed",
+        _ => "none",
+    }
+}
+
+fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
+    let legacy_status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(status) = legacy_status else {
+        return session;
+    };
+    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
+    let session_established = session
+        .get("sessionId")
+        .or_else(|| session.get("acpSessionId"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    session["availability"] = serde_json::json!(canonical_legacy_availability(
+        &normalized,
+        session_established
+    ));
+    session["liveTurnActivity"] = serde_json::json!(canonical_legacy_activity(&normalized));
+    session["latestTurnStatus"] = serde_json::json!(canonical_legacy_latest_status(&normalized));
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session
+}
+
 fn load_session_metadata_value(path: &camino::Utf8Path) -> Option<serde_json::Value> {
-    gold_band::acp::events::load_session_metadata_value(path, None).ok()
+    gold_band::acp::events::read_session_metadata_value(path, None).ok()
 }
 
 fn run_worktree_state_optional(
@@ -6796,7 +6812,7 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-fn session_worktree_path(
+pub(crate) fn session_worktree_path(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,
@@ -6839,38 +6855,6 @@ fn workspace_worktree_path(
             })
             .map(|worktree| worktree.path.to_string()),
     }
-}
-
-fn normalize_preloaded_session_metadata(mut session: serde_json::Value) -> serde_json::Value {
-    let legacy_status = session
-        .get("status")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let Some(status) = legacy_status else {
-        return session;
-    };
-    let normalized = status.trim().to_ascii_lowercase().replace('_', "-");
-    let session_established = session
-        .get("sessionId")
-        .or_else(|| session.get("acpSessionId"))
-        .and_then(Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty());
-    session["availability"] = serde_json::json!(match normalized.as_str() {
-        "closing" | "cancelling" | "cancel-requested" => "closing",
-        "failed" | "failure" | "error" | "killed" if session_established => "restorable",
-        _ if session_established => "established",
-        _ => "unavailable",
-    });
-    session["latestTurnStatus"] = serde_json::json!(match normalized.as_str() {
-        "completed" | "complete" => "completed",
-        "cancelled" | "canceled" => "cancelled",
-        "failed" | "failure" | "error" | "killed" => "failed",
-        _ => "none",
-    });
-    if let Some(object) = session.as_object_mut() {
-        object.remove("status");
-    }
-    session
 }
 
 fn is_acp_session_stopping_status(status: &str) -> bool {
@@ -7847,6 +7831,7 @@ mod tests {
     use gold_band::app::App;
     use gold_band::domain::{PauseReason, RunStatus, VERSION};
     use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
+    use gold_band::storage::write_json;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -8693,7 +8678,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_session_completion_fuse_ignores_pid_when_node_completed() {
+    fn stale_session_completion_fuse_projects_completion_without_deleting_pid() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-completion-fuse-test-{}",
             std::process::id()
@@ -8721,7 +8706,7 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("completed")
         );
-        assert!(!pid_path.exists());
+        assert!(pid_path.exists());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -8769,6 +8754,46 @@ mod tests {
             "cancelling"
         );
         assert_eq!(effective_acp_session_status("completed", None), "completed");
+    }
+
+    #[test]
+    fn session_metadata_status_prioritizes_turn_terminal_over_legacy_closing() {
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "closing",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "cancelled"
+            })),
+            "cancelled"
+        );
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "established",
+                "liveTurnActivity": "cancelRequested",
+                "latestTurnStatus": "none"
+            })),
+            "cancelling"
+        );
+        assert_eq!(
+            session_metadata_status(&json!({
+                "availability": "closing",
+                "liveTurnActivity": "idle",
+                "latestTurnStatus": "none"
+            })),
+            "closing"
+        );
+    }
+
+    #[test]
+    fn preloaded_legacy_stop_is_migrated_to_turn_cancellation() {
+        let normalized = normalize_preloaded_session_metadata(json!({
+            "sessionId": "provider-session",
+            "status": "closing"
+        }));
+        assert_eq!(normalized["availability"], "established");
+        assert_eq!(normalized["liveTurnActivity"], "cancelRequested");
+        assert_eq!(normalized["latestTurnStatus"], "none");
+        assert!(normalized.get("status").is_none());
     }
 
     #[test]
@@ -8836,7 +8861,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_session_close_detection_requires_matching_result() {
+    fn stale_session_completion_fuse_does_not_recover_from_raw_log() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-raw-close-detection-test-{}",
             std::process::id()
@@ -8854,58 +8879,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(raw_has_successful_session_close(&raw_path));
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn raw_session_close_detection_ignores_unrelated_results() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-raw-close-unrelated-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let raw_path = attempt_dir.join("acp.raw.jsonl");
-        fs::write(
-            raw_path.as_std_path(),
-            [
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":4,"result":{}}}"#,
-            ]
-            .join("\n"),
+        fs::write(attempt_dir.join("provider.pid"), "12345").unwrap();
+        let mut session = json!({ "availability": "established", "latestTurnStatus": "none" });
+        let fused = apply_stale_session_completion_fuse_common(
+            &attempt_dir.join("provider.pid"),
+            &raw_path,
+            &mut session,
+            false,
+            false,
         )
         .unwrap();
-
-        assert!(!raw_has_successful_session_close(&raw_path));
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn raw_session_close_detection_ignores_close_before_later_prompt() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-raw-close-resume-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let raw_path = attempt_dir.join("acp.raw.jsonl");
-        fs::write(
-            raw_path.as_std_path(),
-            [
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/resume","params":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
-            ]
-            .join("\n"),
-        )
-        .unwrap();
-
-        assert!(!raw_has_successful_session_close(&raw_path));
+        assert!(!fused);
+        assert_eq!(session["latestTurnStatus"], "none");
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -8930,99 +8915,6 @@ mod tests {
             extract_system_prompt_append(&raw_path).as_deref(),
             Some("stable context")
         );
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn stale_session_completion_fuse_cancels_after_logged_session_close() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-raw-close-fuse-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        let raw_path = attempt_dir.join("acp.raw.jsonl");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        fs::write(
-            raw_path.as_std_path(),
-            [
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
-            ]
-            .join("\n"),
-        )
-        .unwrap();
-        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
-
-        let fused = apply_stale_session_completion_fuse_common(
-            &pid_path,
-            &raw_path,
-            &mut session,
-            false,
-            false,
-        )
-        .unwrap();
-
-        assert!(fused);
-        assert_eq!(
-            session
-                .get("latestTurnStatus")
-                .and_then(|value| value.as_str()),
-            Some("cancelled")
-        );
-        assert_eq!(
-            session.get("stopReason").and_then(|value| value.as_str()),
-            Some("cancelled")
-        );
-        assert!(pid_path.exists());
-
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn stale_session_completion_fuse_keeps_running_after_prompt_following_close() {
-        let dir = std::env::temp_dir().join(format!(
-            "gold-band-raw-close-resumed-fuse-test-{}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
-        let pid_path = attempt_dir.join("provider.pid");
-        let raw_path = attempt_dir.join("acp.raw.jsonl");
-        fs::write(pid_path.as_std_path(), "12345").unwrap();
-        fs::write(
-            raw_path.as_std_path(),
-            [
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":5,"method":"session/close","params":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":5,"result":{}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":6,"method":"session/load","params":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"inbound","frame":{"jsonrpc":"2.0","id":6,"result":{"sessionId":"session-1"}}}"#,
-                r#"{"direction":"outbound","frame":{"jsonrpc":"2.0","id":7,"method":"session/prompt","params":{"sessionId":"session-1","prompt":[]}}}"#,
-            ]
-            .join("\n"),
-        )
-        .unwrap();
-        let mut session = json!({ "availability": "established", "latestTurnStatus": "none", "stopReason": null });
-
-        let fused = apply_stale_session_completion_fuse_common(
-            &pid_path,
-            &raw_path,
-            &mut session,
-            false,
-            false,
-        )
-        .unwrap();
-
-        assert!(!fused);
-        assert_eq!(
-            session
-                .get("latestTurnStatus")
-                .and_then(|value| value.as_str()),
-            Some("none")
-        );
-        assert!(pid_path.exists());
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -10299,6 +10191,33 @@ mod tests {
             "attempt-001",
         );
         write_json(
+            &app.paths.node_file(
+                "task-placeholder",
+                "run-001",
+                "round-001",
+                "direct-agent",
+                "attempt-001",
+            ),
+            &NodeState {
+                version: gold_band::domain::VERSION.to_string(),
+                acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                node_id: "direct-agent".to_string(),
+                node_type: NodeType::Worker,
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                status: RunStatus::Paused,
+                outcome: None,
+                started_at: "1787036945Z".to_string(),
+                finished_at: None,
+                manual_check_pending: false,
+                runtime_execution_id: None,
+                resolved_config: gold_band::domain::ResolvedConfig::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        write_json(
             &snapshot_path,
             &json!({
                 "availability": "unavailable",
@@ -10341,6 +10260,36 @@ mod tests {
             "attempt-001",
         );
         let workspace_cwd = "D:\\Projects\\code\\ai\\Gold-Band";
+        gold_band::storage::write_json(
+            &app.paths.dynamic_node_file(
+                "task-081",
+                "run-001",
+                "round-001",
+                "ai-dynamic",
+                "attempt-001",
+                "goodbye-output",
+            ),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "acpStorageSchemaVersion": gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                "id": "goodbye-output",
+                "dynamicRunId": "dynamic-run-001",
+                "kind": "worker",
+                "title": "Goodbye output",
+                "task": "Return the final output",
+                "status": "completed",
+                "outcome": "success",
+                "chainId": "goodbye-output",
+                "depth": 0,
+                "dependsOn": [],
+                "workspaceId": "workspace-main",
+                "provider": "codex-acp",
+                "sessionMode": "continue",
+                "startedAt": "1778771540Z",
+                "finishedAt": "1778771541Z"
+            }),
+        )
+        .unwrap();
         gold_band::storage::write_json(
             &attempt_dir.join("acp.snapshot.json"),
             &json!({
@@ -10782,6 +10731,9 @@ mod tests {
                     "_meta": { "goldBandConversation": {
                         "branchId": "root",
                         "launchedAgentExecutionId": agent_execution_id,
+                        "toolName": "Agent"
+                    }, "agentTranscript": {
+                        "agentLaunch": true,
                         "toolName": "Agent"
                     } },
                     "rawInput": { "run_in_background": true, "description": id }

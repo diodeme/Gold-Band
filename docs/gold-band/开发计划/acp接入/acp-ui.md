@@ -240,6 +240,8 @@ Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，�
 
 2026-07-28 权限卡片视觉与长文本验收已固化：复用现有 shadcn `Button` / `Tooltip` copy-in 组件，卡片收敛为低边界、低阴影的轻量审批条；前端静态渲染单测覆盖浅色 allow / 中性 reject 层级、截断标签、Tooltip trigger 与完整无障碍名称。UI 验收需在本地会话页同时检查浅色和深色主题，以及长命令选项的鼠标悬浮与键盘聚焦全文展示。
 
+2026-08-21 权限卡片工具参数改为有界摘要预览：使用 CSS line clamp 最多展示 6 个完整文本行，超出部分在末行显示省略号，不裁出残缺行，也不在卡片内增加滚动；决策按钮固定排在摘要之后，确保高熵或超长参数不会把允许/拒绝入口推出可视区域。前端契约测试覆盖行数约束、截断样式及按钮顺序。
+
 ### 6.6 Plan / Mode / Config / SessionInfo
 
 - Plan block 展示 agent 当前计划、step title、status、nested entries。

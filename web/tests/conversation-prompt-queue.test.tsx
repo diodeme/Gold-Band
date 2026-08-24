@@ -66,8 +66,8 @@ describe('ConversationPromptQueue', () => {
     expect(trigger?.textContent).toContain('5/10');
     const queueSurface = host.querySelector('[data-testid="conversation-prompt-queue"]');
     expect(queueSurface?.classList.contains('bg-card')).toBe(true);
-    expect(queueSurface?.classList.contains('border-0')).toBe(true);
-    expect(queueSurface?.classList.contains('border')).toBe(false);
+    expect(queueSurface?.classList.contains('border')).toBe(true);
+    expect(queueSurface?.classList.contains('border-0')).toBe(false);
     expect(queueSurface?.classList.contains('bg-muted/35')).toBe(false);
     expect(host.querySelector('[data-queue-items="true"]')?.classList.contains('divide-y')).toBe(false);
     expect(host.querySelector('[data-queue-items="true"]')?.classList.contains('border-t')).toBe(false);

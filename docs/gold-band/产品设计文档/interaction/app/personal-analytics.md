@@ -185,6 +185,8 @@ SQLite 是唯一派生索引存储，始终可删除重建；无源文件变化�
 
 分析同步继续使用 `PersonalAnalyticsOperation`；Agent 洞察使用专用 `AgentInsightOperation` durable JSON 作为唯一 lifecycle 权威，冻结 `operationId + generation + range + schemaVersion + indexRevision + agentType`。`generation` 在不同洞察 operation 间单调递增，`revision` 只排序同一 operation 内的转换；前端的首次 snapshot、live event、start/cancel response 必须进入同一 merge，先比较 generation，再比较 revision，终态不得回退。普通转换在同一互斥区内先原子写盘，再提交内存和发布事件；取消持久化为 `Cancelling` 后只能进入 `Cancelled`。完成提交在同一互斥区内先写 completed cache，再推进内存与 durable JSON，cache 是崩溃窗口的 durable commit marker：若 JSON 替换失败或进程退出，启动恢复按冻结身份命中 cache 后收敛 `Completed`，否则收敛 `Failed/analytics.execution-interrupted`。取消与最终 cache commit 由同一互斥区串行化，已接受取消不得留下当前 operation 的 completed cache。
 
+analysis 与 repair attempt 作为 `AgentInsightOperation` 下属的 provider turn，统一复用 ACP durable admission：调用 provider 前先在各自 attempt 的 `acp.snapshot.json` 写入并 claim `turnId + operationId + revision`，再把该 CAS owner 交给通用 ACP runtime。该 ACP lifecycle 只约束单次 provider turn 的取消与迟到写入，不是洞察业务状态的第二权威；页面、恢复和 completed cache 仍只以 `AgentInsightOperation` 为准。
+
 ### 9.3 确定性报告与 Agent 洞察解耦
 
 “开始分析”只执行索引同步和确定性报告生成，不调用 Agent。Agent 选择继续保留在页面顶部，但只服务于独立的“生成 Agent 洞察”按钮。

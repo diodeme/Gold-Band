@@ -7,6 +7,7 @@ import type {
   GraphNodeVm,
   GraphVm,
 } from '@/types';
+import { mergeConversationAttemptLifecycle } from './acp-runtime-composer-state';
 
 export type ConversationRunSnapshotSource =
   | 'create'
@@ -419,14 +420,16 @@ function mergeLeafRuntimeSession(
   session?: AcpSessionVm | null,
   lifecycle?: ConversationAttemptLifecycleVm | null,
 ) {
-  const nextStatus = lifecycle?.displayStatus
+  const nextLifecycle = lifecycle
+    ? mergeConversationAttemptLifecycle(leaf.lifecycle, lifecycle)
+    : leaf.lifecycle;
+  const nextStatus = nextLifecycle?.displayStatus
     ?? (session && isConversationActiveStatus(session.status) &&
       !isConversationActiveStatus(leaf.status) &&
       !isConversationTerminalLeafStatus(leaf.status)
       ? session.status
       : leaf.status);
-  const nextRuntimeDisplay = lifecycle?.runtimeDisplay ?? leaf.runtimeDisplay;
-  const nextLifecycle = lifecycle ?? leaf.lifecycle;
+  const nextRuntimeDisplay = nextLifecycle?.runtimeDisplay ?? leaf.runtimeDisplay;
   const nextSessionId = session?.sessionId ?? leaf.sessionId ?? null;
   const nextStartedAt = session?.sessionStartedAt ?? leaf.startedAt ?? null;
   if (

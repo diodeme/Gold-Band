@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use gold_band::acp::client::{self, AcpRuntimePolicy};
+use gold_band::acp::events::{
+    AcpLifecycleOwner, AcpPromptSubmission, AcpTurnExecutionClaim, admit_session_turn_for_execution,
+};
 use gold_band::artifacts::json_artifact_text;
 use gold_band::config::ManagedAgentId;
 use gold_band::domain::{SessionMode, TurnControlMode};
@@ -24,8 +27,8 @@ use gold_band::prompts::{
     PERSONAL_ANALYTICS_USER_ZH_CN, prompt_by_language, render,
 };
 use gold_band::provider::{
-    AttachmentProjectionPolicy, PromptBundle, PromptVisibility, RuntimeControlIntent,
-    resolve_attachments,
+    AttachmentProjectionPolicy, ConversationPromptInput, PromptBundle, PromptVisibility,
+    RuntimeControlIntent, resolve_attachments,
 };
 use gold_band::storage::{read_json, write_json};
 use serde::{Deserialize, Serialize};
@@ -1223,12 +1226,13 @@ fn invoke_agent(
             json!({ "reason": error.to_string() }),
         )
     })?;
+    let turn_id = Uuid::new_v4().to_string();
     let prompt = PromptBundle {
         system_prompt: system_prompt.map_err(prompt_error)?,
         user_prompt: user_prompt.map_err(prompt_error)?,
         display_text: None,
         quotes: Vec::new(),
-        prompt_id: Some(Uuid::new_v4().to_string()),
+        prompt_id: Some(turn_id.clone()),
         visibility: PromptVisibility::Hidden,
         hidden_reason: Some("personalAnalytics".to_string()),
         turn_control_mode: TurnControlMode::NonRuntimeControlled,
@@ -1240,6 +1244,14 @@ fn invoke_agent(
         content_blocks: resolved.iter().map(|item| item.block.clone()).collect(),
     };
     let attempt_dir = operation_dir.join(attempt_name);
+    let lifecycle_owner = claim_agent_prompt_lifecycle(
+        &attempt_dir,
+        &turn_id,
+        agent_type,
+        &agent_config.adapter.display_name,
+        &prompt.user_prompt,
+        &attachments,
+    )?;
     let run = client::run_prompt(
         agent_type,
         &agent_config.adapter,
@@ -1260,6 +1272,7 @@ fn invoke_agent(
         AcpRuntimePolicy::from(&app.config)
             .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
             .with_system_prompt_support(agent_config.supports_system_prompt()),
+        lifecycle_owner,
         None,
         &[],
         None,
@@ -1280,6 +1293,46 @@ fn invoke_agent(
     }
     personal_analytics_artifact_text(&run.output)
         .ok_or_else(|| analytics_error("analytics.report-invalid", json!({ "reason": "empty" })))
+}
+
+fn claim_agent_prompt_lifecycle(
+    attempt_dir: &Utf8Path,
+    turn_id: &str,
+    agent_type: &str,
+    agent_display_name: &str,
+    display_text: &str,
+    attachment_paths: &[String],
+) -> CommandResult<AcpLifecycleOwner> {
+    let submission = AcpPromptSubmission {
+        turn_id: turn_id.to_string(),
+        operation_id: format!("prompt:{}", Uuid::new_v4().simple()),
+        adapter_id: agent_type.to_string(),
+        adapter_display_name: agent_display_name.to_string(),
+        cwd: attempt_dir.to_string(),
+        input: ConversationPromptInput {
+            display_text: display_text.to_string(),
+            quotes: Vec::new(),
+        },
+        attachment_paths: attachment_paths.to_vec(),
+        admitted_at: gold_band::acp::events::current_timestamp(),
+    };
+    match admit_session_turn_for_execution(&attempt_dir.join("acp.snapshot.json"), &submission)
+        .map_err(|error| {
+            analytics_error(
+                "analytics.execution-failed",
+                json!({ "reason": error.to_string() }),
+            )
+        })? {
+        AcpTurnExecutionClaim::Claimed(owner) => Ok(owner),
+        AcpTurnExecutionClaim::AlreadySettled(_) => Err(analytics_error(
+            "analytics.execution-failed",
+            json!({ "reason": "acp.prompt-execution-already-settled" }),
+        )),
+        AcpTurnExecutionClaim::Stale => Err(analytics_error(
+            "analytics.execution-failed",
+            json!({ "reason": "acp.prompt-execution-claim-lost" }),
+        )),
+    }
 }
 
 fn personal_analytics_artifact_text(output: &client::AcpPromptOutput) -> Option<String> {
@@ -1569,6 +1622,46 @@ mod tests {
         let error = parse_personal_analytics_narrative(&payload)
             .expect_err("narrative schema version must match the report contract");
         assert!(error.contains(PERSONAL_ANALYTICS_REPORT_SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn insight_agent_attempt_claims_a_durable_acp_lifecycle_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("analysis-attempt")).unwrap();
+        let attachment_paths = vec!["projection.json".to_string()];
+
+        let owner = claim_agent_prompt_lifecycle(
+            &attempt_dir,
+            "turn-1",
+            "agent-a",
+            "Agent A",
+            "analyze the projection",
+            &attachment_paths,
+        )
+        .unwrap();
+        let snapshot = read_json::<Value>(&attempt_dir.join("acp.snapshot.json")).unwrap();
+
+        assert_eq!(owner.turn_id, "turn-1");
+        assert!(owner.operation_id.starts_with("prompt:"));
+        assert_eq!(snapshot["turnId"], owner.turn_id);
+        assert_eq!(snapshot["lifecycleOperationId"], owner.operation_id);
+        assert_eq!(snapshot["acpRevision"], owner.revision);
+        assert_eq!(snapshot["liveTurnActivity"], "accepted");
+        assert_eq!(
+            snapshot["promptSubmission"]["attachmentPaths"][0],
+            "projection.json"
+        );
+
+        gold_band::acp::events::persist_session_turn_terminal_owned(
+            &attempt_dir.join("acp.snapshot.json"),
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            gold_band::acp::events::AcpLatestTurnStatus::Completed,
+            "completed",
+            &gold_band::acp::events::current_timestamp(),
+        )
+        .unwrap();
     }
 
     fn operation(id: &str) -> PersonalAnalyticsOperation {

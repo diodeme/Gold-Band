@@ -319,6 +319,25 @@ mod tests {
     fn dummy_attempt_dir() -> (TempDir, Utf8PathBuf) {
         let dir = TempDir::new().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        write_json(
+            &path.join("node.json"),
+            &serde_json::json!({
+                "version": crate::domain::VERSION,
+                "acp_storage_schema_version": crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                "node_id": "worker",
+                "node_type": "worker",
+                "run_id": "run-001",
+                "round_id": "round-001",
+                "attempt_id": "attempt-001",
+                "status": "running",
+                "outcome": null,
+                "started_at": "1Z",
+                "finished_at": null,
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
         (dir, path)
     }
 

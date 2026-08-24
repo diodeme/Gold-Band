@@ -230,6 +230,7 @@ describe('ConversationSidebar run selection identity', () => {
     };
 
     const next = applyConversationSidebarRunStateUpdate(sidebar, {
+      eventKind: 'run-completed',
       projectId: 'project-b',
       taskId: 'task-001',
       runId: 'run-001',
@@ -253,6 +254,7 @@ describe('ConversationSidebar run selection identity', () => {
     expect(next.pinnedTasks[0].runs[0]).toMatchObject({ status: 'completed', outcome: 'success' });
 
     const stale = applyConversationSidebarRunStateUpdate(next, {
+      eventKind: 'node-started',
       projectId: 'project-b',
       taskId: 'task-001',
       runId: 'run-001',

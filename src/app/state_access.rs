@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 
 use crate::dsl::{WorkflowDsl, normalize_legacy_workflow_snapshot};
-use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator};
+use crate::runtime::{NodeState, RoundState, RunState, RuntimeAttemptLocator, write_node_state};
 use crate::storage::{read_json, write_json};
 
 use super::App;
@@ -83,7 +83,7 @@ pub(crate) fn persist_runtime_state(
     // Commit the node outcome before publishing any Runtime transition that
     // may point at a successor. This is the aggregate's crash-consistency
     // boundary across the three atomic JSON files.
-    write_json(
+    write_node_state(
         &app.paths
             .node_file(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id),
         node,

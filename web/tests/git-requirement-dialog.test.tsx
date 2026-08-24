@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({
   getGitCapability: vi.fn(),
   initializeGitRepository: vi.fn(),
-  openExternalUrl: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -27,15 +26,32 @@ vi.mock('react-i18next', () => ({
       'conversation.gitRequirement.useOtherWorkflow': '使用其他工作流',
       'conversation.gitRequirement.useMainWorkspace': '使用主工作区',
       'conversation.gitRequirement.initialize': '初始化仓库',
-      'conversation.gitRequirement.openDownloads': '打开 Git 下载页面',
+      'conversation.gitRequirement.openSourceControl': '打开源码管理',
       'conversation.gitRequirement.checking': '检测中…',
       'conversation.gitRequirement.recheck': '重新检测',
+      'sourceControl.title': '源码管理',
+      'sourceControl.description': '查看和管理当前工作区的 Git 状态',
     }[key] ?? key),
   }),
 }));
 vi.mock('@/api', () => api);
 
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
+import {
+  createDraftConversationWorkspaceScope,
+  RightWorkspaceProvider,
+  useRightWorkspace,
+} from '@/components/workspace/right-workspace-context';
+
+function WorkspaceStateProbe() {
+  const workspace = useRightWorkspace();
+  return (
+    <div
+      data-workspace-active-tab={workspace.activeTabKey ?? ''}
+      data-workspace-tab-kinds={workspace.tabs.map((tab) => tab.kind).join(',')}
+    />
+  );
+}
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -116,28 +132,51 @@ describe('Git requirement dialog', () => {
     await act(async () => root.unmount());
   });
 
-  it('offers the main workspace instead of another workflow for worktree selection', async () => {
+  it('orders the worktree recovery actions and opens source control in the right workspace', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
+    const onOpenChange = vi.fn();
 
     await act(async () => {
       root.render(
-        <GitRequirementDialog
-          open
-          projectId="project-1"
-          runKind="worktree"
-          initialStatus="worktree-required"
-          onReady={() => {}}
-          onUseOtherWorkflow={() => {}}
-          onOpenChange={() => {}}
-        />,
+        <RightWorkspaceProvider scope={createDraftConversationWorkspaceScope('project-1')}>
+          <GitRequirementDialog
+            open
+            projectId="project-1"
+            runKind="worktree"
+            initialStatus="head-required"
+            onReady={() => {}}
+            onUseOtherWorkflow={() => {}}
+            onOpenChange={onOpenChange}
+          />
+          <WorkspaceStateProbe />
+        </RightWorkspaceProvider>,
       );
     });
 
-    expect(document.body.textContent).toContain('新工作树需要 Git');
-    expect(document.body.textContent).toContain('使用主工作区');
+    expect(document.body.textContent).toContain('Git 仓库需要首次提交');
     expect(document.body.textContent).not.toContain('使用其他工作流');
+    expect(document.body.textContent).not.toContain('打开 Git 下载页面');
+
+    const actions = [...document.body.querySelectorAll<HTMLButtonElement>('[data-slot="dialog-footer"] button')];
+    expect(actions.map((button) => button.textContent)).toEqual([
+      '取消',
+      '重新检测',
+      '使用主工作区',
+      '打开源码管理',
+    ]);
+    expect(actions[1]?.className).toContain('border');
+    expect(actions[2]?.className).toContain('border');
+    expect(actions[3]?.className).toContain('bg-primary');
+
+    await act(async () => actions[3]?.click());
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(document.querySelector('[data-workspace-active-tab]')?.getAttribute('data-workspace-active-tab'))
+      .toBe('source-control:project-1:main');
+    expect(document.querySelector('[data-workspace-tab-kinds]')?.getAttribute('data-workspace-tab-kinds'))
+      .toBe('source-control');
     await act(async () => root.unmount());
   });
 });

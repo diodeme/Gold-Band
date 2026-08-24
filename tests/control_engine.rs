@@ -48,6 +48,7 @@ fn sample_round() -> RoundState {
 fn sample_node(node_id: &str, outcome: NodeOutcome) -> NodeState {
     NodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: gold_band::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         node_id: node_id.to_string(),
         node_type: NodeType::Worker,
         run_id: "run-001".to_string(),
@@ -157,7 +158,7 @@ fn worker_success_without_matching_edge_completes_run_as_success() {
 }
 
 #[test]
-fn worker_failure_without_matching_edge_completes_run_as_failure() {
+fn manual_check_failure_without_matching_edge_completes_run_as_failure() {
     let workflow = parse_workflow(
         r#"{
             "version": "0.1",
@@ -165,7 +166,7 @@ fn worker_failure_without_matching_edge_completes_run_as_failure() {
             "entry": "review",
             "control": { "max_attempts": 1 },
             "nodes": [
-                { "id": "review", "type": "worker", "provider": "claude-acp" }
+                { "id": "review", "type": "worker", "provider": "claude-acp", "manual_check": true }
             ],
             "edges": [
                 { "from": "review", "to": "$end", "on": "success" }
@@ -236,6 +237,37 @@ fn worker_failure_uses_explicit_edge() {
     );
     assert!(
         matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::Continue } if node_id == "dev")
+    );
+}
+
+#[test]
+fn manual_check_failure_uses_explicit_edge() {
+    let workflow = parse_workflow(
+        r#"{
+            "version": "0.1",
+            "id": "manual-check-failure-edge",
+            "entry": "interview",
+            "control": { "max_attempts": 1 },
+            "nodes": [
+                { "id": "interview", "type": "worker", "provider": "claude-acp", "manual_check": true },
+                { "id": "plan", "type": "worker", "provider": "claude-acp" }
+            ],
+            "edges": [
+                { "from": "interview", "to": "plan", "on": "failure" },
+                { "from": "plan", "to": "$end", "on": "success" }
+            ]
+        }"#,
+    );
+
+    let validated = gold_band::dsl::validate_workflow(workflow).unwrap();
+    let decision = decide_next_step(
+        &validated,
+        &sample_run(),
+        &sample_round(),
+        &sample_node("interview", NodeOutcome::Failure),
+    );
+    assert!(
+        matches!(decision, ControlDecision::TransitionToNode { node_id, session: SessionMode::New } if node_id == "plan")
     );
 }
 

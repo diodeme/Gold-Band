@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
+import type { ScheduledTaskConfig } from '@/types';
 
 /**
  * 首页会话发起 composer 的未提交草稿。
@@ -12,10 +13,13 @@ import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-s
 export interface ConversationComposerDraftState {
   content: string;
   attachments: AttachmentItem[];
+  submission:
+    | { kind: 'send' }
+    | { kind: 'scheduled-task'; config: ScheduledTaskConfig | null };
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-  return { content: '', attachments: [] };
+  return { content: '', attachments: [], submission: { kind: 'send' } };
 }
 
 /**
@@ -25,6 +29,9 @@ export function createInitialConversationComposerDraft(): ConversationComposerDr
 export type ConversationComposerDraftAction =
   | { type: 'setContent'; content: string }
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
+  | { type: 'enterScheduledTask' }
+  | { type: 'setScheduledTaskConfig'; config: ScheduledTaskConfig }
+  | { type: 'exitScheduledTask' }
   | { type: 'reset' };
 
 export function conversationComposerDraftReducer(
@@ -36,6 +43,16 @@ export function conversationComposerDraftReducer(
       return state.content === action.content ? state : { ...state, content: action.content };
     case 'setAttachments':
       return { ...state, attachments: action.attachments };
+    case 'enterScheduledTask':
+      return state.submission.kind === 'scheduled-task'
+        ? state
+        : { ...state, submission: { kind: 'scheduled-task', config: null } };
+    case 'setScheduledTaskConfig':
+      return { ...state, submission: { kind: 'scheduled-task', config: action.config } };
+    case 'exitScheduledTask':
+      return state.submission.kind === 'send'
+        ? state
+        : { ...state, submission: { kind: 'send' } };
     case 'reset':
       return createInitialConversationComposerDraft();
     default:
@@ -49,6 +66,9 @@ export interface ConversationComposerDraftContextValue {
   setAttachments: (
     next: AttachmentItem[] | ((prev: AttachmentItem[]) => AttachmentItem[]),
   ) => void;
+  enterScheduledTask: () => void;
+  setScheduledTaskConfig: (config: ScheduledTaskConfig) => void;
+  exitScheduledTask: () => void;
   reset: () => void;
 }
 
@@ -116,6 +136,18 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     [],
   );
 
+  const enterScheduledTask = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'enterScheduledTask' }));
+  }, []);
+
+  const setScheduledTaskConfig = useCallback((config: ScheduledTaskConfig) => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'setScheduledTaskConfig', config }));
+  }, []);
+
+  const exitScheduledTask = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'exitScheduledTask' }));
+  }, []);
+
   const reset = useCallback(() => {
     setDraft((prev) => {
       revokeAttachmentPreviewUrls(prev.attachments);
@@ -124,7 +156,15 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
   }, []);
 
   return useMemo(
-    () => ({ draft, setContent, setAttachments, reset }),
-    [draft, setContent, setAttachments, reset],
+    () => ({
+      draft,
+      setContent,
+      setAttachments,
+      enterScheduledTask,
+      setScheduledTaskConfig,
+      exitScheduledTask,
+      reset,
+    }),
+    [draft, setContent, setAttachments, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

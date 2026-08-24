@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { getGitCapability, initializeGitRepository, openExternalUrl } from '@/api';
+import { getGitCapability, initializeGitRepository } from '@/api';
 import { Button } from '@/components/ui/button';
+import { sourceControlWorkspaceResourceKey, useOptionalRightWorkspaceCommands } from '@/components/workspace/right-workspace-context';
 import {
   Dialog,
   DialogContent,
@@ -12,8 +13,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { GitCapabilityVm } from '@/types';
-
-const GIT_DOWNLOAD_URL = 'https://git-scm.com/downloads';
 
 interface GitRequirementDialogProps {
   open: boolean;
@@ -35,6 +34,7 @@ export function GitRequirementDialog({
   onOpenChange,
 }: GitRequirementDialogProps) {
   const { t } = useTranslation();
+  const workspaceCommands = useOptionalRightWorkspaceCommands();
   const [status, setStatus] = useState(initialStatus);
   const [checking, setChecking] = useState(false);
 
@@ -58,6 +58,20 @@ export function GitRequirementDialog({
       : runKind === 'auto'
         ? t('conversation.gitRequirement.autoDescription')
         : t('conversation.gitRequirement.workflowDescription');
+
+  function openSourceControl() {
+    if (!projectId || !workspaceCommands?.scopeKey || workspaceCommands.projectId !== projectId) return;
+    void workspaceCommands.openResource({
+      kind: 'source-control',
+      key: sourceControlWorkspaceResourceKey(projectId),
+      scopeKey: workspaceCommands.scopeKey,
+      projectId,
+      title: t('sourceControl.title'),
+      description: t('sourceControl.description'),
+      attention: false,
+    });
+    onOpenChange(false);
+  }
 
   async function recheck() {
     setChecking(true);
@@ -90,23 +104,32 @@ export function GitRequirementDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+        <DialogFooter className="flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
-          <Button variant="outline" onClick={onUseOtherWorkflow}>
-            {runKind === 'worktree'
-              ? t('conversation.gitRequirement.useMainWorkspace')
-              : t('conversation.gitRequirement.useOtherWorkflow')}
-          </Button>
           {repositoryRequired ? (
-            <Button onClick={() => void initialize()} disabled={checking}>{t('conversation.gitRequirement.initialize')}</Button>
+            <>
+              <Button variant="outline" onClick={onUseOtherWorkflow}>
+                {runKind === 'worktree'
+                  ? t('conversation.gitRequirement.useMainWorkspace')
+                  : t('conversation.gitRequirement.useOtherWorkflow')}
+              </Button>
+              <Button onClick={() => void initialize()} disabled={checking}>{t('conversation.gitRequirement.initialize')}</Button>
+            </>
           ) : (
             <>
-              <Button variant="outline" onClick={() => void openExternalUrl(GIT_DOWNLOAD_URL)}>
-                {t('conversation.gitRequirement.openDownloads')}
-              </Button>
-              <Button onClick={() => void recheck()} disabled={checking}>
+              <Button variant="outline" onClick={() => void recheck()} disabled={checking}>
                 {checking ? t('conversation.gitRequirement.checking') : t('conversation.gitRequirement.recheck')}
               </Button>
+              <Button variant="outline" onClick={onUseOtherWorkflow}>
+                {runKind === 'worktree'
+                  ? t('conversation.gitRequirement.useMainWorkspace')
+                  : t('conversation.gitRequirement.useOtherWorkflow')}
+              </Button>
+              {projectId && workspaceCommands?.scopeKey && workspaceCommands.projectId === projectId ? (
+                <Button onClick={openSourceControl}>
+                  {t('conversation.gitRequirement.openSourceControl')}
+                </Button>
+              ) : null}
             </>
           )}
         </DialogFooter>

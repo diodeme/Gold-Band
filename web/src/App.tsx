@@ -18,7 +18,6 @@ import {
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
-  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -82,6 +81,7 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
+import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
   isRuntimeControlledConversationLifecycle,
   planConversationAcpRunUpdate,
@@ -396,6 +396,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const scheduledTaskCreatedNotice = useScheduledTaskCreatedNotice();
   const [workflowRepairTarget, setWorkflowRepairTarget] = useState<WorkflowRepairTarget | null>(null);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
@@ -416,6 +417,7 @@ export function App() {
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
@@ -1174,6 +1176,8 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingCanonicalRunBoundary = false;
+    let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1198,8 +1202,10 @@ export function App() {
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
+      canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
           if (!active) return;
@@ -1227,6 +1233,7 @@ export function App() {
         .catch(() => {})
         .finally(() => {
           refreshInFlight = false;
+          canonicalRunBoundaryInFlight = false;
           if (!active || !refreshAgain) return;
           refreshAgain = false;
           if (refreshTimer === null) {
@@ -1239,10 +1246,19 @@ export function App() {
       sessionKey?: string | null,
       runtimeControlled = false,
       delayMs = 120,
+      canonicalRunBoundary = false,
     ) => {
-      if (sessionKey !== undefined) {
+      // A canonical NodeStarted event is the auto-follow boundary. A late ACP
+      // update from the node that just completed must not replace that target,
+      // including while its Run snapshot request is in flight. Newer canonical
+      // Run boundaries may still supersede it.
+      if (sessionKey !== undefined && (
+        canonicalRunBoundary
+        || (!pendingCanonicalRunBoundary && !canonicalRunBoundaryInFlight)
+      )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
@@ -1264,8 +1280,11 @@ export function App() {
         : null;
       queueConversationRunRefresh(
         sessionKey,
-        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        event.eventKind === 'node-started'
+          ? true
+          : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
         0,
+        true,
       );
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
@@ -1640,33 +1659,6 @@ export function App() {
       conversationRunRef.current = next;
       return next;
     });
-    try {
-      const switched = await switchConversationSession(
-        targetProjectId,
-        event.taskId,
-        event.runId,
-        leaf.roundId,
-        leaf.nodeId,
-        leaf.attemptId,
-        leaf.outerNodeId,
-        leaf.outerAttemptId,
-      );
-      if (conversationSelectedSessionKeyRef.current !== key) return;
-      startTransition(() => {
-        setConversationRun((prev) => {
-          if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-          const next: ConversationRunVm = {
-            ...prev,
-            selectedSession: switched.selectedSession,
-            sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-          };
-          conversationRunRef.current = next;
-          return next;
-        });
-      });
-    } catch {
-      // 切换 session 失败时静默：用户已在 run 页面，可手动选择。
-    }
   }, [
     uiMode,
     taskPage,
@@ -2429,6 +2421,7 @@ export function App() {
           busy={busy}
           inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
+          scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
@@ -2508,14 +2501,18 @@ export function App() {
           onCreateScheduledTask={async (input) => {
             await createScheduledTask(input);
           }}
+          onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenScheduledTasks={() => {
+            scheduledTaskCreatedNotice.dismiss();
+            onSelectConversation({ kind: 'scheduled-tasks' });
+          }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
           onWorkspaceChange={(projectId) => {
-            resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
@@ -2654,43 +2651,6 @@ export function App() {
               conversationRunRef.current = next;
               return next;
             });
-            switchConversationSession(
-              conversationPage.projectId,
-              conversationPage.taskId,
-              conversationPage.runId,
-              leaf.roundId,
-              leaf.nodeId,
-              leaf.attemptId,
-              leaf.outerNodeId,
-              leaf.outerAttemptId,
-            ).then((switched) => {
-              if (conversationSelectedSessionKeyRef.current !== key) {
-                return;
-              }
-              startTransition(() => {
-                setConversationRun((prev) => {
-                  if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-                  const next = {
-                    ...prev,
-                    selectedSession: switched.selectedSession,
-                    sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-                  };
-                  conversationRunRef.current = next;
-                  conversationSelectedSessionKeyRef.current = key;
-                  return next;
-                });
-              });
-              if (conversationRunRef.current && conversationSelectedSessionKeyRef.current === key) {
-                conversationRunRef.current = {
-                  ...conversationRunRef.current,
-                  selectedSession: switched.selectedSession,
-                  sessionTree: {
-                    ...conversationRunRef.current.sessionTree,
-                    selectedSessionKey: key,
-                  },
-                };
-              }
-            }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
             applyConversationLifecycleSnapshotToSidebar(
@@ -2729,14 +2689,19 @@ export function App() {
         profiles={profiles}
         busy={busy}
         inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
+        scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
         workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
+        onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
         onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+        onOpenScheduledTasks={() => {
+          scheduledTaskCreatedNotice.dismiss();
+          onSelectConversation({ kind: 'scheduled-tasks' });
+        }}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
-          resetConversationComposerDraft(composerDraftRef.current);
           setDraftConversationWorkspaceId(projectId);
           void loadConversationRunMode(projectId);
         }}

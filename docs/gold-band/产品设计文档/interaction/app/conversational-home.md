@@ -237,6 +237,7 @@
 - Direct 不在运行模式管理页出现，也不展示指向该页的“去配置 / 修复”按钮；Agent、模型、权限和对应校验均在快速会话 composer 内闭环。
 - Direct 的模型和权限记忆范围是 `workspace + agentType`；切换 Agent 时恢复该 Agent 在当前 workspace 上一次使用的模型和权限。
 - 切换 workspace 后再返回时，必须恢复该 workspace 当前 Direct Agent 及其模型/权限；其他 workspace 的选择不得覆盖当前 workspace。切换期间 composer 的 workspace 与运行模式配置由同一个 App 层 workspace key 驱动，不保留组件内第二份 workspace 选择状态。
+- 快速对话 composer 切换 workspace 属于导航上下文切换，不结束未提交草稿生命周期；无论从 composer 工作空间选择器还是左侧工作空间“新会话”入口切换，正文、图片及其他附件都必须原样保留。只有提交成功或用户明确执行清空/放弃操作时才清理草稿。
 - Direct 会话创建后 Agent 身份不可修改；更换 Agent 等价于创建新的 Direct 会话。会话内模型与权限模式分别使用独立显式 override：未指定时不干预 Agent 当前配置，选择具体值后不再允许回到“不指定”，但可以继续切换其他具体值。
 - Direct 侧边栏 task 行使用 Agent icon 代替 run 成功/暂停/失败状态点；当前 turn 活跃时由 task 级 activity 在 icon 外显示旋转环，相对时间来自 `lastActivityAt`。工作流和 AUTO 继续使用 run 状态点。
 - Direct task 行点击后直接进入最近会话，不渲染 `run-00x` 子列表；底层 run 仅作为内部执行与存储结构。

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { normalizeWorkflowExecutionSlots } from '../src/components/WorkflowEditor';
+import { createAuthoringWorkerNode, normalizeWorkflowExecutionSlots, upsertWorkerModelBinding } from '../src/components/WorkflowEditor';
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '../src/types';
 
 function workflow(nodes: WorkflowWorkerNodeDsl[]): WorkflowDsl {
@@ -14,6 +14,26 @@ function workflow(nodes: WorkflowWorkerNodeDsl[]): WorkflowDsl {
 }
 
 describe('Workflow JSON execution slots', () => {
+  it('creates every authoring worker with a stable slot so Agent selection can bind immediately', () => {
+    const current = workflow([{ type: 'worker', id: 'existing', executionSlotId: 'slot-existing' }]);
+    const node = createAuthoringWorkerNode(current, 'node-2', () => 'slot-new');
+
+    expect(node).toMatchObject({ type: 'worker', id: 'node-2', executionSlotId: 'slot-new' });
+    expect(upsertWorkerModelBinding(
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      node.executionSlotId!,
+      { agentId: 'claude-acp' },
+    ).bindings).toEqual([{ executionSlotId: 'slot-new', agentId: 'claude-acp' }]);
+  });
+
+  it('keeps generated slot identity when the node id is unique-suffixed', () => {
+    const current = workflow([{ type: 'worker', id: 'node-2', executionSlotId: 'slot-existing' }]);
+    const node = createAuthoringWorkerNode(current, 'node-2', () => 'slot-new');
+
+    expect(node.id).toBe('node-2-2');
+    expect(node.executionSlotId).toBe('slot-new');
+  });
+
   it('reuses slots by node id and creates a slot only for a new worker', () => {
     const previous = workflow([
       { type: 'worker', id: 'existing', executionSlotId: 'slot-existing' },

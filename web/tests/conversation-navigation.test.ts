@@ -206,6 +206,7 @@ describe('conversation sidebar navigation wiring', () => {
     const subscriptions = source.match(/void subscribeConversationRunStateUpdates\(\(event\) =>/g) ?? [];
     const globalSubscription = source.match(/void subscribeConversationRunStateUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
     const selectedRunRefresh = source.match(/const refreshConversationRun = \(\) => \{[\s\S]*?const queueConversationRunRefresh/)?.[0] ?? '';
+    const selectedRunStateHandler = source.match(/const refreshSelectedRunFromStateEvent[\s\S]*?conversationRunStateRefreshRef\.current = refreshSelectedRunFromStateEvent/)?.[0] ?? '';
 
     expect(subscriptions).toHaveLength(1);
     expect(globalSubscription).toContain('applyConversationSidebarRunStateUpdate(current, event)');
@@ -213,6 +214,9 @@ describe('conversation sidebar navigation wiring', () => {
     expect(globalSubscription).not.toContain('getConversationSidebar(');
     expect(selectedRunRefresh).toContain('getConversationRun(');
     expect(selectedRunRefresh).not.toContain('getConversationSidebar(');
+    expect(selectedRunStateHandler).toContain("event.eventKind === 'node-started'");
+    expect(source).toContain('canonicalRunBoundaryInFlight');
+    expect(source).toContain('pendingCanonicalRunBoundary');
   });
 
   it('keeps one shell-level ACP listener and clears only the matching task activity', () => {

@@ -140,6 +140,9 @@ pub struct DynamicRunState {
 #[serde(rename_all = "camelCase")]
 pub struct DynamicNodeState {
     pub version: String,
+    /// Canonical ACP storage layout version for this leaf's fixed attempt.
+    #[serde(default, skip_serializing)]
+    pub acp_storage_schema_version: u32,
     pub id: String,
     pub dynamic_run_id: String,
     pub kind: DynamicNodeKind,
@@ -184,6 +187,33 @@ pub struct DynamicNodeState {
     /// Hidden UUID used for metrics reporting (see docs/gold-band/observability-bus-design.md).
     #[serde(default)]
     pub uuid: Option<String>,
+}
+
+pub fn write_dynamic_node_state(path: &camino::Utf8Path, state: &DynamicNodeState) -> Result<()> {
+    crate::storage::with_file_lock(path, || {
+        let mut durable = serde_json::to_value(state)?;
+        let mut storage_version = state.acp_storage_schema_version;
+        if path.exists() {
+            let current = crate::storage::read_json::<serde_json::Value>(path)?;
+            let current_version = current
+                .get("acpStorageSchemaVersion")
+                .map(|version| {
+                    version
+                        .as_u64()
+                        .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-invalid"))
+                        .and_then(|version| {
+                            u32::try_from(version).map_err(|_| {
+                                anyhow::anyhow!("acp.storage-schema-version-unsupported")
+                            })
+                        })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            storage_version = storage_version.max(current_version);
+        }
+        durable["acpStorageSchemaVersion"] = serde_json::Value::from(storage_version);
+        crate::storage::write_json(path, &durable)
+    })
 }
 
 impl DynamicNodeState {
@@ -976,6 +1006,58 @@ pub fn validate_workspace_topology(graph: &DynamicGraphState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dynamic_node_with_storage_version(storage_version: u32) -> DynamicNodeState {
+        serde_json::from_value(serde_json::json!({
+            "version": VERSION,
+            "acpStorageSchemaVersion": storage_version,
+            "id": "worker",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Worker",
+            "task": "Run worker",
+            "status": "running",
+            "chainId": "worker",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "sessionMode": "new"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dynamic_node_storage_schema_is_only_persisted_in_leaf_node_and_is_monotonic() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("node.json")).unwrap();
+        let current =
+            dynamic_node_with_storage_version(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+        assert!(
+            serde_json::to_value(&current)
+                .unwrap()
+                .get("acpStorageSchemaVersion")
+                .is_none()
+        );
+        write_dynamic_node_state(&path, &current).unwrap();
+
+        let mut stale = dynamic_node_with_storage_version(0);
+        stale.title = "Updated by stale lifecycle state".to_string();
+        write_dynamic_node_state(&path, &stale).unwrap();
+
+        let durable = crate::storage::read_json::<serde_json::Value>(&path).unwrap();
+        assert_eq!(
+            durable
+                .get("acpStorageSchemaVersion")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(
+                crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION
+            ))
+        );
+        assert_eq!(
+            durable.get("title").and_then(serde_json::Value::as_str),
+            Some("Updated by stale lifecycle state")
+        );
+    }
 
     #[test]
     fn provider_routing_contract_rejects_model_and_permission_mode() {

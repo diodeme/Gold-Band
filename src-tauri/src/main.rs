@@ -29,10 +29,10 @@ mod workspace_files;
 
 use anyhow::Context;
 use commands::{
-    add_mcp_server, cancel_acp_session, cancel_git_operation, cancel_github_operation,
-    check_local_claude, check_mcp_server_health, check_skill_name_conflict, check_update_manual,
-    choose_workspace, clear_desktop_avatar, continue_conversation_runtime, continue_run,
-    create_agent, create_profile, create_task, delete_agent, delete_auto_template,
+    add_mcp_server, cancel_git_operation, cancel_github_operation, check_local_claude,
+    check_mcp_server_health, check_skill_name_conflict, check_update_manual, choose_workspace,
+    clear_desktop_avatar, continue_conversation_runtime, continue_run, create_agent,
+    create_profile, create_task, delete_agent, delete_auto_template,
     delete_conversation_queued_prompt, delete_mcp_server, delete_profile, delete_skill,
     delete_workflow_template, dismiss_update_announcement, doctor_agent,
     download_and_install_update, execute_git_mutation, get_acp_activity_detail, get_acp_raw_frames,
@@ -57,14 +57,14 @@ use commands::{
     save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
     save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
     search_acp_sessions, search_tasks, select_recent_desktop_avatar,
-    select_recent_desktop_wallpaper, select_recent_workspace, send_acp_prompt,
-    set_acp_session_config_option, set_acp_session_model, set_acp_session_permission_mode,
-    show_artifact, show_attachment, show_worker_ref, start_git_operation, start_git_state_monitor,
-    start_github_login, start_github_pull_request_create, start_run, stop_active_session,
-    stop_git_state_monitor, submit_conversation_prompt, submit_manual_check, toggle_mcp_server,
-    update_agent, update_auto_template, update_mcp_server, update_notification_attention,
-    update_profile, update_skill_sync_targets, update_workflow_template,
-    use_conversation_queued_prompt, write_skill,
+    select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
+    set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
+    show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
+    start_github_pull_request_create, start_run, stop_active_session, stop_git_state_monitor,
+    submit_conversation_prompt, submit_manual_check, toggle_mcp_server, update_agent,
+    update_auto_template, update_mcp_server, update_notification_attention, update_profile,
+    update_skill_sync_targets, update_workflow_template, use_conversation_queued_prompt,
+    write_skill,
 };
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
@@ -78,8 +78,8 @@ use commands_conversation::{
     save_conversation_preference, save_conversation_run_mode, save_desktop_ui_mode,
     save_last_conversation_workspace, save_scheduled_runtime_settings, search_conversation_tasks,
     set_scheduled_task_enabled, show_conversation_attachment, show_conversation_message_attachment,
-    stat_attachment_files, switch_conversation_session, sync_conversation_workspace,
-    unpin_conversation, update_scheduled_task, update_task_metadata, validate_conversation_create,
+    stat_attachment_files, sync_conversation_workspace, unpin_conversation, update_scheduled_task,
+    update_task_metadata, validate_conversation_create,
 };
 use gold_band::observability::{init_tracing, touch_log_file_best_effort};
 use gold_band::storage::sqlite::init_search_index;
@@ -89,7 +89,7 @@ use image_actions::{copy_image_to_clipboard, save_image_as};
 use notifications::send_scheduled_native_notification;
 use state::{DesktopContext, DesktopState};
 use tauri::Manager;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use updater::{retry_pending_startup_install, start_update_polling};
 use workspace_files::{WorkspaceFileRuntime, WorkspaceFileWatchRuntime};
 
@@ -293,16 +293,32 @@ fn run() -> anyhow::Result<()> {
             std::thread::spawn(move || {
                 loop {
                     let state = handle.state::<DesktopState>();
-                    let diagnostics_refreshed = state.refresh_all_agent_diagnostics().is_ok();
-                    let commands_refreshed = state
-                        .refresh_agent_command_catalogs_for_active_workspaces()
-                        .is_ok();
+                    debug!("periodic agent maintenance cycle started");
+                    let diagnostics_refreshed = match state.refresh_all_agent_diagnostics() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            warn!(%error, "periodic agent diagnostic refresh failed");
+                            false
+                        }
+                    };
+                    let commands_refreshed =
+                        match state.refresh_agent_command_catalogs_for_active_workspaces() {
+                            Ok(()) => true,
+                            Err(error) => {
+                                warn!(%error, "periodic agent command catalog refresh failed");
+                                false
+                            }
+                        };
                     if diagnostics_refreshed {
                         commands::emit_agent_registry_updated(&handle);
                     }
                     if diagnostics_refreshed || commands_refreshed {
                         commands::emit_agent_commands_updated(&handle, None);
                     }
+                    debug!(
+                        diagnostics_refreshed,
+                        commands_refreshed, "periodic agent maintenance cycle completed"
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
@@ -378,13 +394,11 @@ fn run() -> anyhow::Result<()> {
             restore_conversation_queued_prompt,
             delete_conversation_queued_prompt,
             use_conversation_queued_prompt,
-            send_acp_prompt,
             set_acp_session_model,
             set_acp_session_config_option,
             set_acp_session_permission_mode,
             respond_acp_permission,
             respond_elicitation,
-            cancel_acp_session,
             get_acp_raw_frames,
             start_run,
             get_git_capability,
@@ -464,7 +478,6 @@ fn run() -> anyhow::Result<()> {
             validate_conversation_create,
             create_conversation_run,
             rerun_conversation_task,
-            switch_conversation_session,
             stat_attachment_files,
             materialize_conversation_attachments,
             show_conversation_attachment,

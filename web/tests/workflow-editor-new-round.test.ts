@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateWorkflowForSave } from '../src/components/WorkflowEditor';
 import type { ManagedAgentVm, ProfileVm, WorkflowDsl } from '../src/types';
+import { readyWorkflowProfileCatalog } from '../src/lib/workflow-profile-catalog';
 
 const t = (key: string, options?: Record<string, unknown>) => `${key}${options ? `:${JSON.stringify(options)}` : ''}`;
 
@@ -43,7 +44,7 @@ function worker(id: string) {
 function validate(workflow: WorkflowDsl) {
   return validateWorkflowForSave(
     workflow,
-    profiles,
+    readyWorkflowProfileCatalog(profiles),
     agents,
     t,
     null,

@@ -17,7 +17,7 @@ pub const BLOB_CORRUPTED: &str = "turn-files.blob-corrupted";
 pub const INVALID_TOOL_DIFF: &str = "turn-files.invalid-tool-diff";
 pub const NON_LINEAR_MUTATION: &str = "turn-files.non-linear-mutation";
 pub const CAPTURE_LIMIT_EXCEEDED: &str = "turn-files.capture-limit-exceeded";
-pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 3;
+pub const TURN_FILE_CHANGE_SET_SCHEMA_VERSION: u32 = 4;
 
 const UNIFIED_DIFF_NO_NEWLINE_MARKERS: [&str; 2] =
     [r"\ No newline at end of file", " No newline at end of file"];
@@ -108,6 +108,28 @@ pub enum TurnFileChangeSetStatus {
     Capturing,
     Finalized,
     Partial,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnFileToolTerminalOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl TurnFileToolTerminalOutcome {
+    pub fn from_status(status: Option<&str>) -> Option<Self> {
+        match status?.trim().to_ascii_lowercase().as_str() {
+            "completed" | "success" | "succeeded" => Some(Self::Succeeded),
+            "failed" | "error" => Some(Self::Failed),
+            "cancelled" | "canceled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    fn committed(self) -> bool {
+        self == Self::Succeeded
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -294,11 +316,18 @@ impl TurnFileStore {
         branch_id: &str,
         started_at: &str,
         finished_at: &str,
+        tool_outcomes: &HashMap<String, TurnFileToolTerminalOutcome>,
     ) -> Result<Option<TurnFileChangeSet>> {
         let mutations = self
             .load_mutations()?
             .into_iter()
-            .filter(|mutation| mutation.turn_id == turn_id && mutation.branch_id == branch_id)
+            .filter(|mutation| {
+                mutation.turn_id == turn_id
+                    && mutation.branch_id == branch_id
+                    && tool_outcomes
+                        .get(&mutation.tool_call_id)
+                        .is_some_and(|outcome| outcome.committed())
+            })
             .collect::<Vec<_>>();
         if mutations.is_empty() {
             return Ok(None);
@@ -422,7 +451,7 @@ impl TurnFileStore {
         if change_set.schema_version >= TURN_FILE_CHANGE_SET_SCHEMA_VERSION {
             return Ok(change_set);
         }
-        self.finalize_turn_branch(
+        let rebuilt = self.finalize_turn_branch(
             &change_set.turn_id,
             &change_set.prompt_event_id,
             &change_set.branch_id,
@@ -431,8 +460,26 @@ impl TurnFileStore {
                 .finished_at
                 .as_deref()
                 .unwrap_or(&change_set.started_at),
-        )?
-        .ok_or_else(|| anyhow!(CHANGE_SET_NOT_FOUND))
+            &self.legacy_tool_outcomes(&change_set.turn_id, &change_set.branch_id)?,
+        )?;
+        if let Some(rebuilt) = rebuilt {
+            return Ok(rebuilt);
+        }
+        let empty = TurnFileChangeSet {
+            schema_version: TURN_FILE_CHANGE_SET_SCHEMA_VERSION,
+            id: change_set.id,
+            turn_id: change_set.turn_id,
+            prompt_event_id: change_set.prompt_event_id,
+            branch_id: change_set.branch_id,
+            status: TurnFileChangeSetStatus::Finalized,
+            started_at: change_set.started_at,
+            finished_at: change_set.finished_at,
+            summary: TurnFileChangeSummary::default(),
+            changes: Vec::new(),
+            limitation_codes: Vec::new(),
+        };
+        write_json(&path, &empty)?;
+        Ok(empty)
     }
 
     pub fn comparison(&self, change_set_id: &str, change_id: &str) -> Result<FileComparison> {
@@ -557,6 +604,37 @@ impl TurnFileStore {
             }
         }
         Ok(mutations)
+    }
+
+    fn legacy_tool_outcomes(
+        &self,
+        turn_id: &str,
+        branch_id: &str,
+    ) -> Result<HashMap<String, TurnFileToolTerminalOutcome>> {
+        let tool_call_ids = self
+            .load_mutations()?
+            .into_iter()
+            .filter(|mutation| mutation.turn_id == turn_id && mutation.branch_id == branch_id)
+            .map(|mutation| mutation.tool_call_id)
+            .collect::<HashSet<_>>();
+        let timeline_path =
+            crate::acp::branches::branch_timeline_path(&self.attempt_dir, branch_id);
+        let mut outcomes = HashMap::new();
+        for event in crate::acp::events::load_timeline_items(&timeline_path)? {
+            let Some(tool_call_id) = event
+                .tool_call_id
+                .as_deref()
+                .filter(|tool_call_id| tool_call_ids.contains(*tool_call_id))
+            else {
+                continue;
+            };
+            let Some(outcome) = TurnFileToolTerminalOutcome::from_status(event.status.as_deref())
+            else {
+                continue;
+            };
+            outcomes.entry(tool_call_id.to_string()).or_insert(outcome);
+        }
+        Ok(outcomes)
     }
 
     fn mutation_journal_path(&self) -> Utf8PathBuf {
@@ -781,6 +859,35 @@ mod tests {
         serde_json::json!({ "sessionUpdate": "tool_call_update", "content": content })
     }
 
+    fn succeeded_tools(tool_call_ids: &[&str]) -> HashMap<String, TurnFileToolTerminalOutcome> {
+        tool_call_ids
+            .iter()
+            .map(|tool_call_id| {
+                (
+                    (*tool_call_id).to_string(),
+                    TurnFileToolTerminalOutcome::Succeeded,
+                )
+            })
+            .collect()
+    }
+
+    fn write_tool_terminal(store: &TurnFileStore, tool_call_id: &str, status: &str) {
+        let event = crate::acp::events::normalize_session_update(
+            100,
+            Some("session".to_string()),
+            &serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "status": status,
+            }),
+        );
+        crate::acp::events::write_timeline_items(
+            &store.attempt_dir.join("acp.timeline.jsonl"),
+            &[event],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn extracts_only_standard_diff_content() {
         let diffs = extract_standard_tool_diffs(&raw(serde_json::json!([
@@ -843,7 +950,14 @@ mod tests {
             )
             .unwrap();
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "12Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "12Z",
+                &succeeded_tools(&["write", "edit"]),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(set.summary.added_files, 1);
@@ -883,7 +997,14 @@ mod tests {
             )
             .unwrap();
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "4Z",
+                &succeeded_tools(&["write", "edit"]),
+            )
             .unwrap()
             .unwrap();
         let change = &set.changes[0];
@@ -918,6 +1039,96 @@ mod tests {
     }
 
     #[test]
+    fn intermediate_diff_requires_a_successful_tool_terminal_outcome() {
+        let (_dir, store) = store();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "progress.txt", "oldText": "before", "newText": "after" }
+                ])),
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z", &HashMap::new(),)
+                .unwrap()
+                .is_none()
+        );
+
+        let completed = HashMap::from([(
+            "edit".to_string(),
+            TurnFileToolTerminalOutcome::from_status(Some("completed")).unwrap(),
+        )]);
+        let set = store
+            .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z", &completed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.summary.file_count, 1);
+        assert_eq!(set.summary.added_lines, 1);
+    }
+
+    #[test]
+    fn failed_tool_terminal_outcome_excludes_repeated_diff_evidence() {
+        let (_dir, store) = store();
+        let diff = serde_json::json!([
+            { "type": "diff", "path": "progress.txt", "oldText": "before", "newText": "before\nafter" }
+        ]);
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(diff.clone()),
+            )
+            .unwrap();
+        store
+            .capture_event_diffs("turn", "prompt", "root", "edit", 3, "3Z", &raw(diff))
+            .unwrap();
+        let failed = HashMap::from([(
+            "edit".to_string(),
+            TurnFileToolTerminalOutcome::from_status(Some("failed")).unwrap(),
+        )]);
+
+        assert!(
+            store
+                .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z", &failed)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn tool_terminal_status_mapping_is_explicit_and_permission_independent() {
+        assert_eq!(
+            TurnFileToolTerminalOutcome::from_status(Some("succeeded")),
+            Some(TurnFileToolTerminalOutcome::Succeeded)
+        );
+        assert_eq!(
+            TurnFileToolTerminalOutcome::from_status(Some("error")),
+            Some(TurnFileToolTerminalOutcome::Failed)
+        );
+        assert_eq!(
+            TurnFileToolTerminalOutcome::from_status(Some("canceled")),
+            Some(TurnFileToolTerminalOutcome::Cancelled)
+        );
+        assert_eq!(
+            TurnFileToolTerminalOutcome::from_status(Some("in_progress")),
+            None
+        );
+        assert_eq!(TurnFileToolTerminalOutcome::from_status(None), None);
+    }
+
+    #[test]
     fn latest_update_of_one_tool_call_replaces_earlier_diff_context() {
         let (_dir, store) = store();
         store
@@ -948,7 +1159,14 @@ mod tests {
             .unwrap();
 
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "4Z",
+                &succeeded_tools(&["edit"]),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(set.status, TurnFileChangeSetStatus::Finalized);
@@ -978,11 +1196,19 @@ mod tests {
             )
             .unwrap();
         let mut legacy = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "4Z",
+                &succeeded_tools(&["edit"]),
+            )
             .unwrap()
             .unwrap();
         legacy.schema_version = 1;
         write_json(&store.change_set_path(&legacy.id), &legacy).unwrap();
+        write_tool_terminal(&store, "edit", "completed");
         store
             .capture_event_diffs(
                 "turn",
@@ -1034,13 +1260,21 @@ mod tests {
         )
         .unwrap();
         let mut schema_two = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["edit"]),
+            )
             .unwrap()
             .unwrap();
         schema_two.schema_version = 2;
         schema_two.changes[0].before_version = Some(before_version);
         schema_two.changes[0].after_version = Some(after_version);
         write_json(&store.change_set_path(&schema_two.id), &schema_two).unwrap();
+        write_tool_terminal(&store, "edit", "completed");
 
         let rebuilt = store.load_change_set(&schema_two.id).unwrap();
         assert_eq!(rebuilt.schema_version, TURN_FILE_CHANGE_SET_SCHEMA_VERSION);
@@ -1049,6 +1283,43 @@ mod tests {
             .unwrap();
         assert_eq!(comparison.before.unwrap().content, "静夜思");
         assert_eq!(comparison.after.unwrap().content, "春望");
+    }
+
+    #[test]
+    fn loading_legacy_change_set_removes_diff_without_successful_tool_terminal() {
+        let (_dir, store) = store();
+        store
+            .capture_event_diffs(
+                "turn",
+                "prompt",
+                "root",
+                "edit",
+                2,
+                "2Z",
+                &raw(serde_json::json!([
+                    { "type": "diff", "path": "progress.txt", "oldText": "before", "newText": "after" }
+                ])),
+            )
+            .unwrap();
+        let mut legacy = store
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["edit"]),
+            )
+            .unwrap()
+            .unwrap();
+        legacy.schema_version = 3;
+        write_json(&store.change_set_path(&legacy.id), &legacy).unwrap();
+        write_tool_terminal(&store, "edit", "failed");
+
+        let rebuilt = store.load_change_set(&legacy.id).unwrap();
+        assert_eq!(rebuilt.schema_version, TURN_FILE_CHANGE_SET_SCHEMA_VERSION);
+        assert_eq!(rebuilt.summary, TurnFileChangeSummary::default());
+        assert!(rebuilt.changes.is_empty());
     }
 
     #[test]
@@ -1081,7 +1352,14 @@ mod tests {
             )
             .unwrap();
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "4Z",
+                &succeeded_tools(&["one", "two"]),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(set.status, TurnFileChangeSetStatus::Partial);
@@ -1122,7 +1400,14 @@ mod tests {
             .unwrap();
         assert!(
             store
-                .finalize_turn_branch("turn", "prompt", "root", "1Z", "4Z")
+                .finalize_turn_branch(
+                    "turn",
+                    "prompt",
+                    "root",
+                    "1Z",
+                    "4Z",
+                    &succeeded_tools(&["one", "two"]),
+                )
                 .unwrap()
                 .is_none()
         );
@@ -1147,7 +1432,14 @@ mod tests {
         std::fs::write(dir.path().join("workspace.txt"), "live-newer\n").unwrap();
 
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["write"]),
+            )
             .unwrap()
             .unwrap();
         let comparison = store.comparison(&set.id, &set.changes[0].id).unwrap();
@@ -1189,7 +1481,14 @@ mod tests {
             .unwrap();
 
         let set = store
-            .finalize_turn_branch("turn", "prompt", "root", "1Z", "3Z")
+            .finalize_turn_branch(
+                "turn",
+                "prompt",
+                "root",
+                "1Z",
+                "3Z",
+                &succeeded_tools(&["write"]),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(set.status, TurnFileChangeSetStatus::Partial);

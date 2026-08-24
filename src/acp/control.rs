@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::acp::events::{current_timestamp, load_session_metadata_value, load_timeline_items};
+use crate::acp::events::{
+    current_timestamp, load_timeline_items, patch_session_runtime_control,
+    read_session_metadata_value,
+};
 use crate::domain::{TurnControlMode, TurnControlTransitionCause};
-use crate::storage::{ensure_parent_dir, write_json};
 
 const SNAPSHOT_FILE: &str = "acp.snapshot.json";
 const SESSION_FILE: &str = "acp.session.json";
@@ -181,7 +183,7 @@ fn load_persisted_cursor_unlocked(
     let mut timeline_scan_complete = false;
     for name in [SNAPSHOT_FILE, SESSION_FILE] {
         let path = attempt_dir.join(name);
-        let Ok(value) = load_session_metadata_value(&path, None) else {
+        let Ok(value) = read_session_metadata_value(&path, None) else {
             continue;
         };
         timeline_scan_complete |= value
@@ -216,15 +218,7 @@ fn write_transition_unlocked(
 }
 
 fn persist_cursor_unlocked(attempt_dir: &Utf8Path, cursor: &AcpRuntimeControlCursor) -> Result<()> {
-    for name in [SNAPSHOT_FILE, SESSION_FILE] {
-        let path = attempt_dir.join(name);
-        let mut session = session_value(&path)?;
-        session["runtimeControl"] = serde_json::to_value(cursor)?;
-        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
-        ensure_parent_dir(&path)?;
-        write_json(&path, &session)?;
-    }
-    Ok(())
+    patch_session_runtime_control(&attempt_dir.join(SNAPSHOT_FILE), Some(cursor), true)
 }
 
 fn reconstruct_cursor_from_timeline_unlocked(
@@ -255,32 +249,19 @@ fn reconstruct_cursor_from_timeline_unlocked(
 }
 
 fn persist_timeline_scan_complete_unlocked(attempt_dir: &Utf8Path) -> Result<()> {
-    for name in [SNAPSHOT_FILE, SESSION_FILE] {
-        let path = attempt_dir.join(name);
-        let mut session = session_value(&path)?;
-        session[TIMELINE_SCAN_COMPLETE_FIELD] = Value::Bool(true);
-        ensure_parent_dir(&path)?;
-        write_json(&path, &session)?;
-    }
-    Ok(())
-}
-
-fn session_value(path: &Utf8Path) -> Result<Value> {
-    if path.exists() {
-        return load_session_metadata_value(path, None);
-    }
-    Ok(serde_json::json!({
-        "availability": "unavailable",
-        "latestTurnStatus": "none",
-        "restored": false,
-        "createdAt": current_timestamp(),
-    }))
+    patch_session_runtime_control(&attempt_dir.join(SNAPSHOT_FILE), None, true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::events::{AcpUiEvent, write_timeline_items};
+    use crate::acp::events::{
+        AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpTurnAdmission,
+        AcpTurnExecutionClaim, AcpUiEvent, begin_session_turn, claim_session_turn_for_execution,
+        persist_session_turn_terminal_owned, read_lifecycle_header, write_timeline_items,
+    };
+    use crate::provider::ConversationPromptInput;
+    use crate::storage::write_json;
 
     #[test]
     fn timeline_scan_placeholder_is_not_an_established_session() {
@@ -289,13 +270,12 @@ mod tests {
 
         persist_timeline_scan_complete_unlocked(attempt_dir).unwrap();
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(metadata["availability"], "unavailable");
-            assert_eq!(metadata["latestTurnStatus"], "none");
-            assert_eq!(metadata[TIMELINE_SCAN_COMPLETE_FIELD], true);
-            assert!(metadata.get("sessionId").is_none());
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["availability"], "unavailable");
+        assert_eq!(metadata["latestTurnStatus"], "none");
+        assert_eq!(metadata[TIMELINE_SCAN_COMPLETE_FIELD], true);
+        assert!(metadata.get("sessionId").is_none());
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]
@@ -305,14 +285,13 @@ mod tests {
 
         mark_runtime_interrupted(attempt_dir).unwrap();
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(metadata["latestTurnStatus"], "none");
-            assert_eq!(
-                metadata["runtimeControl"]["currentMode"],
-                "non-runtime-controlled"
-            );
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["latestTurnStatus"], "none");
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]
@@ -333,9 +312,37 @@ mod tests {
 
         mark_runtime_interrupted(attempt_dir).unwrap();
 
-        let metadata = load_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
         assert_eq!(metadata["latestTurnStatus"], "completed");
         assert_eq!(metadata["sessionId"], "session-existing");
+    }
+
+    #[test]
+    fn first_runtime_control_write_seeds_canonical_snapshot_from_legacy_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        write_json(
+            &attempt_dir.join(SESSION_FILE),
+            &serde_json::json!({
+                "sessionId": "legacy-session",
+                "availability": "established",
+                "latestTurnStatus": "completed",
+                "restored": false,
+                "createdAt": current_timestamp(),
+            }),
+        )
+        .unwrap();
+
+        mark_runtime_interrupted(attempt_dir).unwrap();
+
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(metadata["sessionId"], "legacy-session");
+        assert_eq!(metadata["availability"], "established");
+        assert_eq!(metadata["latestTurnStatus"], "completed");
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
     }
 
     #[test]
@@ -355,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_manual_follow_up_persists_non_runtime_control_to_both_snapshots() {
+    fn accepted_manual_follow_up_persists_non_runtime_control_to_canonical_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
         let (source_id, transition_id) = prepare_manual_follow_up(attempt_dir).unwrap().unwrap();
@@ -366,18 +373,17 @@ mod tests {
             commit_manual_follow_up(attempt_dir, source_id.as_deref(), &transition_id).unwrap()
         );
 
-        for name in [SNAPSHOT_FILE, SESSION_FILE] {
-            let metadata = load_session_metadata_value(&attempt_dir.join(name), None).unwrap();
-            assert_eq!(
-                metadata["runtimeControl"]["currentMode"],
-                "non-runtime-controlled"
-            );
-            assert_eq!(
-                metadata["runtimeControl"]["transitionCause"],
-                "manual-follow-up"
-            );
-            assert_eq!(metadata["runtimeControl"]["transitionId"], transition_id);
-        }
+        let metadata = read_session_metadata_value(&attempt_dir.join(SNAPSHOT_FILE), None).unwrap();
+        assert_eq!(
+            metadata["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
+        assert_eq!(
+            metadata["runtimeControl"]["transitionCause"],
+            "manual-follow-up"
+        );
+        assert_eq!(metadata["runtimeControl"]["transitionId"], transition_id);
+        assert!(!attempt_dir.join(SESSION_FILE).exists());
     }
 
     #[test]
@@ -433,6 +439,84 @@ mod tests {
         let resumed = load_runtime_control_cursor(attempt_dir).unwrap().unwrap();
         assert_eq!(resumed.current_mode, TurnControlMode::RuntimeControlled);
         assert_eq!(resumed.transition_id, resumed_id);
+    }
+
+    #[test]
+    fn workflow_continue_patch_preserves_turn_owner_and_allows_immediate_finalize_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let attempt_dir = Utf8Path::from_path(dir.path()).unwrap();
+        let snapshot = attempt_dir.join(SNAPSHOT_FILE);
+        let interrupted = mark_runtime_interrupted(attempt_dir).unwrap();
+        let business = AcpPromptSubmission {
+            turn_id: "business-turn".to_string(),
+            operation_id: "business-operation".to_string(),
+            adapter_id: "codex-acp".to_string(),
+            adapter_display_name: "Codex".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: ConversationPromptInput {
+                display_text: "run business turn".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-20T00:00:00Z".to_string(),
+        };
+        let AcpTurnAdmission::Started(started) = begin_session_turn(&snapshot, &business).unwrap()
+        else {
+            panic!("business turn must be admitted");
+        };
+        let owner = match claim_session_turn_for_execution(
+            &snapshot,
+            &business.turn_id,
+            started.revision,
+            &business.operation_id,
+        )
+        .unwrap()
+        {
+            AcpTurnExecutionClaim::Claimed(owner) => owner,
+            claim => panic!("business turn must own execution, got {claim:?}"),
+        };
+
+        let (source_id, resumed_id) = prepare_workflow_continued(attempt_dir).unwrap().unwrap();
+        assert_eq!(source_id, interrupted.transition_id);
+        assert!(commit_workflow_continued(attempt_dir, &source_id, &resumed_id).unwrap());
+        let after_control_patch = read_lifecycle_header(&snapshot).unwrap().unwrap();
+        assert_eq!(after_control_patch.revision, owner.revision);
+        assert_eq!(
+            after_control_patch.turn_id.as_deref(),
+            Some("business-turn")
+        );
+        assert_eq!(
+            after_control_patch.live_turn_activity,
+            AcpLiveTurnActivity::Accepted
+        );
+
+        let terminal = persist_session_turn_terminal_owned(
+            &snapshot,
+            &owner.turn_id,
+            Some(&owner.operation_id),
+            owner.revision,
+            AcpLatestTurnStatus::Completed,
+            "end_turn",
+            "2026-08-20T00:00:01Z",
+        )
+        .unwrap()
+        .expect("business owner must reach terminal before finalize");
+        assert_eq!(terminal.latest_turn_status, AcpLatestTurnStatus::Completed);
+
+        let finalize = AcpPromptSubmission {
+            turn_id: "artifact-finalize-attempt-001".to_string(),
+            operation_id: "finalize-operation".to_string(),
+            input: ConversationPromptInput {
+                display_text: "hidden finalize".to_string(),
+                quotes: Vec::new(),
+            },
+            admitted_at: "2026-08-20T00:00:02Z".to_string(),
+            ..business
+        };
+        assert!(matches!(
+            begin_session_turn(&snapshot, &finalize).unwrap(),
+            AcpTurnAdmission::Started(_)
+        ));
     }
 
     #[test]

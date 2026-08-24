@@ -96,6 +96,36 @@ impl ProviderHistoryReplay {
                 })
             })
             .collect();
+        Self::with_prompt_anchors(local_prompt_anchors)
+    }
+
+    /// Builds replay state from the indexed Gold Band prompt anchors. The
+    /// anchors contain only prompt identity and text; provider/tool history is
+    /// intentionally not loaded during normal runtime startup.
+    pub fn from_prompt_anchors(items: impl IntoIterator<Item = AcpUiEvent>) -> Self {
+        let local_prompt_anchors = items
+            .into_iter()
+            .filter(|item| {
+                item.kind == "userTextDelta"
+                    && item
+                        .raw
+                        .as_ref()
+                        .and_then(|raw| raw.get("source"))
+                        .and_then(Value::as_str)
+                        == Some("goldBandPrompt")
+            })
+            .filter_map(|item| {
+                let text = item.content.clone()?;
+                Some(LocalPromptAnchor {
+                    id: prompt_anchor_id(&item),
+                    text: normalize_prompt_text(&text),
+                })
+            })
+            .collect();
+        Self::with_prompt_anchors(local_prompt_anchors)
+    }
+
+    fn with_prompt_anchors(local_prompt_anchors: Vec<LocalPromptAnchor>) -> Self {
         Self {
             local_prompt_anchors,
             local_prompt_cursor: 0,

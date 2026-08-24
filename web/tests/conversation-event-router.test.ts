@@ -8,7 +8,9 @@ import {
   conversationEventMatchesAttempt,
   readConversationBranchLiveSnapshot,
   readConversationBranchReplaySnapshot,
+  reconcileConversationBranchSession,
   resetConversationEventRouterSnapshots,
+  resolveConversationBranchDisplayStatus,
 } from '@/lib/conversation-event-router';
 import type { AcpAgentExecutionVm, AcpSessionVm, AcpUiEventVm } from '@/types';
 
@@ -36,8 +38,19 @@ function uiEvent(kind: string, status: string | null = null): AcpUiEventVm {
   };
 }
 
-function live(branchId: string, event: AcpUiEventVm): AcpSessionUpdatedEventVm {
-  return { ...locator, branchId, event };
+function live(
+  branchId: string,
+  event: AcpUiEventVm,
+  timelineRevision: number | null = event.endedSeq ?? event.seq,
+  timelineGeneration = 1,
+): AcpSessionUpdatedEventVm {
+  return {
+    ...locator,
+    branchId,
+    event,
+    timelineGeneration: timelineRevision == null ? null : timelineGeneration,
+    timelineRevision,
+  };
 }
 
 function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessionUpdatedEventVm {
@@ -61,6 +74,53 @@ function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessio
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
   return { ...locator, session };
+}
+
+function lifecycleUpdate(
+  latestTurnStatus: 'none' | 'completed' | 'cancelled' | 'failed',
+  liveTurnActivity: 'idle' | 'starting' | 'accepted' | 'running' | 'cancel-requested' = 'idle',
+  revision = 1,
+): AcpSessionUpdatedEventVm {
+  return {
+    ...locator,
+    lifecycle: {
+      runtime: {
+        status: 'paused',
+        outcome: null,
+        pauseReason: null,
+        resumable: true,
+        current: true,
+        active: false,
+        continuable: true,
+        phase: 'idle',
+        revision,
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: {
+        revision,
+        sessionAvailability: 'established',
+        liveTurnActivity,
+        latestTurnStatus,
+        stopping: liveTurnActivity === 'cancel-requested',
+      },
+      displayStatus: 'paused',
+      runtimeDisplay: {
+        code: 'paused',
+        tone: 'warning',
+        icon: 'pause',
+        terminal: false,
+        resumable: true,
+        blockingError: false,
+      },
+      composer: {
+        mode: 'normal',
+        submitTarget: 'acp-prompt',
+        processingKind: 'responding',
+        canStop: false,
+        lockInput: false,
+      },
+    },
+  };
 }
 
 function agent(agentExecutionId: string, executionStatus: string): AcpAgentExecutionVm {
@@ -115,7 +175,7 @@ describe('conversation event router', () => {
     expect(replay.events[0]?.content).toBe('检查完整内容');
   });
 
-  it('bounds retained events and marks the branch for afterSeq catch-up', () => {
+  it('bounds retained events and records only the evicted durable revision', () => {
     for (let index = 0; index <= CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch; index += 1) {
       applyConversationEventToBranchSnapshots(live('root', {
         ...uiEvent('toolCall'),
@@ -128,6 +188,7 @@ describe('conversation event router', () => {
     const replay = readConversationBranchReplaySnapshot(locator, 'root');
     expect(replay.events).toHaveLength(CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch);
     expect(replay.requiresCatchUp).toBe(true);
+    expect(replay.lossWatermarkRevision).toBe(1);
     expect(replay.headSeq).toBe(CONVERSATION_EVENT_REPLAY_LIMITS.eventsPerBranch + 1);
   });
 
@@ -141,7 +202,12 @@ describe('conversation event router', () => {
 
     const replay = readConversationBranchReplaySnapshot(locator, 'root');
     expect(replay.events).toHaveLength(0);
-    expect(replay).toMatchObject({ headSeq: 9, requiresCatchUp: true, retainedBytes: 0 });
+    expect(replay).toMatchObject({
+      headSeq: 9,
+      lossWatermarkRevision: 9,
+      requiresCatchUp: true,
+      retainedBytes: 0,
+    });
   });
 
   it('evicts old branch payloads when the global byte budget is reached', () => {
@@ -165,23 +231,94 @@ describe('conversation event router', () => {
       .toBe(true);
   });
 
-  it('acknowledges replay only when the snapshot covers the observed stable generation', () => {
+  it('acknowledges replay only when the snapshot covers the fixed loss watermark', () => {
     applyConversationEventToBranchSnapshots(live('root', {
       ...uiEvent('textDelta'),
-      id: 'answer-1',
+      id: 'oversized-answer',
       endedSeq: 4,
-      content: 'complete',
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
     }));
     const replay = readConversationBranchReplaySnapshot(locator, 'root');
 
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 3, replay.generation)).toBe(false);
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 4, replay.generation + 1)).toBe(false);
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 4, replay.generation)).toBe(true);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 3, replay.generation)).toBe(false);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 4, replay.generation + 1)).toBe(false);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 1, 4, replay.generation)).toBe(true);
     expect(readConversationBranchReplaySnapshot(locator, 'root').events).toHaveLength(0);
   });
 
+  it('allows a newer compacted generation to cover an older loss watermark', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-answer',
+      endedSeq: 4,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }));
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 2, 4, replay.generation)).toBe(true);
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      requiresCatchUp: false,
+      lossWatermarkRevision: 0,
+    });
+  });
+
+  it('ignores a delayed event from an older timeline generation', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'new-generation-answer',
+      endedSeq: 8,
+      content: 'new',
+    }, 8, 2));
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'stale-generation-answer',
+      endedSeq: 9,
+      content: 'stale',
+    }, 9, 1));
+
+    const replay = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(replay.timelineGeneration).toBe(2);
+    expect(replay.events.map((event) => event.id)).toEqual(['new-generation-answer']);
+  });
+
+  it('does not make transient timing updates part of durable catch-up', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('timingUpdate'),
+      id: 'large-timing',
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }, null));
+
+    expect(readConversationBranchReplaySnapshot(locator, 'root')).toMatchObject({
+      headRevision: 0,
+      lossWatermarkRevision: 0,
+      requiresCatchUp: false,
+    });
+  });
+
+  it('does not move an existing loss watermark when newer events remain retained', () => {
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'oversized-answer',
+      seq: 9,
+      endedSeq: 9,
+      content: 'x'.repeat(CONVERSATION_EVENT_REPLAY_LIMITS.eventBytes),
+    }));
+    const first = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(first.lossWatermarkRevision).toBe(9);
+
+    applyConversationEventToBranchSnapshots(live('root', {
+      ...uiEvent('textDelta'),
+      id: 'latest-answer',
+      seq: 100,
+      endedSeq: 100,
+    }));
+    const second = readConversationBranchReplaySnapshot(locator, 'root');
+    expect(second.lossWatermarkRevision).toBe(9);
+    expect(second.headRevision).toBe(100);
+  });
+
   it('treats an already-evicted replay buffer as acknowledged', () => {
-    expect(acknowledgeConversationBranchReplay(locator, 'root', 0, 0)).toBe(true);
+    expect(acknowledgeConversationBranchReplay(locator, 'root', 0, 0, 0)).toBe(true);
   });
 
   it('strictly caps retained branch snapshots and replay buffers', () => {
@@ -254,6 +391,80 @@ describe('conversation event router', () => {
 
     expect(readConversationBranchLiveSnapshot(locator, 'agent-a').status).toBe('completed');
     expect(readConversationBranchLiveSnapshot(locator, 'agent-b').status).toBe('interrupted');
+  });
+
+  it('converges active Agent snapshots on a lifecycle-only terminal update', () => {
+    applyConversationEventToBranchSnapshots(live('agent-completed', {
+      ...uiEvent('textDelta', 'completed'),
+      raw: { source: 'agentBranchResult' },
+    }));
+    applyConversationEventToBranchSnapshots(live('agent-running', uiEvent('toolCall', 'running')));
+    applyConversationEventToBranchSnapshots(live('agent-waiting', uiEvent('permissionRequest', 'pending')));
+
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('cancelled', 'idle', 4));
+
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'cancelled',
+      lifecycleRevision: 4,
+      lifecycle: expect.objectContaining({
+        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
+      }),
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-completed').status).toBe('completed');
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-running')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-waiting')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('does not let delayed lifecycle or branch events revive a terminal execution', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('toolCall', 'running')));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('cancelled', 'idle', 5));
+    applyConversationEventToBranchSnapshots(lifecycleUpdate('none', 'running', 4));
+    applyConversationEventToBranchSnapshots(live('agent-a', {
+      ...uiEvent('permissionRequest', 'pending'),
+      id: 'late-permission',
+      seq: 6,
+    }));
+
+    expect(readConversationBranchLiveSnapshot(locator, 'root')).toMatchObject({
+      status: 'cancelled',
+      lifecycleRevision: 5,
+      lifecycle: expect.objectContaining({
+        acp: expect.objectContaining({ latestTurnStatus: 'cancelled' }),
+      }),
+    });
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('uses an authoritative branch query to correct a stale live snapshot', () => {
+    applyConversationEventToBranchSnapshots(live('agent-a', uiEvent('toolCall', 'running')));
+    const root = sessionUpdate('cancelled', []).session!;
+    reconcileConversationBranchSession(locator, {
+      ...root,
+      branchId: 'agent-a',
+      readOnly: true,
+      status: 'interrupted',
+      branchExecution: agent('agent-a', 'interrupted'),
+    });
+
+    expect(readConversationBranchLiveSnapshot(locator, 'agent-a')).toMatchObject({
+      status: 'interrupted',
+      attention: false,
+    });
+  });
+
+  it('keeps persisted terminal state ahead of a stale live running projection', () => {
+    expect(resolveConversationBranchDisplayStatus('interrupted', 'running')).toBe('interrupted');
+    expect(resolveConversationBranchDisplayStatus('running', 'completed')).toBe('completed');
+    expect(resolveConversationBranchDisplayStatus('queued', 'running')).toBe('running');
   });
 
   it('requires an exact project identity and rejects other attempts', () => {

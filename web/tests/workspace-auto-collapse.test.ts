@@ -12,7 +12,7 @@ import {
   resolveWorkspaceCanonicalLayout,
   resolveWorkspacePanelWidthFromLayout,
   resolveWorkspaceUserResizeTarget,
-  shouldOpenRightWorkspaceSheet,
+  resolveRightWorkspaceSheetOpenTransition,
   workspaceAutoCollapsePresentationChanged,
   workspaceCanonicalLayoutMissingPanel,
   workspaceCanonicalLayoutNeedsConvergence,
@@ -439,20 +439,25 @@ describe('workspace auto collapse state machine', () => {
   });
 
   it('keeps an automatically collapsed workspace hidden until a resource is explicitly opened', () => {
-    expect(shouldOpenRightWorkspaceSheet({
+    expect(resolveRightWorkspaceSheetOpenTransition({
       compact: true,
       previousOpenRevision: 2,
       openRevision: 2,
-    })).toBe(false);
-    expect(shouldOpenRightWorkspaceSheet({
+    })).toEqual({ openSheet: false, handledOpenRevision: 2 });
+    expect(resolveRightWorkspaceSheetOpenTransition({
       compact: true,
       previousOpenRevision: 2,
       openRevision: 3,
-    })).toBe(true);
-    expect(shouldOpenRightWorkspaceSheet({
+    })).toEqual({ openSheet: true, handledOpenRevision: 3 });
+    expect(resolveRightWorkspaceSheetOpenTransition({
       compact: false,
       previousOpenRevision: 2,
       openRevision: 3,
-    })).toBe(false);
+    })).toEqual({ openSheet: false, handledOpenRevision: 2 });
+    expect(resolveRightWorkspaceSheetOpenTransition({
+      compact: true,
+      previousOpenRevision: 2,
+      openRevision: 3,
+    })).toEqual({ openSheet: true, handledOpenRevision: 3 });
   });
 });

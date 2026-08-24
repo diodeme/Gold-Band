@@ -234,7 +234,7 @@ numbered, and enable/disable preserves the materialized Task association.
 
 - [ ] **Step 1: 定义编辑 VM 和更新输入**
 
-Add `ScheduledTaskEditVm` and `UpdateScheduledTaskInputVm` with `scheduled_task_id`, `project_id`, `expected_updated_at`, `content`, `run_mode`, `workflow_template_id`, `include_interview`, `direct_config`, `auto_config`, `attachment_paths`, `schedule`, `overlap_policy`, and `session_policy`. Return attachment names and read-only Direct Agent identity in the edit VM.
+Add `ScheduledTaskEditVm` and `UpdateScheduledTaskInputVm` with `scheduled_task_id`, `project_id`, `expected_updated_at`, `content`, `run_mode`, `workflow_template_id`, `include_optional_entry`, `direct_config`, `auto_config`, `attachment_paths`, `schedule`, `overlap_policy`, and `session_policy`. Return attachment names and read-only Direct Agent identity in the edit VM.
 
 - [ ] **Step 2: 抽取创建/更新共用的 snapshot builder，并先写规则测试**
 

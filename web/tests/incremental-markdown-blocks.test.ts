@@ -33,4 +33,5 @@ describe('incremental Markdown block parser', () => {
     expect(rewritten.join('')).toBe('新内容\n\n尾部');
     expect(parseBlocks).toHaveBeenLastCalledWith('新内容\n\n尾部');
   });
+
 });

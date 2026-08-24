@@ -26,7 +26,7 @@ pub struct AcpCommandItem {
 #[serde(rename_all = "camelCase")]
 pub struct AcpCommandCatalog {
     pub agent_type: String,
-    pub workspace_key: String,
+    pub project_id: String,
     /// 原始 ACP 命令。`None` 仅用于兼容尚未保存该字段的旧目录文件；
     /// `Some(Vec::new())` 表示 Agent 已明确返回空列表。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,12 +53,12 @@ struct NativeSkillCommandCandidate {
     path_key: String,
 }
 
-pub fn workspace_key(workspace: &Utf8Path) -> String {
-    GoldBandPaths::new(workspace.to_path_buf()).normalized_repo_root
+pub fn project_id(workspace: &Utf8Path) -> String {
+    GoldBandPaths::new(workspace.to_path_buf()).project_id
 }
 
-pub fn catalog_key(agent_type: &str, workspace_key: &str) -> String {
-    format!("{}\n{}", agent_type.trim(), workspace_key.trim())
+pub fn catalog_key(agent_type: &str, project_id: &str) -> String {
+    format!("{}\n{}", agent_type.trim(), project_id.trim())
 }
 
 pub fn parse_available_commands(update: &Value) -> Option<Vec<AcpCommandItem>> {
@@ -288,7 +288,7 @@ mod tests {
     use super::{
         AcpCommandCatalog, AcpCommandItem, NativeSkillCommandCandidate, catalog_key,
         merge_native_skill_commands_at_home, native_skill_candidate_order,
-        parse_available_commands, workspace_key,
+        parse_available_commands, project_id,
     };
     use crate::config::{AgentSkillDirectoryPolicy, AgentSkillDirectoryScopePolicy};
 
@@ -354,8 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn catalog_identity_is_agent_and_normalized_workspace() {
-        let workspace = workspace_key(Utf8Path::new("D:/Projects/Example/../Example"));
+    fn catalog_identity_is_agent_and_project_id() {
+        let workspace = project_id(Utf8Path::new("D:/Projects/Example/../Example"));
         assert_eq!(
             catalog_key("codex-acp", &workspace),
             format!("codex-acp\n{workspace}")
@@ -580,17 +580,16 @@ mod tests {
     }
 
     #[test]
-    fn persisted_catalog_without_raw_acp_commands_remains_compatible() {
-        let catalog: AcpCommandCatalog = serde_json::from_value(json!({
+    fn persisted_catalog_without_project_id_is_discarded() {
+        let error = serde_json::from_value::<AcpCommandCatalog>(json!({
             "agentType": "codex-acp",
             "workspaceKey": "D:/workspace",
             "commands": [{ "name": "review", "description": "Review" }],
             "updatedAt": "2026-07-24 12:00:00"
         }))
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(catalog.acp_commands, None);
-        assert_eq!(catalog.commands.len(), 1);
+        assert!(error.to_string().contains("projectId"));
     }
 
     #[test]

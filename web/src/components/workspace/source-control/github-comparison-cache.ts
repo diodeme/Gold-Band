@@ -44,7 +44,7 @@ export class GitHubComparisonCache {
 }
 
 function comparisonKey(projectId: string, source: GitHubPullRequestComparisonSource) {
-  return [projectId, source.workspacePath ?? '', source.host, source.repository, source.prNumber, source.baseOid, source.headOid, source.path].join('\u0000');
+  return [projectId, source.workspacePath ?? '', source.host, source.repository, source.prNumber, source.baseOid, source.headOid, source.beforePath ?? '', source.path].join('\u0000');
 }
 
 export const githubComparisonCache = new GitHubComparisonCache();

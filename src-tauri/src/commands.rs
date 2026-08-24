@@ -3,7 +3,9 @@ use gold_band::acp::commands::{AcpCommandCatalog, parse_available_commands};
 use gold_band::acp::elicitation::{
     ElicitationAction, cancel_pending_elicitation_requests, write_elicitation_response,
 };
-use gold_band::acp::events::{AcpUiEvent, compact_live_conversation_event, current_timestamp};
+use gold_band::acp::events::{
+    AcpUiEvent, compact_live_conversation_event, current_timestamp, load_session_metadata,
+};
 use gold_band::acp::permission::{
     PendingPermissionState, cancel_pending_permission_requests,
     write_permission_response_if_pending,
@@ -13,8 +15,9 @@ use gold_band::acp::prompt_queue::{
     auto_dispatch_is_suspended, claim_next_for_auto_dispatch, claim_queued_prompt,
     clear_auto_dispatch_reply_batch, clear_auto_dispatch_suspension, complete_accepted_prompt,
     delete_queued_prompt, enqueue_prompt, load_prompt_queue, mark_user_priority,
-    record_auto_dispatch_reply_completion, release_queued_prompt, request_auto_dispatch_suspension,
-    settle_dispatching_prompts, suspend_auto_dispatch, update_queued_prompt,
+    record_auto_dispatch_reply_completion, release_queued_prompt, reorder_queued_prompts,
+    request_auto_dispatch_suspension, settle_dispatching_prompts, suspend_auto_dispatch,
+    take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
     CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
@@ -27,14 +30,17 @@ use gold_band::app::{
 };
 use gold_band::domain::{NodeOutcome, PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::{AiDynamicAgentStrategy, NodeDsl, WorkflowDsl, WorkflowValidationError};
-use gold_band::dynamic::{DynamicGraphState, DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic::{DynamicNodeStatus, DynamicRunStatus};
+use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{NodeState, RunState, WorkerRefState};
+use gold_band::scheduler::db::ScheduledTaskDatabase;
 use gold_band::skill::SkillCommandError;
-use gold_band::storage::read_json;
 use gold_band::storage::sqlite::{self, AttemptIndexContext};
+use gold_band::storage::{read_json, write_json};
 use std::path::{Component, Path, PathBuf};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fs,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -42,10 +48,20 @@ use std::{
 
 use camino::Utf8PathBuf;
 use gold_band::config::{
-    AcpAdapterConfig, ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopFontPreference,
-    DesktopLanguage, DesktopThemePreference, ManagedAgentConfig, ManagedAgentId, MulticaAccountRef,
+    AcpAdapterConfig, AppearancePreference, AvatarPreference, AvatarShapePreference,
+    ConversationAutoConfig, DEFAULT_CUSTOM_AGENT_ICON, DesktopLanguage, FontSizePreference,
+    FontStackPreference, MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT, MAX_FONT_FAMILY_CHARS,
+    MAX_FONT_STACK_FAMILIES, MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT, ManagedAgentConfig,
+    ManagedAgentId, MulticaAccountRef, PersonalizationAvatarShape, PersonalizationPreference,
+    WallpaperImagePreference, normalize_desktop_editor_font_size, normalize_desktop_ui_font_size,
 };
 use gold_band::observability::set_runtime_log_level;
+use gold_band::provider::{
+    ConversationPromptInput, MAX_USER_PROMPT_QUOTE_CHARS, MAX_USER_PROMPT_QUOTE_ID_BYTES,
+    MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES, MAX_USER_PROMPT_QUOTES, UserPromptQuote,
+    conversation_prompt_text, select_config_options_from_capabilities,
+    supported_models_from_capabilities, supported_modes_from_capabilities,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
@@ -54,9 +70,12 @@ use uuid::Uuid;
 
 use crate::avatar::{
     AvatarKind, AvatarPreferencesVm, AvatarShape, SaveDesktopAvatarInput, clear_avatar,
-    load_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
+    load_resolved_avatar_preferences, save_avatar_image, save_avatar_shape, select_recent_avatar,
 };
-use crate::conversation_workspace::workspace_entry_for_project;
+use crate::conversation_attention::{
+    ConversationTerminalResultKind, ConversationTerminalResultVm, record_terminal_result,
+};
+use crate::conversation_workspace::{app_for_workspace, workspace_entry_for_project};
 use crate::i18n::Translator;
 use crate::metrics::{MetricsSettingsVm, metrics_settings, normalize_metrics_base_url};
 use crate::multica::state::SharedMulticaState;
@@ -66,7 +85,9 @@ use crate::multica::{
     multica_account_changed, multica_app_url, multica_base_url, multica_settings,
     normalize_multica_base_url,
 };
-use crate::state::{DesktopState, NotificationAttentionInput, UpdateBadgeSeenTarget};
+use crate::state::{
+    DesktopState, NotificationAttentionInput, RecoveredConversationRun, UpdateBadgeSeenTarget,
+};
 use crate::updater::{
     UpdateStatusVm, UpdaterSettingsVm, check_update,
     download_and_install_update as run_download_and_install_update, install_pending_file,
@@ -86,13 +107,21 @@ use crate::view_models::{
 };
 use crate::view_models_conversation::{
     ConversationAttemptLifecycleVm, ConversationTaskActivityVm, conversation_attempt_lifecycle_vm,
-    conversation_is_orchestrated, conversation_run_mode, conversation_task_activity_from_prompt,
+    conversation_is_orchestrated, conversation_run_mode, conversation_session_successor,
+    conversation_task_activity_from_prompt,
+};
+use crate::wallpaper::{
+    ImportDesktopWallpaperInput, RestoreThemeDesktopWallpaperInput,
+    SaveDesktopWallpaperOpacityInput, SelectRecentDesktopWallpaperInput, import_wallpaper_image,
+    load_resolved_wallpaper_preferences, reconcile_wallpaper_personalization,
+    select_recent_wallpaper,
 };
 
 const ACP_SESSION_EVENT: &str = "gold-band://acp-session-updated";
 const AGENT_REGISTRY_UPDATED_EVENT: &str = "gold-band://agent-registry-updated";
 const AGENT_COMMANDS_UPDATED_EVENT: &str = "gold-band://agent-commands-updated";
 const CONVERSATION_RUN_STATE_EVENT: &str = "gold-band://conversation-run-state-updated";
+const CONVERSATION_TERMINAL_RESULT_EVENT: &str = "gold-band://conversation-terminal-result-updated";
 const PERMISSION_REQUESTED_DEDUP_SUFFIX: &str = "permission-requested";
 const ELICITATION_REQUESTED_DEDUP_SUFFIX: &str = "elicitation-requested";
 const QUEUED_PROMPT_ID_PREFIX: &str = "turn-queued-";
@@ -296,14 +325,15 @@ fn dynamic_leaf_runtime_continue_required(
     else {
         return Ok(false);
     };
-    let dynamic_graph = read_json::<DynamicGraphState>(&app.paths.dynamic_graph_file(
+    let dynamic_graph_path = app.paths.dynamic_graph_file(
         &locator.task_id,
         &locator.run_id,
         &locator.round_id,
         outer_node_id,
         outer_attempt_id,
-    ))
-    .map_err(command_error)?;
+    );
+    let dynamic_graph =
+        load_dynamic_graph(&dynamic_graph_path, &app.paths.repo_root).map_err(command_error)?;
     if dynamic_graph.run.status == DynamicRunStatus::Paused
         && !dynamic_graph
             .run
@@ -400,6 +430,29 @@ fn attempt_is_runtime_controlled(app: &App, locator: &AttemptLocator) -> Command
 }
 
 fn ensure_conversation_prompt_available(app: &App, locator: &AttemptLocator) -> CommandResult<()> {
+    if let Some(target) = conversation_session_successor(
+        app,
+        &locator.task_id,
+        &locator.run_id,
+        &locator.round_id,
+        &locator.node_id,
+        &locator.attempt_id,
+        locator.outer_node_id(),
+        locator.outer_attempt_id(),
+    )
+    .map_err(command_error)?
+    {
+        return Err(CommandErrorVm::new(
+            "conversation.session-superseded",
+            serde_json::json!({
+                "roundId": target.round_id,
+                "nodeId": target.node_id,
+                "attemptId": target.attempt_id,
+                "outerNodeId": target.outer_node_id,
+                "outerAttemptId": target.outer_attempt_id,
+            }),
+        ));
+    }
     if attempt_is_runtime_controlled(app, locator)? {
         return Err(CommandErrorVm::new(
             "runtime.conversation-not-available",
@@ -473,6 +526,94 @@ fn acp_turn_agent_label(app: &App, locator: &AttemptLocator) -> String {
         .unwrap_or_else(|| locator.node_id.clone())
 }
 
+// ── Direct metrics background worker ──────────────────────────────────
+// The command thread must never block on file I/O or mutex operations.
+// These lightweight jobs carry only String data; the worker thread does
+// all heavy lifting (task_show, observability snapshot, ACP session read).
+
+#[derive(Debug, Clone)]
+enum DirectMetricsJob {
+    TurnStarted {
+        locator: AttemptLocator,
+        repo_root: String,
+    },
+    TurnFinished {
+        locator: AttemptLocator,
+        turn_id: String,
+        agent_label: String,
+        outcome: AcpTurnOutcome,
+        repo_root: String,
+    },
+    InterventionRequested {
+        context: gold_band::app::AcpLiveEventContext,
+        request_id: String,
+        kind: RuntimeInterventionKind,
+        repo_root: String,
+    },
+}
+
+const DIRECT_METRICS_QUEUE_CAPACITY: usize = 512;
+
+static DIRECT_METRICS_SENDER: std::sync::OnceLock<std::sync::mpsc::SyncSender<DirectMetricsJob>> =
+    std::sync::OnceLock::new();
+
+fn direct_metrics_sender() -> Option<std::sync::mpsc::SyncSender<DirectMetricsJob>> {
+    DIRECT_METRICS_SENDER.get().cloned()
+}
+
+fn init_direct_metrics_worker(app: App) {
+    let (sender, receiver) =
+        std::sync::mpsc::sync_channel::<DirectMetricsJob>(DIRECT_METRICS_QUEUE_CAPACITY);
+    if DIRECT_METRICS_SENDER.set(sender).is_err() {
+        return; // already initialised
+    }
+
+    let _ = std::thread::Builder::new()
+        .name("direct-metrics-worker".into())
+        .spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut scoped_app = app.clone_for_background();
+                    match &job {
+                        DirectMetricsJob::TurnStarted { locator, repo_root } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, None);
+                        }
+                        DirectMetricsJob::TurnFinished {
+                            locator,
+                            outcome,
+                            repo_root,
+                            ..
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_direct_turn_metrics_fact(&scoped_app, locator, Some(*outcome));
+                        }
+                        DirectMetricsJob::InterventionRequested {
+                            context,
+                            request_id,
+                            kind,
+                            repo_root,
+                        } => {
+                            scoped_app.paths = gold_band::storage::GoldBandPaths::new(
+                                camino::Utf8PathBuf::from(repo_root),
+                            );
+                            build_request_intervention_metrics(
+                                &scoped_app,
+                                context,
+                                request_id,
+                                *kind,
+                            );
+                        }
+                    }
+                }));
+            }
+        });
+}
+
 fn emit_acp_turn_finished(
     app: &App,
     locator: &AttemptLocator,
@@ -507,6 +648,198 @@ fn emit_acp_turn_finished(
             .ok()
             .and_then(|task| task.title),
     });
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnFinished {
+            locator: locator.clone(),
+            turn_id: turn_id.to_string(),
+            agent_label: agent_label.to_string(),
+            outcome,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn emit_direct_turn_started(app: &App, locator: &AttemptLocator) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::TurnStarted {
+            locator: locator.clone(),
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_direct_turn_metrics_fact(
+    app: &App,
+    locator: &AttemptLocator,
+    outcome: Option<AcpTurnOutcome>,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    if gold_band::app::direct_conversation_agent_label(app, &locator.task_id).is_none() {
+        return;
+    }
+    let Ok(task) = app.task_show(&locator.task_id) else {
+        return;
+    };
+    let Some(task_uuid) = task.uuid else { return };
+    let attempt_dir = locator.attempt_dir(app);
+    let occurred_at = current_timestamp();
+    let execution_id = task_uuid.clone();
+    let attempt_key = format!("direct:{task_uuid}");
+    let attempt_path = app
+        .paths
+        .run_dir(&locator.task_id, &locator.run_id)
+        .join("observability")
+        .join(&execution_id)
+        .join(&execution_id)
+        .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+    let is_follow_up = if outcome.is_none() {
+        app.direct_metrics_is_follow_up(&attempt_key, Some(attempt_dir.as_path()), &attempt_path)
+    } else {
+        false
+    };
+    let active_turn = if outcome.is_none() {
+        match app.active_metrics_turn(&attempt_key) {
+            Some(turn) => turn,
+            None => {
+                let usage_baseline =
+                    gold_band::app::App::direct_usage_baseline(Some(attempt_dir.as_path()));
+                let turn = gold_band::app::ActiveMetricTurn::new(
+                    execution_id.clone(),
+                    execution_id.clone(),
+                    1,
+                    usage_baseline,
+                );
+                app.begin_metrics_turn(attempt_key.clone(), turn.clone());
+                turn
+            }
+        }
+    } else {
+        let Some(turn) = app.active_metrics_turn(&attempt_key) else {
+            return;
+        };
+        turn
+    };
+    let provider = acp_turn_provider_id(app, locator);
+    let model = current_acp_session_model_name(&attempt_dir);
+    let attempt_state =
+        app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+            if outcome.is_none() {
+                state.record_started_at(occurred_at.clone());
+                if is_follow_up {
+                    state.record_follow_up();
+                }
+            }
+            if outcome.is_some() {
+                let segments = gold_band::app::App::direct_usage_segments_after(
+                    Some(attempt_dir.as_path()),
+                    active_turn.usage_baseline_turn_seq,
+                );
+                let usages = gold_band::app::App::direct_model_usages_from_segments(
+                    &segments,
+                    provider.as_deref(),
+                    model.as_deref(),
+                );
+                for usage in usages {
+                    state.record_model_usage(usage);
+                }
+                if segments.is_empty()
+                    && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
+                {
+                    let usage = gold_band::acp::events::read_attempt_metrics(
+                        &attempt_dir.join("acp.session.json"),
+                    );
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        gold_band::app::observability::TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            }
+            state.next_revision();
+        });
+    let direct_revision = attempt_state.event_revision;
+    let event_type = if outcome.is_some() {
+        gold_band::app::observability::LifecycleEventType::ExecutionCompleted
+    } else {
+        gold_band::app::observability::LifecycleEventType::ExecutionStarted
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        event_type,
+        direct_revision,
+        occurred_at.clone(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        gold_band::app::observability::MetricsSessionMode::Direct,
+        task_uuid,
+        gold_band::app::observability::ExecutionKind::Turn,
+        active_turn.execution_id.clone(),
+    );
+    fact.task_title = task.title.clone();
+    fact.attempt_id = Some(active_turn.attempt_id.clone());
+    fact.attempt_index = Some(active_turn.attempt_index);
+    fact.provider = provider;
+    fact.model = model;
+    fact.collection_state_recovered = attempt_state.collection_state_recovered;
+    if let Some(outcome) = outcome {
+        fact.outcome = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::ExecutionOutcome::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::ExecutionOutcome::Failed,
+            AcpTurnOutcome::Cancelled => gold_band::app::observability::ExecutionOutcome::Cancelled,
+        });
+        fact.terminal_reason = Some(match outcome {
+            AcpTurnOutcome::Completed => gold_band::app::observability::TerminalReason::Completed,
+            AcpTurnOutcome::Failed => gold_band::app::observability::TerminalReason::ProviderError,
+            AcpTurnOutcome::Cancelled => {
+                gold_band::app::observability::TerminalReason::UserCancelled
+            }
+        });
+        let usages = attempt_state.model_usages();
+        let elapsed_sum = usages
+            .iter()
+            .filter_map(|usage| usage.acp_session_elapsed_ms)
+            .fold(None, |total, value| {
+                Some(total.unwrap_or(0u64).saturating_add(value))
+            });
+        let sum = |get: fn(&gold_band::app::observability::TokenUsage) -> Option<u64>| {
+            usages
+                .iter()
+                .filter_map(|usage| get(&usage.usage))
+                .fold(None, |total, value| {
+                    Some(total.unwrap_or(0u64).saturating_add(value))
+                })
+        };
+        if !usages.is_empty() {
+            fact.usage = Some(gold_band::app::observability::TokenUsage {
+                input_tokens: sum(|u| u.input_tokens),
+                output_tokens: sum(|u| u.output_tokens),
+                cache_read_tokens: sum(|u| u.cache_read_tokens),
+                total_tokens: sum(|u| u.total_tokens),
+            });
+            fact.model_usages = Some(usages);
+        }
+        fact.timing = Some(gold_band::app::observability::LifecycleTiming {
+            started_at: attempt_state
+                .started_at
+                .clone()
+                .unwrap_or_else(|| occurred_at.clone()),
+            ended_at: Some(occurred_at),
+            acp_session_elapsed_ms: elapsed_sum,
+        });
+        fact.counters = Some(attempt_state.counters.clone());
+    }
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+    if outcome.is_some() {
+        app.release_observability_state(&active_turn.execution_id);
+        app.end_metrics_turn(&attempt_key);
+    }
 }
 
 fn finish_acp_prompt_preflight<T>(
@@ -592,6 +925,25 @@ struct ConversationRunStateUpdatedEventVm {
     outcome: Option<RunOutcome>,
 }
 
+pub(crate) fn emit_recovered_conversation_run_state(
+    app_handle: &AppHandle,
+    recovered: &RecoveredConversationRun,
+) {
+    let _ = app_handle.emit(
+        CONVERSATION_RUN_STATE_EVENT,
+        ConversationRunStateUpdatedEventVm {
+            project_id: recovered.project_id.clone(),
+            task_id: recovered.task_id.clone(),
+            run_id: recovered.run_id.clone(),
+            round_id: recovered.round_id.clone(),
+            node_id: recovered.node_id.clone(),
+            attempt_id: recovered.attempt_id.clone(),
+            status: recovered.status,
+            outcome: recovered.outcome,
+        },
+    );
+}
+
 pub(crate) fn resolve_command_app(
     state: &DesktopState,
     project_id: Option<&str>,
@@ -615,10 +967,21 @@ pub(crate) fn resolve_command_app(
 }
 
 pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) {
-    app.lifecycle_bus.subscribe_named(
-        "desktop.metrics",
-        crate::metrics::create_metrics_subscriber(app_handle.clone()),
-    );
+    if crate::channel::current_channel_config().channel == "wb"
+        && crate::metrics::metrics_settings(&app.config).enabled
+        && crate::metrics::get_api_key(&app.config).is_some()
+    {
+        app.lifecycle_bus.subscribe_named_with_mode(
+            "core.metrics-producer",
+            gold_band::app::observability::SubscriberMode::Inline,
+            app.create_metrics_fact_producer(),
+        );
+        app.lifecycle_bus.subscribe_named(
+            "desktop.metrics",
+            crate::metrics::create_metrics_subscriber(app_handle.clone()),
+        );
+        init_direct_metrics_worker(app.clone_for_background());
+    }
     app.lifecycle_bus.subscribe_named(
         "desktop.notifications",
         crate::notifications::create_intervention_notification_subscriber(
@@ -634,6 +997,153 @@ pub(crate) fn register_lifecycle_subscribers(app: &App, app_handle: &AppHandle) 
         "desktop.multica",
         crate::multica::bridge::create_multica_subscriber(app_handle.clone()),
     );
+    app.lifecycle_bus.subscribe_named(
+        "desktop.conversation-terminal-result",
+        create_conversation_terminal_result_subscriber(app_handle.clone()),
+    );
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationTerminalResultCandidate {
+    project_id: String,
+    task_id: String,
+    result: ConversationTerminalResultVm,
+    requires_direct_mode_check: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTerminalResultUpdatedEventVm {
+    project_id: String,
+    task_id: String,
+    unread_terminal_result: ConversationTerminalResultVm,
+}
+
+fn conversation_terminal_result_candidate(
+    event: &RuntimeLifecycleEvent,
+) -> Option<ConversationTerminalResultCandidate> {
+    match event {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            completion_agent_label,
+            ..
+        } if completion_agent_label.is_some() && *outcome != RunOutcome::Success => {
+            Some(ConversationTerminalResultCandidate {
+                project_id: project_id.clone(),
+                task_id: task_id.clone(),
+                result: ConversationTerminalResultVm {
+                    event_id: event_id.clone(),
+                    run_id: run_id.clone(),
+                    kind: match outcome {
+                        RunOutcome::Killed => ConversationTerminalResultKind::Stopped,
+                        RunOutcome::Failure => ConversationTerminalResultKind::Failed,
+                        RunOutcome::Success => return None,
+                    },
+                    occurred_at: occurred_at.clone(),
+                },
+                requires_direct_mode_check: false,
+            })
+        }
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id,
+            occurred_at,
+            project_id,
+            task_id,
+            run_id,
+            outcome,
+            batch_progress,
+            ..
+        } if !batch_progress.continues => Some(ConversationTerminalResultCandidate {
+            project_id: project_id.clone(),
+            task_id: task_id.clone(),
+            result: ConversationTerminalResultVm {
+                event_id: event_id.clone(),
+                run_id: run_id.clone(),
+                kind: match outcome {
+                    AcpTurnOutcome::Completed => ConversationTerminalResultKind::Completed,
+                    AcpTurnOutcome::Cancelled => ConversationTerminalResultKind::Stopped,
+                    AcpTurnOutcome::Failed => ConversationTerminalResultKind::Failed,
+                },
+                occurred_at: occurred_at.clone(),
+            },
+            requires_direct_mode_check: true,
+        }),
+        _ => None,
+    }
+}
+
+fn create_conversation_terminal_result_subscriber(
+    app_handle: AppHandle,
+) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
+    Arc::new(move |event| {
+        let Some(candidate) = conversation_terminal_result_candidate(&event) else {
+            return;
+        };
+        let Some(desktop_state) = app_handle.try_state::<DesktopState>() else {
+            warn!("desktop state unavailable while recording Direct terminal result");
+            return;
+        };
+        let app = match resolve_command_app(&desktop_state, Some(&candidate.project_id)) {
+            Ok(app) => app,
+            Err(error) => {
+                warn!(
+                    code = %error.code,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result workspace resolution failed"
+                );
+                return;
+            }
+        };
+        if candidate.requires_direct_mode_check
+            && conversation_run_mode(&app, &candidate.task_id)
+                != Some(gold_band::config::ConversationRunMode::Direct)
+        {
+            return;
+        }
+        let write_guard = match desktop_state.conversation_attention_write_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(?error, "Direct terminal result write lock failed");
+                return;
+            }
+        };
+        if app.task_show(&candidate.task_id).is_err() {
+            return;
+        }
+        let recorded = match record_terminal_result(&app, &candidate.task_id, candidate.result) {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    project_id = %candidate.project_id,
+                    task_id = %candidate.task_id,
+                    "Direct terminal result persistence failed"
+                );
+                return;
+            }
+        };
+        drop(write_guard);
+        if !recorded.changed {
+            return;
+        }
+        if let Some(unread_terminal_result) = recorded.unread_terminal_result {
+            let _ = app_handle.emit(
+                CONVERSATION_TERMINAL_RESULT_EVENT,
+                ConversationTerminalResultUpdatedEventVm {
+                    project_id: candidate.project_id,
+                    task_id: candidate.task_id,
+                    unread_terminal_result,
+                },
+            );
+        }
+    })
+>>>>>>> origin/main
 }
 
 fn create_conversation_run_state_subscriber(
@@ -709,7 +1219,7 @@ fn resolve_command_app_with_emitters(
     app_handle: &AppHandle,
     state: &DesktopState,
     project_id: Option<&str>,
-) -> Result<App, CommandErrorVm> {
+) -> Result<ConfiguredConversationApp, CommandErrorVm> {
     let app = resolve_command_app(state, project_id)?;
     let pid = project_id.map(|s| s.to_string());
     Ok(configure_conversation_runtime_callbacks(
@@ -719,11 +1229,27 @@ fn resolve_command_app_with_emitters(
     ))
 }
 
+pub(crate) struct ConfiguredConversationApp(App);
+
+impl std::ops::Deref for ConfiguredConversationApp {
+    type Target = App;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ConfiguredConversationApp {
+    fn into_inner(self) -> App {
+        self.0
+    }
+}
+
 pub(crate) fn configure_conversation_runtime_callbacks(
     app: App,
     app_handle: AppHandle,
     project_id: Option<String>,
-) -> App {
+) -> ConfiguredConversationApp {
     let bg_app = app.clone_for_background();
     let live_update = acp_live_update_emitter_for_app(&app, app_handle.clone(), project_id.clone());
     let prompt_turn_lifecycle = prompt_turn_lifecycle_callback(
@@ -731,9 +1257,11 @@ pub(crate) fn configure_conversation_runtime_callbacks(
         app.clone_for_background(),
         project_id.clone(),
     );
-    app.with_acp_live_update(live_update)
-        .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
-        .with_prompt_turn_lifecycle(prompt_turn_lifecycle)
+    ConfiguredConversationApp(
+        app.with_acp_live_update(live_update)
+            .with_acp_session_update(acp_session_update_emitter(app_handle, bg_app, project_id))
+            .with_prompt_turn_lifecycle(prompt_turn_lifecycle),
+    )
 }
 
 fn prompt_turn_lifecycle_callback(
@@ -755,42 +1283,59 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        match event {
-            AcpPromptLifecycleEvent::Accepted { prompt_id } => {
-                let _ = complete_accepted_prompt(&locator.attempt_dir(&app), &prompt_id);
-            }
-            AcpPromptLifecycleEvent::Finished {
-                prompt_id,
+        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
+            schedule_direct_prompt_queue_drain(
+                app_handle.clone(),
+                project_id.clone(),
+                direct_prompt_queue_drain_app(&app),
+                locator,
                 successful,
-            } => {
-                let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
-                    turn_id,
-                    agent_label: acp_turn_agent_label(&app, &locator),
-                });
-                schedule_direct_prompt_queue_drain(
-                    app_handle.clone(),
-                    project_id.clone(),
-                    locator,
-                    successful,
-                    completion,
-                );
-            }
-        }
+                completion,
+            );
+        });
         Ok(())
     })
+}
+
+fn process_prompt_turn_lifecycle(
+    app: &App,
+    locator: AttemptLocator,
+    event: AcpPromptLifecycleEvent,
+    mut schedule_finished: impl FnMut(AttemptLocator, bool, Option<DeferredTurnCompletion>),
+) {
+    match event {
+        AcpPromptLifecycleEvent::Accepted { prompt_id } => {
+            let _ = complete_accepted_prompt(&locator.attempt_dir(app), &prompt_id);
+        }
+        AcpPromptLifecycleEvent::Finished {
+            prompt_id,
+            successful,
+        } => {
+            let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
+                turn_id,
+                agent_label: acp_turn_agent_label(app, &locator),
+            });
+            schedule_finished(locator, successful, completion);
+        }
+    }
+}
+
+fn direct_prompt_queue_drain_app(app: &App) -> App {
+    app.clone_for_background()
+}
+
+fn queued_user_turn_app(app: &App) -> App {
+    app.clone_for_background().without_scheduled_turn_context()
 }
 
 fn schedule_direct_prompt_queue_drain(
     app_handle: AppHandle,
     project_id: Option<String>,
+    app: App,
     locator: AttemptLocator,
     successful: bool,
     completed_turn: Option<DeferredTurnCompletion>,
 ) {
-    let state = app_handle.state::<DesktopState>();
-    let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-        return;
-    };
     if conversation_run_mode(&app, &locator.task_id)
         != Some(gold_band::config::ConversationRunMode::Direct)
     {
@@ -836,10 +1381,6 @@ fn schedule_direct_prompt_queue_drain(
     let expected_revision = queue.revision;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(AUTO_DISPATCH_USER_PRIORITY_GRACE_MS)).await;
-        let state = app_handle.state::<DesktopState>();
-        let Ok(app) = resolve_command_app(state.inner(), project_id.as_deref()) else {
-            return;
-        };
         let attempt_dir = locator.attempt_dir(&app);
         if client::prompt_activity(&attempt_dir).is_some() {
             emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), false);
@@ -874,8 +1415,12 @@ fn schedule_direct_prompt_queue_drain(
             return;
         }
         emit_deferred_turn_completion(&app, &locator, completed_turn.as_ref(), true);
-        let queued_turn_app = app.clone_for_background().without_scheduled_turn_context();
-        let _result = send_acp_prompt_with_app(
+        let queued_turn_app = configure_conversation_runtime_callbacks(
+            queued_user_turn_app(&app),
+            app_handle.clone(),
+            project_id.clone(),
+        );
+        let _result = send_acp_prompt_with_configured_app(
             app_handle.clone(),
             queued_turn_app,
             project_id.clone(),
@@ -884,7 +1429,10 @@ fn schedule_direct_prompt_queue_drain(
             locator.round_id.clone(),
             locator.node_id.clone(),
             locator.attempt_id.clone(),
-            claimed.content.clone(),
+            ConversationPromptInput {
+                display_text: claimed.content.clone(),
+                quotes: claimed.quotes.clone(),
+            },
             Some(claimed.prompt_id.clone()),
             locator.outer_node_id.clone(),
             locator.outer_attempt_id.clone(),
@@ -955,6 +1503,21 @@ pub struct ConversationPromptQueueMutationVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationQueuedPromptDraftVm {
+    pub content: String,
+    pub quotes: Vec<UserPromptQuote>,
+    pub attachment_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPromptQueueRestoreVm {
+    pub draft: ConversationQueuedPromptDraftVm,
+    pub lifecycle: Option<ConversationAttemptLifecycleVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActiveSessionStopVm {
     pub operation_id: String,
     pub status: String,
@@ -979,6 +1542,17 @@ pub(crate) async fn prepare_app_exit_inner(
 ) -> AppExitPreparationVm {
     let mut result = AppExitPreparationVm::default();
 
+    // Close the process-wide admission gate before scheduler shutdown. A run
+    // start either appears in this snapshot or observes ShuttingDown; no
+    // registry lock is held while scheduler, file, provider, or SQLite work runs.
+    let active_runtime_candidates = match state.runtime_recovery().begin_shutdown() {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            result.record_warning("app-exit.runtime-gate-failed", &error);
+            Vec::new()
+        }
+    };
+
     // Stop the scheduler before stopping ACP/runtime sessions so no new
     // occurrence can acquire a lease while desktop cleanup is in progress.
     // `shutdown` waits for both the coordinator acknowledgement and task join.
@@ -990,8 +1564,57 @@ pub(crate) async fn prepare_app_exit_inner(
 
     match state.app() {
         Ok(runtime_app) => {
+            let runtime_recovery = state.runtime_recovery();
             match tauri::async_runtime::spawn_blocking(move || {
-                runtime_app.stop_all_running_sessions().map(|_| ())
+                let mut failure_count = 0usize;
+                for candidate in active_runtime_candidates {
+                    let workspace_root = camino::Utf8PathBuf::from(&candidate.workspace_path);
+                    let paths = gold_band::storage::GoldBandPaths::new(workspace_root.clone());
+                    if paths.project_id != candidate.project_id
+                        || paths.validate_project_manifest().is_err()
+                    {
+                        failure_count += 1;
+                        warn!(
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate workspace identity changed during exit"
+                        );
+                        continue;
+                    }
+                    let workspace_app =
+                        runtime_app.with_repo_root(workspace_root, runtime_app.config.clone());
+                    if let Err(error) = workspace_app.run_pause(
+                        &candidate.task_id,
+                        &candidate.run_id,
+                        PauseReason::ProcessInterrupted,
+                    ) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime pause failed during exit"
+                        );
+                        continue;
+                    }
+                    if let Err(error) = runtime_recovery.consume_persisted_candidate(&candidate) {
+                        failure_count += 1;
+                        warn!(
+                            error = %error,
+                            project_id = %candidate.project_id,
+                            task_id = %candidate.task_id,
+                            run_id = %candidate.run_id,
+                            "active runtime candidate cleanup failed during exit"
+                        );
+                    }
+                }
+                runtime_app.close_active_runtime_connections()?;
+                if failure_count > 0 {
+                    anyhow::bail!("{failure_count} active runtime exit operations failed");
+                }
+                Ok(())
             })
             .await
             {
@@ -1142,6 +1765,8 @@ pub struct CreateTaskInputVm {
     pub requirement_file_name: Option<String>,
     pub requirement_content: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
     pub workflow_template_id: Option<String>,
 }
 
@@ -1149,6 +1774,8 @@ pub struct CreateTaskInputVm {
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1156,12 +1783,16 @@ pub struct SaveWorkflowInputVm {
 pub struct SaveWorkflowTemplateInputVm {
     pub name: String,
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateWorkflowTemplateInputVm {
     pub workflow: WorkflowDsl,
+    #[serde(default)]
+    pub model_bindings: gold_band::workflow_model_binding::WorkflowModelBindings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1350,6 +1981,207 @@ pub fn delete_agent(
     let app = state.app().map_err(command_error)?;
     let diagnostics = state.agent_diagnostics().map_err(command_error)?;
     Ok(agent_registry_vm(&app, &diagnostics))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBindingUsageVm {
+    pub workflow_template_count: usize,
+    pub task_count: usize,
+    pub scheduled_task_count: usize,
+    pub unknown_task_count: usize,
+    pub unknown_scheduled_task_count: usize,
+}
+
+fn agent_usage_workspace_apps(
+    context: &crate::state::DesktopContext,
+    workspaces: &[gold_band::config::ConversationWorkspaceEntry],
+) -> anyhow::Result<Vec<App>> {
+    let current_app = context.app();
+    let mut seen_project_ids = BTreeSet::new();
+    let mut apps = Vec::new();
+    for workspace in workspaces {
+        let app = app_for_workspace(context, &workspace.workspace_path)?;
+        let project_key = if cfg!(windows) {
+            app.paths.project_id.to_ascii_lowercase()
+        } else {
+            app.paths.project_id.clone()
+        };
+        if seen_project_ids.insert(project_key) {
+            apps.push(app);
+        }
+    }
+    let current_project_key = if cfg!(windows) {
+        current_app.paths.project_id.to_ascii_lowercase()
+    } else {
+        current_app.paths.project_id.clone()
+    };
+    if seen_project_ids.insert(current_project_key) {
+        apps.push(current_app);
+    }
+    Ok(apps)
+}
+
+fn collect_agent_binding_usage(
+    agent_id: &ManagedAgentId,
+    templates: &WorkflowTemplateStore,
+    workspace_apps: &[App],
+) -> anyhow::Result<AgentBindingUsageVm> {
+    let agent_id = agent_id.as_str();
+    let workflow_template_count = templates
+        .templates
+        .iter()
+        .filter(|template| {
+            workflow_references_agent(&template.workflow, &template.model_bindings, agent_id)
+        })
+        .count();
+    let mut task_count = 0;
+    let mut scheduled_task_count = 0;
+    let mut unknown_task_count = 0;
+    let mut unknown_scheduled_task_count = 0;
+    for app in workspace_apps {
+        let tasks_dir = app.paths.tasks_dir();
+        if tasks_dir.exists() {
+            for entry in fs::read_dir(tasks_dir.as_std_path())? {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        unknown_task_count += 1;
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                if !path.is_dir() || !path.join("task.json").exists() {
+                    continue;
+                }
+                let Some(task_id) = path.file_name().and_then(|value| value.to_str()) else {
+                    unknown_task_count += 1;
+                    continue;
+                };
+                match app.task_authoring_workflow(task_id) {
+                    Ok(authoring)
+                        if workflow_references_agent(
+                            &authoring.workflow,
+                            &authoring.model_bindings,
+                            agent_id,
+                        ) =>
+                    {
+                        task_count += 1;
+                    }
+                    Ok(_) => {}
+                    Err(_) => unknown_task_count += 1,
+                }
+            }
+        }
+        let scheduler_db_path = app.paths.scheduler_db_path();
+        if !scheduler_db_path.exists() {
+            continue;
+        }
+        let scan = ScheduledTaskDatabase::open(scheduler_db_path)?
+            .scan_job_definitions(&app.paths.project_id)?;
+        unknown_scheduled_task_count += scan.invalid_count;
+        for definition in scan.definitions {
+            match scheduled_task_references_agent(&definition, agent_id) {
+                Ok(true) => scheduled_task_count += 1,
+                Ok(false) => {}
+                Err(_) => unknown_scheduled_task_count += 1,
+            }
+        }
+    }
+    Ok(AgentBindingUsageVm {
+        workflow_template_count,
+        task_count,
+        scheduled_task_count,
+        unknown_task_count,
+        unknown_scheduled_task_count,
+    })
+}
+
+fn workflow_references_agent(
+    workflow: &WorkflowDsl,
+    model_bindings: &gold_band::workflow_model_binding::WorkflowModelBindings,
+    agent_id: &str,
+) -> bool {
+    model_bindings
+        .bindings
+        .iter()
+        .any(|binding| binding.agent_id == agent_id)
+        || workflow.nodes.iter().any(|node| {
+            providers_for_node(node)
+                .iter()
+                .any(|provider| provider == agent_id)
+        })
+}
+
+fn auto_authoring_references_agent(
+    authoring: &gold_band::scheduler::AutoAuthoringIdentity,
+    agent_id: &str,
+) -> bool {
+    let agent_type = authoring.agent_type.trim();
+    let agent_strategy = authoring.agent_strategy.trim();
+    let primary_agent = if matches!(agent_type, "fixed" | "dynamic")
+        && !matches!(agent_strategy, "fixed" | "dynamic")
+    {
+        // Older snapshots wrote these constructor arguments in reverse order.
+        agent_strategy
+    } else {
+        agent_type
+    };
+    primary_agent == agent_id
+        || authoring.bootstrap_agent_type.as_deref() == Some(agent_id)
+        || authoring
+            .available_agent_types
+            .iter()
+            .any(|available| available == agent_id)
+}
+
+fn scheduled_task_references_agent(
+    definition: &gold_band::scheduler::ScheduledTaskDefinition,
+    agent_id: &str,
+) -> anyhow::Result<bool> {
+    if definition.content_snapshot.direct_agent_id.as_deref() == Some(agent_id) {
+        return Ok(true);
+    }
+    if definition
+        .content_snapshot
+        .auto_authoring
+        .as_ref()
+        .is_some_and(|authoring| auto_authoring_references_agent(authoring, agent_id))
+    {
+        return Ok(true);
+    }
+    let Some(value) = definition.content_snapshot.workflow_authoring.clone() else {
+        return Ok(false);
+    };
+    let authoring = serde_json::from_value::<
+        gold_band::workflow_model_binding::TaskAuthoringWorkflowCompat,
+    >(value)?
+    .into_current()
+    .0;
+    Ok(workflow_references_agent(
+        &authoring.workflow,
+        &authoring.model_bindings,
+        agent_id,
+    ))
+}
+
+#[tauri::command]
+pub async fn get_agent_binding_usage(
+    state: State<'_, DesktopState>,
+    agent_type: String,
+) -> CommandResult<AgentBindingUsageVm> {
+    let agent_id = ManagedAgentId::from_str(&agent_type).map_err(command_error)?;
+    let context = state.context().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        let app = context.app();
+        let app_state = app.load_state().map_err(command_error)?;
+        let templates = app.workflow_templates().map_err(command_error)?;
+        let workspace_apps =
+            agent_usage_workspace_apps(&context, &app_state.conversation_workspaces)
+                .map_err(command_error)?;
+        collect_agent_binding_usage(&agent_id, &templates, &workspace_apps).map_err(command_error)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1608,18 +2440,22 @@ pub async fn create_task(
     state: State<'_, DesktopState>,
     input: CreateTaskInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
     let background_app = app.clone_for_background();
     let summary = tauri::async_runtime::spawn_blocking(move || {
-        background_app.create_task_from_requirement(CreateTaskInput {
+        let task_input = CreateTaskInput {
             title: input.title,
             description: input.description,
             requirement_file_name: input.requirement_file_name,
             requirement_content: input.requirement_content,
-            workflow: input.workflow,
+            workflow: input.workflow.clone(),
             workflow_template_id: input.workflow_template_id,
-        })
+        };
+        background_app.create_task_from_requirement_with_bindings(
+            task_input,
+            input.workflow,
+            input.model_bindings,
+        )
     })
     .await
     .map_err(|_| CommandErrorVm::new("app.task-join-failed", serde_json::json!({})))?
@@ -1634,16 +2470,19 @@ pub fn save_task_workflow(
     task_id: String,
     input: SaveWorkflowInputVm,
 ) -> CommandResult<WorkflowVm> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
-    app.save_task_workflow(&task_id, input.workflow)
+    app.save_task_workflow_with_bindings(&task_id, input.workflow, input.model_bindings)
         .map_err(command_error)?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
 #[tauri::command]
-pub fn get_workflow(state: State<'_, DesktopState>, task_id: String) -> CommandResult<WorkflowVm> {
-    let app = state.app().map_err(command_error)?;
+pub fn get_workflow(
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+) -> CommandResult<WorkflowVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     workflow_vm(&app, &task_id).map_err(command_error)
 }
 
@@ -1660,9 +2499,8 @@ pub fn save_workflow_template(
     state: State<'_, DesktopState>,
     input: SaveWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.save_workflow_template(input.name, input.workflow)
+    app.save_workflow_template_with_bindings(input.name, input.workflow, input.model_bindings)
         .map_err(command_error)
 }
 
@@ -1672,10 +2510,24 @@ pub fn update_workflow_template(
     template_id: String,
     input: UpdateWorkflowTemplateInputVm,
 ) -> CommandResult<WorkflowTemplateStore> {
-    ensure_workflow_agents_doctor_ready(state.inner(), &input.workflow)?;
     let app = state.app().map_err(command_error)?;
-    app.update_workflow_template(&template_id, input.workflow)
-        .map_err(command_error)
+    if app
+        .workflow_templates()
+        .map_err(command_error)?
+        .templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .is_some_and(|template| template.is_built_in)
+    {
+        app.update_built_in_workflow_template_bindings(&template_id, input.model_bindings)
+    } else {
+        app.update_workflow_template_with_bindings(
+            &template_id,
+            input.workflow,
+            input.model_bindings,
+        )
+    }
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -1763,6 +2615,7 @@ pub fn start_run(
     state: State<'_, DesktopState>,
     task_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_start_background(&task_id, None)
@@ -1963,6 +2816,7 @@ pub async fn get_git_comparison(
                 base_oid,
                 head_oid,
                 path,
+                before_path,
                 ..
             } => gold_band::git::GitHubCliService::default()
                 .pull_request_revision_comparison(
@@ -1973,6 +2827,7 @@ pub async fn get_git_comparison(
                     base_oid,
                     head_oid,
                     path,
+                    before_path.as_deref(),
                 )
                 .map_err(command_error),
             _ => service
@@ -2352,10 +3207,22 @@ pub fn continue_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    app.run_continue_background(&task_id, &run_id, None, None)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    app.record_metrics_resume_cause(
+        &task_id,
+        &run_id,
+        gold_band::app::observability::ResumeCause::ManualContinue,
+    );
+    let result = app.run_continue_background(&task_id, &run_id, None, None);
+    if result.is_err() {
+        app.clear_metrics_resume_cause(
+            &task_id,
+            &run_id,
+            gold_band::app::observability::ResumeCause::ManualContinue,
+        );
+    }
+    result.map(run_summary_vm).map_err(command_error)
 }
 
 #[tauri::command]
@@ -2370,6 +3237,9 @@ pub async fn continue_conversation_runtime(
     attempt_id: String,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
+    input: Option<ConversationPromptInput>,
+    prompt_id: Option<String>,
+    attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
@@ -2381,6 +3251,9 @@ pub async fn continue_conversation_runtime(
         outer_node_id,
         outer_attempt_id,
     );
+    if let Some(input) = input.as_ref() {
+        validate_conversation_prompt_input(input, attachment_paths.as_deref())?;
+    }
     let app = app.clone_for_background();
     spawn_blocking_command(move || {
         let run = app
@@ -2408,6 +3281,7 @@ pub async fn continue_conversation_runtime(
         let attempt_dir = locator.attempt_dir(&app);
         let model_override = current_acp_session_model_override(&attempt_dir);
         let permission_mode_override = current_acp_session_permission_mode_override(&attempt_dir);
+        let attachment_paths = attachment_paths.unwrap_or_default();
         let run = if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (locator.outer_node_id(), locator.outer_attempt_id())
         {
@@ -2419,9 +3293,9 @@ pub async fn continue_conversation_runtime(
                 outer_attempt_id,
                 &locator.node_id,
                 &locator.attempt_id,
-                None,
-                String::new(),
-                Vec::new(),
+                prompt_id,
+                input,
+                attachment_paths,
                 model_override,
                 permission_mode_override,
             )
@@ -2429,9 +3303,9 @@ pub async fn continue_conversation_runtime(
             app.run_continue_background_with_config_overrides(
                 &locator.task_id,
                 &locator.run_id,
-                None,
-                None,
-                Vec::new(),
+                prompt_id,
+                input,
+                attachment_paths,
                 model_override,
                 permission_mode_override,
             )
@@ -2440,6 +3314,44 @@ pub async fn continue_conversation_runtime(
         .map_err(command_error)?;
         Ok(ConversationPromptSubmitVm {
             kind: "runtime-continue-started".to_string(),
+            session: None,
+            run: Some(run),
+            lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn recover_conversation_runtime(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    expected_revision: u64,
+) -> CommandResult<ConversationPromptSubmitVm> {
+    let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(task_id, run_id, round_id, node_id, attempt_id, None, None);
+    let app = app.clone_for_background();
+    spawn_blocking_command(move || {
+        let run = app
+            .run_recover_completed_background(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                expected_revision,
+            )
+            .map(run_summary_vm)
+            .map_err(command_error)?;
+        Ok(ConversationPromptSubmitVm {
+            kind: "runtime-recovery-started".to_string(),
             session: None,
             run: Some(run),
             lifecycle: runtime_continue_started_lifecycle_for_locator(&app, &locator),
@@ -2490,6 +3402,7 @@ pub async fn stop_active_session(
         request_auto_dispatch_suspension(&locator.attempt_dir(&app)).map_err(command_error)?;
     }
     let operation_id = Uuid::new_v4().to_string();
+    let control_operation_id = operation_id.clone();
     let control_app = app.clone_for_background();
     let control_locator = locator.clone();
     let (attempt_dir, current_run, lifecycle) = spawn_blocking_command(move || {
@@ -2500,7 +3413,8 @@ pub async fn stop_active_session(
                 suspend_auto_dispatch(&queue_attempt_dir).map_err(command_error)?;
             }
         }
-        let attempt_dir = persist_active_session_stop(&control_app, &control_locator)?;
+        let attempt_dir =
+            persist_active_session_stop(&control_app, &control_locator, &control_operation_id)?;
         let current_run = control_app
             .run_status(&control_locator.task_id, &control_locator.run_id)
             .map_err(command_error)?;
@@ -2537,7 +3451,7 @@ pub async fn stop_active_session(
 }
 
 #[tauri::command]
-pub fn submit_manual_check(
+pub async fn submit_manual_check(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -2548,6 +3462,7 @@ pub fn submit_manual_check(
     attempt_id: String,
     outcome: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let outcome = match outcome.as_str() {
         "success" => NodeOutcome::Success,
@@ -2559,9 +3474,32 @@ pub fn submit_manual_check(
             ));
         }
     };
-    app.submit_manual_check_background(&task_id, &run_id, &round_id, &node_id, &attempt_id, outcome)
-        .map(run_summary_vm)
-        .map_err(command_error)
+    let submission_lease = app
+        .reserve_manual_check_submission(&task_id, &run_id, &round_id, &node_id, &attempt_id)
+        .map_err(command_error)?;
+    let resumed_occurrence_id = resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
+    let app = app
+        .into_inner()
+        .with_scheduled_occurrence_id(resumed_occurrence_id);
+    app.submit_manual_check_background(
+        &task_id,
+        &run_id,
+        &round_id,
+        &node_id,
+        &attempt_id,
+        outcome,
+        submission_lease,
+    )
+    .map(run_summary_vm)
+    .map_err(command_error)
 }
 
 #[tauri::command]
@@ -2571,6 +3509,7 @@ pub fn retry_run(
     task_id: String,
     run_id: String,
 ) -> CommandResult<RunSummaryVm> {
+    let _ = state.record_heartbeat_activity();
     let base_app = state.app().map_err(command_error)?;
     let app = configure_conversation_runtime_callbacks(base_app, app_handle, None);
     app.run_retry(&task_id, &run_id)
@@ -2656,6 +3595,12 @@ pub fn update_notification_attention(
         .map_err(command_error)
 }
 
+/// Frontend activity signal: pointerdown, keydown, or business command.
+#[tauri::command]
+pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
+    state.record_heartbeat_activity().map_err(command_error)
+}
+
 #[tauri::command]
 pub fn save_metrics_settings(
     state: State<'_, DesktopState>,
@@ -2676,6 +3621,7 @@ pub fn save_metrics_settings(
         .update_settings_config(&existing)
         .map_err(command_error)?;
     let updated_context = state.context().map_err(command_error)?;
+    let _ = state.reevaluate_heartbeat_config();
     Ok(metrics_settings(&updated_context.config))
 }
 
@@ -2946,13 +3892,14 @@ fn maybe_emit_permission_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        PERMISSION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            PERMISSION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -2966,6 +3913,14 @@ fn maybe_emit_permission_intervention(
         kind: RuntimeInterventionKind::PermissionRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::PermissionRequested,
+        );
+    }
 }
 
 fn maybe_emit_elicitation_intervention(
@@ -2986,13 +3941,14 @@ fn maybe_emit_elicitation_intervention(
     if !is_pending {
         return;
     }
+    let event_id = request_scoped_intervention_event_id(
+        project_id,
+        context,
+        event,
+        ELICITATION_REQUESTED_DEDUP_SUFFIX,
+    );
     lifecycle_bus.emit(RuntimeLifecycleEvent::InterventionRequested {
-        event_id: request_scoped_intervention_event_id(
-            project_id,
-            context,
-            event,
-            ELICITATION_REQUESTED_DEDUP_SUFFIX,
-        ),
+        event_id: event_id.clone(),
         occurred_at: current_timestamp(),
         scheduled_occurrence_id: app
             .and_then(|value| value.scheduled_occurrence_id().map(str::to_string)),
@@ -3006,6 +3962,254 @@ fn maybe_emit_elicitation_intervention(
         kind: RuntimeInterventionKind::ElicitationRequested,
         task_title: None,
     });
+    if let Some(app) = app {
+        emit_request_intervention_metrics(
+            app,
+            context,
+            &event_id,
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+    }
+}
+
+fn emit_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if let Some(sender) = direct_metrics_sender() {
+        let _ = sender.try_send(DirectMetricsJob::InterventionRequested {
+            context: context.clone(),
+            request_id: request_id.to_string(),
+            kind,
+            repo_root: app.paths.repo_root.to_string(),
+        });
+    }
+}
+
+fn build_request_intervention_metrics(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    request_id: &str,
+    kind: RuntimeInterventionKind,
+) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    let Ok(run) = app.run_status(&context.task_id, &context.run_id) else {
+        return;
+    };
+    let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+        return;
+    };
+    let is_direct =
+        gold_band::app::direct_conversation_agent_label(app, &context.task_id).is_some();
+    let is_auto = !is_direct && context.outer_node_id.is_some();
+    let active_turn = if is_direct {
+        app.active_metrics_turn(&format!("direct:{task_uuid}"))
+    } else {
+        None
+    };
+    let execution_id = active_turn
+        .as_ref()
+        .map(|turn| turn.execution_id.clone())
+        .unwrap_or_else(|| task_uuid.clone());
+    let event_revision;
+    let collection_state_recovered;
+    let _state = if let Some(active_turn) = active_turn.as_ref() {
+        let attempt_path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(&active_turn.attempt_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let attempt_state =
+            app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+                match kind {
+                    RuntimeInterventionKind::PermissionRequested => {
+                        state.record_permission(request_id)
+                    }
+                    RuntimeInterventionKind::ElicitationRequested => {
+                        state.record_elicitation(request_id)
+                    }
+                    _ => {}
+                }
+                state.next_revision();
+            });
+        event_revision = attempt_state.event_revision;
+        collection_state_recovered = attempt_state.collection_state_recovered;
+        attempt_state
+    } else {
+        let path = app
+            .paths
+            .run_dir(&context.task_id, &context.run_id)
+            .join("observability")
+            .join(&execution_id)
+            .join(gold_band::app::observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let state = app.update_observability_state(&execution_id, path, |state| {
+            match kind {
+                RuntimeInterventionKind::PermissionRequested => state.record_permission(request_id),
+                RuntimeInterventionKind::ElicitationRequested => {
+                    state.record_elicitation(request_id)
+                }
+                _ => {}
+            }
+            state.next_revision();
+        });
+        event_revision = state.event_revision;
+        collection_state_recovered = state.collection_state_recovered;
+        state
+    };
+    let mut fact = gold_band::app::observability::MetricsLifecycleFact::new(
+        gold_band::app::observability::LifecycleEventType::InterventionRequested,
+        event_revision,
+        current_timestamp(),
+        crate::metrics::get_system_username(),
+        app.paths.repo_root.to_string(),
+        if is_direct {
+            gold_band::app::observability::MetricsSessionMode::Direct
+        } else if is_auto {
+            gold_band::app::observability::MetricsSessionMode::Auto
+        } else {
+            gold_band::app::observability::MetricsSessionMode::Workflow
+        },
+        task_uuid,
+        if is_direct {
+            gold_band::app::observability::ExecutionKind::Turn
+        } else if is_auto {
+            gold_band::app::observability::ExecutionKind::OuterRun
+        } else {
+            gold_band::app::observability::ExecutionKind::Run
+        },
+        execution_id.clone(),
+    );
+    fact.task_title = app.task_show(&context.task_id).ok().and_then(|t| t.title);
+    fact.intervention_kind = Some(match kind {
+        RuntimeInterventionKind::PermissionRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Permission
+        }
+        RuntimeInterventionKind::ElicitationRequested => {
+            gold_band::app::observability::MetricsInterventionKind::Elicitation
+        }
+        RuntimeInterventionKind::ManualDecisionRequired => {
+            gold_band::app::observability::MetricsInterventionKind::ManualDecision
+        }
+        RuntimeInterventionKind::RuntimeAbnormal => {
+            gold_band::app::observability::MetricsInterventionKind::RuntimeAbnormal
+        }
+        RuntimeInterventionKind::ErrorBlocked => {
+            gold_band::app::observability::MetricsInterventionKind::ErrorBlocked
+        }
+        RuntimeInterventionKind::ProcessInterrupted => {
+            gold_band::app::observability::MetricsInterventionKind::ProcessInterrupted
+        }
+    });
+    if is_direct {
+        if let Some(turn) = active_turn {
+            fact.attempt_id = Some(turn.attempt_id.clone());
+            fact.attempt_index = Some(turn.attempt_index);
+        }
+    } else {
+        apply_intervention_node_context(app, context, &run_uuid, &mut fact, is_auto);
+    }
+    fact.collection_state_recovered = collection_state_recovered;
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::MetricsFact(fact));
+}
+
+fn apply_intervention_node_context(
+    app: &App,
+    context: &gold_band::app::AcpLiveEventContext,
+    run_uuid: &str,
+    fact: &mut gold_band::app::observability::MetricsLifecycleFact,
+    is_auto: bool,
+) {
+    let round_index = read_json::<gold_band::runtime::RoundState>(&app.paths.round_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+    ))
+    .ok()
+    .map(|round| round.index);
+    fact.round_index = round_index;
+
+    if is_auto {
+        let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) else {
+            return;
+        };
+        let Ok(graph) =
+            read_json::<gold_band::dynamic::DynamicGraphState>(&app.paths.dynamic_graph_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ))
+        else {
+            return;
+        };
+        let Some(dynamic_node) = graph.nodes.iter().find(|node| node.id == context.node_id) else {
+            return;
+        };
+        fact.attempt_index =
+            gold_band::app::observability::attempt_index_from_local_id(&context.attempt_id);
+        fact.role_name = Some(dynamic_node.title.clone());
+        if let Some(node_uuid) = dynamic_node.uuid.as_deref() {
+            fact.node_id = Some(node_uuid.to_string());
+            fact.attempt_id =
+                gold_band::app::observability::derive_attempt_id(node_uuid, &context.attempt_id);
+        }
+        return;
+    }
+
+    let Ok(node) = read_json::<NodeState>(&app.paths.node_file(
+        &context.task_id,
+        &context.run_id,
+        &context.round_id,
+        &context.node_id,
+        &context.attempt_id,
+    )) else {
+        return;
+    };
+    fact.attempt_index =
+        gold_band::app::observability::attempt_index_from_local_id(&node.attempt_id);
+    fact.role_name = Some(node_intervention_role_name(&node));
+    let Some(node_uuid) = node.uuid.as_deref() else {
+        return;
+    };
+    let logical = round_index
+        .and_then(|round_index| {
+            gold_band::app::observability::derive_execution_id(
+                run_uuid,
+                &format!("round:{round_index}:node:{}", node.node_id),
+            )
+        })
+        .unwrap_or_else(|| node_uuid.to_string());
+    fact.node_id = Some(logical);
+    fact.attempt_id = Some(node_uuid.to_string());
+}
+
+fn node_intervention_role_name(node: &NodeState) -> String {
+    node.resolved_config
+        .get("profileName")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            node.resolved_config
+                .get("profile")
+                .and_then(|value| value.as_str())
+        })
+        .or_else(|| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+        })
+        .unwrap_or_else(|| node.node_id.as_str())
+        .to_string()
 }
 
 fn acp_intervention_node_label(
@@ -3062,34 +4266,9 @@ pub(crate) fn acp_session_update_emitter(
     project_id: Option<String>,
 ) -> Arc<dyn Fn(gold_band::app::AcpLiveEventContext) -> anyhow::Result<()> + Send + Sync> {
     Arc::new(move |context| {
-        let session = if let (Some(outer_node_id), Some(outer_attempt_id)) = (
-            context.outer_node_id.as_deref(),
-            context.outer_attempt_id.as_deref(),
-        ) {
-            dynamic_acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                outer_node_id,
-                outer_attempt_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        } else {
-            acp_session_vm(
-                &app,
-                &context.task_id,
-                &context.run_id,
-                &context.round_id,
-                &context.node_id,
-                &context.attempt_id,
-                None,
-                None,
-            )?
-        };
+        // Session lifecycle is a control-plane event. Publishing it must not
+        // rebuild or serialize timeline正文; page data is fetched only by the
+        // explicit session query/pagination path.
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -3101,7 +4280,7 @@ pub(crate) fn acp_session_update_emitter(
             &context.attempt_id,
             context.outer_node_id.clone(),
             context.outer_attempt_id.clone(),
-            session,
+            None,
         );
         Ok(())
     })
@@ -3120,16 +4299,7 @@ fn emit_acp_session_update(
     outer_attempt_id: Option<String>,
     session: Option<AcpSessionVm>,
 ) {
-    let activity = conversation_prompt_activity_vm(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    );
+    let activity = conversation_task_prompt_activity_vm(app, task_id);
     emit_acp_update(
         app_handle,
         Some(app),
@@ -3160,18 +4330,7 @@ fn emit_acp_event_update(
     outer_attempt_id: Option<String>,
     event: AcpUiEvent,
 ) {
-    let activity = activity_app.and_then(|app| {
-        conversation_prompt_activity_vm(
-            app,
-            task_id,
-            run_id,
-            round_id,
-            node_id,
-            attempt_id,
-            outer_node_id.as_deref(),
-            outer_attempt_id.as_deref(),
-        )
-    });
+    let activity = activity_app.and_then(|app| conversation_task_prompt_activity_vm(app, task_id));
     emit_acp_update(
         app_handle,
         None,
@@ -3189,28 +4348,12 @@ fn emit_acp_event_update(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn conversation_prompt_activity_vm(
+fn conversation_task_prompt_activity_vm(
     app: &App,
     task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    outer_node_id: Option<&str>,
-    outer_attempt_id: Option<&str>,
 ) -> Option<ConversationTaskActivityVm> {
-    let attempt_dir = resolve_acp_attempt_dir(
-        app,
-        task_id,
-        run_id,
-        round_id,
-        node_id,
-        attempt_id,
-        outer_node_id,
-        outer_attempt_id,
-    );
-    client::prompt_activity(&attempt_dir).map(conversation_task_activity_from_prompt)
+    client::prompt_activity_under(&app.paths.task_dir(task_id))
+        .map(conversation_task_activity_from_prompt)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3286,9 +4429,38 @@ fn acp_live_event_context(
 }
 
 #[tauri::command]
-pub fn get_acp_session(
+pub async fn get_acp_session(
     state: State<'_, DesktopState>,
     project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    query: Option<AcpSessionQueryInput>,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<Option<AcpSessionVm>> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?.clone_for_background();
+    spawn_blocking_command(move || {
+        get_acp_session_from_app(
+            app,
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            query,
+            outer_node_id,
+            outer_attempt_id,
+        )
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+fn get_acp_session_from_app(
+    app: App,
     task_id: String,
     run_id: String,
     round_id: String,
@@ -3316,7 +4488,6 @@ pub fn get_acp_session(
         "command-received",
         trace_started_at,
     );
-    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
     log_acp_session_command_stage(
         trace_id.as_deref(),
         &branch_id,
@@ -3618,7 +4789,7 @@ fn emit_prompt_queue_lifecycle(
 }
 
 #[tauri::command]
-pub fn update_conversation_queued_prompt(
+pub fn reorder_conversation_queued_prompts(
     app_handle: AppHandle,
     state: State<'_, DesktopState>,
     project_id: Option<String>,
@@ -3627,8 +4798,8 @@ pub fn update_conversation_queued_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    item_id: String,
-    content: String,
+    expected_revision: u64,
+    ordered_item_ids: Vec<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<ConversationPromptQueueMutationVm> {
@@ -3642,9 +4813,49 @@ pub fn update_conversation_queued_prompt(
         outer_node_id,
         outer_attempt_id,
     );
-    update_queued_prompt(&locator.attempt_dir(&app), &item_id, content)
-        .map_err(prompt_queue_command_error)?;
+    reorder_queued_prompts(
+        &locator.attempt_dir(&app),
+        expected_revision,
+        ordered_item_ids,
+    )
+    .map_err(prompt_queue_command_error)?;
     Ok(ConversationPromptQueueMutationVm {
+        lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
+    })
+}
+
+#[tauri::command]
+pub fn restore_conversation_queued_prompt(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: Option<String>,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    item_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<ConversationPromptQueueRestoreVm> {
+    let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let (item, _) = take_queued_prompt(&locator.attempt_dir(&app), &item_id)
+        .map_err(prompt_queue_command_error)?;
+    Ok(ConversationPromptQueueRestoreVm {
+        draft: ConversationQueuedPromptDraftVm {
+            content: item.content,
+            quotes: item.quotes,
+            attachment_paths: item.attachment_paths,
+        },
         lifecycle: emit_prompt_queue_lifecycle(&app_handle, &app, project_id, &locator),
     })
 }
@@ -3727,7 +4938,10 @@ pub async fn use_conversation_queued_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        claimed.content.clone(),
+        ConversationPromptInput {
+            display_text: claimed.content.clone(),
+            quotes: claimed.quotes.clone(),
+        },
         Some(claimed.prompt_id.clone()),
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3749,12 +4963,13 @@ pub async fn submit_conversation_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<ConversationPromptSubmitVm> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
     let locator = AttemptLocator::new(
         task_id,
@@ -3765,6 +4980,7 @@ pub async fn submit_conversation_prompt(
         outer_node_id,
         outer_attempt_id,
     );
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
     crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
         .map_err(command_error)?;
     let run = app
@@ -3782,7 +4998,7 @@ pub async fn submit_conversation_prompt(
         )
     );
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
-        enqueue_prompt(&attempt_dir, prompt, attachment_paths.unwrap_or_default())
+        enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
         emit_acp_session_update(
             &app_handle,
@@ -3843,7 +5059,7 @@ pub async fn submit_conversation_prompt(
         locator.round_id.clone(),
         locator.node_id.clone(),
         locator.attempt_id.clone(),
-        prompt,
+        input,
         prompt_id,
         locator.outer_node_id.clone(),
         locator.outer_attempt_id.clone(),
@@ -3868,14 +5084,16 @@ pub async fn send_acp_prompt(
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app_with_emitters(&app_handle, state.inner(), project_id.as_deref())?;
-    send_acp_prompt_with_app(
+    validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
+    send_acp_prompt_with_configured_app(
         app_handle,
         app,
         project_id,
@@ -3884,7 +5102,7 @@ pub async fn send_acp_prompt(
         round_id,
         node_id,
         attempt_id,
-        prompt,
+        input,
         prompt_id,
         outer_node_id,
         outer_attempt_id,
@@ -3893,21 +5111,22 @@ pub async fn send_acp_prompt(
     .await
 }
 
-pub(crate) async fn send_acp_prompt_with_app(
+pub(crate) async fn send_acp_prompt_with_configured_app(
     app_handle: AppHandle,
-    app: App,
+    app: ConfiguredConversationApp,
     project_id: Option<String>,
     task_id: String,
     run_id: String,
     round_id: String,
     node_id: String,
     attempt_id: String,
-    prompt: String,
+    input: ConversationPromptInput,
     prompt_id: Option<String>,
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
     attachment_paths: Option<Vec<String>>,
 ) -> CommandResult<Option<AcpSessionVm>> {
+    let app = app.into_inner();
     let locator = AttemptLocator::new(
         task_id.clone(),
         run_id.clone(),
@@ -3925,6 +5144,7 @@ pub(crate) async fn send_acp_prompt_with_app(
     let direct_mode = conversation_run_mode(&app, &locator.task_id)
         == Some(gold_band::config::ConversationRunMode::Direct);
     let agent_label = acp_turn_agent_label(&app, &locator);
+    emit_direct_turn_started(&app, &locator);
     let preflight = ensure_conversation_prompt_available(&app, &locator);
     finish_acp_prompt_preflight(&app, &locator, &turn_id, &agent_label, preflight)?;
     let project_id_for_emit = project_id.clone();
@@ -3939,6 +5159,11 @@ pub(crate) async fn send_acp_prompt_with_app(
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let execution = tauri::async_runtime::spawn_blocking(move || -> CommandResult<_> {
+        let ConversationPromptInput {
+            display_text,
+            quotes,
+        } = input;
+        let prompt = conversation_prompt_text(&display_text, &quotes);
         if let (Some(outer_node_id), Some(outer_attempt_id)) =
             (outer_node_id.as_deref(), outer_attempt_id.as_deref())
         {
@@ -3991,8 +5216,8 @@ pub(crate) async fn send_acp_prompt_with_app(
             } else {
                 (SessionMode::New, None)
             };
-            let mut prompt_bundle = app
-                .dynamic_acp_prompt_bundle_for_attempt(
+            let prepared_prompt = app
+                .prepare_dynamic_acp_prompt_for_attempt(
                     &task_id,
                     &run_id,
                     &round_id,
@@ -4005,24 +5230,22 @@ pub(crate) async fn send_acp_prompt_with_app(
                     continue_ref.clone(),
                 )
                 .map_err(command_error)?;
-            // Resolve attachments
+            let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+            let session_workspace_dir = prepared_prompt.session_workspace_dir;
+            let mut prompt_bundle = prepared_prompt.prompt;
+            prompt_bundle.display_text = Some(display_text.clone());
+            prompt_bundle.quotes = quotes.clone();
             if let Some(ref paths) = attachment_paths {
                 if !paths.is_empty() {
-                    let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                    let _ = std::fs::create_dir_all(&user_inputs_dir);
-                    if let Ok(resolved) =
-                        gold_band::provider::resolve_attachments(paths, "user-inputs")
-                    {
-                        // Copy files to user-inputs/
-                        for (r, src) in resolved.iter().zip(paths.iter()) {
-                            let src_path = std::path::Path::new(src);
-                            if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                                let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                                let _ = std::fs::copy(src_path, &dest);
-                            }
-                            prompt_bundle.attachment_metas.push(r.meta.clone());
-                            prompt_bundle.content_blocks.push(r.block.clone());
-                        }
+                    let resolved = gold_band::provider::resolve_user_input_attachments(
+                        paths,
+                        &attempt_dir,
+                        gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                    )
+                    .map_err(command_error)?;
+                    for attachment in resolved {
+                        prompt_bundle.attachment_metas.push(attachment.meta);
+                        prompt_bundle.content_blocks.push(attachment.block);
                     }
                 }
             }
@@ -4062,8 +5285,8 @@ pub(crate) async fn send_acp_prompt_with_app(
             let prompt_run = client::run_prompt(
                 provider,
                 &agent_config.adapter,
-                app.paths.repo_root.clone(),
-                app.paths.repo_root.clone(),
+                adapter_workspace_dir,
+                session_workspace_dir,
                 attempt_dir,
                 &prompt_bundle,
                 session_mode,
@@ -4079,7 +5302,6 @@ pub(crate) async fn send_acp_prompt_with_app(
                 client::AcpRuntimePolicy::from(&app.config)
                     .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                     .with_system_prompt_support(agent_config.supports_system_prompt()),
-                client::AcpOutputPolicy::Conversation,
                 Some(&|event| {
                     live_update(
                         acp_live_event_context(
@@ -4163,8 +5385,8 @@ pub(crate) async fn send_acp_prompt_with_app(
         } else {
             (SessionMode::New, None)
         };
-        let mut prompt_bundle = app
-            .acp_prompt_bundle_for_attempt(
+        let prepared_prompt = app
+            .prepare_acp_prompt_for_attempt(
                 &task_id,
                 &run_id,
                 &round_id,
@@ -4175,22 +5397,22 @@ pub(crate) async fn send_acp_prompt_with_app(
                 continue_ref.clone(),
             )
             .map_err(command_error)?;
-        // Resolve attachments
+        let adapter_workspace_dir = prepared_prompt.adapter_workspace_dir;
+        let session_workspace_dir = prepared_prompt.session_workspace_dir;
+        let mut prompt_bundle = prepared_prompt.prompt;
+        prompt_bundle.display_text = Some(display_text);
+        prompt_bundle.quotes = quotes;
         if let Some(ref paths) = attachment_paths {
             if !paths.is_empty() {
-                let user_inputs_dir = format!("{}/user-inputs", attempt_dir);
-                let _ = std::fs::create_dir_all(&user_inputs_dir);
-                if let Ok(resolved) = gold_band::provider::resolve_attachments(paths, "user-inputs")
-                {
-                    for (r, src) in resolved.iter().zip(paths.iter()) {
-                        let src_path = std::path::Path::new(src);
-                        if let Some(name) = src_path.file_name().and_then(|n| n.to_str()) {
-                            let dest = std::path::Path::new(&user_inputs_dir).join(name);
-                            let _ = std::fs::copy(src_path, &dest);
-                        }
-                        prompt_bundle.attachment_metas.push(r.meta.clone());
-                        prompt_bundle.content_blocks.push(r.block.clone());
-                    }
+                let resolved = gold_band::provider::resolve_user_input_attachments(
+                    paths,
+                    &attempt_dir,
+                    gold_band::provider::AttachmentProjectionPolicy::from(&app.config),
+                )
+                .map_err(command_error)?;
+                for attachment in resolved {
+                    prompt_bundle.attachment_metas.push(attachment.meta);
+                    prompt_bundle.content_blocks.push(attachment.block);
                 }
             }
         }
@@ -4229,8 +5451,8 @@ pub(crate) async fn send_acp_prompt_with_app(
         let prompt_run = client::run_prompt(
             provider,
             &agent_config.adapter,
-            app.paths.repo_root.clone(),
-            app.paths.repo_root.clone(),
+            adapter_workspace_dir,
+            session_workspace_dir,
             attempt_dir,
             &prompt_bundle,
             session_mode,
@@ -4246,7 +5468,6 @@ pub(crate) async fn send_acp_prompt_with_app(
             client::AcpRuntimePolicy::from(&app.config)
                 .with_external_session_sync_enabled(agent_config.external_session_sync_enabled)
                 .with_system_prompt_support(agent_config.supports_system_prompt()),
-            client::AcpOutputPolicy::Conversation,
             Some(&|event| {
                 live_update(
                     acp_live_event_context(
@@ -4399,6 +5620,8 @@ pub fn respond_acp_permission(
     outer_attempt_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let resume_cause = gold_band::app::observability::ResumeCause::PermissionResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
     let session = if let (Some(outer_node_id), Some(outer_attempt_id)) =
         (outer_node_id.as_deref(), outer_attempt_id.as_deref())
     {
@@ -4411,8 +5634,12 @@ pub fn respond_acp_permission(
             &node_id,
             &attempt_id,
         );
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         dynamic_acp_session_vm(
             &app,
             &task_id,
@@ -4430,8 +5657,12 @@ pub fn respond_acp_permission(
         let attempt_dir =
             app.paths
                 .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id);
-        write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
-            .map_err(command_error)?;
+        if let Err(error) =
+            write_acp_permission_response_signal(&attempt_dir, &request_id, option_id.clone())
+        {
+            app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+            return Err(command_error(error));
+        }
         acp_session_vm(
             &app,
             &task_id,
@@ -4581,6 +5812,7 @@ fn stop_acp_session(
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
+    operation_id: &str,
 ) -> CommandResult<Utf8PathBuf> {
     let attempt_dir = locator.attempt_dir(app);
     let runtime_was_controlled = attempt_is_runtime_controlled(app, locator)?;
@@ -4608,12 +5840,23 @@ fn persist_active_session_stop(
         )
         .map_err(command_error)?;
     }
-    app.persist_cancelled_session_snapshot(&attempt_dir)
-        .map_err(command_error)?;
     if runtime_was_controlled {
         gold_band::acp::control::mark_runtime_interrupted(&attempt_dir).map_err(command_error)?;
     }
     client::request_prompt_cancel(&attempt_dir);
+    let snapshot_path = attempt_dir.join("acp.snapshot.json");
+    let session_path = attempt_dir.join("acp.session.json");
+    let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+        snapshot_path
+    } else {
+        session_path
+    };
+    gold_band::acp::events::request_session_stop(
+        &lifecycle_path,
+        operation_id,
+        &gold_band::acp::events::current_timestamp(),
+    )
+    .map_err(command_error)?;
     Ok(attempt_dir)
 }
 
@@ -4626,8 +5869,28 @@ fn spawn_active_session_stop_cleanup(
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         app.cancel_attempt_dir_best_effort(&attempt_dir);
-        if let Err(error) = client::cancel_attempt_prompt(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+        match client::cancel_attempt_prompt(&attempt_dir) {
+            Ok(false) => {
+                let snapshot_path = attempt_dir.join("acp.snapshot.json");
+                let session_path = attempt_dir.join("acp.session.json");
+                let lifecycle_path = if snapshot_path.exists() || !session_path.exists() {
+                    snapshot_path
+                } else {
+                    session_path
+                };
+                if let Err(error) = gold_band::acp::events::persist_session_terminal(
+                    &lifecycle_path,
+                    gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+                    "cancelled",
+                    &gold_band::acp::events::current_timestamp(),
+                ) {
+                    warn!(%error, %attempt_dir, "failed to settle accepted ACP stop without an active provider");
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+            }
         }
         emit_acp_session_update(
             &app_handle,
@@ -4928,25 +6191,62 @@ pub fn show_worker_ref(
 #[tauri::command]
 pub fn save_desktop_preferences(
     state: State<'_, DesktopState>,
-    theme: DesktopThemePreference,
+    mut appearance: AppearancePreference,
+    personalization: PersonalizationPreference,
     language: DesktopLanguage,
-    font: DesktopFontPreference,
     use_local_claude: bool,
     verbose_logging: bool,
 ) -> CommandResult<PreferencesVm> {
+    if appearance.schema_version != 2 {
+        return Err(CommandErrorVm::new(
+            "theme.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": appearance.schema_version }),
+        ));
+    }
+    let theme_catalog = gold_band::theme::builtin_theme_catalog().map_err(|error| {
+        CommandErrorVm::new(error.code, serde_json::json!({ "detail": error.detail }))
+    })?;
+    if !theme_catalog
+        .iter()
+        .any(|theme| theme.id == appearance.theme_id)
+    {
+        return Err(CommandErrorVm::new(
+            "theme.active-package-missing",
+            serde_json::json!({ "themeId": appearance.theme_id }),
+        ));
+    }
+    let mut personalization = normalize_personalization_preference(personalization)?;
+    appearance.visual_quality_by_theme.retain(|theme_id, _| {
+        theme_catalog.iter().any(|theme| {
+            theme.id == *theme_id
+                && theme
+                    .capabilities
+                    .contains(&gold_band::theme::ThemeCapability::VisualQualityProfiles)
+        })
+    });
     let context = state.context().map_err(command_error)?;
     let app = context.app();
+    match reconcile_wallpaper_personalization(&app.paths.user_gold_band_dir(), &mut personalization)
+    {
+        Ok(_) => {}
+        Err(error) => warn!(
+            error_code = error.code,
+            "wallpaper personalization reconciliation skipped"
+        ),
+    }
     if context.config.use_local_claude != use_local_claude {
         ensure_no_active_acp_prompts_in_workspace(&app.paths.repo_root)?;
         gold_band::acp::client::close_workspace_connections_bounded(&app.paths.repo_root)
             .map_err(command_error)?;
     }
-    app.set_user_desktop_preferences(theme, language, font.clone())
-        .map_err(command_error)?;
-    app.set_user_use_local_claude(use_local_claude)
-        .map_err(command_error)?;
     let settings = app
-        .set_user_verbose_logging(verbose_logging)
+        .set_user_desktop_preferences(
+            appearance.clone(),
+            personalization.clone(),
+            language,
+            use_local_claude,
+            verbose_logging,
+        )
         .map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -4954,22 +6254,118 @@ pub fn save_desktop_preferences(
     let log_level = settings.log_level.unwrap_or(context.config.log_level);
     set_runtime_log_level(log_level);
     Ok(preferences_vm(
-        theme,
+        appearance,
+        personalization.clone(),
         language,
-        font,
         use_local_claude,
         log_level,
-        load_avatar_preferences(&app.paths.user_gold_band_dir()).map_err(avatar_command_error)?,
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?,
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default(),
     ))
+}
+
+fn normalize_personalization_preference(
+    mut preference: PersonalizationPreference,
+) -> CommandResult<PersonalizationPreference> {
+    if preference.schema_version != 4 {
+        return Err(CommandErrorVm::new(
+            "personalization.contract-version-unsupported",
+            serde_json::json!({ "schemaVersion": preference.schema_version }),
+        ));
+    }
+    for typography in [
+        &mut preference.typography.ui,
+        &mut preference.typography.editor,
+    ] {
+        if let FontStackPreference::Custom { families } = &mut typography.font_stack {
+            if families.is_empty() || families.len() > MAX_FONT_STACK_FAMILIES {
+                return Err(CommandErrorVm::new(
+                    "personalization.font-stack-invalid",
+                    serde_json::json!({ "count": families.len() }),
+                ));
+            }
+            let mut seen = HashSet::new();
+            for family in families.iter_mut() {
+                *family = family.trim().to_string();
+                if family.is_empty()
+                    || family.chars().count() > MAX_FONT_FAMILY_CHARS
+                    || family
+                        .chars()
+                        .any(|character| matches!(character, ',' | ';' | '{' | '}'))
+                    || !seen.insert(family.to_lowercase())
+                {
+                    return Err(CommandErrorVm::new(
+                        "personalization.font-stack-invalid",
+                        serde_json::json!({ "count": families.len() }),
+                    ));
+                }
+            }
+        }
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.ui.font_size {
+        *px = normalize_desktop_ui_font_size(*px);
+    }
+    if let FontSizePreference::Custom { px } = &mut preference.typography.editor.font_size {
+        *px = normalize_desktop_editor_font_size(*px);
+    }
+    for avatar in [&preference.avatars.agent, &preference.avatars.user] {
+        if matches!(&avatar.image, AvatarPreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.avatar-invalid",
+                serde_json::json!({}),
+            ));
+        }
+    }
+    for wallpaper in [
+        &preference.wallpaper.by_color_scheme.light,
+        &preference.wallpaper.by_color_scheme.dark,
+    ] {
+        if matches!(&wallpaper.image, WallpaperImagePreference::User { asset_id } if asset_id.trim().is_empty())
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
+            .contains(&wallpaper.opacity_percent)
+        {
+            return Err(CommandErrorVm::new(
+                "personalization.wallpaper-opacity-invalid",
+                serde_json::json!({
+                    "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                    "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                }),
+            ));
+        }
+    }
+    Ok(preference)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar(
     state: State<'_, DesktopState>,
     input: SaveDesktopAvatarInput,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    let kind = input.kind;
+    let shape = input.shape;
+    let avatars =
+        save_avatar_image(&app.paths.user_gold_band_dir(), input).map_err(avatar_command_error)?;
+    let profile = avatar_profile(&avatars, kind);
+    let asset_id = profile.selected_avatar_id.clone().ok_or_else(|| {
+        CommandErrorVm::new("personalization.avatar-invalid", serde_json::json!({}))
+    })?;
+    let mut personalization = context.config.personalization.clone();
+    let target = avatar_personalization_mut(&mut personalization, kind);
+    target.image = AvatarPreference::User { asset_id };
+    target.shape = AvatarShapePreference::Custom {
+        value: personalization_avatar_shape(shape),
+    };
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
@@ -4977,32 +6373,226 @@ pub fn select_recent_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
     avatar_id: String,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
     select_recent_avatar(&app.paths.user_gold_band_dir(), kind, &avatar_id)
-        .map_err(avatar_command_error)
+        .map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::User {
+        asset_id: avatar_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn save_desktop_avatar_shape(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-    shape: AvatarShape,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape).map_err(avatar_command_error)
+    shape: Option<AvatarShape>,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    if let Some(shape) = shape {
+        save_avatar_shape(&app.paths.user_gold_band_dir(), kind, shape)
+            .map_err(avatar_command_error)?;
+    }
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).shape =
+        shape.map_or(AvatarShapePreference::Theme, |value| {
+            AvatarShapePreference::Custom {
+                value: personalization_avatar_shape(value),
+            }
+        });
+    persist_desktop_personalization(&state, &context, personalization)
 }
 
 #[tauri::command]
 pub fn clear_desktop_avatar(
     state: State<'_, DesktopState>,
     kind: AvatarKind,
-) -> CommandResult<AvatarPreferencesVm> {
-    let app = state.context().map_err(command_error)?.app();
-    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let app = context.app();
+    clear_avatar(&app.paths.user_gold_band_dir(), kind).map_err(avatar_command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    avatar_personalization_mut(&mut personalization, kind).image = AvatarPreference::Theme;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub async fn import_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: ImportDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let color_scheme = input.color_scheme;
+    let initial_context = state.context().map_err(command_error)?;
+    let root = initial_context.app().paths.user_gold_band_dir();
+    let retained_asset_ids = [
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .light
+            .image,
+        &initial_context
+            .config
+            .personalization
+            .wallpaper
+            .by_color_scheme
+            .dark
+            .image,
+    ]
+    .into_iter()
+    .filter_map(|image| match image {
+        WallpaperImagePreference::User { asset_id } => Some(asset_id.clone()),
+        WallpaperImagePreference::Theme => None,
+    })
+    .collect::<HashSet<_>>();
+    let saved = spawn_blocking_command(move || {
+        import_wallpaper_image(&root, input, &retained_asset_ids).map_err(wallpaper_command_error)
+    })
+    .await?;
+    // Image processing runs off-thread; merge into the latest preference
+    // snapshot so an unrelated settings change cannot be overwritten.
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(color_scheme)
+        .image = WallpaperImagePreference::User {
+        asset_id: saved.asset_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub async fn select_recent_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: SelectRecentDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let root = state
+        .context()
+        .map_err(command_error)?
+        .app()
+        .paths
+        .user_gold_band_dir();
+    let selected_id = input.wallpaper_id.clone();
+    spawn_blocking_command(move || {
+        select_recent_wallpaper(&root, &selected_id).map_err(wallpaper_command_error)
+    })
+    .await?;
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::User {
+        asset_id: input.wallpaper_id,
+    };
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub fn save_desktop_wallpaper_opacity(
+    state: State<'_, DesktopState>,
+    input: SaveDesktopWallpaperOpacityInput,
+) -> CommandResult<PreferencesVm> {
+    if !(MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT..=MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT)
+        .contains(&input.opacity_percent)
+    {
+        return Err(CommandErrorVm::new(
+            "personalization.wallpaper-opacity-invalid",
+            serde_json::json!({
+                "min": MIN_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+                "max": MAX_DESKTOP_WALLPAPER_OPACITY_PERCENT,
+            }),
+        ));
+    }
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .opacity_percent = input.opacity_percent;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+#[tauri::command]
+pub fn restore_theme_desktop_wallpaper(
+    state: State<'_, DesktopState>,
+    input: RestoreThemeDesktopWallpaperInput,
+) -> CommandResult<PreferencesVm> {
+    let context = state.context().map_err(command_error)?;
+    let mut personalization = context.config.personalization.clone();
+    personalization
+        .wallpaper
+        .for_color_scheme_mut(input.color_scheme)
+        .image = WallpaperImagePreference::Theme;
+    persist_desktop_personalization(&state, &context, personalization)
+}
+
+fn avatar_profile(
+    avatars: &AvatarPreferencesVm,
+    kind: AvatarKind,
+) -> &crate::avatar::AvatarProfileVm {
+    match kind {
+        AvatarKind::Agent => &avatars.agent,
+        AvatarKind::User => &avatars.user,
+    }
+}
+
+fn avatar_personalization_mut(
+    personalization: &mut PersonalizationPreference,
+    kind: AvatarKind,
+) -> &mut gold_band::config::AvatarPersonalization {
+    match kind {
+        AvatarKind::Agent => &mut personalization.avatars.agent,
+        AvatarKind::User => &mut personalization.avatars.user,
+    }
+}
+
+fn personalization_avatar_shape(shape: AvatarShape) -> PersonalizationAvatarShape {
+    match shape {
+        AvatarShape::Circle => PersonalizationAvatarShape::Circle,
+        AvatarShape::Square => PersonalizationAvatarShape::Square,
+    }
+}
+
+fn persist_desktop_personalization(
+    state: &DesktopState,
+    context: &crate::state::DesktopContext,
+    personalization: PersonalizationPreference,
+) -> CommandResult<PreferencesVm> {
+    let app = context.app();
+    let settings = app
+        .set_user_desktop_personalization(personalization.clone())
+        .map_err(command_error)?;
+    state
+        .update_settings_config(&settings)
+        .map_err(command_error)?;
+    let avatars =
+        load_resolved_avatar_preferences(&app.paths.user_gold_band_dir(), &personalization)
+            .map_err(avatar_command_error)?;
+    let wallpapers =
+        load_resolved_wallpaper_preferences(&app.paths.user_gold_band_dir()).unwrap_or_default();
+    Ok(preferences_vm(
+        context.config.appearance.clone(),
+        personalization,
+        context.config.desktop_language,
+        context.config.use_local_claude,
+        context.config.log_level,
+        avatars,
+        wallpapers,
+    ))
 }
 
 fn avatar_command_error(error: crate::avatar::AvatarError) -> CommandErrorVm {
+    CommandErrorVm::new(error.code, error.params)
+}
+
+fn wallpaper_command_error(error: crate::wallpaper::WallpaperError) -> CommandErrorVm {
     CommandErrorVm::new(error.code, error.params)
 }
 
@@ -5110,37 +6700,6 @@ fn providers_for_node(node: &NodeDsl) -> Vec<String> {
     }
 }
 
-fn ensure_workflow_agents_doctor_ready(
-    state: &DesktopState,
-    workflow: &WorkflowDsl,
-) -> CommandResult<()> {
-    let diagnostics = state.agent_diagnostics().map_err(command_error)?;
-    for node in &workflow.nodes {
-        for provider in providers_for_node(node) {
-            let agent_id = ManagedAgentId::from_str(&provider).map_err(command_error)?;
-            match diagnostics.get(&agent_id) {
-                Some(diagnostic) if diagnostic.available => {}
-                Some(diagnostic) => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-failed",
-                        serde_json::json!({ "agentType": provider, "reason": diagnostic.reason }),
-                    ));
-                }
-                None => {
-                    return Err(CommandErrorVm::new(
-                        "workflow.agent-doctor-required",
-                        serde_json::json!({ "agentType": provider }),
-                    ));
-                }
-            }
-        }
-    }
-    let app = state.app().map_err(command_error)?;
-    let validated = gold_band::dsl::validate_workflow(workflow.clone()).map_err(command_error)?;
-    app.validate_workflow_agents(&validated)
-        .map_err(command_error)
-}
-
 pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::git::GitPreflightError>() {
         return CommandErrorVm::new(error.code, error.params());
@@ -5154,6 +6713,15 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
     if let Some(error) = error.downcast_ref::<gold_band::runtime_error::RuntimeError>() {
         return CommandErrorVm::new(error.info.code_str(), error.info.params.clone());
     }
+    if let Some(error) = error.downcast_ref::<gold_band::app::RuntimeRecoveryError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::core_state::CoreStateError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::storage::ProjectManifestError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
     if let Some(error) = error.downcast_ref::<WorkflowValidationError>() {
         return workflow_validation_command_error(error);
     }
@@ -5161,6 +6729,14 @@ pub fn command_error(error: anyhow::Error) -> CommandErrorVm {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<ProfileCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) = error.downcast_ref::<gold_band::app::WorkflowTemplateCommandError>() {
+        return CommandErrorVm::new(error.code(), error.params());
+    }
+    if let Some(error) =
+        error.downcast_ref::<gold_band::workflow_model_binding::WorkflowModelBindingError>()
+    {
         return CommandErrorVm::new(error.code(), error.params());
     }
     if let Some(error) = error.downcast_ref::<gold_band::acp::branches::ConversationBranchError>() {
@@ -5182,9 +6758,71 @@ fn prompt_queue_command_error(error: PromptQueueError) -> CommandErrorVm {
         PromptQueueError::NotFound => "conversation.prompt-queue-item-not-found",
         PromptQueueError::Dispatching => "conversation.prompt-queue-item-dispatching",
         PromptQueueError::Empty => "conversation.prompt-queue-empty",
+        PromptQueueError::RevisionConflict => "conversation.prompt-queue-revision-conflict",
+        PromptQueueError::InvalidOrder => "conversation.prompt-queue-invalid-order",
         PromptQueueError::Storage => "conversation.prompt-queue-storage-failed",
     };
     CommandErrorVm::new(code, serde_json::json!({}))
+}
+
+fn validate_conversation_prompt_input(
+    input: &ConversationPromptInput,
+    attachment_paths: Option<&[String]>,
+) -> CommandResult<()> {
+    let attachment_paths = attachment_paths.unwrap_or_default();
+    if input.display_text.trim().is_empty() && attachment_paths.is_empty() {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-empty",
+            serde_json::json!({}),
+        ));
+    }
+    if let Some(code) = crate::view_models_conversation::validate_attachment_paths(attachment_paths)
+        .into_iter()
+        .next()
+    {
+        return Err(CommandErrorVm::new(code, serde_json::json!({})));
+    }
+    if input.quotes.len() > MAX_USER_PROMPT_QUOTES {
+        return Err(CommandErrorVm::new(
+            "conversation.prompt-quote-count-exceeded",
+            serde_json::json!({ "maxQuotes": MAX_USER_PROMPT_QUOTES }),
+        ));
+    }
+    let mut quote_ids = HashSet::with_capacity(input.quotes.len());
+    let mut quote_chars = 0usize;
+    for quote in &input.quotes {
+        if quote.id.trim().is_empty()
+            || quote.source_message_key.trim().is_empty()
+            || quote.text.trim().is_empty()
+            || !quote_ids.insert(quote.id.as_str())
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-invalid",
+                serde_json::json!({}),
+            ));
+        }
+        if quote.id.len() > MAX_USER_PROMPT_QUOTE_ID_BYTES
+            || quote.source_message_key.len() > MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES
+        {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-metadata-too-long",
+                serde_json::json!({
+                    "maxIdBytes": MAX_USER_PROMPT_QUOTE_ID_BYTES,
+                    "maxSourceKeyBytes": MAX_USER_PROMPT_QUOTE_SOURCE_KEY_BYTES,
+                }),
+            ));
+        }
+        let remaining = MAX_USER_PROMPT_QUOTE_CHARS.saturating_sub(quote_chars);
+        let chars = quote.text.chars().take(remaining + 1).count();
+        quote_chars += chars;
+        if quote_chars > MAX_USER_PROMPT_QUOTE_CHARS {
+            return Err(CommandErrorVm::new(
+                "conversation.prompt-quote-limit-exceeded",
+                serde_json::json!({ "maxChars": MAX_USER_PROMPT_QUOTE_CHARS }),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn acp_storage_query_error(error: anyhow::Error, fallback_code: &'static str) -> CommandErrorVm {
@@ -5343,9 +6981,8 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
     } else {
         return None;
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| {
             value
                 .get(override_key)
@@ -5357,7 +6994,11 @@ fn current_acp_session_override(attempt_dir: &Utf8PathBuf, override_key: &str) -
 }
 
 fn current_acp_session_model_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
-    current_acp_session_override(attempt_dir, "modelOverride")
+    gold_band::acp::events::read_attempt_session_model(&attempt_dir.join("acp.session.json"))
+}
+
+fn current_acp_session_model_name(attempt_dir: &Utf8PathBuf) -> Option<String> {
+    gold_band::acp::events::read_attempt_session_model_name(&attempt_dir.join("acp.session.json"))
 }
 
 fn current_acp_session_permission_mode_override(attempt_dir: &Utf8PathBuf) -> Option<String> {
@@ -5376,12 +7017,310 @@ fn current_acp_session_config_option_overrides(
     } else {
         return Default::default();
     };
-    std::fs::read_to_string(path)
+    gold_band::acp::events::load_session_metadata_value(&path, None)
         .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
         .and_then(|value| value.get("configOptionOverrides").cloned())
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpCatalogSelectOption {
+    category: String,
+    values: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AcpSessionConfigCatalog {
+    observed_at: Option<String>,
+    models: Option<BTreeSet<String>>,
+    modes: Option<BTreeSet<String>>,
+    config_options: Option<BTreeMap<String, AcpCatalogSelectOption>>,
+}
+
+impl AcpSessionConfigCatalog {
+    fn from_value(value: &serde_json::Value, observed_at: Option<String>) -> Self {
+        let select_options = select_config_options_from_capabilities(Some(value));
+        let config_options = value.get("configOptions").map(|_| {
+            select_options
+                .iter()
+                .map(|option| {
+                    (
+                        option.id.clone(),
+                        AcpCatalogSelectOption {
+                            category: option.category.clone().unwrap_or_else(|| option.id.clone()),
+                            values: option
+                                .options
+                                .iter()
+                                .map(|value| value.value.clone())
+                                .collect(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let models = select_options
+            .iter()
+            .any(|option| option.category.as_deref() == Some("model"))
+            .then(|| {
+                supported_models_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("models")
+                    .map(|models| acp_catalog_grouped_ids(models, "availableModels", true))
+            });
+        let modes = select_options
+            .iter()
+            .any(|option| option.id == "mode" || option.category.as_deref() == Some("mode"))
+            .then(|| {
+                supported_modes_from_capabilities(Some(value))
+                    .into_iter()
+                    .map(|option| option.id)
+                    .collect()
+            })
+            .or_else(|| {
+                value
+                    .get("modes")
+                    .map(|modes| acp_catalog_grouped_ids(modes, "availableModes", false))
+            });
+        Self {
+            observed_at,
+            models,
+            modes,
+            config_options,
+        }
+    }
+
+    fn supports_model(&self, value: &str) -> Option<bool> {
+        self.models.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_mode(&self, value: &str) -> Option<bool> {
+        self.modes.as_ref().map(|values| values.contains(value))
+    }
+
+    fn supports_config_value(&self, option_id: &str, value: &str) -> Option<bool> {
+        self.config_options.as_ref().map(|options| {
+            options
+                .get(option_id)
+                .is_some_and(|option| option.values.contains(value))
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AcpSessionConfigCatalogContext {
+    session: AcpSessionConfigCatalog,
+    newer_doctor: Option<AcpSessionConfigCatalog>,
+}
+
+impl AcpSessionConfigCatalogContext {
+    fn effective(&self) -> &AcpSessionConfigCatalog {
+        self.newer_doctor.as_ref().unwrap_or(&self.session)
+    }
+}
+
+fn acp_catalog_grouped_ids(
+    value: &serde_json::Value,
+    list_key: &str,
+    model: bool,
+) -> BTreeSet<String> {
+    value
+        .get(list_key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let key = if model { "modelId" } else { "id" };
+            item.get(key)
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("value"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn acp_catalog_timestamp(value: &str) -> Option<i64> {
+    value
+        .trim()
+        .trim_end_matches('Z')
+        .parse::<i64>()
+        .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(value.trim())
+                .ok()
+                .map(|value| value.timestamp())
+        })
+}
+
+fn acp_catalog_observation_is_newer(candidate: &str, current: Option<&str>) -> bool {
+    let candidate = candidate.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    let Some(current) = current.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    if candidate == current {
+        return false;
+    }
+    match (
+        acp_catalog_timestamp(candidate),
+        acp_catalog_timestamp(current),
+    ) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate > current,
+    }
+}
+
+fn acp_session_config_catalog_context(
+    app: &App,
+    locator: &AttemptLocator,
+    session: &serde_json::Value,
+) -> AcpSessionConfigCatalogContext {
+    let session_catalog = AcpSessionConfigCatalog::from_value(
+        session,
+        session
+            .get("configCatalogObservedAt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    );
+    let newer_doctor = acp_turn_provider_id(app, locator)
+        .and_then(|provider| app.provider_diagnostics().remove(&provider))
+        .filter(|diagnostic| diagnostic.available)
+        .and_then(|diagnostic| {
+            let capabilities = diagnostic.capabilities?;
+            acp_catalog_observation_is_newer(
+                &diagnostic.checked_at,
+                session_catalog.observed_at.as_deref(),
+            )
+            .then(|| {
+                AcpSessionConfigCatalog::from_value(&capabilities, Some(diagnostic.checked_at))
+            })
+        });
+    AcpSessionConfigCatalogContext {
+        session: session_catalog,
+        newer_doctor,
+    }
+}
+
+fn acp_session_config_value_unavailable(
+    category: &str,
+    config_id: &str,
+    value: &str,
+    available_values: impl IntoIterator<Item = String>,
+) -> CommandErrorVm {
+    CommandErrorVm::new(
+        gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE,
+        serde_json::json!({
+            "category": category,
+            "configId": config_id,
+            "value": value,
+            "availableValues": available_values.into_iter().collect::<Vec<_>>(),
+        }),
+    )
+}
+
+fn validate_acp_catalog_model(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_model(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "model",
+            "model",
+            value,
+            catalog.models.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_mode(catalog: &AcpSessionConfigCatalog, value: &str) -> CommandResult<()> {
+    if catalog.supports_mode(value) == Some(false) {
+        return Err(acp_session_config_value_unavailable(
+            "mode",
+            "mode",
+            value,
+            catalog.modes.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_acp_catalog_config_value(
+    catalog: &AcpSessionConfigCatalog,
+    option_id: &str,
+    value: &str,
+) -> CommandResult<()> {
+    let option = catalog
+        .config_options
+        .as_ref()
+        .and_then(|options| options.get(option_id));
+    if option.is_some_and(|option| option.values.contains(value)) {
+        return Ok(());
+    }
+    Err(acp_session_config_value_unavailable(
+        option
+            .map(|option| option.category.as_str())
+            .unwrap_or("config"),
+        option_id,
+        value,
+        option
+            .map(|option| option.values.clone())
+            .unwrap_or_default(),
+    ))
+}
+
+fn apply_acp_catalog_refresh_marker(
+    session: &mut serde_json::Value,
+    catalogs: &AcpSessionConfigCatalogContext,
+) {
+    let Some(doctor) = catalogs.newer_doctor.as_ref() else {
+        return;
+    };
+    let model_requires_refresh = session
+        .get("modelOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_model(value) == Some(true)
+                && catalogs.session.supports_model(value) != Some(true)
+        });
+    let mode_requires_refresh = session
+        .get("permissionModeOverride")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            doctor.supports_mode(value) == Some(true)
+                && catalogs.session.supports_mode(value) != Some(true)
+        });
+    let option_requires_refresh = session
+        .get("configOptionOverrides")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|overrides| {
+            overrides.iter().any(|(option_id, value)| {
+                value.as_str().is_some_and(|value| {
+                    doctor.supports_config_value(option_id, value) == Some(true)
+                        && catalogs.session.supports_config_value(option_id, value) != Some(true)
+                })
+            })
+        });
+    let Some(object) = session.as_object_mut() else {
+        return;
+    };
+    if model_requires_refresh || mode_requires_refresh || option_requires_refresh {
+        if let Some(observed_at) = doctor.observed_at.as_ref() {
+            object.insert(
+                "configCatalogRefreshRequiredAt".to_string(),
+                serde_json::Value::String(observed_at.clone()),
+            );
+        }
+    } else {
+        object.remove("configCatalogRefreshRequiredAt");
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -5430,6 +7369,15 @@ pub async fn set_acp_session_model(
     model_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -5450,18 +7398,26 @@ pub async fn set_acp_session_model(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(model_id) = model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_model(catalogs.effective(), model_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(model_id) = model_id
@@ -5490,14 +7446,8 @@ pub async fn set_acp_session_model(
         }
         set_acp_config_option_current_value(&mut value, "model", model_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5547,6 +7497,15 @@ pub async fn set_acp_session_permission_mode(
     permission_mode_id: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -5567,18 +7526,26 @@ pub async fn set_acp_session_permission_mode(
         return Ok(None);
     };
 
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
+    if let Some(permission_mode_id) = permission_mode_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        validate_acp_catalog_mode(catalogs.effective(), permission_mode_id)?;
+    }
 
     if let Some(session) = value.as_object_mut() {
         if let Some(permission_mode_id) = permission_mode_id
@@ -5607,14 +7574,8 @@ pub async fn set_acp_session_permission_mode(
         }
         set_acp_config_option_current_value(&mut value, "mode", permission_mode_id);
     }
-
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -5665,6 +7626,15 @@ pub async fn set_acp_session_config_option(
     option_value: Option<String>,
 ) -> CommandResult<Option<AcpSessionVm>> {
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
+    let locator = AttemptLocator::new(
+        task_id.clone(),
+        run_id.clone(),
+        round_id.clone(),
+        node_id.clone(),
+        attempt_id.clone(),
+        outer_node_id.clone(),
+        outer_attempt_id.clone(),
+    );
     let attempt_dir = resolve_acp_attempt_dir(
         &app,
         &task_id,
@@ -5684,63 +7654,26 @@ pub async fn set_acp_session_config_option(
     } else {
         return Ok(None);
     };
-    let session_json = std::fs::read_to_string(&path).map_err(|error| {
+    let metadata = load_session_metadata(&path, None).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-read-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
-    let mut value: serde_json::Value = serde_json::from_str(&session_json).map_err(|error| {
+    let mut value = serde_json::to_value(metadata).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-parse-error",
             serde_json::json!({ "error": error.to_string() }),
         )
     })?;
     let option_id = option_id.trim();
-    let config_option = value
-        .get("configOptions")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|options| {
-            options.iter().find(|option| {
-                option.get("id").and_then(serde_json::Value::as_str) == Some(option_id)
-            })
-        })
-        .cloned()
-        .ok_or_else(|| {
-            CommandErrorVm::new(
-                "acp.config-option-not-found",
-                serde_json::json!({ "optionId": option_id }),
-            )
-        })?;
-    if config_option
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        != Some("select")
-    {
-        return Err(CommandErrorVm::new(
-            "acp.config-option-not-select",
-            serde_json::json!({ "optionId": option_id }),
-        ));
-    }
+    let catalogs = acp_session_config_catalog_context(&app, &locator, &value);
     let normalized_value = option_value
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(selected) = normalized_value {
-        let supported = config_option
-            .get("options")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|options| {
-                options.iter().any(|option| {
-                    option.get("value").and_then(serde_json::Value::as_str) == Some(selected)
-                })
-            });
-        if !supported {
-            return Err(CommandErrorVm::new(
-                "acp.config-option-value-unsupported",
-                serde_json::json!({ "optionId": option_id, "value": selected }),
-            ));
-        }
+        validate_acp_catalog_config_value(catalogs.effective(), option_id, selected)?;
     }
     if let Some(session) = value.as_object_mut() {
         let overrides = session
@@ -5766,13 +7699,8 @@ pub async fn set_acp_session_config_option(
     if let Some(selected) = normalized_value {
         set_acp_config_option_current_value(&mut value, option_id, selected);
     }
-    let updated_json = serde_json::to_string_pretty(&value).map_err(|error| {
-        CommandErrorVm::new(
-            "acp.session-serialize-error",
-            serde_json::json!({ "error": error.to_string() }),
-        )
-    })?;
-    std::fs::write(&path, &updated_json).map_err(|error| {
+    apply_acp_catalog_refresh_marker(&mut value, &catalogs);
+    write_json(&path, &value).map_err(|error| {
         CommandErrorVm::new(
             "acp.session-write-error",
             serde_json::json!({ "error": error.to_string() }),
@@ -6097,22 +8025,20 @@ pub async fn respond_elicitation(
     outer_node_id: Option<String>,
     outer_attempt_id: Option<String>,
 ) -> CommandResult<()> {
+    let _ = state.record_heartbeat_activity();
     let app = resolve_command_app(state.inner(), project_id.as_deref())?;
 
     // Reclaim the durable scheduled occurrence before writing the response file.
     // The ACP waiter may resume immediately after the file is visible.
-    if let Ok(coordinator) = state.scheduler_coordinator() {
-        coordinator
-            .resume_attention(
-                app.paths.repo_root.clone(),
-                task_id.clone(),
-                run_id.clone(),
-                round_id.clone(),
-                attempt_id.clone(),
-            )
-            .await
-            .map_err(|error| command_error(anyhow::anyhow!(error.to_string())))?;
-    }
+    resume_scheduled_interaction(
+        state.inner(),
+        &app,
+        &task_id,
+        &run_id,
+        &round_id,
+        &attempt_id,
+    )
+    .await?;
 
     let action = match action.as_str() {
         "accept" => ElicitationAction::Accept,
@@ -6135,14 +8061,18 @@ pub async fn respond_elicitation(
         app.paths
             .attempt_dir(&task_id, &run_id, &round_id, &node_id, &attempt_id)
     };
-    write_elicitation_response(
+    let resume_cause = gold_band::app::observability::ResumeCause::ElicitationResolved;
+    app.record_metrics_resume_cause(&task_id, &run_id, resume_cause);
+    if let Err(error) = write_elicitation_response(
         &attempt_dir,
         &elicitation_id,
         action.clone(),
         content.clone(),
         current_timestamp(),
-    )
-    .map_err(command_error)?;
+    ) {
+        app.clear_metrics_resume_cause(&task_id, &run_id, resume_cause);
+        return Err(command_error(error));
+    }
 
     // Emit session update so the frontend can refresh the timeline
     // immediately. The runtime owns consumption and cleanup of the durable
@@ -6193,6 +8123,78 @@ pub async fn respond_elicitation(
     );
 
     Ok(())
+}
+
+fn scheduled_attention_requires_coordinator(
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> crate::scheduled_service::ScheduledServiceResult<bool> {
+    let database_path = app.paths.scheduler_db_path();
+    if !database_path.exists() {
+        return Ok(false);
+    }
+    let database = gold_band::scheduler::db::ScheduledTaskDatabase::open(database_path)
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?;
+    Ok(database
+        .find_attention_occurrence_by_links(
+            &app.paths.project_id,
+            task_id,
+            run_id,
+            round_id,
+            attempt_id,
+        )
+        .map_err(crate::scheduled_service::ScheduledServiceError::from_database)?
+        .is_some())
+}
+
+async fn resume_scheduled_interaction(
+    state: &DesktopState,
+    app: &App,
+    task_id: &str,
+    run_id: &str,
+    round_id: &str,
+    attempt_id: &str,
+) -> CommandResult<Option<String>> {
+    let requires_coordinator =
+        scheduled_attention_requires_coordinator(app, task_id, run_id, round_id, attempt_id)
+            .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?;
+    if !requires_coordinator {
+        return Ok(None);
+    }
+
+    let coordinator = state.scheduler_coordinator().map_err(|_| {
+        CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::CoordinatorUnavailable
+                .to_string(),
+            serde_json::json!({ "operation": "resume-attention" }),
+        )
+    })?;
+    coordinator
+        .resume_attention(
+            app.paths.repo_root.clone(),
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            attempt_id.to_string(),
+        )
+        .await
+        .map_err(|error| CommandErrorVm::new(error.code.to_string(), error.params))?
+        .ok_or_else(|| {
+            CommandErrorVm::new(
+                gold_band::scheduler::occurrence::ScheduledErrorCode::NotFound.to_string(),
+                serde_json::json!({
+                    "operation": "resume-attention",
+                    "taskId": task_id,
+                    "runId": run_id,
+                    "roundId": round_id,
+                    "attemptId": attempt_id,
+                }),
+            )
+        })
+        .map(Some)
 }
 
 fn open_path(path: &std::path::Path) -> Result<(), String> {
@@ -6690,8 +8692,339 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
+    use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
+    use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
+    use gold_band::dynamic::DynamicGraphState;
+    use gold_band::runtime::RoundState;
+    use gold_band::runtime::TaskState;
+    use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
+    use gold_band::workflow_model_binding::{
+        TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
+    };
+    use std::collections::BTreeMap;
+
+    fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::RunCompleted {
+            event_id: "run-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            node_label: "Claude".to_string(),
+            outcome,
+            task_title: None,
+            completion_agent_label: Some("Claude".to_string()),
+        }
+    }
+
+    fn acp_turn_finished(outcome: AcpTurnOutcome, continues: bool) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::AcpTurnFinished {
+            event_id: "turn-event-001".to_string(),
+            occurred_at: "2026-08-18T10:00:01Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-001".to_string(),
+            task_id: "task-001".to_string(),
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            node_id: "direct-agent".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            turn_id: "turn-001".to_string(),
+            agent_label: "Claude".to_string(),
+            outcome,
+            batch_progress: AcpTurnBatchProgress {
+                completed_reply_count: 1,
+                continues,
+            },
+            task_title: None,
+        }
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_waits_for_the_terminal_reply_batch() {
+        assert!(
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Success))
+                .is_none()
+        );
+        assert!(
+            conversation_terminal_result_candidate(&acp_turn_finished(
+                AcpTurnOutcome::Completed,
+                true
+            ))
+            .is_none()
+        );
+
+        let completed = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Completed,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(
+            completed.result.kind,
+            ConversationTerminalResultKind::Completed
+        );
+        assert!(completed.requires_direct_mode_check);
+    }
+
+    #[test]
+    fn direct_terminal_result_projection_maps_failure_and_stop_semantics() {
+        let failed =
+            conversation_terminal_result_candidate(&direct_run_completed(RunOutcome::Failure))
+                .unwrap();
+        assert_eq!(failed.result.kind, ConversationTerminalResultKind::Failed);
+        assert!(!failed.requires_direct_mode_check);
+
+        let stopped = conversation_terminal_result_candidate(&acp_turn_finished(
+            AcpTurnOutcome::Cancelled,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(stopped.result.kind, ConversationTerminalResultKind::Stopped);
+    }
+
+    #[test]
+    fn doctor_catalog_newer_than_session_marks_the_selected_override_for_refresh() {
+        let mut session = serde_json::json!({
+            "configCatalogObservedAt": "100Z",
+            "modelOverride": "new-model",
+            "configOptions": [{
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "options": [{ "value": "old-model" }]
+            }]
+        });
+        let catalogs = AcpSessionConfigCatalogContext {
+            session: AcpSessionConfigCatalog::from_value(&session, Some("100Z".to_string())),
+            newer_doctor: Some(AcpSessionConfigCatalog::from_value(
+                &serde_json::json!({
+                    "configOptions": [{
+                        "id": "model",
+                        "category": "model",
+                        "type": "select",
+                        "options": [{ "value": "new-model" }]
+                    }]
+                }),
+                Some("200Z".to_string()),
+            )),
+        };
+
+        validate_acp_catalog_model(catalogs.effective(), "new-model").unwrap();
+        apply_acp_catalog_refresh_marker(&mut session, &catalogs);
+
+        assert_eq!(
+            session
+                .get("configCatalogRefreshRequiredAt")
+                .and_then(serde_json::Value::as_str),
+            Some("200Z")
+        );
+    }
+
+    #[test]
+    fn session_catalog_wins_ties_and_unavailable_values_are_structured() {
+        assert!(!acp_catalog_observation_is_newer("200Z", Some("200Z")));
+        assert!(!acp_catalog_observation_is_newer("199Z", Some("200Z")));
+        assert!(acp_catalog_observation_is_newer("201Z", Some("200Z")));
+
+        let catalog = AcpSessionConfigCatalog::from_value(
+            &serde_json::json!({
+                "modes": { "availableModes": [{ "id": "ask" }] }
+            }),
+            Some("200Z".to_string()),
+        );
+        let error = validate_acp_catalog_mode(&catalog, "full").unwrap_err();
+        assert_eq!(
+            error.code,
+            gold_band::acp::client::ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE
+        );
+        assert_eq!(error.params["category"], "mode");
+        assert_eq!(error.params["value"], "full");
+        assert_eq!(error.params["availableValues"], serde_json::json!(["ask"]));
+    }
     use std::sync::{Arc, Mutex};
+
+    fn bound_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "dev".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::Worker(WorkerNode {
+                    id: "dev".to_string(),
+                    execution_slot_id: Some("slot-dev".to_string()),
+                    provider: None,
+                    model: None,
+                    profile: None,
+                    goal: None,
+                    output: None,
+                    success_condition: None,
+                    permission_mode: None,
+                    config_options: BTreeMap::new(),
+                    manual_check: None,
+                    prompt_envelope: Default::default(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings {
+                bindings: vec![WorkerModelBinding {
+                    execution_slot_id: "slot-dev".to_string(),
+                    agent_id: agent_id.to_string(),
+                    model_id: None,
+                    permission_mode_id: None,
+                    config_options: BTreeMap::new(),
+                }],
+                ..WorkflowModelBindings::default()
+            },
+        }
+    }
+
+    fn dynamic_authoring(agent_id: &str, workflow_id: &str) -> TaskAuthoringWorkflow {
+        TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: workflow_id.to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Dynamic {
+                        bootstrap_provider: agent_id.to_string(),
+                        bootstrap_model: None,
+                        permission_mode: None,
+                        bootstrap_config_options: Default::default(),
+                        acceptance_model: None,
+                        acceptance_config_options: Default::default(),
+                        routing_prompt: "route by task".to_string(),
+                        available_agents: vec![gold_band::dsl::DynamicAgentRef {
+                            provider: "agent-b".to_string(),
+                            model: None,
+                            permission_mode: None,
+                            config_options: Default::default(),
+                        }],
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        }
+    }
+
+    fn write_bound_task(app: &App, task_id: &str, agent_id: &str) {
+        write_json(&app.paths.task_file(task_id), &TaskState::new(task_id)).unwrap();
+        write_json(
+            &app.paths.workflow_file(task_id),
+            &bound_authoring(agent_id, &format!("workflow-{task_id}")),
+        )
+        .unwrap();
+    }
+
+    fn prompt_with_quote(source_message_key: &str, text: &str) -> ConversationPromptInput {
+        ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "quote-1".to_string(),
+                source_message_key: source_message_key.to_string(),
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn prompt_quote_validation_enforces_bounded_shape_without_loading_sources() {
+        let valid = prompt_with_quote("textDelta-answer-1", "Agent 原文");
+        assert!(validate_conversation_prompt_input(&valid, None).is_ok());
+
+        let mut duplicate = valid.clone();
+        duplicate.quotes.push(duplicate.quotes[0].clone());
+        assert_eq!(
+            validate_conversation_prompt_input(&duplicate, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-invalid"
+        );
+
+        let over_limit = prompt_with_quote(
+            "textDelta-answer-1",
+            &"字".repeat(MAX_USER_PROMPT_QUOTE_CHARS + 1),
+        );
+        assert_eq!(
+            validate_conversation_prompt_input(&over_limit, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-limit-exceeded"
+        );
+        let mut too_many = valid.clone();
+        too_many.quotes = (0..=MAX_USER_PROMPT_QUOTES)
+            .map(|index| gold_band::provider::UserPromptQuote {
+                id: format!("quote-{index}"),
+                source_message_key: format!("source-{index}"),
+                text: "x".to_string(),
+            })
+            .collect();
+        assert_eq!(
+            validate_conversation_prompt_input(&too_many, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-count-exceeded"
+        );
+
+        let too_long_id = ConversationPromptInput {
+            display_text: "继续".to_string(),
+            quotes: vec![gold_band::provider::UserPromptQuote {
+                id: "x".repeat(MAX_USER_PROMPT_QUOTE_ID_BYTES + 1),
+                source_message_key: "arbitrary-source".to_string(),
+                text: "用户提供的任意引用内容".to_string(),
+            }],
+        };
+        assert_eq!(
+            validate_conversation_prompt_input(&too_long_id, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-quote-metadata-too-long"
+        );
+
+        assert!(
+            validate_conversation_prompt_input(
+                &prompt_with_quote("code-selection:anywhere", "引用不需要在消息时间线中存在",),
+                None,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn prompt_payload_validation_accepts_attachment_only_and_rejects_fully_empty_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let attachment = temp.path().join("context.txt");
+        std::fs::write(&attachment, "attachment content").unwrap();
+        let attachment = attachment.to_string_lossy().to_string();
+        let input = ConversationPromptInput {
+            display_text: String::new(),
+            quotes: Vec::new(),
+        };
+
+        assert_eq!(
+            validate_conversation_prompt_input(&input, None)
+                .unwrap_err()
+                .code,
+            "conversation.prompt-empty"
+        );
+        assert!(
+            validate_conversation_prompt_input(&input, Some(std::slice::from_ref(&attachment)))
+                .is_ok()
+        );
+    }
 
     #[test]
     fn blocking_command_runs_outside_the_caller_thread() {
@@ -6704,6 +9037,479 @@ mod tests {
         });
 
         assert_ne!(worker_thread, caller_thread);
+    }
+
+    #[test]
+    fn personalization_font_stack_validation_preserves_order_and_rejects_invalid_input() {
+        let mut valid = PersonalizationPreference::default();
+        valid.typography.ui.font_stack = FontStackPreference::Custom {
+            families: vec![" Segoe UI ".to_string(), "Gold Band MiSans".to_string()],
+        };
+        let normalized = normalize_personalization_preference(valid).unwrap();
+        assert_eq!(
+            normalized.typography.ui.font_stack,
+            FontStackPreference::Custom {
+                families: vec!["Segoe UI".to_string(), "Gold Band MiSans".to_string()],
+            }
+        );
+
+        for families in [
+            vec![],
+            vec!["Segoe UI".to_string(), "segoe ui".to_string()],
+            vec!["bad,font".to_string()],
+            vec!["x".repeat(MAX_FONT_FAMILY_CHARS + 1)],
+        ] {
+            let mut invalid = PersonalizationPreference::default();
+            invalid.typography.ui.font_stack = FontStackPreference::Custom { families };
+            assert_eq!(
+                normalize_personalization_preference(invalid)
+                    .unwrap_err()
+                    .code,
+                "personalization.font-stack-invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_usage_workspace_apps_include_registered_and_current_projects_once() {
+        let root = tempfile::tempdir().unwrap();
+        let current = Utf8PathBuf::from_path_buf(root.path().join("current")).unwrap();
+        let other = Utf8PathBuf::from_path_buf(root.path().join("other")).unwrap();
+        let context = crate::state::DesktopContext {
+            repo_root: current.clone(),
+            config: RuntimeConfig::default(),
+            recent_workspaces: Vec::new(),
+            needs_workspace: false,
+        };
+        let workspaces = vec![
+            ConversationWorkspaceEntry {
+                project_id: "current-alias".to_string(),
+                workspace_path: current.to_string(),
+                name: "Current".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other".to_string(),
+                added_at: String::new(),
+            },
+            ConversationWorkspaceEntry {
+                project_id: "other-duplicate".to_string(),
+                workspace_path: other.to_string(),
+                name: "Other duplicate".to_string(),
+                added_at: String::new(),
+            },
+        ];
+
+        let apps = agent_usage_workspace_apps(&context, &workspaces).unwrap();
+        let project_ids = apps
+            .iter()
+            .map(|app| app.paths.project_id.clone())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(apps.len(), 2);
+        assert_eq!(project_ids.len(), 2);
+        assert!(project_ids.contains(&context.app().paths.project_id));
+    }
+
+    #[test]
+    fn agent_binding_usage_aggregates_tasks_and_schedules_across_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        let first =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("first-workspace")).unwrap());
+        let second =
+            App::new(Utf8PathBuf::from_path_buf(root.path().join("second-workspace")).unwrap());
+        write_bound_task(&first, "task-first", "agent-a");
+        write_bound_task(&second, "task-second", "agent-a");
+        write_bound_task(&second, "task-unrelated", "agent-b");
+        write_json(
+            &first.paths.task_file("task-dynamic"),
+            &TaskState::new("task-dynamic"),
+        )
+        .unwrap();
+        write_json(
+            &first.paths.workflow_file("task-dynamic"),
+            &dynamic_authoring("agent-a", "workflow-task-dynamic"),
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(second.paths.scheduler_db_path()).unwrap();
+        let mut scheduled_workflow = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-agent-a",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_workflow.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-workflow")).unwrap());
+        database.save_job_definition(&scheduled_workflow).unwrap();
+
+        let mut scheduled_direct = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-direct-agent-a",
+            "direct",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_direct.content_snapshot.direct_agent_id = Some("agent-a".to_string());
+        database.save_job_definition(&scheduled_direct).unwrap();
+
+        let mut scheduled_auto = ScheduledTaskDefinition::new(
+            &second.paths.project_id,
+            "scheduled-auto-agent-a",
+            "auto",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        scheduled_auto.content_snapshot.auto_authoring =
+            Some(gold_band::scheduler::AutoAuthoringIdentity::new(
+                "agent-a",
+                "fixed",
+                None::<String>,
+                Vec::<String>::new(),
+                None::<String>,
+                Vec::<String>::new(),
+            ));
+        database.save_job_definition(&scheduled_auto).unwrap();
+
+        let template_authoring = bound_authoring("agent-a", "template-workflow");
+        let dynamic_template_authoring = dynamic_authoring("agent-a", "template-dynamic-workflow");
+        let templates = WorkflowTemplateStore {
+            version: gold_band::domain::VERSION.to_string(),
+            last_used_template_id: None,
+            last_created_workflow: None,
+            templates: vec![
+                WorkflowTemplate {
+                    id: "template-a".to_string(),
+                    name: "Template A".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: template_authoring.workflow,
+                    model_bindings: template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                WorkflowTemplate {
+                    id: "template-dynamic".to_string(),
+                    name: "Dynamic Template".to_string(),
+                    is_built_in: false,
+                    optional_entry_stage: None,
+                    workflow: dynamic_template_authoring.workflow,
+                    model_bindings: dynamic_template_authoring.model_bindings,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+            ],
+        };
+        let agent_id = ManagedAgentId::from_str("agent-a").unwrap();
+
+        let usage = collect_agent_binding_usage(&agent_id, &templates, &[first, second]).unwrap();
+
+        assert_eq!(
+            usage,
+            AgentBindingUsageVm {
+                workflow_template_count: 2,
+                task_count: 3,
+                scheduled_task_count: 3,
+                unknown_task_count: 0,
+                unknown_scheduled_task_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_only_requires_coordinator_for_matching_occurrence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+
+        assert!(
+            !scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+        assert!(!app.paths.scheduler_db_path().exists());
+
+        let database =
+            gold_band::scheduler::db::ScheduledTaskDatabase::open(app.paths.scheduler_db_path())
+                .unwrap();
+        let now = chrono::Utc::now();
+        let definition = gold_band::scheduler::ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "job-1",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now + chrono::Duration::hours(1)),
+            gold_band::scheduler::OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        database
+            .create_job(&definition, Some(now + chrono::Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                definition.id(),
+                now,
+                gold_band::scheduler::occurrence::OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "owner-1";
+        database
+            .claim_occurrence(
+                &app.paths.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + chrono::Duration::minutes(5),
+            )
+            .unwrap();
+        database
+            .finish_occurrence(
+                &app.paths.project_id,
+                &occurrence.id,
+                owner_id,
+                gold_band::scheduler::occurrence::OccurrenceStatus::AttentionRequired,
+                Some(gold_band::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-1".to_string()),
+                    run_id: Some("run-1".to_string()),
+                    round_id: Some("round-1".to_string()),
+                    attempt_id: Some("attempt-1".to_string()),
+                }),
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::UserInputRequired,
+                )),
+            )
+            .unwrap();
+
+        assert!(
+            scheduled_attention_requires_coordinator(
+                &app,
+                "task-1",
+                "run-1",
+                "round-1",
+                "attempt-1",
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn scheduled_attention_lookup_maps_database_failure_to_storage_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let app = App::new(root);
+        std::fs::create_dir_all(app.paths.scheduler_db_path()).unwrap();
+
+        let error = scheduled_attention_requires_coordinator(
+            &app,
+            "task-1",
+            "run-1",
+            "round-1",
+            "attempt-1",
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.code,
+            gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+        );
+    }
+
+    #[test]
+    fn agent_binding_usage_isolates_damaged_tasks_and_scheduled_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.path().join("workspace")).unwrap());
+        write_bound_task(&app, "task-valid", "agent-a");
+        write_json(
+            &app.paths.task_file("task-invalid"),
+            &TaskState::new("task-invalid"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            app.paths
+                .workflow_file("task-invalid")
+                .parent()
+                .unwrap()
+                .as_std_path(),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.workflow_file("task-invalid").as_std_path(),
+            "{invalid",
+        )
+        .unwrap();
+
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let mut valid = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-valid",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        valid.content_snapshot.workflow_authoring =
+            Some(serde_json::to_value(bound_authoring("agent-a", "scheduled-valid")).unwrap());
+        database.save_job_definition(&valid).unwrap();
+
+        let mut invalid_snapshot = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-invalid-snapshot",
+            "workflow",
+            ScheduleSpec::every(1, "hours", chrono::Utc::now()).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        invalid_snapshot.content_snapshot.workflow_authoring = Some(serde_json::json!({
+            "workflow": "invalid"
+        }));
+        database.save_job_definition(&invalid_snapshot).unwrap();
+
+        drop(database);
+
+        let usage = collect_agent_binding_usage(
+            &ManagedAgentId::from_str("agent-a").unwrap(),
+            &WorkflowTemplateStore {
+                version: gold_band::domain::VERSION.to_string(),
+                last_used_template_id: None,
+                last_created_workflow: None,
+                templates: Vec::new(),
+            },
+            &[app],
+        )
+        .unwrap();
+
+        assert_eq!(usage.workflow_template_count, 0);
+        assert_eq!(usage.task_count, 1);
+        assert_eq!(usage.scheduled_task_count, 1);
+        assert_eq!(usage.unknown_task_count, 1);
+        assert_eq!(usage.unknown_scheduled_task_count, 1);
+    }
+
+    #[test]
+    fn workflow_agent_usage_covers_legacy_worker_and_ai_dynamic_roles() {
+        let mut legacy_worker = bound_authoring("agent-b", "legacy-worker");
+        legacy_worker.model_bindings.bindings.clear();
+        let NodeDsl::Worker(worker) = &mut legacy_worker.workflow.nodes[0] else {
+            panic!("expected worker node");
+        };
+        worker.provider = Some("agent-a".to_string());
+
+        let fixed_dynamic = TaskAuthoringWorkflow {
+            workflow: WorkflowDsl {
+                version: gold_band::domain::VERSION.to_string(),
+                id: "fixed-dynamic".to_string(),
+                entry: "route".to_string(),
+                control: Default::default(),
+                nodes: vec![NodeDsl::AiDynamic(gold_band::dsl::AiDynamicNode {
+                    id: "route".to_string(),
+                    agent_strategy: AiDynamicAgentStrategy::Fixed {
+                        provider: "agent-a".to_string(),
+                        model: None,
+                        permission_mode: None,
+                    },
+                    config_options: Default::default(),
+                    allowed_profiles: Vec::new(),
+                    global_goal: None,
+                    control: gold_band::dsl::DynamicControlDsl::default(),
+                    allowed_workflows: Vec::new(),
+                })],
+                edges: Vec::new(),
+            },
+            model_bindings: WorkflowModelBindings::default(),
+        };
+        let dynamic_available = dynamic_authoring("agent-c", "dynamic-available");
+
+        assert!(workflow_references_agent(
+            &legacy_worker.workflow,
+            &legacy_worker.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &fixed_dynamic.workflow,
+            &fixed_dynamic.model_bindings,
+            "agent-a"
+        ));
+        assert!(workflow_references_agent(
+            &dynamic_available.workflow,
+            &dynamic_available.model_bindings,
+            "agent-b"
+        ));
+    }
+
+    #[test]
+    fn auto_authoring_usage_covers_current_secondary_and_legacy_identity_fields() {
+        let current = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-a",
+            "fixed",
+            None::<String>,
+            Vec::<String>::new(),
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let secondary = gold_band::scheduler::AutoAuthoringIdentity::new(
+            "agent-b",
+            "dynamic",
+            Some("agent-a"),
+            vec!["agent-a"],
+            None::<String>,
+            Vec::<String>::new(),
+        );
+        let legacy = gold_band::scheduler::AutoAuthoringIdentity {
+            agent_strategy: "agent-a".to_string(),
+            agent_type: "fixed".to_string(),
+            bootstrap_agent_type: None,
+            available_agent_types: Vec::new(),
+            global_goal: None,
+            allowed_workflow_ids: Vec::new(),
+        };
+
+        assert!(auto_authoring_references_agent(&current, "agent-a"));
+        assert!(auto_authoring_references_agent(&secondary, "agent-a"));
+        assert!(auto_authoring_references_agent(&legacy, "agent-a"));
+        assert!(!auto_authoring_references_agent(&legacy, "agent-b"));
+    }
+
+    #[test]
+    fn personalization_wallpaper_validation_rejects_invalid_identity_and_opacity() {
+        let mut invalid_identity = PersonalizationPreference::default();
+        invalid_identity
+            .wallpaper
+            .for_color_scheme_mut(ResolvedColorScheme::Light)
+            .image = WallpaperImagePreference::User {
+            asset_id: "  ".to_string(),
+        };
+        assert_eq!(
+            normalize_personalization_preference(invalid_identity)
+                .unwrap_err()
+                .code,
+            "personalization.wallpaper-invalid"
+        );
+
+        for opacity_percent in [0, 19, 101] {
+            let mut invalid_opacity = PersonalizationPreference::default();
+            invalid_opacity
+                .wallpaper
+                .for_color_scheme_mut(ResolvedColorScheme::Dark)
+                .opacity_percent = opacity_percent;
+            assert_eq!(
+                normalize_personalization_preference(invalid_opacity)
+                    .unwrap_err()
+                    .code,
+                "personalization.wallpaper-opacity-invalid"
+            );
+        }
     }
 
     #[test]
@@ -6835,16 +9641,19 @@ mod tests {
         std::fs::create_dir_all(timeline_path.as_std_path()).unwrap();
 
         let started = std::time::Instant::now();
-        let attempt_dir = persist_active_session_stop(&app, &locator).unwrap();
+        let attempt_dir = persist_active_session_stop(&app, &locator, "operation-001").unwrap();
 
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let run: serde_json::Value = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
         assert_eq!(run["status"], "paused");
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
-        assert_eq!(snapshot["status"], "cancelled");
+        assert_eq!(snapshot["latestTurnStatus"], "none");
+        assert_eq!(
+            snapshot["runtimeControl"]["currentMode"],
+            "non-runtime-controlled"
+        );
         assert!(timeline_path.is_dir());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7023,7 +9832,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_follow_up_uses_only_gold_band_model_override() {
+    fn current_acp_session_model_override_prefers_explicit_override() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-model-override-test-{}",
             uuid::Uuid::new_v4()
@@ -7034,26 +9843,93 @@ mod tests {
         write_json(
             &attempt_dir.join("acp.snapshot.json"),
             &serde_json::json!({
-                "models": { "currentModelId": "default" },
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "models": { "currentModelId": "agent-default" },
                 "configOptions": [
-                    { "id": "model", "currentValue": "default" }
+                    { "id": "model", "currentValue": "agent-default" }
                 ]
-            }),
-        )
-        .unwrap();
-        assert_eq!(current_acp_session_model_override(&attempt_dir), None);
-
-        write_json(
-            &attempt_dir.join("acp.snapshot.json"),
-            &serde_json::json!({
-                "modelOverride": "default",
-                "models": { "currentModelId": "default" }
             }),
         )
         .unwrap();
         assert_eq!(
             current_acp_session_model_override(&attempt_dir).as_deref(),
-            Some("default")
+            Some("agent-default")
+        );
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "override-default",
+                "models": { "currentModelId": "agent-default" },
+                "configOptions": [
+                    { "id": "model", "currentValue": "agent-default" }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("override-default")
+        );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn current_acp_session_model_name_resolves_display_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "gold-band-model-name-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        write_json(
+            &attempt_dir.join("acp.snapshot.json"),
+            &serde_json::json!({
+                "adapterId": "t",
+                "adapterDisplayName": "T",
+                "cwd": ".",
+                "status": "ok",
+                "restored": false,
+                "capabilities": {},
+                "createdAt": "",
+                "updatedAt": "",
+                "modelOverride": "opus",
+                "configOptions": [
+                    {
+                        "id": "model",
+                        "currentValue": "opus",
+                        "options": [
+                            { "value": "opus", "name": "glm-5.2" }
+                        ]
+                    }
+                ]
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            current_acp_session_model_override(&attempt_dir).as_deref(),
+            Some("opus")
+        );
+        assert_eq!(
+            current_acp_session_model_name(&attempt_dir).as_deref(),
+            Some("glm-5.2")
         );
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -7266,6 +10142,60 @@ mod tests {
     }
 
     #[test]
+    fn direct_queue_drain_keeps_the_originating_scheduled_turn_context() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-direct-drain-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()));
+
+        let drain_app = direct_prompt_queue_drain_app(&app);
+
+        assert_eq!(drain_app.scheduled_occurrence_id(), Some("occurrence-001"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_user_turn_clears_only_the_scheduled_origin() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-queued-turn-context-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let seen = Arc::new(Mutex::new(0usize));
+        let seen_for_callback = seen.clone();
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap())
+            .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
+            .with_prompt_turn_lifecycle(Arc::new(move |_, _| {
+                *seen_for_callback.lock().unwrap() += 1;
+                Ok(())
+            }));
+
+        let queued_app = queued_user_turn_app(&app);
+        queued_app
+            .notify_prompt_turn_finished(
+                acp_live_event_context(
+                    "task-001",
+                    "run-001",
+                    "round-001",
+                    "node-001",
+                    "attempt-001",
+                    None,
+                    None,
+                ),
+                Some("turn-001".to_string()),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(queued_app.scheduled_occurrence_id(), None);
+        assert_eq!(*seen.lock().unwrap(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn scheduled_acp_preflight_failure_emits_one_failed_turn() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-scheduled-acp-preflight-test-{}",
@@ -7366,6 +10296,82 @@ mod tests {
     }
 
     #[test]
+    fn prompt_lifecycle_acceptance_and_completion_drain_every_queued_turn() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-prompt-lifecycle-drain-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo_root = Utf8PathBuf::from_path_buf(root.clone()).unwrap();
+        let app = App::new(repo_root);
+        let locator = AttemptLocator::new(
+            "task-001".to_string(),
+            "run-001".to_string(),
+            "round-001".to_string(),
+            "direct-agent".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        let expected_contents = ["first", "second", "third"];
+        for content in expected_contents {
+            enqueue_prompt(&attempt_dir, content.to_string(), Vec::new()).unwrap();
+        }
+
+        let queue = load_prompt_queue(&attempt_dir).unwrap();
+        let mut current = match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap()
+        {
+            AutoClaimResult::Claimed(item) => Some(item),
+            result => panic!("expected first queued prompt, got {result:?}"),
+        };
+        let mut dispatched_contents = Vec::new();
+
+        while let Some(item) = current.take() {
+            dispatched_contents.push(item.content.clone());
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Accepted {
+                    prompt_id: item.prompt_id.clone(),
+                },
+                |_, _, _| panic!("accepted must not schedule the next prompt"),
+            );
+            assert!(
+                load_prompt_queue(&attempt_dir)
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|queued| queued.prompt_id != item.prompt_id),
+                "accepted prompt must leave the queue before its provider turn finishes"
+            );
+
+            process_prompt_turn_lifecycle(
+                &app,
+                locator.clone(),
+                AcpPromptLifecycleEvent::Finished {
+                    prompt_id: Some(item.prompt_id),
+                    successful: true,
+                },
+                |_, successful, completion| {
+                    assert!(successful);
+                    assert!(completion.is_some());
+                    let queue = load_prompt_queue(&attempt_dir).unwrap();
+                    current =
+                        match claim_next_for_auto_dispatch(&attempt_dir, queue.revision).unwrap() {
+                            AutoClaimResult::Claimed(item) => Some(item),
+                            AutoClaimResult::Empty => None,
+                            result => panic!("unexpected automatic claim result: {result:?}"),
+                        };
+                },
+            );
+        }
+
+        assert_eq!(dispatched_contents, expected_contents);
+        assert!(load_prompt_queue(&attempt_dir).unwrap().items.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn conversation_run_state_update_maps_paused_and_completed_events() {
         let paused = conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunPaused {
             event_id: "event-paused".to_string(),
@@ -7445,6 +10451,8 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7481,7 +10489,7 @@ mod tests {
                 "source": "conversation",
                 "runMode": "workflow",
                 "workflowTemplateId": "default",
-                "includeInterview": true,
+                "includeOptionalEntry": true,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,
@@ -7526,6 +10534,22 @@ mod tests {
             },
         )
         .unwrap();
+        write_json(
+            &app.paths
+                .round_file(&locator.task_id, &locator.run_id, &locator.round_id),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": locator.round_id,
+                "run_id": locator.run_id,
+                "index": 1,
+                "status": "paused",
+                "outcome": null,
+                "trigger": "initial",
+                "started_at": "2026-08-12T00:00:00Z",
+                "trace": []
+            }),
+        )
+        .unwrap();
         let run = RunState {
             version: gold_band::domain::VERSION.to_string(),
             id: locator.run_id.clone(),
@@ -7543,6 +10567,8 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
 
         assert!(runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7564,6 +10590,103 @@ mod tests {
     }
 
     #[test]
+    fn superseded_workflow_attempt_rejects_prompt_with_latest_target_locator() {
+        let root = std::env::temp_dir().join(format!(
+            "gold-band-superseded-session-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::new(Utf8PathBuf::from_path_buf(root.clone()).unwrap());
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        write_json(
+            &app.paths
+                .task_dir(task_id)
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "source": "conversation",
+                "runMode": "workflow",
+                "workflowTemplateId": "default",
+                "includeInterview": false,
+                "directConfig": null,
+                "agentIdentity": null,
+                "titleAutoGenerated": false,
+                "initialAttachmentNames": null,
+                "createdAt": "2026-08-16T00:00:00Z",
+                "lastActivityAt": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.workflow_snapshot_file(task_id, run_id),
+            &serde_json::json!({
+                "version": "0.1",
+                "id": "session-owner",
+                "entry": "review",
+                "control": {},
+                "nodes": [
+                    { "type": "worker", "id": "review", "provider": "claude-acp" }
+                ],
+                "edges": [
+                    { "from": "review", "to": "review", "on": "failure", "session": "continue" }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": round_id,
+                "run_id": run_id,
+                "index": 1,
+                "status": "completed",
+                "outcome": "success",
+                "trigger": "initial",
+                "started_at": "2026-08-16T00:00:00Z",
+                "trace": [
+                    { "sequence": 1, "node_id": "review", "attempt_id": "attempt-001", "from_node_id": null, "edge_outcome": null, "entered_at": "2026-08-16T00:00:00Z" },
+                    { "sequence": 2, "node_id": "review", "attempt_id": "attempt-002", "from_node_id": "review", "edge_outcome": "failure", "entered_at": "2026-08-16T00:00:01Z" }
+                ]
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .worker_ref_file(task_id, run_id, round_id, "review", "attempt-001"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "provider": "claude-acp",
+                "mode": "new",
+                "supports_open_session": true,
+                "supports_continue_session": true,
+                "continue_ref": { "acpSessionId": "session-001" },
+                "open_command": null
+            }),
+        )
+        .unwrap();
+
+        let locator = AttemptLocator::new(
+            task_id.to_string(),
+            run_id.to_string(),
+            round_id.to_string(),
+            "review".to_string(),
+            "attempt-001".to_string(),
+            None,
+            None,
+        );
+        let error = ensure_conversation_prompt_available(&app, &locator).unwrap_err();
+
+        assert_eq!(error.code, "conversation.session-superseded");
+        assert_eq!(error.params["roundId"], round_id);
+        assert_eq!(error.params["nodeId"], "review");
+        assert_eq!(error.params["attemptId"], "attempt-002");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn direct_runtime_never_requires_explicit_workflow_continue() {
         let root = std::env::temp_dir().join(format!(
             "gold-band-direct-runtime-continue-test-{}",
@@ -7580,7 +10703,7 @@ mod tests {
                 "source": "conversation",
                 "runMode": "direct",
                 "workflowTemplateId": null,
-                "includeInterview": null,
+                "includeOptionalEntry": null,
                 "directConfig": null,
                 "agentIdentity": null,
                 "titleAutoGenerated": false,
@@ -7616,6 +10739,8 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
 
         assert!(!runtime_continue_required(&app, &locator, &run, false).unwrap());
@@ -7662,6 +10787,8 @@ mod tests {
             pause_reason: Some(PauseReason::ProcessInterrupted),
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -7715,7 +10842,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
@@ -7821,7 +10948,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node],
                 "groups": [],
@@ -7884,6 +11011,8 @@ mod tests {
             pause_reason: None,
             uuid: None,
             last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
         };
         write_json(&app.paths.run_file(task_id, run_id), &run).unwrap();
         let dynamic_node = serde_json::json!({
@@ -7937,7 +11066,7 @@ mod tests {
                 outer_attempt_id,
             ),
             &serde_json::json!({
-                "version": gold_band::domain::VERSION,
+                "version": gold_band::dynamic_store::CURRENT_DYNAMIC_GRAPH_VERSION,
                 "run": dynamic_run,
                 "nodes": [dynamic_node.clone()],
                 "groups": [],
@@ -8075,15 +11204,26 @@ mod tests {
     fn permission_response_signal_is_kept_for_live_waiter_when_snapshot_is_cancelled() {
         let dir = std::env::temp_dir().join(format!(
             "gold-band-permission-response-signal-test-{}",
-            std::process::id()
+            uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+        let params = serde_json::json!({ "sessionId": "session-1" });
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
-            serde_json::json!({ "sessionId": "session-1" }),
+            params.clone(),
             "1778771541Z".to_string(),
+        )
+        .unwrap();
+        let mut pending =
+            gold_band::acp::events::permission_request_event(1, "0".to_string(), params);
+        pending.id = "permission-0".to_string();
+        pending.started_seq = Some(1);
+        pending.ended_seq = Some(1);
+        gold_band::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[pending],
         )
         .unwrap();
         gold_band::storage::write_json(
@@ -8345,5 +11485,317 @@ mod tests {
         );
 
         assert_eq!(*seen.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn workflow_intervention_metrics_carry_current_node_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-workflow-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some("plan".to_string()),
+                current_attempt: Some("attempt-001".to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid.clone()),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let mut node = NodeState {
+            version: gold_band::domain::VERSION.to_string(),
+            node_id: "plan".to_string(),
+            node_type: gold_band::domain::NodeType::Worker,
+            run_id: run_id.to_string(),
+            round_id: round_id.to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: gold_band::domain::RunStatus::Running,
+            outcome: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: None,
+            resolved_config: Default::default(),
+            uuid: Some(node_uuid.clone()),
+        };
+        node.resolved_config
+            .insert("profileName".to_string(), serde_json::json!("Planner"));
+        write_json(
+            &app.paths
+                .node_file(task_id, run_id, round_id, "plan", "attempt-001"),
+            &node,
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "plan".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            "elicit-1",
+            RuntimeInterventionKind::ElicitationRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.event_type,
+            gold_band::app::observability::LifecycleEventType::InterventionRequested
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.attempt_id.as_deref(), Some(node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Planner"));
+        assert_eq!(
+            fact.node_id.as_deref(),
+            gold_band::app::observability::derive_execution_id(&run_uuid, "round:1:node:plan")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn auto_intervention_metrics_carry_current_dynamic_unit_context() {
+        let temp = std::env::temp_dir().join(format!(
+            "gold-band-auto-intervention-metrics-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        let repo_root = Utf8PathBuf::from_path_buf(temp.join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let task_id = "task-001";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let outer_node_id = "ai-dynamic";
+        let outer_attempt_id = "attempt-001";
+        let started_at = "2026-08-11T00:00:00Z".to_string();
+        let task_uuid = uuid::Uuid::new_v4().to_string();
+        let run_uuid = uuid::Uuid::new_v4().to_string();
+        let dynamic_node_uuid = uuid::Uuid::new_v4().to_string();
+        write_json(
+            &app.paths.run_file(task_id, run_id),
+            &RunState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: run_id.to_string(),
+                task_id: task_id.to_string(),
+                task_uuid: Some(task_uuid),
+                status: gold_band::domain::RunStatus::Paused,
+                outcome: None,
+                started_at: started_at.clone(),
+                updated_at: started_at.clone(),
+                workflow_snapshot: "workflow.snapshot.json".to_string(),
+                current_round: Some(round_id.to_string()),
+                current_node: Some(outer_node_id.to_string()),
+                current_attempt: Some(outer_attempt_id.to_string()),
+                new_rounds_opened: 0,
+                pause_reason: Some(gold_band::domain::PauseReason::WaitingForUserInput),
+                uuid: Some(run_uuid),
+                last_executed_node: None,
+                worktree: None,
+                execution: Default::default(),
+            },
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file(task_id, run_id, round_id),
+            &RoundState {
+                version: gold_band::domain::VERSION.to_string(),
+                id: round_id.to_string(),
+                run_id: run_id.to_string(),
+                index: 1,
+                status: gold_band::domain::RunStatus::Running,
+                outcome: None,
+                trigger: gold_band::domain::RoundTrigger::Initial,
+                started_at: started_at.clone(),
+                trace: Vec::new(),
+                uuid: None,
+            },
+        )
+        .unwrap();
+        let dynamic_node = serde_json::json!({
+            "version": gold_band::domain::VERSION,
+            "id": "bootstrap",
+            "dynamicRunId": "dynamic-run-001",
+            "kind": "worker",
+            "title": "Bootstrap",
+            "task": "Bootstrap",
+            "status": "running",
+            "outcome": null,
+            "groupId": null,
+            "chainId": "bootstrap",
+            "depth": 0,
+            "dependsOn": [],
+            "workspaceId": "workspace-main",
+            "provider": "codex-acp",
+            "profile": null,
+            "permissionMode": null,
+            "model": null,
+            "sessionMode": "new",
+            "continueFromNodeId": null,
+            "workflowId": null,
+            "workflowSnapshotId": null,
+            "childRunId": null,
+            "startedAt": started_at,
+            "finishedAt": null,
+            "uuid": dynamic_node_uuid
+        });
+        write_json(
+            &app.paths.dynamic_graph_file(
+                task_id,
+                run_id,
+                round_id,
+                outer_node_id,
+                outer_attempt_id,
+            ),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "run": {
+                    "version": gold_band::domain::VERSION,
+                    "id": "dynamic-run-001",
+                    "parentRunId": run_id,
+                    "parentRoundId": round_id,
+                    "parentNodeId": outer_node_id,
+                    "parentAttemptId": outer_attempt_id,
+                    "status": "running",
+                    "outcome": null,
+                    "pauseReason": null,
+                    "startedAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:01Z",
+                    "control": {},
+                    "allowedWorkflowSnapshots": [],
+                    "currentNodeIds": ["bootstrap"]
+                },
+                "nodes": [dynamic_node],
+                "groups": [],
+                "workspaces": [{
+                    "version": gold_band::domain::VERSION,
+                    "id": "workspace-main",
+                    "dynamicRunId": "dynamic-run-001",
+                    "kind": "main",
+                    "ownership": "user",
+                    "repoRoot": app.paths.repo_root,
+                    "path": app.paths.repo_root,
+                    "branch": null,
+                    "parentWorkspaceId": null,
+                    "createdByGroupId": null,
+                    "forkCommit": "test-head",
+                    "checkpointCommit": null,
+                    "status": "active",
+                    "createdAt": "2026-08-11T00:00:00Z",
+                    "updatedAt": "2026-08-11T00:00:00Z"
+                }],
+                "proposals": []
+            }),
+        )
+        .unwrap();
+
+        let bus = gold_band::app::observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_handler = seen.clone();
+        bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+                seen_for_handler.lock().unwrap().push(fact);
+            }
+        }));
+
+        build_request_intervention_metrics(
+            &app,
+            &gold_band::app::AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: run_id.to_string(),
+                round_id: round_id.to_string(),
+                node_id: "bootstrap".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: Some(outer_node_id.to_string()),
+                outer_attempt_id: Some(outer_attempt_id.to_string()),
+            },
+            "permission-1",
+            RuntimeInterventionKind::PermissionRequested,
+        );
+
+        let facts = seen.lock().unwrap();
+        assert_eq!(facts.len(), 1);
+        let fact = &facts[0];
+        assert_eq!(
+            fact.session_mode,
+            gold_band::app::observability::MetricsSessionMode::Auto
+        );
+        assert_eq!(
+            fact.execution_kind,
+            gold_band::app::observability::ExecutionKind::OuterRun
+        );
+        assert_eq!(fact.round_index, Some(1));
+        assert_eq!(fact.attempt_index, Some(1));
+        assert_eq!(fact.node_id.as_deref(), Some(dynamic_node_uuid.as_str()));
+        assert_eq!(fact.role_name.as_deref(), Some("Bootstrap"));
+        assert_eq!(
+            fact.attempt_id.as_deref(),
+            gold_band::app::observability::derive_attempt_id(&dynamic_node_uuid, "attempt-001")
+                .as_deref()
+        );
+        drop(facts);
+        let _ = std::fs::remove_dir_all(temp);
     }
 }

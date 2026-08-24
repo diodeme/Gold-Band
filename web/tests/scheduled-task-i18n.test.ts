@@ -27,6 +27,7 @@ describe('scheduled task localization', () => {
         'scheduled.detail.history',
         'scheduled.dialog.title',
         'scheduled.composer.create',
+        'scheduled.composer.created',
         'scheduled.settings.keepAwake',
       ]) {
         expect(i18n.exists(key), `${language}:${key}`).toBe(true);

@@ -4,6 +4,14 @@
 
 统一运行时改造前已经具备结构化 schedule、内容指纹、Composer 创建入口、全局管理页和 Direct/Workflow/AUTO 的基础 Task/Run 物化链路。当时的 JSON definition、`lastTriggerAt` 游标和每秒全量轮询只作为迁移前基线，不能作为可靠性实现继续扩展；当前活跃路径已经由 SQLite 与 deadline coordinator 取代。
 
+## 当前持久化契约（2026-08-19）
+
+`scheduled_jobs` 与 `scheduled_occurrences` 统一存放在用户级 `~/.gold-band/core.db`。`GoldBandPaths::scheduler_db_path()` 直接复用 `core_db_path()`；Scheduler 通过 `core_schema(component = 'scheduler', version = 1)` 管理自己的表版本，与 `core`、`workspace_identity` 等 component 共用物理数据库但保持独立 schema ownership。
+
+`project_id` 是应用内 workspace 的唯一业务身份。job 主键、occurrence 主键、外键、唯一约束、索引、repository API、coordinator key、heartbeat/active guard registry key 与 lifecycle event 都显式包含 `project_id`；`workspaceKey` 已废弃，workspace path 仅用于定位和归属校验。`scheduled_jobs` 使用 `(project_id, id)` 主键，`scheduled_occurrences` 使用 `(project_id, id)` 主键并以 `(project_id, job_id)` 外键级联到 job，计划点以 `(project_id, job_id, scheduled_at, trigger_kind)` 去重。
+
+这是开发阶段的破坏式切换。旧项目级/用户级 `scheduled-tasks.db`、旧 JSON store、`scheduler_schema`、`scheduler_migrations` 以及所有 import/fallback 路径均已删除；runtime 不打开旧文件，也不迁移已有任务。下文 Phase 1 至 Phase 10.9 保留实施历史；与本节冲突的旧迁移或 per-workspace database 描述均由本节和 Phase 10.10 取代。
+
 ## 目标运行时结构
 
 调度器由四层组成：
@@ -15,11 +23,11 @@
 
 ### Phase 1 repository contract (2026-08-03)
 
-`ScheduledTaskDatabase` 使用独立的 `GoldBandPaths::scheduler_db_path()`，与搜索数据库保持分离。数据库启用 WAL 和 busy timeout，维护单例 schema version、`scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
+`ScheduledTaskDatabase` 通过 `GoldBandPaths::scheduler_db_path()` 打开用户级 `core.db`。数据库启用 WAL、foreign keys、`synchronous = FULL` 和 3 秒 busy timeout，使用 component-scoped schema version 管理 `scheduled_jobs` 与 `scheduled_occurrences`；occurrence 通过 `(project_id, job_id, scheduled_at, trigger_kind)` 唯一约束去重。claim、续租、终态回写和过期 lease 恢复均在事务中执行，并在写入条件中校验 `project_id`、owner 与 lease，且跨 SQLite 连接的竞争也只能产生一个 running owner。仓储只保存 `SCHEDULED_*` 错误码及结构化参数，不生成面向用户的错误文案。
 
 ### Phase 2 repository and time semantics (2026-08-03)
 
-旧 `ScheduledTaskStore` 的 definition/trigger 可以按 definition 事务导入 SQLite；重复导入是 no-op，definition ID 或 `(job_id, scheduled_at, trigger_kind)` 冲突会返回类型化 migration error，Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
+旧 `ScheduledTaskStore` 和导入接口已经删除，不再作为启动输入或冲突来源。Task/Run 链接和完整 content snapshot 保留在 definition/occurrence 数据中。默认时区通过系统 IANA 时区解析，Hourly 计算下一个本地整点；DST gap 跳过无效本地时间，DST overlap 按绝对时间选择第一个有效 occurrence。Every 只有在启用转换或 interval/unit 变化时重置 anchor。
 
 ### Scheduler contract baseline (2026-08-06)
 
@@ -38,7 +46,7 @@ pending
   -> attention_required  AskUserQuestion，Run 可恢复但 scheduler 释放 lease
 ```
 
-`attention_required` 不会创建下一条同一问题的并发会话；用户回答后继续原 Run，完成时回写原 occurrence。Occurrence 的 claim 受 `(job_id, scheduled_at, trigger_kind)` 唯一约束保护。
+`attention_required` 不会创建下一条同一问题的并发会话；用户回答后继续原 Run，完成时回写原 occurrence。Occurrence 的 claim 和去重均受完整 `project_id` 作用域保护。
 
 ## 无人值守策略
 
@@ -70,9 +78,9 @@ Direct 与 Workflow/AUTO 之间切换属于执行模式边界，更新时会清�
 
 页面提供启用/暂停、编辑、删除、立即执行和详情/历史入口。没有独立名称输入；标题始终由 instruction 首行摘要生成。
 
-## 迁移
+## 破坏式切换
 
-首次初始化 scheduler database 时扫描旧 JSON definition 和 trigger 文件并幂等导入。迁移成功后旧 JSON 不再被 runtime 读写；删除调度定义只删除调度数据和输入快照，不删除 Gold Band Task/Run/ACP 历史。
+首次初始化只在 `core.db` 创建当前 scheduler component 和表，不扫描旧 JSON 或旧 SQLite。旧 `scheduled-tasks.db` 即使存在或损坏也不会被打开。删除调度定义只删除当前项目的调度数据和输入快照，不删除 Gold Band Task/Run/ACP 历史。
 
 ## 验收重点
 
@@ -99,7 +107,7 @@ The web runtime facade now exposes occurrence history, diagnostics, manual run-n
 
 The scheduled-task management page provides a run-now action, a selected-task execution detail area, status-aware occurrence history, retry/run counters, next-run and last-error diagnostics, and live refresh when the backend emits an occurrence or scheduled-task update. `failed` and `attention_required` remain visible terminal states; they are not converted into indefinite loading or waiting UI states.
 
-### Phase 5 workspace isolation and startup migration (2026-08-03)
+### Phase 5 workspace isolation and startup migration（历史，已由 Phase 10.10 取代）(2026-08-03)
 
 The scheduler SQLite database is scoped to `GoldBandPaths::runtime_root` so each workspace has an independent definition and occurrence store. The scheduler loop queries only definitions whose `project_id` matches the current workspace, and the execution adapter rejects a mismatched definition before creating a Task, Run, or ACP session.
 
@@ -238,3 +246,89 @@ Tauri `RunEvent` has exactly one owner: `desktop_lifecycle::handle_run_event`. E
 Lifecycle notification ownership is selected by `scheduled_occurrence_id`. Events without it use the ordinary conversation notification policy, including Direct prompt-queue batch suppression and one terminal batch notification. Events with it are excluded from ordinary notifications and use the structured scheduled-notification event only. Native-notification navigation is queued as an explicit `conversation` or `scheduled` target, deduplicated by key, and consumed after the main window is restored; scheduled copy remains frontend i18n data rather than backend customer-facing text.
 
 Both branches previously used settings schema version 3 for independent additions. The merged schema is version 4. Migration from either v3 shape applies both scheduler defaults and managed-agent capability fields while preserving explicit values from the source branch.
+
+### Phase 10.4 next_run_at ownership, single next_at source, and running-occurrence reconciliation (2026-08-12)
+
+Three coupled defects around a scheduled task that stuck in `running` while `next_run_at` appeared to regress were fixed together.
+
+**1. `next_run_at` has a single maintainer.** Editing or toggling a job no longer overwrites `next_run_at` unconditionally. `ScheduledTaskService::update` compares the incoming schedule against the prior one: when the schedule is unchanged it persists the existing `next_run_at` (so editing an instruction, attachment, or non-schedule field does not disturb the scheduler's already-advanced deadline); only a real schedule change (or enable/disable) recomputes the next run via `derived_next_run_at`. `derived_next_run_at` keeps its `last_trigger_at`/`created_at` baseline so one-shot `At` schedules and legacy imports retain their trigger point, while periodic schedules always advance forward — regression to a past point is now impossible because the covering edit path preserves the materialized value instead of recomputing from a stale `last_trigger_at`.
+
+**2. Single "next run" data source.** The list VM previously rendered `next_at` from `schedule.next_occurrence_after(now)` (real-time recompute), while the diagnostics VM used `record.next_run_at` (persisted). They now share one source: both come from the persisted `next_run_at` on `ScheduledJobRecord`. `ScheduledTaskVm::from_definition[_in_workspace]` takes a `next_run_at` parameter; `service.list` returns records; the `scheduled-task-updated` event payload carries the record's `next_run_at`. The management list and the detail page therefore can no longer disagree on the next-run time — the previous "list shows 16:34, detail shows 16:31" split is gone.
+
+**3. Active state reconciliation for stuck `running` occurrences (root-cause fix, not a max-duration cap).** An occurrence leaves `running` only on a terminal lifecycle event; the lease heartbeat proves the scheduler process is alive, not that the underlying Task/Run is still executing, so a lost terminal event left the occurrence stuck forever (only a process restart recovered it). `handle_registered_deadline` now runs an explicit reconciliation right after `recover_expired`: for each `running` occurrence of the job, `reconcile_running_occurrence_outcome` checks the real Task/Run state via `task_has_active_execution`/`run_status` — if the Task/Run is still active the occurrence is preserved (long-running tasks are never killed), if the Task/Run is completed/missing the occurrence is finalized to `succeeded`/`failed` and a warning is logged. This converges control-plane state to actual state on every trigger point, using the existing recovery primitive with corrected "still-active ⇒ keep" semantics. Supporting hardening: `launch_prepared_run_background` wraps `drive_from_node` in `catch_unwind` so a panic routes through `terminalize_background_drive_error` instead of silently dropping the terminal event, and `handle_lifecycle_event` logs the three previously-silent bail-outs (missing `scheduled_occurrence_id`, no registered active occurrence).
+
+Acceptance tests were added for each point: `derived_next_run_at_for_every_schedule_always_yields_future_point`, `update_preserves_next_run_at_when_schedule_is_unchanged`, `scheduled_task_vm_next_at_uses_persisted_next_run_at_not_realtime_recompute`, `list_running_occurrences_for_job_returns_only_running`, and the three `reconcile_running_occurrence_*` cases (underlying run completed ⇒ succeeded, missing ⇒ failed, still active ⇒ preserved). The scheduler suite is green; two unrelated `view_models.rs`/`commands.rs` tests (`round_graph_connects_ai_dynamic_exit_to_next_workflow_node`, `accepted_stop_persists_control_state_without_reading_timeline`) fail identically on the pre-change tree and are residual Windows-temp-directory issues, not regressions from this change.
+
+### Phase 10.5 re-enabling a paused job no longer back-fills missed occurrences or fires missed notifications (2026-08-12)
+
+Re-enabling a paused Repeat/Cron job used to compute `next_run_at` via `derived_next_run_at`, whose baseline is `last_trigger_at` — a value frozen at the moment the job was paused. For Repeat/Cron this yielded a trigger point that fell inside the disabled window (in the past), so the coordinator immediately treated it as missed: `reconcile_missed_deadlines` materialized one `missed` occurrence per elapsed period (only bounded by `MISSED_RECONCILE_BATCH_SIZE = 50` and `LATE_FIRE_GRACE = 60s`) and `notify_missed` raised a "missed N times" notification. The `Every` kind happened to avoid this only because the enable branch reset its `anchor_at` to now. This affected any run mode whose users commonly pick Repeat/Cron schedules — including Workflow and AUTO.
+
+`set_enabled` now schedules the next run from `now` for **every** schedule kind on the disabled→enabled transition (`definition.schedule.next_occurrence_after(now)`), instead of recomputing from the stale `last_trigger_at`. The disabled window's elapsed periods are deliberately skipped, consistent with the existing "missed points outside grace are not back-filled" contract, so re-enabling produces neither historical `missed` occurrences nor a missed notification. The special-case `Every` anchor reset was removed — `next_occurrence_after(now)` covers it. The disable path is unchanged (`derived_next_run_at` returns `None` for a disabled job).
+
+Acceptance: `reenabling_repeat_job_schedules_next_run_from_now_not_from_stale_last_trigger` sets `last_trigger_at` 30 days in the past, disables, re-enables, and asserts `next_run_at >= now`. The scheduler suite stays green (108 bin tests).
+
+### Phase 10.6 scheduler deadline precision and monotonic persistence (2026-08-13)
+
+Scheduler timestamps use SQLite's millisecond precision as their persistence boundary. `Every` schedule arithmetic normalizes both `anchor_at` and the comparison deadline to milliseconds and must return a value whose persisted millisecond is strictly greater than the persisted comparison value. This prevents a nanosecond anchor from producing the same millisecond deadline after a database round trip.
+
+The previous implementation divided the elapsed duration with `num_seconds()`. When an anchor such as `07:16:49.249706300Z` was paired with a persisted deadline `08:22:49.249Z`, the sub-millisecond difference was truncated and the algorithm returned the same logical occurrence. `materialize_due_occurrence` then incremented `revision` while persisting the unchanged deadline, and the coordinator immediately rearmed the past deadline. The resulting zero-delay loop generated about 65 writes per second, kept `next_run_at` stale, and caused unrelated CAS operations to lose repeatedly.
+
+The root correction uses checked O(1) millisecond interval arithmetic and returns a millisecond-normalized timestamp. Two defenses remain at adjacent boundaries: identical `save_job_definition` calls are revision-idempotent, and a stale past coordinator registration with no runnable recovery work is rearmed no earlier than `DEADLINE_FAILURE_RETRY_DELAY`. A runnable occurrence left by a failed process attempt is exempt from that stale-business-deadline backoff and resumes at its existing retry wake-up, so the protection does not double the failure retry delay. Interface regressions cover the exact production precision mismatch, assert one materialization advances `08:22:49.249Z` to `08:25:49.249Z`, and assert a second call at the same `now` returns `NotDue` without another revision increment. The change adds no scans, polling, cache, or lock expansion; it removes the unbounded database-write and timer-rearm hot loop.
+
+### Phase 10.7 Direct continuous terminal convergence (2026-08-13)
+
+A Direct/continuous scheduled occurrence owns exactly the ACP turn that the scheduler submitted. The scheduler configures that App through the same `configure_conversation_runtime_callbacks` boundary as an ordinary conversation, rather than installing a partial list of live/session callbacks. Direct success intentionally defers `AcpTurnFinished` until prompt-queue settlement; the queue-drain callback therefore carries the originating App clone, including `scheduled_occurrence_id`, `ScheduledTaskContextInfo`, lifecycle bus, and prompt-turn callback. It must not reconstruct an App from `DesktopState`, because that would discard the execution origin before the terminal event is emitted.
+
+When a queued user-authored turn is automatically dispatched after the scheduled turn, `without_scheduled_turn_context` removes only the scheduled occurrence and prompt context. The ordinary conversation callbacks are retained/reconfigured, so further queue draining continues while later turns cannot finish or notify for the scheduler-owned occurrence. The scheduled turn's `AcpTurnFinished` reaches the inline scheduler subscriber with its stable occurrence identity; the subscriber stops the per-occurrence guard before durably transitioning the occurrence to `succeeded` or `failed`.
+
+Deadline reconciliation is a recovery channel, not the primary completion path. `CoordinatorRuntimeDriver for ScheduledRuntime` explicitly delegates `reconcile_running_occurrences` to the concrete runtime implementation; the trait default remains a no-op only for isolated coordinator test drivers. If a terminal event is lost, reconciliation compares each running occurrence with canonical Task/Run/ACP activity. A terminal reconciliation first removes and awaits the matching heartbeat guard, then performs the owner-scoped occurrence transition. This prevents a repaired history row from retaining an in-memory heartbeat worker.
+
+Regression coverage fixes the three boundaries: the Direct drain App preserves its scheduled occurrence identity, an automatically dispatched user turn clears only scheduled origin while retaining the prompt lifecycle callback, and reconciliation removes/stops the active guard before the durable terminal state is observed. Runtime cost is constant per callback. Recovery queries remain scoped to one job's running occurrences at an existing deadline wake-up; no polling, full-table scan, N+1 workspace lookup, unbounded queue, or lock-range expansion is introduced.
+
+### Phase 10.8 Review closure: exact reconciliation and occurrence pagination (2026-08-13)
+
+The canonical locator for a running occurrence is `project_id + scheduled_task_id + occurrence_id + task_id + run_id`. Recovery may inspect only the Run and Attempt owned by that occurrence; another active Run under the same reused Task cannot keep an older occurrence running. Filesystem probes stay scoped to the target Run so coordinator deadlines do not grow with the Task's complete Run history.
+
+Lifecycle completion and recovery reconciliation share one terminal convergence pipeline: stop and remove the heartbeat guard, owner-CAS the occurrence terminal state, update the definition projection, emit task and occurrence events, apply notification policy, and request bounded retention cleanup. `scheduled-task-updated.task.nextAt` always comes from persisted `ScheduledJobRecord.next_run_at`; non-delete CRUD events cannot synthesize a null deadline.
+
+Occurrence history uses keyset pagination ordered by `scheduled_at DESC, created_at DESC, id DESC`. The opaque cursor encodes the final row's three sort fields. The API returns `{ items, nextCursor }`, fixes the page size at 20, and reads at most 21 rows to determine whether another page exists. New occurrences inserted while browsing cannot duplicate or skip rows in subsequent pages.
+
+Status filtering is part of the history query contract and runs before pagination. Unfiltered and filtered queries use `(job_id, scheduled_at, created_at, id)` and `(job_id, status, scheduled_at, created_at, id)` indexes respectively; the implementation must not use an optional `OR` predicate that prevents the filtered index prefix from being selected. Diagnostics compute the exact run total with `COUNT(run_id IS NOT NULL)` and expose only the latest 20 occurrences, rather than loading a fixed 200-row sample and treating it as the total.
+
+The scheduled runtime settings cache treats a save response as an authoritative mutation. Every cache write advances a generation and notifies subscribers; an earlier GET may commit only when that generation has not changed. Multiple saves are serialized and merge each patch into the latest server snapshot, while the retention field separately tracks server value, draft, and dirty state.
+
+The settings cache owns a mutation generation. A background GET commits only when no later mutation has advanced the generation; a successful save response is authoritative. Retention input keeps separate server value, draft, and dirty state so background refresh never mixes fields from two server versions. These changes add no polling, full scans, unbounded cache, cross-workspace N+1, or expanded lock scope.
+
+Acceptance completed on 2026-08-14: the full Web suite of 1,089 tests across 168 files passed, together with Rust formatting/check, TypeScript checking, the production Web build, and the scheduled runtime/command regressions. The occurrence query reads at most 21 rows per page, the filtered query is covered by an `EXPLAIN QUERY PLAN` assertion for `idx_scheduled_occurrences_status_history`, and diagnostics use an exact SQL count while loading only the latest 20 rows.
+
+All resumable user interactions share one scheduler boundary. Before either `respond_elicitation` exposes an AskUserQuestion response to ACP or `submit_manual_check` advances a Workflow manual decision, the command resolves the exact Task/Run/Round/Attempt locator. The scheduler atomically changes that occurrence back to `running`, installs its heartbeat guard, advances the definition runtime projection through revision/CAS, emits the existing occurrence update contract, and returns the reclaimed occurrence ID. ManualCheck injects that identity into the App passed to its background continuation so later lifecycle events finish the same record. Both success and failure manual decisions follow this path.
+
+ManualCheck validates that the Run is still paused on the requested current node and attempt before entering the scheduler boundary, then repeats the same domain validation in the background continuation. A stale or invalid request is therefore rejected before it can move the occurrence to `running`; the repeated validation also prevents a later concurrent state change from mutating the wrong Run attempt.
+
+ManualCheck uses the same one-shot launch handshake and Run-scoped single-flight lease as RuntimeContinue. The command acquires the lease before asking scheduler to reclaim the occurrence, so two concurrent or opposite decisions cannot let an unbound second request win the background launch race. It does not acknowledge success merely because the background thread was spawned: it waits until the manual decision and the resulting control transition have both been durably persisted. This places the acknowledgement before any long-running provider execution but after the returned Run has reached its authoritative `Running`, `Completed`, or newly paused state. A validation, workflow-load, persistence, thread-start, or panic failure before that acknowledgement first converges the Run to `Paused + RuntimeAbnormal` and emits the lifecycle event with the reclaimed occurrence ID, then returns structured `runtime.continue-launch-failed`. After acknowledgement, failure convergence carries the exact Run/Round/Node/Attempt execution ID and updates state only while that execution still owns the active attempt; a later provider callback, user action, or lifecycle transition cannot be overwritten by the stale failure.
+
+Pre-acknowledgement failure convergence is also identity-guarded. Under the attempt lock it may change canonical state only while the original locator still identifies the paused, `manual_check_pending` attempt. A stop, retry, recovery, or other control transition that has replaced that attempt makes the failure `Superseded`: the replacement state is left untouched, while the scheduler-owned occurrence still receives a failure lifecycle event for the original locator so its heartbeat cannot remain `running`.
+
+Attempt failure convergence distinguishes `Converged`, `Superseded`, and persistence failure. Only a proven execution/locator mismatch suppresses a stale post-acknowledgement event. An active legacy attempt without an execution ID is accepted only when the exact locator is still running and the durable Node also has no execution ID; it never falls back to an unconditional write. A lock, read, validation, or write failure is not treated as supersession; the runtime re-reads the exact locator, and if the original execution still owns it, the ownership is indeterminate, or the Run was already partially written as `Paused + RuntimeAbnormal`, it emits the terminal lifecycle event with the persistence error attached. Re-entering convergence for that exact partially paused Run also repairs the missing event. This preserves occurrence convergence when Run persistence succeeds but Round or Node persistence fails, without allowing an old execution to pause a newer one.
+
+A missing scheduler database remains a no-I/O fast path for ordinary non-scheduled interactions. Once an `attention_required` record has been identified, storage, coordinator, workspace registration, reclaim, or race failures return structured scheduler codes and do not write the response signal or submit the manual decision. The resumed Run later converges the original occurrence to `succeeded` or `failed`. Each scheduled interaction adds one exact `LIMIT 1` lookup, one owner-scoped claim, one revision/CAS projection update, and one incremental event; it adds no polling, history scan, N+1 request, unbounded state, or wider lock scope.
+
+The extra locator re-read occurs only when failure convergence itself fails. Normal execution and normal failure convergence keep the existing constant number of exact file operations and the same attempt-scoped lock; provider work remains outside the lock. Final backend verification covers the ManualCheck and background-drive races, 95 scheduler core tests, all 389 desktop tests, desktop compilation, formatting, and diff integrity. The broader core library completed 742 of 757 tests; its 15 residual failures remain confined to the pre-existing shared profile directory, Windows temp-path, Git subprocess/worktree isolation, and parallel JSONL groups.
+
+### Phase 10.9 schema v3 与 deadline 转换收敛（2026-08-17）
+
+Scheduler repository schema 升级到 v3。新数据库直接创建带 `revision`、`next_run_at`、migration marker 和最终 history/status-history 复合索引的 v3 结构；已有 v1 在同一事务内依次完成 v1→v2→v3，已有 v2 只在 v2→v3 migration 中重建两条历史索引。打开当前 v3 数据库只读取 `scheduler_schema.version` 并立即返回，不开启 immediate 写事务，也不执行 `DROP/CREATE INDEX`。因此正常列表、详情和操作路径的数据库 open 不再随 occurrence 历史量产生 O(N) 索引重建、SQLite 写锁或 busy timeout 风险；版本高于当前 binary 时仍在任何 mutation 前拒绝。
+
+`next_run_at` 的 authoring 转换使用以下唯一规则：非 schedule 字段编辑保留 SQLite 已推进的 deadline；启用任务真实修改 schedule 时使用 `schedule.next_occurrence_after(now)`，停用任务修改 schedule 时保持 `None`；disabled→enabled 同样从 `now` 计算，enabled→disabled 写入 `None`；enabled→enabled 与 disabled→disabled 是幂等读取，直接返回当前 record，不增加 revision，也不发送 coordinator command。`derived_next_run_at` 继续只服务创建、legacy backfill 等需要按历史游标恢复连续性的路径，不再用于用户修改 schedule 或同状态启停。
+
+这一设计没有新增 scheduler 状态、缓存或后台队列。schema migration 复用既有版本表和事务；deadline 复用 `ScheduleSpec::next_occurrence_after` 与现有 CAS record。回归固定 v1 数据保留、v2 索引一次性升级、v3 重开 `PRAGMA schema_version` 不变化、Repeat/Cron/Every 在 stale `last_trigger_at` 下仍得到未来 deadline，以及同状态启停不改 record/coordinator command。
+
+### Phase 10.10 Scheduler 并入 core.db 与 canonical project identity（2026-08-19）
+
+Scheduler 存储由“每 workspace 一个数据库”破坏式收敛为用户级 `core.db`。物理隔离不再承担 workspace identity 职责；所有 repository 和 runtime 调用必须显式传递 canonical `project_id`，SQL 主键、外键、唯一约束和查询索引统一以它作为第一列。definition JSON 的 `projectId` 与 SQL 行作用域不一致时拒绝读取，防止损坏数据绕过边界。两个项目允许复用相同 job ID 或 occurrence ID，读取、claim、lease、恢复、通知、保留清理和删除仍严格隔离。
+
+旧项目级/用户级 `scheduled-tasks.db` 和 JSON store 不迁移、不导入、不读取、不 fallback；相应 path helper、migration marker、schema upgrade 和 startup import 代码已删除。新 scheduler schema 直接登记在共享 `core_schema` 的独立 `scheduler` component 下，因此可以与 Runtime recovery 表共存而不耦合两者版本。初始化策略与 `core.db` 对齐为 WAL、foreign keys、`synchronous = FULL` 和 3 秒 busy timeout。
+
+性能上，enabled deadline、active occurrence、history 和 status history 索引都以 `project_id` 开头；正常协调、恢复、分页和 retention 查询只访问单项目范围，不因共享物理库引入跨项目全表扫描、N+1、额外缓存或扩大锁范围。方案复用既有 `core.db`、`core_schema`、事务和 coordinator，没有新增聚合、状态机、队列或迁移抽象，复杂度与当前开发阶段的数据规模和风险匹配。
+
+定向验收覆盖 repository、core-state 共库、storage path、runtime/lease/lifecycle、service CRUD 和 attention lookup：45 + 6 + 1 + 87 + 26 + 2 项测试全部通过，core library 与 desktop 均编译通过，diff integrity 通过。按开发约定未执行全量回归、前端构建或 UI/EXE 启动验证。

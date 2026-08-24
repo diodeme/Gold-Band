@@ -39,6 +39,38 @@ describe('scheduled task composer entry', () => {
     expect(app).toContain("initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}");
   });
 
+  it('shows an inline scheduled-task link after creation succeeds', () => {
+    const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
+    const home = readFileSync(fileURLToPath(new URL('../src/pages/ConversationHomePage.tsx', import.meta.url)), 'utf8');
+    const app = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
+
+    expect(composer).toContain("<Trans i18nKey=\"scheduled.composer.created\"");
+    expect(composer).toContain('href="/chat/scheduled-tasks"');
+    expect(composer).toContain('onScheduledTaskCreated?.();');
+    expect(composer).toContain('onOpenScheduledTasks();');
+    const notice = readFileSync(fileURLToPath(new URL('../src/lib/scheduled-task-created-notice.ts', import.meta.url)), 'utf8');
+    expect(notice).toContain('SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS = 5000');
+    expect(notice).toContain('const timer = window.setTimeout(dismiss, SCHEDULED_TASK_CREATED_NOTICE_DURATION_MS);');
+    expect(notice).toContain('window.clearTimeout(timer);');
+    expect(app).toContain('scheduledTaskCreatedNotice.visible');
+    expect(app).toContain('scheduledTaskCreatedNotice.show');
+    expect(home).toContain('onOpenScheduledTasks={onOpenScheduledTasks}');
+    expect(app).toContain('scheduledTaskCreatedNotice.dismiss();');
+    expect(app).toContain("onSelectConversation({ kind: 'scheduled-tasks' });");
+  });
+
+  it('uses the ordinary composer workspace surface without offering worktree selection', () => {
+    const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
+    expect(composer).toContain('showWorkLocation={!scheduledMode}');
+    expect(composer).toContain('const scheduledConversationInput = () => ({');
+    const scheduledInputSource = composer.slice(
+      composer.indexOf('const scheduledConversationInput = () => ({'),
+      composer.indexOf('const createScheduledTask = async () => {'),
+    );
+    expect(scheduledInputSource).not.toContain('workLocation');
+    expect(composer).not.toMatch(/\{scheduledMode \? \(\s*<ConversationWorkspaceControl/u);
+  });
+
   it('opens scheduled authoring as a right-workspace tab instead of a composer dialog', () => {
     const composer = readFileSync(fileURLToPath(new URL('../src/components/conversation/ConversationComposer.tsx', import.meta.url)), 'utf8');
     const editor = readFileSync(fileURLToPath(new URL('../src/components/conversation/ScheduledTaskDialog.tsx', import.meta.url)), 'utf8');

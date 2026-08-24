@@ -1,9 +1,13 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDsl } from '@/types';
 import { autoNoticeAutoDismiss, autoNoticeDismissDelay, autoSaveTarget, createBlankAutoTemplateEditorState, createBlankWorkflowTemplateEditorState, findSavedWorkflowTemplate, isNoAutoTemplateSelected, RunModeManagementPage, RunModeProjectSelector, RunModeTabsToolbar, templatePickerSavedListClass, TemplateActionRow } from '@/pages/RunModeManagementPage';
 import { pruneMissingAutoAllowedProfileIds, pruneMissingAutoAllowedWorkflowIds, pruneMissingAutoConfigReferences } from '@/lib/run-mode-validation';
+
+const pageSource = readFileSync(fileURLToPath(new URL('../src/pages/RunModeManagementPage.tsx', import.meta.url)), 'utf8');
 
 describe('RunModeTabsToolbar', () => {
   it('renders a title-only page header, without a mode description or duplicate back action', () => {
@@ -59,6 +63,14 @@ describe('RunModeTabsToolbar', () => {
     expect(draft.workflow.id).toMatch(/^workflow-/);
   });
 
+  it('keeps workflow profile validation and template saves pending until profiles load', () => {
+    expect(pageSource).toContain('profileCatalog={profileCatalog}');
+    expect(pageSource).toContain("saveCurrentDisabled={profileCatalog.status !== 'ready' || wfSaveCurrentDisabled}");
+    expect(pageSource).toContain("saveAsDisabled={profileCatalog.status !== 'ready'}");
+    expect(pageSource).toContain('profileCatalog.error.message');
+    expect(pageSource).toContain('profileCatalog.retry');
+  });
+
   it('creates an independent empty AUTO draft for a new template', () => {
     expect(createBlankAutoTemplateEditorState()).toMatchObject({
       agentStrategy: 'fixed',
@@ -78,7 +90,7 @@ describe('RunModeTabsToolbar', () => {
       lastCreatedWorkflow: null,
       templates: [
         { id: 'new-template', name: '新增工作流', workflow: { id: 'workflow-new' } as WorkflowDsl, createdAt: '', updatedAt: '' },
-        { id: 'default', name: '默认工作流', workflow: { id: 'workflow-default' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+        { id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'workflow-default' } as WorkflowDsl, createdAt: '', updatedAt: '' },
       ],
     };
 
@@ -137,7 +149,7 @@ describe('RunModeTabsToolbar', () => {
         lastUsedTemplateId: 'default',
         lastCreatedWorkflow: null,
         templates: [
-          { id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
+          { id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
           { id: 'custom', name: '我的工作流', workflow: { id: 'custom-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' },
         ],
       },
@@ -175,7 +187,7 @@ describe('RunModeTabsToolbar', () => {
         version: '0.1',
         lastUsedTemplateId: 'default',
         lastCreatedWorkflow: null,
-        templates: [{ id: 'default', name: '默认工作流', workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' }],
+        templates: [{ id: 'default', name: '默认完整工作流', isBuiltIn: true, workflow: { id: 'task-workflow' } as WorkflowDsl, createdAt: '', updatedAt: '' }],
       },
       [{ id: 'profile-plan', name: '规划', content: '', isBuiltIn: false }],
     );

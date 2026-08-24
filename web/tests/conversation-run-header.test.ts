@@ -45,8 +45,9 @@ describe('ConversationRunHeader', () => {
           onRerun: () => undefined,
           onEditWorkflow: () => undefined,
           onViewWorkflow: () => undefined,
-          onToggleSessionSwitcher: () => undefined,
+          onSessionSwitcherOpenChange: () => undefined,
           sessionSwitcherOpen: false,
+          sessionSwitcher: null,
           canViewWorkflow: false,
           canEditWorkflow: false,
         }),
@@ -59,5 +60,6 @@ describe('ConversationRunHeader', () => {
     expect(html).not.toContain('sonnet-hidden');
     expect(html).not.toContain('bypass-hidden');
     expect(html).not.toContain('title="修改标题"');
+    expect(html).toContain('px-5 py-0.5');
   });
 });

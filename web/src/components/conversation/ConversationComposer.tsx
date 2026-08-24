@@ -1,21 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
-import { Send, Paperclip, Workflow, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Globe } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkspaceVm, ProfileVm, WorkflowTemplateStore } from '../../types';
+import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeInterviewForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, shouldShowInterviewToggle } from '@/lib/conversation-run-mode-config';
-import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles } from '@/lib/run-mode-validation';
+import { canOpenRunModeManagement, CONVERSATION_RUN_MODE_ORDER, directConfigForAgent, includeOptionalEntryForSubmit, normalizeConversationAutoConfigForSubmit, normalizeConversationDirectConfigForSubmit, optionalRunModeText, setOptionalEntryPreference, shouldShowOptionalEntryToggle } from '@/lib/conversation-run-mode-config';
+import { groupSelectableAgentOptions, normalizeConfigOptionOverrides, selectableAgentOptions, type SelectableAgentOption, validateAutoConfig, validateDirectConfig, validateWorkflowTemplateForConversationStartWithFreshProfiles, workflowRepairTargetForTemplate } from '@/lib/run-mode-validation';
 import { useAttachmentPicker, useWindowDragGuard } from '@/lib/attachment-service';
-import { AttachmentChipsList, AttachmentPreviewDialogs } from '@/components/shared/AttachmentComponents';
-import { useConversationComposerDraft, type ConversationComposerMulticaBinding } from '@/lib/conversation-composer-draft';
-import { shouldBackspaceClearMulticaBinding } from '@/lib/conversation-composer-multica-chip';
+import { ComposerContextArea } from '@/components/shared/ComposerContextArea';
+import { useConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
 import { useAgentCommands } from '@/hooks/useAgentCommands';
 import { useSlashCommandController } from '@/hooks/useSlashCommandController';
@@ -36,7 +34,12 @@ import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
 import { PromptInput, PromptInputTextarea } from '@/components/prompt-kit/prompt-input';
 import { CONVERSATION_HOME_COMPOSER_LAYOUT } from '@/lib/conversation-composer-layout';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { cn } from '@/lib/utils';
+import { hasUserPromptPayload } from '@/lib/composer-context';
 import {
+  createDraftAttachmentWorkspaceResource,
+  draftAttachmentWorkspaceResourceKey,
   scheduledTaskConfigWorkspaceResourceKey,
   useOptionalRightWorkspace,
   type RightWorkspaceResource,
@@ -51,15 +54,302 @@ interface ConversationComposerProps {
   workflowTemplates: WorkflowTemplateStore | null;
   profiles: ProfileVm[];
   busy: boolean;
+  inlineContentMaxBytes: number;
   initialScheduledMode?: boolean;
+  scheduledTaskCreated?: boolean;
+  workLocation: ConversationWorkLocation;
   onRunModeChange: (mode: ConversationRunModeVm, projectId: string) => void;
   onLoadProfiles: () => Promise<ProfileVm[]>;
-  onSubmit: (input: ConversationCreateInput, multica?: ConversationComposerMulticaBinding | null) => Promise<string | null | undefined> | string | null | undefined;
+  onSubmit: (input: ConversationCreateInput) => Promise<string | null | undefined> | string | null | undefined;
   onCreateScheduledTask?: (input: ConversationCreateInput & { schedule: ScheduledScheduleInput; overlapPolicy: 'skip_when_running' | 'retry_when_busy'; sessionPolicy?: 'new' | 'continuous' }) => Promise<void>;
+  onScheduledTaskCreated?: () => void;
   onOpenAgentManagement: () => void;
+  onOpenScheduledTasks: () => void;
   onOpenRunModeSettings: () => void;
+  onWorkflowRepairTargetChange?: (target: WorkflowRepairTarget | null) => void;
   onWorkspaceChange: (projectId: string) => void;
+  onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   onScheduledModeExit?: () => void;
+}
+
+interface ConversationWorkspaceControlProps {
+  projectId: string;
+  workspaceName: string;
+  workspaces: ConversationWorkspaceVm[];
+  onWorkspaceChange: (projectId: string) => void;
+  variant?: 'toolbar' | 'info';
+}
+
+const CONTEXT_CONTROL_INTERACTION_CLASS_NAME = 'bg-transparent text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground dark:bg-transparent dark:hover:bg-accent/50 dark:focus-visible:bg-accent/50 dark:data-[state=open]:bg-accent/50';
+const CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX = '0 0 48 28';
+const CONVERSATION_WORKSPACE_INFO_CURVE_PATH = 'M0 28L20.14 4Q23.497 0 29.497 0H48V28Z';
+
+export function ScheduledTaskCreatedNotice({ onOpenScheduledTasks }: { onOpenScheduledTasks: () => void }) {
+  return (
+    <div className="px-3 text-xs text-muted-foreground" role="status">
+      <Trans i18nKey="scheduled.composer.created" components={{
+        tasks: (
+          <a
+            href="/chat/scheduled-tasks"
+            className="rounded-sm font-medium text-link underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onOpenScheduledTasks();
+            }}
+          />
+        ),
+      }} />
+    </div>
+  );
+}
+export function ConversationWorkspaceControl({
+  projectId,
+  workspaceName,
+  workspaces,
+  onWorkspaceChange,
+  variant = 'toolbar',
+}: ConversationWorkspaceControlProps) {
+  const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
+  const selectTriggerRef = useRef<HTMLButtonElement>(null);
+  const selectionUsedPointerRef = useRef(false);
+  const {
+    valueRef,
+    tooltipOpen,
+    showTooltipIfOverflowing,
+    hideTooltip,
+    handleTooltipOpenChange,
+  } = useOverflowTooltip<HTMLSpanElement>();
+  const controlClassName = variant === 'info'
+    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-1.5 rounded-md border border-transparent px-1.5 text-sm shadow-none data-[size=default]:h-7`
+    : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
+  const triggerSurfaceClassName = variant === 'info'
+    ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
+    : 'hover:bg-gold-surface-high/55 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55';
+  const triggerEvents = {
+    onPointerEnter: showTooltipIfOverflowing,
+    onPointerLeave: hideTooltip,
+    onPointerDown: () => {
+      selectionUsedPointerRef.current = true;
+      hideTooltip();
+    },
+    onKeyDown: () => {
+      selectionUsedPointerRef.current = false;
+    },
+    onFocus: showTooltipIfOverflowing,
+    onBlur: hideTooltip,
+  };
+  const value = (
+    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
+      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
+      <TooltipTrigger asChild>
+        <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
+          {selectedWorkspaceName}
+        </span>
+      </TooltipTrigger>
+    </span>
+  );
+
+  return (
+    <TooltipProvider>
+      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+        {workspaces.length > 1 ? (
+          <Select value={projectId} onValueChange={onWorkspaceChange}>
+            <SelectTrigger
+              ref={selectTriggerRef}
+              {...triggerEvents}
+              data-context-control={variant === 'info' ? 'workspace' : undefined}
+              className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
+            >
+              {value}
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              align="start"
+              onPointerDownCapture={() => {
+                selectionUsedPointerRef.current = true;
+              }}
+              onKeyDownCapture={() => {
+                selectionUsedPointerRef.current = false;
+              }}
+              onCloseAutoFocus={(event) => {
+                if (!selectionUsedPointerRef.current) return;
+                event.preventDefault();
+                selectTriggerRef.current?.blur();
+                selectionUsedPointerRef.current = false;
+              }}
+            >
+              {workspaces.map((workspace) => (
+                <SelectItem key={workspace.projectId} value={workspace.projectId}>{workspace.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <div
+            {...triggerEvents}
+            tabIndex={0}
+            data-context-control={variant === 'info' ? 'workspace' : undefined}
+            className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
+          >
+            {value}
+          </div>
+        )}
+        <TooltipContent
+          side="top"
+          sideOffset={6}
+          className="max-w-[min(24rem,calc(100vw-2rem))] whitespace-normal break-words"
+        >
+          {selectedWorkspaceName}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControlProps {
+  workLocation: ConversationWorkLocation;
+  busy: boolean;
+  onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
+  showWorkLocation?: boolean;
+}
+
+export function ConversationWorkspaceInfoBar({
+  projectId,
+  workspaceName,
+  workspaces,
+  workLocation,
+  busy,
+  onWorkspaceChange,
+  onWorkLocationChange,
+  showWorkLocation = true,
+}: ConversationWorkspaceInfoBarProps) {
+  const { t } = useTranslation();
+  const [checkingLocation, setCheckingLocation] = useState(false);
+  const locationTriggerRef = useRef<HTMLButtonElement>(null);
+  const locationMenuUsedPointerRef = useRef(false);
+
+  const selectLocation = async (location: ConversationWorkLocation) => {
+    if (checkingLocation || location === workLocation) return;
+    setCheckingLocation(true);
+    try {
+      await onWorkLocationChange(location, projectId);
+    } finally {
+      setCheckingLocation(false);
+    }
+  };
+
+  const LocationIcon = workLocation === 'worktree' ? GitFork : Laptop;
+  const locationLabel = workLocation === 'worktree'
+    ? t('conversation.home.workLocationWorktree')
+    : t('conversation.home.workLocationMain');
+
+  return (
+    <TooltipProvider>
+      <div
+        data-conversation-workspace-info="true"
+        className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoClassName}
+      >
+        <div
+          aria-hidden="true"
+          data-conversation-workspace-info-body="true"
+          className="pointer-events-none absolute inset-y-0 left-12 right-12 bg-[var(--conversation-workspace-info-surface)]"
+        />
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          viewBox={CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX}
+          preserveAspectRatio="none"
+          data-conversation-workspace-info-curve="left"
+          className="pointer-events-none absolute left-0 bottom-0 h-7 w-12 text-[var(--conversation-workspace-info-surface)]"
+        >
+          <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" />
+        </svg>
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          viewBox={CONVERSATION_WORKSPACE_INFO_CURVE_VIEW_BOX}
+          preserveAspectRatio="none"
+          data-conversation-workspace-info-curve="right"
+          className="pointer-events-none absolute right-0 bottom-0 h-7 w-12 text-[var(--conversation-workspace-info-surface)]"
+        >
+          <path d={CONVERSATION_WORKSPACE_INFO_CURVE_PATH} fill="currentColor" transform="translate(48 0) scale(-1 1)" />
+        </svg>
+        <div data-conversation-workspace-info-controls="true" className="relative z-10 flex min-w-0 items-center gap-0">
+          <ConversationWorkspaceControl
+            projectId={projectId}
+            workspaceName={workspaceName}
+            workspaces={workspaces}
+            onWorkspaceChange={onWorkspaceChange}
+            variant="info"
+          />
+          {showWorkLocation ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={locationTriggerRef}
+                  type="button"
+                  variant={null}
+                  size="sm"
+                  disabled={busy || checkingLocation}
+                  aria-label={t('conversation.home.workLocation')}
+                  data-conversation-work-location-trigger="true"
+                  data-context-control="work-location"
+                  onPointerDown={() => {
+                    locationMenuUsedPointerRef.current = true;
+                  }}
+                  onKeyDown={() => {
+                    locationMenuUsedPointerRef.current = false;
+                  }}
+                  className={cn('h-7 min-w-0 gap-1.5 rounded-md px-1.5 text-sm font-normal has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                >
+                  {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
+                  <span className="truncate">{locationLabel}</span>
+                  <ChevronDown className="size-4 text-muted-foreground opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="min-w-56"
+                onPointerDownCapture={() => {
+                  locationMenuUsedPointerRef.current = true;
+                }}
+                onKeyDownCapture={() => {
+                  locationMenuUsedPointerRef.current = false;
+                }}
+                onCloseAutoFocus={(event) => {
+                  if (!locationMenuUsedPointerRef.current) return;
+                  event.preventDefault();
+                  locationTriggerRef.current?.blur();
+                  locationMenuUsedPointerRef.current = false;
+                }}
+              >
+                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                  {t('conversation.home.workLocation')}
+                </div>
+                <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
+                  <Laptop className="size-4" />
+                  <span>{t('conversation.home.workLocationMain')}</span>
+                  {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="flex min-w-0 flex-1 items-center gap-2">
+                        <GitFork className="size-4" />
+                        <span>{t('conversation.home.workLocationNewWorktree')}</span>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
+                  </Tooltip>
+                  {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
+      </div>
+    </TooltipProvider>
+  );
 }
 
 export function ConversationComposer({
@@ -71,14 +361,21 @@ export function ConversationComposer({
   workflowTemplates,
   profiles,
   busy,
+  inlineContentMaxBytes,
   initialScheduledMode = false,
+  scheduledTaskCreated = false,
+  workLocation,
   onRunModeChange,
   onLoadProfiles,
   onSubmit,
   onCreateScheduledTask,
+  onScheduledTaskCreated,
   onOpenAgentManagement,
+  onOpenScheduledTasks,
   onOpenRunModeSettings,
+  onWorkflowRepairTargetChange,
   onWorkspaceChange,
+  onWorkLocationChange,
   onScheduledModeExit,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
@@ -113,13 +410,36 @@ export function ConversationComposer({
     clearAttachments,
     resolveAttachmentPaths,
     dropZoneHandlers,
-    extractPasteFiles,
-    previewImage,
-    setPreviewImage,
-    textPreview,
-    setTextPreview,
-    handlePreviewAttachment,
-  } = useAttachmentPicker({ attachments: [composerDraft.draft.attachments, composerDraft.setAttachments] });
+    handlePaste,
+  } = useAttachmentPicker({
+    attachments: [composerDraft.draft.attachments, composerDraft.setAttachments],
+    inlineContentMaxBytes,
+  });
+
+  const openComposerAttachment = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.openResource(createDraftAttachmentWorkspaceResource({
+      scopeKey: rightWorkspace.scopeKey,
+      projectId,
+      attachment,
+    }));
+  }, [projectId, rightWorkspace]);
+
+  const closeComposerAttachmentPreview = useCallback((attachment: import('@/lib/attachment-service').AttachmentItem) => {
+    if (!rightWorkspace?.scopeKey) return;
+    void rightWorkspace.closeTab(draftAttachmentWorkspaceResourceKey(rightWorkspace.scopeKey, attachment.id));
+  }, [rightWorkspace]);
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    const attachment = attachments.find((item) => item.id === id);
+    if (attachment) closeComposerAttachmentPreview(attachment);
+    removeAttachment(id);
+  }, [attachments, closeComposerAttachmentPreview, removeAttachment]);
+
+  const clearComposerAttachments = useCallback(() => {
+    attachments.forEach(closeComposerAttachmentPreview);
+    clearAttachments();
+  }, [attachments, clearAttachments, closeComposerAttachmentPreview]);
 
   useWindowDragGuard();
 
@@ -128,21 +448,12 @@ export function ConversationComposer({
   const showRunModeManagement = canOpenRunModeManagement(runMode.mode);
   const autoStrategy = runMode.autoConfig?.agentStrategy ?? 'fixed';
   const isDynamicAuto = autoStrategy === 'dynamic';
-  // After a multica remote task is prefilled via "click to run", the draft carries a multica
-  // binding. While bound, the workspace dropdown is force-shown (decision d) so the local landing
-  // workspace becomes an explicit choice; with zero local workspaces, send is disabled and the
-  // user is guided to add one first (decision e).
-  const multicaBinding = composerDraft.draft.multica;
-  const multicaActive = multicaBinding !== null;
-  const hasLocalWorkspaces = workspaces.length > 0;
   const scheduledSummary = scheduledConfig
     ? formatScheduledScheduleInput(t, scheduledConfig.schedule)
     : t('scheduled.composer.unconfigured');
-  const canSubmit =
-    content.trim().length > 0
+  const canSubmit = hasUserPromptPayload(content, attachments.length)
     && !busy
-    && !submittingAttachments
-    && !(multicaActive && !hasLocalWorkspaces);
+    && !submittingAttachments;
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
@@ -207,6 +518,7 @@ export function ConversationComposer({
     if (!rightWorkspace) return;
     return rightWorkspace.registerResourceRenderer('scheduled-task-config', renderScheduledConfig);
   }, [renderScheduledConfig, rightWorkspace?.registerResourceRenderer]);
+
   const agentOptions = useMemo(() => selectableAgentOptions(agentRegistry, t), [agentRegistry, t]);
   const directAgentGroups = useMemo(() => groupSelectableAgentOptions(agentOptions), [agentOptions]);
   const agents = useMemo(
@@ -224,7 +536,9 @@ export function ConversationComposer({
   const thoughtLevel = findAcpThoughtLevel(selectedAgentObj?.configOptions);
   const templates = workflowTemplates?.templates ?? [];
   const selectedWorkflowTemplateId = workflowTemplateId || runMode.workflowTemplateId || undefined;
-  const showInterviewToggle = shouldShowInterviewToggle(runMode.mode, selectedWorkflowTemplateId);
+  const selectedWorkflowTemplate = templates.find((template) => template.id === selectedWorkflowTemplateId);
+  const showOptionalEntryToggle = shouldShowOptionalEntryToggle(runMode.mode, selectedWorkflowTemplate);
+  const includeOptionalEntry = includeOptionalEntryForSubmit(runMode, selectedWorkflowTemplate);
   const renderDirectAgentOption = ({ agent, selectable, reason }: SelectableAgentOption) => (
     <Tooltip key={agent.agentType}>
       <TooltipTrigger asChild>
@@ -232,7 +546,7 @@ export function ConversationComposer({
           <TabsTrigger
             value={agent.agentType}
             disabled={!selectable}
-            className="h-10 min-w-10 gap-2 rounded-full border border-transparent px-2.5 data-[state=active]:border-primary/25 data-[state=active]:bg-primary/10"
+            className={CONVERSATION_HOME_COMPOSER_LAYOUT.agentOptionClassName}
           >
             <img
               src={agentIconSrc(agent.iconKey)}
@@ -270,13 +584,7 @@ export function ConversationComposer({
     [agentCommands.commands, content],
   );
   const visibleContent = committedSlashCommand?.suffix ?? content;
-  // The multica binding chip and the slash-command label are both leading adornments at the very
-  // front of the body. They are mutually exclusive (slash wins — the binding prefills task
-  // requirement text, not a slash command) and share the same text-indent mechanism: the first
-  // line indents to clear the label width, wrapped lines return to the left edge (standard CSS
-  // text-indent behavior, which only affects the first line).
-  const multicaChipActive = Boolean(multicaBinding) && !committedSlashCommand;
-  const leadingAdornmentLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand) || multicaChipActive);
+  const committedInputLayout = useLeadingAdornmentTextIndent(Boolean(committedSlashCommand));
 
   useEffect(() => {
     const fallbackAgent = runMode.directConfig?.agentType
@@ -385,7 +693,7 @@ export function ConversationComposer({
       content: trimmed,
       runMode: runMode.mode,
       workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-      includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+      includeOptionalEntry,
       directConfig: isDirect
         ? normalizeConversationDirectConfigForSubmit({
           agentType: selectedDirectAgent,
@@ -403,6 +711,7 @@ export function ConversationComposer({
             : {},
         ))
         : undefined,
+      workLocation,
     };
     setSubmittingAttachments(true);
     try {
@@ -419,24 +728,29 @@ export function ConversationComposer({
           t,
         );
       if (localIssues.length > 0) {
+        if (!isDirect && !isAuto) {
+          onWorkflowRepairTargetChange?.(workflowRepairTargetForTemplate(
+            inputBase.workflowTemplateId,
+            agentRegistry,
+            profiles,
+            workflowTemplates,
+            t,
+          ));
+        }
         setRunModeError(localIssues.join('\n'));
         return;
       }
       const paths = await resolveAttachmentPaths();
       setRunModeError(null);
-      // Forward the draft's multica binding to onSubmit: the caller routes remote task vs. local
-      // new conversation accordingly. The composer itself makes no decision here — it only forwards.
-      const submitError = await onSubmit(
-        {
-          ...inputBase,
-          attachmentPaths: paths.length > 0 ? paths : undefined,
-        },
-        composerDraft.draft.multica,
-      );
+      const submitError = await onSubmit({
+        ...inputBase,
+        attachmentPaths: paths.length > 0 ? paths : undefined,
+      });
       if (submitError) {
         setRunModeError(submitError);
         return;
       }
+      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
     } catch {
       // Attachment hook owns the user-facing file error.
@@ -450,7 +764,7 @@ export function ConversationComposer({
     content: content.trim(),
     runMode: runMode.mode,
     workflowTemplateId: isAuto || isDirect ? undefined : selectedWorkflowTemplateId,
-    includeInterview: includeInterviewForSubmit(runMode, selectedWorkflowTemplateId),
+    includeOptionalEntry,
     directConfig: isDirect ? normalizeConversationDirectConfigForSubmit({ agentType: selectedDirectAgent, modelId: selectedDirectModel || undefined, permissionMode: selectedDirectPermissionMode || undefined, configOptions: selectedDirectConfigOptions }) : undefined,
     autoConfig: isAuto ? normalizeConversationAutoConfigForSubmit(autoConfigWithSession()) : undefined,
   });
@@ -477,7 +791,9 @@ export function ConversationComposer({
     try {
       const paths = await resolveAttachmentPaths();
       await onCreateScheduledTask({ ...inputBase, ...scheduledConfig, attachmentPaths: paths.length ? paths : undefined });
+      attachments.forEach(closeComposerAttachmentPreview);
       composerDraft.reset();
+      onScheduledTaskCreated?.();
       exitScheduledMode();
       setRunModeError(null);
     } catch (error) {
@@ -487,34 +803,8 @@ export function ConversationComposer({
     }
   };
 
-  // Drop the multica binding (claim-at-send): the click only read the requirement without claiming
-  // the task, so removing the chip is a purely local unbind — the server is untouched (the task
-  // stays queued). Body text and attachments are kept: the draft degrades to a normal local
-  // conversation (send goes through create_conversation_run).
-  const handleUnbindMultica = useCallback(() => {
-    const binding = composerDraft.draft.multica;
-    if (!binding) return;
-    composerDraft.clearMultica();
-  }, [composerDraft]);
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashCommands.onKeyDown(e as React.KeyboardEvent<HTMLTextAreaElement>)) return;
-    // The multica binding chip is a leading adornment at the very front of the body; the Backspace
-    // removal rule lives in shouldBackspaceClearMulticaBinding: the chip is deleted only when the
-    // cursor sits at the very start with no selection (mimicking deleting the first token); all
-    // other cases delete a character normally. When a slash command is committed, the slash
-    // controller takes over.
-    if (shouldBackspaceClearMulticaBinding({
-      key: e.key,
-      multicaActive,
-      hasCommittedSlashCommand: Boolean(committedSlashCommand),
-      selectionStart: composerTextareaRef.current?.selectionStart ?? -1,
-      selectionEnd: composerTextareaRef.current?.selectionEnd ?? -1,
-    })) {
-      e.preventDefault();
-      handleUnbindMultica();
-      return;
-    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void (scheduledMode ? createScheduledTask() : handleSubmit());
@@ -524,20 +814,48 @@ export function ConversationComposer({
   return (
     <>
       <div
+        data-conversation-composer="quick"
         data-attachment-dropzone="true"
         className={CONVERSATION_HOME_COMPOSER_LAYOUT.containerClassName}
         {...dropZoneHandlers}
       >
-        {scheduledMode ? <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground"><AlarmClock className="size-4 text-foreground" /><span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span><Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} title={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button></div> : null}
+        {scheduledMode ? (
+          <div className="flex min-h-8 items-center gap-2 px-2 text-xs text-muted-foreground">
+            <AlarmClock className="size-4 text-foreground" />
+            <span className="truncate"><strong className="font-medium text-foreground">{scheduledSummary}</strong> · {t('scheduled.composer.creating')}</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="ml-auto size-7 rounded-md" aria-label={t('scheduled.composer.exit')} onClick={exitScheduledMode}><X className="size-3.5" /></Button>
+              </TooltipTrigger>
+              <TooltipContent>{t('scheduled.composer.exit')}</TooltipContent>
+            </Tooltip>
+          </div>
+        ) : null}
         {/* Main text input */}
-        <PromptInput
+        <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.attachedInfoRailClassName}>
+          <ConversationWorkspaceInfoBar
+            projectId={projectId}
+            workspaceName={workspaceName}
+            workspaces={workspaces}
+            workLocation={workLocation}
+            busy={busy || submittingAttachments}
+            onWorkspaceChange={onWorkspaceChange}
+            onWorkLocationChange={onWorkLocationChange}
+            showWorkLocation={!scheduledMode}
+          />
+          <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
           disabled={busy || submittingAttachments}
-          className="rounded-2xl border-border/60 bg-card/60 p-4 shadow-sm transition-colors focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10"
+          className={CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName}
         >
+          <ComposerContextArea
+            attachments={attachments}
+            onRemoveAttachment={removeComposerAttachment}
+            onPreviewAttachment={openComposerAttachment}
+          />
           <SlashCommandMenu
             open={slashCommands.isOpen}
             commands={slashCommands.filteredCommands}
@@ -549,40 +867,20 @@ export function ConversationComposer({
           >
             <div className="relative min-w-0">
               {committedSlashCommand ? (
-                <span ref={leadingAdornmentLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
+                <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
                   <SlashCommandInputTag
                     prefix={committedSlashCommand.prefix}
                     description={committedSlashCommand.command.description}
                   />
                 </span>
-              ) : multicaBinding ? (
-                <span ref={leadingAdornmentLayout.adornmentRef} className="absolute left-0 top-0 z-10 inline-flex">
-                  <Badge
-                    variant="secondary"
-                    className="gap-1 h-6 rounded-md border-primary/30 bg-primary/10 px-2 text-[0.75rem] font-medium text-primary"
-                  >
-                    <Globe className="size-3 shrink-0" />
-                    <span className="max-w-[260px] truncate">
-                      {t('conversation.composer.multicaBindingTag', { title: multicaBinding.title })}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={t('conversation.composer.removeMulticaBinding')}
-                      onClick={handleUnbindMultica}
-                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-primary/20"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </Badge>
-                </span>
               ) : null}
               <PromptInputTextarea
                 ref={composerTextareaRef}
-                style={leadingAdornmentLayout.textareaStyle}
-                className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMinHeightClassName} w-full overflow-y-hidden px-0 py-0 text-sm leading-6 text-foreground placeholder:text-muted-foreground`}
+                style={committedInputLayout.textareaStyle}
+                className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}
                 placeholder={t('conversation.home.inputPlaceholder')}
                 onKeyDown={handleKeyDown}
-                onPaste={(e) => { void extractPasteFiles(e); }}
+                onPaste={(e) => { void handlePaste(e); }}
                 onDragEnter={dropZoneHandlers.onDragEnter}
                 onDragOver={dropZoneHandlers.onDragOver}
                 onDrop={dropZoneHandlers.onDrop}
@@ -590,10 +888,10 @@ export function ConversationComposer({
               />
             </div>
           </SlashCommandMenu>
-          <span className="mt-1 text-xs text-muted-foreground">{t('acp.promptInputHint')}</span>
           <div
             data-slot="conversation-composer-toolbar"
-            className={CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName}
+            data-layout={isDirect ? 'configured' : 'simple'}
+            className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.toolbarClassName} ${isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredToolbarClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleToolbarClassName}`}
           >
             <div
               data-slot="conversation-composer-leading-actions"
@@ -609,57 +907,17 @@ export function ConversationComposer({
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-9 rounded-full border border-border/50 bg-gold-surface-high/25 text-muted-foreground hover:bg-gold-surface-high/55 hover:text-foreground"
+                className="size-7 rounded-full"
                 onClick={() => { void pickFiles(); }}
                 disabled={busy || submittingAttachments}
+                aria-label={t('acp.attachHint')}
               >
-                <Paperclip className="size-4" />
+                <Paperclip className="size-3.5" />
               </Button>
-              {attachments.length > 0 ? (
-                <span className="shrink-0 rounded-full border border-border/50 bg-gold-surface-high/30 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                  {attachments.length} file(s)
-                </span>
-              ) : null}
-              {multicaActive && workspaces.length === 0 ? (
-                // Decision e: a remote task is running but there is no local workspace → guide the
-                // user to add a local workspace first; send is already disabled by canSubmit.
-                <span className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center rounded-full border border-dashed border-border/50 bg-gold-surface-high/20 px-3 text-xs text-muted-foreground`}>
-                  {t('conversation.composer.multicaNeedLocalWorkspace')}
-                </span>
-              ) : workspaces.length > 1 || multicaActive ? (
-                // Workspace dropdown: always shown with multiple workspaces; force-shown when a
-                // multica binding is active (even with a single local workspace, decision d), so
-                // the local landing workspace for a remote task is an explicit choice. On change:
-                // when multica is active, keep the binding + prefilled content (decision d).
-                <Select
-                  value={projectId}
-                  onValueChange={(next) => {
-                    if (!composerDraft.draft.multica) composerDraft.reset();
-                    onWorkspaceChange(next);
-                  }}
-                >
-                  <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} h-9 gap-2 rounded-full border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none hover:bg-gold-surface-high/55 focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 dark:bg-gold-surface-high/35 dark:hover:bg-gold-surface-high/55`}>
-                    <span className="flex min-w-0 items-center gap-2">
-                      <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
-                      <SelectValue />
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent position="popper" align="start">
-                    {workspaces.map((w) => (
-                      <SelectItem key={w.projectId} value={w.projectId}>{w.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground`}>
-                  <Folders className="size-3.5 shrink-0 text-muted-foreground/80" />
-                  <span className="truncate">{workspaceName}</span>
-                </div>
-              )}
             </div>
             <div
               data-slot="conversation-composer-trailing-actions"
-              className={CONVERSATION_HOME_COMPOSER_LAYOUT.trailingActionsClassName}
+              className={isDirect ? CONVERSATION_HOME_COMPOSER_LAYOUT.configuredTrailingActionsClassName : CONVERSATION_HOME_COMPOSER_LAYOUT.simpleTrailingActionsClassName}
             >
               {isDirect ? (
                 <>
@@ -711,18 +969,23 @@ export function ConversationComposer({
                 </>
               ) : null}
               {scheduledMode ? (
-                <div className="flex min-w-0 items-center gap-1">
-                  <div className="flex min-w-0 flex-1 overflow-hidden rounded-full bg-primary text-primary-foreground">
-                    <Button size="sm" className="h-8 min-w-0 flex-1 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} items-center gap-1`}>
+                  <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                    <Button size="sm" className="h-8 min-w-0 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                  <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} title={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" className="rounded-full" aria-label={t('scheduled.composer.configure')} onClick={openScheduledConfig}><Settings2 className="size-3.5" /></Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{t('scheduled.composer.configure')}</TooltipContent>
+                  </Tooltip>
                 </div>
               ) : (
-                <div className="flex min-w-0 overflow-hidden rounded-full bg-primary text-primary-foreground">
+                <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.submitActionsClassName} overflow-hidden rounded-full bg-primary text-primary-foreground`}>
                   <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
@@ -733,20 +996,14 @@ export function ConversationComposer({
             </div>
           </div>
         </PromptInput>
-
-        {/* Attachment chips */}
-        <AttachmentChipsList
-          attachments={attachments}
-          onRemove={removeAttachment}
-          onPreview={handlePreviewAttachment}
-          onClear={clearAttachments}
-          clearLabel={t('common.clear') ?? 'Clear all'}
-        />
+        </div>
 
         {/* File error */}
         {fileError ? (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{fileError}</div>
         ) : null}
+
+        {scheduledTaskCreated ? <ScheduledTaskCreatedNotice onOpenScheduledTasks={onOpenScheduledTasks} /> : null}
 
         {/* Run mode selector */}
         <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.optionSectionClassName}>
@@ -761,7 +1018,7 @@ export function ConversationComposer({
                 onRunModeChange({ mode: 'direct', directPreferences: runMode.directPreferences }, projectId);
               }
             } else if (value === 'workflow') {
-              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, includeInterview: runMode.includeInterview }, projectId);
+              onRunModeChange({ mode: 'workflow', workflowTemplateId: workflowTemplateId || runMode.workflowTemplateId, optionalEntryPreferences: runMode.optionalEntryPreferences }, projectId);
             } else {
               onRunModeChange({ mode: 'auto', autoConfig: autoConfigWithSession() }, projectId);
             }
@@ -806,17 +1063,17 @@ export function ConversationComposer({
             ) : null}
           </div>
         ) : isAuto ? (
-          <div className="space-y-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
+          <div className={CONVERSATION_HOME_COMPOSER_LAYOUT.autoSectionClassName}>
             <div className="flex items-center gap-3">
               <Bot className="size-4 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                 {isDynamicAuto ? (
-                  <div className="flex h-8 min-w-0 items-center rounded-md border border-border/60 bg-background/40 px-3 text-xs text-muted-foreground">
+                  <div className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} flex min-w-0 items-center rounded-md border border-border/60 bg-background/40 px-3 text-xs text-muted-foreground`}>
                     <span className="truncate">{t('conversation.home.dynamicAgent')}</span>
                   </div>
                 ) : (
                   <Select value={selectedAgent} onValueChange={(v) => { setSelectedAgent(v); setSelectedModel(''); setSelectedConfigOptions({}); updateAutoSession({ agentType: v, modelId: undefined, configOptions: {} }); }}>
-                    <SelectTrigger className="h-8 w-[180px] min-w-0 text-xs">
+                    <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} w-[180px] min-w-0 text-xs`}>
                       <SelectValue placeholder={t('conversation.home.selectAgent')} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="start">
@@ -824,7 +1081,7 @@ export function ConversationComposer({
                         <SelectItem key={a.agentType} value={a.agentType} disabled={!selectable}>
                           <span className="block min-w-0">
                             <span className="block truncate">{a.displayName}</span>
-                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-[11px] text-destructive">{reason}</span> : null}
+                            {!selectable && reason ? <span className="mt-0.5 block whitespace-normal text-ui-caption text-destructive">{reason}</span> : null}
                           </span>
                         </SelectItem>
                       ))}
@@ -841,6 +1098,7 @@ export function ConversationComposer({
                     thoughtLevel={thoughtLevel}
                     thoughtValue={thoughtLevel ? selectedConfigOptions[thoughtLevel.id] : null}
                     align="start"
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
                     onModelChange={(value) => {
                       const modelId = value ?? '';
                       setSelectedModel(modelId);
@@ -859,6 +1117,7 @@ export function ConversationComposer({
                     value={selectedPermissionMode}
                     options={autoPermissionModes}
                     unspecifiedLabel={t('workflowEditor.permissionModeUnspecified')}
+                    triggerClassName={CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName}
                     onValueChange={(value) => {
                       const next = value ?? '';
                       setSelectedPermissionMode(next);
@@ -873,7 +1132,7 @@ export function ConversationComposer({
               </div>
             </div>
             <textarea
-              className="w-full min-h-14 resize-y rounded-md border border-border/60 bg-background/35 px-3 py-2 text-xs leading-5 text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/10"
+              className={CONVERSATION_HOME_COMPOSER_LAYOUT.autoGoalClassName}
               value={globalGoal}
               placeholder={t('runMode.globalGoalPlaceholder')}
               onChange={(event) => {
@@ -884,10 +1143,10 @@ export function ConversationComposer({
             />
           </div>
         ) : (
-          <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3">
-            <Workflow className="size-4 text-muted-foreground" />
-            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, includeInterview: runMode.includeInterview }, projectId); }}>
-              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+          <div data-conversation-workflow-selector="true" className={CONVERSATION_HOME_COMPOSER_LAYOUT.workflowSectionClassName}>
+            <Route className="size-4 text-muted-foreground" />
+            <Select value={workflowTemplateId} onValueChange={(id) => { setWorkflowTemplateId(id); onRunModeChange({ mode: 'workflow', workflowTemplateId: id, optionalEntryPreferences: runMode.optionalEntryPreferences }, projectId); }}>
+              <SelectTrigger className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.modeControlHeightClassName} min-w-0 flex-1 text-xs`}>
                 <SelectValue placeholder={t('conversation.home.selectWorkflowTemplate')} />
               </SelectTrigger>
               <SelectContent position="popper" align="start">
@@ -899,12 +1158,12 @@ export function ConversationComposer({
                 ) : null}
               </SelectContent>
             </Select>
-            {showInterviewToggle ? (
+            {showOptionalEntryToggle && selectedWorkflowTemplate?.optionalEntryStage ? (
               <label className="flex shrink-0 items-center gap-1.5">
-                <span className="text-xs text-muted-foreground">{t('conversation.home.includeInterview')}</span>
+                <span className="text-xs text-muted-foreground">{t(selectedWorkflowTemplate.optionalEntryStage.labelKey)}</span>
                 <Switch
-                  checked={runMode.includeInterview ?? true}
-                  onCheckedChange={(checked) => onRunModeChange({ ...runMode, includeInterview: checked }, projectId)}
+                  checked={includeOptionalEntry}
+                  onCheckedChange={(checked) => onRunModeChange(setOptionalEntryPreference(runMode, selectedWorkflowTemplate.id, checked), projectId)}
                 />
               </label>
             ) : null}
@@ -926,12 +1185,6 @@ export function ConversationComposer({
           </div>
         ) : null}
       </div>
-      <AttachmentPreviewDialogs
-        previewImage={previewImage}
-        textPreview={textPreview}
-        onCloseImage={() => setPreviewImage(null)}
-        onCloseText={() => setTextPreview(null)}
-      />
     </>
   );
 }
@@ -945,17 +1198,21 @@ export function DirectAgentEmptyState({
   return (
     <div className="flex min-w-0 items-center gap-2">
       <span className="truncate text-xs text-muted-foreground">{t('conversation.home.noAgent')}</span>
-      <Button
-        type="button"
-        variant="outline"
-        size="icon"
-        className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
-        aria-label={t('agentManagement.addAgent')}
-        title={t('agentManagement.addAgent')}
-        onClick={onOpenAgentManagement}
-      >
-        <Plus className="size-3.5" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-7 shrink-0 rounded-full border-border/60 bg-background/30"
+            aria-label={t('agentManagement.addAgent')}
+            onClick={onOpenAgentManagement}
+          >
+            <Plus className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{t('agentManagement.addAgent')}</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

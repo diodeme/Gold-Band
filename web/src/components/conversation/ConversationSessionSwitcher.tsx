@@ -1,50 +1,77 @@
 import { ChevronDown } from 'lucide-react';
-import { useState } from 'react';
 import type { ConversationSessionLeafVm, ConversationSessionTreeVm } from '../../types';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { runtimeStatusDotClass } from '@/lib/runtime-status-dot';
+import type { ConversationSessionTreeExpansion } from '@/lib/conversation-run-cache';
+
+const SESSION_TREE_ROW_HOVER_CLASS = 'hover:bg-sidebar-accent/55 hover:text-sidebar-accent-foreground';
+export const CONVERSATION_SESSION_TREE_SCROLL_MAX_HEIGHT = 'min(32rem, var(--radix-popover-content-available-height))';
 
 interface ConversationSessionSwitcherProps {
   tree: ConversationSessionTreeVm;
   selectedKey?: string | null;
+  expansion: ConversationSessionTreeExpansion;
+  onExpansionChange: (branchKey: string, open: boolean) => void;
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
 }
 
 export function ConversationSessionSwitcher({
   tree,
   selectedKey,
+  expansion,
+  onExpansionChange,
   onSelectSession,
 }: ConversationSessionSwitcherProps) {
   return (
-    <div className="w-64 rounded-xl border border-border/60 bg-card/60 p-2 shadow-sm">
-      {tree.rounds.length === 0 ? (
-        <div className="px-3 py-4 text-center text-xs text-muted-foreground">No sessions</div>
-      ) : (
-        tree.rounds.map((round) => (
-          <RoundNode key={round.roundId} round={round} selectedKey={selectedKey} onSelectSession={onSelectSession} />
-        ))
-      )}
-    </div>
+    <ScrollArea
+      data-conversation-session-tree-scroll="true"
+      className="w-64 overflow-hidden [&_[data-slot=scroll-area-viewport]]:max-h-[inherit]"
+      style={{ maxHeight: CONVERSATION_SESSION_TREE_SCROLL_MAX_HEIGHT }}
+    >
+      <div className="p-2">
+        {tree.rounds.length === 0 ? (
+          <div className="px-3 py-4 text-center text-xs text-muted-foreground">No sessions</div>
+        ) : (
+          tree.rounds.map((round) => (
+            <RoundNode
+              key={round.roundId}
+              round={round}
+              selectedKey={selectedKey}
+              expansion={expansion}
+              onExpansionChange={onExpansionChange}
+              onSelectSession={onSelectSession}
+            />
+          ))
+        )}
+      </div>
+    </ScrollArea>
   );
 }
 
 function RoundNode({
   round,
   selectedKey,
+  expansion,
+  onExpansionChange,
   onSelectSession,
 }: {
   round: ConversationSessionTreeVm['rounds'][0];
   selectedKey?: string | null;
+  expansion: ConversationSessionTreeExpansion;
+  onExpansionChange: (branchKey: string, open: boolean) => void;
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const branchPath = ['round', round.roundId];
+  const branchKey = conversationSessionTreeBranchKey(branchPath);
+  const open = expansion[branchKey] ?? true;
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
+    <Collapsible open={open} onOpenChange={(nextOpen) => onExpansionChange(branchKey, nextOpen)}>
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium">
+        <Button variant="ghost" className={cn('h-8 w-full justify-start gap-1.5 rounded-md px-2 text-xs font-medium', SESSION_TREE_ROW_HOVER_CLASS)}>
           <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
           {round.label}
         </Button>
@@ -52,7 +79,15 @@ function RoundNode({
       <CollapsibleContent>
         <div className="ml-4 border-l border-border/60 pl-3">
           {round.nodes.map((node) => (
-            <TreeNode key={node.nodeId} node={node} selectedKey={selectedKey} onSelectSession={onSelectSession} depth={0} />
+            <TreeNode
+              key={node.nodeId}
+              node={node}
+              selectedKey={selectedKey}
+              expansion={expansion}
+              onExpansionChange={onExpansionChange}
+              onSelectSession={onSelectSession}
+              branchPath={[...branchPath, 'node', node.nodeId]}
+            />
           ))}
         </div>
       </CollapsibleContent>
@@ -63,21 +98,26 @@ function RoundNode({
 function TreeNode({
   node,
   selectedKey,
+  expansion,
+  onExpansionChange,
   onSelectSession,
-  depth,
+  branchPath,
 }: {
   node: ConversationSessionTreeVm['rounds'][0]['nodes'][0];
   selectedKey?: string | null;
+  expansion: ConversationSessionTreeExpansion;
+  onExpansionChange: (branchKey: string, open: boolean) => void;
   onSelectSession: (leaf: ConversationSessionLeafVm) => void;
-  depth: number;
+  branchPath: readonly string[];
 }) {
-  const [open, setOpen] = useState(true);
+  const branchKey = conversationSessionTreeBranchKey(branchPath);
+  const open = expansion[branchKey] ?? true;
 
   return (
     <div>
-      <Collapsible open={open} onOpenChange={setOpen}>
+      <Collapsible open={open} onOpenChange={(nextOpen) => onExpansionChange(branchKey, nextOpen)}>
         <CollapsibleTrigger asChild>
-          <Button variant="ghost" className="h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs">
+          <Button variant="ghost" className={cn('h-7 w-full justify-start gap-1.5 rounded-md px-2 text-xs', SESSION_TREE_ROW_HOVER_CLASS)}>
             <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
             <span className="truncate">{node.label}</span>
           </Button>
@@ -98,13 +138,25 @@ function TreeNode({
                 );
               })}
             {node.outerNodes?.map((outerNode) => (
-              <TreeNode key={outerNode.nodeId} node={outerNode} selectedKey={selectedKey} onSelectSession={onSelectSession} depth={depth + 1} />
+              <TreeNode
+                key={outerNode.nodeId}
+                node={outerNode}
+                selectedKey={selectedKey}
+                expansion={expansion}
+                onExpansionChange={onExpansionChange}
+                onSelectSession={onSelectSession}
+                branchPath={[...branchPath, 'outer-node', outerNode.nodeId]}
+              />
             ))}
           </div>
         </CollapsibleContent>
       </Collapsible>
     </div>
   );
+}
+
+export function conversationSessionTreeBranchKey(branchPath: readonly string[]) {
+  return JSON.stringify(branchPath);
 }
 
 function SessionLeaf({
@@ -121,9 +173,12 @@ function SessionLeaf({
   return (
     <button
       type="button"
+      aria-current={selected ? 'true' : undefined}
+      data-selected={selected}
       className={cn(
-        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent',
-        selected && 'bg-sidebar-accent text-sidebar-accent-foreground',
+        'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs',
+        SESSION_TREE_ROW_HOVER_CLASS,
+        selected && 'bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent',
       )}
       onClick={onSelect}
     >

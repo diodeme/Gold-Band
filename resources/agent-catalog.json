@@ -3,13 +3,13 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-13T14:21:56.878Z"
+    "fetchedAt": "2026-08-19T03:01:52.582Z"
   },
   "agents": [
     {
       "id": "claude-acp",
       "label": "Claude",
-      "version": "0.66.0",
+      "version": "0.70.0",
       "description": "ACP wrapper for Anthropic's Claude",
       "repository": "https://github.com/agentclientprotocol/claude-agent-acp",
       "website": null,
@@ -18,7 +18,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.66.0"
+        "@agentclientprotocol/claude-agent-acp@0.70.0"
       ],
       "env": {},
       "primaryAgentDir": ".claude",
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.2.0",
+      "version": "1.4.0",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.2.0"
+        "@agentclientprotocol/codex-acp@1.4.0"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -53,7 +53,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "version": "2026.07.23",
+      "version": "2026.08.11",
       "description": "Cursor's coding agent",
       "repository": null,
       "website": "https://cursor.com/docs/cli/acp",
@@ -141,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.21.11",
+      "version": "0.21.13",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,7 +150,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.21.11",
+        "@qwen-code/qwen-code@0.21.13",
         "--acp",
         "--experimental-skills"
       ],

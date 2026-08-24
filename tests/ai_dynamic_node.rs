@@ -1,5 +1,6 @@
 use camino::Utf8PathBuf;
 use gold_band::app::App;
+use gold_band::config::ProviderDiagnosticSnapshot;
 use gold_band::domain::{PauseReason, RunOutcome, RunStatus, SessionMode};
 use gold_band::dsl::WorkflowValidationError;
 use gold_band::dynamic::{
@@ -151,8 +152,11 @@ impl ProviderAdapter for DynamicProvider {
         req: WorkerInvocation,
         _live_update: Option<AcpLiveUpdate<'_>>,
         _session_update: Option<AcpSessionUpdate<'_>>,
-        _prompt_accepted: Option<AcpPromptAccepted<'_>>,
+        prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> anyhow::Result<ProviderRunResult> {
+        if let Some(callback) = prompt_accepted {
+            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+        }
         if req.output_contract.as_ref().is_some_and(|contract| {
             contract.emission_mode == OutputEmissionMode::PostTurnProjection
         }) {
@@ -177,7 +181,8 @@ impl ProviderAdapter for DynamicProvider {
                 .emission_mode = OutputEmissionMode::InlineControl;
             finalize_req.session_mode = SessionMode::Continue;
             finalize_req.resume_prompt_visibility = PromptVisibility::Hidden;
-            finalize_req.input_attachment_paths.clear();
+            finalize_req.task_input_attachment_paths.clear();
+            finalize_req.user_input_attachment_paths.clear();
             if !resumed_control_turn {
                 finalize_req.resume_prompt = Some("finalize artifact".to_string());
                 finalize_req.resume_prompt_id = Some(format!(
@@ -202,6 +207,20 @@ impl ProviderAdapter for DynamicProvider {
     ) -> anyhow::Result<Option<String>> {
         Ok(worker_ref.open_command.clone())
     }
+}
+
+fn with_available_claude_diagnostics(app: App) -> App {
+    app.with_provider_diagnostics_source(Arc::new(|| {
+        Ok(std::collections::BTreeMap::from([(
+            "claude-acp".to_string(),
+            ProviderDiagnosticSnapshot {
+                available: true,
+                reason: None,
+                checked_at: "2026-08-17T00:00:00Z".to_string(),
+                capabilities: None,
+            },
+        )]))
+    }))
 }
 
 impl DynamicProvider {
@@ -888,7 +907,9 @@ fn write_task_input_image(app: &App, task_id: &str, name: &str) -> Utf8PathBuf {
     let inputs_dir = app.paths.task_dir(task_id).join("authoring").join("inputs");
     std::fs::create_dir_all(inputs_dir.as_std_path()).unwrap();
     let path = inputs_dir.join(name);
-    std::fs::write(path.as_std_path(), b"\x89PNG\r\n\x1a\nimage").unwrap();
+    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]))
+        .save(path.as_std_path())
+        .unwrap();
     path
 }
 
@@ -947,13 +968,11 @@ fn write_dynamic_workflow_with_agent_strategy(
 }
 
 fn dynamic_graph(app: &App, task_id: &str) -> DynamicGraphState {
-    gold_band::storage::read_json(&app.paths.dynamic_graph_file(
-        task_id,
-        "run-001",
-        "round-001",
-        "router",
-        "attempt-001",
-    ))
+    gold_band::dynamic_store::load_dynamic_graph(
+        &app.paths
+            .dynamic_graph_file(task_id, "run-001", "round-001", "router", "attempt-001"),
+        &app.paths.repo_root,
+    )
     .unwrap()
 }
 
@@ -1175,7 +1194,7 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
         "group-core-merge",
         "attempt-001",
         Some("merge-resume-001".to_string()),
-        "继续".to_string(),
+        Some("继续".to_string().into()),
         Vec::new(),
         None,
         None,
@@ -1199,15 +1218,22 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
         merge_continue.user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
-    assert_eq!(merge_continue.resume_prompt.as_deref(), Some("继续"));
+    let resume_prompt = merge_continue.resume_prompt.as_deref().unwrap_or_default();
+    assert_eq!(resume_prompt.lines().next(), Some("继续"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(!resume_prompt.contains("artifact 输出约束"));
+    assert!(!resume_prompt.contains("后续独立 turn"));
+    assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
     assert_eq!(
         merge_continue.resume_prompt_id.as_deref(),
         Some("merge-resume-001")
     );
 
     let prompt = render_prompt_bundle(merge_continue).unwrap();
-    assert_eq!(prompt.user_prompt, "继续");
-    assert!(!prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert_eq!(prompt.user_prompt.lines().next(), Some("继续"));
+    assert!(prompt.user_prompt.contains("data-gold-band-hidden"));
+    assert_eq!(prompt.display_text.as_deref(), Some("继续"));
     assert!(!prompt.user_prompt.contains("# 目标"));
     assert!(!prompt.user_prompt.contains("# Goal"));
     assert!(!prompt.user_prompt.contains("# 用户提示"));
@@ -1385,7 +1411,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         invocations
             .iter()
             .filter(|invocation| is_business_invocation(invocation))
-            .all(|invocation| invocation.input_attachment_paths == vec![image_path_string.clone()])
+            .all(|invocation| {
+                invocation.task_input_attachment_paths == vec![image_path_string.clone()]
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(
         invocations
@@ -1393,7 +1422,10 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .filter(|invocation| {
                 invocation.user_prompt_render_mode == UserPromptRenderMode::RuntimeFinalize
             })
-            .all(|invocation| invocation.input_attachment_paths.is_empty())
+            .all(|invocation| {
+                invocation.task_input_attachment_paths.is_empty()
+                    && invocation.user_input_attachment_paths.is_empty()
+            })
     );
     assert!(invocations.iter().all(|invocation| {
         invocation
@@ -1404,7 +1436,11 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
             .unwrap_or(false)
     }));
 
-    let prompt = render_prompt_bundle(&invocations[0]).unwrap();
+    let business_invocation = invocations
+        .iter()
+        .find(|invocation| is_business_invocation(invocation))
+        .expect("expected a business invocation");
+    let prompt = render_prompt_bundle(business_invocation).unwrap();
     assert_eq!(prompt.attachment_metas.len(), 1);
     assert_eq!(prompt.attachment_metas[0].name, "image.png");
     assert_eq!(prompt.attachment_metas[0].path, "task-inputs/image.png");
@@ -1412,7 +1448,7 @@ fn ai_dynamic_invocations_receive_task_input_attachments() {
         Some(AcpContentBlock::Image(block)) => {
             let expected_uri = format!("file://{}", image_path_string.replace('\\', "/"));
             assert_eq!(block.mime_type, "image/png");
-            assert_eq!(block.uri.as_deref(), Some(expected_uri.as_str()));
+            assert_eq!(block.link.uri, expected_uri);
         }
         _ => panic!("expected image content block"),
     }
@@ -1988,10 +2024,19 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
     assert_eq!(run.status, RunStatus::Completed);
 
     let graph = dynamic_graph(&app, task_id);
-    assert!(graph.nodes.iter().any(|node| node.id == "branch-b"));
+    let branch_b = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "branch-b")
+        .unwrap();
+    let branch_b_workspace = graph
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == branch_b.workspace_id)
+        .unwrap();
     let continue_ref = serde_json::json!({ "sessionId": "branch-b-attempt-001" });
-    let prompt = app
-        .dynamic_acp_prompt_bundle_for_attempt(
+    let prepared_prompt = app
+        .prepare_dynamic_acp_prompt_for_attempt(
             task_id,
             "run-001",
             "round-001",
@@ -2004,6 +2049,12 @@ fn ai_dynamic_continue_prompt_bundle_preserves_prompt_id() {
             Some(continue_ref),
         )
         .unwrap();
+    assert_eq!(prepared_prompt.adapter_workspace_dir, app.paths.repo_root);
+    assert_eq!(
+        prepared_prompt.session_workspace_dir,
+        branch_b_workspace.path
+    );
+    let prompt = prepared_prompt.prompt;
 
     assert_eq!(prompt.user_prompt, "继续");
     assert!(prompt.system_prompt.contains("用户主动打断当前工作"));
@@ -2043,7 +2094,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
     let task_id = "task-ai-dynamic-child-pause";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2113,6 +2167,29 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_resume_child_run() {
         Some(PauseReason::ProcessInterrupted)
     );
 
+    let durable_parent = app.run_status(task_id, "run-001").unwrap();
+    let parent_round: gold_band::runtime::RoundState =
+        gold_band::storage::read_json(&app.paths.round_file(task_id, "run-001", "round-001"))
+            .unwrap();
+    let parent_node: gold_band::runtime::NodeState = gold_band::storage::read_json(
+        &app.paths
+            .node_file(task_id, "run-001", "round-001", "router", "attempt-001"),
+    )
+    .unwrap();
+    assert_eq!(durable_parent.status, RunStatus::Paused);
+    assert_eq!(parent_round.status, RunStatus::Paused);
+    assert_eq!(parent_node.status, RunStatus::Paused);
+    assert_eq!(parent_node.runtime_execution_id, None);
+    assert_eq!(
+        durable_parent.execution.phase,
+        gold_band::runtime::RuntimeExecutionPhase::Paused
+    );
+    let locator = durable_parent.execution.locator.as_ref().unwrap();
+    assert_eq!(locator.node_id, "router");
+    assert_eq!(locator.attempt_id, "attempt-001");
+    assert_eq!(locator.outer_node_id, None);
+    assert_eq!(locator.outer_attempt_id, None);
+
     let resumed = app.run_continue(task_id, "run-001", None, None).unwrap();
     assert_eq!(resumed.status, RunStatus::Completed);
     assert_eq!(resumed.outcome, Some(RunOutcome::Success));
@@ -2137,7 +2214,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
     let task_id = "task-ai-dynamic-child-pause-user-message";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2209,10 +2289,10 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
         child_continue.user_prompt_render_mode,
         UserPromptRenderMode::UserMessage
     );
-    assert_eq!(
-        child_continue.resume_prompt.as_deref(),
-        Some("请继续检查这个会话")
-    );
+    let resume_prompt = child_continue.resume_prompt.as_deref().unwrap_or_default();
+    assert_eq!(resume_prompt.lines().next(), Some("请继续检查这个会话"));
+    assert!(resume_prompt.contains("show=\"false\""));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
     assert_eq!(
         child_continue.resume_prompt_id.as_deref(),
         Some("prompt-continue-001")
@@ -2226,7 +2306,7 @@ fn ai_dynamic_pause_all_running_sessions_recursively_pauses_child_run() {
     let task_id = "task-ai-dynamic-global-pause";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation_pause_then_continue(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider));
+    let app = with_available_claude_diagnostics(App::with_provider(repo_root, Box::new(provider)));
     let profile = first_profile_id(&app);
 
     let store = app
@@ -2306,7 +2386,10 @@ fn ai_dynamic_workflow_invocation_uses_frozen_allowed_snapshot() {
     let task_id = "task-ai-dynamic-child";
     let workflow_id = Arc::new(Mutex::new(String::new()));
     let provider = DynamicProvider::workflow_invocation(workflow_id.clone());
-    let app = App::with_provider(repo_root, Box::new(provider.clone()));
+    let app = with_available_claude_diagnostics(App::with_provider(
+        repo_root,
+        Box::new(provider.clone()),
+    ));
     let profile = first_profile_id(&app);
 
     let store = app

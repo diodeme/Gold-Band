@@ -261,6 +261,12 @@ impl NodeDsl {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerNode {
     pub id: String,
+    #[serde(
+        default,
+        rename = "executionSlotId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execution_slot_id: Option<String>,
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -550,35 +556,39 @@ impl ValidatedWorkflow {
     }
 }
 
-fn validate_worker_node(worker: &WorkerNode, id: &str) -> Result<()> {
-    let provider = worker
-        .provider
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("worker node `{id}` provider cannot be blank"))?;
-    ensure!(
-        !provider.is_empty(),
-        "worker node `{id}` provider cannot be blank"
-    );
-    if let Some(model) = &worker.model {
-        if model.trim().is_empty() {
-            bail!(WorkflowValidationError::WorkerModelBlank {
-                node_id: id.to_string(),
-                provider: provider.to_string(),
-            });
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowValidationMode {
+    Authoring,
+    Executable,
+}
+
+fn validate_worker_node(worker: &WorkerNode, id: &str, mode: WorkflowValidationMode) -> Result<()> {
+    if mode == WorkflowValidationMode::Executable {
+        let provider = worker
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("worker node `{id}` provider cannot be blank"))?;
+        if let Some(model) = &worker.model {
+            if model.trim().is_empty() {
+                bail!(WorkflowValidationError::WorkerModelBlank {
+                    node_id: id.to_string(),
+                    provider: provider.to_string(),
+                });
+            }
+        }
+        if let Some(permission_mode) = &worker.permission_mode {
+            ensure!(
+                !permission_mode.trim().is_empty(),
+                "worker node `{id}` permission_mode cannot be blank"
+            );
         }
     }
     if let Some(profile) = &worker.profile {
         ensure!(
             !profile.trim().is_empty(),
             "worker node `{id}` profile cannot be blank"
-        );
-    }
-    if let Some(permission_mode) = &worker.permission_mode {
-        ensure!(
-            !permission_mode.trim().is_empty(),
-            "worker node `{id}` permission_mode cannot be blank"
         );
     }
     ensure!(
@@ -787,7 +797,10 @@ fn validate_ai_dynamic_node(node: &AiDynamicNode, id: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_workflow_strict(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+fn validate_workflow_with_mode(
+    workflow: WorkflowDsl,
+    mode: WorkflowValidationMode,
+) -> Result<ValidatedWorkflow> {
     ensure!(
         workflow.version == "0.1",
         "unsupported workflow version: {}",
@@ -825,7 +838,7 @@ fn validate_workflow_strict(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> 
         );
 
         match node {
-            NodeDsl::Worker(worker) => validate_worker_node(worker, id)?,
+            NodeDsl::Worker(worker) => validate_worker_node(worker, id, mode)?,
             NodeDsl::AiDynamic(dynamic) => validate_ai_dynamic_node(dynamic, id)?,
         }
 
@@ -896,16 +909,18 @@ fn validate_workflow_strict(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> 
                 edge.to != END_NODE && edge.to != NEW_ROUND_NODE,
                 "session=continue requires a real node target"
             );
-            let target = nodes_by_id
-                .get(&edge.to)
-                .ok_or_else(|| anyhow!("edge target not found: {}", edge.to))?;
-            let provider = target
-                .provider()
-                .ok_or_else(|| anyhow!("target node `{}` provider cannot be blank", edge.to))?;
-            ensure!(
-                supports_continue_session(provider)?,
-                "session=continue currently only supports agents with continue-session capability"
-            );
+            if mode == WorkflowValidationMode::Executable {
+                let target = nodes_by_id
+                    .get(&edge.to)
+                    .ok_or_else(|| anyhow!("edge target not found: {}", edge.to))?;
+                let provider = target
+                    .provider()
+                    .ok_or_else(|| anyhow!("target node `{}` provider cannot be blank", edge.to))?;
+                ensure!(
+                    supports_continue_session(provider)?,
+                    "session=continue currently only supports agents with continue-session capability"
+                );
+            }
         }
     }
 
@@ -958,7 +973,11 @@ fn validate_workflow_strict(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> 
 }
 
 pub fn validate_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
-    validate_workflow_strict(workflow)
+    validate_workflow_with_mode(workflow, WorkflowValidationMode::Executable)
+}
+
+pub fn validate_authoring_workflow(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
+    validate_workflow_with_mode(workflow, WorkflowValidationMode::Authoring)
 }
 
 pub fn normalize_legacy_workflow_snapshot(mut workflow: WorkflowDsl) -> WorkflowDsl {
@@ -978,5 +997,8 @@ pub fn normalize_legacy_workflow_snapshot(mut workflow: WorkflowDsl) -> Workflow
 }
 
 pub fn validate_workflow_snapshot(workflow: WorkflowDsl) -> Result<ValidatedWorkflow> {
-    validate_workflow_strict(normalize_legacy_workflow_snapshot(workflow))
+    validate_workflow_with_mode(
+        normalize_legacy_workflow_snapshot(workflow),
+        WorkflowValidationMode::Executable,
+    )
 }

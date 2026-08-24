@@ -15,8 +15,8 @@
 - 后端 live 节流按稳定 timeline item 边界 flush；text/thought/plan 切换稳定 id 时，旧 pending 快照必须先发出，不能被新 item 覆盖。
 - 保留后端 timeline upsert 设计，补充 Rust 单测锁定累计内容与最新 patch 行为。
 - 将内置 Codex adapter 从 `@zed-industries/codex-acp` 替换为 `@agentclientprotocol/codex-acp`，并通过 settings schema v2 迁移现有默认安装配置。
-- active text/thought/plan stream 同时保存 provider source identity；相同显式身份继续累计，不同显式身份或“有身份/无身份”切换时创建新 stream。两个连续无身份 delta 保留兼容性的本地连续流合并。
-- 对确认来自 `@agentclientprotocol/codex-acp` 的无 `messageId` agent text 归一化为 `codex_acp.warning` 结构化诊断，保存到 diagnostics，不写入 timeline、assistant 最终正文或 UI 消息。
+- active text/thought/plan stream 同时保存 provider source identity；相同显式身份继续累计，不同显式身份创建新稳定流。稳定流可以跨工具、usage 和无 ID Agent 文本继续累计；“有身份/无身份”切换时，无 ID 文本创建独立匿名段但不销毁暂存的稳定流。两个连续无身份 delta 保留兼容性的本地连续流合并，工具等非文本事件关闭匿名段。
+- 所有无 `messageId` Agent 文本均进入 canonical timeline 和可见正文，不再按 Codex adapter 类型过滤。结构化 terminal failure 仍是 warning/error 是否改变 prompt 生命周期的唯一依据；无 ID 文案不得反向改写错误分类。
 - legacy events 扫描窗口采用同一身份规则，避免历史读取层再次把不同 `messageId` 拼接。
 
 ## 验收项
@@ -30,11 +30,15 @@
 - Rust ACP / Tauri view model 单测覆盖 streaming delta 与 timeline patch 行为。
 - 同一 `messageId` 的多个 delta 合并；不同 `messageId` 的相邻 text delta 分离。
 - 无 provider identity 的传统 ACP 连续 token 仍可合并，不因边界修复退化成逐 token 气泡。
-- 新 Codex adapter 的无 ID warning 进入结构化 diagnostics，有 ID 正常回答仍进入 assistant 正文。
+- Codex 的无 ID warning 形成独立匿名消息；有 ID 正文在 warning 或工具事件后按原 identity 继续累计且内容完整。
+- 空字符串或仅包含 Unicode `Format` 控制字符的 Agent 正文/思考 chunk 不生成独立消息、Activity 思考项或打字机目标；同一 chunk 含有可见正文时原文必须保持不变。
 - settings v1 中的旧 Codex npm 包规格迁移为新包，自定义非旧包参数不被覆盖。
 
 ## 实施状态
 
+- 2026-08-18：task-289 的 Kimi Code raw frame 在真实回答前后发送了 `U+200B` 单字符 `agent_message_chunk`，并发送了一条空 `agent_thought_chunk`；旧版将其持久化为独立 text/thought timeline item，前端 `trim()` 又无法移除 `U+200B`，最终显示空头像与空消息。修复后由通用 Unicode `Format` 类语义判断约束 canonical timeline 和 prompt output，原始 frame 保留、同流累计不丢字符；前端 timeline 投影、打字机目标与最终行渲染共同兼容旧数据。实现不增加 provider 特判、状态或缓存，每 chunk 单次 O(n) 字符扫描，n 为当前小段长度，不随会话历史增长。
+- 2026-08-18：task-284 复现稳定 `messageId` 正文与长时间工具输出交错时，非文本事件错误清空正文 accumulator，timeline 对同一 identity 的最新短快照覆盖完整前缀，最终只保留“匹配。”。修复后逐事件区分稳定流与匿名连续段：稳定流跨工具、usage 和无 ID warning 恢复；匿名流仍在工具边界切段；下一条用户 prompt 关闭上一轮稳定流。实时累计、重连恢复与 prompt output 使用同一 identity 契约，接口测试覆盖 stable→tool→same stable、stable→anonymous warning→same stable 和 anonymous→tool→anonymous。
+- 2026-08-18：过度设计与性能验收通过。没有增加 Agent 类型分支、initialize capability、持久字段、无界 identity map 或并发队列；每个 branch、每种 text/thought/plan 最多保留当前流与一个暂存稳定流，prompt output 仍只保留最近三条消息及一个 64K 字符稳定正文缓存。单事件归约为 O(1)，最近消息定位固定上限 O(3)，不会随工具事件数或会话长度增加热路径扫描。
 - 2026-08-10：修复持久化 `ConversationBranchRoute` 只恢复 `branchId` 的设计缺口，统一恢复并校验 `launchedAgentExecutionId` 与 `toolName`；后台 Agent 遗留启动确认迁移不再误报 completed，并以路由往返及 migration v2 单测固化。
 - 2026-07-26：完成 Codex adapter preset 与 settings schema v2 迁移。
 - 2026-07-26：完成 provider source identity 驱动的 stream 切分、Codex warning 诊断归一化和 legacy events 身份合并修复。

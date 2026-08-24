@@ -30,8 +30,29 @@ export function routeFromPath(pathname: string): AppRoute {
     }
     if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
       const roundId = segments[7] === 'rounds' ? segments[8] : undefined;
-      const attemptId = roundId && segments[9] === 'attempts' ? segments[10] : undefined;
-      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'conversation-run', projectId: segments[2], taskId: segments[4], runId: segments[6], roundId, attemptId } };
+      const legacyAttemptId = roundId && segments[9] === 'attempts' ? segments[10] : undefined;
+      const firstNodeId = roundId && segments[9] === 'nodes' ? segments[10] : undefined;
+      const firstAttemptId = firstNodeId && segments[11] === 'attempts' ? segments[12] : undefined;
+      const dynamicNodeId = firstAttemptId && segments[13] === 'dynamic' && segments[14] === 'nodes'
+        ? segments[15]
+        : undefined;
+      const dynamicAttemptId = dynamicNodeId && segments[16] === 'attempts' ? segments[17] : undefined;
+      return {
+        uiMode: 'conversation',
+        module: 'task-orchestration',
+        taskPage: taskListPage,
+        conversationPage: {
+          kind: 'conversation-run',
+          projectId: segments[2],
+          taskId: segments[4],
+          runId: segments[6],
+          roundId,
+          nodeId: dynamicNodeId ?? firstNodeId,
+          attemptId: dynamicAttemptId ?? firstAttemptId ?? legacyAttemptId,
+          outerNodeId: dynamicNodeId ? firstNodeId : undefined,
+          outerAttemptId: dynamicNodeId ? firstAttemptId : undefined,
+        },
+      };
     }
     return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: conversationHomePage };
   }
@@ -64,6 +85,17 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
       const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}`;
       if (!conversationPage.roundId) return base;
       const round = `${base}/rounds/${encodeURIComponent(conversationPage.roundId)}`;
+      if (
+        conversationPage.outerNodeId &&
+        conversationPage.outerAttemptId &&
+        conversationPage.nodeId &&
+        conversationPage.attemptId
+      ) {
+        return `${round}/nodes/${encodeURIComponent(conversationPage.outerNodeId)}/attempts/${encodeURIComponent(conversationPage.outerAttemptId)}/dynamic/nodes/${encodeURIComponent(conversationPage.nodeId)}/attempts/${encodeURIComponent(conversationPage.attemptId)}`;
+      }
+      if (conversationPage.nodeId && conversationPage.attemptId) {
+        return `${round}/nodes/${encodeURIComponent(conversationPage.nodeId)}/attempts/${encodeURIComponent(conversationPage.attemptId)}`;
+      }
       return conversationPage.attemptId ? `${round}/attempts/${encodeURIComponent(conversationPage.attemptId)}` : round;
     }
     return '/chat';

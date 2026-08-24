@@ -2,6 +2,7 @@ export interface AcpLiveEventFlushPolicyInput {
   coalescable: boolean;
   paused: boolean;
   deferRemainingMs?: number;
+  maxDeferRemainingMs?: number;
   flushDelayMs?: number;
   hasScheduledFlush: boolean;
 }
@@ -191,6 +192,7 @@ export function decideAcpLiveEventFlush(
   input: AcpLiveEventFlushPolicyInput,
 ): AcpLiveEventFlushDecision {
   const deferRemainingMs = Math.max(0, input.deferRemainingMs ?? 0);
+  const maxDeferRemainingMs = Math.max(0, input.maxDeferRemainingMs ?? Number.POSITIVE_INFINITY);
   const flushDelayMs = Math.max(0, input.flushDelayMs ?? 0);
   if (!input.coalescable) {
     return {
@@ -209,7 +211,7 @@ export function decideAcpLiveEventFlush(
     flushPendingBeforeApply: false,
     scheduleFlush,
     scheduleDelayMs: scheduleFlush
-      ? Math.max(flushDelayMs, deferRemainingMs)
+      ? Math.min(Math.max(flushDelayMs, deferRemainingMs), maxDeferRemainingMs)
       : null,
   };
 }

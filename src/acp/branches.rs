@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+#[cfg(test)]
+use std::io::Write;
+use std::io::{BufRead, BufReader};
 use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
-use atomic_write_file::AtomicWriteFile;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,12 +16,18 @@ use crate::acp::events::{
     AcpUiEvent, AgentTranscriptRelation, agent_transcript_tool_output,
     extract_agent_transcript_relation, load_timeline_items, write_timeline_items,
 };
-use crate::storage::{ensure_parent_dir, write_json};
+#[cfg(test)]
+use crate::storage::atomic_write_file;
+#[cfg(test)]
+use crate::storage::ensure_parent_dir;
+use crate::storage::write_json;
 
 pub const ROOT_BRANCH_ID: &str = "root";
 const BRANCH_META_KEY: &str = "goldBandConversation";
+const BRANCH_TIMELINE_MIGRATION_MARKER: &str = ".acp-branch-timeline-migration-v1";
 const AGENT_RESULT_MIGRATION_MARKER: &str = ".acp-agent-result-migration-v2";
 const AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x63c7f8ac_1498_4f6e_8f6d_62f2f04033f1);
+#[cfg(test)]
 const AGENT_INDEX_CACHE_CAPACITY: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -27,7 +35,6 @@ pub enum ConversationBranchError {
     #[error("invalid conversation branch id")]
     InvalidBranchId,
 }
-
 impl ConversationBranchError {
     pub const fn code(self) -> &'static str {
         match self {
@@ -36,6 +43,7 @@ impl ConversationBranchError {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentIndexSourceFileSignature {
     path: String,
@@ -43,12 +51,14 @@ struct AgentIndexSourceFileSignature {
     modified_nanos: u128,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentIndexSourceSignature {
     session_status: String,
     files: Vec<AgentIndexSourceFileSignature>,
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct AgentIndexCacheEntry {
     attempt_dir: String,
@@ -56,9 +66,15 @@ struct AgentIndexCacheEntry {
     records: Vec<AgentExecutionRecord>,
 }
 
+#[cfg(test)]
 fn agent_index_cache() -> &'static Mutex<VecDeque<AgentIndexCacheEntry>> {
     static CACHE: OnceLock<Mutex<VecDeque<AgentIndexCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn branch_timeline_migration_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,30 +143,6 @@ pub fn agent_relation(event: &AcpUiEvent) -> Option<AgentTranscriptRelation> {
 }
 
 pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
-    if let Some(conversation) = event
-        .raw
-        .as_ref()
-        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}")))
-        .and_then(Value::as_object)
-        && let Some(branch_id) = conversation
-            .get("branchId")
-            .and_then(Value::as_str)
-            .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
-    {
-        return ConversationBranchRoute {
-            branch_id: branch_id.to_string(),
-            launched_agent_execution_id: conversation
-                .get("launchedAgentExecutionId")
-                .and_then(Value::as_str)
-                .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
-                .map(str::to_string),
-            tool_name: conversation
-                .get("toolName")
-                .and_then(Value::as_str)
-                .filter(|tool_name| !tool_name.is_empty())
-                .map(str::to_string),
-        };
-    }
     let relation = agent_relation(event);
     let session_id = event.session_id.as_deref().unwrap_or("unknown-session");
     let parent_agent_execution_id = relation
@@ -162,12 +154,27 @@ pub fn branch_route_for_event(event: &AcpUiEvent) -> ConversationBranchRoute {
         .filter(|relation| relation.agent_launch)
         .and_then(|_| event.tool_call_id.as_deref())
         .map(|tool_call_id| stable_agent_execution_id(session_id, tool_call_id));
+    let tool_name = relation.and_then(|relation| relation.tool_name);
+    // A persisted branch-id override determines which transcript an event
+    // belongs to, but it must not discard the launch relation it carries.
+    // Migration and agent-index accounting still need launched_agent_execution_id
+    // and tool_name, which are orthogonal to branch ownership.
+    let branch_id = event
+        .raw
+        .as_ref()
+        .and_then(|raw| raw.pointer(&format!("/_meta/{BRANCH_META_KEY}/branchId")))
+        .and_then(Value::as_str)
+        .filter(|branch_id| validate_conversation_branch_id(branch_id).is_ok())
+        .map(|branch_id| branch_id.to_string())
+        .unwrap_or_else(|| {
+            parent_agent_execution_id
+                .clone()
+                .unwrap_or_else(|| ROOT_BRANCH_ID.to_string())
+        });
     ConversationBranchRoute {
-        branch_id: parent_agent_execution_id
-            .clone()
-            .unwrap_or_else(|| ROOT_BRANCH_ID.to_string()),
+        branch_id,
         launched_agent_execution_id,
-        tool_name: relation.and_then(|relation| relation.tool_name),
+        tool_name,
     }
 }
 
@@ -451,6 +458,36 @@ pub fn branch_timeline_path(attempt_dir: &Utf8Path, branch_id: &str) -> Utf8Path
     }
 }
 
+pub fn existing_branch_timeline_paths(
+    attempt_dir: &Utf8Path,
+) -> Result<Vec<(String, Utf8PathBuf)>> {
+    let mut paths = vec![(
+        ROOT_BRANCH_ID.to_string(),
+        branch_timeline_path(attempt_dir, ROOT_BRANCH_ID),
+    )];
+    let agents_dir = attempt_dir.join("agents");
+    if agents_dir.exists() {
+        for entry in std::fs::read_dir(agents_dir.as_std_path())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(branch_id) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if validate_conversation_branch_id(&branch_id).is_err() {
+                continue;
+            }
+            paths.push((
+                branch_id.clone(),
+                branch_timeline_path(attempt_dir, &branch_id),
+            ));
+        }
+    }
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(paths)
+}
+
 pub fn branch_snapshot_path(attempt_dir: &Utf8Path, branch_id: &str) -> Utf8PathBuf {
     attempt_dir
         .join("agents")
@@ -521,6 +558,7 @@ pub fn migrate_legacy_events_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
 
     let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
     for mut event in canonical {
+        normalize_legacy_timeline_identity(&mut event);
         let prompt = agent_prompt_event(&event);
         let result = agent_result_event(&event).or_else(|| legacy_agent_result_event(&event));
         let route = annotate_event_branch(&mut event);
@@ -664,11 +702,18 @@ pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
     migrate_legacy_events_timeline(attempt_dir)?;
     let root_path = branch_timeline_path(attempt_dir, ROOT_BRANCH_ID);
     let mut events = load_timeline_items(&root_path)?;
+    let mut identity_changed = false;
+    for event in &mut events {
+        identity_changed |= normalize_legacy_timeline_identity(event);
+    }
     if !events
         .iter()
         .any(|event| branch_route_for_event(event).branch_id != ROOT_BRANCH_ID)
     {
-        return Ok(false);
+        if identity_changed {
+            write_timeline_items(&root_path, &events)?;
+        }
+        return Ok(identity_changed);
     }
     let mut by_branch = BTreeMap::<String, Vec<AcpUiEvent>>::new();
     for mut event in events.drain(..) {
@@ -703,6 +748,34 @@ pub fn migrate_legacy_agent_timeline(attempt_dir: &Utf8Path) -> Result<bool> {
         )?;
     }
     Ok(true)
+}
+
+fn normalize_legacy_timeline_identity(event: &mut AcpUiEvent) -> bool {
+    if event.kind != "permissionRequest" || event.id.starts_with("permission-") {
+        return false;
+    }
+    event.id = format!("permission-{}", event.id);
+    true
+}
+
+/// Establishes the branch/index storage boundary once per attempt. Runtime
+/// startup calls this before the first event is written; old attempts pay the
+/// full migration cost once and then use the marker as the bounded fast path.
+pub fn prepare_agent_timeline_storage(attempt_dir: &Utf8Path) -> Result<bool> {
+    let marker = attempt_dir.join(BRANCH_TIMELINE_MIGRATION_MARKER);
+    if marker.exists() {
+        return Ok(false);
+    }
+    let _guard = branch_timeline_migration_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if marker.exists() {
+        return Ok(false);
+    }
+    let mut changed = migrate_legacy_agent_timeline(attempt_dir)?;
+    changed |= migrate_legacy_agent_results(attempt_dir)?;
+    write_json(&marker, &json!({ "version": 1 }))?;
+    Ok(changed)
 }
 
 pub fn load_all_branch_events(attempt_dir: &Utf8Path) -> Result<Vec<AcpUiEvent>> {
@@ -832,6 +905,7 @@ fn migrate_legacy_agent_results(attempt_dir: &Utf8Path) -> Result<bool> {
     Ok(changed)
 }
 
+#[cfg(test)]
 pub fn rebuild_agent_index(
     attempt_dir: &Utf8Path,
     session_status: &str,
@@ -986,6 +1060,154 @@ pub fn rebuild_agent_index(
     Ok(records)
 }
 
+/// Builds the Agent list from per-branch materialized projections. Unlike the
+/// legacy repair function above, this never loads complete branch timelines.
+pub fn indexed_agent_index(
+    attempt_dir: &Utf8Path,
+    session_status: &str,
+) -> Result<Vec<AgentExecutionRecord>> {
+    let session_active = matches!(
+        session_status,
+        "running" | "active" | "starting" | "cancelling" | "stopping"
+    );
+    let session_interrupted = matches!(
+        session_status,
+        "cancelled" | "canceled" | "interrupted" | "stopped" | "failed" | "error"
+    );
+    let root = crate::acp::timeline::read_indexed_timeline_projection(&branch_timeline_path(
+        attempt_dir,
+        ROOT_BRANCH_ID,
+    ))?;
+    let mut pending_launches = VecDeque::from(root.agent_launches);
+    let mut launches = HashMap::<String, AcpUiEvent>::new();
+    let mut projections = HashMap::new();
+
+    while let Some(launch) = pending_launches.pop_front() {
+        let Some(launch_tool_call_id) = launch.tool_call_id.clone() else {
+            continue;
+        };
+        let session_id = launch
+            .session_id
+            .clone()
+            .unwrap_or_else(|| "unknown-session".to_string());
+        let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
+        let replace = launches.get(&launch_tool_call_id).is_none_or(|current| {
+            launch.ended_seq.unwrap_or(launch.seq) >= current.ended_seq.unwrap_or(current.seq)
+        });
+        if replace {
+            launches.insert(launch_tool_call_id, launch);
+        }
+        if projections.contains_key(&agent_execution_id) {
+            continue;
+        }
+        let projection = crate::acp::timeline::read_indexed_timeline_projection(
+            &branch_timeline_path(attempt_dir, &agent_execution_id),
+        )?;
+        pending_launches.extend(projection.agent_launches.iter().cloned());
+        projections.insert(agent_execution_id, projection);
+    }
+
+    let mut records = launches
+        .into_iter()
+        .map(|(launch_tool_call_id, launch)| {
+            let session_id = launch
+                .session_id
+                .clone()
+                .unwrap_or_else(|| "unknown-session".to_string());
+            let agent_execution_id = stable_agent_execution_id(&session_id, &launch_tool_call_id);
+            let relation = agent_relation(&launch).unwrap_or_default();
+            let parent_agent_execution_id = relation
+                .parent_tool_call_id
+                .as_deref()
+                .map(|tool_call_id| stable_agent_execution_id(&session_id, tool_call_id));
+            let projection = projections.get(&agent_execution_id);
+            let launch_status = launch
+                .status
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let failed = matches!(launch_status.as_str(), "failed" | "error");
+            let has_attention =
+                projection.is_some_and(|projection| projection.has_pending_interaction);
+            let status = if failed {
+                "failed"
+            } else if projection.is_some_and(|projection| projection.has_completion_evidence) {
+                "completed"
+            } else if has_attention && session_active {
+                "waiting_permission"
+            } else if !session_active {
+                if session_interrupted {
+                    "interrupted"
+                } else if matches!(
+                    launch_status.as_str(),
+                    "completed" | "success" | "succeeded"
+                ) {
+                    "completed"
+                } else {
+                    "interrupted"
+                }
+            } else if projection.is_none_or(|projection| projection.execution_event_count == 0) {
+                "queued"
+            } else {
+                "running"
+            }
+            .to_string();
+            let input = launch.raw.as_ref().and_then(tool_raw_input);
+            let updated_at = projection
+                .and_then(|projection| projection.latest_timestamp.clone())
+                .unwrap_or_else(|| {
+                    launch
+                        .ended_at
+                        .clone()
+                        .or_else(|| launch.started_at.clone())
+                        .unwrap_or_else(|| launch.timestamp.clone())
+                });
+            let ended_at = matches!(status.as_str(), "completed" | "failed" | "interrupted")
+                .then(|| updated_at.clone());
+            AgentExecutionRecord {
+                agent_execution_id,
+                parent_agent_execution_id,
+                launch_tool_call_id,
+                session_id,
+                status,
+                title: launch.title.clone(),
+                description: input
+                    .and_then(|input| input.get("description"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                started_at: launch
+                    .started_at
+                    .clone()
+                    .unwrap_or_else(|| launch.timestamp.clone()),
+                updated_at,
+                ended_at,
+                event_count: projection
+                    .map(|projection| projection.execution_event_count)
+                    .unwrap_or_default(),
+                tool_call_count: projection
+                    .map(|projection| projection.tool_call_count)
+                    .unwrap_or_default(),
+                read_file_count: projection
+                    .map(|projection| projection.read_file_count)
+                    .unwrap_or_default(),
+                written_file_count: projection
+                    .map(|projection| projection.written_file_count)
+                    .unwrap_or_default(),
+                has_attention,
+                latest_cursor: projection
+                    .and_then(|projection| projection.latest_seq)
+                    .map(|seq| format!("seq:{seq}")),
+                todo_entries: projection
+                    .map(|projection| projection.latest_plan_entries.clone())
+                    .unwrap_or_default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+    propagate_agent_attention_to_ancestors(&mut records);
+    Ok(records)
+}
+
 fn propagate_agent_attention_to_ancestors(records: &mut [AgentExecutionRecord]) {
     let index_by_id = records
         .iter()
@@ -1016,6 +1238,7 @@ fn propagate_agent_attention_to_ancestors(records: &mut [AgentExecutionRecord]) 
     }
 }
 
+#[cfg(test)]
 fn branch_has_pending_interaction(events: &[AcpUiEvent]) -> bool {
     let resolved_elicitation_ids = events
         .iter()
@@ -1041,6 +1264,7 @@ fn branch_has_pending_interaction(events: &[AcpUiEvent]) -> bool {
     })
 }
 
+#[cfg(test)]
 fn elicitation_id(event: &AcpUiEvent) -> Option<String> {
     event
         .raw
@@ -1055,6 +1279,7 @@ fn elicitation_id(event: &AcpUiEvent) -> Option<String> {
         })
 }
 
+#[cfg(test)]
 fn agent_index_source_signature(
     attempt_dir: &Utf8Path,
     session_status: &str,
@@ -1097,6 +1322,7 @@ fn agent_index_source_signature(
     })
 }
 
+#[cfg(test)]
 fn cached_agent_index(
     attempt_dir: &Utf8Path,
     signature: &AgentIndexSourceSignature,
@@ -1114,6 +1340,7 @@ fn cached_agent_index(
     Some(records)
 }
 
+#[cfg(test)]
 fn cache_agent_index(
     attempt_dir: &Utf8Path,
     signature: AgentIndexSourceSignature,
@@ -1133,6 +1360,7 @@ fn cache_agent_index(
     }
 }
 
+#[cfg(test)]
 fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -> Result<bool> {
     let path = attempt_dir.join("acp.agents.jsonl");
     let mut content = Vec::new();
@@ -1144,12 +1372,14 @@ fn write_agent_index(attempt_dir: &Utf8Path, records: &[AgentExecutionRecord]) -
         return Ok(false);
     }
     ensure_parent_dir(&path)?;
-    let mut file = AtomicWriteFile::open(path.as_std_path())?;
-    file.write_all(&content)?;
-    file.commit()?;
+    atomic_write_file(path.as_std_path(), |file| -> Result<()> {
+        file.write_all(&content)?;
+        Ok(())
+    })?;
     Ok(true)
 }
 
+#[cfg(test)]
 fn write_agent_snapshot_if_changed(path: &Utf8Path, record: &AgentExecutionRecord) -> Result<bool> {
     if path.exists()
         && crate::storage::read_json::<AgentExecutionRecord>(path)
@@ -1163,6 +1393,7 @@ fn write_agent_snapshot_if_changed(path: &Utf8Path, record: &AgentExecutionRecor
     Ok(true)
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct BranchMetrics {
     tool_call_count: usize,
@@ -1170,6 +1401,7 @@ struct BranchMetrics {
     written_file_count: usize,
 }
 
+#[cfg(test)]
 fn branch_metrics(events: &[AcpUiEvent]) -> BranchMetrics {
     let mut latest_tools = BTreeMap::<String, &AcpUiEvent>::new();
     for event in events {
@@ -1245,6 +1477,7 @@ fn equivalent_agent_result(existing: &AcpUiEvent, result: &AcpUiEvent) -> bool {
                 == result.content.as_deref().map(str::trim))
 }
 
+#[cfg(test)]
 fn has_agent_completion_evidence(events: &[&AcpUiEvent]) -> bool {
     events.iter().any(|event| is_agent_result_event(event))
 }
@@ -1259,6 +1492,7 @@ fn agent_launch_runs_in_background(event: &AcpUiEvent) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn structured_tool_paths(event: &AcpUiEvent) -> Vec<String> {
     let mut paths = Vec::<String>::new();
     if let Some(input) = event.raw.as_ref().and_then(tool_raw_input) {
@@ -1288,6 +1522,7 @@ fn structured_tool_paths(event: &AcpUiEvent) -> Vec<String> {
     paths
 }
 
+#[cfg(test)]
 fn normalize_metric_path(path: &str) -> String {
     path.trim()
         .replace('\\', "/")
@@ -1295,6 +1530,7 @@ fn normalize_metric_path(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn latest_plan_entries(events: &[AcpUiEvent]) -> Vec<Value> {
     events
         .iter()
@@ -1632,6 +1868,7 @@ mod tests {
         persist_partitioned(&attempt, vec![outer, nested, permission]);
 
         let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(indexed_agent_index(&attempt, "running").unwrap(), records);
         let outer = records
             .iter()
             .find(|record| record.launch_tool_call_id == "provider-outer")
@@ -1682,6 +1919,7 @@ mod tests {
         persist_partitioned(&attempt, vec![launch, request, response]);
 
         let records = rebuild_agent_index(&attempt, "running").unwrap();
+        assert_eq!(indexed_agent_index(&attempt, "running").unwrap(), records);
         let agent = records
             .iter()
             .find(|record| record.launch_tool_call_id == "provider-agent")
@@ -2019,6 +2257,8 @@ mod tests {
         ]);
         persist_partitioned(&attempt, vec![launch, read_start, read_end, write, plan]);
         let record = rebuild_agent_index(&attempt, "running").unwrap().remove(0);
+        let indexed = indexed_agent_index(&attempt, "running").unwrap().remove(0);
+        assert_eq!(indexed, record);
         assert_eq!(record.tool_call_count, 2);
         assert_eq!(record.read_file_count, 1);
         assert_eq!(record.written_file_count, 1);

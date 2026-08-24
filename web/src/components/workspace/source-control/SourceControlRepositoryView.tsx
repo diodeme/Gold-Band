@@ -303,5 +303,5 @@ function ToggleRow({ label, checked, onChecked }: { label: string; checked: bool
 }
 
 function RepositoryRow({ primary, secondary, active = false, children }: { primary: string; secondary: string; active?: boolean; children?: ReactNode }) {
-  return <div className="flex w-full min-w-0 max-w-full items-center gap-2 overflow-hidden px-3 py-1 text-xs"><span className={active ? 'size-2 shrink-0 rounded-full bg-primary' : 'size-2 shrink-0'} /><span className="min-w-0 flex-1 truncate">{primary}</span><span className="min-w-0 max-w-[32%] shrink truncate font-mono text-[10px] text-muted-foreground">{secondary}</span>{children ? <span className="flex shrink-0 items-center">{children}</span> : null}</div>;
+  return <div className="flex w-full min-w-0 max-w-full items-center gap-2 overflow-hidden px-3 py-1 text-xs"><span className={active ? 'size-2 shrink-0 rounded-full bg-primary' : 'size-2 shrink-0'} /><span className="min-w-0 flex-1 truncate">{primary}</span><span className="min-w-0 max-w-[32%] shrink truncate font-mono text-ui-micro text-muted-foreground">{secondary}</span>{children ? <span className="flex shrink-0 items-center">{children}</span> : null}</div>;
 }

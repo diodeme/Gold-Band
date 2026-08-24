@@ -4,7 +4,8 @@ import type { GitComparisonSourceVm, GitFileComparisonVm } from '@/types';
 export interface GitDiffReviewItem {
   id: string;
   path: string;
-  source: Extract<GitComparisonSourceVm, { kind: 'commit' }>;
+  source: GitComparisonSourceVm;
+  stats: { addedLines: number | null; deletedLines: number | null };
 }
 
 export interface GitDiffReviewSession {
@@ -47,10 +48,15 @@ class DiffReviewStore {
       this.comparisons.set(key, cached);
       return cached;
     }
-    const request = getGitComparison(projectId, item.source).catch((error) => {
-      this.comparisons.delete(key);
-      throw error;
-    });
+    const request = getGitComparison(projectId, item.source)
+      .then((comparison) => ({
+        ...comparison,
+        stats: resolveReviewComparisonStats(item.stats, comparison.stats),
+      }))
+      .catch((error) => {
+        this.comparisons.delete(key);
+        throw error;
+      });
     this.comparisons.set(key, request);
     while (this.comparisons.size > COMPARISON_LIMIT) {
       const oldest = this.comparisons.keys().next().value as string | undefined;
@@ -72,8 +78,24 @@ class DiffReviewStore {
 
 export const diffReviewStore = new DiffReviewStore();
 
+export function resolveReviewComparisonStats(
+  authoritative: GitDiffReviewItem['stats'],
+  computed: GitFileComparisonVm['stats'],
+) {
+  return {
+    addedLines: authoritative.addedLines ?? computed.addedLines,
+    deletedLines: authoritative.deletedLines ?? computed.deletedLines,
+  };
+}
+
 export function gitDiffReviewItemId(afterOid: string, beforeOid: string | null | undefined, beforePath: string | null | undefined, path: string) {
   return `${afterOid}:${beforeOid ?? ''}:${beforePath ?? ''}:${path}`;
+}
+
+export function gitComparisonReviewItemId(source: GitComparisonSourceVm) {
+  if (source.kind === 'workspace') return `workspace:${source.workspacePath ?? ''}:${source.area}:${source.path}`;
+  if (source.kind === 'commit') return `commit:${gitDiffReviewItemId(source.afterOid, source.beforeOid, source.beforePath, source.path)}`;
+  return `github-pr:${source.workspacePath ?? ''}:${source.host}:${source.repository}:${source.prNumber}:${source.baseOid}:${source.headOid}:${source.beforePath ?? ''}:${source.path}`;
 }
 
 export function resolveDiffReviewNavigation(input: {

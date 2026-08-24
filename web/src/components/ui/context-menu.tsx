@@ -77,34 +77,54 @@ function ContextMenuSubTrigger({
 
 function ContextMenuSubContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
   return (
     <ContextMenuPrimitive.SubContent
-      data-slot="context-menu-sub-content"
-      className={cn(
-        "z-50 min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-        className
-      )}
+      data-slot="context-menu-sub-content-positioner"
+      className="group/context-menu-sub-positioner z-50 outline-none"
       {...props}
-    />
+    >
+      <div
+        data-slot="context-menu-sub-content"
+        data-theme-role="popover"
+        data-theme-material-layer="isolated"
+        className={cn(
+          "relative min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-lg group-data-[side=bottom]/context-menu-sub-positioner:slide-in-from-top-2 group-data-[side=left]/context-menu-sub-positioner:slide-in-from-right-2 group-data-[side=right]/context-menu-sub-positioner:slide-in-from-left-2 group-data-[side=top]/context-menu-sub-positioner:slide-in-from-bottom-2 group-data-[state=closed]/context-menu-sub-positioner:animate-out group-data-[state=closed]/context-menu-sub-positioner:fade-out-0 group-data-[state=closed]/context-menu-sub-positioner:zoom-out-95 group-data-[state=open]/context-menu-sub-positioner:animate-in group-data-[state=open]/context-menu-sub-positioner:fade-in-0 group-data-[state=open]/context-menu-sub-positioner:zoom-in-95",
+          className
+        )}
+      >
+        {children}
+      </div>
+    </ContextMenuPrimitive.SubContent>
   )
 }
 
 function ContextMenuContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
-        data-slot="context-menu-content"
-        className={cn(
-          "z-50 max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          className
-        )}
+        data-slot="context-menu-content-positioner"
+        className="group/context-menu-positioner z-50 outline-none"
         {...props}
-      />
+      >
+        <div
+          data-slot="context-menu-content"
+          data-theme-role="popover"
+          data-theme-material-layer="isolated"
+          className={cn(
+            "relative max-h-(--radix-context-menu-content-available-height) min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md group-data-[side=bottom]/context-menu-positioner:slide-in-from-top-2 group-data-[side=left]/context-menu-positioner:slide-in-from-right-2 group-data-[side=right]/context-menu-positioner:slide-in-from-left-2 group-data-[side=top]/context-menu-positioner:slide-in-from-bottom-2 group-data-[state=closed]/context-menu-positioner:animate-out group-data-[state=closed]/context-menu-positioner:fade-out-0 group-data-[state=closed]/context-menu-positioner:zoom-out-95 group-data-[state=open]/context-menu-positioner:animate-in group-data-[state=open]/context-menu-positioner:fade-in-0 group-data-[state=open]/context-menu-positioner:zoom-in-95",
+            className
+          )}
+        >
+          {children}
+        </div>
+      </ContextMenuPrimitive.Content>
     </ContextMenuPrimitive.Portal>
   )
 }

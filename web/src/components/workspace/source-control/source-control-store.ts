@@ -98,6 +98,9 @@ interface SessionRuntime {
   monitorStartPromise: Promise<void> | null;
   invalidationTimer: ReturnType<typeof setTimeout> | null;
   finishingOperationId: string | null;
+  historyCommitScrollTop: number;
+  historyReviewScrollTop: number;
+  historyReviewScrollKey: string | null;
 }
 
 interface CommitReviewCacheSlot {
@@ -192,7 +195,38 @@ export class SourceControlStore {
     const runtime = this.runtime(projectId, workspacePath);
     const next = Math.max(0, Math.floor(historyPage));
     if (runtime.snapshot.historyPage === next) return;
+    runtime.historyCommitScrollTop = 0;
     this.update(runtime, { ...runtime.snapshot, historyPage: next });
+  }
+
+  historyScrollPositions(
+    projectId: string,
+    workspacePath: string | null | undefined,
+    reviewKey?: string | null,
+  ) {
+    const runtime = this.runtime(projectId, workspacePath, false);
+    return {
+      commitList: runtime.historyCommitScrollTop,
+      reviewList: reviewKey != null && runtime.historyReviewScrollKey === reviewKey
+        ? runtime.historyReviewScrollTop
+        : 0,
+    };
+  }
+
+  setHistoryScrollPosition(
+    projectId: string,
+    workspacePath: string | null | undefined,
+    area: 'commit-list' | 'review-list',
+    scrollTop: number,
+    reviewKey?: string | null,
+  ) {
+    const runtime = this.runtime(projectId, workspacePath, false);
+    const next = Math.max(0, scrollTop);
+    if (area === 'commit-list') runtime.historyCommitScrollTop = next;
+    else {
+      runtime.historyReviewScrollKey = reviewKey ?? null;
+      runtime.historyReviewScrollTop = next;
+    }
   }
 
   selectCommit(
@@ -370,6 +404,7 @@ export class SourceControlStore {
         revision: history.revision,
       });
       if (runtime.historyRequestRevision !== requestRevision) return;
+      if (advancePage) runtime.historyCommitScrollTop = 0;
       this.update(runtime, {
         ...runtime.snapshot,
         history: {
@@ -741,6 +776,9 @@ export class SourceControlStore {
         monitorStartPromise: null,
         invalidationTimer: null,
         finishingOperationId: null,
+        historyCommitScrollTop: 0,
+        historyReviewScrollTop: 0,
+        historyReviewScrollKey: null,
       };
       this.sessions.set(storageKey, runtime);
       this.aliases.set(routeKey, storageKey);

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::ChildStdin;
 use std::sync::{
@@ -708,6 +708,21 @@ pub struct AdapterConnectionResolution {
     pub outcome: AdapterConnectionOutcome,
 }
 
+fn is_same_connection_generation<T>(
+    current: &Arc<T>,
+    expected: &Arc<T>,
+    current_generation: u64,
+    expected_generation: u64,
+) -> bool {
+    Arc::ptr_eq(current, expected) && current_generation == expected_generation
+}
+
+#[derive(Debug, Clone)]
+pub struct AdapterInitializationOutcome {
+    pub capabilities: Value,
+    pub performed: bool,
+}
+
 #[derive(Debug)]
 pub struct PendingRequest {
     pub id: u64,
@@ -753,7 +768,7 @@ pub struct AdapterConnection {
     session_routes: Mutex<HashMap<String, SessionRouteSender>>,
     early_session_frames: Mutex<EarlySessionFrames>,
     unrouted_warnings: Mutex<HashMap<String, UnroutedWarningState>>,
-    initialized_capabilities: Mutex<Option<Value>>,
+    initialization: ConnectionInitialization,
     active_prompts: ActivePromptTracker,
     generation: u64,
     last_activity_at: Mutex<Instant>,
@@ -777,6 +792,117 @@ impl Drop for ActivePromptGuard {
 #[derive(Debug, Default)]
 struct SessionConfigTransaction {
     lock: Mutex<()>,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionInitialization {
+    state: Mutex<ConnectionInitializationState>,
+    changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+enum ConnectionInitializationState {
+    #[default]
+    Uninitialized,
+    Initializing,
+    Initialized(Value),
+    Failed,
+}
+
+struct ConnectionInitializationAttempt<'a> {
+    initialization: &'a ConnectionInitialization,
+    settled: bool,
+}
+
+impl Drop for ConnectionInitializationAttempt<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        if let Ok(mut state) = self.initialization.state.lock() {
+            if matches!(*state, ConnectionInitializationState::Initializing) {
+                *state = ConnectionInitializationState::Failed;
+            }
+        }
+        self.initialization.changed.notify_all();
+    }
+}
+
+impl ConnectionInitialization {
+    fn capabilities(&self) -> Option<Value> {
+        self.state.lock().ok().and_then(|state| match &*state {
+            ConnectionInitializationState::Initialized(capabilities) => Some(capabilities.clone()),
+            ConnectionInitializationState::Uninitialized
+            | ConnectionInitializationState::Initializing
+            | ConnectionInitializationState::Failed => None,
+        })
+    }
+
+    fn initialize_once(
+        &self,
+        initialize: impl FnOnce() -> Result<Value>,
+    ) -> Result<AdapterInitializationOutcome> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
+        loop {
+            match &*state {
+                ConnectionInitializationState::Initialized(capabilities) => {
+                    return Ok(AdapterInitializationOutcome {
+                        capabilities: capabilities.clone(),
+                        performed: false,
+                    });
+                }
+                ConnectionInitializationState::Failed => {
+                    bail!("ACP connection initialization previously failed");
+                }
+                ConnectionInitializationState::Initializing => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
+                }
+                ConnectionInitializationState::Uninitialized => {
+                    *state = ConnectionInitializationState::Initializing;
+                    break;
+                }
+            }
+        }
+        drop(state);
+
+        let mut attempt = ConnectionInitializationAttempt {
+            initialization: self,
+            settled: false,
+        };
+        match initialize() {
+            Ok(capabilities) => {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
+                *state = ConnectionInitializationState::Initialized(capabilities.clone());
+                attempt.settled = true;
+                drop(state);
+                self.changed.notify_all();
+                Ok(AdapterInitializationOutcome {
+                    capabilities,
+                    performed: true,
+                })
+            }
+            Err(error) => {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow!("ACP connection initialization lock poisoned"))?;
+                *state = ConnectionInitializationState::Failed;
+                attempt.settled = true;
+                drop(state);
+                self.changed.notify_all();
+                Err(error)
+            }
+        }
+    }
 }
 
 impl SessionConfigTransaction {
@@ -840,7 +966,7 @@ impl AdapterConnection {
             session_routes: Mutex::new(HashMap::new()),
             early_session_frames: Mutex::new(EarlySessionFrames::default()),
             unrouted_warnings: Mutex::new(HashMap::new()),
-            initialized_capabilities: Mutex::new(None),
+            initialization: ConnectionInitialization::default(),
             active_prompts: ActivePromptTracker::default(),
             generation: NEXT_CONNECTION_GENERATION.fetch_add(1, Ordering::Relaxed),
             last_activity_at: Mutex::new(Instant::now()),
@@ -920,16 +1046,14 @@ impl AdapterConnection {
     }
 
     pub fn initialized_capabilities(&self) -> Option<Value> {
-        self.initialized_capabilities
-            .lock()
-            .ok()
-            .and_then(|capabilities| capabilities.clone())
+        self.initialization.capabilities()
     }
 
-    pub fn set_initialized_capabilities(&self, capabilities: Value) {
-        if let Ok(mut cached) = self.initialized_capabilities.lock() {
-            *cached = Some(capabilities);
-        }
+    pub fn initialize_once(
+        &self,
+        initialize: impl FnOnce() -> Result<Value>,
+    ) -> Result<AdapterInitializationOutcome> {
+        self.initialization.initialize_once(initialize)
     }
 
     pub fn begin_request(&self, method: &str, params: Value) -> Result<PendingRequest> {
@@ -1431,9 +1555,50 @@ fn session_id_from_frame(value: &Value) -> Option<&str> {
 }
 
 #[derive(Default)]
+struct ConnectionCreationGate {
+    in_flight: Mutex<HashSet<AdapterConnectionKey>>,
+    changed: Condvar,
+}
+
+struct ConnectionCreationGuard<'a> {
+    gate: &'a ConnectionCreationGate,
+    key: AdapterConnectionKey,
+}
+
+impl ConnectionCreationGate {
+    fn enter(&self, key: &AdapterConnectionKey) -> Result<ConnectionCreationGuard<'_>> {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .map_err(|_| anyhow!("ACP connection creation gate lock poisoned"))?;
+        while in_flight.contains(key) {
+            in_flight = self
+                .changed
+                .wait(in_flight)
+                .map_err(|_| anyhow!("ACP connection creation gate lock poisoned"))?;
+        }
+        in_flight.insert(key.clone());
+        Ok(ConnectionCreationGuard {
+            gate: self,
+            key: key.clone(),
+        })
+    }
+}
+
+impl Drop for ConnectionCreationGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut in_flight) = self.gate.in_flight.lock() {
+            in_flight.remove(&self.key);
+        }
+        self.gate.changed.notify_all();
+    }
+}
+
+#[derive(Default)]
 pub struct AdapterConnectionManager {
     connections: Mutex<HashMap<AdapterConnectionKey, Arc<AdapterConnection>>>,
     attempt_sessions: Mutex<HashMap<String, LiveAcpSession>>,
+    creation_gate: ConnectionCreationGate,
 }
 
 impl AdapterConnectionManager {
@@ -1478,6 +1643,14 @@ impl AdapterConnectionManager {
             });
         }
 
+        let _creation_guard = self.creation_gate.enter(&key)?;
+        if let Some(existing) = self.existing_ready_connection(&key, &signature) {
+            return Ok(AdapterConnectionResolution {
+                connection: existing,
+                outcome: AdapterConnectionOutcome::Reused,
+            });
+        }
+
         let stale = self
             .connections
             .lock()
@@ -1505,6 +1678,30 @@ impl AdapterConnectionManager {
             connection,
             outcome,
         })
+    }
+
+    pub fn evict_if_current(
+        &self,
+        key: &AdapterConnectionKey,
+        expected: &Arc<AdapterConnection>,
+    ) -> bool {
+        let removed = self.connections.lock().ok().and_then(|mut connections| {
+            let matches = connections.get(key).is_some_and(|current| {
+                is_same_connection_generation(
+                    current,
+                    expected,
+                    current.generation(),
+                    expected.generation(),
+                )
+            });
+            matches.then(|| connections.remove(key)).flatten()
+        });
+        if let Some(connection) = removed {
+            connection.shutdown();
+            true
+        } else {
+            false
+        }
     }
 
     fn existing_ready_connection(
@@ -1836,13 +2033,18 @@ fn persist_cancelled_session_file(path: &Utf8Path) -> Result<()> {
             .unwrap_or("session");
         json!({
             "sessionId": session_id,
-            "status": "cancelled",
+            "availability": "established",
+            "latestTurnStatus": "cancelled",
             "restored": false,
             "createdAt": current_timestamp(),
         })
     };
     let now = current_timestamp();
-    session["status"] = json!("cancelled");
+    if let Some(object) = session.as_object_mut() {
+        object.remove("status");
+    }
+    session["availability"] = json!("established");
+    session["latestTurnStatus"] = json!("cancelled");
     session["stopReason"] = json!("cancelled");
     session["updatedAt"] = json!(now.clone());
     if session.get("updated_at").is_some() {
@@ -1860,19 +2062,187 @@ mod tests {
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, mpsc};
+    use std::sync::{
+        Arc, Barrier, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
 
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
-        AdapterConnectionState, EarlySessionFrames, SessionConfigTransaction, SessionEventPump,
-        SessionRouteTryRecvError, persist_cancelled_session_snapshot, record_unrouted_warning,
+        AdapterConnectionState, ConnectionCreationGate, ConnectionInitialization,
+        EarlySessionFrames, SessionConfigTransaction, SessionEventPump, SessionRouteTryRecvError,
+        is_same_connection_generation, persist_cancelled_session_snapshot, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
         select_provider_connection_keys, session_id_from_frame, session_route_pair,
         settle_attempt_for_session_close,
     };
+
+    #[test]
+    fn parallel_callers_share_one_connection_initialize() {
+        let initialization = Arc::new(ConnectionInitialization::default());
+        let started = Arc::new(Barrier::new(3));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let initialization = Arc::clone(&initialization);
+            let started = Arc::clone(&started);
+            let calls = Arc::clone(&calls);
+            workers.push(thread::spawn(move || {
+                started.wait();
+                initialization
+                    .initialize_once(|| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        thread::sleep(Duration::from_millis(30));
+                        Ok(json!({ "loadSession": true }))
+                    })
+                    .unwrap()
+            }));
+        }
+        started.wait();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.performed).count(),
+            1
+        );
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
+        );
+    }
+
+    #[test]
+    fn failed_initialize_poison_is_confined_to_the_old_connection() {
+        let old_initialization = ConnectionInitialization::default();
+        let first = old_initialization.initialize_once(|| anyhow::bail!("ambiguous transport"));
+
+        assert!(first.is_err());
+        let repeated = old_initialization
+            .initialize_once(|| panic!("a failed connection must never initialize again"));
+        assert!(repeated.is_err());
+
+        let replacement_initialization = ConnectionInitialization::default();
+        let second = replacement_initialization
+            .initialize_once(|| Ok(json!({ "resumeSession": true })))
+            .unwrap();
+        assert!(second.performed);
+        assert_eq!(second.capabilities, json!({ "resumeSession": true }));
+    }
+
+    #[test]
+    fn panicking_initialize_wakes_waiters_and_poisons_the_connection() {
+        let initialization = ConnectionInitialization::default();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = initialization.initialize_once(|| panic!("initialize panic"));
+        }));
+
+        assert!(panic.is_err());
+        let repeated = initialization
+            .initialize_once(|| panic!("a failed connection must never initialize again"));
+        assert!(repeated.is_err());
+    }
+
+    #[test]
+    fn cancelled_waiter_does_not_abort_shared_initialize_for_another_attempt() {
+        let initialization = Arc::new(ConnectionInitialization::default());
+        let attempt_a_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let session_new_count = Arc::new(AtomicUsize::new(0));
+        let (initialize_started_tx, initialize_started_rx) = mpsc::channel();
+        let (release_initialize_tx, release_initialize_rx) = mpsc::channel();
+
+        let a_initialization = Arc::clone(&initialization);
+        let a_cancelled = Arc::clone(&attempt_a_cancelled);
+        let a_session_new_count = Arc::clone(&session_new_count);
+        let attempt_a = thread::spawn(move || {
+            let outcome = a_initialization
+                .initialize_once(|| {
+                    initialize_started_tx.send(()).unwrap();
+                    release_initialize_rx.recv().unwrap();
+                    Ok(json!({ "loadSession": true }))
+                })
+                .unwrap();
+            if !a_cancelled.load(Ordering::SeqCst) {
+                a_session_new_count.fetch_add(1, Ordering::SeqCst);
+            }
+            outcome
+        });
+        initialize_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        let b_initialization = Arc::clone(&initialization);
+        let b_session_new_count = Arc::clone(&session_new_count);
+        let attempt_b = thread::spawn(move || {
+            let outcome = b_initialization
+                .initialize_once(|| panic!("attempt B must consume the shared initialize result"))
+                .unwrap();
+            b_session_new_count.fetch_add(1, Ordering::SeqCst);
+            outcome
+        });
+        attempt_a_cancelled.store(true, Ordering::SeqCst);
+        release_initialize_tx.send(()).unwrap();
+
+        let a_outcome = attempt_a.join().unwrap();
+        let b_outcome = attempt_b.join().unwrap();
+        assert!(a_outcome.performed);
+        assert!(!b_outcome.performed);
+        assert_eq!(session_new_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_old_generation_cannot_match_its_replacement() {
+        let old = Arc::new(());
+        let replacement = Arc::new(());
+
+        assert!(!is_same_connection_generation(&replacement, &old, 2, 1));
+        assert!(!is_same_connection_generation(&old, &old, 2, 1));
+        assert!(is_same_connection_generation(&old, &old, 1, 1));
+    }
+
+    #[test]
+    fn connection_creation_is_single_flight_per_key() {
+        let gate = Arc::new(ConnectionCreationGate::default());
+        let key = AdapterConnectionKey::new("codex-acp", Utf8PathBuf::from("/repo"));
+        let first_gate = Arc::clone(&gate);
+        let first_key = key.clone();
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first = thread::spawn(move || {
+            let _guard = first_gate.enter(&first_key).unwrap();
+            first_entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        let second_gate = Arc::clone(&gate);
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            let _guard = second_gate.enter(&key).unwrap();
+            second_entered_tx.send(()).unwrap();
+        });
+        assert!(
+            second_entered_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        second_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+    }
 
     #[test]
     fn session_config_transactions_do_not_overlap() {
@@ -1968,6 +2338,7 @@ mod tests {
                 }))
                 .unwrap(),
                 created_at: "1Z".to_string(),
+                timeline_identity: None,
             },
         )
         .unwrap();
@@ -2011,6 +2382,19 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(prompts.count_for_session(&session_id), 1);
+    }
+
+    #[test]
+    fn settling_one_established_session_does_not_affect_another_session() {
+        let prompts = ActivePromptTracker::default();
+        prompts.mark_active("session-a");
+        prompts.mark_active("session-b");
+
+        prompts.mark_inactive("session-a");
+
+        assert_eq!(prompts.count_for_session("session-a"), 0);
+        assert_eq!(prompts.count_for_session("session-b"), 1);
+        assert_eq!(prompts.count(), 1);
     }
 
     #[test]
@@ -2391,7 +2775,9 @@ mod tests {
         let snapshot: serde_json::Value =
             read_json(&attempt_dir.join("acp.snapshot.json")).unwrap();
         assert_eq!(
-            snapshot.get("status").and_then(|value| value.as_str()),
+            snapshot
+                .get("latestTurnStatus")
+                .and_then(|value| value.as_str()),
             Some("cancelled")
         );
         assert_eq!(

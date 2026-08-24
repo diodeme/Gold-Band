@@ -65,40 +65,62 @@ AUTO 模式本质上是一个只有 AI-DYNAMIC 节点的工作流。
 
 ### 功能
 - 查看已保存的工作流模板列表
-- 内置默认模板使用稳定 ID `default` 作为存储与引用身份；所有展示入口（运行模式管理、会话 composer、旧任务创建页和工作流编辑器）根据当前界面语言显示“默认工作流 / Default workflow”，不得直接展示持久化历史名称。用户创建的模板名称保持原样。
+- 内置模板使用后端 `isBuiltIn` 布尔元数据作为不可覆盖、不可删除等管理策略的唯一来源，不定义完整/轻量类型枚举。稳定 ID `default` 保持不变并显示“默认完整工作流 / Default full workflow”；新增稳定 ID `default-lightweight` 并显示“默认轻量工作流 / Default lightweight workflow”。所有入口（运行模式管理、会话 composer、旧任务创建页和工作流编辑器）按当前界面语言显示内置名称，用户创建的模板名称保持原样。
+- 内置模板可声明 `optionalEntryStage`：完整模板对应 interview，轻量模板对应 grill。composer 对当前模板展示“需求采访”或“需求拷问”Switch，偏好按 workspace 和模板 ID 分别记忆；自定义模板隐藏开关。关闭只影响后续创建的 workflow 副本，运行模式管理页始终编辑完整模板拓扑。内置模板不可覆盖或删除，另存时剥离全部内置元数据。
+- 浏览器预览 facade 与桌面端使用同一 `ConversationRunModeVm` 契约：配置按 project 隔离保存并在读写边界深拷贝，`optionalEntryPreferences` 必须完整往返，不能用固定 AUTO 响应掩盖 workspace 或模板偏好问题。
+- 所有内置与自定义模板都由工作流定义和用户本机模型绑定组成。绑定属于用户级模板配置并跨 workspace 共用，同一模板只有一套；系统升级替换内置定义时保留仍能按稳定槽位关联的绑定，新普通 Worker 保持未配置，已删除 Worker 不再参与解析。
+- `WorkflowTemplate` 直接嵌入 `modelBindings`，定义与绑定在用户级 `workflows.json` 中作为一个模板聚合原子保存，不维护按名称反查的旁路索引或第二份绑定文件。
 - 新建、编辑、删除模板
 - 最后使用的模板记忆（workspace 级）
 - 会话 composer 选择 WORKFLOW 模式时展示工作流模板下拉，并提供跳转工作流模式 tab 的快速入口
 - WORKFLOW 模式发起会话等价于旧 UI 使用指定工作流创建 task
 - 运行模式管理的工作流模板编辑区、旧 UI 创建任务抽屉、任务工作流页必须复用同一个 `WorkflowEditor` 组件；各入口只允许保留不同的外层模板选择/保存编排
 - 工作流模板“新增模板”必须创建可编辑的空 `WorkflowDsl` 草稿并立即进入 `WorkflowEditor`；选择器显示“新增模板（未保存）”。空态只用于模板 store 不可用或没有可编辑草稿，不用于新增模板流程。
-- 工作流模板编辑器必须区分完整 `WorkflowDsl` 草稿和画布投影：右侧 Inspector 的目标、模型、角色、权限、校验 schema、表达式、动态路由 prompt、动态控制等配置字段输入只更新编辑草稿，不应触发画布节点/边投影重算；只有节点增删、节点 id/type/provider、边 from/to/on、选中态、校验高亮和终点显隐等会改变画布呈现的字段才刷新 ReactFlow。
-- 普通 Worker 节点和 AI-DYNAMIC 的固定、动态 Agent 策略必须复用 Direct 的 ACP 模型复合选择器。固定策略的模型分别写入既有 `model` / `agentStrategy.model`，思考强度按 Agent 返回的真实 option id 写入节点 `config_options` / `configOptions`；动态策略写入初始分发、验收和各候选 Agent 自己的 role-scoped config options。不得硬编码 `reasoning_effort` 等 provider 专用字段；切换 Agent 或策略时同时清空对应模型与 option overrides，避免跨 Agent 污染。
+- 工作流模板编辑器必须区分完整 `WorkflowDsl` 草稿和画布投影：右侧 Inspector 的目标、模型、角色、权限、校验 schema、表达式、动态路由 prompt、动态控制等配置字段输入只更新编辑草稿，不应触发画布节点/边投影重算；只有节点增删、节点 id/type、边 from/to/on、选中态、校验高亮和终点显隐等会改变画布呈现的字段才刷新 ReactFlow。
+- 工作流编辑器的实时校验必须显式区分 profile catalog 的加载状态与已加载空集合。目录加载期间继续执行 DSL 结构、必填项和拓扑校验，但不得把尚未解析的 profile 引用报告为“角色不存在或已删除”；目录成功到达后自动恢复完整引用校验。运行模式页在目录就绪前禁用工作流模板的“保存修改”和“另存为新的工作流”，避免使用未知目录生成错误验收结论。
+- 普通 Worker 节点必须复用 Direct 的 ACP 模型复合选择器，并把 Agent、模型、权限及 Agent capability 声明的全部 session config options 写入独立本机模型绑定；作者态 `WorkflowDsl` 中对应执行字段保持为空。思考强度使用 Agent 返回的真实 option id，不得硬编码 `reasoning_effort` 等 provider 专用字段；切换 Agent 时清空旧模型、权限和 option overrides，避免跨 Agent 污染。
+- AI-DYNAMIC 及其内部动态节点不使用普通 Worker 模型绑定或执行槽位，继续由现有 AUTO / AI-DYNAMIC 运行时统一配置与解析。
+- 每个普通 Worker 使用内部、不可编辑的 `executionSlotId` 关联绑定。修改 node id 保留槽位与绑定；内置 Worker 使用跨版本固定 ID；新建自定义 Worker 使用 UUID；复制 Worker 生成新槽位并复制完整模型绑定。
+- 普通 Worker Inspector 的“模型配置”包含 Agent、模型、全部 Agent config options、权限模式和“同步至其他节点”，“节点配置”承载工作流定义字段。三个带边界分区的顺序固定为“模型配置 → 工作流控制 → 节点配置”，分区标题旁不显示 `worker` 等实现类型标识。模型字段变化不得触发 ReactFlow 拓扑重算。
+- “同步至其他节点”只处理当前工作流内的普通 Worker，默认把完整绑定填充到未配置 Worker；用户可显式选择覆盖已有配置。确认界面必须明确提示“仅当前工作流”，并展示实际 Agent、模型、权限、config options 以及填充、覆盖、跳过数量，最终按整份绑定快照原子保存。
+- 内置与自定义模板的主按钮统一命名为“保存修改”。内置模板只有定义未变且全部普通 Worker 绑定有效时才允许保存绑定；自定义模板原子保存定义与绑定，并允许保留不完整或失效的不可运行状态。模型、权限和 config options 的显式值必须属于最新 doctor 能力目录；Agent doctor 成功但目录缺失时，“不指定”仍是有效值。
+- 内置工作流存在任何定义改动时禁用“保存修改”，并提供“另存为新工作流”和“还原其他修改”。前者保存全部当前草稿为普通自定义模板；后者恢复系统定义并保留仍有归属的模型绑定草稿。未配完的内置草稿只存在于当前编辑会话，离开时确认，应用重启不恢复。
 - “保存为新的工作流”不会继承来源 `workflow.id` 作为新模板 DSL ID；后端保存时生成 `workflow-{uuid}`，如与现有模板冲突最多重试 3 次
 - 工作流模板存储在用户目录 `~/.gold-band/context/workflows.json`，属于用户级跨 workspace 模板；若新路径不存在且当前 workspace 仍存在旧版 `authoring/workflows.json`，首次读取时会复制迁移到用户级 context
 - 保存/删除后必须立即刷新当前页面和会话主页持有的 workflow template store；另存成功后以保存结果中的模板身份更新当前运行模式和编辑选择，新模板应立刻出现在模板选择器中并保持显示保存后的模板名，不能回退到默认工作流
+
+### Profile catalog 生命周期（Phase 73）
+
+- 所有复用 `WorkflowEditor` 的入口必须传入同一三态 `profileCatalog` 契约：`loading`、`ready` 或 `error`；`profiles: []` 只表示已成功加载且目录为空，不能表达未加载或失败。
+- `loading` 时继续执行不依赖角色目录的 DSL 结构、必填项和拓扑校验，但不生成角色缺失错误，也不允许保存；`ready` 后才执行普通 Worker 与 AI-DYNAMIC `allowedProfiles` 的引用存在性校验。
+- `error` 必须在编辑区域展示结构化错误文案和“重新加载”操作；保存/另存按钮保持禁用直到重试成功，不能静默失败或永久无入口。
+- 目录请求由入口自身管理，使用请求代次忽略卸载、切换和重试产生的迟到响应；不使用全局缓存、自动轮询或名称反查。
 
 ## 校验规则
 
 创建新会话时校验：
 - workspace 已选择
 - AUTO 模式：固定策略要求 agent；动态策略要求 bootstrap agent 和至少一个可用 agent；决策指南为空时，每个可用 agent 必须配置模型
-- WORKFLOW 模式：workflow 模板存在且通过与运行模式管理保存相同的 DSL/Agent/Profile 校验；例如节点权限模式不属于当前 Agent 时必须阻断启动
+- WORKFLOW 模式：workflow 模板存在且定义合法；每个普通 Worker 都必须绑定可用 Agent，显式模型、权限和 config options 必须通过最新权威 doctor 缓存校验。AI-DYNAMIC 不计入普通 Worker 模型绑定校验。
+- profile catalog 尚未加载完成属于 `unknown`，不等于角色已删除；只有权威目录成功返回后，才允许产生 profile 引用缺失错误。显式保存与创建会话仍必须执行完整引用校验，不得把加载期的局部校验结果当作可执行性结论。
+- 校验失败时阻断创建 Task / Run；后端结构化错误 `params` 返回 `workflowTemplateId`、`nodeId` 与 `executionSlotId`，前端据此 deep link 到运行模式管理页的目标工作流并聚焦第一个问题普通 Worker。不进入首次运行向导，不显示步骤进度，不保留启动意图，也不在保存后自动续跑。用户保存修复后自行再次发起运行。
 - 校验失败时在 composer 下方持续展示错误和修复入口，直到用户重新发送或页面重新加载；不使用短暂消失的顶部 toast 承载阻断错误
 - 工作流模板保存/另存被 DSL 校验或后端校验拦截时，必须在模板编辑区域展示错误原因，不允许表现为按钮无反应
 
 ## ACP 模型配置
 
 - Direct/AUTO 发起会话、工作流节点 Inspector、AUTO 固定 Agent 模板配置与 ACP 已建立后的追问 composer 共用同一个模型复合选择器：单一“模型”触发器的第一层提供“模型”和“思考强度”，第二层展示对应选项；权限模式保持独立。追问区虽然嵌套在 PromptInput 内，但点击配置按钮、菜单项等交互元素时不得触发输入框聚焦，弹层位置必须跟随触发器，不允许落到抽屉或页面左上角。
-- 思考强度属于通用 ACP config option override：能力发现只识别 `category=thought_level`，持久化使用 Agent 返回的 option id。普通 Worker 使用 DSL `config_options`，AI-DYNAMIC 与会话 AUTO 使用 camelCase `configOptions`，运行时继续通过既有 `BTreeMap<String, String>` 管道传给 provider。
+- 思考强度属于通用 ACP config option override：能力发现只识别 `category=thought_level`，持久化使用 Agent 返回的 option id。工作流模板的普通 Worker 把该 option 保存到本机模型绑定；AI-DYNAMIC 与会话 AUTO 继续使用各自现有的运行时 `configOptions`。运行解析后仍通过既有 `BTreeMap<String, String>` 管道传给 provider。
 - 复合选择器的子菜单开合由 Radix DropdownMenu 原生的指针、点击与键盘状态统一管理，业务组件不得重复绑定点击切换，避免一次点击发生两次状态翻转。
 - Composer 内相邻的模型与权限配置菜单统一使用非模态 DropdownMenu 交互；无论当前展开哪一个，单击另一个都必须在同一次点击中完成关闭旧菜单并打开新菜单，不允许使用会消费第一次外部点击的模态 Select 弹层。
 - 发起会话前允许模型、权限和思考强度回到“不指定”；进入追问 session 后，“不指定”只在对应显式 override 尚未建立时提供，任一配置选择具体值后便不能再清空，只能切换到其他具体值。
 - 用户切换模型后，当前 session snapshot/configOptions 的 current model 要作为下一次 ACP prompt 的模型 override 传给 provider；回复完成后 UI 不应回退到切换前模型
+- 工作流模板本机模型绑定与 ACP 已建立后的 session override 是两个生命周期：前者在创建 Task 时复制为 Task 绑定，并在新建 Run 前注入同一个 `WorkflowDsl` 形成不可变可执行快照；后者只影响当前 session，不得反向回写 Task 或模板。模板、Task 后续编辑和应用升级不得改变既有 Run；Agent 删除不改写快照或绑定，但尚未启动的 Worker 仍须能解析对应 Managed Agent，否则结构化阻断。
 
 ## 与 Agent/Context 管理的边界
 
 - Agent 管理：独立页面，管理 agent 的配置和诊断
+- 删除 Managed Agent 前按稳定 Agent ID 统计受影响的模板、Task 与定时任务并在二次确认中分别展示数量；统计失败时不得静默少报。确认删除不级联清理绑定，后续由结构化修复流程处理失效引用。
 - 上下文管理：独立页面，管理角色（profile）
 - 运行模式管理：仅管理 AUTO 与工作流模式，通过引用 Agent、角色和工作流模板完成组合，不复制其源配置
 

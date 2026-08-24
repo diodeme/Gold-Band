@@ -93,7 +93,7 @@ export function McpServerCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{server.name}</span>
-            <Badge variant="outline" className={cn('shrink-0 border px-1.5 py-0 text-[10px] font-normal', TRANSPORT_BADGE_CLASS[server.transport])}>{transportLabel}</Badge>
+            <Badge variant="outline" className={cn('shrink-0 border px-1.5 py-0 text-ui-micro font-normal', TRANSPORT_BADGE_CLASS[server.transport])}>{transportLabel}</Badge>
             {server.helpMessage && (
               <Popover>
                 <PopoverTrigger asChild>
@@ -107,7 +107,7 @@ export function McpServerCard({
               </Popover>
             )}
           </div>
-          <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{server.command ?? server.url ?? ''}</p>
+          <p className="mt-1 truncate font-mono text-ui-caption text-muted-foreground">{server.command ?? server.url ?? ''}</p>
         </div>
         <button
           type="button" role="switch" aria-checked={server.enabled}
@@ -132,7 +132,7 @@ export function McpServerCard({
               onDiagnoseAgent={onDiagnoseAgent}
             />
           ) : agentCompatLoading ? (
-            <div className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-1.5 px-1 text-ui-caption text-muted-foreground">
               <Loader2 className="size-3 animate-spin" />
               <span>{t('contextManagement.mcp.compatLoading', '检测 Agent 兼容性…')}</span>
             </div>

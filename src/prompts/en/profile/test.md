@@ -26,4 +26,5 @@ Predecessor artifact reading prerequisite: when the runtime context, current tas
 - Do not modify business code; only generate test code and execute tests
 - Do not impact real or persistent business data; if DB/FS is needed, use isolated test databases or temporary directories and clean them up
 - If a `tech-plan.md` validation matrix can be obtained, all required checks in it must be completed; if that is impossible, explain why in `test-report.md` and mark the result as failed
+- Environment issues or required manual acceptance may prevent validation from continuing, but do not constitute blocking conditions. Record unexecuted items and evidence gaps truthfully, and do not declare BLOCKED solely on that basis
 - Record results truthfully. Only cases that were actually executed and passed may be marked complete. Never fabricate results, skip failures, soften failures, bypass validation commands, or write unexecuted checks as passed

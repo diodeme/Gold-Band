@@ -48,14 +48,6 @@ pub fn current_channel_config() -> DesktopChannelConfig {
         multica_base_url: option_env!("GOLD_BAND_MULTICA_BASE_URL").unwrap_or(""),
         multica_app_url: option_env!("GOLD_BAND_MULTICA_APP_URL").unwrap_or(""),
     };
-    eprintln!(
-        "[metrics] compile-time channel={} metrics_enabled={} metrics_locked={} base_url={} apikey_set={}",
-        config.channel,
-        config.metrics_enabled,
-        config.metrics_toggle_locked,
-        config.metrics_base_url,
-        !config.metrics_api_key.is_empty(),
-    );
     config
 }
 

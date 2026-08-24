@@ -5,10 +5,12 @@ import type {
   ConversationDirectConfigVm,
   ManagedAgentVm,
   ProfileVm,
+  WorkflowRepairTarget,
   WorkflowTemplate,
   WorkflowTemplateStore,
 } from '@/types';
 import { workflowTemplateDisplayName } from '@/lib/workflow-template';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 export type SelectableAgentOption = {
   agent: ManagedAgentVm;
@@ -169,14 +171,43 @@ export function validateWorkflowTemplateForConversationStart(
   const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
   const validation = validateWorkflowForSave(
     template.workflow,
-    profiles,
+    readyWorkflowProfileCatalog(profiles),
     agents,
     t,
     workflowTemplates,
     template.id,
     workflowTemplateDisplayName(template, t),
+    true,
+    template.modelBindings,
   );
   return validation.valid ? [] : validation.issues.map((issue) => issue.message);
+}
+
+export function workflowRepairTargetForTemplate(
+  templateId: string | null | undefined,
+  agentRegistry: AgentRegistryVm | null,
+  profiles: ProfileVm[],
+  workflowTemplates: WorkflowTemplateStore | null,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): WorkflowRepairTarget | null {
+  const selectedId = templateId?.trim();
+  const template = workflowTemplates?.templates.find((item) => item.id === selectedId);
+  if (!selectedId || !template) return null;
+  const agents = agentRegistry?.agents.filter((agent) => agent.diagnostic?.available === true) ?? [];
+  const validation = validateWorkflowForSave(
+    template.workflow,
+    readyWorkflowProfileCatalog(profiles),
+    agents,
+    t,
+    workflowTemplates,
+    template.id,
+    workflowTemplateDisplayName(template, t),
+    true,
+    template.modelBindings,
+  );
+  const issue = validation.issues.find((item) => item.nodeId || item.nodeIds?.length);
+  const nodeId = issue?.nodeId ?? issue?.nodeIds?.[0];
+  return nodeId ? { workflowTemplateId: template.id, nodeId } : null;
 }
 
 export async function validateWorkflowTemplateForConversationStartWithFreshProfiles(

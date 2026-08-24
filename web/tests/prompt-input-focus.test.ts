@@ -21,6 +21,9 @@ describe("PromptInput click-to-focus", () => {
   it.each([
     ["button", "button"],
     ["combobox trigger", '[role="combobox"]'],
+    ["menu item", '[role="menuitem"]'],
+    ["checkbox menu item", '[role="menuitemcheckbox"]'],
+    ["radio menu item", '[role="menuitemradio"]'],
     ["textarea", "textarea"],
   ])("keeps focus on an interactive %s", (_label, selectorPart) => {
     expect(shouldFocusPromptInputTextarea(targetInside(selectorPart))).toBe(false)

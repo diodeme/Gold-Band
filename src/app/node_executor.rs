@@ -16,9 +16,10 @@ use crate::dsl::{
 use crate::observability::{ProgressStage, progress};
 use crate::prompts::PromptExecutionSurface;
 use crate::provider::{
-    OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef, PromptOutputContract,
-    PromptPredecessorContext, PromptRuntimeContext, PromptVisibility, ProviderRunResult,
-    ProviderRunStatus, StreamMode, UserPromptRenderMode, WorkerInvocation,
+    ConversationPromptInput, OutputEmissionMode, PromptArtifactRef, PromptAttachmentRef,
+    PromptOutputContract, PromptPredecessorContext, PromptRuntimeContext, PromptVisibility,
+    ProviderRunResult, ProviderRunStatus, RuntimeControlIntent, StreamMode, UserPromptRenderMode,
+    WorkerInvocation,
 };
 use crate::runtime::{
     NodeState, RoundState, RoundTraceStep, WorkerRefState, validate_node_state,
@@ -503,6 +504,7 @@ pub(crate) fn build_worker_invocation(
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
+    prompt_display: Option<ConversationPromptInput>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
@@ -570,9 +572,9 @@ pub(crate) fn build_worker_invocation(
         build_predecessor_contexts(app, task_id, run_id, round, node_id, attempt_id, workflow);
     let new_round_trigger =
         build_new_round_trigger_context(app, task_id, run_id, round, node_id, attempt_id, workflow);
-    let input_attachment_paths = match session_mode {
-        SessionMode::New => super::task_input_attachment_paths(app, task_id),
-        SessionMode::Continue => resume_input_attachment_paths,
+    let (task_input_attachment_paths, user_input_attachment_paths) = match session_mode {
+        SessionMode::New => (super::task_input_attachment_paths(app, task_id), Vec::new()),
+        SessionMode::Continue => (Vec::new(), resume_input_attachment_paths),
     };
 
     let mcp_resolution_started_at = Instant::now();
@@ -604,6 +606,8 @@ pub(crate) fn build_worker_invocation(
         "worker invocation built"
     );
 
+    let workspace_dir = super::orchestrator::run_workspace_dir(app, task_id, run_id)?;
+
     Ok(WorkerInvocation {
         invocation_kind,
         turn_control_mode: if prompt_envelope == crate::dsl::PromptEnvelopeMode::RawAgent {
@@ -611,7 +615,7 @@ pub(crate) fn build_worker_invocation(
         } else {
             TurnControlMode::RuntimeControlled
         },
-        runtime_control_resume_candidate: false,
+        runtime_control_intent: RuntimeControlIntent::Unchanged,
         prompt_envelope,
         execution_surface: PromptExecutionSurface::Workflow,
         profile,
@@ -620,7 +624,7 @@ pub(crate) fn build_worker_invocation(
         requirement_path: Some(app.paths.requirement_file(task_id)),
         requirement_text: None,
         adapter_workspace_dir: app.paths.repo_root.clone(),
-        workspace_dir: app.paths.repo_root.clone(),
+        workspace_dir,
         attempt_dir: runtime_context.attempt_dir.clone(),
         output_contract,
         runtime_context,
@@ -639,6 +643,7 @@ pub(crate) fn build_worker_invocation(
         continue_ref,
         resume_prompt,
         resume_prompt_id,
+        prompt_display,
         resume_prompt_visibility,
         stream_mode: StreamMode::StreamJson,
         log_prompts: app.config.log_prompts,
@@ -649,7 +654,11 @@ pub(crate) fn build_worker_invocation(
         }),
         cold_artifacts,
         cold_attachments,
-        input_attachment_paths,
+        task_input_attachment_paths,
+        user_input_attachment_paths,
+        attachment_projection_policy: crate::provider::AttachmentProjectionPolicy::from(
+            &app.config,
+        ),
         mcp_servers,
         scheduled_context: app.scheduled_task_context().cloned(),
     })
@@ -665,10 +674,9 @@ fn current_acp_config_option_overrides(attempt_dir: &camino::Utf8Path) -> BTreeM
     } else {
         return BTreeMap::new();
     };
-    read_json::<serde_json::Value>(&path)
+    crate::acp::events::load_session_metadata(&path, None)
         .ok()
-        .and_then(|value| value.get("configOptionOverrides").cloned())
-        .and_then(|value| serde_json::from_value(value).ok())
+        .map(|metadata| metadata.config_option_overrides)
         .unwrap_or_default()
 }
 
@@ -685,10 +693,11 @@ pub(crate) fn execute_ai_node(
     continue_ref: Option<serde_json::Value>,
     resume_prompt: Option<String>,
     resume_prompt_id: Option<String>,
+    prompt_display: Option<ConversationPromptInput>,
     resume_prompt_visibility: PromptVisibility,
     user_prompt_render_mode: UserPromptRenderMode,
     resume_input_attachment_paths: Vec<String>,
-    runtime_control_resume_candidate: bool,
+    runtime_control_intent: RuntimeControlIntent,
     model_override: Option<String>,
     permission_mode_override: Option<String>,
 ) -> Result<NodeState> {
@@ -705,13 +714,14 @@ pub(crate) fn execute_ai_node(
         continue_ref,
         resume_prompt,
         resume_prompt_id,
+        prompt_display,
         resume_prompt_visibility,
         user_prompt_render_mode,
         resume_input_attachment_paths,
         model_override,
         permission_mode_override,
     )?;
-    invocation.runtime_control_resume_candidate = runtime_control_resume_candidate;
+    invocation.runtime_control_intent = runtime_control_intent;
 
     progress(&format!(
         "calling provider for {}/{}/{}",
@@ -741,13 +751,53 @@ pub(crate) fn execute_ai_node(
     let live_update = app.acp_live_update_for(live_update_context.clone());
     let session_update = app.acp_session_update_for(live_update_context.clone());
     let prompt_accepted = app.acp_prompt_accepted_for(live_update_context);
+    let runtime_prompt_accepted = |prompt_id: &str| {
+        app.transition_runtime_execution_phase(
+            task_id,
+            run_id,
+            round_id,
+            node_id,
+            attempt_id,
+            crate::runtime::RuntimeExecutionPhase::RunningNode,
+        )?;
+        if let Some(callback) = prompt_accepted.as_ref() {
+            callback(prompt_id)?;
+        }
+        Ok(())
+    };
+    let runtime_phase_update = |phase| {
+        let phase = match phase {
+            crate::provider::ProviderRuntimePhase::FinalizingArtifact => {
+                crate::runtime::RuntimeExecutionPhase::FinalizingArtifact
+            }
+        };
+        let state_lock =
+            super::attempt_runtime_state_lock(app, task_id, run_id, round_id, node_id, attempt_id);
+        let _guard = state_lock
+            .lock()
+            .map_err(|_| anyhow!("attempt runtime state lock poisoned"))?;
+        let run_path = app.paths.run_file(task_id, run_id);
+        let mut durable_run: crate::runtime::RunState = read_json(&run_path)?;
+        if durable_run.status != RunStatus::Running
+            || durable_run.current_round.as_deref() != Some(round_id)
+            || durable_run.current_node.as_deref() != Some(node_id)
+            || durable_run.current_attempt.as_deref() != Some(attempt_id)
+        {
+            return Ok(());
+        }
+        durable_run.updated_at = super::ids::now_rfc3339_like();
+        durable_run.transition_current_execution(phase, durable_run.updated_at.clone())?;
+        crate::runtime::validate_run_state(&durable_run)?;
+        write_json(&run_path, &durable_run)
+    };
     let result = app
         .provider_for_id(provider_id)?
-        .run_worker_with_callbacks(
+        .run_worker_with_runtime_callbacks(
             invocation,
             live_update.as_ref().map(|callback| callback as _),
             session_update.as_ref().map(|callback| callback as _),
-            prompt_accepted.as_ref().map(|callback| callback as _),
+            Some(&runtime_prompt_accepted),
+            Some(&runtime_phase_update),
         )?;
 
     if !attempt_is_still_current_running(app, task_id, run_id, round_id, node_id, attempt_id)? {
@@ -1173,6 +1223,7 @@ mod tests {
     fn workflow_output_contract_uses_post_turn_projection() {
         let worker = WorkerNode {
             id: "review".to_string(),
+            execution_slot_id: None,
             provider: Some("claude-acp".to_string()),
             model: None,
             profile: None,
@@ -1400,6 +1451,7 @@ mod tests {
             control: Default::default(),
             nodes: vec![NodeDsl::Worker(WorkerNode {
                 id: "dev".to_string(),
+                execution_slot_id: None,
                 provider: Some("claude-acp".to_string()),
                 model: None,
                 profile: None,
@@ -1435,6 +1487,30 @@ mod tests {
             trace: Vec::new(),
             uuid: None,
         }
+    }
+
+    fn write_attachment_test_run(app: &App) {
+        let run = crate::runtime::RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "2026-07-01T00:00:00Z".to_string(),
+            updated_at: "2026-07-01T00:00:00Z".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("dev".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: None,
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        crate::storage::write_json(&app.paths.run_file("task-001", "run-001"), &run).unwrap();
     }
 
     fn trace_step(sequence: u32, node_id: &str, from_node_id: Option<&str>) -> RoundTraceStep {
@@ -1512,6 +1588,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let task_id = "task-001";
         let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
@@ -1533,6 +1610,7 @@ mod tests {
             Some(serde_json::json!({ "acpSessionId": "session-001" })),
             Some("continue".to_string()),
             Some("prompt-001".to_string()),
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::UserMessage,
             vec![resume_input.clone()],
@@ -1541,13 +1619,14 @@ mod tests {
         )
         .expect("invocation should build");
 
-        assert_eq!(invocation.input_attachment_paths, vec![resume_input]);
+        assert_eq!(invocation.user_input_attachment_paths, vec![resume_input]);
         assert!(
             !invocation
-                .input_attachment_paths
+                .user_input_attachment_paths
                 .iter()
                 .any(|path| path.ends_with("original.txt"))
         );
+        assert!(invocation.task_input_attachment_paths.is_empty());
     }
 
     #[test]
@@ -1556,6 +1635,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let task_id = "task-001";
         let task_input_dir = crate::app::task_inputs_dir(&app, task_id);
         std::fs::create_dir_all(task_input_dir.as_std_path()).unwrap();
@@ -1574,6 +1654,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             PromptVisibility::Visible,
             UserPromptRenderMode::RequirementTask,
             vec!["ignored-on-new.txt".to_string()],
@@ -1583,9 +1664,10 @@ mod tests {
         .expect("invocation should build");
 
         assert_eq!(
-            invocation.input_attachment_paths,
+            invocation.task_input_attachment_paths,
             vec![original_input.to_string()]
         );
+        assert!(invocation.user_input_attachment_paths.is_empty());
         assert_eq!(
             invocation.turn_control_mode,
             TurnControlMode::RuntimeControlled
@@ -1598,6 +1680,7 @@ mod tests {
         let repo_root =
             Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).expect("utf8 temp path");
         let app = App::with_config(repo_root, crate::config::RuntimeConfig::default());
+        write_attachment_test_run(&app);
         let mut workflow = attachment_test_workflow();
         let NodeDsl::Worker(worker) = &mut workflow.raw.nodes[0] else {
             panic!("expected worker node");
@@ -1616,6 +1699,7 @@ mod tests {
             &workflow,
             "dev",
             SessionMode::New,
+            None,
             None,
             None,
             None,

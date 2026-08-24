@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateWorkflowForSave } from '../src/components/WorkflowEditor';
 import type { ManagedAgentVm, ProfileVm, WorkflowDsl } from '../src/types';
+import { readyWorkflowProfileCatalog } from '../src/lib/workflow-profile-catalog';
 
 const t = (key: string, options?: Record<string, unknown>) => `${key}${options ? `:${JSON.stringify(options)}` : ''}`;
 
@@ -32,14 +33,32 @@ function worker(id: string) {
   return {
     type: 'worker' as const,
     id,
-    provider: 'claude-acp',
+    executionSlotId: `slot-${id}`,
     profile: 'developer',
     goal: `Run ${id}`,
+    output: { kind: 'json' as const, artifact: `${id}-result`, schema: { result: 'boolean' } },
+    success_condition: { expression: '$.result == true' },
   };
 }
 
 function validate(workflow: WorkflowDsl) {
-  return validateWorkflowForSave(workflow, profiles, agents, t, null, null, null, false);
+  return validateWorkflowForSave(
+    workflow,
+    readyWorkflowProfileCatalog(profiles),
+    agents,
+    t,
+    null,
+    null,
+    null,
+    false,
+    {
+      definitionRevision: '',
+      bindingRevision: 0,
+      bindings: workflow.nodes.flatMap((node) => node.type === 'worker' && node.executionSlotId
+        ? [{ executionSlotId: node.executionSlotId, agentId: 'claude-acp' }]
+        : []),
+    },
+  );
 }
 
 describe('WorkflowEditor new round entry validation', () => {

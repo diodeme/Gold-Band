@@ -82,8 +82,6 @@ function run(overrides: Partial<ConversationRunVm> = {}, attempts = [leaf('runni
     projectId: 'default',
     taskId: 'task-001',
     runId: 'run-001',
-    title: 'Task',
-    autoTitle: true,
     runMode: 'workflow',
     workflowTemplateId: null,
     runStatus: 'running',
@@ -187,7 +185,8 @@ describe('runtime-abnormal snapshots', () => {
       attemptId: 'attempt-001',
       lifecycle: {
         runtime: { status: 'paused', outcome: null, pauseReason: 'runtime-abnormal', resumable: true, current: true, active: false, continuable: true, phase: 'paused' },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        control: { mode: 'non-runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'paused',
         runtimeDisplay: runtimeAbnormalDisplay,
         continueKind: 'action',
@@ -254,7 +253,8 @@ describe('applyConversationSelectedSessionSnapshot', () => {
       attemptId: 'attempt-001',
       lifecycle: {
         runtime: { status: 'running', outcome: null, pauseReason: null, resumable: false, current: true, active: true, continuable: false, phase: 'runtime-active' },
-        acp: { status: 'cancelled', active: false, stopping: false, terminal: true },
+        control: { mode: 'runtime-controlled' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
         displayStatus: 'running',
         runtimeDisplay: runningDisplay,
         continueKind: null,

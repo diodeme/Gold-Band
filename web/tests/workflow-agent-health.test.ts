@@ -7,6 +7,7 @@ import {
   workflowEditorSupportedAgents,
 } from '@/components/WorkflowEditor';
 import type { AgentRegistryVm, ManagedAgentVm, WorkflowDsl } from '@/types';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 const failedAgent = {
   agentType: 'cursor',
@@ -51,7 +52,7 @@ describe('workflow agent health', () => {
       nodes: [{
         type: 'worker',
         id: 'cursor-node',
-        provider: 'cursor',
+        executionSlotId: 'slot-cursor',
         profile: 'developer',
         goal: 'Implement the change',
       }],
@@ -60,9 +61,14 @@ describe('workflow agent health', () => {
 
     const validation = validateWorkflowForSave(
       workflow,
-      [{ id: 'developer', name: 'Developer' }],
+      readyWorkflowProfileCatalog([{ id: 'developer', name: 'Developer' }]),
       [],
       (key) => key,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [{ executionSlotId: 'slot-cursor', agentId: 'cursor' }] },
     );
 
     expect(validation.valid).toBe(false);

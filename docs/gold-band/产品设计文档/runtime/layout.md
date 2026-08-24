@@ -104,6 +104,8 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 
 `projects/{project-id}` 存放某个仓库对应的全部 Gold Band 过程状态，包括 task authoring、run 状态、ACP runtime 文件、artifacts、attachments。
 
+`project-id` 是由规范化仓库路径确定性生成的 canonical identity，格式为 `{可读 slug}--{8 位 BLAKE3}`；运行时路径、测试和调用方必须读取 `GoldBandPaths::project_id`，不得重新拼接旧的纯 slug。
+
 系统级 debug 日志（`runtime.log`）为桌面/CLI 进程级全局日志，放在 `~/.gold-band/logs/`；桌面端启动时，即使当前还没有 task / run / ACP 事件，也必须先预创建 `~/.gold-band/logs/runtime.log`，保证首次启动、未选 workspace、目录选择器异常等问题都能有稳定的系统级排障落点。workspace 级过程日志仍通过 task/run/attempt 目录下的 `events.jsonl`、`run-progress.json`、`raw.stream.jsonl` 等文件保存。
 
 凡是桌面端在主线程触发的原生文件/目录选择器，也必须使用非阻塞调用并通过回调或事件把结果回传到 runtime；不能在 workspace 选择、会话 workspace 添加等入口使用 blocking dialog API，否则会把“打开选择器”本身变成不可观测的卡死点。
@@ -113,11 +115,17 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 ```json
 {
   "version": "0.1",
-  "projectId": "D--Projects-code-ai-Gold-Band",
-  "repoRoot": "D:/Projects/code/ai/Gold-Band",
-  "normalizedRepoRoot": "d:/projects/code/ai/gold-band"
+  "projectId": "d-projects-example-app--3d4964d2",
+  "repoRoot": "D:/Projects/Example App",
+  "normalizedRepoRoot": "d:/projects/example-app"
 }
 ```
+
+`project.json` 是可由 workspace 身份重新生成的低频 manifest，不是 Runtime 生命周期的 canonical state。桌面端只在 workspace 首次注册、桌面 workspace 切换，以及应用版本升级后 scheduler 重新注册既有 workspace 时执行 provision：先读取并比较 `version / projectId / repoRoot / normalizedRepoRoot`，内容一致时不写；新 runtime 缺失 manifest，或同一稳定 identity 的版本、原始路径发生变化时才原子替换。已有非空 runtime 缺失/损坏 manifest 或稳定 identity 不匹配时返回完整性错误，不静默覆盖。普通 `App` 构造、会话详情读取、恢复候选扫描和刷新不得隐式改写该文件；恢复候选只调用只读 identity 校验。
+
+文件替换统一使用 storage 层的 `atomic_write_file` helper，保持 `open 临时文件 → 写入 → commit/rename` 的单一路径。成功提交后临时路径随 rename 消失；写入或 commit 失败必须向调用层返回原始错误。`project.json` provision 的写入/commit I/O 失败不阻断已有 workspace 的普通读取，但桌面进程必须按指数频率聚合记录失败次数、manifest 路径、`ErrorKind` 和原始 OS error；manifest 缺失于已有非空 runtime、内容损坏或稳定 identity 不匹配仍属于数据完整性错误，不得被 best-effort 分支吞掉。允许 `atomic-write-file` 在极少数 commit 失败或进程异常退出时留下临时文件，不为二次清理引入自研事务、后台扫描或第二套持久状态。
+
+`run.json`、`round.json`、`node.json` 等生命周期文件继续遵守 canonical state 写入语义：状态写入失败必须返回错误并中止本次状态转换，不得因 manifest 的 best-effort 策略而被降级为仅记录日志。只有失败后的临时文件二次清理可以忽略。
 
 ---
 

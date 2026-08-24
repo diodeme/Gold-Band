@@ -4,11 +4,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   applyAcpScrollAnchorCompensation,
+  captureAcpBranchScrollState,
   captureAcpBranchViewState,
+  hasHydratedAcpSessionContent,
+  markAcpSessionContentHydrated,
   resetAcpResourceCache,
   restoreAcpBranchViewState,
   restoreAcpLoadedEvents,
   restoreAcpSession,
+  shouldInitiallyFollowAcpBranch,
   storeAcpBranchViewState,
   storeAcpLoadedEvents,
   storeAcpSession,
@@ -72,6 +76,12 @@ const event = (id: string): AcpUiEventVm => ({
 beforeEach(() => resetAcpResourceCache());
 
 describe('ACP branch view state cache', () => {
+  it('starts a remounted viewport from the cached follow intent', () => {
+    expect(shouldInitiallyFollowAcpBranch(state(100))).toBe(false);
+    expect(shouldInitiallyFollowAcpBranch({ ...state(100), atBottom: true })).toBe(true);
+    expect(shouldInitiallyFollowAcpBranch(null)).toBe(true);
+  });
+
   it('stores independent scroll, cursor, and bottom-lock state per branch', () => {
     storeAcpBranchViewState('attempt:root', state(100));
     storeAcpBranchViewState('attempt:agent-a', { ...state(500), atBottom: true, hasOlder: false });
@@ -93,6 +103,17 @@ describe('ACP branch view state cache', () => {
     }
     expect(restoreAcpSession('session-lru-0')).toBeNull();
     expect(restoreAcpSession('session-lru-12')?.branchId).toBe('agent-12');
+  });
+
+  it('distinguishes a hydrated content response from a cached session projection', () => {
+    storeAcpSession('hydration-session', session('agent-summary'));
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(false);
+
+    markAcpSessionContentHydrated('hydration-session');
+    storeAcpSession('hydration-session', session('agent-refreshed-summary'));
+
+    expect(hasHydratedAcpSessionContent('hydration-session')).toBe(true);
+    expect(restoreAcpSession('hydration-session')?.branchId).toBe('agent-refreshed-summary');
   });
 
   it('evicts session, events, and view state atomically by resource key', () => {
@@ -131,5 +152,21 @@ describe('ACP branch view state cache', () => {
     expect(applyAcpScrollAnchorCompensation(scroller, 'message-anchor', 60)).toBe(true);
     expect(scroller.scrollTop).toBe(120);
     expect(applyAcpScrollAnchorCompensation(scroller, 'missing', 60)).toBe(false);
+  });
+
+  it('updates scroll state without reading or scanning message DOM in the scroll hot path', () => {
+    const querySelectorAll = () => {
+      throw new Error('scroll hot path must not scan message DOM');
+    };
+    const scroller = { scrollTop: 240, querySelectorAll };
+
+    expect(captureAcpBranchScrollState(scroller, true, false, true)).toEqual({
+      anchorKey: null,
+      anchorOffset: 0,
+      scrollTop: 240,
+      atBottom: true,
+      hasOlder: false,
+      hasNewer: true,
+    });
   });
 });

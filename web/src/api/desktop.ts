@@ -1,5 +1,5 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopFontPreference, DesktopLanguage, DesktopThemePreference, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkspaceFileChangedEventVm } from '../types';
-import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, MulticaServerWorkspaceVm, MulticaSettingsVm, MulticaWorkspaceRefVm, PersonalizationPreference, PreferencesVm, ProfileInput, RemoteConversationSidebarVm, RemoteTaskVm, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -16,6 +16,32 @@ export interface MetricsSettingsVm {
 }
 
 const noopUnlisten = () => {};
+
+function emptyWorkflowModelBindings(): WorkflowModelBindings {
+  return { definitionRevision: '', bindingRevision: 0, bindings: [] };
+}
+
+export function wallpaperAssetUrl(token: string): string {
+  return convertFileSrc(token, 'gold-band-wallpaper');
+}
+
+function withWallpaperAssetUrls(preferences: PreferencesVm): PreferencesVm {
+  return {
+    ...preferences,
+    wallpapers: {
+      ...preferences.wallpapers,
+      recentWallpapers: preferences.wallpapers.recentWallpapers.map((wallpaper) => ({
+        ...wallpaper,
+        imageUrl: wallpaperAssetUrl(wallpaper.imageUrl),
+        thumbnailUrl: wallpaperAssetUrl(wallpaper.thumbnailUrl),
+      })),
+    },
+  };
+}
+
+function withWallpaperBootstrapAssetUrls(bootstrap: AppBootstrapVm): AppBootstrapVm {
+  return { ...bootstrap, preferences: withWallpaperAssetUrls(bootstrap.preferences) };
+}
 
 export const desktopApi: RuntimeApi = {
   getGitCapability(projectId) {
@@ -131,6 +157,13 @@ export const desktopApi: RuntimeApi = {
     });
     return () => unlisten();
   },
+  async subscribeConversationTerminalResultUpdates(listener) {
+    if (!isTauriRuntime()) return noopUnlisten;
+    const unlisten: UnlistenFn = await listen<ConversationTerminalResultUpdatedEventVm>('gold-band://conversation-terminal-result-updated', (event) => {
+      if (event.payload) listener(event.payload);
+    });
+    return () => unlisten();
+  },
   async subscribeInterventionNavigate(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
     let drain = Promise.resolve();
@@ -177,8 +210,9 @@ export const desktopApi: RuntimeApi = {
   checkLocalClaude() {
     return invokeCommand('check_local_claude');
   },
-  getAppBootstrap() {
-    return invokeCommand('get_app_bootstrap');
+  async getAppBootstrap() {
+    const bootstrap = await invokeCommand<AppBootstrapVm>('get_app_bootstrap');
+    return withWallpaperBootstrapAssetUrls(bootstrap);
   },
   getSystemFonts() {
     return invokeCommand('get_system_fonts');
@@ -197,6 +231,9 @@ export const desktopApi: RuntimeApi = {
   },
   deleteAgent(agentType: string) {
     return invokeCommand('delete_agent', { agentType });
+  },
+  getAgentBindingUsage(agentType: string) {
+    return invokeCommand('get_agent_binding_usage', { agentType });
   },
   doctorAgent(agentType: string) {
     return invokeCommand('doctor_agent', { agentType });
@@ -226,34 +263,34 @@ export const desktopApi: RuntimeApi = {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const path = await open({ directory: true });
     if (!path) return null;
-    return invokeCommand('choose_workspace', { path });
+    return invokeCommand<AppBootstrapVm>('choose_workspace', { path }).then(withWallpaperBootstrapAssetUrls);
   },
   selectRecentWorkspace(workspace: string) {
-    return invokeCommand('select_recent_workspace', { workspace });
+    return invokeCommand<AppBootstrapVm>('select_recent_workspace', { workspace }).then(withWallpaperBootstrapAssetUrls);
   },
   removeRecentWorkspace(workspace: string) {
-    return invokeCommand('remove_recent_workspace', { workspace });
+    return invokeCommand<AppBootstrapVm>('remove_recent_workspace', { workspace }).then(withWallpaperBootstrapAssetUrls);
   },
   getTaskDetail(taskId: string) {
     return invokeCommand('get_task_detail', { taskId });
   },
-  getWorkflow(taskId: string) {
-    return invokeCommand('get_workflow', { taskId });
+  getWorkflow(taskId: string, projectId?: string | null) {
+    return invokeCommand('get_workflow', { projectId, taskId });
   },
   createTask(input: CreateTaskInput) {
     return invokeCommand('create_task', { input });
   },
-  saveTaskWorkflow(projectId, taskId, workflow) {
-    return invokeCommand('save_task_workflow', { projectId, taskId, input: { workflow } });
+  saveTaskWorkflow(projectId, taskId, workflow, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('save_task_workflow', { projectId, taskId, input: { workflow, modelBindings } });
   },
   getWorkflowTemplates() {
     return invokeCommand('get_workflow_templates');
   },
-  saveWorkflowTemplate(name: string, workflow: WorkflowDsl) {
-    return invokeCommand('save_workflow_template', { input: { name, workflow } });
+  saveWorkflowTemplate(name: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('save_workflow_template', { input: { name, workflow, modelBindings } });
   },
-  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl) {
-    return invokeCommand('update_workflow_template', { templateId, input: { workflow } });
+  updateWorkflowTemplate(templateId: string, workflow: WorkflowDsl, modelBindings = emptyWorkflowModelBindings()) {
+    return invokeCommand('update_workflow_template', { templateId, input: { workflow, modelBindings } });
   },
   deleteWorkflowTemplate(templateId: string) {
     return invokeCommand('delete_workflow_template', { templateId });
@@ -285,8 +322,11 @@ export const desktopApi: RuntimeApi = {
   continueRun(projectId, taskId, runId) {
     return invokeCommand('continue_run', { projectId, taskId, runId });
   },
-  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
-    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
+  continueConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths) {
+    return invokeCommand('continue_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId, input, promptId, attachmentPaths });
+  },
+  recoverConversationRuntime(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision) {
+    return invokeCommand('recover_conversation_runtime', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision });
   },
   pauseRun(taskId: string, runId: string, projectId?: string | null) {
     return invokeCommand('pause_run', { taskId, runId, projectId });
@@ -321,11 +361,14 @@ export const desktopApi: RuntimeApi = {
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
-    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
+  submitConversationPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
+    return invokeCommand('submit_conversation_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, input, promptId, outerNodeId, outerAttemptId, attachmentPaths });
   },
-  updateConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId) {
-    return invokeCommand('update_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, content, outerNodeId, outerAttemptId });
+  reorderConversationQueuedPrompts(projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId) {
+    return invokeCommand('reorder_conversation_queued_prompts', { projectId, taskId, runId, roundId, nodeId, attemptId, expectedRevision, orderedItemIds, outerNodeId, outerAttemptId });
+  },
+  restoreConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
+    return invokeCommand('restore_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
   deleteConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
     return invokeCommand('delete_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
@@ -369,20 +412,41 @@ export const desktopApi: RuntimeApi = {
   showWorkerRef(taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand('show_worker_ref', { taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
-  saveDesktopPreferences(theme: DesktopThemePreference, language: DesktopLanguage, font: DesktopFontPreference, useLocalClaude: boolean, verboseLogging: boolean) {
-    return invokeCommand('save_desktop_preferences', { theme, language, font, useLocalClaude, verboseLogging });
+  saveDesktopPreferences(appearance: AppearancePreference, personalization: PersonalizationPreference, language: DesktopLanguage, useLocalClaude: boolean, verboseLogging: boolean) {
+    return invokeCommand<PreferencesVm>('save_desktop_preferences', { appearance, personalization, language, useLocalClaude, verboseLogging }).then(withWallpaperAssetUrls);
   },
   saveDesktopAvatar(input) {
-    return invokeCommand('save_desktop_avatar', { input });
+    return invokeCommand<PreferencesVm>('save_desktop_avatar', { input }).then(withWallpaperAssetUrls);
   },
   selectRecentDesktopAvatar(kind, avatarId) {
-    return invokeCommand('select_recent_desktop_avatar', { kind, avatarId });
+    return invokeCommand<PreferencesVm>('select_recent_desktop_avatar', { kind, avatarId }).then(withWallpaperAssetUrls);
   },
   saveDesktopAvatarShape(kind, shape) {
-    return invokeCommand('save_desktop_avatar_shape', { kind, shape });
+    return invokeCommand<PreferencesVm>('save_desktop_avatar_shape', { kind, shape }).then(withWallpaperAssetUrls);
   },
   clearDesktopAvatar(kind) {
-    return invokeCommand('clear_desktop_avatar', { kind });
+    return invokeCommand<PreferencesVm>('clear_desktop_avatar', { kind }).then(withWallpaperAssetUrls);
+  },
+  async importDesktopWallpaper(colorScheme) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const sourcePath = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (!sourcePath || Array.isArray(sourcePath)) return null;
+    return invokeCommand<PreferencesVm>('import_desktop_wallpaper', {
+      input: { sourcePath, colorScheme },
+    }).then(withWallpaperAssetUrls);
+  },
+  selectRecentDesktopWallpaper(colorScheme, wallpaperId) {
+    return invokeCommand<PreferencesVm>('select_recent_desktop_wallpaper', { input: { colorScheme, wallpaperId } }).then(withWallpaperAssetUrls);
+  },
+  saveDesktopWallpaperOpacity(colorScheme, opacityPercent) {
+    return invokeCommand<PreferencesVm>('save_desktop_wallpaper_opacity', { input: { colorScheme, opacityPercent } }).then(withWallpaperAssetUrls);
+  },
+  restoreThemeDesktopWallpaper(colorScheme) {
+    return invokeCommand<PreferencesVm>('restore_theme_desktop_wallpaper', { input: { colorScheme } }).then(withWallpaperAssetUrls);
   },
   saveUpdaterSettings(overrideUrl: string | null) {
     const normalized = overrideUrl?.trim() ? overrideUrl.trim() : null;
@@ -397,6 +461,7 @@ export const desktopApi: RuntimeApi = {
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null) {
     return invokeCommand<MetricsSettingsVm>('save_metrics_settings', { enabled, metricsBaseUrl, apiKey });
   },
+<<<<<<< HEAD
   getMulticaSettings() {
     return invokeCommand<MulticaSettingsVm>('get_multica_settings');
   },
@@ -438,6 +503,9 @@ export const desktopApi: RuntimeApi = {
   setActiveMulticaWorkspace(workspaceId: string) {
     return invokeCommand<MulticaSettingsVm>('set_active_multica_workspace', { workspaceId });
   },
+  recordActivity() {
+    return invokeCommand('record_activity');
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },
@@ -462,6 +530,11 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationSidebar() {
     return invokeCommand<ConversationSidebarVm>('get_conversation_sidebar');
+  },
+  acknowledgeConversationTerminalResult(projectId, taskId, eventId) {
+    return invokeCommand('acknowledge_conversation_terminal_result', {
+      input: { projectId, taskId, eventId },
+    });
   },
   async subscribeScheduledNotifications(listener) {
     if (!isTauriRuntime()) return noopUnlisten;
@@ -511,8 +584,8 @@ export const desktopApi: RuntimeApi = {
   deleteScheduledTask(projectId, scheduledTaskId) {
     return invokeCommand<void>('delete_scheduled_task', { projectId, scheduledTaskId });
   },
-  listScheduledTaskOccurrences(projectId, scheduledTaskId, limit) {
-    return invokeCommand<ScheduledOccurrenceVm[]>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, limit });
+  listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
+    return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
@@ -536,13 +609,13 @@ export const desktopApi: RuntimeApi = {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });
   },
   createConversationRun(input) {
-    return invokeCommand<ConversationRunVm>('create_conversation_run', { input });
+    return invokeCommand<ConversationCreateResultVm>('create_conversation_run', { input });
   },
   rerunConversationTask(projectId, taskId) {
     return invokeCommand<ConversationRunVm>('rerun_conversation_task', { projectId, taskId });
   },
   updateTaskMetadata(projectId, taskId, title, description) {
-    return invokeCommand('update_task_metadata', { projectId, taskId, title, description });
+    return invokeCommand<ConversationTaskRowVm>('update_task_metadata', { projectId, taskId, title, description });
   },
   deleteConversationTask(projectId, taskId) {
     return invokeCommand<ConversationSidebarVm>('delete_conversation_task', { projectId, taskId });
@@ -642,12 +715,43 @@ export const desktopApi: RuntimeApi = {
     const { openPath } = await import('@tauri-apps/plugin-opener');
     await openPath(path);
   },
+  copyImageToClipboard(input) {
+    return invokeCommand('copy_image_to_clipboard', { source: input.source });
+  },
+  async saveImageAs(input) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const extension = input.fileName.includes('.')
+      ? input.fileName.slice(input.fileName.lastIndexOf('.') + 1).toLowerCase()
+      : '';
+    const destinationPath = await save({
+      defaultPath: input.fileName,
+      filters: extension ? [{ name: 'Image', extensions: [extension] }] : undefined,
+    });
+    if (!destinationPath) return false;
+    await invokeCommand('save_image_as', {
+      input: { source: input.source, destinationPath },
+    });
+    return true;
+  },
   async pickAttachmentFiles() {
     const { open } = await import('@tauri-apps/plugin-dialog');
     const result = await open({ multiple: true });
     if (!result) return [];
     const paths = Array.isArray(result) ? result : [result];
-    return invokeCommand('stat_attachment_files', { paths });
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+      contentUrl: file.contentUrl ? convertFileSrc(file.contentUrl, 'gold-band-preview') : null,
+    }));
+  },
+  async statAttachmentFiles(paths) {
+    const files = await invokeCommand<import('./client').AttachmentFileRef[]>('stat_attachment_files', { paths });
+    return files.map((file) => ({
+      ...file,
+      previewUrl: file.previewUrl ? convertFileSrc(file.previewUrl, 'gold-band-preview') : null,
+      contentUrl: file.contentUrl ? convertFileSrc(file.contentUrl, 'gold-band-preview') : null,
+    }));
   },
   materializeConversationAttachments(files) {
     return invokeCommand('materialize_conversation_attachments', { input: { files } });

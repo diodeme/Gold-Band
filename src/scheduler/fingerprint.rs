@@ -260,7 +260,64 @@ fn sorted_strings(values: &[String]) -> Value {
 }
 
 fn canonical_workflow_authoring(value: &Value) -> Value {
-    normalize_workflow_value(value, None)
+    let Some(authoring) = value.as_object() else {
+        return normalize_workflow_value(value, None);
+    };
+    let Some(workflow) = authoring.get("workflow") else {
+        return normalize_workflow_value(value, None);
+    };
+
+    let mut identity = Map::new();
+    identity.insert(
+        "workflow".to_string(),
+        normalize_workflow_value(workflow, None),
+    );
+    identity.insert(
+        "workerAgents".to_string(),
+        canonical_worker_agents(workflow, authoring.get("modelBindings")),
+    );
+    Value::Object(identity)
+}
+
+fn canonical_worker_agents(workflow: &Value, model_bindings: Option<&Value>) -> Value {
+    let bindings_by_slot = model_bindings
+        .and_then(Value::as_object)
+        .and_then(|bindings| bindings.get("bindings"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|binding| {
+            let binding = binding.as_object()?;
+            let slot = binding.get("executionSlotId")?.as_str()?.trim();
+            let agent = binding.get("agentId")?.as_str()?.trim();
+            (!slot.is_empty() && !agent.is_empty()).then(|| (slot, agent))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let agents_by_node = workflow
+        .as_object()
+        .and_then(|workflow| workflow.get("nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            let node = node.as_object()?;
+            if node.get("type").and_then(Value::as_str) != Some("worker") {
+                return None;
+            }
+            let node_id = node.get("id")?.as_str()?.trim();
+            let agent = node
+                .get("executionSlotId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .and_then(|slot| bindings_by_slot.get(slot).copied())
+                .or_else(|| node.get("provider").and_then(Value::as_str).map(str::trim))?;
+            (!node_id.is_empty() && !agent.is_empty())
+                .then(|| (node_id.to_string(), Value::String(agent.to_string())))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    Value::Object(agents_by_node.into_iter().collect())
 }
 
 fn normalize_workflow_value(value: &Value, parent_key: Option<&str>) -> Value {
@@ -332,6 +389,8 @@ fn is_execution_option(key: &str) -> bool {
             | "acp_options"
             | "executionConfig"
             | "execution_config"
+            | "executionSlotId"
+            | "execution_slot_id"
     )
 }
 
@@ -388,6 +447,91 @@ mod tests {
         assert_ne!(
             content_fingerprint(&input_a).unwrap(),
             content_fingerprint(&input_b).unwrap()
+        );
+    }
+
+    fn current_workflow_authoring(
+        execution_slot_id: &str,
+        agent_id: &str,
+        model_id: &str,
+        binding_revision: u64,
+    ) -> Value {
+        serde_json::json!({
+            "workflow": {
+                "version": "0.1",
+                "id": "workflow-a",
+                "entry": "worker",
+                "nodes": [{
+                    "type": "worker",
+                    "id": "worker",
+                    "executionSlotId": execution_slot_id,
+                    "provider": null,
+                    "profile": "review",
+                    "goal": "inspect"
+                }],
+                "edges": [{"from": "worker", "to": "__end__", "on": "success"}],
+                "control": {"maxAttempts": 2}
+            },
+            "modelBindings": {
+                "definitionRevision": "derived-revision",
+                "bindingRevision": binding_revision,
+                "bindings": [{
+                    "executionSlotId": execution_slot_id,
+                    "agentId": agent_id,
+                    "modelId": model_id,
+                    "permissionModeId": "ask",
+                    "configOptions": {"thought": "high"}
+                }]
+            }
+        })
+    }
+
+    #[test]
+    fn current_workflow_agent_binding_changes_fingerprint() {
+        let first = ScheduledTaskContentInput::workflow(
+            "run the workflow",
+            Vec::<String>::new(),
+            "workspace-a",
+            current_workflow_authoring("slot-a", "claude-acp", "model-a", 1),
+        );
+        let second = ScheduledTaskContentInput::workflow(
+            "run the workflow",
+            Vec::<String>::new(),
+            "workspace-a",
+            current_workflow_authoring("slot-a", "codex-acp", "model-a", 2),
+        );
+
+        assert_ne!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn current_workflow_execution_binding_changes_keep_fingerprint() {
+        let first = ScheduledTaskContentInput::workflow(
+            "run the workflow",
+            Vec::<String>::new(),
+            "workspace-a",
+            current_workflow_authoring("slot-a", "claude-acp", "model-a", 1),
+        );
+        let mut second_authoring = current_workflow_authoring("slot-b", "claude-acp", "model-b", 9);
+        second_authoring["modelBindings"]["definitionRevision"] =
+            serde_json::json!("another-derived-revision");
+        second_authoring["modelBindings"]["bindings"][0]["permissionModeId"] =
+            serde_json::json!("bypass");
+        second_authoring["modelBindings"]["bindings"][0]["configOptions"] =
+            serde_json::json!({"thought": "low"});
+        let second = ScheduledTaskContentInput::workflow(
+            "run the workflow",
+            Vec::<String>::new(),
+            "workspace-a",
+            second_authoring,
+        );
+
+        assert_eq!(
+            content_fingerprint(&first).unwrap(),
+            content_fingerprint(&second).unwrap()
         );
     }
 

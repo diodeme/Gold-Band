@@ -5002,9 +5002,12 @@ impl<'a> AcpRuntime<'a> {
             // synchronization point for one meaningful redelivery.
             self.send_cancel_notification_best_effort();
         }
-        if self.is_prompt_cancel_requested() && is_current_turn_content_update(&update) {
-            return Ok(());
-        }
+
+        // CancelRequested is control intent, not the prompt ingress terminal.
+        // Keep projecting updates until the original session/prompt response
+        // watermark and terminal quiet drain have converged. The shared cancel
+        // deadline bounds that convergence, and only its timeout quarantines
+        // the live session route.
 
         // Fold raw provider samples into a stable context gauge before the event
         // enters the canonical timeline. The untouched raw frame is already in
@@ -8128,6 +8131,49 @@ mod tests {
             observed[0].pointer("/content/text"),
             Some(&json!("502 Bad Gateway"))
         );
+    }
+
+    #[test]
+    fn cancelled_prompt_drain_preserves_content_until_terminal_convergence() {
+        let control = super::ProviderControl::new();
+        control.mark_running();
+        assert!(control.request_prompt_cancel());
+
+        let queued = std::cell::RefCell::new(VecDeque::from([json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "- `run`:" }
+        })]));
+        let consumed = std::cell::Cell::new(0usize);
+        let mut observed = Vec::new();
+
+        let drained = drain_frames_until_route_watermark(
+            Duration::from_millis(100),
+            || consumed.get() == 1,
+            |_| {
+                queued
+                    .borrow_mut()
+                    .pop_front()
+                    .ok_or(RecvTimeoutError::Timeout)
+            },
+            |update| {
+                assert_eq!(
+                    control.state(),
+                    super::ProviderControlState::CancelRequested
+                );
+                assert!(super::is_current_turn_content_update(&update));
+                observed.push(update);
+                consumed.set(consumed.get().saturating_add(1));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(drained, 1);
+        assert_eq!(
+            observed[0].pointer("/content/text").and_then(Value::as_str),
+            Some("- `run`:")
+        );
+        assert!(prompt_cancellation_outcome(true, None).observed);
     }
 
     #[test]

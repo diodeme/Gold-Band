@@ -27,7 +27,7 @@ use gold_band::domain::RunStatus;
 use gold_band::domain::{SessionMode, TurnControlMode};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
-    EdgeOutcome, NodeDsl, WorkflowDsl,
+    EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
 use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;

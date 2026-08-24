@@ -340,7 +340,6 @@ export interface RuntimeApi {
   updateNotificationAttention?(input: NotificationAttentionInput): Promise<void>;
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
-<<<<<<< HEAD
   getMulticaSettings(): Promise<MulticaSettingsVm>;
   connectMultica(): Promise<MulticaSettingsVm>;
   disconnectMultica(): Promise<MulticaSettingsVm>;
@@ -350,7 +349,7 @@ export interface RuntimeApi {
   getMulticaTaskRequirement(taskId: string, workspaceId: string): Promise<RemoteTaskVm>;
   /// 远程任务「发送」时复用本地 composer 链：claim（pending→dispatched）+ start（dispatched→running）+ 建会话
   /// + 叠加 multica 簿记（register_active_run）。claim 成功但 start 失败时后端自动 release（dispatched→queued）回滚。
-  startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationRunVm>;
+  startMulticaConversationRun(input: ConversationCreateInput, remoteTaskId: string, workspaceId: string): Promise<ConversationCreateResultVm>;
   cancelMulticaTask(taskId: string): Promise<void>;
   listServerMulticaWorkspaces(): Promise<MulticaServerWorkspaceVm[]>;
   pickLocalDirectory(): Promise<string | null>;

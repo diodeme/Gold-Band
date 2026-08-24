@@ -1677,7 +1677,7 @@ export const browserApi: RuntimeApi = {
       projectId: null,
     });
   },
-  startMulticaConversationRun(input) {
+  startMulticaConversationRun(input, _remoteTaskId, _workspaceId) {
     // 浏览器桩：复用本地 createConversationRun 桩返回同样的会话 VM（多机端仅桌面端真实执行）。
     return this.createConversationRun(input);
   },

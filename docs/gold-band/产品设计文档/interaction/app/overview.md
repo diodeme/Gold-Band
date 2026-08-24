@@ -143,6 +143,7 @@ UI 不应根据日志直接推断 workflow 终局，终局状态以 canonical st
 - 前后端通过 Tauri commands 交换 view model，终局状态仍以 canonical state 为准。
 - 桌面端 workspace 不依赖 Tauri 进程启动目录：启动时恢复用户记忆，或向上查找 `.gold-band/` 作为项目根；用户可通过原生目录选择器切换 workspace。
 - 开发热加载启动命令为 `npm run dev`；需要固定当前源码快照、且不随前端或 Rust 文件修改热加载/重启时，使用默认渠道静态开发启动命令 `npm run dev:static`。该命令先将一次性 `web:build` 直接输出到本次进程独占的 `src-tauri/target/static-dev/<channel>/<snapshot>/frontend`，再让 Tauri `frontendDist` 只服务该不可变目录；退出后清理本次前端快照。后续其他进程改写 `web/dist` 不会触发当前客户端刷新，深层会话路由也不会在并行构建的清空窗口内落入临时 404。该模式同时关闭 Tauri source watcher，使用独立 Cargo target，并关闭 static dev 专用 Cargo dev profile 的 Rust debug symbols，避免与普通构建争用 Windows PDB 或触发容量限制；普通 `npm run dev` 的源码级调试能力不受影响。默认渠道构建命令为 `npm run build` / `npm run build:default`，wb 内网渠道本地临时构建命令为 `npm run build:wb`。
+- Windows 应用图标使用单一多分辨率 `icon.ico` 同时服务开发窗口和生产 EXE；图层顺序固定为 `32 / 16 / 24 / 48 / 64 / 256`，且全部使用 32 位 RGBA。Tauri 在 Windows 下只解码 ICO 首层作为实时窗口图标，因此 32px 必须位于首层，避免 Windows 在常见任务栏 DPI 下把 16px 位图放大；其余图层继续供 EXE、资源管理器、开始菜单和安装包按目标尺寸选择。
 - Tauri updater 按构建渠道内置更新配置：default 指向 GitHub Release `latest.json`，wb 指向内网占位地址；两个渠道内置不同 public key，避免跨渠道更新包互相验证通过。default 渠道由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在，并附加桌面安装包、签名和 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，便于 release-please 主链路补跑；项目处于 `0.x` 阶段时，breaking change 按 minor 版本发布，例如 `0.12.x` 的 breaking change 发布为 `0.13.0`，避免在产品尚未进入稳定版时自动提升到 `1.0.0`；manifest 始终使用 release tag 生成版本号和下载 URL，Windows 平台优先指向签名的 setup exe 安装包；手动 fallback 重建时应用源码来自 release tag，发布脚本来自所选 workflow 分支；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`，release publish 后客户端才会从 latest 地址看到更新。PR checks 对完整合并树执行 `cargo fmt --all -- --check`，上游格式漂移必须先通过同一 formatter 收敛，不能因本次业务改动未触及对应 Rust 文件而绕过；跨平台文本契约按逻辑行断言，不绑定工作区的 LF/CRLF，依赖 Agent 可用性的运行夹具必须显式提供诊断事实。Runtime continue 的传输 prompt 保留隐藏控制段且对客投影只取 `display_text`；AI-DYNAMIC Merge 不拥有 completion contract，其 continue 隐藏段不得伪造 artifact 输出或 post-turn 归一化约束。
 - Windows release 包按 GUI 桌面应用启动，不附带 cmd 控制台窗口；仅 debug/dev 构建保留控制台输出以便开发调试；后台子进程通过统一 process helper 启动，ACP provider、诊断清理、Toast AUMID 注册等 npx/codex/taskkill/reg/PowerShell 调用不弹控制台窗口。
 - macOS release 不维护 signed/unsigned 两套产品逻辑。`tauri.conf.json` 默认使用 ad-hoc signing identity `-`；两种架构继续走同一 release job 和原文件名。CI 中 Apple 凭证全部缺失时只设置 `APPLE_SIGNING_IDENTITY=-`，部分缺失直接失败，完整时把全部凭证交给 Tauri bundler 签名、公证；构建后只做严格 codesign 完整性验证，不对未公证包执行必然失败的 Gatekeeper assess。
@@ -244,12 +245,13 @@ MVP 范围：
 
 ---
 
-## 15. 2026-05-07 品牌 Logo 替换记录
+## 15. 品牌 Logo 资源
 
-本轮将桌面端品牌标识从临时菱形字形替换为用户提供的红蓝金无限环 Logo：
-- 左侧应用壳品牌区使用 `web/public/logo.svg`，保持 Gold Band 产品名和 AI Orchestrator 副标题不变。
+当前桌面端品牌标识统一使用用户提供的 `gold-band-logo-final-v6-transparent.svg` 透明矢量 Logo：
+- 左侧应用壳品牌区使用 `web/public/logo.svg`，保持 Gold Band 产品名和 AI Orchestrator 副标题不变；顶栏品牌框按正方形 Logo 使用 `24px × 24px` 尺寸，图片在可收缩内容区内保持 `contain`，品牌图形与标题共用标题栏垂直中心线。
 - 浏览器调试 favicon 与 Web 侧品牌图共用同一 SVG，减少多份前端 Logo 资源漂移。
-- Tauri 图标资源由同一 Logo 生成正方形源图与平台图标，Windows `.ico`、macOS `.icns` 和 PNG 图标使用一致品牌来源。
+- README 头标也直接引用 `web/public/logo.svg`，避免展示独立旧图标。
+- `src-tauri/icons/logo-source.svg` 是同一组矢量路径的 2048 正方形投影，Tauri 平台图标由它生成；平台 PNG 与 Windows `.ico` 的透明边缘必须保持预乘颜色正确，不得含低 Alpha 的白色 matte 污染，深色任务栏上不得出现白色晕边。macOS `.icns` 和其他平台资源继续使用同一品牌来源。
 
 ---
 

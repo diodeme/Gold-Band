@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::ChildStdin;
 use std::sync::{
     Arc, Condvar, LazyLock, Mutex, MutexGuard,
@@ -16,11 +16,12 @@ use tracing::{debug, warn};
 
 use crate::acp::adapter::{ResolvedAcpAdapter, spawn_adapter};
 use crate::acp::elicitation::cancel_pending_elicitation_requests;
-use crate::acp::events::{append_raw_frame, current_timestamp};
+use crate::acp::events::{
+    AcpLatestTurnStatus, append_raw_frame, current_timestamp, persist_session_terminal,
+};
 use crate::acp::permission::cancel_pending_permission_requests;
 use crate::config::AcpAdapterConfig;
 use crate::process::{ManagedProcessGroup, PROCESS_GROUP_TERMINATION_GRACE};
-use crate::storage::{ensure_parent_dir, read_json, write_json};
 
 const CLOSE_RAW_MAX_SIZE: u64 = 5 * 1024 * 1024;
 const CLOSE_RAW_TARGET_SIZE: u64 = 4 * 1024 * 1024;
@@ -32,6 +33,9 @@ const UNROUTED_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 const EARLY_SESSION_FRAME_TTL: Duration = Duration::from_secs(5);
 const EARLY_SESSION_FRAME_MAX_BYTES: usize = 1024 * 1024;
 const EARLY_SESSION_FRAME_MAX_FRAMES: usize = 64;
+const STDERR_READ_BUFFER_SIZE: usize = 4096;
+const STDERR_LINE_MAX_BYTES: usize = 16 * 1024;
+const STDERR_RAW_PREVIEW_BYTES: usize = 256;
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_SESSION_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -759,6 +763,7 @@ struct PendingRequestSender {
 
 pub struct AdapterConnection {
     key: Option<AdapterConnectionKey>,
+    provider_id: String,
     adapter: ResolvedAcpAdapter,
     signature: AdapterConfigSignature,
     child: Mutex<ManagedProcessGroup>,
@@ -915,6 +920,7 @@ impl SessionConfigTransaction {
 
 impl AdapterConnection {
     pub fn spawn_standalone(
+        provider_id: &str,
         config: &AcpAdapterConfig,
         cwd: &Utf8Path,
         use_local_claude: bool,
@@ -922,6 +928,7 @@ impl AdapterConnection {
     ) -> Result<Arc<Self>> {
         Self::spawn(
             None,
+            provider_id,
             config,
             cwd,
             use_local_claude,
@@ -931,6 +938,7 @@ impl AdapterConnection {
 
     fn spawn(
         key: Option<AdapterConnectionKey>,
+        provider_id: &str,
         config: &AcpAdapterConfig,
         cwd: &Utf8Path,
         use_local_claude: bool,
@@ -951,8 +959,16 @@ impl AdapterConnection {
         let stderr = child
             .take_stderr()
             .ok_or_else(|| anyhow!("failed to capture ACP adapter stderr"))?;
+        let provider_id = if provider_id.trim().is_empty() {
+            key.as_ref()
+                .map(|key| key.provider_id.clone())
+                .unwrap_or_else(|| adapter.adapter_id.clone())
+        } else {
+            provider_id.to_string()
+        };
         let connection = Arc::new(Self {
             key,
+            provider_id,
             adapter,
             signature: AdapterConfigSignature::new(
                 config,
@@ -977,20 +993,18 @@ impl AdapterConnection {
         let stdout_connection = Arc::clone(&connection);
         thread::spawn(move || read_stdout(stdout_connection, stdout));
 
-        let stderr_adapter_id = connection.adapter.adapter_id.clone();
+        let stderr_connection = Arc::clone(&connection);
         thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line) if line.trim().is_empty() => {}
-                    Ok(line) => {
-                        debug!(adapter = %stderr_adapter_id, stderr = %line, "ACP adapter stderr")
-                    }
-                    Err(error) => {
-                        warn!(adapter = %stderr_adapter_id, %error, "failed reading ACP adapter stderr");
-                        break;
-                    }
-                }
+            if let Err(error) = read_stderr(stderr, |line| {
+                log_stderr_line(&stderr_connection, line);
+            }) {
+                warn!(
+                    provider = %stderr_connection.provider_id,
+                    adapter = %stderr_connection.adapter.adapter_id,
+                    command = %stderr_connection.adapter.command,
+                    %error,
+                    "failed reading ACP adapter stderr"
+                );
             }
         });
 
@@ -1416,7 +1430,7 @@ impl AdapterConnection {
     }
 }
 
-fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl std::io::Read + Send + 'static) {
+fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl Read + Send + 'static) {
     let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
     loop {
@@ -1426,15 +1440,169 @@ fn read_stdout(connection: Arc<AdapterConnection>, stdout: impl std::io::Read + 
             Ok(_) if line.iter().all(u8::is_ascii_whitespace) => {}
             Ok(frame_bytes) => match serde_json::from_slice::<Value>(&line) {
                 Ok(value) => route_inbound_frame(&connection, value, frame_bytes),
-                Err(error) => warn!(%error, frame_bytes, "invalid ACP stdout frame"),
+                Err(error) => warn!(
+                    provider = %connection.provider_id,
+                    adapter = %connection.adapter.adapter_id,
+                    command = %connection.adapter.command,
+                    %error,
+                    frame_bytes,
+                    "invalid ACP stdout frame"
+                ),
             },
             Err(error) => {
-                warn!(%error, "failed reading ACP stdout");
+                warn!(
+                    provider = %connection.provider_id,
+                    adapter = %connection.adapter.adapter_id,
+                    command = %connection.adapter.command,
+                    %error,
+                    "failed reading ACP stdout"
+                );
                 break;
             }
         }
     }
+    let transport_was_already_closed = connection.is_transport_closed();
     connection.mark_transport_closed();
+    log_adapter_exit(&connection, transport_was_already_closed);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StderrLine {
+    text: String,
+    byte_len: usize,
+    encoding: &'static str,
+    raw_bytes_hex: Option<String>,
+    truncated: bool,
+}
+
+fn read_stderr<R, Emit>(mut reader: R, mut emit: Emit) -> std::io::Result<()>
+where
+    R: Read,
+    Emit: FnMut(StderrLine),
+{
+    let mut buffer = [0_u8; STDERR_READ_BUFFER_SIZE];
+    let mut line = Vec::with_capacity(STDERR_LINE_MAX_BYTES.min(1024));
+    let mut byte_len = 0_usize;
+    let mut truncated = false;
+
+    let mut flush_line = |line: &mut Vec<u8>, byte_len: &mut usize, truncated: &mut bool| {
+        if *byte_len == 0 {
+            line.clear();
+            *truncated = false;
+            return;
+        }
+        let content = line.strip_suffix(b"\r").unwrap_or(line);
+        if !content.is_empty() {
+            let encoding = if std::str::from_utf8(content).is_ok() {
+                "utf-8"
+            } else {
+                "non-utf8"
+            };
+            let raw_bytes_hex = (encoding == "non-utf8").then(|| {
+                content
+                    .iter()
+                    .take(STDERR_RAW_PREVIEW_BYTES)
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            });
+            emit(StderrLine {
+                text: String::from_utf8_lossy(content).into_owned(),
+                byte_len: *byte_len,
+                encoding,
+                raw_bytes_hex,
+                truncated: *truncated,
+            });
+        }
+        line.clear();
+        *byte_len = 0;
+        *truncated = false;
+    };
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            flush_line(&mut line, &mut byte_len, &mut truncated);
+            return Ok(());
+        }
+        for byte in &buffer[..read] {
+            if *byte == b'\n' {
+                flush_line(&mut line, &mut byte_len, &mut truncated);
+            } else {
+                byte_len = byte_len.saturating_add(1);
+                if line.len() < STDERR_LINE_MAX_BYTES {
+                    line.push(*byte);
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+    }
+}
+
+fn log_stderr_line(connection: &AdapterConnection, line: StderrLine) {
+    let raw_bytes_hex = line.raw_bytes_hex.as_deref().unwrap_or("");
+    if line.encoding == "non-utf8" {
+        debug!(
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            stderr_bytes = line.byte_len,
+            stderr_encoding = line.encoding,
+            stderr_truncated = line.truncated,
+            "ACP adapter stderr used non-UTF-8 bytes; decoded output is available when detailed logs are enabled"
+        );
+    }
+    debug!(
+        provider = %connection.provider_id,
+        adapter = %connection.adapter.adapter_id,
+        command = %connection.adapter.command,
+        stderr = %line.text,
+        stderr_bytes = line.byte_len,
+        stderr_encoding = line.encoding,
+        stderr_bytes_hex_prefix = raw_bytes_hex,
+        stderr_truncated = line.truncated,
+        "ACP adapter stderr"
+    );
+}
+
+fn log_adapter_exit(connection: &AdapterConnection, transport_was_already_closed: bool) {
+    match connection.try_wait() {
+        Ok(Some(status)) => {
+            if !transport_was_already_closed {
+                warn!(
+                    provider = %connection.provider_id,
+                    adapter = %connection.adapter.adapter_id,
+                    command = %connection.adapter.command,
+                    exit_code = status.code(),
+                    status = %status,
+                    "ACP adapter process exited after stdout closed"
+                );
+            } else {
+                debug!(
+                    provider = %connection.provider_id,
+                    adapter = %connection.adapter.adapter_id,
+                    command = %connection.adapter.command,
+                    exit_code = status.code(),
+                    status = %status,
+                    "ACP adapter process exited"
+                );
+            }
+        }
+        Ok(None) if !transport_was_already_closed => warn!(
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            "ACP adapter stdout closed before process exit status was available"
+        ),
+        Ok(None) => {}
+        Err(error) => warn!(
+            provider = %connection.provider_id,
+            adapter = %connection.adapter.adapter_id,
+            command = %connection.adapter.command,
+            %error,
+            "failed to read ACP adapter exit status"
+        ),
+    }
 }
 
 fn route_inbound_frame(connection: &AdapterConnection, value: Value, frame_bytes: usize) {
@@ -1665,6 +1833,7 @@ impl AdapterConnectionManager {
 
         let connection = AdapterConnection::spawn(
             Some(key.clone()),
+            provider_id,
             config,
             &key.workspace_root,
             use_local_claude,
@@ -1823,11 +1992,14 @@ impl AdapterConnectionManager {
             self.unregister_attempt_session(attempt_dir);
             return Ok(false);
         };
-        settle_attempt_for_session_close(attempt_dir);
-        if connection.active_prompt_count_for_session(&session.session_id) > 0 {
+        let has_active_prompt = connection.active_prompt_count_for_session(&session.session_id) > 0;
+        if has_active_prompt {
             if let Err(error) = connection.send_cancel_notification(&session.session_id) {
                 warn!(%attempt_dir, %error, "failed to cancel ACP prompt before session close");
             }
+        }
+        settle_attempt_for_session_close(attempt_dir);
+        if has_active_prompt {
             let drained = connection
                 .wait_for_prompt_drain(std::slice::from_ref(&session.session_id), timeout)?;
             if !drained {
@@ -1927,13 +2099,15 @@ impl AdapterConnectionManager {
         let mut closed_attempts = Vec::new();
         let mut close_errors = Vec::new();
         for (attempt_dir, session_id) in &sessions {
-            let attempt_path = Utf8PathBuf::from(&attempt_dir);
-            settle_attempt_for_session_close(attempt_path.as_path());
             if connection.active_prompt_count_for_session(session_id) > 0
                 && let Err(error) = connection.send_cancel_notification(session_id)
             {
                 warn!(%attempt_dir, %session_id, %error, "failed to cancel ACP prompt while draining connection");
             }
+        }
+        for (attempt_dir, _) in &sessions {
+            let attempt_path = Utf8PathBuf::from(attempt_dir);
+            settle_attempt_for_session_close(attempt_path.as_path());
         }
         if !connection.wait_for_prompt_drain(&session_ids, timeout)? {
             warn!(
@@ -2015,43 +2189,16 @@ fn settle_attempt_for_session_close(attempt_dir: &Utf8Path) {
 }
 
 fn persist_cancelled_session_snapshot(attempt_dir: &Utf8Path) {
-    for file_name in ["acp.snapshot.json", "acp.session.json"] {
-        let path = attempt_dir.join(file_name);
-        if let Err(error) = persist_cancelled_session_file(&path) {
-            warn!(%path, %error, "failed to persist cancelled ACP session metadata after session close");
-        }
+    let path = attempt_dir.join("acp.snapshot.json");
+    if let Err(error) = persist_cancelled_session_file(&path) {
+        warn!(%path, %error, "failed to persist cancelled ACP session metadata after session close");
     }
 }
 
 fn persist_cancelled_session_file(path: &Utf8Path) -> Result<()> {
-    let mut session = if path.exists() {
-        read_json::<Value>(path)?
-    } else {
-        let session_id = path
-            .parent()
-            .and_then(|attempt_dir| attempt_dir.file_name())
-            .unwrap_or("session");
-        json!({
-            "sessionId": session_id,
-            "availability": "established",
-            "latestTurnStatus": "cancelled",
-            "restored": false,
-            "createdAt": current_timestamp(),
-        })
-    };
     let now = current_timestamp();
-    if let Some(object) = session.as_object_mut() {
-        object.remove("status");
-    }
-    session["availability"] = json!("established");
-    session["latestTurnStatus"] = json!("cancelled");
-    session["stopReason"] = json!("cancelled");
-    session["updatedAt"] = json!(now.clone());
-    if session.get("updated_at").is_some() {
-        session["updated_at"] = json!(now);
-    }
-    ensure_parent_dir(path)?;
-    write_json(path, &session)
+    persist_session_terminal(path, AcpLatestTurnStatus::Cancelled, "cancelled", &now)?;
+    Ok(())
 }
 
 static ADAPTER_CONNECTION_MANAGER: LazyLock<AdapterConnectionManager> =
@@ -2062,6 +2209,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
     use std::collections::HashMap;
+    use std::io::Cursor;
     use std::sync::{
         Arc, Barrier, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -2074,12 +2222,35 @@ mod tests {
     use super::{
         AcpConnectionUnavailable, ActivePromptTracker, AdapterConnectionKey,
         AdapterConnectionState, ConnectionCreationGate, ConnectionInitialization,
-        EarlySessionFrames, SessionConfigTransaction, SessionEventPump, SessionRouteTryRecvError,
-        is_same_connection_generation, persist_cancelled_session_snapshot, record_unrouted_warning,
+        EarlySessionFrames, STDERR_LINE_MAX_BYTES, SessionConfigTransaction, SessionEventPump,
+        SessionRouteTryRecvError, is_same_connection_generation,
+        persist_cancelled_session_snapshot, read_stderr, record_unrouted_warning,
         register_session_route_state, request_unavailability, route_or_buffer_session_frame,
         select_provider_connection_keys, session_id_from_frame, session_route_pair,
         settle_attempt_for_session_close,
     };
+
+    fn write_current_attempt_node(attempt_dir: &Utf8PathBuf) {
+        crate::storage::write_json(
+            &attempt_dir.join("node.json"),
+            &json!({
+                "version": crate::domain::VERSION,
+                "acp_storage_schema_version": crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+                "node_id": "worker",
+                "node_type": "worker",
+                "run_id": "run-001",
+                "round_id": "round-001",
+                "attempt_id": "attempt-001",
+                "status": "running",
+                "outcome": null,
+                "started_at": "1Z",
+                "finished_at": null,
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn parallel_callers_share_one_connection_initialize() {
@@ -2118,6 +2289,42 @@ mod tests {
                 .iter()
                 .all(|outcome| outcome.capabilities == json!({ "loadSession": true }))
         );
+    }
+
+    #[test]
+    fn stderr_reader_recovers_non_utf8_output_and_continues() {
+        let mut input = b"npm error: ".to_vec();
+        input.extend_from_slice(&[0x81, 0x40]);
+        input.extend_from_slice(b"\r\nnext line\n");
+        let mut lines = Vec::new();
+
+        read_stderr(Cursor::new(input), |line| lines.push(line)).unwrap();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].encoding, "non-utf8");
+        assert!(lines[0].text.starts_with("npm error:"));
+        assert_eq!(
+            lines[0].raw_bytes_hex.as_deref(),
+            Some("6e706d206572726f723a208140")
+        );
+        assert!(!lines[0].truncated);
+        assert_eq!(lines[1].text, "next line");
+        assert_eq!(lines[1].encoding, "utf-8");
+    }
+
+    #[test]
+    fn stderr_reader_bounds_unterminated_lines_without_losing_following_output() {
+        let mut input = vec![b'x'; STDERR_LINE_MAX_BYTES + 32];
+        input.extend_from_slice(b"\nfinal line\n");
+        let mut lines = Vec::new();
+
+        read_stderr(Cursor::new(input), |line| lines.push(line)).unwrap();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].byte_len, STDERR_LINE_MAX_BYTES + 32);
+        assert_eq!(lines[0].text.len(), STDERR_LINE_MAX_BYTES);
+        assert!(lines[0].truncated);
+        assert_eq!(lines[1].text, "final line");
     }
 
     #[test]
@@ -2323,6 +2530,7 @@ mod tests {
     fn ask_user_question_close_drains_prompt_before_transport_shutdown() {
         let dir = tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        write_current_attempt_node(&attempt_dir);
         let session_id = "session-ask".to_string();
         let elicitation_id = "elicit-close";
         write_pending_elicitation(
@@ -2722,6 +2930,7 @@ mod tests {
     fn session_close_settles_pending_permission_and_snapshot() {
         let dir = tempdir().unwrap();
         let attempt_dir = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
+        write_current_attempt_node(&attempt_dir);
         let request_id = "close";
         write_pending_permission(
             &attempt_dir,
@@ -2784,5 +2993,6 @@ mod tests {
             snapshot.get("stopReason").and_then(|value| value.as_str()),
             Some("cancelled")
         );
+        assert!(!attempt_dir.join("acp.session.json").exists());
     }
 }

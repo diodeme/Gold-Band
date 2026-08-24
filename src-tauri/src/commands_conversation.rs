@@ -14,7 +14,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Instant;
 use tauri::{AppHandle, State};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::commands::{
@@ -627,6 +627,32 @@ pub async fn create_conversation_run(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ConversationCreateInputVm,
 ) -> CommandResult<crate::view_models_conversation::ConversationCreateResultVm> {
+    let log_project_id = input.project_id.clone();
+    let log_run_mode = input.run_mode.clone();
+    let result = create_conversation_run_inner(app_handle, state, input).await;
+    match &result {
+        Ok(value) => info!(
+            project_id = %value.run.project_id,
+            task_id = %value.run.task_id,
+            run_id = %value.run.run_id,
+            run_mode = %value.run.run_mode,
+            "conversation run created"
+        ),
+        Err(error) => warn!(
+            project_id = %log_project_id,
+            run_mode = %log_run_mode,
+            error_code = %error.code,
+            "conversation run creation failed"
+        ),
+    }
+    result
+}
+
+async fn create_conversation_run_inner(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    input: crate::view_models_conversation::ConversationCreateInputVm,
+) -> CommandResult<crate::view_models_conversation::ConversationCreateResultVm> {
     let _ = state.record_heartbeat_activity();
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
@@ -682,7 +708,7 @@ pub async fn create_conversation_run(
         command = "create_conversation_run",
         project_id = %project_id_for_current,
         elapsed_ms = started.elapsed().as_millis(),
-        "conversation run created"
+        "conversation run creation completed"
     );
     Ok(run)
 }
@@ -723,41 +749,6 @@ pub fn rerun_conversation_task(
     .map_err(command_error)?;
     persist_last_conversation_workspace(&global_app, &resolved_project_id)?;
     Ok(run)
-}
-
-#[tauri::command]
-pub fn switch_conversation_session(
-    state: State<'_, DesktopState>,
-    project_id: String,
-    task_id: String,
-    run_id: String,
-    round_id: String,
-    node_id: String,
-    attempt_id: String,
-    outer_node_id: Option<String>,
-    outer_attempt_id: Option<String>,
-) -> CommandResult<crate::view_models_conversation::ConversationSessionSwitchVm> {
-    let context = state.context().map_err(command_error)?;
-    let global_app = context.app();
-    let app_state = global_app.load_state().map_err(command_error)?;
-    let Some((workspace_path, _)) = workspace_entry_for_project(&app_state, &project_id) else {
-        return Err(CommandErrorVm::new(
-            "workspace.not-found",
-            serde_json::json!({ "projectId": project_id }),
-        ));
-    };
-    let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
-    crate::view_models_conversation::switch_conversation_session_vm(
-        &workspace_app,
-        &task_id,
-        &run_id,
-        &round_id,
-        &node_id,
-        &attempt_id,
-        outer_node_id.as_deref(),
-        outer_attempt_id.as_deref(),
-    )
-    .map_err(command_error)
 }
 
 #[tauri::command]

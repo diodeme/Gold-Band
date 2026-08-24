@@ -1435,6 +1435,13 @@ describe('ACP chat event handling', () => {
         raw: { source: 'goldBandPrompt', optimistic: true, promptId: 'prompt-2' },
       }),
       event({
+        id: 'optimistic-processing',
+        kind: 'userTextDelta',
+        status: 'processing',
+        content: 'accepted but not durable',
+        raw: { source: 'goldBandPrompt', optimistic: true, promptId: 'prompt-4' },
+      }),
+      event({
         id: 'gold-band-user-prompt-3',
         kind: 'userTextDelta',
         status: 'completed',

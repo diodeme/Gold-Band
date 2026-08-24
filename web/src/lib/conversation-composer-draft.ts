@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { revokeAttachmentPreviewUrls, type AttachmentItem } from './attachment-service';
+import type { ScheduledTaskConfig } from '@/types';
 
 /**
  * 首页会话发起 composer 的未提交草稿。
@@ -32,10 +33,14 @@ export interface ConversationComposerDraftState {
   attachments: AttachmentItem[];
   /// 当前 prepare 中的 multica 远程任务绑定（null = 普通本地新建会话，走 create_conversation_run）。
   multica: ConversationComposerMulticaBinding | null;
+  /// 提交意图：普通发送，或从 composer 直接创建 scheduled task。与 multica 绑定互斥（见 prefill / enterScheduledTask）。
+  submission:
+    | { kind: 'send' }
+    | { kind: 'scheduled-task'; config: ScheduledTaskConfig | null };
 }
 
 export function createInitialConversationComposerDraft(): ConversationComposerDraftState {
-  return { content: '', attachments: [], multica: null };
+  return { content: '', attachments: [], multica: null, submission: { kind: 'send' } };
 }
 
 /**
@@ -47,6 +52,9 @@ export type ConversationComposerDraftAction =
   | { type: 'setAttachments'; attachments: AttachmentItem[] }
   | { type: 'prefill'; content: string; multica: ConversationComposerMulticaBinding }
   | { type: 'clearMultica' }
+  | { type: 'enterScheduledTask' }
+  | { type: 'setScheduledTaskConfig'; config: ScheduledTaskConfig }
+  | { type: 'exitScheduledTask' }
   | { type: 'reset' };
 
 export function conversationComposerDraftReducer(
@@ -59,11 +67,23 @@ export function conversationComposerDraftReducer(
     case 'setAttachments':
       return { ...state, attachments: action.attachments };
     case 'prefill':
-      // 远程任务 prepare：正文预填 + 绑定 multica，并清空既有附件（新的远程任务草稿，不复用上一条本地草稿的附件）。
-      return { content: action.content, attachments: [], multica: action.multica };
+      // 远程任务 prepare：覆盖式新草稿——正文预填 + 绑定 multica + 清空附件，并回到 send 提交意图
+      // （scheduled-task 与 multica 绑定是互斥的提交意图，prefill 即声明本草稿为远程执行草稿）。
+      return { content: action.content, attachments: [], multica: action.multica, submission: { kind: 'send' } };
     case 'clearMultica':
       // 解除 multica 绑定但保留正文与附件：用户删掉绑定 chip 后，草稿降级为普通本地会话（发送走 create_conversation_run）。
       return state.multica === null ? state : { ...state, multica: null };
+    case 'enterScheduledTask':
+      // scheduled-task 与 multica 绑定互斥：进入排程模式即本地解绑远程任务（任务仍在服务端 queued，可再次点执行）。
+      return state.submission.kind === 'scheduled-task'
+        ? state
+        : { ...state, multica: null, submission: { kind: 'scheduled-task', config: null } };
+    case 'setScheduledTaskConfig':
+      return { ...state, submission: { kind: 'scheduled-task', config: action.config } };
+    case 'exitScheduledTask':
+      return state.submission.kind === 'send'
+        ? state
+        : { ...state, submission: { kind: 'send' } };
     case 'reset':
       return createInitialConversationComposerDraft();
     default:
@@ -81,6 +101,9 @@ export interface ConversationComposerDraftContextValue {
   prefill: (content: string, multica: ConversationComposerMulticaBinding) => void;
   /// 解除 multica 绑定（保留正文与附件）。claim-at-send 下删 chip 纯属本地解绑——任务未被领取（仍 queued），无需通知服务端。
   clearMultica: () => void;
+  enterScheduledTask: () => void;
+  setScheduledTaskConfig: (config: ScheduledTaskConfig) => void;
+  exitScheduledTask: () => void;
   reset: () => void;
 }
 
@@ -159,6 +182,18 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
     [],
   );
 
+  const enterScheduledTask = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'enterScheduledTask' }));
+  }, []);
+
+  const setScheduledTaskConfig = useCallback((config: ScheduledTaskConfig) => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'setScheduledTaskConfig', config }));
+  }, []);
+
+  const exitScheduledTask = useCallback(() => {
+    setDraft((prev) => conversationComposerDraftReducer(prev, { type: 'exitScheduledTask' }));
+  }, []);
+
   const reset = useCallback(() => {
     setDraft((prev) => {
       revokeAttachmentPreviewUrls(prev.attachments);
@@ -171,7 +206,17 @@ export function useConversationComposerDraftOwner(): ConversationComposerDraftCo
   }, []);
 
   return useMemo(
-    () => ({ draft, setContent, setAttachments, prefill, clearMultica, reset }),
-    [draft, setContent, setAttachments, prefill, clearMultica, reset],
+    () => ({
+      draft,
+      setContent,
+      setAttachments,
+      prefill,
+      clearMultica,
+      enterScheduledTask,
+      setScheduledTaskConfig,
+      exitScheduledTask,
+      reset,
+    }),
+    [draft, setContent, setAttachments, prefill, clearMultica, enterScheduledTask, setScheduledTaskConfig, exitScheduledTask, reset],
   );
 }

@@ -1,6 +1,7 @@
 use crate::config::ResolvedProfileRef;
 use crate::domain::{ResolvedConfig, RunStatus, VERSION};
 use crate::dsl::{JsonConditionDsl, NodeDsl};
+use crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION;
 use crate::runtime::NodeState;
 
 use super::ids::{generate_uuid, next_runtime_execution_id, now_rfc3339_like};
@@ -15,6 +16,7 @@ pub(crate) fn create_node_state(
 ) -> NodeState {
     NodeState {
         version: VERSION.to_string(),
+        acp_storage_schema_version: CURRENT_ACP_STORAGE_SCHEMA_VERSION,
         node_id: node_id.to_string(),
         node_type: node_dsl.node_type(),
         run_id: run_id.to_string(),

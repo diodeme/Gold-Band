@@ -29,7 +29,7 @@ import {
 import { AcpSingleConfigMenu } from '@/components/acp/AcpSingleConfigMenu';
 import { parseCommittedSlashCommand, restoreSlashCommandInputFocus } from '@/lib/slash-command';
 import { useLeadingAdornmentTextIndent } from '@/hooks/useLeadingAdornmentTextIndent';
-import { ScheduledTaskDialog, type ScheduledTaskConfig } from '@/components/conversation/ScheduledTaskDialog';
+import { ScheduledTaskDialog } from '@/components/conversation/ScheduledTaskDialog';
 import type { ScheduledScheduleInput } from '@/types';
 import { validateScheduledConversationInput } from '@/lib/scheduled-task-validation';
 import { formatScheduledScheduleInput } from '@/lib/scheduled-task-formatting';
@@ -401,6 +401,10 @@ export function ConversationComposer({
   const composerDraft = useConversationComposerDraft();
   const content = composerDraft.draft.content;
   const setContent = composerDraft.setContent;
+  const scheduledMode = composerDraft.draft.submission.kind === 'scheduled-task';
+  const scheduledConfig = composerDraft.draft.submission.kind === 'scheduled-task'
+    ? composerDraft.draft.submission.config
+    : null;
   const [selectedDirectAgent, setSelectedDirectAgent] = useState(runMode.directConfig?.agentType ?? '');
   const [selectedDirectModel, setSelectedDirectModel] = useState(runMode.directConfig?.modelId ?? '');
   const [selectedDirectPermissionMode, setSelectedDirectPermissionMode] = useState(runMode.directConfig?.permissionMode ?? '');
@@ -413,8 +417,6 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
-  const [scheduledMode, setScheduledMode] = useState(initialScheduledMode);
-  const [scheduledConfig, setScheduledConfig] = useState<ScheduledTaskConfig | null>(null);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
   const rightWorkspace = useOptionalRightWorkspace();
@@ -492,7 +494,7 @@ export function ConversationComposer({
 
   const openScheduledConfig = useCallback(() => {
     if (!rightWorkspace?.scopeKey || !scheduledConfigResourceKey) return;
-    setScheduledMode(true);
+    composerDraft.enterScheduledTask();
     void rightWorkspace.openResource({
       kind: 'scheduled-task-config',
       key: scheduledConfigResourceKey,
@@ -501,14 +503,13 @@ export function ConversationComposer({
       description: t('scheduled.composer.configure'),
       attention: false,
     });
-  }, [rightWorkspace, scheduledConfigResourceKey, t]);
+  }, [composerDraft.enterScheduledTask, rightWorkspace, scheduledConfigResourceKey, t]);
 
   const exitScheduledMode = useCallback(() => {
-    setScheduledMode(false);
-    setScheduledConfig(null);
+    composerDraft.exitScheduledTask();
     closeScheduledConfig();
     onScheduledModeExit?.();
-  }, [closeScheduledConfig, onScheduledModeExit]);
+  }, [closeScheduledConfig, composerDraft.exitScheduledTask, onScheduledModeExit]);
 
   useEffect(() => {
     const wasInitiallyScheduled = previousInitialScheduledModeRef.current;
@@ -516,17 +517,16 @@ export function ConversationComposer({
     if (!initialScheduledMode) {
       initialScheduledModeOpenedRef.current = false;
       if (wasInitiallyScheduled) {
-        setScheduledMode(false);
-        setScheduledConfig(null);
+        composerDraft.exitScheduledTask();
         closeScheduledConfig();
       }
       return;
     }
-    setScheduledMode(true);
+    composerDraft.enterScheduledTask();
     if (initialScheduledModeOpenedRef.current || !rightWorkspace?.scopeKey) return;
     initialScheduledModeOpenedRef.current = true;
     openScheduledConfig();
-  }, [closeScheduledConfig, initialScheduledMode, openScheduledConfig, rightWorkspace?.scopeKey]);
+  }, [closeScheduledConfig, composerDraft.enterScheduledTask, composerDraft.exitScheduledTask, initialScheduledMode, openScheduledConfig, rightWorkspace?.scopeKey]);
 
   const renderScheduledConfig = useCallback((resource: RightWorkspaceResource) => (
     resource.kind === 'scheduled-task-config' ? (
@@ -536,10 +536,10 @@ export function ConversationComposer({
         presentation="workspace"
         onOpenChange={(open) => { if (!open) closeScheduledConfig(); }}
         draftConfig={scheduledConfig}
-        onSave={async (config) => { setScheduledConfig(config); }}
+        onSave={async (config) => { composerDraft.setScheduledTaskConfig(config); }}
       />
     ) : null
-  ), [closeScheduledConfig, isDirect, scheduledConfig]);
+  ), [closeScheduledConfig, composerDraft.setScheduledTaskConfig, isDirect, scheduledConfig]);
 
   useEffect(() => {
     if (!rightWorkspace) return;
@@ -1074,7 +1074,7 @@ export function ConversationComposer({
                   <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setScheduledMode(true); setScheduledConfig(null); openScheduledConfig(); }}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
+                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={openScheduledConfig}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
                   </DropdownMenu>
                 </div>
               )}

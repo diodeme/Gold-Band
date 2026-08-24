@@ -11,10 +11,12 @@ import {
   Position,
   ReactFlow,
   getSmoothStepPath,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type EdgeProps,
   type Node,
+  type NodeProps,
   type ReactFlowInstance,
   type Viewport,
 } from '@xyflow/react';
@@ -247,7 +249,40 @@ export function workerAgentSelectionPatch(provider: string): Partial<WorkflowWor
 }
 
 export function nodeSupportsFailureOutcome(node: WorkflowNodeDsl | undefined): boolean {
-  return node?.type === 'worker' && Boolean(node.output || node.success_condition);
+  return node?.type === 'worker' && Boolean(node.manual_check || node.output || node.success_condition);
+}
+
+export function createAuthoringWorkerNode(
+  workflow: WorkflowDsl,
+  baseId: string,
+  createSlotId: () => string = () => crypto.randomUUID(),
+): WorkflowWorkerNodeDsl {
+  return {
+    type: 'worker',
+    id: uniqueNodeId(workflow, baseId),
+    executionSlotId: createSlotId(),
+    goal: null,
+  };
+}
+
+export function upsertWorkerModelBinding(
+  modelBindings: WorkflowModelBindings,
+  executionSlotId: string,
+  patch: Partial<WorkerModelBinding>,
+): WorkflowModelBindings {
+  const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
+  const nextBinding: WorkerModelBinding = {
+    executionSlotId,
+    agentId: current?.agentId ?? '',
+    ...current,
+    ...patch,
+  };
+  return {
+    ...modelBindings,
+    bindings: current
+      ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
+      : [...modelBindings.bindings, nextBinding],
+  };
 }
 
 export function removeTerminalFromWorkflow(workflow: WorkflowDsl, terminalId: string): WorkflowDsl {
@@ -273,7 +308,11 @@ function AgentSelectItemContent({ agent, unavailableLabel }: { agent: ManagedAge
   );
 }
 
-function EditorCanvasNode({ data }: { data: EditorNodeData }) {
+function EditorCanvasNode({ id, data }: NodeProps<Node<EditorNodeData>>) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [data.supportsFailureOutcome, id, updateNodeInternals]);
   if (data.terminal) {
     return (
       <div data-theme-role="workflow-node" className="flex size-full items-center justify-center rounded-full border border-dashed border-border/80 bg-muted/20 text-xs tracking-wide text-muted-foreground">
@@ -603,19 +642,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   };
 
   const updateWorkerBinding = (executionSlotId: string, patch: Partial<WorkerModelBinding>) => {
-    const current = modelBindings.bindings.find((binding) => binding.executionSlotId === executionSlotId);
-    const nextBinding: WorkerModelBinding = {
-      executionSlotId,
-      agentId: current?.agentId ?? '',
-      ...current,
-      ...patch,
-    };
-    syncModelBindings({
-      ...modelBindings,
-      bindings: current
-        ? modelBindings.bindings.map((binding) => binding.executionSlotId === executionSlotId ? nextBinding : binding)
-        : [...modelBindings.bindings, nextBinding],
-    });
+    syncModelBindings(upsertWorkerModelBinding(modelBindings, executionSlotId, patch));
   };
 
   const syncWorkerBindingToOthers = (executionSlotId: string, overwriteConfigured: boolean) => {
@@ -723,13 +750,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
 
   const addWorkerNode = () => {
     const nextIndex = workflow.nodes.length + 1;
-    const id = uniqueNodeId(workflow, `node-${nextIndex}`);
-    const node: WorkflowWorkerNodeDsl = {
-      type: 'worker',
-      id,
-      executionSlotId: crypto.randomUUID(),
-      goal: null,
-    };
+    const node = createAuthoringWorkerNode(workflow, `node-${nextIndex}`);
+    const id = node.id;
     const next = { ...workflow, entry: workflow.entry || id, nodes: [...workflow.nodes, node] };
     syncWorkflow(next);
     setSelectedNodeId(id);
@@ -795,8 +817,8 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
     const currentWorkflow = workflowRef.current;
     const sourceNode = currentWorkflow.nodes.find((node) => node.id === sourceId);
     if (!sourceNode || (outcome === 'failure' && !nodeSupportsFailureOutcome(sourceNode))) return;
-    const id = uniqueNodeId(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
-    const node: WorkflowWorkerNodeDsl = { type: 'worker', id, provider: null, goal: null };
+    const node = createAuthoringWorkerNode(currentWorkflow, `node-${currentWorkflow.nodes.length + 1}`);
+    const id = node.id;
     const edge: WorkflowEdgeDsl = { from: sourceId, to: id, on: outcome };
     const next = { ...currentWorkflow, nodes: [...currentWorkflow.nodes, node], edges: [...currentWorkflow.edges, edge] };
     syncWorkflow(next);
@@ -2668,7 +2690,7 @@ export function deriveWorkflowEntryCandidateIds(workflow: Pick<WorkflowDsl, 'nod
 export function authoringWorkflowGraphSignature(workflow: Pick<WorkflowDsl, 'entry' | 'nodes' | 'edges'>): string {
   return JSON.stringify({
     entry: workflow.entry,
-    nodes: workflow.nodes.map((node) => [node.id, node.type]),
+    nodes: workflow.nodes.map((node) => [node.id, node.type, nodeSupportsFailureOutcome(node)]),
     edges: workflow.edges.map((edge) => [edge.from, edge.to, edge.on]),
   });
 }
@@ -3242,7 +3264,7 @@ export function validateWorkflowForSave(
     else if (![END_NODE, NEW_ROUND_NODE].includes(edge.to) && !nodeIds.has(edge.to)) addIssue(t('workflowEditor.validationEdgeTargetMissing', { node: edge.to }), edgeField(index, 'to'), edge.to, index);
     if (!['success', 'failure'].includes(edge.on)) addIssue(t('workflowEditor.validationEdgeOutcomeRequired', { index: index + 1 }), edgeField(index, 'on'), undefined, index);
     else if (edge.on === 'failure' && !nodeSupportsFailureOutcome(nodeById.get(edge.from))) {
-      addIssue(t('workflowEditor.validationFailureOutcomeRequiresOutputValidation', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
+      addIssue(t('workflowEditor.validationFailureOutcomeRequiresResultDecision', { node: edge.from }), edgeField(index, 'on'), edge.from, index);
     }
     else if (edge.on === 'success' && edge.to === NEW_ROUND_NODE) {
       addIssue(t('workflowEditor.validationSuccessNewRoundTarget', { node: edge.from }), edgeField(index, 'to'), edge.from, index);

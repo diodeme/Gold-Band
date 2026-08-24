@@ -18,7 +18,6 @@ import {
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
-  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -1180,6 +1179,8 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingCanonicalRunBoundary = false;
+    let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1204,8 +1205,10 @@ export function App() {
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
+      canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
           if (!active) return;
@@ -1233,6 +1236,7 @@ export function App() {
         .catch(() => {})
         .finally(() => {
           refreshInFlight = false;
+          canonicalRunBoundaryInFlight = false;
           if (!active || !refreshAgain) return;
           refreshAgain = false;
           if (refreshTimer === null) {
@@ -1245,10 +1249,19 @@ export function App() {
       sessionKey?: string | null,
       runtimeControlled = false,
       delayMs = 120,
+      canonicalRunBoundary = false,
     ) => {
-      if (sessionKey !== undefined) {
+      // A canonical NodeStarted event is the auto-follow boundary. A late ACP
+      // update from the node that just completed must not replace that target,
+      // including while its Run snapshot request is in flight. Newer canonical
+      // Run boundaries may still supersede it.
+      if (sessionKey !== undefined && (
+        canonicalRunBoundary
+        || (!pendingCanonicalRunBoundary && !canonicalRunBoundaryInFlight)
+      )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
@@ -1270,8 +1283,11 @@ export function App() {
         : null;
       queueConversationRunRefresh(
         sessionKey,
-        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        event.eventKind === 'node-started'
+          ? true
+          : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
         0,
+        true,
       );
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
@@ -1656,39 +1672,13 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key, run);
+    const selectedRun = run;
     setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : selectedRun;
       const next = beginConversationSessionSelection(base, key);
       conversationRunRef.current = next;
       return next;
     });
-    try {
-      const switched = await switchConversationSession(
-        targetProjectId,
-        event.taskId,
-        event.runId,
-        leaf.roundId,
-        leaf.nodeId,
-        leaf.attemptId,
-        leaf.outerNodeId,
-        leaf.outerAttemptId,
-      );
-      if (conversationSelectedSessionKeyRef.current !== key) return;
-      startTransition(() => {
-        setConversationRun((prev) => {
-          if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-          const next: ConversationRunVm = {
-            ...prev,
-            selectedSession: switched.selectedSession,
-            sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-          };
-          conversationRunRef.current = next;
-          return next;
-        });
-      });
-    } catch {
-      // 切换 session 失败时静默：用户已在 run 页面，可手动选择。
-    }
   }, [
     uiMode,
     taskPage,
@@ -2523,8 +2513,6 @@ export function App() {
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
           onWorkspaceChange={(projectId) => {
-            // composer 自身负责按 multica 绑定是否清空草稿（决策 d：multica 激活时保留绑定 + 预填内容）；
-            // App 这里只切工作区 + 加载对应运行模式。
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
@@ -2679,43 +2667,6 @@ export function App() {
               conversationRunRef.current = next;
               return next;
             });
-            switchConversationSession(
-              conversationPage.projectId,
-              conversationPage.taskId,
-              conversationPage.runId,
-              leaf.roundId,
-              leaf.nodeId,
-              leaf.attemptId,
-              leaf.outerNodeId,
-              leaf.outerAttemptId,
-            ).then((switched) => {
-              if (conversationSelectedSessionKeyRef.current !== key) {
-                return;
-              }
-              startTransition(() => {
-                setConversationRun((prev) => {
-                  if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-                  const next = {
-                    ...prev,
-                    selectedSession: switched.selectedSession,
-                    sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-                  };
-                  conversationRunRef.current = next;
-                  conversationSelectedSessionKeyRef.current = key;
-                  return next;
-                });
-              });
-              if (conversationRunRef.current && conversationSelectedSessionKeyRef.current === key) {
-                conversationRunRef.current = {
-                  ...conversationRunRef.current,
-                  selectedSession: switched.selectedSession,
-                  sessionTree: {
-                    ...conversationRunRef.current.sessionTree,
-                    selectedSessionKey: key,
-                  },
-                };
-              }
-            }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
             applyConversationLifecycleSnapshotToSidebar(
@@ -2767,7 +2718,6 @@ export function App() {
         }}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
-          resetConversationComposerDraft(composerDraftRef.current);
           setDraftConversationWorkspaceId(projectId);
           void loadConversationRunMode(projectId);
         }}

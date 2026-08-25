@@ -872,7 +872,10 @@ export function ConversationComposer({
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
           disabled={busy || submittingAttachments || branchMutationPending}
-          className={CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName}
+          className={cn(
+            CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName,
+            slashCommands.isOpen && 'z-50',
+          )}
         >
           <ComposerContextArea
             attachments={attachments}

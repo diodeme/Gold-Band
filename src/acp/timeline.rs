@@ -1396,6 +1396,7 @@ fn timeline_item_locator(
         || matches!(
             item.kind.as_str(),
             "userTextDelta"
+                | "scheduledTrigger"
                 | "textDelta"
                 | "fileChangeSet"
                 | "attemptSeparator"
@@ -2925,11 +2926,14 @@ mod tests {
         DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT, TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION,
         TimelineCompactionPolicy, TimelineRestoreMode, TimelineSettleOutcome, TimelineStore,
         TimelineUpsertOutcome, read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
-        read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
-        read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
-        settle_timeline_item_status, timeline_index_path,
+        read_indexed_runtime_restore_for_branch, read_indexed_timeline_item,
+        read_indexed_timeline_page, read_indexed_timeline_projection,
+        settle_latest_processing_retry_prompt, settle_timeline_item_status, timeline_index_path,
     };
-    use crate::acp::events::{AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, load_timeline_items};
+    use crate::acp::events::{
+        AcpTimelinePatch, AcpTimingPatch, AcpUiEvent, ScheduledTriggerPayload, load_timeline_items,
+        scheduled_trigger_event,
+    };
 
     fn event(id: &str, seq: u64, content: &str) -> AcpUiEvent {
         AcpUiEvent {
@@ -2949,6 +2953,113 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "providerHistory" })),
         }
+    }
+
+    fn trigger_payload() -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            scheduled_at: Some("2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "accepted summary".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn prompt_retry_does_not_duplicate_the_scheduled_trigger() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+        assert_eq!(
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Appended
+        );
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(20, &payload))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+
+        let items = load_timeline_items(&path).unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.kind == "scheduledTrigger")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn timeline_index_restores_scheduled_trigger_after_restart() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let payload = trigger_payload();
+        {
+            let mut store =
+                TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+            store
+                .upsert(1, &scheduled_trigger_event(1, &payload))
+                .unwrap();
+            store.force_checkpoint().unwrap();
+        }
+
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .expect("scheduled trigger must remain indexed after restart");
+
+        assert_eq!(restored.event.kind, "scheduledTrigger");
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(payload)
+        );
+    }
+
+    #[test]
+    fn trigger_event_snapshot_is_immutable_under_later_definition_edits() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let accepted = trigger_payload();
+        let mut edited = accepted.clone();
+        edited.instruction_summary = "later definition summary".to_string();
+        edited.content_fingerprint = "sha256:later-definition".to_string();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &accepted))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .upsert(2, &scheduled_trigger_event(2, &edited))
+                .unwrap(),
+            TimelineUpsertOutcome::Unchanged
+        );
+        store.force_checkpoint().unwrap();
+        let restored = read_indexed_timeline_item(&path, "scheduled-trigger:occurrence-001")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored.event.raw.unwrap()["scheduledTrigger"],
+            serde_json::json!(accepted)
+        );
     }
 
     #[test]
@@ -3034,6 +3145,25 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn scheduled_trigger_is_a_standalone_semantic_block() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        store
+            .upsert(1, &scheduled_trigger_event(1, &trigger_payload()))
+            .unwrap();
+        store.force_checkpoint().unwrap();
+
+        let page = read_indexed_timeline_page(&path, None, None, None, 30).unwrap();
+
+        assert_eq!(page.total_semantic_blocks, 1);
+        assert_eq!(page.loaded_semantic_blocks, 1);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].kind, "scheduledTrigger");
     }
 
     #[test]

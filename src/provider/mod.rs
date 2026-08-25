@@ -615,6 +615,7 @@ pub struct PromptBundle {
     pub runtime_control_transition_cause: Option<TurnControlTransitionCause>,
     pub attachment_metas: Vec<AttachmentMeta>,
     pub content_blocks: Vec<AcpContentBlock>,
+    pub scheduled_trigger: Option<crate::acp::events::ScheduledTriggerPayload>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2042,6 +2043,7 @@ pub fn render_prompt_bundle(req: &WorkerInvocation) -> Result<PromptBundle> {
         runtime_control_transition_cause: None,
         attachment_metas,
         content_blocks,
+        scheduled_trigger: scheduled_trigger_payload(req)?,
     })
 }
 
@@ -2187,6 +2189,44 @@ fn project_scheduled_execution(
         PromptVisibility::Hidden,
         Some("scheduledTaskExecution".to_string()),
     ))
+}
+
+fn scheduled_trigger_payload(
+    req: &WorkerInvocation,
+) -> Result<Option<crate::acp::events::ScheduledTriggerPayload>> {
+    let Some(context) = req.scheduled_context.as_ref() else {
+        return Ok(None);
+    };
+    ensure!(
+        context.timeline_owner.is_complete(),
+        "scheduled trigger requires a complete timeline owner"
+    );
+    let runtime = &req.runtime_context;
+    let owner = &context.timeline_owner;
+    let is_owner = context.project_id == runtime.project_id
+        && owner.task_id.as_deref() == Some(runtime.task_id.as_str())
+        && owner.run_id.as_deref() == Some(runtime.run_id.as_str())
+        && owner.round_id.as_deref() == Some(runtime.round_id.as_str())
+        && owner.node_id.as_deref() == Some(runtime.node_id.as_str())
+        && owner.attempt_id.as_deref() == Some(runtime.attempt_id.as_str());
+    if !is_owner {
+        return Ok(None);
+    }
+    Ok(Some(crate::acp::events::ScheduledTriggerPayload {
+        project_id: context.project_id.clone(),
+        scheduled_task_id: context.scheduled_task_id.clone(),
+        occurrence_id: context.occurrence_id.clone(),
+        trigger_kind: context.trigger_kind.clone(),
+        scheduled_at: context.automatic.as_ref().map(|automatic| {
+            automatic
+                .scheduled_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        }),
+        accepted_at: context.accepted_at.clone(),
+        instruction_summary: context.instruction_summary.clone(),
+        content_fingerprint: context.content_fingerprint.clone(),
+        links: context.timeline_owner.clone(),
+    }))
 }
 
 fn render_hidden_context(req: &WorkerInvocation) -> String {
@@ -3028,6 +3068,26 @@ mod tests {
             Some("scheduledTaskExecution")
         );
         assert_eq!(prompt.display_text.as_deref(), Some("检查主分支状态"));
+        assert_eq!(
+            prompt
+                .scheduled_trigger
+                .as_ref()
+                .map(|payload| payload.occurrence_id.as_str()),
+            Some("occurrence-001")
+        );
+    }
+
+    #[test]
+    fn workflow_child_invocation_gets_context_but_not_a_second_trigger_row() {
+        let mut child =
+            scheduled_invocation(crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled);
+        child.runtime_context.node_id = "child-node".to_string();
+        child.runtime_context.attempt_id = "child-attempt".to_string();
+
+        let prompt = render_prompt_bundle(&child).unwrap();
+
+        assert!(prompt.user_prompt.contains("occurrenceId: occurrence-001"));
+        assert!(prompt.scheduled_trigger.is_none());
     }
 
     #[test]

@@ -561,7 +561,7 @@ git commit -m "feat: project scheduled context into every agent turn"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] **Step 1: Write failing event and restore tests**
+- [x] **Step 1: Write failing event and restore tests**
 
 Add tests:
 
@@ -575,7 +575,7 @@ Add tests:
 #[test] fn trigger_event_snapshot_is_immutable_under_later_definition_edits()
 ```
 
-- [ ] **Step 2: Run Timeline tests and verify RED**
+- [x] **Step 2: Run Timeline tests and verify RED**
 
 ```powershell
 cargo test -p gold-band acp::events::tests
@@ -586,7 +586,7 @@ cargo test -p gold-band-desktop view_models::tests
 
 Expected: `scheduledTrigger` is unknown and retry emits no deterministic visible projection.
 
-- [ ] **Step 3: Add a typed trigger payload and event builder**
+- [x] **Step 3: Add a typed trigger payload and event builder**
 
 Define:
 
@@ -610,7 +610,7 @@ pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> A
 
 Use deterministic ID `scheduled-trigger:{occurrenceId}` and `kind = "scheduledTrigger"`. Store the typed payload in `raw.scheduledTrigger`; do not put the full instruction in visible `content`.
 
-- [ ] **Step 4: Emit at the accepted prompt boundary and make it idempotent**
+- [x] **Step 4: Emit at the accepted prompt boundary and make it idempotent**
 
 When ACP accepts the logical prompt for the Timeline-owner attempt:
 
@@ -620,7 +620,7 @@ When ACP accepts the logical prompt for the Timeline-owner attempt:
 
 On retry/recovery, Timeline upsert must converge on the same event. Non-owner Workflow/AUTO invocations receive the hidden protocol but skip trigger-row emission by comparing the current complete attempt locator to `ScheduledTaskContextInfo.timeline_owner`.
 
-- [ ] **Step 5: Run Timeline tests and verify GREEN**
+- [x] **Step 5: Run Timeline tests and verify GREEN**
 
 ```powershell
 cargo test -p gold-band acp::events::tests
@@ -631,7 +631,7 @@ cargo test -p gold-band-desktop view_models::tests
 
 Expected: one visible trigger and one hidden prompt survive retry and restart with unchanged payload.
 
-- [ ] **Step 6: Update docs and commit**
+- [x] **Step 6: Update docs and commit**
 
 ```powershell
 git add src/acp/events.rs src/acp/client.rs src/acp/timeline.rs src-tauri/src/view_models.rs docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md

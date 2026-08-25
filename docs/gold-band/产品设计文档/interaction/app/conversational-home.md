@@ -90,6 +90,7 @@
 
 - `RunState.worktree { path, branch, fork_commit }` 是会话运行工作位置的 canonical fact；缺少该字段表示主工作区。会话 metadata 中的 `work_location` 只保存创建与重跑意图，详情页和执行路径不得从偏好反推当前 run 的事实。
 - 选择 worktree 后，run 先进入既有 `PreparingWorkspace` 阶段，在 Gold Band 用户数据目录的受管 `worktrees/` 下创建独立目录，并以源仓库当前 `HEAD` 创建专用分支。路径和分支使用 run identity 的确定性短哈希生成，不把 worktree 写入源仓库，也不使用名称反查身份。
+- `PreparingWorkspace` 是 Runtime 的 canonical 工作区阶段，可同时覆盖初始环境准备和 AI-DYNAMIC leaf 成功后的 checkpoint、fork、release 等后置转换。Composer 根据已有 graph/leaf lifecycle 事实区分展示语义：初始阶段继续显示“正在准备开发环境…”，只有 graph 正在执行 workspace transition 且拥有的 leaf 已 `completed/success` 时显示“正在处理工作区…”。该区别只属于 ViewModel 展示投影，不新增持久状态，也不改变 Direct 和普通 Workflow 的阶段映射。
 - Agent 的 `workspace_dir` 使用该 run worktree；adapter 的 `adapter_workspace_dir` 继续指向原项目工作空间，以保持配置和能力发现边界。AI-DYNAMIC 的 main workspace 使用外层 run 的实际工作目录，因此可以在会话 worktree 内继续按现有 fanout 机制创建子 worktree。
 - 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
 

@@ -376,6 +376,7 @@ type AcpProcessingKind =
   | "responding"
   | "stopping"
   | "preparing-workspace"
+  | "processing-workspace"
   | "launching-next-node";
 type AcpTimelineEvent = AcpUiEventVm & {
   startedAt?: string;
@@ -7020,6 +7021,8 @@ function processingLabel(
   if (kind === "stopping") return t("acp.stopping");
   if (kind === "preparing-workspace")
     return t("conversation.runtime.preparingDevelopmentEnvironment");
+  if (kind === "processing-workspace")
+    return t("conversation.runtime.processingWorkspace");
   if (kind === "launching-next-node") return t("conversation.runtime.launchingNextNode");
   if (kind === "launching") return t("acp.launchingClaude");
   if (kind === "thinking") return t("acp.thinkingNow");

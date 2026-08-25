@@ -1492,3 +1492,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 状态与接口：复用 `run.currentRound/currentNode/currentAttempt` 作为普通 Workflow/AUTO 的 continue owner。只有当前 attempt 可以投影 continue action：未完成断点使用 `continue-current-attempt`（“继续工作流”），已成功完成但后继边尚未提交的断点使用 `recover-completed-attempt`（“恢复工作流”）；历史 attempt 固定 `continueKind=null`。AI-DYNAMIC 保留既有复合节点语义，以当前 outer attempt 作为命令 owner，dynamic leaf 继续描述内部断点。
 - [x] 回归：Rust ViewModel 接口测试固定同一 paused Run 下“历史成功 dev-test 无 continue action、当前 paused test 显示继续工作流”，并保留 dynamic parent running/paused、stale cancelled leaf 和 launching suppression 的既有覆盖；83 项 Conversation ViewModel 测试通过。
 - 性能与过度设计评审：只复用已加载 Run 的三个 locator 字段增加 O(1) 身份比较，不新增协议字段、持久状态、状态机、依赖、缓存、I/O、Timeline/raw 扫描或锁范围；现有 canonical current identity 已足够表达动作所有权，无需复制 UI 状态。
+
+## 2026-08-25：AI-DYNAMIC 后置工作区状态文案
+
+- [x] 根因：Runtime 使用同一个 `PreparingWorkspace` canonical phase 表达初始环境准备和 AI-DYNAMIC leaf 完成后的 checkpoint、fork、release；后端 Composer 与前端合并投影都把该 phase 无条件翻译为“正在准备开发环境…”。生命周期所有权和状态转换正确，缺陷属于正确设计下的展示投影实现不完整，不拆分或复制 Runtime 状态机。
+- [x] 实现：复用 dynamic graph phase、leaf `completed/success`、graph 对 causal leaf 的既有投影所有权和 leaf lifecycle revision。仅在该组合成立时，Conversation VM 输出 `processing-workspace + conversation.runtime.processingWorkspace`；初始 workspace preparation 保持原文案，Direct 和普通 Workflow 不变。前端 Composer 合并按 Runtime revision 选择权威 facet 后保留该后端展示语义，并继续让停止态优先。
+- [x] 回归范围：Rust ViewModel 接口覆盖初始准备原文案、已完成 causal leaf 的详情与 session tree 新文案、并行运行 leaf 和历史 leaf 不继承新文案；前端状态测试覆盖后端新投影消费、ACP facet 合并保持和停止优先级。
+- 性能与过度设计评审：所有判断均针对已加载 graph、leaf 和 lifecycle 做 O(1) 比较，不增加 I/O、Timeline/raw 扫描、React 订阅或渲染范围；不新增 aggregate、持久字段、revision、状态机、依赖、缓存、队列、并发或锁。现有 canonical lifecycle 已足够表达区别，因此只完善消费端投影。

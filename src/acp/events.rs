@@ -422,6 +422,20 @@ pub struct AcpUiEvent {
     pub raw: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTriggerPayload {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub scheduled_at: Option<String>,
+    pub accepted_at: String,
+    pub instruction_summary: String,
+    pub content_fingerprint: String,
+    pub links: crate::scheduler::occurrence::OccurrenceLinks,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTranscriptRelation {
@@ -1488,6 +1502,9 @@ pub(crate) fn merge_timeline_item_revision(
     existing: &AcpUiEvent,
     mut incoming: AcpUiEvent,
 ) -> AcpUiEvent {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event(&incoming) && !is_provider_history_event(existing) {
         return existing.clone();
     }
@@ -3176,6 +3193,29 @@ pub fn user_prompt_event(
     )
 }
 
+pub fn scheduled_trigger_event(seq: u64, payload: &ScheduledTriggerPayload) -> AcpUiEvent {
+    AcpUiEvent {
+        id: format!("scheduled-trigger:{}", payload.occurrence_id),
+        seq,
+        timestamp: payload.accepted_at.clone(),
+        kind: "scheduledTrigger".to_string(),
+        session_id: None,
+        content: None,
+        title: None,
+        tool_call_id: None,
+        status: Some("completed".to_string()),
+        started_seq: Some(seq),
+        ended_seq: Some(seq),
+        started_at: Some(payload.accepted_at.clone()),
+        ended_at: Some(payload.accepted_at.clone()),
+        timing: None,
+        raw: Some(serde_json::json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": payload,
+        })),
+    }
+}
+
 pub fn user_prompt_event_with_quotes(
     seq: u64,
     session_id: String,
@@ -3308,20 +3348,89 @@ fn extract_status(value: &Value) -> Option<String> {
 mod tests {
     use super::{
         AcpLatestTurnStatus, AcpLiveTurnActivity, AcpPromptSubmission, AcpSessionAvailability,
-        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent,
+        AcpSessionMetadata, AcpTimingState, AcpTurnAdmission, AcpUiEvent, ScheduledTriggerPayload,
         agent_transcript_tool_output, annotate_latest_runtime_control_output, append_raw_frame,
         append_structured_diagnostic, append_timeline_patch, begin_session_turn,
         cancel_latest_processing_prompt_retry, compact_live_conversation_event,
         context_compaction_phase, elicitation_request_event, elicitation_response_event,
         extract_usage_fields, inspect_session_turn, is_semantically_empty_agent_content,
         kind_to_ui_kind, latest_timeline_source_seq, load_session_metadata, load_timeline_items,
-        normalize_session_update, permission_request_event, user_prompt_event,
-        user_prompt_event_with_quotes, write_timeline_items,
+        normalize_session_update, permission_request_event, scheduled_trigger_event,
+        user_prompt_event, user_prompt_event_with_quotes, write_timeline_items,
     };
     use crate::provider::UserPromptQuote;
     use crate::storage::{read_json, write_json};
     use camino::Utf8PathBuf;
     use serde_json::{Value, json};
+
+    fn scheduled_trigger_payload(
+        trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    ) -> ScheduledTriggerPayload {
+        ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: trigger_kind.clone(),
+            scheduled_at: (trigger_kind
+                == crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled)
+                .then(|| "2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn scheduled_trigger_event_has_deterministic_occurrence_identity() {
+        let payload = scheduled_trigger_payload(
+            crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+        );
+
+        let first = scheduled_trigger_event(10, &payload);
+        let retry = scheduled_trigger_event(20, &payload);
+
+        assert_eq!(first.id, "scheduled-trigger:occurrence-001");
+        assert_eq!(retry.id, first.id);
+        assert_eq!(first.kind, "scheduledTrigger");
+        assert!(first.content.is_none());
+        assert_eq!(
+            first.raw.as_ref().unwrap()["scheduledTrigger"],
+            json!(payload)
+        );
+        assert_ne!(first.seq, retry.seq);
+    }
+
+    #[test]
+    fn automatic_and_manual_trigger_events_have_distinct_kinds() {
+        let automatic = scheduled_trigger_event(
+            1,
+            &scheduled_trigger_payload(
+                crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            ),
+        );
+        let manual = scheduled_trigger_event(
+            2,
+            &scheduled_trigger_payload(crate::scheduler::occurrence::OccurrenceTriggerKind::Manual),
+        );
+
+        assert_eq!(
+            automatic.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "scheduled"
+        );
+        assert_eq!(
+            manual.raw.as_ref().unwrap()["scheduledTrigger"]["triggerKind"],
+            "manual"
+        );
+        assert!(automatic.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_string());
+        assert!(manual.raw.as_ref().unwrap()["scheduledTrigger"]["scheduledAt"].is_null());
+    }
 
     #[test]
     fn metadata_patch_preserves_the_latest_canonical_lifecycle() {

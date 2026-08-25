@@ -99,6 +99,13 @@ fn prompt_usage_transaction_id(
     format!("{prompt_event_id}:attempt-{retry_attempt}:{operation_seq}")
 }
 
+fn scheduled_trigger_for_prompt(seq: u64, prompt: &PromptBundle) -> Option<AcpUiEvent> {
+    prompt
+        .scheduled_trigger
+        .as_ref()
+        .map(|payload| scheduled_trigger_event(seq, payload))
+}
+
 fn settle_prompt_event(
     mut event: AcpUiEvent,
     terminal_status: &str,
@@ -354,8 +361,8 @@ use crate::acp::events::{
     AcpSessionTiming, AcpTimingState, AcpUiEvent, append_diagnostic, append_raw_frame,
     append_structured_diagnostic, cancel_latest_processing_prompt_retry, current_timestamp,
     is_semantically_empty_agent_content, load_session_metadata, normalize_session_update,
-    permission_request_event, read_lifecycle_header, user_prompt_event_with_quotes,
-    write_session_metadata, write_session_metadata_owned,
+    permission_request_event, read_lifecycle_header, scheduled_trigger_event,
+    user_prompt_event_with_quotes, write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
 use crate::acp::permission::{
@@ -4365,6 +4372,11 @@ impl<'a> AcpRuntime<'a> {
             .session_id
             .clone()
             .ok_or_else(|| anyhow!("ACP prompt requires a session id"))?;
+        let trigger_seq = self.seq.saturating_add(1);
+        if let Some(trigger) = scheduled_trigger_for_prompt(trigger_seq, prompt) {
+            self.seq = trigger_seq;
+            self.persist_event(&trigger)?;
+        }
         let prior_retry = self.prompt_retry.clone();
         let prompt_id = prompt
             .prompt_id
@@ -7373,11 +7385,11 @@ mod tests {
         prompt_usage_transaction_id, provider_thread_is_active, register_provider_control,
         request_prompt_cancel, resolve_permission_mode, resolve_session_model,
         retain_bounded_doctor_acp_failure_bundle, runtime_hot_timeline_items,
-        session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
-        session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
-        settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        take_pending_live_update_for_stream_switch, unregister_provider_control,
-        validate_session_restore_target,
+        scheduled_trigger_for_prompt, session_config_fingerprint, session_load_params,
+        session_new_params, session_prompt_params, session_prompt_text, session_resume_params,
+        settle_attempt_prompt_interactions, settle_prompt_event, should_suppress_session_update,
+        stable_message_item_id, take_pending_live_update_for_stream_switch,
+        unregister_provider_control, validate_session_restore_target,
     };
 
     #[test]
@@ -7405,7 +7417,63 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         }
+    }
+
+    #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let mut prompt = non_runtime_control_test_prompt("scheduled-prompt-001");
+        prompt.visibility = PromptVisibility::Hidden;
+        prompt.hidden_reason = Some("scheduledTaskExecution".to_string());
+        prompt.scheduled_trigger = Some(crate::acp::events::ScheduledTriggerPayload {
+            project_id: "project-001".to_string(),
+            scheduled_task_id: "scheduled-task-001".to_string(),
+            occurrence_id: "occurrence-001".to_string(),
+            trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+            scheduled_at: Some("2026-08-25T01:30:00Z".to_string()),
+            accepted_at: "2026-08-25T01:29:59Z".to_string(),
+            instruction_summary: "检查主分支状态".to_string(),
+            content_fingerprint: "sha256:accepted".to_string(),
+            links: crate::scheduler::occurrence::OccurrenceLinks {
+                task_id: Some("task-001".to_string()),
+                run_id: Some("run-001".to_string()),
+                round_id: Some("round-001".to_string()),
+                node_id: Some("dev".to_string()),
+                attempt_id: Some("attempt-001".to_string()),
+            },
+        });
+
+        let trigger = scheduled_trigger_for_prompt(7, &prompt).unwrap();
+        let hidden_prompt = crate::acp::events::user_prompt_event(
+            8,
+            "session-001".to_string(),
+            prompt.user_prompt.clone(),
+            prompt.prompt_id.clone(),
+            true,
+            Vec::new(),
+        );
+
+        assert_eq!(trigger.kind, "scheduledTrigger");
+        assert_ne!(
+            trigger
+                .raw
+                .as_ref()
+                .and_then(|raw| raw["hiddenFromChat"].as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            hidden_prompt
+                .raw
+                .as_ref()
+                .and_then(|raw| raw["hiddenFromChat"].as_bool()),
+            Some(true)
+        );
+        assert!(trigger.content.is_none());
+        assert_eq!(
+            trigger.raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
     }
 
     #[test]
@@ -10363,6 +10431,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         let text = session_prompt_text("codex-acp", &prompt, false, false);
@@ -10401,6 +10470,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         let text = session_prompt_text("codex-acp", &prompt, true, false);
@@ -10437,6 +10507,7 @@ mod tests {
             runtime_control_transition_cause: None,
             attachment_metas: Vec::new(),
             content_blocks: Vec::new(),
+            scheduled_trigger: None,
         };
 
         assert_eq!(

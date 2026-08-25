@@ -4814,6 +4814,9 @@ fn merge_timeline_item_revision_vm(
     existing: &AcpUiEventVm,
     mut incoming: AcpUiEventVm,
 ) -> AcpUiEventVm {
+    if existing.kind == "scheduledTrigger" {
+        return existing.clone();
+    }
     if is_provider_history_event_vm(&incoming) && !is_provider_history_event_vm(existing) {
         return existing.clone();
     }
@@ -5754,6 +5757,7 @@ fn is_conversation_semantic_event(
     matches!(
         event.kind.as_str(),
         "userTextDelta"
+            | "scheduledTrigger"
             | "textDelta"
             | "thoughtDelta"
             | "toolCall"
@@ -7968,6 +7972,96 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "goldBandPrompt" })),
         }
+    }
+
+    #[test]
+    fn scheduled_trigger_is_visible_while_provider_prompt_is_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut trigger = test_event("scheduledTrigger", "");
+        trigger.id = "scheduled-trigger:occurrence-001".to_string();
+        trigger.content = None;
+        trigger.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "检查主分支状态"
+            }
+        }));
+        let mut hidden_prompt = test_event("userTextDelta", "hidden protocol");
+        hidden_prompt.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "hiddenFromChat": true,
+            "reason": "scheduledTaskExecution"
+        }));
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({ "item": trigger }),
+                json!({ "item": hidden_prompt })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "scheduledTrigger");
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "检查主分支状态"
+        );
+    }
+
+    #[test]
+    fn scheduled_trigger_projection_keeps_the_first_persisted_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path =
+            camino::Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut accepted = test_event("scheduledTrigger", "");
+        accepted.id = "scheduled-trigger:occurrence-001".to_string();
+        accepted.content = None;
+        accepted.raw = Some(json!({
+            "source": "goldBandScheduledTrigger",
+            "scheduledTrigger": {
+                "occurrenceId": "occurrence-001",
+                "instructionSummary": "accepted summary"
+            }
+        }));
+        let mut later = accepted.clone();
+        later.raw.as_mut().unwrap()["scheduledTrigger"]["instructionSummary"] =
+            Value::String("later definition summary".to_string());
+        std::fs::write(
+            path.as_std_path(),
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": accepted.id,
+                    "revision": 1,
+                    "op": "upsert",
+                    "item": accepted
+                }),
+                json!({
+                    "patchType": "timelinePatch",
+                    "itemId": later.id,
+                    "revision": 2,
+                    "op": "upsert",
+                    "item": later
+                })
+            ),
+        )
+        .unwrap();
+
+        let (events, ..) = parse_timeline_file(&path, false).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].raw.as_ref().unwrap()["scheduledTrigger"]["instructionSummary"],
+            "accepted summary"
+        );
     }
 
     #[test]

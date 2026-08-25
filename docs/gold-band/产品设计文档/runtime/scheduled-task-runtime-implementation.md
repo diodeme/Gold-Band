@@ -351,6 +351,12 @@ Task 3 补齐 authoring 与 acceptance 之间的运行时边界。自动触发�
 
 内容编辑在接受前完成时，新 definition 赢得 CAS，第一次准备产生的未接受 Task/Run 由既有 prepared guard 回滚，运行时只重新读取并准备一次；第二次 authoring 冲突不再继续循环，而是把 occurrence 释放为 `retrying + SCHEDULED_CONFLICT`。内容编辑在接受后只影响未来 occurrence，当前执行、恢复和历史始终复用已持久化 snapshot 与完整 locator。schedule 修改、停用或删除只失效未接受的自动 occurrence，不改写已接受事实；一次性 `At` 任务也在成功接受并启动后才投影为 disabled，避免 definition 先变化导致自身接受失败。
 
-`ScheduledTaskContextInfo` 不再携带 title、mode、session policy 或可变 instruction，而是由已接受 occurrence 唯一构造，包含 `projectId + scheduledTaskId + occurrenceId`、类型化 trigger kind、`acceptedAt`、可选完整自动触发上下文、fingerprint、冻结摘要和 Task/Run/Round/Node/Attempt locator。该 context 随自动 Workflow/AUTO worker execution chain 继承；`App::as_turn` 在普通用户续聊和 queued user turn 边界同时清除 occurrence ID 与 scheduled context，避免无人值守协议泄漏到交互式 turn。最终 bilingual prompt 投影仍由下一阶段统一替换，当前模板适配不是最终对客或 Agent 协议。
+`ScheduledTaskContextInfo` 不再携带 title、mode、session policy 或可变 instruction，而是由已接受 occurrence 唯一构造，包含 `projectId + scheduledTaskId + occurrenceId`、类型化 trigger kind、`acceptedAt`、可选完整自动触发上下文、fingerprint、冻结摘要和 Task/Run/Round/Node/Attempt locator。该 context 随自动 Workflow/AUTO worker execution chain 继承；`App::as_turn` 在普通用户续聊和 queued user turn 边界同时清除 occurrence ID 与 scheduled context，避免无人值守协议泄漏到交互式 turn。
 
 Task 3 性能与过度设计复核：每次真实触发增加一次按 project/job 主键读取和一次 occurrence CAS，只有可证明的 authoring 冲突才发生至多一次重建；数据库事务不包含文件准备、provider 调用或后台执行。没有全量扫描、N+1、无界重试、缓存、队列、并发状态机或新依赖。`ScheduledExecutionAuthority` 只是当前 record 与待接受 snapshot 的短生命周期组合，不是新的 canonical model；已接受 occurrence 继续是唯一 durable execution fact。
+
+最终 provider user prompt 投影在所有 envelope mode 合并后执行。Timeline-owner attempt 接收一次隐藏的 `scheduledTaskExecution` 协议和一次原始 instruction；Workflow/AUTO 子 invocation 继承隐藏执行上下文，但因完整 Task/Run/Round/Node/Attempt locator 不匹配 owner，不生成第二条可见 trigger。自动触发协议读取冻结的 `scheduledAt + schedule + timezone`；手动执行明确标识 `manual` 且不伪造自动调度字段。普通用户 follow-up 不携带该协议。
+
+ACP 在接受逻辑 prompt 时先按 `scheduled-trigger:{occurrenceId}` upsert 一条 `kind = scheduledTrigger` 的 Timeline event，再持久化 `hiddenFromChat = true` 的 provider prompt。trigger payload 只包含 project、scheduled task、occurrence、trigger kind、可选 scheduledAt、acceptedAt、`instructionSummary`、content fingerprint 和完整 locator；可见 content 不包含原始 instruction。首次已持久化的 trigger revision 即冻结，后续 retry、recovery 或 definition 编辑不能覆盖 payload；确定性 ID 使重复写入收敛为同一行。只有 locator 完全匹配的 Timeline owner 生成该 event，因此一个 accepted occurrence 恰有一个可见触发事实。
+
+`scheduledTrigger` 是独立 Timeline semantic block。索引分页、重启恢复和桌面 view model 都保留该事件，同时过滤隐藏 provider prompt；自动与手动通过 payload 的 `triggerKind` 区分。trigger 写入为每个接受 prompt 增加一次按确定性 ID 的 O(1) 索引 upsert，不增加全量加载、扫描、缓存、队列或额外持久身份。设计复用 accepted snapshot、PromptBundle 和既有 Timeline store，不建立第二份 execution snapshot 或任务 title，复杂度与不可变历史和用户可见触发事实的实际不变量匹配。

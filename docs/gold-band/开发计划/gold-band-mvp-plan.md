@@ -1493,6 +1493,14 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 回归：Rust ViewModel 接口测试固定同一 paused Run 下“历史成功 dev-test 无 continue action、当前 paused test 显示继续工作流”，并保留 dynamic parent running/paused、stale cancelled leaf 和 launching suppression 的既有覆盖；83 项 Conversation ViewModel 测试通过。
 - 性能与过度设计评审：只复用已加载 Run 的三个 locator 字段增加 O(1) 身份比较，不新增协议字段、持久状态、状态机、依赖、缓存、I/O、Timeline/raw 扫描或锁范围；现有 canonical current identity 已足够表达动作所有权，无需复制 UI 状态。
 
+## 2026-08-24：快速会话工作树身份与启动错误贯穿
+
+- [x] 根因：会话工作树实现虽然声明使用 run identity，实际短哈希只包含规范化仓库路径与 `taskId/runId` 顺序编号；`.gold-band` 与 `.maling` 等独立数据域操作同一 Git repository 时会重复产生相同编号，继而与共享 `.git` 中的既有分支和 linked-worktree 登记冲突。该问题属于 canonical identity 作用域设计缺陷，不通过自动 prune、删除历史分支或重试补丁规避。
+- [x] 数据与实现：run 创建时先生成并复用现有 `run.uuid`，与既有 `projectId/taskUuid` 一起通过项目已有 BLAKE3 生成 16 位稳定短 ID；路径继续归属当前通道受管 `worktrees/`，Git 分支继续使用 `gold-band/conversation/<shortId>`。同一 durable run 重算保持幂等，不同通道独立创建的 run 不再因显示编号相同而碰撞；不迁移或改写已失败空会话和历史 worktree。
+- [x] 错误契约：Git worktree 创建边界返回 `workspace.worktree-create-failed` 结构化 `RuntimeErrorInfo`；后台准备失败复用 canonical `run_paused` 事件并写入 `controlFailure.runtimeError`，timestamp 与 durable `run.updatedAt` 对齐。会话页沿用既有 runtime error 映射按错误码显示中英文恢复文案，原始 Git diagnostic 只保留给日志和诊断，不新增对客后端文案。
+- [x] 回归与验收：Rust 测试固定相同 durable identity 幂等、task/run UUID 任一变化均生成不同 worktree、Git 创建失败保留结构化错误，以及后台失败事件可由 Conversation VM 按当前 pause timestamp 读取；前端映射测试固定中英文错误码文案。`cargo test --lib worktree` 17 项、后台错误定向测试、desktop Conversation VM 定向测试、两个 crate check、前端 6 项定向测试、TypeScript 与生产构建均通过。WB/MALING 桌面实测在 Test 工作空间新建 `task-008/run-001` 的工作树 + AUTO 会话，使用独立 `task_uuid/run_uuid` 生成 `.maling/.../worktrees/439c32bbd972b134` 与 `gold-band/conversation/439c32bbd972b134`，顺利越过 workspace preparation 并以 success 完成；验收后已移除这个零独有提交的临时 worktree/branch，测试 task 已移入回收站。未迁移失败会话，未 prune、删除或改写任何既有 `.gold-band` worktree/branch。
+- 性能与过度设计评审：identity 计算只哈希三个固定长度字段，错误事件只增加一个常量大小对象，均为 O(1)；不新增 Git 查询、全量扫描、迁移器、状态机、持久字段、依赖、缓存、队列、轮询、锁或渲染订阅。现有 UUID、BLAKE3、`RuntimeErrorInfo`、run event 与 i18n 已足够表达不变量，无需清理其他产品通道的 Git 资源。
+
 ## 2026-08-25：AI-DYNAMIC 后置工作区状态文案
 
 - [x] 根因：Runtime 使用同一个 `PreparingWorkspace` canonical phase 表达初始环境准备和 AI-DYNAMIC leaf 完成后的 checkpoint、fork、release；后端 Composer 与前端合并投影都把该 phase 无条件翻译为“正在准备开发环境…”。生命周期所有权和状态转换正确，缺陷属于正确设计下的展示投影实现不完整，不拆分或复制 Runtime 状态机。

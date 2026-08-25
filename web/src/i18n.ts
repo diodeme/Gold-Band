@@ -2090,6 +2090,8 @@ const resources = {
             "配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}",
           sessionConfigValueUnavailableNoValues:
             "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
+          worktreeCreateFailed:
+            "无法创建新工作树，请检查当前仓库的工作树状态后重试",
           launchingNextNode: "拉起下一节点中",
           preparingDevelopmentEnvironment: "正在准备开发环境…",
           processingWorkspace: "正在处理工作区…",
@@ -4318,6 +4320,8 @@ const resources = {
             "Config option {{configId}} does not support value {{value}}. Available: {{values}}",
           sessionConfigValueUnavailableNoValues:
             "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
+          worktreeCreateFailed:
+            "Unable to create a new worktree. Check the repository worktree state and try again.",
           launchingNextNode: "Launching next node",
           preparingDevelopmentEnvironment: "Preparing development environment…",
           processingWorkspace: "Processing workspace…",

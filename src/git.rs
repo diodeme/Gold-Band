@@ -6,6 +6,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::process::background_command;
+use crate::runtime_error::{RuntimeErrorDomain, manual_runtime_error_info, runtime_error};
 
 mod github;
 mod source_control;
@@ -476,12 +477,22 @@ impl GitWorkspaceManager {
             },
             "git worktree add completed"
         );
-        let output = output_result?;
-        ensure!(
-            output.success,
-            "git worktree add failed: {}",
-            details(&output)
-        );
+        let output = output_result.map_err(|error| {
+            runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Workspace,
+                "workspace.worktree-create-failed",
+                format!("git worktree add failed: {error:#}"),
+                serde_json::json!({ "branch": branch }),
+            ))
+        })?;
+        if !output.success {
+            return Err(runtime_error(manual_runtime_error_info(
+                RuntimeErrorDomain::Workspace,
+                "workspace.worktree-create-failed",
+                format!("git worktree add failed: {}", details(&output)),
+                serde_json::json!({ "branch": branch }),
+            )));
+        }
         Ok(())
     }
 
@@ -731,6 +742,33 @@ mod tests {
         manager
             .validate_worktree(&worktree, "gb-test-conversation")
             .unwrap();
+    }
+
+    #[test]
+    fn worktree_create_failure_preserves_structured_workspace_error() {
+        let (_dir, root) = initialized_repository();
+        let runner = GitCommandRunner::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        assert!(
+            runner
+                .run(&root, &["branch", "gb-test-existing", &head])
+                .unwrap()
+                .success
+        );
+
+        let error = GitWorkspaceManager::default()
+            .create_worktree(
+                &root,
+                &root.join("runtime-worktrees/conflict"),
+                "gb-test-existing",
+                &head,
+            )
+            .unwrap_err();
+        let info = crate::runtime_error::normalize_runtime_error(&error);
+
+        assert_eq!(info.code_str(), "workspace.worktree-create-failed");
+        assert_eq!(info.domain, RuntimeErrorDomain::Workspace);
+        assert_eq!(info.params["branch"], "gb-test-existing");
     }
 
     #[test]

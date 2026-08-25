@@ -7298,6 +7298,51 @@ mod tests {
     }
 
     #[test]
+    fn conversation_run_vm_exposes_worktree_creation_failure() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"workspace","code":"workspace.worktree-create-failed"},"domain":"workspace","recovery":"manual","retryPolicy":null,"params":{"branch":"gold-band/conversation/conflict"},"diagnostic":"git worktree add failed: branch already exists","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+        let runtime_error = vm.runtime_error.as_ref().unwrap();
+
+        assert_eq!(runtime_error.code.code, "workspace.worktree-create-failed");
+        assert_eq!(
+            runtime_error
+                .params
+                .get("branch")
+                .and_then(serde_json::Value::as_str),
+            Some("gold-band/conversation/conflict")
+        );
+    }
+
+    #[test]
     fn conversation_run_vm_does_not_project_runtime_error_after_resume() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);

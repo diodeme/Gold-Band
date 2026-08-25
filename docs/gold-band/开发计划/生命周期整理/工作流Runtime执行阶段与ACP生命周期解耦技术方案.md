@@ -363,7 +363,7 @@ latestTurnStatus        = Completed
 
 ### 7.7 AI-DYNAMIC
 
-AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace catalog 等细节。顶层 `RunState.execution` 只表示 outer AI-DYNAMIC attempt 的聚合阶段；每个 `DynamicNodeState` 独立持有 `runtimeExecutionId / runtimeExecutionPhase / runtimeExecutionRevision / runtimeExecutionUpdatedAt`，作为该 leaf lifecycle 的权威源。
+AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace catalog 等细节。顶层 `RunState.execution` 只表示 outer AI-DYNAMIC attempt 的聚合阶段；每个 `DynamicNodeState` 独立持有 `runtimeExecutionId / runtimeExecutionPhase / runtimeLifecycleRevision / runtimeLifecycleUpdatedAt`，作为该 leaf lifecycle 的权威源。outer revision、leaf revision 与 ACP revision 不属于同一个比较域。
 
 | Dynamic 权威事实 | 权威状态归属 |
 |---|---|
@@ -371,11 +371,11 @@ AI-DYNAMIC graph 继续拥有内部拓扑、leaf outcome、group、workspace cat
 | leaf finalize / repair | 对应 `DynamicNodeState = FinalizingArtifact / RepairingArtifact` |
 | leaf 暂停 / 完成 | 对应 `DynamicNodeState = Paused / Terminal`，并清空 active execution ID |
 | graph 正在调度并行 leaf | `DynamicRunState=Running`；父 `RunState.execution=RunningNode` |
-| workspace checkpoint / fork / release | `DynamicRunState.phase=PreparingWorkspace`；父 execution 暂时为 `PreparingWorkspace` |
+| workspace checkpoint / fork / release | `DynamicRunState.phase=PreparingWorkspace`；父 execution 暂时为 `PreparingWorkspace`；causal leaf phase 同步被 graph 接管 |
 | 单 leaf 停止、仍有 active sibling | 仅该 leaf Paused；graph 与父 Run 保持 Running |
 | 最后 active leaf 停止或 outer 停止 | graph、父 Node/Round/Run 聚合为 Paused |
 
-leaf phase 变更必须位于现有 project-scoped dynamic state lock 内，以 `nodeId + attemptId + runtimeExecutionId` 做 generation CAS，并持久化 graph 与 leaf node 文件。事件发布移到锁外，避免扩大临界区。Conversation 选择 dynamic leaf 时直接读取 leaf execution 投影；尚未建立 active execution 的 `Ready` leaf 由确定性 read-model 规则显示为 `StartingNode`。父 Run 已暂停时非终态 leaf 使用父 `Paused` 聚合，workspace 临界区使用父 `PreparingWorkspace` 聚合；leaf completed 后 graph 尚在消费 proposal、或 leaf pause 与 graph active 集合之间的提交收敛窗口使用父 graph 聚合。selected session 不是 canonical identity，不能驱动任何后端状态迁移。
+leaf local phase 变更必须位于现有 project-scoped dynamic state lock 内，以 `nodeId + attemptId + runtimeExecutionId` 做 generation CAS，并持久化 graph 与 leaf node 文件。workspace transition 由 scheduler 显式传入 causal leaf identity：entry 保存 leaf 原 phase、写入 `PreparingWorkspace` 并推进同一个 leaf lifecycle revision；exit 恢复原 phase 并再次推进，durable 后才发布定向 session update。`currentNodeIds` 是所有活跃 leaf 的 aggregate，不能代替 transition owner。Conversation 选择 dynamic leaf 时直接读取 leaf lifecycle 投影；尚未建立 active execution 的 `Ready` leaf 由确定性 read-model 规则显示为 `StartingNode`。父 Run 已暂停时非终态 leaf 使用父 `Paused` 聚合；leaf completed 后 graph 尚在消费 proposal、或 leaf pause 与 graph active 集合之间的提交收敛窗口使用父 graph 聚合。selected session 不是 canonical identity，不能驱动任何后端状态迁移。
 
 父级聚合写入固定以 `roundId + outerNodeId + outerAttemptId + outer runtimeExecutionId` 校验归属，父 execution locator 始终保持 outer attempt。并行 leaf 不得写父 phase，因此一个 leaf 的 `FinalizingArtifact` 不会阻止 sibling 进入 `StartingNode`。子工作流或 leaf 暂停时先按旧 leaf execution ID 校验 generation；若仍有 active leaf，只提交 leaf pause，最后 active leaf 暂停时才按 `node.json -> round.json -> run.json` 收敛父聚合。显式继续复用 per-run lease，并为目标 leaf 生成新的 execution ID；旧 generation 的迟到回调不得覆盖新事实。
 
@@ -845,6 +845,7 @@ Conversation VM 本来就读取 `run.json`，直接从同一对象获得 executi
 - 2026-08-17 修复 AI-DYNAMIC 子工作流暂停后的父级聚合收敛：outer CAS 改为校验稳定 outer attempt 归属，允许同一 attempt 内 inner locator 合法推进；父 `node/round/run` 同步暂停并清空 active execution ID，接口回归覆盖暂停后立即读取一致、显式继续完成和测试 Provider 的 accepted 合约。
 - 2026-08-19 修复 AI-DYNAMIC 并行 leaf 共享父 execution phase 的作用域缺陷：leaf execution phase/revision/generation 下沉到 `DynamicNodeState`，父 execution 固定为 outer 聚合与 workspace 阶段；Conversation dynamic leaf lifecycle 改读 leaf 权威状态。回归覆盖 finalizing leaf 与 sibling start 并行、单 leaf stop 保持父 Running、最后 active leaf stop 聚合暂停，以及旧 execution 迟到 phase/result 不能覆盖新 generation。
 - 2026-08-19 修复 ACP 停止后 composer 持续“发送中”的 turn 作用域缺陷：prompt command 改为持久化 `Starting + turnId + operationId + acpRevision` 后返回 `acp-session-started`，provider turn 在后台继续；失败只按同一 turn 提交 terminal。Web submission 改为按 lifecycle `turnId` 收敛，旧 turn terminal 保留新 submission，同 turn cancelled/failed/completed 立即解除发送和等待状态；删除 attempt 级 pending 对 canonical terminal 的遮蔽。接口回归覆盖 admission 幂等/并发拒绝、迟到失败隔离、cancel-requested 压制迟到 running、A terminal + B submission 与 B terminal + B pending。
+- 2026-08-24 将 AI-DYNAMIC leaf phase-only revision 收口为 `runtimeLifecycleRevision`：graph workspace 接管/释放与 leaf-local execution 共用单一 leaf 水位，最后 graph terminal 在 durable completed 后推进并定向刷新最终 leaf；`0.3 -> 0.4` 一次性迁移同步 graph 与已存在 leaf 投影。workspace owner 由 causal leaf phase 表达，不再按所有 `currentNodeIds` 扩散；回归覆盖并行 sibling 不继承 preparing、terminal 严格新 revision 淘汰旧 processing、迟到旧 revision 不回退，以及迁移幂等。
 
 验证与实际 UI deep-link 结果记录在本次实现验收中；若产品运行环境没有可复用测试会话，则以 production build、接口测试和浏览器可达页面验证为最低交付门槛。
 

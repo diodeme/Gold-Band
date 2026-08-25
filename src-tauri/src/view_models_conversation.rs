@@ -28,7 +28,7 @@ use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
+use gold_band::dynamic::DynamicRunStatus;
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
@@ -1981,12 +1981,12 @@ fn dynamic_node_runtime_execution(
 ) -> Option<RuntimeExecutionState> {
     node.runtime_execution_phase
         .map(|phase| RuntimeExecutionState {
-            revision: node.runtime_execution_revision,
+            revision: node.runtime_lifecycle_revision,
             phase,
             locator: None,
             recovery_candidate_token: None,
             updated_at: node
-                .runtime_execution_updated_at
+                .runtime_lifecycle_updated_at
                 .clone()
                 .unwrap_or_default(),
         })
@@ -1998,33 +1998,39 @@ fn dynamic_attempt_runtime_execution(
     node: &gold_band::dynamic::DynamicNodeState,
 ) -> Option<RuntimeExecutionState> {
     let graph_owns_transitional_leaf = graph.run.status == DynamicRunStatus::Running
-        && (dynamic_runtime_owns_completed_leaf(graph, &node.id)
+        && (gold_band::dynamic::dynamic_runtime_owns_leaf_projection(graph, node)
             || (node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                 && graph
                     .run
                     .current_node_ids
                     .iter()
                     .any(|node_id| node_id == &node.id)));
-    if (run.status == RunStatus::Paused && node.outcome.is_none())
-        || (graph.run.phase == gold_band::dynamic::DynamicRunPhase::PreparingWorkspace
-            && run.execution.phase == RuntimeExecutionPhase::PreparingWorkspace)
+    let execution = if (run.status == RunStatus::Paused && node.outcome.is_none())
         || graph_owns_transitional_leaf
     {
-        return Some(run.execution.clone());
-    }
-    dynamic_node_runtime_execution(node).or_else(|| {
-        (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
-            RuntimeExecutionState {
-                revision: node.runtime_execution_revision,
-                phase: RuntimeExecutionPhase::StartingNode,
-                locator: None,
-                recovery_candidate_token: None,
-                updated_at: node
-                    .runtime_execution_updated_at
-                    .clone()
-                    .unwrap_or_else(|| graph.run.updated_at.clone()),
-            }
+        Some(run.execution.clone())
+    } else {
+        dynamic_node_runtime_execution(node).or_else(|| {
+            (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
+                RuntimeExecutionState {
+                    revision: node.runtime_lifecycle_revision,
+                    phase: RuntimeExecutionPhase::StartingNode,
+                    locator: None,
+                    recovery_candidate_token: None,
+                    updated_at: node
+                        .runtime_lifecycle_updated_at
+                        .clone()
+                        .unwrap_or_else(|| graph.run.updated_at.clone()),
+                }
+            })
         })
+    };
+    execution.map(|mut execution| {
+        // Phase ownership may temporarily move to the outer AI-DYNAMIC run,
+        // but ordering remains leaf-owned. Graph transitions advance this
+        // watermark before publishing the corresponding leaf session update.
+        execution.revision = node.runtime_lifecycle_revision;
+        execution
     })
 }
 
@@ -2114,16 +2120,6 @@ fn composer_for_lifecycle(
         lock_input: mode != "normal",
         superseded_by: None,
     }
-}
-
-fn dynamic_runtime_owns_completed_leaf(graph: &DynamicGraphState, node_id: &str) -> bool {
-    graph.run.status == DynamicRunStatus::Running
-        && graph.run.current_node_ids.is_empty()
-        && graph.nodes.last().is_some_and(|node| {
-            node.id == node_id
-                && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
-                && node.outcome.is_some()
-        })
 }
 
 fn derive_conversation_attempt_lifecycle_with_facets(
@@ -2414,7 +2410,7 @@ pub fn conversation_attempt_lifecycle_vm(
             run_pause_reason.as_deref(),
         );
         let dynamic_runtime_owns_leaf =
-            dynamic_runtime_owns_completed_leaf(&dynamic_graph, node_id);
+            gold_band::dynamic::dynamic_runtime_owns_leaf_projection(&dynamic_graph, dynamic_node);
         let runtime_status = if dynamic_runtime_owns_leaf {
             "running".to_string()
         } else if run.status == RunStatus::Paused
@@ -3132,17 +3128,25 @@ pub fn conversation_run_vm(
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
                                     == Some(&latest_attempt.attempt_id);
+                            let graph_owns_dyn_leaf =
+                                gold_band::dynamic::dynamic_runtime_owns_leaf_projection(
+                                    &dynamic_graph,
+                                    dyn_node,
+                                );
                             let dyn_current = dynamic_parent_current
                                 && (dynamic_graph
                                     .run
                                     .current_node_ids
                                     .iter()
                                     .any(|id| id == &dyn_node.id)
+                                    || graph_owns_dyn_leaf
                                     || (run_paused_for_dyn_leaf
                                         && dyn_node.status
                                             == gold_band::dynamic::DynamicNodeStatus::Paused
                                         && dyn_node.outcome.is_none()));
-                            let dyn_base_status = if run.status == RunStatus::Paused
+                            let dyn_base_status = if graph_owns_dyn_leaf {
+                                "running".to_string()
+                            } else if run.status == RunStatus::Paused
                                 && dyn_runtime_status == "running"
                                 && dyn_node.outcome.is_none()
                                 && is_runtime_continue_pause_reason(run_pause_reason.as_deref())
@@ -3174,7 +3178,9 @@ pub fn conversation_run_vm(
                                     dyn_node,
                                     run_pause_reason.as_deref(),
                                 );
-                                let dyn_status = if run.status == RunStatus::Paused
+                                let dyn_status = if graph_owns_dyn_leaf {
+                                    "running".to_string()
+                                } else if run.status == RunStatus::Paused
                                     && dyn_runtime_status == "running"
                                     && dyn_node.outcome.is_none()
                                     && is_runtime_continue_pause_reason(dyn_pause_reason.as_deref())
@@ -5866,6 +5872,68 @@ mod tests {
     }
 
     #[test]
+    fn newer_dynamic_leaf_lifecycle_releases_terminal_processing_projection() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(&app, "running", json!(null), "completed", Vec::new());
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["nodes"][0]["runtimeLifecycleRevision"] = json!(5);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+        let run_path = app.paths.run_file("task-dyn", "run-dyn");
+        let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
+        run["execution"]["revision"] = json!(20);
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let transitional = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert!(transitional.runtime.active);
+        assert_eq!(transitional.runtime.revision, Some(5));
+
+        graph["run"]["status"] = json!("paused");
+        graph["run"]["pauseReason"] = json!("process-interrupted");
+        graph["nodes"][0]["runtimeLifecycleRevision"] = json!(6);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.runtime.status, "completed");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
+        assert_eq!(lifecycle.runtime.revision, Some(6));
+        assert!(lifecycle.runtime.revision > transitional.runtime.revision);
+        assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert!(!lifecycle.composer.can_stop);
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
     fn preparing_workspace_projects_runtime_owned_composer_state() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -5884,11 +5952,18 @@ mod tests {
             "attempt-001",
         );
         let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        let mut parallel = graph["nodes"][0].clone();
+        parallel["id"] = json!("parallel-worker");
+        parallel["title"] = json!("Parallel worker");
+        parallel["runtimeLifecycleRevision"] = json!(4);
         graph["run"]["phase"] = json!("preparing-workspace");
-        graph["run"]["currentNodeIds"] = json!([]);
+        graph["run"]["currentNodeIds"] = json!(["parallel-worker"]);
         graph["nodes"][0]["status"] = json!("completed");
         graph["nodes"][0]["outcome"] = json!("success");
+        graph["nodes"][0]["runtimeExecutionId"] = json!(null);
+        graph["nodes"][0]["runtimeExecutionPhase"] = json!("preparing-workspace");
         graph["nodes"][0]["finishedAt"] = json!("2026-06-15T00:00:02Z");
+        graph["nodes"].as_array_mut().unwrap().push(parallel);
         gold_band::storage::write_json(&graph_path, &graph).unwrap();
         let run_path = app.paths.run_file("task-dyn", "run-dyn");
         let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
@@ -5919,6 +5994,47 @@ mod tests {
         );
         assert!(lifecycle.composer.can_stop);
         assert!(lifecycle.composer.lock_input);
+
+        let parallel_lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "parallel-worker",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(parallel_lifecycle.runtime.revision, Some(4));
+        assert_eq!(parallel_lifecycle.runtime.phase, "starting-node");
+        assert_eq!(parallel_lifecycle.composer.processing_kind, "processing");
+
+        let mut historical = graph["nodes"][0].clone();
+        historical["id"] = json!("historical-worker");
+        historical["title"] = json!("Historical worker");
+        historical["runtimeLifecycleRevision"] = json!(7);
+        historical["runtimeExecutionPhase"] = json!("terminal");
+        graph["nodes"].as_array_mut().unwrap().insert(0, historical);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let historical_lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "historical-worker",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(historical_lifecycle.runtime.revision, Some(7));
+        assert_eq!(historical_lifecycle.runtime.phase, "terminal");
+        assert!(!historical_lifecycle.runtime.active);
+        assert_eq!(historical_lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -7487,8 +7603,8 @@ mod tests {
                 "ready" => json!(null),
                 _ => json!("starting-node"),
             },
-            "runtimeExecutionRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
-            "runtimeExecutionUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
+            "runtimeLifecycleRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
+            "runtimeLifecycleUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,

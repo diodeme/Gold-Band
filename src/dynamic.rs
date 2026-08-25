@@ -158,14 +158,20 @@ pub struct DynamicNodeState {
     /// It changes on every explicit continue and is cleared when the leaf pauses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_execution_id: Option<String>,
-    /// Canonical lifecycle phase for this leaf attempt. Parallel leaves update
-    /// only their own phase; the outer Run execution remains a graph aggregate.
+    /// Canonical Runtime phase projected on this leaf attempt. Parallel leaves
+    /// update only their own phase; graph-owned workspace transitions temporarily
+    /// take over only their causal leaves. The outer Run execution remains a
+    /// graph aggregate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_execution_phase: Option<RuntimeExecutionPhase>,
+    /// Monotonic watermark for every Runtime lifecycle projection visible on
+    /// this leaf, including leaf-local execution and graph-owned transitions.
+    /// ACP turn state has its own revision domain and is not folded into this
+    /// counter.
     #[serde(default)]
-    pub runtime_execution_revision: u64,
+    pub runtime_lifecycle_revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_execution_updated_at: Option<String>,
+    pub runtime_lifecycle_updated_at: Option<String>,
     pub group_id: Option<String>,
     pub chain_id: String,
     pub depth: u32,
@@ -217,6 +223,11 @@ pub fn write_dynamic_node_state(path: &camino::Utf8Path, state: &DynamicNodeStat
 }
 
 impl DynamicNodeState {
+    pub fn advance_runtime_lifecycle_revision(&mut self, updated_at: impl Into<String>) {
+        self.runtime_lifecycle_revision = self.runtime_lifecycle_revision.saturating_add(1);
+        self.runtime_lifecycle_updated_at = Some(updated_at.into());
+    }
+
     pub fn begin_runtime_execution(
         &mut self,
         execution_id: impl Into<String>,
@@ -224,8 +235,7 @@ impl DynamicNodeState {
     ) {
         self.runtime_execution_id = Some(execution_id.into());
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::StartingNode);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 
     pub fn transition_runtime_execution(
@@ -255,23 +265,20 @@ impl DynamicNodeState {
             "dynamic leaf runtime execution cannot transition from {current_phase:?} to {phase:?}"
         );
         self.runtime_execution_phase = Some(phase);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
         Ok(true)
     }
 
     pub fn pause_runtime_execution(&mut self, updated_at: impl Into<String>) {
         self.runtime_execution_id = None;
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::Paused);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 
     pub fn complete_runtime_execution(&mut self, updated_at: impl Into<String>) {
         self.runtime_execution_id = None;
         self.runtime_execution_phase = Some(RuntimeExecutionPhase::Terminal);
-        self.runtime_execution_revision = self.runtime_execution_revision.saturating_add(1);
-        self.runtime_execution_updated_at = Some(updated_at.into());
+        self.advance_runtime_lifecycle_revision(updated_at);
     }
 }
 
@@ -765,6 +772,30 @@ pub fn dynamic_leaf_is_active(status: DynamicNodeStatus) -> bool {
     )
 }
 
+/// The outer AI-DYNAMIC Runtime may temporarily own the phase projected on a
+/// leaf attempt while the leaf keeps its own lifecycle ordering watermark.
+/// Keep this ownership predicate in the core model so transition producers and
+/// desktop lifecycle consumers cannot drift apart.
+pub fn dynamic_runtime_owns_leaf_projection(
+    graph: &DynamicGraphState,
+    node: &DynamicNodeState,
+) -> bool {
+    if graph.run.status != DynamicRunStatus::Running {
+        return false;
+    }
+    if graph.run.phase == DynamicRunPhase::PreparingWorkspace
+        && node.runtime_execution_phase == Some(RuntimeExecutionPhase::PreparingWorkspace)
+    {
+        return true;
+    }
+    graph.run.current_node_ids.is_empty()
+        && graph.nodes.last().is_some_and(|last| {
+            last.id == node.id
+                && node.status == DynamicNodeStatus::Completed
+                && node.outcome.is_some()
+        })
+}
+
 pub fn refresh_dynamic_current_leaf_ids(graph: &mut DynamicGraphState) {
     graph.run.current_node_ids = graph
         .nodes
@@ -868,6 +899,17 @@ pub fn validate_dynamic_node_state(state: &DynamicNodeState) -> Result<()> {
             Some(RuntimeExecutionPhase::Paused | RuntimeExecutionPhase::Terminal)
         ) || state.runtime_execution_id.is_none(),
         "inactive dynamic leaf execution phase cannot retain an execution id"
+    );
+    ensure!(
+        (state.runtime_lifecycle_revision == 0) == state.runtime_lifecycle_updated_at.is_none(),
+        "dynamic leaf Runtime lifecycle revision and updatedAt must be initialized together"
+    );
+    ensure!(
+        state
+            .runtime_lifecycle_updated_at
+            .as_deref()
+            .is_none_or(|updated_at| !updated_at.trim().is_empty()),
+        "dynamic leaf Runtime lifecycle updatedAt cannot be empty"
     );
     Ok(())
 }
@@ -1057,6 +1099,35 @@ mod tests {
             durable.get("title").and_then(serde_json::Value::as_str),
             Some("Updated by stale lifecycle state")
         );
+    }
+
+    #[test]
+    fn dynamic_leaf_runtime_lifecycle_watermark_advances_for_local_and_graph_owned_changes() {
+        let mut node =
+            dynamic_node_with_storage_version(crate::runtime::CURRENT_ACP_STORAGE_SCHEMA_VERSION);
+
+        node.begin_runtime_execution("execution-1", "2026-08-24T00:00:01Z");
+        assert_eq!(node.runtime_lifecycle_revision, 1);
+        node.transition_runtime_execution(
+            "execution-1",
+            RuntimeExecutionPhase::RunningNode,
+            "2026-08-24T00:00:02Z",
+        )
+        .unwrap();
+        assert_eq!(node.runtime_lifecycle_revision, 2);
+        node.advance_runtime_lifecycle_revision("2026-08-24T00:00:03Z");
+        assert_eq!(node.runtime_lifecycle_revision, 3);
+        assert_eq!(
+            node.runtime_lifecycle_updated_at.as_deref(),
+            Some("2026-08-24T00:00:03Z")
+        );
+        validate_dynamic_node_state(&node).unwrap();
+
+        let durable = serde_json::to_value(&node).unwrap();
+        assert_eq!(durable["runtimeLifecycleRevision"], 3);
+        assert_eq!(durable["runtimeLifecycleUpdatedAt"], "2026-08-24T00:00:03Z");
+        assert!(durable.get("runtimeExecutionRevision").is_none());
+        assert!(durable.get("runtimeExecutionUpdatedAt").is_none());
     }
 
     #[test]

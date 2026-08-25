@@ -214,7 +214,7 @@ import {
   shouldCreateCancelledDirectAttemptShell,
   shouldCreateLiveAcpSessionShell,
 } from "@/lib/acp-session-shell";
-import { formatLocalDateTime } from "@/lib/datetime";
+import { formatAgentMessageDetailedTime, formatLocalDateTime } from "@/lib/datetime";
 import {
   getAcpActivityDetail,
   getAcpToolDetail,
@@ -361,6 +361,8 @@ interface ACPChatDialogProps {
   turnFileCardPreviewLimit?: number;
   wallpaperSurface?: boolean;
   worktreePath?: string | null;
+  showBranchControl?: boolean;
+  managedWorktreeBranch?: string | null;
 }
 
 type AcpCanvasMode = "chat" | "raw";
@@ -826,6 +828,8 @@ export function ACPChatDialog(
     turnFileCardPreviewLimit = DEFAULT_TURN_FILE_CARD_PREVIEW_LIMIT,
     wallpaperSurface = false,
     worktreePath,
+    showBranchControl = false,
+    managedWorktreeBranch,
   }: ACPChatDialogProps,
 ) {
   const { t } = useTranslation();
@@ -4031,6 +4035,8 @@ export function ACPChatDialog(
                 processingLabel={showComposerStatus ? composerStatusLabel : null}
                 sessionSeconds={composerSessionSeconds}
                 worktreePath={worktreePath}
+                branchProjectId={showBranchControl ? projectId : null}
+                managedWorktreeBranch={effective?.worktreeBranch ?? managedWorktreeBranch}
                 className={cn(
                   ACP_SESSION_COMPOSER_LAYOUT.stackSurfaceClassName,
                   "absolute left-0 top-0 z-20 w-max max-w-[calc(100%-0.625rem)] -translate-y-full flex-nowrap gap-x-2 rounded-t-md border-b-0 bg-card py-0.5 pl-2.5 pr-3 !shadow-none after:pointer-events-none after:absolute after:inset-x-0 after:bottom-[calc(-1*var(--acp-session-composer-border-width))] after:h-[var(--acp-session-composer-border-width)] after:bg-card after:content-['']",
@@ -5846,7 +5852,7 @@ const MessageBubble = memo(function MessageBubble({
           </MessageContent>
         ) : null}
         {quotableAgentMessage ? (
-          <AgentMessageCopyAction markdown={messageText} />
+          <AgentMessageCopyAction markdown={messageText} timestamp={event.timestamp} />
         ) : null}
         {runtimeControlParts.display ? (
           <RuntimeControlOutputCard
@@ -5931,8 +5937,10 @@ const MessageBubble = memo(function MessageBubble({
 
 const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
   markdown,
+  timestamp,
 }: {
   markdown: string;
+  timestamp?: string | null;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -5954,6 +5962,7 @@ const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
   }, [markdown]);
 
   const label = copied ? t("acp.markdownSourceCopied") : t("acp.copyMarkdownSource");
+  const detailedTime = formatAgentMessageDetailedTime(timestamp, t('conversation.runtime.justNow'));
   return (
     <MessageActions
       data-agent-message-actions="true"
@@ -5976,6 +5985,12 @@ const AgentMessageCopyAction = memo(function AgentMessageCopyAction({
           )}
         </Button>
       </MessageAction>
+      <span
+        className="whitespace-nowrap px-1 text-ui-micro leading-5 tabular-nums text-muted-foreground/70"
+        data-agent-message-detailed-time="true"
+      >
+        {detailedTime}
+      </span>
     </MessageActions>
   );
 });

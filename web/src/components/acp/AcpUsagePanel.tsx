@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { ACP_SESSION_COMPOSER_BORDER_WIDTH_PX } from '@/lib/conversation-composer-layout';
+import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 
 export { formatTokenCount } from '@/lib/format-token';
 
@@ -19,6 +20,8 @@ export interface AcpUsagePanelProps {
   processingLabel?: string | null;
   sessionSeconds?: number | null;
   worktreePath?: string | null;
+  branchProjectId?: string | null;
+  managedWorktreeBranch?: string | null;
   className?: string;
 }
 
@@ -65,6 +68,8 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   processingLabel,
   sessionSeconds,
   worktreePath,
+  branchProjectId,
+  managedWorktreeBranch,
   className,
 }: AcpUsagePanelProps) {
   const { t } = useTranslation();
@@ -79,9 +84,10 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
   const showProcessing = Boolean(processingLabel);
   const showTiming = sessionSeconds != null;
   const showWorktree = Boolean(worktreePath?.trim());
+  const showBranch = Boolean(branchProjectId);
   const showContext = hasAcpUsagePanelContent(usage);
 
-  if (!showProcessing && !showTiming && !showWorktree && !showContext) return null;
+  if (!showProcessing && !showTiming && !showWorktree && !showBranch && !showContext) return null;
 
   const gaugeStyle: ContextGaugeStyle = {
     '--context-usage-percent': `${percentage ?? 0}%`,
@@ -173,6 +179,16 @@ export const AcpUsagePanel = memo(function AcpUsagePanel({
         </Tooltip>
       ) : null}
 
+      {showBranch ? (
+        <span className={cn('min-w-0', !showWorktree && 'ml-auto')}>
+          <GitBranchSelector
+            projectId={branchProjectId ?? ''}
+            readOnlyBranch={showWorktree ? managedWorktreeBranch ?? '' : undefined}
+            variant="session"
+          />
+        </span>
+      ) : null}
+
       <svg
         aria-hidden="true"
         className="pointer-events-none absolute -right-2.5 bottom-[calc(-1*var(--acp-session-composer-border-width))] h-[calc(0.625rem+var(--acp-session-composer-border-width))] w-[calc(0.625rem+var(--acp-session-composer-border-width))] overflow-visible"
@@ -238,6 +254,8 @@ function areUsagePanelPropsEqual(previous: AcpUsagePanelProps, next: AcpUsagePan
     && previous.processingLabel === next.processingLabel
     && previous.sessionSeconds === next.sessionSeconds
     && previous.worktreePath === next.worktreePath
+    && previous.branchProjectId === next.branchProjectId
+    && previous.managedWorktreeBranch === next.managedWorktreeBranch
     && usageFieldsEqual(previous.usage, next.usage);
 }
 

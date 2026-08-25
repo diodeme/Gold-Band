@@ -1,4 +1,4 @@
-function parseTimestamp(value?: string | null) {
+export function parseTimestamp(value?: string | null) {
   if (!value) return null;
   const trimmed = value.trim();
   const epoch = trimmed.match(/^(\d+(?:\.\d+)?)Z?$/);
@@ -51,4 +51,24 @@ export function formatCompactRelativeTime(
   if (days < DAYS_PER_MONTH) return `${Math.floor(days / DAYS_PER_WEEK)}${COMPACT_RELATIVE_TIME_UNITS.week}`;
   if (days < DAYS_PER_YEAR) return `${Math.floor(days / DAYS_PER_MONTH)}${COMPACT_RELATIVE_TIME_UNITS.month}`;
   return `${Math.floor(days / DAYS_PER_YEAR)}${COMPACT_RELATIVE_TIME_UNITS.year}`;
+}
+
+export function formatAgentMessageDetailedTime(
+  value: string | null | undefined,
+  justNowLabel: string,
+  nowMs = Date.now(),
+) {
+  const date = parseTimestamp(value);
+  if (!date) return '--:--';
+  const pad = (part: number) => part.toString().padStart(2, '0');
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const relative = formatCompactRelativeTime(value, justNowLabel, nowMs);
+  const differentYear = date.getFullYear() !== new Date(nowMs).getFullYear();
+  const olderThanOneWeek = Math.max(0, nowMs - date.getTime()) > DAYS_PER_WEEK * HOURS_PER_DAY * MINUTES_PER_HOUR * MILLISECONDS_PER_MINUTE;
+  const dateSuffix = differentYear
+    ? `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}`
+    : olderThanOneWeek
+      ? `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`
+      : '';
+  return [time, relative, dateSuffix].filter(Boolean).join('  ');
 }

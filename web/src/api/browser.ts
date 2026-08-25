@@ -662,6 +662,39 @@ export const browserApi: RuntimeApi = {
       stashes: [],
     });
   },
+  getGitBranchPickerSnapshot(_projectId, workspacePath) {
+    const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
+    return Promise.resolve({
+      workspacePath: resolvedWorkspacePath,
+      currentBranch: 'feature/source-control',
+      headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+      revision: 'browser-preview-revision',
+      dirtyFileCount: 3,
+      operationInProgress: null,
+      lock: { locked: false, owner: null, operation: null },
+      branches: [
+        { name: 'feature/source-control', targetOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', checkedOutWorktreePaths: [resolvedWorkspacePath] },
+        { name: 'main', targetOid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89', checkedOutWorktreePaths: [] },
+        { name: 'gold-band/conversation/5aa4c2b45fc6', targetOid: '1dc4ac2a3fc32f88e2348c0ea6682907c38acc11', checkedOutWorktreePaths: ['/preview/gold-band/worktrees/5aa4c2b45fc6'] },
+      ],
+    });
+  },
+  async changeGitBranch(projectId, workspacePath, input) {
+    const snapshot = await browserApi.getGitBranchPickerSnapshot(projectId, workspacePath);
+    const name = input.name;
+    const targetOid = input.kind === 'create-and-switch'
+      ? snapshot.headOid ?? 'browser-preview-head'
+      : snapshot.branches.find((branch) => branch.name === name)?.targetOid ?? 'browser-preview-head';
+    return {
+      ...snapshot,
+      currentBranch: name,
+      headOid: targetOid,
+      revision: `${snapshot.revision}:${name}`,
+      branches: snapshot.branches.some((branch) => branch.name === name)
+        ? snapshot.branches
+        : [...snapshot.branches, { name, targetOid, checkedOutWorktreePaths: [snapshot.workspacePath] }],
+    };
+  },
   getGitHistory(_projectId, _workspacePath, query) {
     const cursorMatch = query.cursor?.match(/^browser-history:(\d+)$/);
     const offset = cursorMatch ? Number(cursorMatch[1]) : 0;
@@ -1896,7 +1929,7 @@ export const browserApi: RuntimeApi = {
         ? {
           path: `/preview/gold-band/worktrees/${Date.now()}`,
           branch: `gold-band/conversation/${Date.now()}`,
-          forkCommit: 'preview-head',
+          forkCommit: input.branchCheckpoint?.headOid ?? 'preview-head',
         }
         : null,
     };

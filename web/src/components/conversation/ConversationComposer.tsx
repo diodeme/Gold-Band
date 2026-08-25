@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, GitBranchCheckpointVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -37,6 +37,7 @@ import { workflowTemplateDisplayName } from '@/lib/workflow-template';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
 import { cn } from '@/lib/utils';
 import { hasUserPromptPayload } from '@/lib/composer-context';
+import { GitBranchSelector } from '@/components/git/GitBranchSelector';
 import {
   createDraftAttachmentWorkspaceResource,
   draftAttachmentWorkspaceResourceKey,
@@ -211,6 +212,9 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   busy: boolean;
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   showWorkLocation?: boolean;
+  showBranch?: boolean;
+  onBranchCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
+  onBranchMutationPendingChange?: (pending: boolean) => void;
 }
 
 export function ConversationWorkspaceInfoBar({
@@ -222,6 +226,9 @@ export function ConversationWorkspaceInfoBar({
   onWorkspaceChange,
   onWorkLocationChange,
   showWorkLocation = true,
+  showBranch,
+  onBranchCheckpointChange,
+  onBranchMutationPendingChange,
 }: ConversationWorkspaceInfoBarProps) {
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -242,6 +249,7 @@ export function ConversationWorkspaceInfoBar({
   const locationLabel = workLocation === 'worktree'
     ? t('conversation.home.workLocationWorktree')
     : t('conversation.home.workLocationMain');
+  const branchVisible = showBranch ?? showWorkLocation;
 
   return (
     <TooltipProvider>
@@ -346,6 +354,14 @@ export function ConversationWorkspaceInfoBar({
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
+          {branchVisible ? (
+            <GitBranchSelector
+              projectId={projectId}
+              disabled={busy || checkingLocation}
+              onCheckpointChange={onBranchCheckpointChange}
+              onMutationPendingChange={onBranchMutationPendingChange}
+            />
+          ) : null}
         </div>
       </div>
     </TooltipProvider>
@@ -398,6 +414,8 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
+  const [branchCheckpoint, setBranchCheckpoint] = useState<GitBranchCheckpointVm | null>(null);
+  const [branchMutationPending, setBranchMutationPending] = useState(false);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
   const rightWorkspace = useOptionalRightWorkspace();
@@ -455,7 +473,8 @@ export function ConversationComposer({
     : t('scheduled.composer.unconfigured');
   const canSubmit = hasUserPromptPayload(content, attachments.length)
     && !busy
-    && !submittingAttachments;
+    && !submittingAttachments
+    && !branchMutationPending;
   const canCreateScheduledTask = canSubmit && Boolean(onCreateScheduledTask);
   const scheduledConfigResourceKey = rightWorkspace?.scopeKey
     ? scheduledTaskConfigWorkspaceResourceKey(rightWorkspace.scopeKey)
@@ -712,6 +731,7 @@ export function ConversationComposer({
         ))
         : undefined,
       workLocation,
+      branchCheckpoint: workLocation === 'worktree' ? branchCheckpoint : undefined,
     };
     setSubmittingAttachments(true);
     try {
@@ -842,13 +862,16 @@ export function ConversationComposer({
             onWorkspaceChange={onWorkspaceChange}
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
+            showBranch={!scheduledMode}
+            onBranchCheckpointChange={setBranchCheckpoint}
+            onBranchMutationPendingChange={setBranchMutationPending}
           />
           <PromptInput
           value={visibleContent}
           onValueChange={(value) => setContent(`${committedSlashCommand?.prefix ?? ''}${value}`)}
           maxHeight={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaMaxHeightPx}
           onSubmit={() => { void handleSubmit(); }}
-          disabled={busy || submittingAttachments}
+          disabled={busy || submittingAttachments || branchMutationPending}
           className={CONVERSATION_HOME_COMPOSER_LAYOUT.promptInputClassName}
         >
           <ComposerContextArea

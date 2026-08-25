@@ -1024,7 +1024,7 @@ pub(crate) fn prepare_run(
         Some(path) => read_json(path)?,
         None => app.executable_task_workflow(task_id)?,
     };
-    prepare_run_from_workflow(app, task_id, workflow, false)
+    prepare_run_from_workflow(app, task_id, workflow, None)
 }
 
 pub(crate) fn prepare_run_in_worktree(
@@ -1036,7 +1036,24 @@ pub(crate) fn prepare_run_in_worktree(
         Some(path) => read_json(path)?,
         None => app.executable_task_workflow(task_id)?,
     };
-    prepare_run_from_workflow(app, task_id, workflow, true)
+    let fork_commit = GitRepositoryService::default()
+        .require_worktree(&app.paths.repo_root)?
+        .head
+        .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
+    prepare_run_from_workflow(app, task_id, workflow, Some(fork_commit))
+}
+
+pub(crate) fn prepare_run_in_worktree_at(
+    app: &App,
+    task_id: &str,
+    workflow_override: Option<&Utf8Path>,
+    fork_commit: String,
+) -> Result<PreparedRun> {
+    let workflow: WorkflowDsl = match workflow_override {
+        Some(path) => read_json(path)?,
+        None => app.executable_task_workflow(task_id)?,
+    };
+    prepare_run_from_workflow(app, task_id, workflow, Some(fork_commit))
 }
 
 pub(crate) fn prepare_run_with_authoring(
@@ -1051,22 +1068,17 @@ pub(crate) fn prepare_run_with_authoring(
         &app.config.agents,
         &app.provider_diagnostics(),
     )?;
-    prepare_run_from_workflow(app, task_id, workflow, false)
+    prepare_run_from_workflow(app, task_id, workflow, None)
 }
 
 fn prepare_run_from_workflow(
     app: &App,
     task_id: &str,
     workflow: WorkflowDsl,
-    create_worktree: bool,
+    worktree_fork_commit: Option<String>,
 ) -> Result<PreparedRun> {
     let validated = validate_workflow_snapshot(workflow)?;
-    let worktree_capability = if create_worktree {
-        Some(GitRepositoryService::default().require_worktree(&app.paths.repo_root)?)
-    } else {
-        None
-    };
-    if worktree_capability.is_none() && workflow_contains_ai_dynamic(&validated.raw) {
+    if worktree_fork_commit.is_none() && workflow_contains_ai_dynamic(&validated.raw) {
         GitRepositoryService::default().require_worktree(&app.paths.repo_root)?;
     }
     app.validate_workflow_agents(&validated)?;
@@ -1089,10 +1101,7 @@ fn prepare_run_from_workflow(
     let round_id = "round-001".to_string();
     let attempt_id = "attempt-001".to_string();
     let now = now_rfc3339_like();
-    let worktree = if let Some(capability) = worktree_capability {
-        let fork_commit = capability
-            .head
-            .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
+    let worktree = if let Some(fork_commit) = worktree_fork_commit {
         Some(conversation_run_worktree_state(
             app,
             task_uuid.as_deref(),
@@ -1102,6 +1111,7 @@ fn prepare_run_from_workflow(
     } else {
         None
     };
+    let creating_worktree = worktree.is_some();
 
     let execution_locator = RuntimeAttemptLocator {
         round_id: round_id.clone(),
@@ -1129,7 +1139,7 @@ fn prepare_run_from_workflow(
         last_executed_node: None,
         worktree,
         execution: RuntimeExecutionState::new(
-            if create_worktree {
+            if creating_worktree {
                 RuntimeExecutionPhase::PreparingWorkspace
             } else {
                 RuntimeExecutionPhase::StartingNode

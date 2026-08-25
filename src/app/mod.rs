@@ -80,6 +80,7 @@ use self::orchestrator::{
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
     prepare_run_in_worktree as orchestrator_prepare_run_in_worktree,
+    prepare_run_in_worktree_at as orchestrator_prepare_run_in_worktree_at,
     prepare_run_with_authoring as orchestrator_prepare_run_with_authoring,
     reserve_manual_check_submission as orchestrator_reserve_manual_check_submission,
     run_continue as orchestrator_run_continue,
@@ -5037,6 +5038,15 @@ impl App {
         workflow_override: Option<&Utf8Path>,
     ) -> Result<PreparedRun> {
         orchestrator_prepare_run_in_worktree(self, task_id, workflow_override)
+    }
+
+    pub fn prepare_run_in_worktree_at(
+        &self,
+        task_id: &str,
+        workflow_override: Option<&Utf8Path>,
+        fork_commit: String,
+    ) -> Result<PreparedRun> {
+        orchestrator_prepare_run_in_worktree_at(self, task_id, workflow_override, fork_commit)
     }
 
     pub fn prepare_run_with_authoring(

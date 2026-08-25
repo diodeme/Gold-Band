@@ -734,6 +734,38 @@ export interface GitSourceControlSnapshotVm {
   stashes: GitStashEntryVm[];
 }
 
+export interface GitBranchCheckpointVm {
+  branch: string;
+  headOid: string;
+  revision: string;
+}
+
+export interface GitBranchPickerItemVm {
+  name: string;
+  targetOid: string;
+  checkedOutWorktreePaths: string[];
+}
+
+export interface GitBranchPickerSnapshotVm {
+  workspacePath: string;
+  currentBranch?: string | null;
+  headOid?: string | null;
+  revision: string;
+  dirtyFileCount: number;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
+  lock: GitLockVm;
+  branches: GitBranchPickerItemVm[];
+}
+
+export type GitBranchChangeRequestVm = (
+  | { kind: 'switch'; name: string }
+  | { kind: 'create-and-switch'; name: string; startPoint: string }
+) & { expectedRevision: string };
+
 export type GitMutationVm =
   | { kind: 'stage-paths'; paths: string[] }
   | { kind: 'stage-all' }
@@ -1447,6 +1479,7 @@ export interface AcpSessionVm {
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
   worktreePath?: string | null;
+  worktreeBranch?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -2246,6 +2279,7 @@ export interface ConversationSessionLeafVm {
   sessionId?: string | null;
   sessionEstablished?: boolean;
   worktreePath?: string | null;
+  worktreeBranch?: string | null;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2408,6 +2442,7 @@ export interface ConversationCreateInput {
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
+  branchCheckpoint?: GitBranchCheckpointVm | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

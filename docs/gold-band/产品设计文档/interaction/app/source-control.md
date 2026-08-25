@@ -21,6 +21,8 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 同一 workspace 任意时刻只允许一个 Git 写操作。pending action 由源码管理会话统一保存为结构化 `kind + path`，不得由各按钮维护旁路 loading：单文件 Stage/Unstage 时被点击行的操作按钮持续显示旋转状态，其他文件行的按钮不渲染，Commit 和其他仓库写操作保持禁用；后台只读刷新使用独立 `refreshing` 状态，不禁用 commit 草稿或文件操作。Commit、Fetch、Pull、Push 在各自主操作按钮显示旋转状态，直至权威结果收敛或结构化失败返回。
 
+会话 composer 的分支入口复用同一 Git runner、repository/workspace 协调锁与结构化错误，但使用独立轻量 `GitBranchPickerSnapshot { workspacePath, currentBranch, headOid, revision, dirtyFileCount, operationInProgress, lock, branches }`，不得为了显示选择器读取完整源码管理 snapshot、numstat、history 或 diff。轻量 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 LRU；重新挂载先同步恢复旧 snapshot，再在后台校准，因此普通导航不闪回 loading。该 Store 不持久化，也不作为 Git 事实源。`switch` 与 `create-and-switch` 都是 typed Git mutation；后端必须在同一把 Git 写锁内完成 expected revision 校验、checkout 和最终 `HEAD` 读取，并返回新的 snapshot。Merge/Rebase 进行中、runtime 锁占用、目标分支被其他 worktree 检出或 revision 过期均返回稳定错误码。连续快速切换由该锁串行化，后一个请求必须基于前一个请求返回的新 revision；前端 mutation pending 时禁用重复选择与会话提交，失败后重读轻量 snapshot 收敛，不保留乐观分支事实。
+
 ## 3. 信息架构
 
 源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。`not-installed` 显示系统 Git 未安装与官方下载入口；`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。

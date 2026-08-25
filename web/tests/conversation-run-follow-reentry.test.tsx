@@ -118,6 +118,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       manualCheckPending: false,
       sessionEstablished: true,
       worktreePath: 'D:/repo/.gold-band/worktrees/child',
+      worktreeBranch: 'gb-dynamic-child',
       artifactCount: 0,
       attachmentCount: 0,
     };
@@ -179,7 +180,10 @@ describe('ConversationRunPage follow mode reentry', () => {
     });
 
     expect(chatMocks.render).toHaveBeenCalledWith(
-      expect.objectContaining({ worktreePath: 'D:/repo/.gold-band/worktrees/child' }),
+      expect.objectContaining({
+        worktreePath: 'D:/repo/.gold-band/worktrees/child',
+        managedWorktreeBranch: 'gb-dynamic-child',
+      }),
       undefined,
     );
 

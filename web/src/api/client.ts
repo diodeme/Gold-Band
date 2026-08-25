@@ -75,6 +75,8 @@ import type {
   FeedbackResult,
   FeedbackArchivePreview,
   GitCapabilityVm,
+  GitBranchChangeRequestVm,
+  GitBranchPickerSnapshotVm,
   GitCommitDetailVm,
   GitCommitReachabilityQueryVm,
   GitCommitReachabilityVm,
@@ -237,6 +239,8 @@ export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
+  changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
   getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;

@@ -976,7 +976,7 @@ export function ConversationComposer({
                       <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onSelect={exitScheduledMode}>
-                          <span className="text-xs text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
+                          <span className="text-xs leading-5 text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
                           <Send className="size-3.5" />
                           <span>{t('acp.send')}</span>
                         </DropdownMenuItem>
@@ -997,7 +997,7 @@ export function ConversationComposer({
                     <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={openScheduledConfig}>
-                        <span className="text-xs text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
+                        <span className="text-xs leading-5 text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
                         <AlarmClock className="size-3.5" />
                         <span>{t('scheduled.composer.create')}</span>
                       </DropdownMenuItem>

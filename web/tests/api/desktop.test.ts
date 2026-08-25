@@ -157,6 +157,19 @@ describe('desktopApi', () => {
     });
   });
 
+  it('forwards frontend fatal diagnostics through the bounded Tauri command contract', async () => {
+    const input = {
+      kind: 'react-uncaught' as const,
+      message: 'render failed',
+      stack: 'at ConversationPage',
+      pathname: '/conversation/task-001',
+    };
+
+    await desktopApi.reportFrontendError(input);
+
+    expect(invokeCommand).toHaveBeenCalledWith('report_frontend_error', { input });
+  });
+
   it('copies a path-backed image through the native clipboard command', async () => {
     const input = {
       source: { kind: 'path' as const, path: 'D:/images/shot.png' },

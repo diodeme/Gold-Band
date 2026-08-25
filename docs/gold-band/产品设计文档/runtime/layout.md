@@ -108,6 +108,10 @@ Layout 定义 Gold Band 的文件边界：项目仓库只保留项目级可覆�
 
 系统级 debug 日志（`runtime.log`）为桌面/CLI 进程级全局日志，放在 `~/.gold-band/logs/`；桌面端启动时，即使当前还没有 task / run / ACP 事件，也必须先预创建 `~/.gold-band/logs/runtime.log`，保证首次启动、未选 workspace、目录选择器异常等问题都能有稳定的系统级排障落点。workspace 级过程日志仍通过 task/run/attempt 目录下的 `events.jsonl`、`run-progress.json`、`raw.stream.jsonl` 等文件保存。
 
+`runtime.log` 必须使用进程级单一异步 writer：调用线程只把已格式化日志送入 `tracing-appender` 的 1024 行有界 lossy 队列，专用 `gold-band-runtime-log` 线程独占 `FileRotate`，负责实际磁盘写入、flush 和 8 MiB/4 份轮转。队列满时增加 dropped-lines 计数并丢弃诊断行，不允许反压 UI、Tauri IPC、Runtime/ACP 或 canonical state 写入线程；不得改为无界队列或 non-lossy 阻塞队列。CLI 在命令作用域、桌面端在 Tauri 进程状态中持有唯一 `WorkerGuard`，正常退出时执行有界 flush；进程强制终止或崩溃时允许丢失尚未落盘的尾部诊断。该异步边界只适用于 `runtime.log`，不改变 `events.jsonl`、Timeline、session metadata、run/node state 等文件各自的 durable/best-effort 契约。
+
+桌面 WebView 的致命错误观测由产品自身负责，不依赖 WebKit/系统是否把 page console 转发到系统日志。前端统一监听 `window.error`、`window.unhandledrejection` 和 React root `onUncaughtError`，经单一 `report_frontend_error` Tauri command 把固定 DTO 写入同一 `runtime.log`。DTO 只允许错误来源类型、message/stack、React component stack、脚本位置、行列、当前 pathname、user agent，以及不含文本内容的 active/last-pointer DOM 结构摘要；不得采集输入值、聊天正文、prompt、附件路径、工具内容、Token、查询参数或任意页面对象。message 最多 4096 字符，stack/component stack 最多 16384 字符，其余文本字段最多 64–2048 字符；前端先限长并按 message+stack 在 5 秒内去重、10 秒最多上报 5 条，桌面 command 再独立限长后以结构化 `ERROR` 写入。该通道属于 best-effort 诊断旁路：IPC、序列化或日志写入失败不得抛回页面、触发递归上报、改变 UI/Runtime canonical state 或覆盖原始错误。
+
 凡是桌面端在主线程触发的原生文件/目录选择器，也必须使用非阻塞调用并通过回调或事件把结果回传到 runtime；不能在 workspace 选择、会话 workspace 添加等入口使用 blocking dialog API，否则会把“打开选择器”本身变成不可观测的卡死点。
 
 `project.json` 记录该 runtime store 对应的仓库路径和 project id，例如：

@@ -1507,3 +1507,19 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 实现：复用 dynamic graph phase、leaf `completed/success`、graph 对 causal leaf 的既有投影所有权和 leaf lifecycle revision。仅在该组合成立时，Conversation VM 输出 `processing-workspace + conversation.runtime.processingWorkspace`；初始 workspace preparation 保持原文案，Direct 和普通 Workflow 不变。前端 Composer 合并按 Runtime revision 选择权威 facet 后保留该后端展示语义，并继续让停止态优先。
 - [x] 回归范围：Rust ViewModel 接口覆盖初始准备原文案、已完成 causal leaf 的详情与 session tree 新文案、并行运行 leaf 和历史 leaf 不继承新文案；前端状态测试覆盖后端新投影消费、ACP facet 合并保持和停止优先级。
 - 性能与过度设计评审：所有判断均针对已加载 graph、leaf 和 lifecycle 做 O(1) 比较，不增加 I/O、Timeline/raw 扫描、React 订阅或渲染范围；不新增 aggregate、持久字段、revision、状态机、依赖、缓存、队列、并发或锁。现有 canonical lifecycle 已足够表达区别，因此只完善消费端投影。
+
+## 2026-08-25：Release WebView 致命错误写入 runtime.log
+
+- [x] 根因：Release WebView 已有 `window.error`、`unhandledrejection` 和 React uncaught 入口，但只针对 Maximum update depth 输出 page console；macOS WebKit 默认不把 page message 转发到系统日志，导致页面已加载但黑屏/渲染失败时 `runtime.log` 没有前端异常。该问题属于全局观测设计正确但持久化实现不完整；本次补齐统一诊断边界，不把某个用户现场特征硬编码为特例，也不假定已经定位黑屏业务根因。
+- [x] 数据与接口：新增固定 `FrontendErrorReportInput`，只包含 `window-error / unhandled-rejection / react-uncaught`、错误与 component stack、脚本行列、pathname/user agent 和不含文本内容的 DOM 结构摘要。前端经 Runtime API 的单一 `report_frontend_error` command 上报，Rust 二次规范化后用现有 tracing 写 `runtime.log`；browser preview 保持 no-op。禁止输入值、聊天正文、prompt、附件路径、工具内容、Token、query 和任意对象透传。
+- [x] 资源与失败边界：message 4096 字符、stack/component stack 16384 字符、其余字段 64–2048 字符，前后端独立限长；同一 message+stack 5 秒去重，10 秒最多 5 条。调用同步抛错、Promise reject 或日志失败全部静默收敛，不能形成新的 unhandled rejection、改变页面行为或覆盖 canonical Runtime 错误。
+- [x] 回归与验收：前端固化三种入口、结构化字段、所有字段限长、去重/异常风暴限流、sink/context throw/reject 和既有 Maximum update depth 控制台诊断；桌面 API 固化 command/参数契约，Rust 固化 Unicode 安全二次限长和 command 接受结构化 DTO。Web 定向 2 个文件 25 项、Rust 定向 2 项通过；`npm run web:build`、`cargo check -p gold-band-desktop` 和 `cargo fmt --all -- --check` 通过，只有项目既有 dead-code 和 Vite chunk-size warnings。
+- 性能与过度设计评审：正常路径仅有三个全局 listener 和一次 pointer 摘要更新，不发生 IPC、扫描或轮询；只有异常路径执行 O(受限字符串长度) 规范化与最多 5 次/10 秒 IPC，内存去重集合受相同窗口约束。复用现有 Runtime API、Tauri command 和 tracing/轮转日志，不新增依赖、持久字段、状态机、缓存层、后台队列、重试或 UI；一个有界 reporter 足以补齐观测缺口。
+
+## 2026-08-25：runtime.log 有界异步 writer
+
+- [x] 根因：`runtime.log` 已有 8 MiB/4 份轮转和高频事件限流，但 tracing subscriber 仍在每个调用线程同步获取 `Mutex<FileRotate>` 并执行磁盘写入；日志调用扩展到桌面 IPC、Runtime 与 ACP 后，慢磁盘、杀毒扫描或轮转可能把 best-effort 诊断反向变成业务线程延迟。该问题属于正确容量设计下线程隔离实现不完整，不通过只移动 WebView error command 的局部补丁规避。
+- [x] 数据与生命周期：复用已有 `tracing-appender`，以单一 1024 行 lossy 队列连接全局 subscriber 与专用 `gold-band-runtime-log` writer 线程；`FileRotate` 只归 writer 线程所有。队列满时丢弃并累计 dropped-lines，不反压调用线程；CLI 在整个 command 作用域持有 `RuntimeLogGuard`，桌面端由 Tauri managed state 持有到进程退出，正常退出执行有界 flush。强制终止允许损失队列尾部，符合 `runtime.log` 非 canonical、best-effort 的既有契约。
+- [x] 范围：只替换 `runtime.log` writer，不修改 `events.jsonl`、ACP Timeline/raw/diagnostics、session metadata、run/node/dynamic graph、配置或其他文件写入语义；8 MiB/4 份轮转、日志级别、target filter、格式和调用点保持不变。
+- [x] 回归与验收：确定性门控测试固定 writer 被阻塞且队列满时调用方继续并准确计数丢弃行，异步队列测试固定 guard 释放时 flush 并保持 8 MiB/4 份轮转；Rust observability 相关 21 项、`cargo check -p gold-band-desktop`、`cargo check -p gold-band --bin gold-band -j 1`、Rust 格式与差异检查通过。首次并行验证因同时存在多个 Rust 构建导致 `rustc-LLVM out of memory`，改用 `--lib -j 1` 后通过，确认不是实现或测试失败；编译仅保留项目既有 dead-code warnings。
+- 性能与过度设计评审：调用线程只承担现有事件格式化和一次有界 channel `try_send`，不再获取文件锁或执行 write/flush/rotate；常驻资源为一个 1024 行队列和一个日志线程。使用已有依赖和标准 guard，不新增自研队列、重试、持久状态、业务状态机或第二套 writer；lossy 策略避免异常洪峰把诊断压力传导到业务线程。

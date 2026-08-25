@@ -1611,6 +1611,9 @@ export const browserApi: RuntimeApi = {
   recordActivity() {
     return Promise.resolve();
   },
+  reportFrontendError(_input) {
+    return Promise.resolve();
+  },
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {
     return this.getMetricsSettings();
   },

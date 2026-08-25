@@ -4027,6 +4027,126 @@ pub fn update_notification_attention(
         .map_err(command_error)
 }
 
+const FRONTEND_ERROR_MESSAGE_MAX_CHARS: usize = 4_096;
+const FRONTEND_ERROR_STACK_MAX_CHARS: usize = 16_384;
+const FRONTEND_ERROR_CONTEXT_MAX_CHARS: usize = 2_048;
+const FRONTEND_ERROR_ELEMENT_MAX_CHARS: usize = 1_024;
+const FRONTEND_ERROR_TIMESTAMP_MAX_CHARS: usize = 64;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum FrontendErrorKindInput {
+    WindowError,
+    UnhandledRejection,
+    ReactUncaught,
+}
+
+impl FrontendErrorKindInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WindowError => "window-error",
+            Self::UnhandledRejection => "unhandled-rejection",
+            Self::ReactUncaught => "react-uncaught",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FrontendErrorReportInput {
+    kind: FrontendErrorKindInput,
+    message: String,
+    stack: Option<String>,
+    component_stack: Option<String>,
+    source: Option<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+    active_element: Option<String>,
+    last_pointer_target: Option<String>,
+    last_pointer_at: Option<String>,
+    pathname: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl FrontendErrorReportInput {
+    fn normalize(mut self) -> Self {
+        self.message =
+            truncate_frontend_error_field(self.message, FRONTEND_ERROR_MESSAGE_MAX_CHARS);
+        self.stack =
+            truncate_optional_frontend_error_field(self.stack, FRONTEND_ERROR_STACK_MAX_CHARS);
+        self.component_stack = truncate_optional_frontend_error_field(
+            self.component_stack,
+            FRONTEND_ERROR_STACK_MAX_CHARS,
+        );
+        self.source = sanitize_frontend_error_source(self.source);
+        self.active_element = truncate_optional_frontend_error_field(
+            self.active_element,
+            FRONTEND_ERROR_ELEMENT_MAX_CHARS,
+        );
+        self.last_pointer_target = truncate_optional_frontend_error_field(
+            self.last_pointer_target,
+            FRONTEND_ERROR_ELEMENT_MAX_CHARS,
+        );
+        self.last_pointer_at = truncate_optional_frontend_error_field(
+            self.last_pointer_at,
+            FRONTEND_ERROR_TIMESTAMP_MAX_CHARS,
+        );
+        self.pathname =
+            truncate_optional_frontend_error_field(self.pathname, FRONTEND_ERROR_CONTEXT_MAX_CHARS);
+        self.user_agent = truncate_optional_frontend_error_field(
+            self.user_agent,
+            FRONTEND_ERROR_CONTEXT_MAX_CHARS,
+        );
+        self
+    }
+}
+
+fn truncate_frontend_error_field(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value
+    } else {
+        value.chars().take(max_chars).collect()
+    }
+}
+
+fn truncate_optional_frontend_error_field(
+    value: Option<String>,
+    max_chars: usize,
+) -> Option<String> {
+    value.map(|value| truncate_frontend_error_field(value, max_chars))
+}
+
+fn sanitize_frontend_error_source(value: Option<String>) -> Option<String> {
+    value.map(|value| {
+        let without_query = value
+            .find(|character| character == '?' || character == '#')
+            .map_or(value.as_str(), |index| &value[..index]);
+        truncate_frontend_error_field(without_query.to_string(), FRONTEND_ERROR_CONTEXT_MAX_CHARS)
+    })
+}
+
+#[tauri::command]
+pub fn report_frontend_error(input: FrontendErrorReportInput) -> CommandResult<()> {
+    let report = input.normalize();
+    tracing::error!(
+        target: "gold_band::frontend",
+        kind = report.kind.as_str(),
+        message = %report.message,
+        stack = report.stack.as_deref().unwrap_or(""),
+        component_stack = report.component_stack.as_deref().unwrap_or(""),
+        source = report.source.as_deref().unwrap_or(""),
+        line = ?report.line,
+        column = ?report.column,
+        active_element = report.active_element.as_deref().unwrap_or(""),
+        last_pointer_target = report.last_pointer_target.as_deref().unwrap_or(""),
+        last_pointer_at = report.last_pointer_at.as_deref().unwrap_or(""),
+        pathname = report.pathname.as_deref().unwrap_or(""),
+        user_agent = report.user_agent.as_deref().unwrap_or(""),
+        "frontend fatal error reported"
+    );
+    Ok(())
+}
+
 /// Frontend activity signal: pointerdown, keydown, or business command.
 #[tauri::command]
 pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
@@ -9441,6 +9561,47 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use std::collections::BTreeMap;
+
+    fn frontend_error_input(message: String) -> FrontendErrorReportInput {
+        FrontendErrorReportInput {
+            kind: FrontendErrorKindInput::ReactUncaught,
+            message,
+            stack: Some("stack".to_string()),
+            component_stack: Some("component-stack".to_string()),
+            source: Some("main.tsx".to_string()),
+            line: Some(12),
+            column: Some(8),
+            active_element: Some("button#send".to_string()),
+            last_pointer_target: Some("button#send".to_string()),
+            last_pointer_at: Some("2026-08-25T10:00:00Z".to_string()),
+            pathname: Some("/conversation/task-001".to_string()),
+            user_agent: Some("GoldBandWebView".to_string()),
+        }
+    }
+
+    #[test]
+    fn frontend_error_report_normalization_enforces_unicode_safe_bounds() {
+        let mut input = frontend_error_input("错".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS + 5));
+        input.source = Some("app://localhost/main.js?token=secret".to_string());
+        let report = input.normalize();
+
+        assert_eq!(
+            report.message.chars().count(),
+            FRONTEND_ERROR_MESSAGE_MAX_CHARS
+        );
+        assert_eq!(
+            report.message,
+            "错".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS)
+        );
+        assert_eq!(report.kind, FrontendErrorKindInput::ReactUncaught);
+        assert_eq!(report.line, Some(12));
+        assert_eq!(report.source.as_deref(), Some("app://localhost/main.js"));
+    }
+
+    #[test]
+    fn frontend_error_command_accepts_bounded_structured_report() {
+        assert!(report_frontend_error(frontend_error_input("render failed".to_string())).is_ok());
+    }
 
     fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunCompleted {

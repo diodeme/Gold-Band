@@ -216,6 +216,23 @@ export interface MaterializeAttachmentFileInput {
   dataBase64: string;
 }
 
+export type FrontendErrorKind = 'window-error' | 'unhandled-rejection' | 'react-uncaught';
+
+export interface FrontendErrorReportInput {
+  kind: FrontendErrorKind;
+  message: string;
+  stack?: string | null;
+  componentStack?: string | null;
+  source?: string | null;
+  line?: number | null;
+  column?: number | null;
+  activeElement?: string | null;
+  lastPointerTarget?: string | null;
+  lastPointerAt?: string | null;
+  pathname?: string | null;
+  userAgent?: string | null;
+}
+
 export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
@@ -339,6 +356,7 @@ export interface RuntimeApi {
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   recordActivity(): Promise<void>;
+  reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;

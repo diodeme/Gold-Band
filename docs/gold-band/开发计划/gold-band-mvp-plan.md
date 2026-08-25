@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-25：PostTurn finalize 控制协议与 system prompt 隔离
+
+- 根因与实现：artifact 后置的两阶段设计正确，但实现为复用控制结果提取逻辑，在隐藏 finalize 前把 `PostTurnProjection` 临时改写成 `InlineControl`；system prompt 渲染又把 `InlineControl` 解释为需要展开完整 output contract，导致 artifact 名称、schema 与 success condition 同时进入隐藏 user prompt 和会话级 system prompt，右侧“系统提示”最终显示 finalize 契约，session load/resume 时还可能真实追加该契约。现保留 contract 的原始 `PostTurnProjection` identity，以既有 `RuntimeFinalize / RuntimeRepair` render mode 单独判定当前 turn 是否消费 artifact；完整契约只由隐藏 user prompt 承载，业务、finalize 和 repair 的稳定 system prompt 均不展开 PostTurn schema。真正首轮内联控制的 AI-DYNAMIC bootstrap 继续使用 `InlineControl`，行为不变。
+- 验收：Provider 接口单测固定 PostTurn 业务、隐藏 finalize 与隐藏 repair 的 system prompt 一致且都不含 artifact 名称/schema，finalize user prompt 仍包含完整协议、上下文与禁止继续业务工作的约束，并确认 finalize/repair 仍启用控制结果提取；AI-DYNAMIC acceptance prompt 回归固定 finalize 不再把 `dynamic-node-completion` 或 `next.type` 投影到 system prompt。Provider 单元测试 35 项、prompt bundle 接口测试 30 项、普通 workflow `worker_bootstrap` 20 项、AI-DYNAMIC 集成测试 25 项全部通过，Rust 格式与差异检查通过。
+- 性能与过度设计评审：复用现有 `OutputEmissionMode`、`UserPromptRenderMode`、PromptBundle 和 artifact 提取链路，不新增状态机、持久字段、依赖、缓存、队列、扫描或兼容分支。每个 provider turn 只增加一次 O(1) 枚举匹配，不改变 ACP I/O、prompt 体积上限、锁范围、恢复次数或渲染范围；同时减少 PostTurn finalize system prompt 中的重复 schema 字节，无需专项 benchmark。
+
 ## 2026-08-24：ACP 取消超时后严格恢复原 Provider 会话
 
 - 根因与实现：cancel drain timeout 把“本地 live route/attached runtime 不可安全复用”错误等同为“Provider session identity 不可继续”，通过 `write_worker_ref(..., reusable=false)` 清除了 `continue_ref`；同时既有 attempt 的人工/队列 turn 虽已按 Continue 渲染 PromptBundle，Tauri command 却再次读取首次 worker mode，可能向 ACP client 传入 `New + continue_ref`，恢复失败后便可静默进入 `session/new`。本次拆开两类事实：timeout 继续 shutdown 并隔离本地 runtime，但 worker ref 始终保留原 `acpSessionId`；既有 attempt 的 Direct、停止后追问、节点完成后 non-runtime-controlled 追问、队列派发和 dynamic 人工追问统一以本次执行意图 `SessionMode::Continue` 调用 ACP。公共 prompt 入口校验 Continue 必须携带有效恢复引用，缺失时返回 `acp.session-restore-reference-missing`；恢复按 capability 选择 resume/load，禁止新建 session。首轮节点启动、工作流迁移、dynamic 首轮、显式 runtime resume 和 hidden finalize/repair 仍由 orchestrator 的既有 invocation 规则决定，不建立 command 特判。
@@ -1094,8 +1100,8 @@ attempt-001/
 - 根因修复：原实现把“业务执行”和“runtime 控制结果归一化”压在同一个 prompt turn，导致 agent 在工作开始前就被结构化 artifact 协议约束，自然业务回复与控制 JSON 相互污染。保留现有 `output_contract` 作为 runtime 控制契约，并新增 `PostTurnProjection / InlineControl` 发射模式，不拆出第二套 contract 领域。
 - 执行契约：普通 workflow worker 与 AI-DYNAMIC 的 worker / workflow invocation / acceptance 先以 Conversation 策略完成可见业务 turn，再复用同一 ACP session 发送隐藏 `RuntimeFinalize` prompt 生成 artifact；AI-DYNAMIC bootstrap dispatcher 的职责就是分发，继续使用 `InlineControl` 在首轮接收并输出完整动态协议。Direct / `RawAgent` 不变。
 - 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。纯继续、进程恢复和自动重试观察到 `finalizing` 时跳过已完成的业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。若用户在 finalize 暂停边界选择继续并发送，则先原子改写为 `business-turn` 并执行新的用户业务 turn，成功后再回到 `finalizing`；该业务 turn 再次中断时不得直接跳 artifact。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
-- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
-- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
+- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；业务、隐藏 finalize 与隐藏 repair 的稳定 system prompt 均不暴露 PostTurn schema，完整协议只进入隐藏 user prompt；隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
+- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、PostTurn 业务/finalize/repair system prompt 不含 schema、隐藏 finalize user prompt 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
 
 ---
 

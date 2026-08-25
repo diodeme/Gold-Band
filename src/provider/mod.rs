@@ -1514,10 +1514,7 @@ impl AcpProvider {
             &prompt,
             req.invocation_kind,
             req.profile.as_deref(),
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
-                .map(|contract| contract.artifact.as_str()),
+            active_output_contract_for_turn(&req).map(|contract| contract.artifact.as_str()),
             req.cold_artifacts.len(),
             req.cold_attachments.len(),
             req.log_prompts,
@@ -1570,9 +1567,7 @@ impl AcpProvider {
                 terminal.status,
                 ProviderRunStatus::Success | ProviderRunStatus::Interrupted
             ) {
-            req.output_contract
-                .as_ref()
-                .filter(|contract| contract.emission_mode == OutputEmissionMode::InlineControl)
+            active_output_contract_for_turn(&req)
                 .map(|contract| output_artifact_payload_from_run(contract, &run.output))
                 .unwrap_or(Ok(None))
         } else {
@@ -1604,7 +1599,7 @@ impl AcpProvider {
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
         runtime_phase_update: Option<ProviderRuntimePhaseUpdate<'_>>,
     ) -> Result<ProviderRunResult> {
-        let mut contract = req
+        let contract = req
             .output_contract
             .clone()
             .expect("post-turn projection requires output contract");
@@ -1653,7 +1648,6 @@ impl AcpProvider {
                 .as_deref()
                 .is_some_and(|prompt| !prompt.trim().is_empty());
         let mut finalize_req = req;
-        contract.emission_mode = OutputEmissionMode::InlineControl;
         finalize_req.output_contract = Some(contract.clone());
         finalize_req.session_mode = SessionMode::Continue;
         finalize_req.continue_ref = Some(continue_ref);
@@ -1686,6 +1680,21 @@ impl AcpProvider {
             prompt_accepted,
         )
     }
+}
+
+fn active_output_contract_for_turn(req: &WorkerInvocation) -> Option<&PromptOutputContract> {
+    // PostTurn keeps its stable emission identity through finalize/repair so
+    // the hidden user prompt owns the contract without promoting it into the
+    // system prompt. The render mode activates control-result extraction.
+    req.output_contract
+        .as_ref()
+        .filter(|contract| match contract.emission_mode {
+            OutputEmissionMode::InlineControl => true,
+            OutputEmissionMode::PostTurnProjection => matches!(
+                req.user_prompt_render_mode,
+                UserPromptRenderMode::RuntimeFinalize | UserPromptRenderMode::RuntimeRepair
+            ),
+        })
 }
 
 fn acp_turn_was_cancelled_before_execution(
@@ -3194,7 +3203,6 @@ mod tests {
         );
 
         let contract = req.output_contract.as_mut().unwrap();
-        contract.emission_mode = OutputEmissionMode::InlineControl;
         contract.finalize_context = Some("remaining nodes: 3".to_string());
         let finalize_prompt =
             render_artifact_finalize_prompt(req.runtime_context.language, contract).unwrap();
@@ -3206,16 +3214,28 @@ mod tests {
         let prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(prompt.visibility, PromptVisibility::Hidden);
         assert_eq!(prompt.hidden_reason.as_deref(), Some("artifactFinalize"));
+        assert_eq!(prompt.system_prompt, business_prompt.system_prompt);
+        assert!(!prompt.system_prompt.contains("required status field"));
+        assert!(!prompt.system_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("dynamic-node-completion"));
         assert!(prompt.user_prompt.contains("required status field"));
         assert!(prompt.user_prompt.contains("remaining nodes: 3"));
         assert!(prompt.user_prompt.contains("不要继续执行任务"));
+        assert!(active_output_contract_for_turn(&req).is_some());
 
         req.user_prompt_render_mode = UserPromptRenderMode::RuntimeRepair;
+        let repair_prompt = render_prompt_bundle(&req).unwrap();
         assert_eq!(
-            render_prompt_bundle(&req).unwrap().hidden_reason.as_deref(),
+            repair_prompt.hidden_reason.as_deref(),
             Some("invalidOutputRepair")
         );
+        assert_eq!(repair_prompt.system_prompt, business_prompt.system_prompt);
+        assert!(
+            !repair_prompt
+                .system_prompt
+                .contains("required status field")
+        );
+        assert!(active_output_contract_for_turn(&req).is_some());
     }
 
     #[test]

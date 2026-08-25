@@ -16936,22 +16936,18 @@ mod tests {
         assert!(prompt.system_prompt.contains("隐藏 finalize turn"));
 
         let mut finalize_invocation = invocation;
-        finalize_invocation
-            .output_contract
-            .as_mut()
-            .unwrap()
-            .emission_mode = OutputEmissionMode::InlineControl;
         finalize_invocation.session_mode = SessionMode::Continue;
         finalize_invocation.user_prompt_render_mode = UserPromptRenderMode::RuntimeFinalize;
         finalize_invocation.resume_prompt_visibility = PromptVisibility::Hidden;
         finalize_invocation.resume_prompt = Some("finalize".to_string());
         let finalize_prompt = render_prompt_bundle(&finalize_invocation).unwrap();
         assert!(
-            finalize_prompt
+            !finalize_prompt
                 .system_prompt
                 .contains("dynamic-node-completion")
         );
-        assert!(finalize_prompt.system_prompt.contains("next.type"));
+        assert!(!finalize_prompt.system_prompt.contains("next.type"));
+        assert!(finalize_prompt.system_prompt.contains("隐藏 finalize turn"));
     }
 
     #[test]

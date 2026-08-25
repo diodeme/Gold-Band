@@ -233,7 +233,7 @@
 
 ## Composer 状态
 
-运行中的状态提示必须放在 composer 上方的紧凑信息栏，不得进入 `PromptInput` 内挤占正文高度，也不能作为消息流卡片。当前步骤状态应展示具体文案：发送中、处理中、思考中、工具调用中、响应中、停止中、Agent 调起中、拉起下一节点中，并固定排在会话累计与上下文窗口之前。工作流阶段只消费 `run.json.execution.phase`：仅 Runtime 已明确提交 `LaunchingNextNode` 时展示“拉起下一节点中”，ACP turn 的 `completed/cancelled/failed` 永远不能推导该阶段。Direct 不消费工作流 execution phase，也不会展示工作流后继节点状态。ACP completed 只表示上一轮 turn 已结束，不表示该会话不能继续追问；用户发起新的 same-session ACP prompt 后，发送中、处理中属于当前进程 live turn 或命令 accepted 前的本地 overlay，不得被旧 terminal snapshot 压掉。旋转标识统一复用 reduced-motion-safe 的 CSS 边框圆环，并由 transform 动画交给浏览器合成；活动摘要与会话信息栏不得各自退回 SVG stroke spinner。
+运行中的状态提示必须放在 composer 上方的紧凑信息栏，不得进入 `PromptInput` 内挤占正文高度，也不能作为消息流卡片。当前步骤状态应展示具体文案：发送中、处理中、思考中、工具调用中、响应中、停止中、Agent 调起中、拉起下一节点中，并固定排在会话累计与上下文窗口之前。工作流阶段只消费 `run.json.execution.phase`：仅 Runtime 已明确提交 `LaunchingNextNode` 时展示“拉起下一节点中”，ACP turn 的 `completed/cancelled/failed` 永远不能推导该阶段。Direct 不消费工作流 execution phase，也不会展示工作流后继节点状态。ACP completed 只表示上一轮 turn 已结束，不表示该会话不能继续追问；用户发起新的 same-session ACP prompt 后，发送中、处理中属于当前进程 live turn 或命令 accepted 前的本地 overlay，不得被旧 terminal snapshot 压掉。旋转标识统一复用无条件运行的 CSS 边框圆环，不受系统 `prefers-reduced-motion` 设置影响，并由 transform 动画交给浏览器合成；活动摘要与会话信息栏不得各自退回 SVG stroke spinner。
 
 ACP 历史分页能力必须以客户端当前合并窗口为权威，并仅在前端事件缓冲发生真实截断时由缓冲状态补充；分支视口缓存只负责恢复 scrollTop、锚点与是否贴底，不得把旧的 `hasOlder` 重新解释为当前会话仍有历史。完整 session 快照可以替换分页边界，返回 `hasOlder=false` 时必须清除旧分页状态；`afterSeq/afterCursor` 增量响应中的 `hasOlder` 只表示“本次增量之前存在事件”，这些事件可能已在客户端窗口内，因此增量合并只能扩展 newest 边界并继承当前窗口的 oldest/hasOlder，不能凭增量响应重新制造历史缺口。该规则避免流式消息、断线补帧、卡片折叠或布局重算期间闪现“上滑查看历史信息”。
 

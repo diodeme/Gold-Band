@@ -1166,6 +1166,12 @@ attempt-001/
 - 同一 `activityStartSeq` 的活动摘要采用单调 `live -> archived` 展示生命周期。停止期间一旦归档，迟到的 active snapshot 不能把它重新投影为“正在操作”；后续新活动通过新的 start sequence 建立新 identity。
 - 回归验收覆盖隐藏段展示投影、CSS spinner 契约、活动摘要在 `running -> cancelled -> stale running` 序列中不复活，以及既有 Activity 披露/详情交互；聚焦 46 项 Web 测试和 Web 生产构建通过。该改动不新增 I/O、定时器、缓存或历史扫描，每次稳定合并仅作常数级 lifecycle 判断，渲染范围保持在当前活动行。
 
+### 2026-08-25：ACP 处理圆环无条件旋转
+
+- [x] 根因与方案：共享 `AcpProcessingSpinner` 原先通过 `motion-safe:animate-spin + motion-reduce:animate-none` 响应系统动态效果偏好；Windows 关闭动画效果时 WebView2 会投影 `prefers-reduced-motion: reduce`，导致“思考中”和“处理中”圆环同时静止。按桌面产品运行反馈要求，破坏式删除该降级分支，统一使用 Tailwind `animate-spin`，不增加设置项、兼容层或第二套 spinner。
+- [ ] 回归与验收：组件契约测试固定 `animate-spin` 始终存在且禁止重新引入 `motion-safe` / `motion-reduce`；执行相关 Web 单元测试、TypeScript 生产构建，并在正常与 reduced-motion 两种媒体条件下验证 computed animation。
+- 性能与过度设计评审：继续使用单个 900ms `transform` CSS 动画和既有 `will-change` 合成提示，不新增 React 状态、计时器、订阅、I/O、缓存或依赖，渲染范围不变；仅在系统 reduced-motion 环境中增加两个小圆环的持续合成工作，与明确的常驻运行反馈需求匹配。
+
 ---
 
 ## 2026-08-14：完成节点转换中断恢复

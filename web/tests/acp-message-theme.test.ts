@@ -94,10 +94,12 @@ describe('ACP message theme contract', () => {
     expect(hiddenPromptSource).not.toContain('open ? "w-full" : "w-fit"');
   });
 
-  it('uses the compositor-friendly CSS ring for live activity and composer processing', () => {
+  it('always animates the compositor-friendly CSS ring for live activity and composer processing', () => {
     expect(chatSource).toContain('<AcpProcessingSpinner className="size-3.5" />');
     expect(activitySpinnerSource).toContain('border-t-gold-running');
-    expect(activitySpinnerSource).toContain('motion-safe:animate-spin');
+    expect(activitySpinnerSource).toContain('border-t-gold-running animate-spin');
+    expect(activitySpinnerSource).not.toContain('motion-safe:animate-spin');
+    expect(activitySpinnerSource).not.toContain('motion-reduce:animate-none');
     expect(activitySpinnerSource).not.toContain('Loader2');
   });
 

@@ -1249,7 +1249,7 @@ mod tests {
     use gold_band::dsl::NodeDsl;
     use gold_band::scheduler::db::{ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult};
     use gold_band::scheduler::occurrence::{
-        OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
+        ClaimResult, OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
     };
     use gold_band::scheduler::{
         LocalTimeDisambiguation, OverlapPolicy, RepeatPreset, ScheduleKind, ScheduledMode,
@@ -1257,6 +1257,7 @@ mod tests {
     };
     use gold_band::workflow_model_binding::{WorkerModelBinding, WorkflowModelBindings};
     use tempfile::TempDir;
+    use tokio::sync::Barrier;
 
     use super::{
         ManualRunResult, ScheduledCoordinator, ScheduledTaskService, SchedulerCommand,
@@ -1830,6 +1831,118 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![OccurrenceTriggerKind::Manual]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn schedule_edit_cancels_old_unaccepted_automatic_occurrence() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let scheduled_at = Utc::now();
+        let occurrence = fixture
+            .database
+            .create_or_get_occurrence_for_existing_job(
+                &fixture.app.paths.project_id,
+                created.definition.id(),
+                scheduled_at,
+                OccurrenceTriggerKind::Scheduled,
+            )
+            .unwrap()
+            .unwrap();
+        let claim_complete = Arc::new(Barrier::new(2));
+        let authoring_complete = Arc::new(Barrier::new(2));
+        let worker_database = fixture.database.clone();
+        let worker_project_id = fixture.app.paths.project_id.clone();
+        let worker_occurrence_id = occurrence.id.clone();
+        let worker_claim_complete = claim_complete.clone();
+        let worker_authoring_complete = authoring_complete.clone();
+        let worker = tokio::spawn(async move {
+            assert!(matches!(
+                worker_database
+                    .claim_occurrence(
+                        &worker_project_id,
+                        &worker_occurrence_id,
+                        "schedule-edit-owner",
+                        scheduled_at,
+                        scheduled_at + Duration::minutes(5),
+                    )
+                    .unwrap(),
+                ClaimResult::Claimed(_)
+            ));
+            worker_claim_complete.wait().await;
+            worker_authoring_complete.wait().await;
+            worker_database
+                .get_occurrence(&worker_project_id, &worker_occurrence_id)
+                .unwrap()
+        });
+
+        claim_complete.wait().await;
+        let mut update = fixture.update_input(&created.definition, "new schedule instruction");
+        update.schedule = ScheduledScheduleInputVm::At {
+            local_date: "2099-01-02".to_string(),
+            local_time: "09:00".to_string(),
+            timezone: "UTC".to_string(),
+            disambiguation: LocalTimeDisambiguation::Earlier,
+        };
+        fixture.service.update(update).unwrap();
+        authoring_complete.wait().await;
+
+        assert!(worker.await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disable_rejects_a_concurrent_unaccepted_automatic_claim() {
+        let fixture = Fixture::new();
+        let created = fixture.service.create(fixture.create_input()).unwrap();
+        let scheduled_at = Utc::now();
+        let occurrence = fixture
+            .database
+            .create_or_get_occurrence_for_existing_job(
+                &fixture.app.paths.project_id,
+                created.definition.id(),
+                scheduled_at,
+                OccurrenceTriggerKind::Scheduled,
+            )
+            .unwrap()
+            .unwrap();
+        let claim_complete = Arc::new(Barrier::new(2));
+        let authoring_complete = Arc::new(Barrier::new(2));
+        let worker_database = fixture.database.clone();
+        let worker_project_id = fixture.app.paths.project_id.clone();
+        let worker_occurrence_id = occurrence.id.clone();
+        let worker_claim_complete = claim_complete.clone();
+        let worker_authoring_complete = authoring_complete.clone();
+        let worker = tokio::spawn(async move {
+            assert!(matches!(
+                worker_database
+                    .claim_occurrence(
+                        &worker_project_id,
+                        &worker_occurrence_id,
+                        "disable-owner",
+                        scheduled_at,
+                        scheduled_at + Duration::minutes(5),
+                    )
+                    .unwrap(),
+                ClaimResult::Claimed(_)
+            ));
+            worker_claim_complete.wait().await;
+            worker_authoring_complete.wait().await;
+            worker_database
+                .get_occurrence(&worker_project_id, &worker_occurrence_id)
+                .unwrap()
+        });
+
+        claim_complete.wait().await;
+        fixture
+            .service
+            .set_enabled(
+                &fixture.app.paths.project_id,
+                created.definition.id(),
+                false,
+            )
+            .unwrap();
+        authoring_complete.wait().await;
+
+        assert!(worker.await.unwrap().is_none());
     }
 
     #[test]

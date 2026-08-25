@@ -310,14 +310,17 @@ pub struct WorkerInvocation {
     pub scheduled_context: Option<ScheduledTaskContextInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTaskContextInfo {
-    pub title: String,
-    pub mode: String,
-    pub session_policy: String,
-    pub trigger_kind: String,
-    pub triggered_at: String,
-    pub instruction: Option<String>,
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub occurrence_id: String,
+    pub trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind,
+    pub accepted_at: String,
+    pub automatic: Option<crate::scheduler::execution::ScheduledAutomaticTriggerContext>,
+    pub content_fingerprint: String,
+    pub instruction_summary: String,
+    pub timeline_owner: crate::scheduler::occurrence::OccurrenceLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2187,12 +2190,12 @@ fn render_scheduled_context(req: &WorkerInvocation) -> Option<String> {
     let rendered = crate::prompts::render(
         template,
         &ScheduledTaskContextTemplateContext {
-            scheduled_title: &ctx.title,
-            scheduled_mode: &ctx.mode,
-            scheduled_session_policy: &ctx.session_policy,
-            scheduled_trigger_kind: &ctx.trigger_kind,
-            scheduled_triggered_at: &ctx.triggered_at,
-            scheduled_instruction: ctx.instruction.as_deref(),
+            scheduled_title: &ctx.instruction_summary,
+            scheduled_mode: "",
+            scheduled_session_policy: "",
+            scheduled_trigger_kind: &ctx.trigger_kind.to_string(),
+            scheduled_triggered_at: &ctx.accepted_at,
+            scheduled_instruction: None,
         },
     )
     .ok()?;

@@ -270,31 +270,28 @@ struct WorkspaceRegistration {
 }
 
 fn scheduled_task_context_info(
-    definition: &ScheduledTaskDefinition,
-    trigger_kind: &str,
-    triggered_at: chrono::DateTime<chrono::Utc>,
-) -> gold_band::provider::ScheduledTaskContextInfo {
-    gold_band::provider::ScheduledTaskContextInfo {
-        title: definition
-            .instruction
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string(),
-        mode: match definition.mode {
-            ScheduledMode::Direct => "direct",
-            ScheduledMode::Workflow => "workflow",
-            ScheduledMode::Auto => "auto",
-        }
-        .to_string(),
-        session_policy: match definition.session_policy {
-            gold_band::scheduler::SessionPolicy::New => "new".to_string(),
-            gold_band::scheduler::SessionPolicy::Continuous => "continuous".to_string(),
-        },
-        trigger_kind: trigger_kind.to_string(),
-        triggered_at: triggered_at.to_rfc3339(),
-        instruction: Some(definition.instruction.clone()),
-    }
+    project_id: &str,
+    occurrence: &ScheduledOccurrence,
+) -> anyhow::Result<gold_band::provider::ScheduledTaskContextInfo> {
+    let snapshot = occurrence.accepted_execution.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("scheduled execution context requires an accepted occurrence")
+    })?;
+    let timeline_owner = occurrence.links();
+    anyhow::ensure!(
+        timeline_owner.is_complete(),
+        "scheduled execution context requires a complete timeline owner"
+    );
+    Ok(gold_band::provider::ScheduledTaskContextInfo {
+        project_id: project_id.to_string(),
+        scheduled_task_id: occurrence.job_id.clone(),
+        occurrence_id: occurrence.id.clone(),
+        trigger_kind: occurrence.trigger_kind.clone(),
+        accepted_at: snapshot.accepted_at.to_rfc3339(),
+        automatic: snapshot.automatic.clone(),
+        content_fingerprint: snapshot.content_fingerprint.clone(),
+        instruction_summary: snapshot.instruction_summary.clone(),
+        timeline_owner,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -851,7 +848,6 @@ impl ScheduledRuntime {
             &self.owner_id,
             &mut definition,
             &claimed,
-            &claimed.trigger_kind.to_string(),
         ) {
             Ok(execution) => execution,
             Err(error) => {
@@ -860,6 +856,7 @@ impl ScheduledRuntime {
                 return Err(error);
             }
         };
+        expected_revision = Some(execution.definition_revision);
         handoff.handoff();
         if let Err(error) = self.persist_active_projection(
             &claimed.id,
@@ -1009,16 +1006,6 @@ impl ScheduledRuntime {
             return Ok(());
         }
 
-        advance_definition_after_point(&mut definition, scheduled_at, "running", now);
-        if matches!(definition.schedule.kind, ScheduleKind::At { .. }) {
-            definition.enabled = false;
-        }
-        self.persist_active_projection(
-            &claimed.id,
-            database,
-            &mut definition,
-            &mut expected_revision,
-        )?;
         let execution = match execute_definition(
             &self.app_handle,
             app,
@@ -1026,7 +1013,6 @@ impl ScheduledRuntime {
             &self.owner_id,
             &mut definition,
             &claimed,
-            &claimed.trigger_kind.to_string(),
         ) {
             Ok(execution) => execution,
             Err(error) => {
@@ -1035,8 +1021,13 @@ impl ScheduledRuntime {
                 return Err(error);
             }
         };
+        expected_revision = Some(execution.definition_revision);
         handoff.handoff();
         let _ = execution.immediate_links;
+        advance_definition_after_point(&mut definition, scheduled_at, "running", now);
+        if matches!(definition.schedule.kind, ScheduleKind::At { .. }) {
+            definition.enabled = false;
+        }
         if let Err(error) = self.persist_active_projection(
             &claimed.id,
             database,
@@ -1107,6 +1098,19 @@ impl ScheduledRuntime {
     ) -> anyhow::Result<()> {
         handoff.stop().await;
         let project_id = handoff.lease.project_id.clone();
+        if execution_error.is::<ExecutionAuthorityChanged>() {
+            let released = release_pre_acceptance_conflict(
+                database,
+                &project_id,
+                &occurrence.id,
+                &self.owner_id,
+            )?;
+            if !released {
+                anyhow::bail!("failed to release scheduled occurrence after authoring conflict");
+            }
+            handoff.disarm();
+            return Ok(());
+        }
         let finished = database.finish_occurrence(
             &project_id,
             &occurrence.id,
@@ -2167,7 +2171,16 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             .runtime
             .run_manual(&registration.app, &record)
             .await
-            .map_err(|_| coordinator_error("run-now"));
+            .map_err(|error| {
+                if error.is::<ExecutionAuthorityChanged>() {
+                    ScheduledServiceError::new(
+                        ScheduledErrorCode::Conflict,
+                        serde_json::json!({ "scheduledTaskId": &key.job_id }),
+                    )
+                } else {
+                    coordinator_error("run-now")
+                }
+            });
         if let Ok(manual) = &result {
             self.runtime
                 .notify_occurrence(&key.project_id, &manual.occurrence);
@@ -2724,26 +2737,130 @@ fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
 #[derive(Debug, Clone)]
 pub(super) struct ExecutionResult {
     pub(super) immediate_links: Option<OccurrenceLinks>,
+    pub(super) definition_revision: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ScheduledExecutionAuthority {
+    pub(super) record: ScheduledJobRecord,
+    pub(super) snapshot: ScheduledExecutionSnapshot,
+}
+
+#[derive(Debug)]
+struct ExecutionAuthorityChanged;
+
+impl std::fmt::Display for ExecutionAuthorityChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("scheduled task changed during execution preparation")
+    }
+}
+
+impl std::error::Error for ExecutionAuthorityChanged {}
+
+fn release_pre_acceptance_conflict(
+    database: &ScheduledTaskDatabase,
+    project_id: &str,
+    occurrence_id: &str,
+    owner_id: &str,
+) -> anyhow::Result<bool> {
+    Ok(database.finish_occurrence(
+        project_id,
+        occurrence_id,
+        owner_id,
+        OccurrenceStatus::Retrying,
+        None,
+        Some(ScheduledError::new(ScheduledErrorCode::Conflict)),
+    )?)
+}
+
+fn reload_execution_authority(
+    database: &ScheduledTaskDatabase,
+    project_id: &str,
+    occurrence: &ScheduledOccurrence,
+    accepted_at: DateTime<Utc>,
+) -> anyhow::Result<ScheduledExecutionAuthority> {
+    let record = database
+        .get_job_definition(project_id, &occurrence.job_id)?
+        .ok_or_else(|| anyhow::anyhow!("scheduled task changed before execution acceptance"))?;
+    if occurrence.trigger_kind == OccurrenceTriggerKind::Scheduled {
+        anyhow::ensure!(
+            record.definition.enabled
+                && occurrence.schedule_revision == Some(record.definition.schedule_revision),
+            "scheduled task changed before execution acceptance"
+        );
+    }
+    let automatic = match occurrence.trigger_kind {
+        OccurrenceTriggerKind::Scheduled => Some(ScheduledAutomaticTriggerContext {
+            scheduled_at: occurrence.scheduled_at,
+            schedule_summary: record.definition.display_schedule(),
+            timezone: record
+                .definition
+                .schedule
+                .timezone()
+                .unwrap_or("UTC")
+                .to_string(),
+        }),
+        OccurrenceTriggerKind::Manual => None,
+    };
+    let snapshot = ScheduledExecutionSnapshot {
+        accepted_at,
+        definition_revision: record.revision,
+        content_fingerprint: record.definition.content_fingerprint.clone(),
+        content: record.definition.content_snapshot.clone(),
+        instruction_summary: instruction_summary(
+            &record.definition.content_snapshot.instruction,
+            SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS,
+        ),
+        automatic,
+    };
+    Ok(ScheduledExecutionAuthority { record, snapshot })
+}
+
+fn accept_execution_authority(
+    database: &ScheduledTaskDatabase,
+    owner_id: &str,
+    occurrence: &ScheduledOccurrence,
+    links: &OccurrenceLinks,
+    authority: &ScheduledExecutionAuthority,
+) -> anyhow::Result<ScheduledOccurrence> {
+    match database.accept_occurrence_execution(
+        &authority.record.definition.project_id,
+        &occurrence.id,
+        owner_id,
+        authority.record.revision,
+        links,
+        &authority.snapshot,
+    )? {
+        AcceptExecutionResult::Accepted(accepted)
+        | AcceptExecutionResult::AlreadyAccepted(accepted) => Ok(accepted),
+        AcceptExecutionResult::DefinitionChanged => Err(ExecutionAuthorityChanged.into()),
+        AcceptExecutionResult::NotFound => {
+            anyhow::bail!("scheduled occurrence disappeared before execution acceptance")
+        }
+        AcceptExecutionResult::LostClaim => {
+            anyhow::bail!("scheduled occurrence claim was lost before execution acceptance")
+        }
+    }
 }
 
 #[cfg(test)]
 fn accept_occurrence_execution_then<T, F>(
     database: &ScheduledTaskDatabase,
     owner_id: &str,
-    definition: &ScheduledTaskDefinition,
+    authority: &ScheduledExecutionAuthority,
     occurrence: &ScheduledOccurrence,
     links: &OccurrenceLinks,
     launch: F,
 ) -> anyhow::Result<T>
 where
-    F: FnOnce() -> anyhow::Result<T>,
+    F: FnOnce(&ScheduledOccurrence) -> anyhow::Result<T>,
 {
-    accept_current_occurrence_execution(database, owner_id, definition, occurrence, links)?;
-    match launch() {
+    let accepted = accept_execution_authority(database, owner_id, occurrence, links, authority)?;
+    match launch(&accepted) {
         Ok(result) => Ok(result),
         Err(launch_error) => {
             let finish_result = database.finish_occurrence(
-                &definition.project_id,
+                &authority.record.definition.project_id,
                 &occurrence.id,
                 owner_id,
                 OccurrenceStatus::Failed,
@@ -2769,16 +2886,16 @@ where
 fn accept_occurrence_execution_then_deferred<T, F>(
     database: &ScheduledTaskDatabase,
     owner_id: &str,
-    definition: &ScheduledTaskDefinition,
+    authority: &ScheduledExecutionAuthority,
     occurrence: &ScheduledOccurrence,
     links: &OccurrenceLinks,
     launch: F,
 ) -> anyhow::Result<T>
 where
-    F: FnOnce() -> anyhow::Result<T>,
+    F: FnOnce(&ScheduledOccurrence) -> anyhow::Result<T>,
 {
-    accept_current_occurrence_execution(database, owner_id, definition, occurrence, links)?;
-    launch()
+    let accepted = accept_execution_authority(database, owner_id, occurrence, links, authority)?;
+    launch(&accepted)
 }
 
 fn accept_current_occurrence_execution(
@@ -2787,49 +2904,10 @@ fn accept_current_occurrence_execution(
     definition: &ScheduledTaskDefinition,
     occurrence: &ScheduledOccurrence,
     links: &OccurrenceLinks,
-) -> anyhow::Result<()> {
-    let record = database
-        .get_job_definition(&definition.project_id, definition.id())?
-        .ok_or_else(|| anyhow::anyhow!("scheduled task changed before execution acceptance"))?;
-    let accepted_at = Utc::now();
-    let automatic = match occurrence.trigger_kind {
-        OccurrenceTriggerKind::Scheduled => Some(ScheduledAutomaticTriggerContext {
-            scheduled_at: occurrence.scheduled_at,
-            schedule_summary: definition.display_schedule(),
-            timezone: definition.schedule.timezone().unwrap_or("UTC").to_string(),
-        }),
-        OccurrenceTriggerKind::Manual => None,
-    };
-    let snapshot = ScheduledExecutionSnapshot {
-        accepted_at,
-        definition_revision: record.revision,
-        content_fingerprint: definition.content_fingerprint.clone(),
-        content: definition.content_snapshot.clone(),
-        instruction_summary: instruction_summary(
-            &definition.content_snapshot.instruction,
-            SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS,
-        ),
-        automatic,
-    };
-    match database.accept_occurrence_execution(
-        &definition.project_id,
-        &occurrence.id,
-        owner_id,
-        record.revision,
-        links,
-        &snapshot,
-    )? {
-        AcceptExecutionResult::Accepted(_) | AcceptExecutionResult::AlreadyAccepted(_) => Ok(()),
-        AcceptExecutionResult::DefinitionChanged => {
-            anyhow::bail!("scheduled task changed before execution acceptance")
-        }
-        AcceptExecutionResult::NotFound => {
-            anyhow::bail!("scheduled occurrence disappeared before execution acceptance")
-        }
-        AcceptExecutionResult::LostClaim => {
-            anyhow::bail!("scheduled occurrence claim was lost before execution acceptance")
-        }
-    }
+) -> anyhow::Result<ScheduledOccurrence> {
+    let authority =
+        reload_execution_authority(database, &definition.project_id, occurrence, Utc::now())?;
+    accept_execution_authority(database, owner_id, occurrence, links, &authority)
 }
 
 #[cfg(test)]
@@ -3133,33 +3211,46 @@ fn execute_definition(
     owner_id: &str,
     definition: &mut ScheduledTaskDefinition,
     occurrence: &ScheduledOccurrence,
-    trigger_kind: &str,
 ) -> anyhow::Result<ExecutionResult> {
-    ensure_definition_workspace(app, definition)?;
-    let task_fingerprint = definition.task_id.as_deref().and_then(|task_id| {
-        crate::view_models_conversation::scheduled_content_fingerprint_for_task(app, task_id)
-    });
-    let action =
-        scheduled_execution_action_for_fingerprint(definition, task_fingerprint.as_deref());
-    let adapter = adapter_for(definition, &action);
-    let binding = adapter.start(ScheduledExecutionContext {
-        app_handle,
-        app,
-        database,
-        owner_id,
-        definition,
-        occurrence,
-        trigger_kind,
-    })?;
-    Ok(ExecutionResult {
-        immediate_links: Some(OccurrenceLinks {
-            task_id: binding.task_id,
-            run_id: binding.run_id,
-            round_id: binding.round_id,
-            node_id: binding.node_id,
-            attempt_id: binding.attempt_id,
-        }),
-    })
+    for preparation_attempt in 0..2 {
+        let authority =
+            reload_execution_authority(database, &definition.project_id, occurrence, Utc::now())?;
+        *definition = authority.record.definition.clone();
+        ensure_definition_workspace(app, definition)?;
+        let task_fingerprint = definition.task_id.as_deref().and_then(|task_id| {
+            crate::view_models_conversation::scheduled_content_fingerprint_for_task(app, task_id)
+        });
+        let action =
+            scheduled_execution_action_for_fingerprint(definition, task_fingerprint.as_deref());
+        let adapter = adapter_for(definition, &action);
+        match adapter.start(ScheduledExecutionContext {
+            app_handle,
+            app,
+            database,
+            owner_id,
+            definition,
+            occurrence,
+            authority: &authority,
+        }) {
+            Ok(binding) => {
+                return Ok(ExecutionResult {
+                    immediate_links: Some(OccurrenceLinks {
+                        task_id: binding.task_id,
+                        run_id: binding.run_id,
+                        round_id: binding.round_id,
+                        node_id: binding.node_id,
+                        attempt_id: binding.attempt_id,
+                    }),
+                    definition_revision: authority.record.revision,
+                });
+            }
+            Err(error) if error.is::<ExecutionAuthorityChanged>() && preparation_attempt == 0 => {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("scheduled execution preparation loop is bounded to two attempts")
 }
 
 pub(super) fn execute_definition_with_action(
@@ -3169,31 +3260,20 @@ pub(super) fn execute_definition_with_action(
     owner_id: &str,
     definition: &mut ScheduledTaskDefinition,
     occurrence: &ScheduledOccurrence,
-    trigger_kind: &str,
+    authority: &ScheduledExecutionAuthority,
     action: ScheduledExecutionAction,
 ) -> anyhow::Result<ExecutionResult> {
     ensure_definition_workspace(app, definition)?;
     let occurrence_id = occurrence.id.as_str();
-    let scheduled_at = occurrence.scheduled_at;
     match action {
         ScheduledExecutionAction::ContinueSession { task_id } => {
             if let Some((run_id, round_id, node_id, attempt_id)) = latest_attempt(app, &task_id)? {
                 let input = scheduled_create_input(app, definition)?;
-                let scheduled_app = app
-                    .clone_for_background()
-                    .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
-                    .with_scheduled_task_context(Some(scheduled_task_context_info(
-                        definition,
-                        trigger_kind,
-                        scheduled_at,
-                    )));
-                let scheduled_app = configure_conversation_runtime_callbacks(
-                    scheduled_app,
-                    app_handle.clone(),
-                    Some(definition.project_id.clone()),
-                );
                 let handle = app_handle.clone();
                 let project_id = Some(definition.project_id.clone());
+                let scheduled_project_id = definition.project_id.clone();
+                let scheduled_occurrence_id = occurrence_id.to_string();
+                let scheduled_app_source = app.clone_for_background();
                 let task_id_for_thread = task_id.clone();
                 let run_id_for_thread = run_id.clone();
                 let round_id_for_thread = round_id.clone();
@@ -3209,10 +3289,21 @@ pub(super) fn execute_definition_with_action(
                 accept_occurrence_execution_then_deferred(
                     database,
                     owner_id,
-                    definition,
+                    authority,
                     occurrence,
                     &links,
-                    || {
+                    |accepted| {
+                        let scheduled_app = scheduled_app_source
+                            .with_scheduled_occurrence_id(Some(scheduled_occurrence_id))
+                            .with_scheduled_task_context(Some(scheduled_task_context_info(
+                                &scheduled_project_id,
+                                accepted,
+                            )?));
+                        let scheduled_app = configure_conversation_runtime_callbacks(
+                            scheduled_app,
+                            handle.clone(),
+                            Some(scheduled_project_id),
+                        );
                         thread::Builder::new()
                             .name("scheduled-continuous-prompt".to_string())
                             .spawn(move || {
@@ -3242,31 +3333,20 @@ pub(super) fn execute_definition_with_action(
                 )?;
                 return Ok(ExecutionResult {
                     immediate_links: Some(links),
+                    definition_revision: authority.record.revision,
                 });
             }
         }
         ScheduledExecutionAction::StartNewRun { task_id } => {
-            let scheduled_app = app
-                .clone_for_background()
-                .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
-                .with_scheduled_task_context(Some(scheduled_task_context_info(
-                    definition,
-                    trigger_kind,
-                    scheduled_at,
-                )));
-            let scheduled_app = configure_conversation_runtime_callbacks(
-                scheduled_app,
-                app_handle.clone(),
-                Some(definition.project_id.clone()),
-            );
+            let preparation_app = app.clone_for_background();
             let prepared_run = match definition.mode {
                 ScheduledMode::Workflow => {
                     let authoring = scheduled_workflow_authoring(definition)?.ok_or_else(|| {
                         anyhow::anyhow!("scheduled workflow authoring snapshot is missing")
                     })?;
-                    scheduled_app.prepare_run_with_authoring(&task_id, &authoring)?
+                    preparation_app.prepare_run_with_authoring(&task_id, &authoring)?
                 }
-                ScheduledMode::Auto => scheduled_app.prepare_run(&task_id, None)?,
+                ScheduledMode::Auto => preparation_app.prepare_run(&task_id, None)?,
                 ScheduledMode::Direct => {
                     anyhow::bail!("direct mode cannot use the start-new-run action")
                 }
@@ -3282,10 +3362,22 @@ pub(super) fn execute_definition_with_action(
             accept_occurrence_execution_then_deferred(
                 database,
                 owner_id,
-                definition,
+                authority,
                 occurrence,
                 &links,
-                || {
+                |accepted| {
+                    let scheduled_app = app
+                        .clone_for_background()
+                        .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
+                        .with_scheduled_task_context(Some(scheduled_task_context_info(
+                            &definition.project_id,
+                            accepted,
+                        )?));
+                    let scheduled_app = configure_conversation_runtime_callbacks(
+                        scheduled_app,
+                        app_handle.clone(),
+                        Some(definition.project_id.clone()),
+                    );
                     scheduled_app
                         .launch_prepared_run_background(&task_id, prepared_run.accept())?;
                     Ok(())
@@ -3293,25 +3385,14 @@ pub(super) fn execute_definition_with_action(
             )?;
             return Ok(ExecutionResult {
                 immediate_links: Some(links),
+                definition_revision: authority.record.revision,
             });
         }
         ScheduledExecutionAction::MaterializeTaskAndRun => {}
     }
 
     let input = scheduled_create_input(app, definition)?;
-    let scheduled_app = app
-        .clone_for_background()
-        .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
-        .with_scheduled_task_context(Some(scheduled_task_context_info(
-            definition,
-            trigger_kind,
-            scheduled_at,
-        )));
-    let run_app = configure_conversation_runtime_callbacks(
-        scheduled_app,
-        app_handle.clone(),
-        Some(definition.project_id.clone()),
-    );
+    let run_app = app.clone_for_background();
     let prepared_task =
         crate::view_models_conversation::prepare_conversation_task_vm(&run_app, &input)?;
     let task_id = prepared_task.task_id().to_string();
@@ -3327,18 +3408,31 @@ pub(super) fn execute_definition_with_action(
     accept_occurrence_execution_then_deferred(
         database,
         owner_id,
-        definition,
+        authority,
         occurrence,
         &links,
-        || {
+        |accepted| {
+            let scheduled_app = app
+                .clone_for_background()
+                .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
+                .with_scheduled_task_context(Some(scheduled_task_context_info(
+                    &definition.project_id,
+                    accepted,
+                )?));
+            let scheduled_app = configure_conversation_runtime_callbacks(
+                scheduled_app,
+                app_handle.clone(),
+                Some(definition.project_id.clone()),
+            );
             let _ = prepared_task.accept();
-            run_app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
+            scheduled_app.launch_prepared_run_background(&task_id, prepared_run.accept())?;
             Ok(())
         },
     )?;
     definition.task_id = Some(task_id);
     Ok(ExecutionResult {
         immediate_links: Some(links),
+        definition_revision: authority.record.revision,
     })
 }
 
@@ -3452,7 +3546,7 @@ mod tests {
         TaskAuthoringWorkflow, WorkerModelBinding, WorkflowModelBindings,
     };
     use tempfile::tempdir;
-    use tokio::sync::Notify;
+    use tokio::sync::{Barrier, Notify};
 
     use super::{
         ActiveOccurrenceKey, ActiveOccurrenceMetadata, CLOCK_DRIFT_CHECK_INTERVAL,
@@ -3460,13 +3554,15 @@ mod tests {
         OccurrenceExecutionGuard, PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction,
         SchedulerCommand, SchedulerCoordinator, SchedulerCoordinatorHandle,
         WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration,
-        accept_current_occurrence_execution, accept_occurrence_execution_then,
-        active_execution_for_run, attempt_tree_has_active_prompt, create_manual_occurrence,
-        ensure_definition_workspace, finish_occurrence_for_event, finish_reconciled_occurrence,
-        mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
-        project_resumed_attention, reconcile_missed_deadlines, recover_accepted_occurrence,
+        accept_current_occurrence_execution, accept_execution_authority,
+        accept_occurrence_execution_then, active_execution_for_run, attempt_tree_has_active_prompt,
+        create_manual_occurrence, ensure_definition_workspace, finish_occurrence_for_event,
+        finish_reconciled_occurrence, mark_past_points_missed, materialize_registered_deadline,
+        persist_runtime_projection, project_resumed_attention, reconcile_missed_deadlines,
+        recover_accepted_occurrence, release_pre_acceptance_conflict, reload_execution_authority,
         scheduled_execution_action, scheduled_execution_action_for_fingerprint,
-        scheduled_occurrence_updated_event, shutdown_active_occurrences, task_has_active_execution,
+        scheduled_occurrence_updated_event, scheduled_task_context_info,
+        shutdown_active_occurrences, task_has_active_execution,
         task_has_active_execution_with_prompt_probe,
     };
 
@@ -4102,6 +4198,16 @@ mod tests {
         (database, occurrence.id, owner_id)
     }
 
+    fn runtime_links(suffix: &str) -> gold_band::scheduler::occurrence::OccurrenceLinks {
+        gold_band::scheduler::occurrence::OccurrenceLinks {
+            task_id: Some(format!("task-{suffix}")),
+            run_id: Some(format!("run-{suffix}")),
+            round_id: Some(format!("round-{suffix}")),
+            node_id: Some(format!("node-{suffix}")),
+            attempt_id: Some(format!("attempt-{suffix}")),
+        }
+    }
+
     #[test]
     fn occurrence_accept_failure_never_calls_launch() {
         let (database, definition, occurrence, owner_id) = claimed_occurrence_context();
@@ -4114,6 +4220,9 @@ mod tests {
             node_id: Some("node-1".to_string()),
             attempt_id: Some("attempt-1".to_string()),
         };
+        let authority =
+            reload_execution_authority(&database, &definition.project_id, &occurrence, Utc::now())
+                .unwrap();
         database
             .delete_job(&definition.project_id, definition.id())
             .unwrap();
@@ -4122,10 +4231,10 @@ mod tests {
             accept_occurrence_execution_then(
                 &database,
                 &owner_id,
-                &definition,
+                &authority,
                 &occurrence,
                 &links,
-                || {
+                |_| {
                     launches.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 },
@@ -4140,6 +4249,298 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn content_edit_before_acceptance_executes_the_new_snapshot() {
+        let (database, mut stale_definition, occurrence, owner_id) = claimed_occurrence_context();
+        let claim_complete = Arc::new(Barrier::new(2));
+        let authoring_complete = Arc::new(Barrier::new(2));
+        let worker_database = database.clone();
+        let worker_occurrence = occurrence.clone();
+        let worker_owner = owner_id.clone();
+        let worker_project_id = stale_definition.project_id.clone();
+        let worker_claim_complete = claim_complete.clone();
+        let worker_authoring_complete = authoring_complete.clone();
+        let links = gold_band::scheduler::occurrence::OccurrenceLinks {
+            task_id: Some("task-current".to_string()),
+            run_id: Some("run-current".to_string()),
+            round_id: Some("round-current".to_string()),
+            node_id: Some("node-current".to_string()),
+            attempt_id: Some("attempt-current".to_string()),
+        };
+        let worker_links = links.clone();
+        let worker = tokio::spawn(async move {
+            worker_claim_complete.wait().await;
+            worker_authoring_complete.wait().await;
+            let authority = reload_execution_authority(
+                &worker_database,
+                &worker_project_id,
+                &worker_occurrence,
+                Utc::now(),
+            )?;
+            accept_execution_authority(
+                &worker_database,
+                &worker_owner,
+                &worker_occurrence,
+                &worker_links,
+                &authority,
+            )
+        });
+
+        claim_complete.wait().await;
+        let expected_updated_at = stale_definition.updated_at;
+        stale_definition.content_snapshot.instruction = "new instruction".to_string();
+        stale_definition.instruction = "new instruction".to_string();
+        stale_definition.recompute_content_fingerprint().unwrap();
+        stale_definition.updated_at = Utc::now();
+        let updated = database
+            .update_job(&stale_definition, expected_updated_at, None)
+            .unwrap();
+        assert!(matches!(updated, UpdateJobResult::Updated(_)));
+        authoring_complete.wait().await;
+
+        let accepted = worker.await.unwrap().unwrap();
+        assert_eq!(accepted.links(), links);
+        let context = scheduled_task_context_info(&stale_definition.project_id, &accepted).unwrap();
+        assert_eq!(context.project_id, stale_definition.project_id);
+        assert_eq!(context.scheduled_task_id, stale_definition.id);
+        assert_eq!(context.occurrence_id, occurrence.id);
+        assert_eq!(context.timeline_owner, links);
+        assert_eq!(
+            context.content_fingerprint,
+            accepted
+                .accepted_execution
+                .as_ref()
+                .unwrap()
+                .content_fingerprint
+        );
+        let persisted = database
+            .get_occurrence(&stale_definition.project_id, &occurrence.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted
+                .accepted_execution
+                .as_ref()
+                .unwrap()
+                .content
+                .instruction,
+            "new instruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_edit_after_acceptance_does_not_mutate_the_running_snapshot() {
+        let (database, mut definition, occurrence, owner_id) = claimed_occurrence_context();
+        definition.content_snapshot.instruction = "accepted instruction".to_string();
+        definition.instruction = "accepted instruction".to_string();
+        definition.recompute_content_fingerprint().unwrap();
+        let original_updated_at = definition.updated_at;
+        definition.updated_at = original_updated_at + Duration::milliseconds(1);
+        let UpdateJobResult::Updated(record) = database
+            .update_job(&definition, original_updated_at, None)
+            .unwrap()
+        else {
+            panic!("accepted authoring update failed");
+        };
+        let authority =
+            reload_execution_authority(&database, &definition.project_id, &occurrence, Utc::now())
+                .unwrap();
+        let links = runtime_links("immutable");
+        accept_execution_authority(&database, &owner_id, &occurrence, &links, &authority).unwrap();
+
+        let mut edited = record.definition;
+        edited.content_snapshot.instruction = "later instruction".to_string();
+        edited.instruction = "later instruction".to_string();
+        edited.recompute_content_fingerprint().unwrap();
+        let expected_updated_at = edited.updated_at;
+        edited.updated_at = expected_updated_at + Duration::milliseconds(1);
+        assert!(matches!(
+            database
+                .update_job(&edited, expected_updated_at, None)
+                .unwrap(),
+            UpdateJobResult::Updated(_)
+        ));
+
+        let persisted = database
+            .get_occurrence(&definition.project_id, &occurrence.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.links(), links);
+        assert_eq!(
+            persisted.accepted_execution.unwrap().content.instruction,
+            "accepted instruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrying_occurrence_reloads_latest_content_before_acceptance() {
+        let (database, mut definition, occurrence, owner_id) = claimed_occurrence_context();
+        let now = Utc::now();
+        assert!(
+            database
+                .release_owned_occurrence_for_retry(
+                    &definition.project_id,
+                    &occurrence.id,
+                    &owner_id,
+                    now,
+                )
+                .unwrap()
+        );
+        let expected_updated_at = definition.updated_at;
+        definition.content_snapshot.instruction = "retry instruction".to_string();
+        definition.instruction = "retry instruction".to_string();
+        definition.recompute_content_fingerprint().unwrap();
+        definition.updated_at = expected_updated_at + Duration::milliseconds(1);
+        assert!(matches!(
+            database
+                .update_job(&definition, expected_updated_at, None)
+                .unwrap(),
+            UpdateJobResult::Updated(_)
+        ));
+        let claimed = match database
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                &owner_id,
+                now + Duration::milliseconds(1),
+                now + Duration::minutes(5),
+            )
+            .unwrap()
+        {
+            ClaimResult::Claimed(claimed) => claimed,
+            result => panic!("expected retry claim, got {result:?}"),
+        };
+        let authority = reload_execution_authority(
+            &database,
+            &definition.project_id,
+            &claimed,
+            now + Duration::seconds(1),
+        )
+        .unwrap();
+
+        let accepted = accept_execution_authority(
+            &database,
+            &owner_id,
+            &claimed,
+            &runtime_links("retry"),
+            &authority,
+        )
+        .unwrap();
+
+        assert_eq!(
+            accepted.accepted_execution.unwrap().content.instruction,
+            "retry instruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_occurrence_survives_schedule_edit_and_uses_latest_content() {
+        let directory = tempdir().unwrap();
+        let database = ScheduledTaskDatabase::open(directory.path().join("scheduler.db")).unwrap();
+        let now = Utc::now();
+        let mut definition = ScheduledTaskDefinition::new(
+            "project-manual",
+            "job-manual",
+            "direct",
+            ScheduleSpec::at(now + Duration::hours(1)),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let record = database
+            .create_job(&definition, Some(now + Duration::hours(1)))
+            .unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &definition.project_id,
+                definition.id(),
+                now,
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        let owner_id = "manual-owner";
+        let claimed = match database
+            .claim_occurrence(
+                &definition.project_id,
+                &occurrence.id,
+                owner_id,
+                now,
+                now + Duration::minutes(5),
+            )
+            .unwrap()
+        {
+            ClaimResult::Claimed(claimed) => claimed,
+            result => panic!("expected manual claim, got {result:?}"),
+        };
+        definition.schedule = ScheduleSpec::at(now + Duration::hours(2));
+        definition.content_snapshot.instruction = "manual latest".to_string();
+        definition.instruction = "manual latest".to_string();
+        definition.recompute_content_fingerprint().unwrap();
+        let expected_updated_at = definition.updated_at;
+        definition.updated_at = expected_updated_at + Duration::milliseconds(1);
+        assert!(matches!(
+            database
+                .update_job(
+                    &definition,
+                    expected_updated_at,
+                    Some(now + Duration::hours(2)),
+                )
+                .unwrap(),
+            UpdateJobResult::Updated(_)
+        ));
+        assert!(
+            record.revision
+                < database
+                    .get_job_definition(&definition.project_id, definition.id())
+                    .unwrap()
+                    .unwrap()
+                    .revision
+        );
+        let authority = reload_execution_authority(
+            &database,
+            &definition.project_id,
+            &claimed,
+            now + Duration::seconds(1),
+        )
+        .unwrap();
+
+        let accepted = accept_execution_authority(
+            &database,
+            owner_id,
+            &claimed,
+            &runtime_links("manual"),
+            &authority,
+        )
+        .unwrap();
+
+        let snapshot = accepted.accepted_execution.unwrap();
+        assert_eq!(snapshot.content.instruction, "manual latest");
+        assert!(snapshot.automatic.is_none());
+    }
+
+    #[test]
+    fn second_authoring_conflict_keeps_occurrence_retryable() {
+        let (database, definition, occurrence, owner_id) = claimed_occurrence_context();
+
+        assert!(
+            release_pre_acceptance_conflict(
+                &database,
+                &definition.project_id,
+                &occurrence.id,
+                &owner_id,
+            )
+            .unwrap()
+        );
+
+        let persisted = database
+            .get_occurrence(&definition.project_id, &occurrence.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, OccurrenceStatus::Retrying);
+        assert_eq!(persisted.error_code, Some(ScheduledErrorCode::Conflict));
+        assert!(persisted.accepted_execution.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4170,16 +4571,19 @@ mod tests {
             node_id: Some("node-1".to_string()),
             attempt_id: Some("attempt-1".to_string()),
         };
+        let authority =
+            reload_execution_authority(&database, &definition.project_id, &occurrence, Utc::now())
+                .unwrap();
 
         guard.stop().await;
         assert!(
             accept_occurrence_execution_then(
                 &database,
                 &owner_id,
-                &definition,
+                &authority,
                 &occurrence,
                 &links,
-                || -> anyhow::Result<()> { anyhow::bail!("injected synchronous launch failure") },
+                |_| -> anyhow::Result<()> { anyhow::bail!("injected synchronous launch failure") },
             )
             .is_err()
         );
@@ -4204,7 +4608,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_occurrence_recovery_finishes_persisted_run_without_duplicate_launch() {
+    fn accepted_occurrence_recovery_reuses_snapshot_and_locator() {
         let directory = tempdir().unwrap();
         let repo_root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
         let app = gold_band::app::App::new(repo_root);
@@ -4253,6 +4657,27 @@ mod tests {
         };
         accept_current_occurrence_execution(&database, owner_id, &definition, &claimed, &links)
             .unwrap();
+        let accepted_before_edit = database
+            .get_occurrence(&definition.project_id, &claimed.id)
+            .unwrap()
+            .unwrap();
+        let accepted_snapshot = accepted_before_edit.accepted_execution.clone().unwrap();
+        let current = database
+            .get_job_definition(&definition.project_id, definition.id())
+            .unwrap()
+            .unwrap();
+        let mut edited = current.definition;
+        edited.content_snapshot.instruction = "edited after acceptance".to_string();
+        edited.instruction = "edited after acceptance".to_string();
+        edited.recompute_content_fingerprint().unwrap();
+        let expected_updated_at = edited.updated_at;
+        edited.updated_at = expected_updated_at + Duration::milliseconds(1);
+        assert!(matches!(
+            database
+                .update_job(&edited, expected_updated_at, current.next_run_at)
+                .unwrap(),
+            UpdateJobResult::Updated(_)
+        ));
         let run = RunState {
             version: VERSION.to_string(),
             id: "run-1".to_string(),
@@ -4285,6 +4710,7 @@ mod tests {
 
         assert_eq!(recovered.status, OccurrenceStatus::Succeeded);
         assert_eq!(recovered.links(), links);
+        assert_eq!(recovered.accepted_execution, Some(accepted_snapshot));
         assert_eq!(app.run_list("task-1").unwrap().len(), 1);
     }
 

@@ -1655,9 +1655,8 @@ impl App {
         self.scheduled_task_context.as_ref()
     }
 
-    /// Convert a scheduler-scoped app clone back to ordinary conversation
-    /// semantics before dispatching a later user-authored prompt turn.
-    pub fn without_scheduled_turn_context(mut self) -> Self {
+    /// Convert an execution-scoped clone to an ordinary user-authored turn.
+    pub fn as_turn(mut self) -> Self {
         self.scheduled_occurrence_id = None;
         self.scheduled_task_context = None;
         self
@@ -6521,22 +6520,39 @@ mod tests {
     }
 
     #[test]
-    fn queued_user_turn_drops_scheduler_occurrence_and_prompt_context() {
+    fn ordinary_user_turn_clears_scheduled_execution_context() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root)
             .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
             .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
-                title: "Daily review".to_string(),
-                mode: "direct".to_string(),
-                session_policy: "continuous".to_string(),
-                trigger_kind: "cron".to_string(),
-                triggered_at: "2026-08-03T00:00:00Z".to_string(),
-                instruction: Some("Review changes".to_string()),
+                project_id: "project-001".to_string(),
+                scheduled_task_id: "scheduled-task-001".to_string(),
+                occurrence_id: "occurrence-001".to_string(),
+                trigger_kind: crate::scheduler::occurrence::OccurrenceTriggerKind::Scheduled,
+                accepted_at: "2026-08-03T00:00:00Z".to_string(),
+                automatic: Some(
+                    crate::scheduler::execution::ScheduledAutomaticTriggerContext {
+                        scheduled_at: chrono::DateTime::parse_from_rfc3339("2026-08-03T00:00:00Z")
+                            .unwrap()
+                            .with_timezone(&chrono::Utc),
+                        schedule_summary: "0 0 0 * * *".to_string(),
+                        timezone: "UTC".to_string(),
+                    },
+                ),
+                content_fingerprint: "sha256:scheduled".to_string(),
+                instruction_summary: "Daily review".to_string(),
+                timeline_owner: crate::scheduler::occurrence::OccurrenceLinks {
+                    task_id: Some("task-001".to_string()),
+                    run_id: Some("run-001".to_string()),
+                    round_id: Some("round-001".to_string()),
+                    node_id: Some("node-001".to_string()),
+                    attempt_id: Some("attempt-001".to_string()),
+                },
             }));
 
-        let ordinary_turn = app.clone_for_background().without_scheduled_turn_context();
+        let ordinary_turn = app.clone_for_background().as_turn();
 
         assert_eq!(app.scheduled_occurrence_id(), Some("occurrence-001"));
         assert!(app.scheduled_task_context().is_some());

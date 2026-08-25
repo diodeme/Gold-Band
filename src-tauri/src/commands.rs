@@ -1531,7 +1531,7 @@ fn direct_prompt_queue_drain_app(app: &App) -> App {
 }
 
 fn queued_user_turn_app(app: &App) -> App {
-    app.clone_for_background().without_scheduled_turn_context()
+    app.clone_for_background().as_turn()
 }
 
 fn schedule_direct_prompt_queue_drain(

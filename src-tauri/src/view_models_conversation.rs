@@ -23,12 +23,14 @@ use gold_band::app::{
 };
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
-use gold_band::domain::{NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode};
+use gold_band::domain::{
+    NodeOutcome, NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode,
+};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::DynamicRunStatus;
+use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
@@ -2122,6 +2124,26 @@ fn composer_for_lifecycle(
     }
 }
 
+fn apply_dynamic_workspace_transition_composer(
+    graph: &gold_band::dynamic::DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    let processing_completed_leaf_workspace = graph.run.phase
+        == DynamicRunPhase::PreparingWorkspace
+        && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
+        && node.outcome == Some(NodeOutcome::Success)
+        && gold_band::dynamic::dynamic_runtime_owns_leaf_projection(graph, node)
+        && lifecycle.runtime.active
+        && lifecycle.runtime.phase == "preparing-workspace";
+    if !processing_completed_leaf_workspace {
+        return;
+    }
+
+    lifecycle.composer.processing_kind = "processing-workspace".to_string();
+    lifecycle.composer.status_key = Some("conversation.runtime.processingWorkspace".to_string());
+}
+
 fn derive_conversation_attempt_lifecycle_with_facets(
     session_status: Option<&str>,
     prompt_activity: Option<PromptActivity>,
@@ -2474,6 +2496,7 @@ pub fn conversation_attempt_lifecycle_vm(
         );
         attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+        apply_dynamic_workspace_transition_composer(&dynamic_graph, dynamic_node, &mut lifecycle);
         return Ok(lifecycle);
     }
 
@@ -3230,6 +3253,11 @@ pub fn conversation_run_vm(
                                     app,
                                     task_id,
                                     &dyn_attempt_dir,
+                                    &mut lifecycle,
+                                );
+                                apply_dynamic_workspace_transition_composer(
+                                    &dynamic_graph,
+                                    dyn_node,
                                     &mut lifecycle,
                                 );
                                 let dyn_status = lifecycle.display_status.clone();
@@ -4912,6 +4940,40 @@ mod tests {
     }
 
     #[test]
+    fn initial_workspace_preparation_keeps_development_environment_copy() {
+        let execution = RuntimeExecutionState {
+            revision: 8,
+            phase: RuntimeExecutionPhase::PreparingWorkspace,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: "t2".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            None,
+            None,
+            "running",
+            None,
+            true,
+            true,
+            None,
+            false,
+            false,
+            true,
+            Some(&execution),
+            true,
+            TurnControlMode::RuntimeControlled,
+            false,
+        );
+
+        assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
+        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+    }
+
+    #[test]
     fn non_current_workflow_leaf_carries_run_revision_without_becoming_active() {
         let execution = RuntimeExecutionState {
             revision: 8,
@@ -5934,7 +5996,7 @@ mod tests {
     }
 
     #[test]
-    fn preparing_workspace_projects_runtime_owned_composer_state() {
+    fn completed_dynamic_leaf_projects_workspace_processing_composer_state() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_dynamic_lifecycle_fixture(
@@ -5987,13 +6049,33 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
         assert_eq!(lifecycle.composer.mode, "runtime-active");
         assert_eq!(lifecycle.composer.submit_target, "none");
-        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(lifecycle.composer.processing_kind, "processing-workspace");
         assert_eq!(
             lifecycle.composer.status_key.as_deref(),
-            Some("conversation.runtime.preparingDevelopmentEnvironment")
+            Some("conversation.runtime.processingWorkspace")
         );
         assert!(lifecycle.composer.can_stop);
         assert!(lifecycle.composer.lock_input);
+
+        let run_vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let tree_leaf = run_vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|node| node.node_id == "good-morning")
+            .unwrap()
+            .attempts
+            .first()
+            .unwrap();
+        assert_eq!(
+            tree_leaf.lifecycle.composer.processing_kind,
+            "processing-workspace"
+        );
+        assert_eq!(
+            tree_leaf.lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.processingWorkspace")
+        );
 
         let parallel_lifecycle = conversation_attempt_lifecycle_vm(
             &app,

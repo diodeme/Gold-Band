@@ -2092,6 +2092,7 @@ const resources = {
             "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
           launchingNextNode: "拉起下一节点中",
           preparingDevelopmentEnvironment: "正在准备开发环境…",
+          processingWorkspace: "正在处理工作区…",
           worktree: "工作树",
           composerRuntimeControlledPlaceholder:
             "当前会话由 runtime 运行中，暂不可输入",
@@ -4319,6 +4320,7 @@ const resources = {
             "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
           launchingNextNode: "Launching next node",
           preparingDevelopmentEnvironment: "Preparing development environment…",
+          processingWorkspace: "Processing workspace…",
           worktree: "worktree",
           composerRuntimeControlledPlaceholder:
             "This session is being controlled by the runtime, so input is temporarily unavailable",

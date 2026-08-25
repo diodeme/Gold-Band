@@ -20,7 +20,7 @@
     "web:dev": "npm run themes:build && vite --config web/vite.config.ts --host 127.0.0.1 --port 1420",
     "web:test": "vitest run --config web/vitest.config.ts",
     "web:test:coverage": "vitest run --config web/vitest.config.ts --coverage",
-    "test:channel-config": "node --test scripts/channel-config.test.mjs",
+    "test:channel-config": "node --test scripts/channel-config.test.mjs scripts/build-channel-options.test.mjs",
     "test:dev-watch-config": "node --test scripts/dev-watch-config.test.mjs",
     "test:dev-static": "node --test scripts/dev-static-channel.test.mjs",
     "test:macos-signing": "node --test scripts/configure-macos-signing.test.mjs",

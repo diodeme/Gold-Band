@@ -83,7 +83,9 @@ import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
+  conversationAcpRunRefreshStatus,
   isRuntimeControlledConversationLifecycle,
+  isTerminalConversationSessionStatus,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -1198,6 +1200,9 @@ export function App() {
         followMode: followStateAtRequest.mode,
         pendingEventSessionKey,
         currentSelectedKey,
+        currentSelectedTerminal: isTerminalConversationSessionStatus(
+          currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+        ),
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
@@ -1221,6 +1226,9 @@ export function App() {
             followMode: latestFollowState.mode,
             pendingEventSessionKey: selectedKey,
             currentSelectedKey: latestSelectedKey,
+            currentSelectedTerminal: isTerminalConversationSessionStatus(
+              latestSelectedLeaf?.lifecycle?.runtime.status ?? latestSelectedLeaf?.status,
+            ),
             currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
             pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
           });
@@ -1313,6 +1321,9 @@ export function App() {
       const currentSelectedActive = Boolean(
         currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
+      const currentSelectedTerminal = isTerminalConversationSessionStatus(
+        currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+      );
       const hasRuntimeSnapshot = Boolean(event.session || event.lifecycle);
       const incomingActive = event.lifecycle
         ? isConversationActiveLifecycle(event.lifecycle)
@@ -1320,18 +1331,29 @@ export function App() {
           ? isConversationActiveStatus(event.session.status)
           : Boolean(event.event);
       const followState = conversationSessionFollowRef.current;
-      const followPending = followState.mode === 'auto'
-        && Boolean(currentSelectedKey)
-        && !currentSelectedActive
-        && incomingActive
-        && currentSelectedRuntimeControlled
-        && incomingRuntimeControlled;
+      const eventSelectedSessionKey = resolveConversationEventSelectedSessionKey({
+        currentSelectedKey,
+        incomingSessionKey: sessionKey,
+        followMode: followState.mode,
+        currentSelectedActive,
+        currentSelectedTerminal,
+        incomingActive,
+        currentSelectedRuntimeControlled,
+        incomingRuntimeControlled,
+      });
+      const followPending = currentSelectedKey !== sessionKey
+        && eventSelectedSessionKey === sessionKey;
+      const refreshStatus = conversationAcpRunRefreshStatus({
+        dynamicSession: Boolean(event.outerNodeId && event.outerAttemptId),
+        lifecycle: event.lifecycle,
+        sessionStatus: event.session?.status,
+      });
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
         hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
-        sessionStatus: event.lifecycle?.displayStatus ?? event.session?.status,
+        sessionStatus: refreshStatus,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
         followPending,
       });
@@ -1352,15 +1374,7 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunRefresh(resolveConversationEventSelectedSessionKey({
-        currentSelectedKey,
-        incomingSessionKey: sessionKey,
-        followMode: followState.mode,
-        currentSelectedActive,
-        incomingActive,
-        currentSelectedRuntimeControlled,
-        incomingRuntimeControlled,
-      }), incomingRuntimeControlled);
+      queueConversationRunRefresh(eventSelectedSessionKey, incomingRuntimeControlled);
     };
     conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 

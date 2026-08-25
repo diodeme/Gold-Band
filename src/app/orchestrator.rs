@@ -35,9 +35,10 @@ use crate::dynamic::{
     DynamicProposalState, DynamicProposalValidationError, DynamicProposalValidationStatus,
     DynamicRunPhase, DynamicRunState, DynamicRunStatus, WorkspaceKind, WorkspaceOwnership,
     WorkspaceState, WorkspaceStatus, dynamic_completion_effective_schema,
-    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, refresh_dynamic_current_leaf_ids,
-    validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
-    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
+    dynamic_graph_has_active_leaf, dynamic_leaf_is_active, dynamic_runtime_owns_leaf_projection,
+    refresh_dynamic_current_leaf_ids, validate_dynamic_group_state, validate_dynamic_node_state,
+    validate_dynamic_run_state, validate_workspace_state, validate_workspace_topology,
+    write_dynamic_node_state,
 };
 use crate::dynamic_store::{
     CURRENT_DYNAMIC_GRAPH_VERSION, load_dynamic_graph, validate_dynamic_graph,
@@ -4664,6 +4665,86 @@ fn emit_dynamic_session_updates_best_effort(
     }
 }
 
+fn emit_dynamic_run_terminal_session_update_best_effort(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &DynamicGraphState,
+) {
+    let Some(node) = graph
+        .nodes
+        .last()
+        .filter(|node| node.status == DynamicNodeStatus::Completed && node.outcome.is_some())
+    else {
+        return;
+    };
+    emit_dynamic_session_update_best_effort(ctx, &node.id, &dynamic_attempt_id(node));
+}
+
+fn advance_dynamic_leaf_runtime_lifecycle_revisions(
+    graph: &mut DynamicGraphState,
+    node_ids: &[String],
+    updated_at: &str,
+) -> Vec<String> {
+    let mut advanced_node_ids = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for node_id in node_ids {
+        if !seen.insert(node_id.as_str()) {
+            continue;
+        }
+        let Some(node) = graph.nodes.iter_mut().find(|node| node.id == *node_id) else {
+            continue;
+        };
+        node.advance_runtime_lifecycle_revision(updated_at.to_string());
+        advanced_node_ids.push(node.id.clone());
+    }
+    advanced_node_ids
+}
+
+fn begin_dynamic_workspace_transition_ownership(
+    graph: &mut DynamicGraphState,
+    owner_node_ids: &[String],
+    updated_at: &str,
+) -> Result<Vec<(String, Option<RuntimeExecutionPhase>)>> {
+    ensure!(
+        !owner_node_ids.is_empty(),
+        "dynamic workspace transition requires at least one causal leaf"
+    );
+    let mut owners = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for node_id in owner_node_ids {
+        if !seen.insert(node_id.as_str()) {
+            continue;
+        }
+        let node = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == *node_id)
+            .ok_or_else(|| anyhow!("dynamic workspace transition leaf `{node_id}` is missing"))?;
+        owners.push((node.id.clone(), node.runtime_execution_phase));
+        node.runtime_execution_phase = Some(RuntimeExecutionPhase::PreparingWorkspace);
+        node.advance_runtime_lifecycle_revision(updated_at.to_string());
+    }
+    Ok(owners)
+}
+
+fn finish_dynamic_workspace_transition_ownership(
+    graph: &mut DynamicGraphState,
+    owners: &[(String, Option<RuntimeExecutionPhase>)],
+    updated_at: &str,
+) -> Result<Vec<String>> {
+    let mut owner_node_ids = Vec::with_capacity(owners.len());
+    for (node_id, previous_phase) in owners {
+        let node = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == *node_id)
+            .ok_or_else(|| anyhow!("dynamic workspace transition leaf `{node_id}` is missing"))?;
+        node.runtime_execution_phase = *previous_phase;
+        node.advance_runtime_lifecycle_revision(updated_at.to_string());
+        owner_node_ids.push(node.id.clone());
+    }
+    Ok(owner_node_ids)
+}
+
 fn dynamic_runtime_context(
     ctx: &DynamicExecutionContext<'_>,
     node_id: &str,
@@ -5755,8 +5836,8 @@ fn refresh_dynamic_leaf_runtime_execution(
         .ok_or_else(|| anyhow!("dynamic node `{}` not found", node.id))?;
     if current.runtime_execution_id == node.runtime_execution_id {
         node.runtime_execution_phase = current.runtime_execution_phase;
-        node.runtime_execution_revision = current.runtime_execution_revision;
-        node.runtime_execution_updated_at = current.runtime_execution_updated_at.clone();
+        node.runtime_lifecycle_revision = current.runtime_lifecycle_revision;
+        node.runtime_lifecycle_updated_at = current.runtime_lifecycle_updated_at.clone();
     }
     Ok(())
 }
@@ -6000,8 +6081,8 @@ fn load_or_create_dynamic_graph(ctx: &DynamicExecutionContext<'_>) -> Result<Dyn
         runtime_error: None,
         runtime_execution_id: None,
         runtime_execution_phase: None,
-        runtime_execution_revision: 0,
-        runtime_execution_updated_at: None,
+        runtime_lifecycle_revision: 0,
+        runtime_lifecycle_updated_at: None,
         group_id: None,
         chain_id: DYNAMIC_BOOTSTRAP_NODE_ID.to_string(),
         depth: 0,
@@ -6154,26 +6235,24 @@ fn drive_dynamic_graph(
                 .map(|workspace| workspace.id.clone())
                 .collect::<Vec<_>>();
             if !workspace_ids.is_empty() {
-                with_dynamic_workspace_transition(ctx, graph, |graph| {
-                    for workspace_id in workspace_ids {
-                        release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
-                    }
-                    Ok(())
-                })?;
+                let transition_owner_node_ids = graph
+                    .nodes
+                    .last()
+                    .map(|node| vec![node.id.clone()])
+                    .unwrap_or_default();
+                with_dynamic_workspace_transition(
+                    ctx,
+                    graph,
+                    &transition_owner_node_ids,
+                    |graph| {
+                        for workspace_id in workspace_ids {
+                            release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
+                        }
+                        Ok(())
+                    },
+                )?;
             }
-            graph.run.status = DynamicRunStatus::Completed;
-            graph.run.phase = DynamicRunPhase::Executing;
-            graph.run.outcome = Some(RunOutcome::Success);
-            graph.run.updated_at = now_rfc3339_like();
-            persist_dynamic_graph(ctx, graph)?;
-            append_dynamic_event(
-                ctx,
-                "dynamic_run_completed",
-                serde_json::json!({
-                    "dynamicRunId": graph.run.id,
-                    "outcome": "success",
-                }),
-            )?;
+            complete_dynamic_graph_success(ctx, graph)?;
             return Ok(());
         }
 
@@ -6271,6 +6350,35 @@ fn drive_dynamic_graph(
         )?;
         bail!("AI-DYNAMIC graph `{}` is blocked", graph.run.id);
     }
+}
+
+fn complete_dynamic_graph_success(
+    ctx: &DynamicExecutionContext<'_>,
+    graph: &mut DynamicGraphState,
+) -> Result<()> {
+    let terminal_leaf_ids = graph
+        .nodes
+        .last()
+        .filter(|node| node.status == DynamicNodeStatus::Completed && node.outcome.is_some())
+        .map(|node| vec![node.id.clone()])
+        .unwrap_or_default();
+    let updated_at = now_rfc3339_like();
+    graph.run.status = DynamicRunStatus::Completed;
+    graph.run.phase = DynamicRunPhase::Executing;
+    graph.run.outcome = Some(RunOutcome::Success);
+    graph.run.updated_at = updated_at.clone();
+    advance_dynamic_leaf_runtime_lifecycle_revisions(graph, &terminal_leaf_ids, &updated_at);
+    persist_dynamic_graph(ctx, graph)?;
+    let event_result = append_dynamic_event(
+        ctx,
+        "dynamic_run_completed",
+        serde_json::json!({
+            "dynamicRunId": graph.run.id,
+            "outcome": "success",
+        }),
+    );
+    emit_dynamic_run_terminal_session_update_best_effort(ctx, graph);
+    event_result
 }
 
 fn launch_ready_dynamic_nodes(
@@ -9683,6 +9791,11 @@ fn materialize_dynamic_next(
     next: DynamicNext,
 ) -> Result<Vec<String>> {
     let mut visible_node_ids = Vec::new();
+    let source_node_id = graph
+        .nodes
+        .get(source_index)
+        .map(|source| source.id.clone())
+        .ok_or_else(|| anyhow!("dynamic proposal source node is missing"))?;
     let source_is_acceptance = graph
         .nodes
         .get(source_index)
@@ -9694,24 +9807,30 @@ fn materialize_dynamic_next(
         .and_then(|source| source.group_id.clone());
     match next {
         DynamicNext::End => {
-            with_dynamic_workspace_transition(ctx, graph, |graph| {
-                let source = graph.nodes[source_index].clone();
-                checkpoint_dynamic_workspace(
-                    graph,
-                    &source.workspace_id,
-                    source.group_id.as_deref(),
-                )?;
-                if let Some(group_id) = source.group_id.as_deref() {
-                    if let Some(group) = graph.groups.iter_mut().find(|group| group.id == group_id)
-                    {
-                        if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
-                            group.terminal_node_ids.push(source.id.clone());
+            with_dynamic_workspace_transition(
+                ctx,
+                graph,
+                std::slice::from_ref(&source_node_id),
+                |graph| {
+                    let source = graph.nodes[source_index].clone();
+                    checkpoint_dynamic_workspace(
+                        graph,
+                        &source.workspace_id,
+                        source.group_id.as_deref(),
+                    )?;
+                    if let Some(group_id) = source.group_id.as_deref() {
+                        if let Some(group) =
+                            graph.groups.iter_mut().find(|group| group.id == group_id)
+                        {
+                            if !group.terminal_node_ids.iter().any(|id| id == &source.id) {
+                                group.terminal_node_ids.push(source.id.clone());
+                            }
+                            group.updated_at = now_rfc3339_like();
                         }
-                        group.updated_at = now_rfc3339_like();
                     }
-                }
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
         }
         DynamicNext::Single { node } => {
             reopen_acceptance_group_for_repair(
@@ -9748,93 +9867,100 @@ fn materialize_dynamic_next(
             merge,
             acceptance,
         } => {
-            with_dynamic_workspace_transition(ctx, graph, |graph| {
-                reopen_acceptance_group_for_repair(
-                    graph,
-                    source_is_acceptance,
-                    source_group_id.as_deref(),
-                );
-                let source = graph.nodes[source_index].clone();
-                let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
-                let acceptance = dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
-                let group_depth = source
-                    .group_id
-                    .as_deref()
-                    .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
-                    .map(|group| group.depth + 1)
-                    .unwrap_or(1);
-                let root_node_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
-                let mut child_workspace_ids = Vec::with_capacity(nodes.len());
-                for node in &nodes {
-                    child_workspace_ids.push(fork_dynamic_workspace(
-                        ctx,
+            with_dynamic_workspace_transition(
+                ctx,
+                graph,
+                std::slice::from_ref(&source_node_id),
+                |graph| {
+                    reopen_acceptance_group_for_repair(
                         graph,
-                        &source.workspace_id,
-                        &group_id,
-                        &node.id,
-                    )?);
-                }
-                {
-                    let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
-                    parent.status = WorkspaceStatus::Frozen;
-                    parent.updated_at = now_rfc3339_like();
-                }
-                let group = DynamicGroupState {
-                    version: VERSION.to_string(),
-                    id: group_id.clone(),
-                    dynamic_run_id: graph.run.id.clone(),
-                    status: DynamicGroupStatus::Open,
-                    depth: group_depth,
-                    parent_group_id: source.group_id.clone(),
-                    root_node_ids: root_node_ids.clone(),
-                    terminal_node_ids: Vec::new(),
-                    target_workspace_id: source.workspace_id.clone(),
-                    child_workspace_ids: child_workspace_ids.clone(),
-                    merge_node_id: None,
-                    acceptance_node_id: None,
-                    created_by_node_id: source.id.clone(),
-                    merge,
-                    acceptance,
-                    created_at: now_rfc3339_like(),
-                    updated_at: now_rfc3339_like(),
-                };
-                validate_dynamic_group_state(&group)?;
-                graph.groups.push(group);
-                for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
-                    let chain_id = node.id.clone();
-                    let new_node = dynamic_node_state_from_spec(
-                        ctx,
-                        graph,
-                        &source,
-                        node,
-                        Some(group_id.clone()),
-                        chain_id,
-                        workspace_id,
-                    )?;
+                        source_is_acceptance,
+                        source_group_id.as_deref(),
+                    );
+                    let source = graph.nodes[source_index].clone();
+                    let merge = dynamic_agent_task_spec_with_resolved_provider(ctx, merge)?;
+                    let acceptance =
+                        dynamic_agent_task_spec_with_resolved_provider(ctx, acceptance)?;
+                    let group_depth = source
+                        .group_id
+                        .as_deref()
+                        .and_then(|group_id| graph.groups.iter().find(|group| group.id == group_id))
+                        .map(|group| group.depth + 1)
+                        .unwrap_or(1);
+                    let root_node_ids =
+                        nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
+                    let mut child_workspace_ids = Vec::with_capacity(nodes.len());
+                    for node in &nodes {
+                        child_workspace_ids.push(fork_dynamic_workspace(
+                            ctx,
+                            graph,
+                            &source.workspace_id,
+                            &group_id,
+                            &node.id,
+                        )?);
+                    }
+                    {
+                        let parent = dynamic_workspace_mut(graph, &source.workspace_id)?;
+                        parent.status = WorkspaceStatus::Frozen;
+                        parent.updated_at = now_rfc3339_like();
+                    }
+                    let group = DynamicGroupState {
+                        version: VERSION.to_string(),
+                        id: group_id.clone(),
+                        dynamic_run_id: graph.run.id.clone(),
+                        status: DynamicGroupStatus::Open,
+                        depth: group_depth,
+                        parent_group_id: source.group_id.clone(),
+                        root_node_ids: root_node_ids.clone(),
+                        terminal_node_ids: Vec::new(),
+                        target_workspace_id: source.workspace_id.clone(),
+                        child_workspace_ids: child_workspace_ids.clone(),
+                        merge_node_id: None,
+                        acceptance_node_id: None,
+                        created_by_node_id: source.id.clone(),
+                        merge,
+                        acceptance,
+                        created_at: now_rfc3339_like(),
+                        updated_at: now_rfc3339_like(),
+                    };
+                    validate_dynamic_group_state(&group)?;
+                    graph.groups.push(group);
+                    for (node, workspace_id) in nodes.into_iter().zip(child_workspace_ids) {
+                        let chain_id = node.id.clone();
+                        let new_node = dynamic_node_state_from_spec(
+                            ctx,
+                            graph,
+                            &source,
+                            node,
+                            Some(group_id.clone()),
+                            chain_id,
+                            workspace_id,
+                        )?;
+                        append_dynamic_event(
+                            ctx,
+                            "dynamic_node_materialized",
+                            serde_json::json!({
+                                "nodeId": new_node.id,
+                                "sourceNodeId": source.id,
+                                "kind": new_node.kind,
+                                "groupId": group_id,
+                            }),
+                        )?;
+                        let new_node_id = new_node.id.clone();
+                        graph.nodes.push(new_node);
+                        visible_node_ids.push(new_node_id);
+                    }
                     append_dynamic_event(
                         ctx,
-                        "dynamic_node_materialized",
+                        "dynamic_group_created",
                         serde_json::json!({
-                            "nodeId": new_node.id,
-                            "sourceNodeId": source.id,
-                            "kind": new_node.kind,
                             "groupId": group_id,
+                            "rootNodeIds": root_node_ids,
                         }),
                     )?;
-                    let new_node_id = new_node.id.clone();
-                    graph.nodes.push(new_node);
-                    visible_node_ids.push(new_node_id);
-                }
-                append_dynamic_event(
-                    ctx,
-                    "dynamic_group_created",
-                    serde_json::json!({
-                        "groupId": group_id,
-                        "rootNodeIds": root_node_ids,
-                    }),
-                )?;
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
         }
     }
     let promoted_node_ids = refresh_dynamic_ready_nodes(graph);
@@ -9911,8 +10037,8 @@ fn dynamic_node_state_from_spec(
         runtime_error: None,
         runtime_execution_id: None,
         runtime_execution_phase: None,
-        runtime_execution_revision: 0,
-        runtime_execution_updated_at: None,
+        runtime_lifecycle_revision: 0,
+        runtime_lifecycle_updated_at: None,
         group_id,
         chain_id,
         depth: source.depth + 1,
@@ -9988,33 +10114,41 @@ fn advance_dynamic_groups(
         let status = graph.groups[group_index].status;
         match status {
             DynamicGroupStatus::Open if dynamic_group_ready(graph, group_index) => {
-                let merge_node_id = with_dynamic_workspace_transition(ctx, graph, |graph| {
-                    let group_id = graph.groups[group_index].id.clone();
-                    let child_workspace_ids = graph.groups[group_index].child_workspace_ids.clone();
-                    for workspace_id in child_workspace_ids {
-                        checkpoint_dynamic_workspace(graph, &workspace_id, Some(&group_id))?;
-                    }
-                    let target_workspace_id = graph.groups[group_index].target_workspace_id.clone();
-                    {
-                        let target = dynamic_workspace_mut(graph, &target_workspace_id)?;
-                        target.status = WorkspaceStatus::Merging;
-                        target.updated_at = now_rfc3339_like();
-                    }
-                    let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
-                    graph.groups[group_index].status = DynamicGroupStatus::Merging;
-                    graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
-                    graph.groups[group_index].updated_at = now_rfc3339_like();
-                    let merge_node_id = merge_node.id.clone();
-                    graph.nodes.push(merge_node);
-                    append_dynamic_event(
-                        ctx,
-                        "dynamic_group_merge_started",
-                        serde_json::json!({
-                            "groupId": group_id,
-                        }),
-                    )?;
-                    Ok(merge_node_id)
-                })?;
+                let transition_owner_node_ids = graph.groups[group_index].terminal_node_ids.clone();
+                let merge_node_id = with_dynamic_workspace_transition(
+                    ctx,
+                    graph,
+                    &transition_owner_node_ids,
+                    |graph| {
+                        let group_id = graph.groups[group_index].id.clone();
+                        let child_workspace_ids =
+                            graph.groups[group_index].child_workspace_ids.clone();
+                        for workspace_id in child_workspace_ids {
+                            checkpoint_dynamic_workspace(graph, &workspace_id, Some(&group_id))?;
+                        }
+                        let target_workspace_id =
+                            graph.groups[group_index].target_workspace_id.clone();
+                        {
+                            let target = dynamic_workspace_mut(graph, &target_workspace_id)?;
+                            target.status = WorkspaceStatus::Merging;
+                            target.updated_at = now_rfc3339_like();
+                        }
+                        let merge_node = create_dynamic_merge_node(ctx, graph, group_index)?;
+                        graph.groups[group_index].status = DynamicGroupStatus::Merging;
+                        graph.groups[group_index].merge_node_id = Some(merge_node.id.clone());
+                        graph.groups[group_index].updated_at = now_rfc3339_like();
+                        let merge_node_id = merge_node.id.clone();
+                        graph.nodes.push(merge_node);
+                        append_dynamic_event(
+                            ctx,
+                            "dynamic_group_merge_started",
+                            serde_json::json!({
+                                "groupId": group_id,
+                            }),
+                        )?;
+                        Ok(merge_node_id)
+                    },
+                )?;
                 visible_node_ids.push(merge_node_id);
                 changed = true;
             }
@@ -10046,29 +10180,41 @@ fn advance_dynamic_groups(
                     graph.groups[group_index].acceptance_node_id.as_deref(),
                 ) =>
             {
-                with_dynamic_workspace_transition(ctx, graph, |graph| {
-                    let group_id = graph.groups[group_index].id.clone();
-                    let child_workspace_ids = graph.groups[group_index].child_workspace_ids.clone();
-                    let target_workspace_id = graph.groups[group_index].target_workspace_id.clone();
-                    graph.groups[group_index].status = DynamicGroupStatus::Closed;
-                    graph.groups[group_index].updated_at = now_rfc3339_like();
-                    for workspace_id in child_workspace_ids {
-                        release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
-                    }
-                    if let Ok(target) = dynamic_workspace_mut(graph, &target_workspace_id) {
-                        target.status = WorkspaceStatus::Active;
-                        target.updated_at = now_rfc3339_like();
-                    }
-                    attach_closed_child_group_to_parent(graph, group_index);
-                    append_dynamic_event(
-                        ctx,
-                        "dynamic_group_closed",
-                        serde_json::json!({
-                            "groupId": group_id,
-                        }),
-                    )?;
-                    Ok(())
-                })?;
+                let transition_owner_node_ids = graph.groups[group_index]
+                    .acceptance_node_id
+                    .clone()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                with_dynamic_workspace_transition(
+                    ctx,
+                    graph,
+                    &transition_owner_node_ids,
+                    |graph| {
+                        let group_id = graph.groups[group_index].id.clone();
+                        let child_workspace_ids =
+                            graph.groups[group_index].child_workspace_ids.clone();
+                        let target_workspace_id =
+                            graph.groups[group_index].target_workspace_id.clone();
+                        graph.groups[group_index].status = DynamicGroupStatus::Closed;
+                        graph.groups[group_index].updated_at = now_rfc3339_like();
+                        for workspace_id in child_workspace_ids {
+                            release_dynamic_workspace_best_effort(ctx, graph, &workspace_id);
+                        }
+                        if let Ok(target) = dynamic_workspace_mut(graph, &target_workspace_id) {
+                            target.status = WorkspaceStatus::Active;
+                            target.updated_at = now_rfc3339_like();
+                        }
+                        attach_closed_child_group_to_parent(graph, group_index);
+                        append_dynamic_event(
+                            ctx,
+                            "dynamic_group_closed",
+                            serde_json::json!({
+                                "groupId": group_id,
+                            }),
+                        )?;
+                        Ok(())
+                    },
+                )?;
                 changed = true;
             }
             _ => {}
@@ -10290,8 +10436,8 @@ fn create_dynamic_merge_node(
         runtime_error: None,
         runtime_execution_id: None,
         runtime_execution_phase: None,
-        runtime_execution_revision: 0,
-        runtime_execution_updated_at: None,
+        runtime_lifecycle_revision: 0,
+        runtime_lifecycle_updated_at: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -10343,8 +10489,8 @@ fn create_dynamic_acceptance_node(
         runtime_error: None,
         runtime_execution_id: None,
         runtime_execution_phase: None,
-        runtime_execution_revision: 0,
-        runtime_execution_updated_at: None,
+        runtime_lifecycle_revision: 0,
+        runtime_lifecycle_updated_at: None,
         group_id: Some(group.id.clone()),
         chain_id: id.clone(),
         depth: group.depth,
@@ -12184,23 +12330,12 @@ fn persist_dynamic_graph(
     Ok(())
 }
 
-fn dynamic_workspace_transition_node_ids(graph: &DynamicGraphState) -> Vec<String> {
-    if !graph.run.current_node_ids.is_empty() {
-        return graph.run.current_node_ids.clone();
-    }
-    graph
-        .nodes
-        .last()
-        .map(|node| vec![node.id.clone()])
-        .unwrap_or_default()
-}
-
 fn emit_dynamic_workspace_transition_updates_best_effort(
     ctx: &DynamicExecutionContext<'_>,
     graph: &DynamicGraphState,
+    node_ids: &[String],
 ) {
-    let node_ids = dynamic_workspace_transition_node_ids(graph);
-    emit_dynamic_session_updates_best_effort(ctx, graph, &node_ids);
+    emit_dynamic_session_updates_best_effort(ctx, graph, node_ids);
 }
 
 fn persist_dynamic_workspace_phase(
@@ -12237,6 +12372,7 @@ fn persist_dynamic_workspace_phase(
 fn with_dynamic_workspace_transition<T>(
     ctx: &DynamicExecutionContext<'_>,
     graph: &mut DynamicGraphState,
+    owner_node_ids: &[String],
     operation: impl FnOnce(&mut DynamicGraphState) -> Result<T>,
 ) -> Result<T> {
     ensure!(
@@ -12248,32 +12384,65 @@ fn with_dynamic_workspace_transition<T>(
         "dynamic workspace transition is already active"
     );
 
+    let transition_started_at = now_rfc3339_like();
     graph.run.phase = DynamicRunPhase::PreparingWorkspace;
-    graph.run.updated_at = now_rfc3339_like();
+    graph.run.updated_at = transition_started_at.clone();
+    let transition_owners = begin_dynamic_workspace_transition_ownership(
+        graph,
+        owner_node_ids,
+        &transition_started_at,
+    )?;
+    let transition_entry_node_ids = transition_owners
+        .iter()
+        .map(|(node_id, _)| node_id.clone())
+        .collect::<Vec<_>>();
     if let Err(error) = persist_dynamic_workspace_phase(ctx, graph) {
+        let transition_failed_at = now_rfc3339_like();
         graph.run.phase = DynamicRunPhase::Executing;
-        graph.run.updated_at = now_rfc3339_like();
+        graph.run.updated_at = transition_failed_at.clone();
+        let _ = finish_dynamic_workspace_transition_ownership(
+            graph,
+            &transition_owners,
+            &transition_failed_at,
+        );
         let _ = persist_dynamic_workspace_phase(ctx, graph);
         return Err(error.context("failed to persist dynamic workspace transition start"));
     }
-    ctx.app.transition_runtime_execution_phase(
+    if let Err(error) = ctx.app.transition_runtime_execution_phase(
         ctx.task_id,
         ctx.run_id,
         ctx.round_id,
         ctx.outer_node_id,
         ctx.outer_attempt_id,
         RuntimeExecutionPhase::PreparingWorkspace,
-    )?;
+    ) {
+        let transition_failed_at = now_rfc3339_like();
+        graph.run.phase = DynamicRunPhase::Executing;
+        graph.run.updated_at = transition_failed_at.clone();
+        finish_dynamic_workspace_transition_ownership(
+            graph,
+            &transition_owners,
+            &transition_failed_at,
+        )?;
+        persist_dynamic_graph(ctx, graph)?;
+        return Err(error.context("failed to project dynamic workspace transition start"));
+    }
     dynamic_event_best_effort(
         ctx,
         "dynamic_workspace_transition_started",
         serde_json::json!({ "dynamicRunId": graph.run.id }),
     );
-    emit_dynamic_workspace_transition_updates_best_effort(ctx, graph);
+    emit_dynamic_workspace_transition_updates_best_effort(ctx, graph, &transition_entry_node_ids);
 
     let operation_result = operation(graph);
+    let transition_finished_at = now_rfc3339_like();
     graph.run.phase = DynamicRunPhase::Executing;
-    graph.run.updated_at = now_rfc3339_like();
+    graph.run.updated_at = transition_finished_at.clone();
+    let transition_exit_node_ids = finish_dynamic_workspace_transition_ownership(
+        graph,
+        &transition_owners,
+        &transition_finished_at,
+    )?;
     let persist_result = persist_dynamic_graph(ctx, graph);
     let phase_restore_result = if persist_result.is_err() {
         persist_dynamic_workspace_phase(ctx, graph)
@@ -12299,7 +12468,11 @@ fn with_dynamic_workspace_transition<T>(
                 "succeeded": operation_result.is_ok(),
             }),
         );
-        emit_dynamic_workspace_transition_updates_best_effort(ctx, graph);
+        emit_dynamic_workspace_transition_updates_best_effort(
+            ctx,
+            graph,
+            &transition_exit_node_ids,
+        );
     }
 
     match (operation_result, persist_result, phase_restore_result) {
@@ -12419,13 +12592,19 @@ fn logical_prompt_id(existing: Option<String>) -> String {
         .unwrap_or_else(|| format!("runtime-turn-{}", uuid::Uuid::new_v4().simple()))
 }
 
-fn pause_active_dynamic_leaves(graph: &mut DynamicGraphState, pause_reason: PauseReason) {
+fn pause_active_dynamic_leaves(
+    graph: &mut DynamicGraphState,
+    pause_reason: PauseReason,
+) -> Vec<String> {
+    let mut paused_node_ids = Vec::new();
     for node in &mut graph.nodes {
         if dynamic_leaf_is_active(node.status) && node.outcome.is_none() {
             mark_dynamic_node_paused(node, pause_reason, None);
+            paused_node_ids.push(node.id.clone());
         }
     }
     refresh_dynamic_current_leaf_ids(graph);
+    paused_node_ids
 }
 
 fn pause_dynamic_graph(
@@ -12434,20 +12613,42 @@ fn pause_dynamic_graph(
     pause_reason: PauseReason,
     reason: &str,
 ) -> Result<()> {
-    if matches!(
+    let graph_owned_leaf_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| dynamic_runtime_owns_leaf_projection(graph, node))
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let mut lifecycle_changed_node_ids = if matches!(
         pause_reason,
         PauseReason::ErrorBlocked | PauseReason::RuntimeAbnormal
     ) {
-        pause_active_dynamic_leaves(graph, pause_reason);
+        pause_active_dynamic_leaves(graph, pause_reason)
     } else {
         refresh_dynamic_current_leaf_ids(graph);
-    }
+        Vec::new()
+    };
+    let updated_at = now_rfc3339_like();
+    let already_advanced = lifecycle_changed_node_ids
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let released_graph_owner_ids = graph_owned_leaf_ids
+        .into_iter()
+        .filter(|node_id| !already_advanced.contains(node_id))
+        .collect::<Vec<_>>();
+    lifecycle_changed_node_ids.extend(advance_dynamic_leaf_runtime_lifecycle_revisions(
+        graph,
+        &released_graph_owner_ids,
+        &updated_at,
+    ));
     graph.run.status = DynamicRunStatus::Paused;
     graph.run.phase = DynamicRunPhase::Executing;
     graph.run.outcome = None;
     graph.run.pause_reason = Some(pause_reason);
-    graph.run.updated_at = now_rfc3339_like();
-    append_dynamic_event(
+    graph.run.updated_at = updated_at;
+    persist_dynamic_graph(ctx, graph)?;
+    let event_result = append_dynamic_event(
         ctx,
         "dynamic_run_paused",
         serde_json::json!({
@@ -12455,8 +12656,9 @@ fn pause_dynamic_graph(
             "pauseReason": pause_reason,
             "reason": reason,
         }),
-    )?;
-    persist_dynamic_graph(ctx, graph)
+    );
+    emit_dynamic_session_updates_best_effort(ctx, graph, &lifecycle_changed_node_ids);
+    event_result
 }
 
 fn append_dynamic_event(
@@ -13543,8 +13745,8 @@ mod tests {
                 depends_on: Vec::new(),
                 runtime_execution_id: None,
                 runtime_execution_phase: None,
-                runtime_execution_revision: 0,
-                runtime_execution_updated_at: None,
+                runtime_lifecycle_revision: 0,
+                runtime_lifecycle_updated_at: None,
                 workspace_id: "workspace-main".into(),
                 provider: None,
                 profile: None,
@@ -15407,8 +15609,8 @@ mod tests {
             runtime_error: None,
             runtime_execution_id: None,
             runtime_execution_phase: None,
-            runtime_execution_revision: 0,
-            runtime_execution_updated_at: None,
+            runtime_lifecycle_revision: 0,
+            runtime_lifecycle_updated_at: None,
             group_id: None,
             chain_id: id.to_string(),
             depth: 1,
@@ -15909,28 +16111,34 @@ mod tests {
                 let state_lock = dynamic_state_lock(&ctx).unwrap();
                 let _state_guard = state_lock.lock();
                 let mut graph = graph;
-                let result = with_dynamic_workspace_transition(&ctx, &mut graph, |graph| {
-                    transition_started_tx.send(()).unwrap();
-                    release_transition_rx.recv().unwrap();
-                    graph.workspaces.push(WorkspaceState {
-                        version: VERSION.to_string(),
-                        id: "workspace-created".to_string(),
-                        dynamic_run_id: graph.run.id.clone(),
-                        kind: WorkspaceKind::Worktree,
-                        ownership: WorkspaceOwnership::Runtime,
-                        repo_root: transition_repo_root.clone(),
-                        path: transition_repo_root.join("created-worktree"),
-                        branch: Some("gold-band/test-created-worktree".to_string()),
-                        parent_workspace_id: Some("workspace-main".to_string()),
-                        created_by_group_id: Some("group-test".to_string()),
-                        fork_commit: "test-head".to_string(),
-                        checkpoint_commit: None,
-                        status: WorkspaceStatus::Active,
-                        created_at: "2026-06-16T00:00:00Z".to_string(),
-                        updated_at: "2026-06-16T00:00:00Z".to_string(),
-                    });
-                    Ok(())
-                });
+                let transition_owner_node_ids = vec![graph.nodes[0].id.clone()];
+                let result = with_dynamic_workspace_transition(
+                    &ctx,
+                    &mut graph,
+                    &transition_owner_node_ids,
+                    |graph| {
+                        transition_started_tx.send(()).unwrap();
+                        release_transition_rx.recv().unwrap();
+                        graph.workspaces.push(WorkspaceState {
+                            version: VERSION.to_string(),
+                            id: "workspace-created".to_string(),
+                            dynamic_run_id: graph.run.id.clone(),
+                            kind: WorkspaceKind::Worktree,
+                            ownership: WorkspaceOwnership::Runtime,
+                            repo_root: transition_repo_root.clone(),
+                            path: transition_repo_root.join("created-worktree"),
+                            branch: Some("gold-band/test-created-worktree".to_string()),
+                            parent_workspace_id: Some("workspace-main".to_string()),
+                            created_by_group_id: Some("group-test".to_string()),
+                            fork_commit: "test-head".to_string(),
+                            checkpoint_commit: None,
+                            status: WorkspaceStatus::Active,
+                            created_at: "2026-06-16T00:00:00Z".to_string(),
+                            updated_at: "2026-06-16T00:00:00Z".to_string(),
+                        });
+                        Ok(())
+                    },
+                );
                 transition_done_tx.send(result).unwrap();
             });
 
@@ -16003,10 +16211,14 @@ mod tests {
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("bootstrap")]);
+        let transition_owner_node_ids = vec!["bootstrap".to_string()];
 
-        let error = with_dynamic_workspace_transition::<()>(&ctx, &mut graph, |_graph| {
-            bail!("simulated workspace failure")
-        })
+        let error = with_dynamic_workspace_transition::<()>(
+            &ctx,
+            &mut graph,
+            &transition_owner_node_ids,
+            |_graph| bail!("simulated workspace failure"),
+        )
         .unwrap_err();
 
         assert!(error.to_string().contains("simulated workspace failure"));
@@ -16020,6 +16232,102 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(persisted.run.phase, DynamicRunPhase::Executing);
+    }
+
+    #[test]
+    fn workspace_transition_advances_one_leaf_lifecycle_watermark_at_each_handoff() {
+        let (_temp, repo_root) = init_repo();
+        let base_app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let graph_path = base_app.paths.dynamic_graph_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let callback_graph_path = graph_path.clone();
+        let seen_revisions = Arc::new(Mutex::new(Vec::new()));
+        let callback_revisions = seen_revisions.clone();
+        let app = base_app.with_acp_session_update(Arc::new(move |_context| {
+            let persisted: DynamicGraphState = read_json(&callback_graph_path)?;
+            callback_revisions
+                .lock()
+                .unwrap()
+                .push(persisted.nodes[0].runtime_lifecycle_revision);
+            Ok(())
+        }));
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut graph = test_dynamic_graph_at(repo_root, vec![test_worktree_node("bootstrap")]);
+        let transition_owner_node_ids = vec!["bootstrap".to_string()];
+
+        with_dynamic_workspace_transition(&ctx, &mut graph, &transition_owner_node_ids, |_graph| {
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(graph.nodes[0].runtime_lifecycle_revision, 2);
+        let persisted: DynamicGraphState = read_json(&graph_path).unwrap();
+        assert_eq!(persisted.nodes[0].runtime_lifecycle_revision, 2);
+        assert_eq!(*seen_revisions.lock().unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn workspace_fanout_advances_only_the_causal_leaf_lifecycle_watermark() {
+        let (_temp, repo_root) = init_repo();
+        let base_app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let graph_path = base_app.paths.dynamic_graph_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let callback_graph_path = graph_path.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let callback_seen = seen.clone();
+        let app = base_app.with_acp_session_update(Arc::new(move |context| {
+            let persisted: DynamicGraphState = read_json(&callback_graph_path)?;
+            let revision = persisted
+                .nodes
+                .iter()
+                .find(|node| node.id == context.node_id)
+                .map(|node| node.runtime_lifecycle_revision)
+                .unwrap_or_default();
+            callback_seen
+                .lock()
+                .unwrap()
+                .push((context.node_id, revision));
+            Ok(())
+        }));
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut bootstrap = test_worktree_node("bootstrap");
+        bootstrap.status = DynamicNodeStatus::Completed;
+        bootstrap.outcome = Some(NodeOutcome::Success);
+        bootstrap.complete_runtime_execution("2026-06-16T00:00:01Z");
+        let mut graph = test_dynamic_graph_at(repo_root, vec![bootstrap]);
+        graph.run.current_node_ids.clear();
+        let transition_owner_node_ids = vec!["bootstrap".to_string()];
+
+        with_dynamic_workspace_transition(&ctx, &mut graph, &transition_owner_node_ids, |graph| {
+            graph.nodes.push(test_worktree_node("hello-worker"));
+            graph.nodes.push(test_worktree_node("goodbye-worker"));
+            graph.run.current_node_ids =
+                vec!["hello-worker".to_string(), "goodbye-worker".to_string()];
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(graph.nodes[0].runtime_lifecycle_revision, 3);
+        assert_eq!(graph.nodes[1].runtime_lifecycle_revision, 0);
+        assert_eq!(graph.nodes[2].runtime_lifecycle_revision, 0);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("bootstrap".to_string(), 2), ("bootstrap".to_string(), 3),]
+        );
     }
 
     #[test]
@@ -17915,7 +18223,7 @@ mod tests {
                 "2026-06-16T00:00:02Z".to_string(),
             )
             .unwrap();
-        let expected_revision = current.runtime_execution_revision;
+        let expected_revision = current.runtime_lifecycle_revision;
         let mut graph = test_dynamic_graph(vec![current]);
         persist_dynamic_graph(&ctx, &mut graph).unwrap();
 
@@ -17950,7 +18258,7 @@ mod tests {
             Some(RuntimeExecutionPhase::RunningNode)
         );
         assert_eq!(
-            durable.nodes[0].runtime_execution_revision,
+            durable.nodes[0].runtime_lifecycle_revision,
             expected_revision
         );
     }
@@ -18585,6 +18893,59 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_graph_completion_emits_leaf_refresh_after_completed_graph_is_durable() {
+        let (_temp, repo_root) = init_repo();
+        let base_app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let graph_path = base_app.paths.dynamic_graph_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let graph_path_for_callback = graph_path.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_for_callback = seen.clone();
+        let app = base_app.with_acp_session_update(Arc::new(move |context| {
+            let persisted: DynamicGraphState = read_json(&graph_path_for_callback)?;
+            let revision = persisted
+                .nodes
+                .last()
+                .map(|node| node.runtime_lifecycle_revision)
+                .unwrap_or_default();
+            seen_for_callback
+                .lock()
+                .unwrap()
+                .push((context, persisted.run.status, revision));
+            Ok(())
+        }));
+        write_test_outer_run(&app);
+        let dynamic = test_dynamic();
+        let ctx = test_context(&app, &dynamic);
+        let mut completed = test_worktree_node("goodbye-worker");
+        completed.status = DynamicNodeStatus::Completed;
+        completed.outcome = Some(NodeOutcome::Success);
+        completed.finished_at = Some("2026-06-16T00:00:00Z".to_string());
+        let mut graph = test_dynamic_graph_at(repo_root, vec![completed]);
+        graph.run.current_node_ids.clear();
+
+        complete_dynamic_graph_success(&ctx, &mut graph).unwrap();
+
+        let persisted: DynamicGraphState = read_json(&graph_path).unwrap();
+        assert_eq!(persisted.run.status, DynamicRunStatus::Completed);
+        assert_eq!(persisted.run.outcome, Some(RunOutcome::Success));
+        assert_eq!(persisted.nodes[0].runtime_lifecycle_revision, 1);
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.node_id, "goodbye-worker");
+        assert_eq!(calls[0].0.attempt_id, "attempt-001");
+        assert_eq!(calls[0].0.outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(calls[0].0.outer_attempt_id.as_deref(), Some("attempt-001"));
+        assert_eq!(calls[0].1, DynamicRunStatus::Completed);
+        assert_eq!(calls[0].2, 1);
+    }
+
+    #[test]
     fn dynamic_node_completed_result_emits_session_update() {
         let (_temp, repo_root) = init_repo();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -18667,18 +19028,45 @@ mod tests {
     #[test]
     fn dynamic_graph_with_only_paused_leaf_remaining_is_interrupted_not_error_blocked() {
         let (_temp, repo_root) = init_repo();
-        let app = App::with_config(repo_root, RuntimeConfig::default());
+        let base_app = App::with_config(repo_root.clone(), RuntimeConfig::default());
+        let graph_path = base_app.paths.dynamic_graph_file(
+            "task-006",
+            "run-001",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let callback_graph_path = graph_path.clone();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let callback_seen = seen.clone();
+        let app = base_app.with_acp_session_update(Arc::new(move |context| {
+            let persisted: DynamicGraphState = read_json(&callback_graph_path)?;
+            let revision = persisted
+                .nodes
+                .iter()
+                .find(|node| node.id == context.node_id)
+                .map(|node| node.runtime_lifecycle_revision)
+                .unwrap_or_default();
+            callback_seen
+                .lock()
+                .unwrap()
+                .push((context, persisted.run.status, revision));
+            Ok(())
+        }));
         write_test_outer_run(&app);
         let dynamic = test_dynamic();
         let ctx = test_context(&app, &dynamic);
         let mut paused = test_worktree_node("good-morning");
         paused.status = DynamicNodeStatus::Paused;
         paused.finished_at = Some("2026-06-16T00:00:00Z".to_string());
-        let mut completed = test_worktree_node("good-night");
+        let paused_revision = paused.runtime_lifecycle_revision;
+        let mut completed = test_worktree_node("goodbye-worker");
         completed.status = DynamicNodeStatus::Completed;
         completed.outcome = Some(NodeOutcome::Success);
         completed.finished_at = Some("2026-06-16T00:00:01Z".to_string());
-        let mut graph = test_dynamic_graph(vec![paused, completed]);
+        completed.complete_runtime_execution("2026-06-16T00:00:01Z");
+        let completed_revision = completed.runtime_lifecycle_revision;
+        let mut graph = test_dynamic_graph_at(repo_root, vec![paused, completed]);
         graph.run.current_node_ids.clear();
         persist_dynamic_graph(&ctx, &mut graph).unwrap();
 
@@ -18690,6 +19078,24 @@ mod tests {
             Some(PauseReason::ProcessInterrupted)
         );
         assert!(graph.run.current_node_ids.is_empty());
+        let persisted: DynamicGraphState = read_json(&graph_path).unwrap();
+        assert_eq!(persisted.run.status, DynamicRunStatus::Paused);
+        assert_eq!(
+            persisted.nodes[0].runtime_lifecycle_revision,
+            paused_revision
+        );
+        assert_eq!(
+            persisted.nodes[1].runtime_lifecycle_revision,
+            completed_revision + 1
+        );
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.node_id, "goodbye-worker");
+        assert_eq!(calls[0].0.attempt_id, "attempt-001");
+        assert_eq!(calls[0].0.outer_node_id.as_deref(), Some("ai-dynamic"));
+        assert_eq!(calls[0].0.outer_attempt_id.as_deref(), Some("attempt-001"));
+        assert_eq!(calls[0].1, DynamicRunStatus::Paused);
+        assert_eq!(calls[0].2, completed_revision + 1);
     }
 
     #[test]

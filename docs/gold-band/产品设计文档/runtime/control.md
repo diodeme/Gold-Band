@@ -68,7 +68,7 @@ continue command 只有在目标 run/round/node（或 dynamic leaf）的 `Runnin
 
 Workflow Runtime、turn 控制、ACP live turn 和 ACP session 是四个独立领域：
 
-- `run.json.execution` 是 Workflow/AUTO 外层执行聚合阶段的唯一权威源，包含单调 `revision`、外层 attempt locator 与 `StartingNode / RunningNode / FinalizingArtifact / RepairingArtifact / AwaitingManualCheck / Transitioning / LaunchingNextNode / PreparingWorkspace / Paused / Terminal`。普通 workflow attempt 直接使用该阶段；AI-DYNAMIC 的并行 leaf 另由各自 `DynamicNodeState.runtimeExecution*` 管理，不能把任一 leaf 的阶段写回父聚合。
+- `run.json.execution` 是 Workflow/AUTO 外层执行聚合阶段的唯一权威源，包含单调 `revision`、外层 attempt locator 与 `StartingNode / RunningNode / FinalizingArtifact / RepairingArtifact / AwaitingManualCheck / Transitioning / LaunchingNextNode / PreparingWorkspace / Paused / Terminal`。普通 workflow attempt 直接使用该阶段；AI-DYNAMIC 的并行 leaf 另由各自 `DynamicNodeState.runtimeExecutionId / runtimeExecutionPhase / runtimeLifecycleRevision / runtimeLifecycleUpdatedAt` 管理，不能把任一 leaf 的阶段写回父聚合，也不能把父 revision 与 leaf revision 比较。
 - `RuntimeControlled / NonRuntimeControlled` 只决定当前 turn 是否交由 Runtime 消费。
 - 当前进程 prompt registry 只决定 Agent 是否正在 `Starting / Accepted / Running / CancelRequested`；客户端重启后 registry 为空，磁盘 session status 不能重建 live turn。
 - ACP session metadata 只决定 session 可用性与最近一轮历史结果；`completed/cancelled/failed` 不代表节点完成，也不代表 Runtime 正在跳转。
@@ -83,8 +83,8 @@ AI-DYNAMIC 的状态归属必须按聚合边界拆分：
 
 - 父 `Run.status` 与 `run.json.execution` 只描述外层 AI-DYNAMIC attempt；父 locator 始终是 `roundId + outerNodeId + outerAttemptId`。
 - `DynamicRunState` 描述 graph 调度聚合；workspace checkpoint / fork / release 可以把父 execution 暂时推进到 `PreparingWorkspace`，结束后恢复外层 `RunningNode`。
-- 每个 `DynamicNodeState` 持有自己的 `runtimeExecutionId / runtimeExecutionPhase / runtimeExecutionRevision / runtimeExecutionUpdatedAt`。leaf 的 prompt accepted、finalize、repair、pause 和 terminal 只更新该 leaf，并用 `nodeId + attemptId + runtimeExecutionId` 做 generation CAS。
-- Conversation 选中 dynamic leaf 时，从该 `DynamicNodeState` 投影 leaf lifecycle；尚未创建 active execution 的 `Ready` leaf 由明确的 read-model 规则投影为 `StartingNode`。父 Run 已暂停时，非终态 leaf 服从父 `Paused` 聚合；workspace 临界区服从父 `PreparingWorkspace` 聚合；leaf 已完成但 graph 尚在消费 proposal，或 leaf pause 已落盘但 graph active 集合尚未收敛的提交窗口，服从父 graph 聚合。页面选择不参与后端 identity，也不能改变父 execution。
+- 每个 `DynamicNodeState` 持有自己的 `runtimeExecutionId / runtimeExecutionPhase / runtimeLifecycleRevision / runtimeLifecycleUpdatedAt`。leaf prompt accepted、finalize、repair、pause、terminal，以及 graph 对 causal leaf 的 workspace 接管/释放，都推进同一个 leaf lifecycle revision；ACP turn 继续使用独立的 `acpRevision`。`runtimeExecutionId` 只负责 leaf invocation generation CAS，不承担 graph transition identity。
+- Conversation 选中 dynamic leaf 时，从该 `DynamicNodeState` 投影 leaf lifecycle；尚未创建 active execution 的 `Ready` leaf 由明确的 read-model 规则投影为 `StartingNode`。父 Run 已暂停时，非终态 leaf 服从父 `Paused` 聚合；workspace 临界区只把 causal leaf 的 phase 暂时推进到 `PreparingWorkspace`，无关并行/历史 leaf 保持自己的 phase。leaf 已完成但 graph 尚在消费 proposal，或 leaf pause 已落盘但 graph active 集合尚未收敛的提交窗口，才服从父 graph 聚合。页面选择和 `currentNodeIds` 聚合都不能替代 causal owner identity。
 - 停止一个 leaf 后若仍有 `Ready | Running` sibling，`DynamicRunState` 与父 Run 保持 Running；最后一个 active leaf 停止时，才把 graph、父 Node/Round/Run 聚合为 Paused。旧 execution 的迟到回调必须被忽略或拒绝。
 
 `LaunchingNextNode` 只能在当前节点 outcome 已可靠落盘、Runtime 明确提交后出现。停止后的 NonRuntime 追问无论成功、取消或失败，都保持 `Paused + ProcessInterrupted + execution=Paused`，直到用户点击“继续工作流”。继续命令在启动后台执行前先提交 `Run.status=Running` 与 checkpoint 对应的 execution phase，因此不会读取上一条 NonRuntime turn 的 terminal 结果填补窗口。

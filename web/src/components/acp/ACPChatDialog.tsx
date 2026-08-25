@@ -246,7 +246,7 @@ import {
   ACP_SESSION_COMPOSER_BORDER_STYLE,
   ACP_SESSION_COMPOSER_LAYOUT,
 } from '@/lib/conversation-composer-layout';
-import { getRuntimeApi } from "@/api/client";
+import { getRuntimeApi, type AcpSessionUpdatedEventVm } from "@/api/client";
 import { isTauriRuntime } from "@/api/shared";
 import {
   acknowledgeConversationBranchReplay,
@@ -2338,6 +2338,7 @@ export function ACPChatDialog(
     let initialFetchSucceeded = false;
     let snapshotGeneration = latestSessionRef.current?.eventPage.generation ?? 0;
     let snapshotCoveredRevision = latestSessionRef.current?.eventPage.coveredRevision ?? 0;
+    let dynamicTerminalContentRefreshRequested = false;
     void (async () => {
       stopListening = subscribeConversationEvents((event) => {
         const locatorMatches = conversationEventMatchesAttempt(event, branchLocator);
@@ -2387,6 +2388,42 @@ export function ACPChatDialog(
           enqueueLiveEventUpdate(event.event);
         } else {
           flushOrSchedulePendingLiveEvents(true);
+          if (
+            shouldRefreshDynamicTerminalSessionContent(event, branchId)
+            && !dynamicTerminalContentRefreshRequested
+          ) {
+            dynamicTerminalContentRefreshRequested = true;
+            void getAcpSession(
+              projectId,
+              taskId,
+              runId,
+              roundId,
+              nodeId,
+              attemptId,
+              { branchId, pageSize: effectiveEventPageSize, eventLimit: effectiveEventPageSize },
+              latestSessionRef.current,
+              outerNodeId,
+              outerAttemptId,
+            ).then((updated) => {
+              if (
+                !updated
+                || !active
+                || sessionRefreshSeqRef.current !== refreshSeq
+              ) {
+                return;
+              }
+              applySessionUpdate(updated, 'subscription-dynamic-terminal-refresh');
+              snapshotGeneration = Math.max(
+                snapshotGeneration,
+                updated.eventPage.generation ?? 0,
+              );
+              snapshotCoveredRevision = Math.max(
+                snapshotCoveredRevision,
+                updated.eventPage.coveredRevision ?? 0,
+              );
+            }).catch(() => {});
+            return;
+          }
           if (!event.session) return;
           if (branchId !== 'root') {
             void getAcpSession(
@@ -7991,6 +8028,31 @@ export function planAcpStopResponse(result: {
       : shouldAwaitTerminalAcpStop(result.session),
     sessionSnapshot: result.session ?? undefined,
   };
+}
+
+/**
+ * AI-DYNAMIC stores the final control-output annotation after the last live
+ * text delta. A terminal lifecycle-only notification is the bounded signal to
+ * re-query the selected root session body. Direct and normal Workflow attempts
+ * have no outer locator and keep their existing subscription behavior.
+ */
+export function shouldRefreshDynamicTerminalSessionContent(
+  event: Pick<
+    AcpSessionUpdatedEventVm,
+    'outerNodeId' | 'outerAttemptId' | 'event' | 'session' | 'lifecycle'
+  >,
+  branchId: string,
+) {
+  return Boolean(
+    branchId === 'root'
+    && event.outerNodeId
+    && event.outerAttemptId
+    && !event.event
+    && !event.session
+    && event.lifecycle
+    && !event.lifecycle.runtime.active
+    && event.lifecycle.runtime.phase === 'terminal'
+  );
 }
 
 function partitionAcpLiveTimingUpdates(events: AcpUiEventVm[]) {

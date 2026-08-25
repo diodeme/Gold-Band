@@ -1078,6 +1078,47 @@ describe('mergeConversationAttemptLifecycle', () => {
     expect(mergeConversationAttemptLifecycle(terminal, staleRunning).acp).toBe(terminal.acp);
   });
 
+  it('uses a strictly newer AI-DYNAMIC leaf watermark for terminal convergence', () => {
+    const transitional = lifecycle({
+      runtime: {
+        revision: 25,
+        status: 'running',
+        outcome: null,
+        current: true,
+        active: true,
+        phase: 'preparing-workspace',
+      },
+      control: { mode: 'runtime-controlled' },
+      displayStatus: 'running',
+      composer: { mode: 'runtime-active', submitTarget: 'none', lockInput: true },
+    });
+    const terminal = lifecycle({
+      runtime: {
+        revision: 26,
+        status: 'completed',
+        outcome: 'success',
+        current: false,
+        active: false,
+        phase: 'terminal',
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+      displayStatus: 'completed',
+      composer: { mode: 'normal', submitTarget: 'acp-prompt', lockInput: false },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(transitional, terminal);
+
+    expect(merged.runtime).toBe(terminal.runtime);
+    expect(merged.runtime.phase).toBe('terminal');
+    expect(merged.composer.mode).toBe('normal');
+    expect(merged.composer.lockInput).toBe(false);
+
+    const afterStaleTransition = mergeConversationAttemptLifecycle(terminal, transitional);
+    expect(afterStaleTransition.runtime).toBe(terminal.runtime);
+    expect(afterStaleTransition.composer.mode).toBe('normal');
+  });
+
   it('keeps a newer Direct queue when a stale lifecycle snapshot arrives after stop', () => {
     const local = lifecycle({
       promptQueue: {

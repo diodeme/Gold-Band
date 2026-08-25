@@ -466,7 +466,7 @@ git commit -m "fix: bind scheduled acceptance to current authoring"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] **Step 1: Write the failing prompt matrix**
+- [x] **Step 1: Write the failing prompt matrix**
 
 Create table-driven tests covering:
 
@@ -484,7 +484,7 @@ Create table-driven tests covering:
 
 For the restored ACP test, assert the context is present in `user_prompt`; asserting only `system_prompt` is insufficient.
 
-- [ ] **Step 2: Run prompt tests and verify RED**
+- [x] **Step 2: Run prompt tests and verify RED**
 
 ```powershell
 cargo test -p gold-band provider::tests
@@ -493,7 +493,7 @@ cargo test -p gold-band acp::client::tests
 
 Expected: RawAgent and restored-continuous assertions fail; the instruction-count test detects current duplication.
 
-- [ ] **Step 3: Replace the templates with the agreed protocol**
+- [x] **Step 3: Replace the templates with the agreed protocol**
 
 The Chinese template must render this structure, with conditional automatic fields and no task title/mode/session-policy fields:
 
@@ -518,7 +518,7 @@ The Chinese template must render this structure, with conditional automatic fiel
 
 The English template must express the same facts and autonomy boundary. Keep both templates under `src/prompts/`; do not inline either language in Rust.
 
-- [ ] **Step 4: Move injection to one final boundary**
+- [x] **Step 4: Move injection to one final boundary**
 
 After the existing `PromptEnvelopeMode` match computes the ordinary user prompt, call:
 
@@ -531,7 +531,7 @@ fn project_scheduled_execution(
 
 The function prepends one trusted Gold Band hidden block and leaves the base instruction unchanged. Remove `render_hidden_context`'s RuntimeManaged-only scheduled append. When context exists, set `PromptVisibility::Hidden` and `hidden_reason = Some("scheduledTaskExecution")`; keep `prompt_display.display_text` untouched for audit/workspace inspection.
 
-- [ ] **Step 5: Run prompt/ACP tests and verify GREEN**
+- [x] **Step 5: Run prompt/ACP tests and verify GREEN**
 
 ```powershell
 cargo test -p gold-band provider::tests
@@ -540,7 +540,7 @@ cargo test -p gold-band acp::client::tests
 
 Expected: every envelope contains one protocol and one instruction; ordinary turns contain neither scheduled metadata nor unattended posture.
 
-- [ ] **Step 6: Update prompt design docs and commit**
+- [x] **Step 6: Update prompt design docs and commit**
 
 ```powershell
 git add src/provider/mod.rs src/prompts.rs src/prompts/zh-CN/runtime/scheduled_task_context.md src/prompts/en/runtime/scheduled_task_context.md src/acp/client.rs docs/gold-band/产品设计文档/runtime/scheduled-task.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md

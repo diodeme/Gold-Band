@@ -106,6 +106,18 @@ Direct session policy 是执行策略，不进入内容指纹。新会话与持�
 
 Occurrence 的执行链接由 `taskId + runId + roundId + nodeId + attemptId` 构成完整内部 locator。接受前允许链接不完整；接受事务必须一次性绑定完整 locator，后续编辑和重试不得覆写已接受快照。跨 UI 导航使用 `projectId + scheduledTaskId + taskId + runId + occurrenceId`，不使用摘要反查实体。
 
+### 5.3 隐藏 occurrence 执行协议
+
+每个已接受 occurrence 在最终 provider user prompt 边界投影一个 Gold Band 可信隐藏块，适用于 RuntimeManaged、RawAgent、新 session、restored continuous session、Workflow/AUTO worker 以及同一 occurrence 的 runtime repair。协议是本次执行目标直接相关且随 occurrence 变化的上下文，因此属于 user prompt；它不进入稳定 system prompt，也不得只追加到 RuntimeManaged 的内部 runtime context。
+
+协议只表达冻结触发事实：`scheduledTaskId`、`occurrenceId`、类型化 `triggerKind` 和 `acceptedAt`。自动触发额外包含完整的 `scheduledAt + schedule + timezone`；手动“立即执行”明确说明手动触发并完全省略这三个自动字段。任务没有 title，协议不携带 instruction 摘要、mode、session policy 或第二份 instruction。原始执行 instruction 在协议之后原样保留且只出现一次。
+
+协议声明这是无人值守执行，并使用有边界的自主执行规则：默认自主采取合理且可逆的行动；仅当继续执行不安全、不可逆、客观上无法完成或缺少必要信息时请求用户介入。中英文模板分别由 `src/prompts/zh-CN/runtime/scheduled_task_context.md` 与 `src/prompts/en/runtime/scheduled_task_context.md` 维护，结构和条件字段必须同步。
+
+带 scheduled context 的 `PromptBundle` 固定为 `visibility = hidden`、`hiddenReason = scheduledTaskExecution`，但保留 `promptDisplay.displayText` 供审计和工作区检查；Chat 不显示重复的原始 instruction 气泡，后续由一条结构化 trigger Timeline 行表达触发事实。普通用户 follow-up 通过 turn 边界清除 scheduled context，不继承无人值守姿态；同一 occurrence 的 repair 保持相同 prompt identity 和协议，不创建新的触发身份。
+
+性能与过度设计复核：投影只对一个常量大小的 occurrence context 执行一次 MiniJinja 渲染和字符串前置，时间与空间开销为 `O(protocol + instruction length)`；不增加 provider 请求、token 之外的 I/O、缓存、队列、状态机或依赖。复用现有 `PromptBundle` visibility/display、语言模板和 prompt identity 已足以满足不变量，不新增第二套 envelope 或 scheduled provider adapter。
+
 ## 6. 队列保护和错过执行
 
 队列保护默认开启，内部使用类型化策略：

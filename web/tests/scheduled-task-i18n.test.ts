@@ -28,10 +28,18 @@ describe('scheduled task localization', () => {
         'scheduled.dialog.title',
         'scheduled.composer.create',
         'scheduled.composer.created',
+        'scheduled.composer.switchTo',
         'scheduled.settings.keepAwake',
       ]) {
         expect(i18n.exists(key), `${language}:${key}`).toBe(true);
       }
+    }
+  });
+
+  it('localizes the composer mode-switch prefix', async () => {
+    for (const [language, expected] of [['zh-CN', '切换为'], ['en', 'Switch to']] as const) {
+      await i18n.changeLanguage(language);
+      expect(i18n.t('scheduled.composer.switchTo')).toBe(expected);
     }
   });
 });

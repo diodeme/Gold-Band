@@ -21,7 +21,7 @@
 [发送] [ChevronDown]
 ```
 
-ChevronDown 菜单中提供 `创建定时任务`。选择后进入定时创建状态：
+ChevronDown 菜单使用“`切换为`（辅助小字）+ 目标模式图标 + 目标动作”的统一层级：普通态显示“切换为 + AlarmClock + 创建定时任务”，定时创建态显示“切换为 + Send + 发送”。辅助文案与两个目标动作必须维护中英文资源，菜单项整体仍是一个可点击、可聚焦的 shadcn DropdownMenuItem，不拆成多个交互目标。选择后进入对应状态：
 
 ```text
 [AlarmClock 创建定时任务] [ChevronDown] [Settings]

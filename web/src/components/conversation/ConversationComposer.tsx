@@ -974,7 +974,13 @@ export function ConversationComposer({
                     <Button size="sm" className="h-8 min-w-0 rounded-none px-3 shadow-none" disabled={!canCreateScheduledTask} onClick={() => void createScheduledTask()}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end"><DropdownMenuItem onSelect={exitScheduledMode}><Send className="size-3.5" />{t('acp.send')}</DropdownMenuItem></DropdownMenuContent>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={exitScheduledMode}>
+                          <span className="text-xs text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
+                          <Send className="size-3.5" />
+                          <span>{t('acp.send')}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                   <Tooltip>
@@ -989,7 +995,13 @@ export function ConversationComposer({
                   <Button size="sm" className={`${CONVERSATION_HOME_COMPOSER_LAYOUT.sendButtonClassName} min-w-0 flex-1 rounded-none shadow-none`} disabled={!canSubmit} onClick={() => { void handleSubmit(); }}><Send className="size-3.5" />{t('acp.send')}</Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button size="sm" className="h-8 w-6 rounded-none px-0 shadow-none" disabled={busy || submittingAttachments || !onCreateScheduledTask} aria-label={t('scheduled.composer.moreSendOptions')}><ChevronDown className="size-2.5" /></Button></DropdownMenuTrigger>
-                    <DropdownMenuContent align="end"><DropdownMenuItem onSelect={openScheduledConfig}><AlarmClock className="size-3.5" />{t('scheduled.composer.create')}</DropdownMenuItem></DropdownMenuContent>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={openScheduledConfig}>
+                        <span className="text-xs text-muted-foreground">{t('scheduled.composer.switchTo')}</span>
+                        <AlarmClock className="size-3.5" />
+                        <span>{t('scheduled.composer.create')}</span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
               )}

@@ -371,7 +371,7 @@ git commit -m "refactor: make accepted occurrences durable history"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] **Step 1: Write failing interface-level race tests**
+- [x] **Step 1: Write failing interface-level race tests**
 
 Add these tests:
 
@@ -388,7 +388,7 @@ Add these tests:
 
 Use barriers around `claim_occurrence` and `accept_occurrence_execution` so the test controls whether authoring or acceptance wins. Assertions must read the persisted snapshot; do not assert only the in-memory definition clone.
 
-- [ ] **Step 2: Run the targeted tests and verify RED**
+- [x] **Step 2: Run the targeted tests and verify RED**
 
 ```powershell
 cargo test -p gold-band-desktop scheduled_service
@@ -398,7 +398,7 @@ cargo test -p gold-band app::tests::ordinary_user_turn_clears_scheduled_executio
 
 Expected: stale-definition execution and missing accepted snapshot assertions fail.
 
-- [ ] **Step 3: Reload authority immediately before acceptance**
+- [x] **Step 3: Reload authority immediately before acceptance**
 
 In automatic and manual paths:
 
@@ -413,7 +413,7 @@ In automatic and manual paths:
 
 If `DefinitionChanged` occurs because content authoring won concurrently, discard the prepared unaccepted Run through existing prepared guards, reload once, and rebuild from the new definition. Do not loop without a bound; a second conflict returns structured `SCHEDULED_CONFLICT` and leaves the occurrence unaccepted/retryable.
 
-- [ ] **Step 4: Propagate one immutable context through the occurrence execution chain**
+- [x] **Step 4: Propagate one immutable context through the occurrence execution chain**
 
 Replace context fields with:
 
@@ -436,7 +436,7 @@ Build this context only from the accepted snapshot. For automatic occurrences `a
 
 All automatic Workflow/AUTO child invocations inherit the context. `App::as_turn` and manual user-follow-up builders clear it. A user response that resumes `attention_required` keeps the occurrence association in lifecycle links but does not set the unattended scheduled prompt context.
 
-- [ ] **Step 5: Run mode/race tests and verify GREEN**
+- [x] **Step 5: Run mode/race tests and verify GREEN**
 
 ```powershell
 cargo test -p gold-band-desktop scheduled_runtime
@@ -446,7 +446,7 @@ cargo test -p gold-band app::tests
 
 Expected: Direct new/continuous, Workflow, AUTO, automatic/manual, edit-before/after, recovery, and ordinary-follow-up cases pass.
 
-- [ ] **Step 6: Update docs and commit**
+- [x] **Step 6: Update docs and commit**
 
 ```powershell
 git add src-tauri/src/scheduled_service.rs src-tauri/src/scheduled_runtime.rs src/app/mod.rs src/app/node_executor.rs docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md

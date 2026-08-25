@@ -346,3 +346,11 @@ Scheduler 存储由“每 workspace 一个数据库”破坏式收敛为用户�
 性能复核：acceptance 是单行主键查找、单 job revision 读取与单行更新，事务不包含文件 I/O、Run 启动或 provider 调用；schedule 失效删除由 project/job/trigger 条件限定。执行历史索引先限定单 project/job 的 accepted rows，精确 Run 计数与首末时间仍为该定时任务 accepted 数据量的 `O(n)` 聚合，返回量由调用方固定为 20 个 Run；当前数据规模不值得为计数新增双写汇总表、缓存或新队列。启动清理使用 partial index 和每批 500 个 ID，批间主动 yield，不持有跨批锁。
 
 过度设计复核：新增字段只表达已有 definition/occurrence 的 revision 与 acceptance 不变量，没有引入 task-version aggregate、artifact 子系统、历史缓存或并行执行机制。v1 无证据 occurrence 采用破坏式丢弃，避免兼容快照和双事实源；用户删除完整 Run 的持久操作由后续历史管理阶段统一实现。
+
+Task 3 补齐 authoring 与 acceptance 之间的运行时边界。自动触发和手动“立即执行”都先 claim provisional occurrence、应用 overlap policy，再从 SQLite 重新读取当前 `ScheduledJobRecord`，基于该权威 definition 准备 Task/Run/Attempt，最后通过 `accept_occurrence_execution` 的 definition revision CAS 接受；provider 或后台 Run 只能在接受成功后启动。自动 occurrence 额外要求 definition 仍 enabled 且 `scheduleRevision` 未变化，手动 occurrence 不受这两个条件约束，但同样使用接受前最新内容。
+
+内容编辑在接受前完成时，新 definition 赢得 CAS，第一次准备产生的未接受 Task/Run 由既有 prepared guard 回滚，运行时只重新读取并准备一次；第二次 authoring 冲突不再继续循环，而是把 occurrence 释放为 `retrying + SCHEDULED_CONFLICT`。内容编辑在接受后只影响未来 occurrence，当前执行、恢复和历史始终复用已持久化 snapshot 与完整 locator。schedule 修改、停用或删除只失效未接受的自动 occurrence，不改写已接受事实；一次性 `At` 任务也在成功接受并启动后才投影为 disabled，避免 definition 先变化导致自身接受失败。
+
+`ScheduledTaskContextInfo` 不再携带 title、mode、session policy 或可变 instruction，而是由已接受 occurrence 唯一构造，包含 `projectId + scheduledTaskId + occurrenceId`、类型化 trigger kind、`acceptedAt`、可选完整自动触发上下文、fingerprint、冻结摘要和 Task/Run/Round/Node/Attempt locator。该 context 随自动 Workflow/AUTO worker execution chain 继承；`App::as_turn` 在普通用户续聊和 queued user turn 边界同时清除 occurrence ID 与 scheduled context，避免无人值守协议泄漏到交互式 turn。最终 bilingual prompt 投影仍由下一阶段统一替换，当前模板适配不是最终对客或 Agent 协议。
+
+Task 3 性能与过度设计复核：每次真实触发增加一次按 project/job 主键读取和一次 occurrence CAS，只有可证明的 authoring 冲突才发生至多一次重建；数据库事务不包含文件准备、provider 调用或后台执行。没有全量扫描、N+1、无界重试、缓存、队列、并发状态机或新依赖。`ScheduledExecutionAuthority` 只是当前 record 与待接受 snapshot 的短生命周期组合，不是新的 canonical model；已接受 occurrence 继续是唯一 durable execution fact。

@@ -4,7 +4,10 @@ use gold_band::scheduler::occurrence::ScheduledOccurrence;
 use gold_band::scheduler::{ScheduledMode, ScheduledTaskDefinition};
 use tauri::AppHandle;
 
-use super::{ExecutionResult, ScheduledExecutionAction, execute_definition_with_action};
+use super::{
+    ExecutionResult, ScheduledExecutionAction, ScheduledExecutionAuthority,
+    execute_definition_with_action,
+};
 use gold_band::app::App;
 
 /// All scheduled modes receive the same immutable runtime inputs and return the
@@ -16,7 +19,7 @@ pub struct ScheduledExecutionContext<'a> {
     pub owner_id: &'a str,
     pub definition: &'a mut ScheduledTaskDefinition,
     pub occurrence: &'a ScheduledOccurrence,
-    pub trigger_kind: &'a str,
+    pub authority: &'a ScheduledExecutionAuthority,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -71,7 +74,7 @@ fn start_with_action(
         context.owner_id,
         context.definition,
         context.occurrence,
-        context.trigger_kind,
+        context.authority,
         action,
     )
     .map(|result: ExecutionResult| result.immediate_links.into())

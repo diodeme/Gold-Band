@@ -50,12 +50,12 @@ use commands::{
     open_conversation_directory_path_in_file_manager, open_in_file_manager, pause_run,
     preflight_github_pull_request, read_conversation_directory_file, read_skill, record_activity,
     recover_conversation_runtime, remove_recent_workspace, renew_acp_session_lease,
-    reorder_conversation_queued_prompts, replace_auto_templates, respond_acp_permission,
-    respond_elicitation, restore_conversation_queued_prompt, restore_theme_desktop_wallpaper,
-    retry_run, save_auto_template, save_desktop_avatar, save_desktop_avatar_shape,
-    save_desktop_preferences, save_desktop_wallpaper_opacity, save_metrics_settings,
-    save_task_workflow, save_updater_settings, save_workflow_template, search_acp_prompts,
-    search_acp_sessions, search_tasks, select_recent_desktop_avatar,
+    reorder_conversation_queued_prompts, replace_auto_templates, report_frontend_error,
+    respond_acp_permission, respond_elicitation, restore_conversation_queued_prompt,
+    restore_theme_desktop_wallpaper, retry_run, save_auto_template, save_desktop_avatar,
+    save_desktop_avatar_shape, save_desktop_preferences, save_desktop_wallpaper_opacity,
+    save_metrics_settings, save_task_workflow, save_updater_settings, save_workflow_template,
+    search_acp_prompts, search_acp_sessions, search_tasks, select_recent_desktop_avatar,
     select_recent_desktop_wallpaper, select_recent_workspace, set_acp_session_config_option,
     set_acp_session_model, set_acp_session_permission_mode, show_artifact, show_attachment,
     show_worker_ref, start_git_operation, start_git_state_monitor, start_github_login,
@@ -276,7 +276,9 @@ fn run() -> anyhow::Result<()> {
             if let Ok(ctx) = state.context() {
                 let paths = gold_band::storage::GoldBandPaths::new(ctx.repo_root);
                 touch_log_file_best_effort(&paths);
-                init_tracing(&paths, &ctx.config, true);
+                if let Some(runtime_log_guard) = init_tracing(&paths, &ctx.config, true) {
+                    let _ = app.manage(runtime_log_guard);
+                }
                 info!(
                     repo_root = %paths.repo_root,
                     project_id = %paths.project_id,
@@ -441,6 +443,7 @@ fn run() -> anyhow::Result<()> {
             send_scheduled_native_notification,
             save_metrics_settings,
             record_activity,
+            report_frontend_error,
             get_update_status,
             mark_settings_update_seen,
             mark_settings_advanced_update_seen,

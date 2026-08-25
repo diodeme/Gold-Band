@@ -501,6 +501,10 @@ export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | n
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }
+
+export function reportFrontendError(input: import('./api/client').FrontendErrorReportInput) {
+  return getRuntimeApi().reportFrontendError(input);
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);

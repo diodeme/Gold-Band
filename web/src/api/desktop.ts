@@ -448,6 +448,9 @@ export const desktopApi: RuntimeApi = {
   recordActivity() {
     return invokeCommand('record_activity');
   },
+  reportFrontendError(input) {
+    return invokeCommand('report_frontend_error', { input });
+  },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
   },

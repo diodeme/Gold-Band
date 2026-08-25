@@ -24,6 +24,7 @@ pub struct ExecutionBinding {
     pub task_id: Option<String>,
     pub run_id: Option<String>,
     pub round_id: Option<String>,
+    pub node_id: Option<String>,
     pub attempt_id: Option<String>,
     pub session_id: Option<String>,
 }
@@ -37,6 +38,7 @@ impl From<Option<gold_band::scheduler::occurrence::OccurrenceLinks>> for Executi
             task_id: links.task_id,
             run_id: links.run_id,
             round_id: links.round_id,
+            node_id: links.node_id,
             attempt_id: links.attempt_id,
             session_id: None,
         }

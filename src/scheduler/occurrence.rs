@@ -237,6 +237,8 @@ pub struct ScheduledOccurrence {
     pub job_id: String,
     pub scheduled_at: DateTime<Utc>,
     pub trigger_kind: OccurrenceTriggerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_revision: Option<u64>,
     pub status: OccurrenceStatus,
     pub attempt: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +253,8 @@ pub struct ScheduledOccurrence {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,7 +277,7 @@ impl ScheduledOccurrence {
             task_id: self.task_id.clone(),
             run_id: self.run_id.clone(),
             round_id: self.round_id.clone(),
-            node_id: None,
+            node_id: self.node_id.clone(),
             attempt_id: self.attempt_id.clone(),
         }
     }

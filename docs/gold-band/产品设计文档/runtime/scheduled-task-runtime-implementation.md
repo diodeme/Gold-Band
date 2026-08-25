@@ -332,3 +332,17 @@ Scheduler 存储由“每 workspace 一个数据库”破坏式收敛为用户�
 性能上，enabled deadline、active occurrence、history 和 status history 索引都以 `project_id` 开头；正常协调、恢复、分页和 retention 查询只访问单项目范围，不因共享物理库引入跨项目全表扫描、N+1、额外缓存或扩大锁范围。方案复用既有 `core.db`、`core_schema`、事务和 coordinator，没有新增聚合、状态机、队列或迁移抽象，复杂度与当前开发阶段的数据规模和风险匹配。
 
 定向验收覆盖 repository、core-state 共库、storage path、runtime/lease/lifecycle、service CRUD 和 attention lookup：45 + 6 + 1 + 87 + 26 + 2 项测试全部通过，core library 与 desktop 均编译通过，diff integrity 通过。按开发约定未执行全量回归、前端构建或 UI/EXE 启动验证。
+
+### Phase 10.11 Accepted execution 与用户管理历史（2026-08-25）
+
+本节取代上文关于 scheduler schema v1、definition 外键级联、30 天 occurrence retention 和“所有终态都是执行历史”的现行描述；旧段落仅保留实施沿革。Scheduler component 当前 schema 为 v2。v1 升级保留 `scheduled_jobs`，但删除无法证明可靠接受、也没有不可变内容快照的 legacy occurrence；不得用当前可编辑 definition 伪造历史快照。
+
+`ScheduledTaskDefinition` 新增从 1 开始的 `scheduleRevision`，只在 schedule 语义变化时递增。自动 occurrence 在物化时记录该 revision；schedule 修改或停用在同一写事务中删除未接受自动 occurrence，内容修改不删除 occurrence，手动 run-now 不受 schedule revision 约束。删除 definition 先删除所有未接受 occurrence，再删除 job；已接受 occurrence 没有 definition 外键级联，因此保留完整执行历史。
+
+可靠接受由 `accept_occurrence_execution` 单一 immediate transaction 完成。事务校验 project、owner、live lease、当前 definition revision、自动 occurrence 对应的 definition 仍 enabled、schedule revision、手动/自动触发不变量与当前完整内容，再一次性写入 `taskId + runId + roundId + nodeId + attemptId`、毫秒规范化的 `acceptedAt` 和 `ScheduledExecutionSnapshot`。完全相同的重试返回 `AlreadyAccepted`；definition revision 不同或自动任务已停用返回 `DefinitionChanged`；locator 或同 revision 快照冲突返回 `LostClaim`，任何路径都不得覆写已接受事实。手动 run-now 不读取 enabled 或 schedule revision 作为接受条件。
+
+执行历史查询只读取 `accepted_at IS NOT NULL`，并按 `(project_id, scheduled_task_id, task_id, run_id)` 聚合；Direct continuous 的多个 occurrence 因而属于同一个真实 Run。`pending/retrying/missed/skipped` 和接受前失败仍只属于 scheduler 运维状态，不是用户执行历史。Settings schema v11 删除 `scheduledOccurrenceRetentionDays`，coordinator 不再按年龄删除任何已接受 occurrence；通知或日志发出后，只允许通过受保护操作删除 `accepted_at IS NULL` 的 `missed/skipped/failed`，启动时重复该幂等清理以收敛崩溃残留。
+
+性能复核：acceptance 是单行主键查找、单 job revision 读取与单行更新，事务不包含文件 I/O、Run 启动或 provider 调用；schedule 失效删除由 project/job/trigger 条件限定。执行历史索引先限定单 project/job 的 accepted rows，精确 Run 计数与首末时间仍为该定时任务 accepted 数据量的 `O(n)` 聚合，返回量由调用方固定为 20 个 Run；当前数据规模不值得为计数新增双写汇总表、缓存或新队列。启动清理使用 partial index 和每批 500 个 ID，批间主动 yield，不持有跨批锁。
+
+过度设计复核：新增字段只表达已有 definition/occurrence 的 revision 与 acceptance 不变量，没有引入 task-version aggregate、artifact 子系统、历史缓存或并行执行机制。v1 无证据 occurrence 采用破坏式丢弃，避免兼容快照和双事实源；用户删除完整 Run 的持久操作由后续历史管理阶段统一实现。

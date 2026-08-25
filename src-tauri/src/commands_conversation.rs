@@ -43,29 +43,6 @@ fn scheduled_service_error(
     }
     CommandErrorVm::new(error.code.to_string(), params)
 }
-fn validate_scheduled_runtime_settings_input(
-    input: &crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
-) -> crate::scheduled_service::ScheduledServiceResult<()> {
-    use gold_band::scheduler::queue::{
-        MAX_OCCURRENCE_RETENTION_DAYS, MIN_OCCURRENCE_RETENTION_DAYS,
-    };
-
-    if !(MIN_OCCURRENCE_RETENTION_DAYS..=MAX_OCCURRENCE_RETENTION_DAYS)
-        .contains(&input.occurrence_retention_days)
-    {
-        return Err(crate::scheduled_service::ScheduledServiceError::new(
-            gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed,
-            serde_json::json!({
-                "field": "occurrenceRetentionDays",
-                "minimum": MIN_OCCURRENCE_RETENTION_DAYS,
-                "maximum": MAX_OCCURRENCE_RETENTION_DAYS,
-                "actual": input.occurrence_retention_days,
-            }),
-        ));
-    }
-    Ok(())
-}
-
 fn scheduled_runtime_settings_vm(
     config: &gold_band::config::RuntimeConfig,
     power: crate::scheduled_runtime::power::ScheduledPowerStatus,
@@ -75,7 +52,6 @@ fn scheduled_runtime_settings_vm(
         keep_awake_effective: power.effective,
         completion_notifications_enabled: config.scheduled_completion_notifications_enabled,
         enabled_job_count: power.enabled_job_count,
-        occurrence_retention_days: config.scheduled_occurrence_retention_days,
         power_error_code: power.error.map(|error| error.code.to_string()),
     }
 }
@@ -94,14 +70,11 @@ pub fn save_scheduled_runtime_settings(
     state: State<'_, DesktopState>,
     input: crate::view_models_conversation::ScheduledRuntimeSettingsInputVm,
 ) -> CommandResult<crate::view_models_conversation::ScheduledRuntimeSettingsVm> {
-    validate_scheduled_runtime_settings_input(&input).map_err(scheduled_service_error)?;
-
     let app = state.app().map_err(command_error)?;
     let mut settings = app.load_settings().map_err(command_error)?;
     settings.scheduled_keep_awake_enabled = Some(input.keep_awake_enabled);
     settings.scheduled_completion_notifications_enabled =
         Some(input.completion_notifications_enabled);
-    settings.scheduled_occurrence_retention_days = Some(input.occurrence_retention_days);
     app.save_settings(&settings).map_err(command_error)?;
     state
         .update_settings_config(&settings)
@@ -2125,7 +2098,7 @@ mod tests {
         conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
         materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
         scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
-        scheduled_service_error, validate_scheduled_runtime_settings_input,
+        scheduled_service_error,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
@@ -2135,8 +2108,6 @@ mod tests {
     use gold_band::scheduler::occurrence::ScheduledErrorCode;
     use gold_band::storage::{sqlite::TaskSearchResult, write_json};
     use uuid::Uuid;
-
-    use crate::view_models_conversation::ScheduledRuntimeSettingsInputVm;
 
     #[test]
     fn occurrence_cursor_round_trips_and_rejects_invalid_input() {
@@ -2170,6 +2141,7 @@ mod tests {
             job_id: "scheduled-1".to_string(),
             scheduled_at: now,
             trigger_kind: OccurrenceTriggerKind::Scheduled,
+            schedule_revision: Some(1),
             status,
             attempt: 1,
             owner_id: None,
@@ -2178,6 +2150,7 @@ mod tests {
             task_id: None,
             run_id: None,
             round_id: None,
+            node_id: None,
             attempt_id: None,
             error_code: None,
             error_params: None,
@@ -2201,45 +2174,10 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_runtime_settings_reject_retention_below_minimum() {
-        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
-            keep_awake_enabled: true,
-            completion_notifications_enabled: true,
-            occurrence_retention_days: 0,
-        })
-        .unwrap_err();
-
-        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
-        assert_eq!(
-            error.params,
-            serde_json::json!({
-                "field": "occurrenceRetentionDays",
-                "minimum": 1,
-                "maximum": 3650,
-                "actual": 0,
-            })
-        );
-    }
-
-    #[test]
-    fn scheduled_runtime_settings_reject_retention_above_maximum() {
-        let error = validate_scheduled_runtime_settings_input(&ScheduledRuntimeSettingsInputVm {
-            keep_awake_enabled: false,
-            completion_notifications_enabled: false,
-            occurrence_retention_days: 3651,
-        })
-        .unwrap_err();
-
-        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed);
-        assert_eq!(error.params["actual"], 3651);
-    }
-
-    #[test]
     fn scheduled_runtime_settings_report_config_and_effective_power_separately() {
         let config = gold_band::config::RuntimeConfig {
             scheduled_keep_awake_enabled: true,
             scheduled_completion_notifications_enabled: false,
-            scheduled_occurrence_retention_days: 90,
             ..gold_band::config::RuntimeConfig::default()
         };
         let vm = scheduled_runtime_settings_vm(
@@ -2257,7 +2195,6 @@ mod tests {
         assert!(!vm.keep_awake_effective);
         assert!(!vm.completion_notifications_enabled);
         assert_eq!(vm.enabled_job_count, 4);
-        assert_eq!(vm.occurrence_retention_days, 90);
         assert_eq!(
             vm.power_error_code.as_deref(),
             Some("SCHEDULED_POWER_INHIBITOR_FAILED")

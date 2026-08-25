@@ -98,6 +98,14 @@ Direct session policy 是执行策略，不进入内容指纹。新会话与持�
 - 调度、时区、队列保护、model、thought level 或 permission 变化时保留 `taskId`。
 - 删除定时任务只删除调度定义和定时输入快照，保留历史 Task、Run、Round、ACP 会话和产物。
 
+### 5.2 Accepted execution snapshot
+
+`ScheduledTaskDefinition` 与其中的 `ScheduledTaskContentSnapshot` 仍是可编辑的 authoring 权威；只有运行时可靠接受一次 occurrence 后，才生成不可变的 `ScheduledExecutionSnapshot`。快照保存 `acceptedAt`、定义 revision、内容 fingerprint、完整 `ScheduledTaskContentSnapshot` 和只用于展示的 `instructionSummary`。任务没有 title 字段，摘要不得作为 identity、名称或 authoring 数据使用。
+
+摘要使用 Markdown parser 提取第一个非空块，将块内空白规范化后最多保留 120 个 Unicode 字符。生成过程确定性执行，不调用模型，也不读取额外文件。自动触发额外冻结 `scheduledAt + scheduleSummary + timezone`；三个字段由一个可选值统一管理，手动“立即执行”不得携带其中任何一个。
+
+Occurrence 的执行链接由 `taskId + runId + roundId + nodeId + attemptId` 构成完整内部 locator。接受前允许链接不完整；接受事务必须一次性绑定完整 locator，后续编辑和重试不得覆写已接受快照。跨 UI 导航使用 `projectId + scheduledTaskId + taskId + runId + occurrenceId`，不使用摘要反查实体。
+
 ## 6. 队列保护和错过执行
 
 队列保护默认开启，内部使用类型化策略：

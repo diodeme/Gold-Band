@@ -10,6 +10,7 @@ use thiserror::Error;
 
 pub mod coordinator;
 pub mod db;
+pub mod execution;
 pub mod fingerprint;
 pub mod occurrence;
 pub mod queue;

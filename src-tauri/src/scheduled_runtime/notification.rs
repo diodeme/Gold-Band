@@ -94,6 +94,7 @@ mod tests {
             error_params: Some(serde_json::json!({ "reason": "test" })),
             started_at: Some(now),
             finished_at: Some(now),
+            accepted_execution: None,
             created_at: now,
             updated_at: now,
         }

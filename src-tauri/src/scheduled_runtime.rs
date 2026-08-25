@@ -2624,6 +2624,7 @@ pub(crate) fn finish_occurrence_for_event(
                 task_id: Some(task_id.clone()),
                 run_id: Some(run_id.clone()),
                 round_id: Some(round_id.clone()),
+                node_id: None,
                 attempt_id: Some(attempt_id.clone()),
             }),
             None,
@@ -2645,6 +2646,7 @@ pub(crate) fn finish_occurrence_for_event(
                 task_id: Some(task_id.clone()),
                 run_id: Some(run_id.clone()),
                 round_id: Some(round_id.clone()),
+                node_id: None,
                 attempt_id: Some(attempt_id.clone()),
             }),
             matches!(outcome, AcpTurnOutcome::Failed | AcpTurnOutcome::Cancelled)
@@ -2681,6 +2683,7 @@ pub(crate) fn finish_occurrence_for_event(
                     task_id: Some(task_id.clone()),
                     run_id: Some(run_id.clone()),
                     round_id: Some(round_id.clone()),
+                    node_id: None,
                     attempt_id: Some(attempt_id.clone()),
                 }),
                 Some(ScheduledError::new(code)),
@@ -3110,6 +3113,7 @@ fn execute_definition(
             task_id: binding.task_id,
             run_id: binding.run_id,
             round_id: binding.round_id,
+            node_id: None,
             attempt_id: binding.attempt_id,
         }),
     })
@@ -3156,6 +3160,7 @@ pub(super) fn execute_definition_with_action(
                     task_id: Some(task_id),
                     run_id: Some(run_id),
                     round_id: Some(round_id),
+                    node_id: None,
                     attempt_id: Some(attempt_id),
                 };
                 accept_occurrence_links_then_deferred(
@@ -3229,6 +3234,7 @@ pub(super) fn execute_definition_with_action(
                 task_id: Some(task_id.clone()),
                 run_id: Some(run.id),
                 round_id: run.current_round,
+                node_id: None,
                 attempt_id: run.current_attempt,
             };
             accept_occurrence_links_then_deferred(
@@ -3274,6 +3280,7 @@ pub(super) fn execute_definition_with_action(
         task_id: Some(task_id.clone()),
         run_id: Some(run.id),
         round_id: run.current_round,
+        node_id: None,
         attempt_id: run.current_attempt,
     };
     accept_occurrence_links_then_deferred(
@@ -3969,6 +3976,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -4181,6 +4189,7 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
+            node_id: None,
             attempt_id: Some("attempt-1".to_string()),
         };
         assert!(
@@ -4274,6 +4283,7 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
+            node_id: None,
             attempt_id: Some("attempt-1".to_string()),
         };
         assert!(
@@ -5821,6 +5831,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -5865,6 +5876,7 @@ mod tests {
                     task_id: Some("task-1".to_string()),
                     run_id: Some("run-1".to_string()),
                     round_id: Some("round-1".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-1".to_string()),
                 }),
                 Some(gold_band::scheduler::occurrence::ScheduledError::new(
@@ -6260,6 +6272,7 @@ mod tests {
             task_id: Some("task-reconcile".to_string()),
             run_id: Some("run-reconcile".to_string()),
             round_id: Some("round-1".to_string()),
+            node_id: None,
             attempt_id: Some("attempt-1".to_string()),
         };
         assert!(

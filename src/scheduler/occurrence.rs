@@ -1,3 +1,4 @@
+use super::execution::ScheduledExecutionSnapshot;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -189,7 +190,19 @@ pub struct OccurrenceLinks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
+}
+
+impl OccurrenceLinks {
+    pub fn is_complete(&self) -> bool {
+        self.task_id.is_some()
+            && self.run_id.is_some()
+            && self.round_id.is_some()
+            && self.node_id.is_some()
+            && self.attempt_id.is_some()
+    }
 }
 
 pub type ScheduledOccurrenceLinks = OccurrenceLinks;
@@ -248,6 +261,8 @@ pub struct ScheduledOccurrence {
     pub started_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_execution: Option<ScheduledExecutionSnapshot>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -258,6 +273,7 @@ impl ScheduledOccurrence {
             task_id: self.task_id.clone(),
             run_id: self.run_id.clone(),
             round_id: self.round_id.clone(),
+            node_id: None,
             attempt_id: self.attempt_id.clone(),
         }
     }
@@ -327,7 +343,8 @@ impl LeaseConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
+        ClaimResult, LeaseConfig, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind,
+        ScheduledErrorCode,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -408,6 +425,19 @@ mod tests {
 
         let encoded = serde_json::to_string(&ClaimResult::Busy).unwrap();
         assert_eq!(encoded, "\"busy\"");
+    }
+
+    #[test]
+    fn occurrence_links_cover_the_complete_run_locator() {
+        let links = OccurrenceLinks {
+            task_id: Some("task-1".into()),
+            run_id: Some("run-1".into()),
+            round_id: Some("round-1".into()),
+            node_id: Some("node-1".into()),
+            attempt_id: Some("attempt-1".into()),
+        };
+
+        assert!(links.is_complete());
     }
 
     #[test]

@@ -2183,6 +2183,7 @@ mod tests {
             error_params: None,
             started_at: None,
             finished_at: Some(now),
+            accepted_execution: None,
             created_at: now,
             updated_at: now,
         };

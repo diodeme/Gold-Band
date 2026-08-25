@@ -1761,6 +1761,7 @@ fn map_occurrence(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduledOccurren
             .map(from_timestamp_millis)
             .transpose()
             .map_err(to_conversion_error)?,
+        accepted_execution: None,
         created_at: from_timestamp_millis(row.get(17)?).map_err(to_conversion_error)?,
         updated_at: from_timestamp_millis(row.get(18)?).map_err(to_conversion_error)?,
     })
@@ -2517,6 +2518,7 @@ mod tests {
                     task_id: Some("task-a".to_string()),
                     run_id: Some("run-a".to_string()),
                     round_id: Some("round-a".to_string()),
+                    node_id: None,
                     attempt_id: Some("attempt-a".to_string()),
                 },
             )
@@ -2882,6 +2884,7 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
+            node_id: None,
             attempt_id: Some("attempt-1".to_string()),
         };
 
@@ -2937,6 +2940,7 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
+            node_id: None,
             attempt_id: Some("attempt-1".to_string()),
         };
         assert!(

@@ -85,6 +85,17 @@ describe('acpRuntimeErrorBannerCopy', () => {
     );
   });
 
+  it('maps worktree creation failures to localized product copy', () => {
+    const copy = acpRuntimeErrorBannerCopy(fakeT('zh'), runtimeError({
+      code: { domain: 'workspace', code: 'workspace.worktree-create-failed' },
+      domain: 'workspace',
+      params: { branch: 'gold-band/conversation/conflict' },
+      diagnostic: 'git worktree add failed: branch already exists',
+    }));
+
+    expect(copy).toBe('zh:conversation.runtime.worktreeCreateFailed');
+  });
+
   it('returns null for unknown codes so callers keep their existing fallback', () => {
     expect(acpRuntimeErrorBannerCopy(fakeT('zh'), runtimeError({
       code: { domain: 'provider', code: 'acp.initialize-failed' },

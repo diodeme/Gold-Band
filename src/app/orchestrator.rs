@@ -914,22 +914,27 @@ fn emit_background_drive_error(
     node: &NodeState,
     error: &anyhow::Error,
 ) {
+    let runtime_error = normalize_runtime_error(error);
+    let mut event_data = run_event_data(
+        &ExecutionContext::for_run(task_id, &run.id)
+            .with_round(round.id.clone())
+            .with_node(node.node_id.clone())
+            .with_attempt(node.attempt_id.clone()),
+        Some(ProgressStage::Paused),
+        Some(run.status),
+        Some(format!("background execution failed: {error:#}")),
+        run.pause_reason,
+    );
+    event_data.control_failure = Some(serde_json::json!({
+        "runtimeError": runtime_error,
+    }));
     append_run_event_best_effort(
         &app.paths,
         task_id,
         &run.id,
-        "background_drive_failed",
-        now_rfc3339_like(),
-        run_event_data(
-            &ExecutionContext::for_run(task_id, &run.id)
-                .with_round(round.id.clone())
-                .with_node(node.node_id.clone())
-                .with_attempt(node.attempt_id.clone()),
-            Some(ProgressStage::Paused),
-            Some(run.status),
-            Some(format!("background execution failed: {error:#}")),
-            run.pause_reason,
-        ),
+        "run_paused",
+        run.updated_at.clone(),
+        event_data,
     );
     emit_pause_side_effects(app, task_id, run, round, node);
 }
@@ -1074,6 +1079,8 @@ fn prepare_run_from_workflow(
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
     let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
+    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
+    let run_uuid = generate_uuid();
     let mut prepared = PreparedRun {
         data: None,
         run_dir,
@@ -1088,17 +1095,14 @@ fn prepare_run_from_workflow(
             .ok_or_else(|| anyhow!("Git preflight returned no HEAD"))?;
         Some(conversation_run_worktree_state(
             app,
-            task_id,
-            &run_id,
+            task_uuid.as_deref(),
+            &run_uuid,
             fork_commit,
         ))
     } else {
         None
     };
 
-    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))
-        .ok()
-        .and_then(|t| t.uuid);
     let execution_locator = RuntimeAttemptLocator {
         round_id: round_id.clone(),
         node_id: validated.raw.entry.clone(),
@@ -1121,7 +1125,7 @@ fn prepare_run_from_workflow(
         current_attempt: Some(attempt_id.clone()),
         new_rounds_opened: 0,
         pause_reason: None,
-        uuid: Some(generate_uuid()),
+        uuid: Some(run_uuid),
         last_executed_node: None,
         worktree,
         execution: RuntimeExecutionState::new(
@@ -1252,15 +1256,21 @@ fn prepare_run_from_workflow(
 
 fn conversation_run_worktree_state(
     app: &App,
-    task_id: &str,
-    run_id: &str,
+    task_uuid: Option<&str>,
+    run_uuid: &str,
     fork_commit: String,
 ) -> RunWorktreeState {
-    let mut hasher = DefaultHasher::new();
-    app.paths.normalized_repo_root.hash(&mut hasher);
-    task_id.hash(&mut hasher);
-    run_id.hash(&mut hasher);
-    let short_id = format!("{:016x}", hasher.finish());
+    let mut hasher = blake3::Hasher::new();
+    for identity_part in [
+        app.paths.project_id.as_bytes(),
+        task_uuid.unwrap_or_default().as_bytes(),
+        run_uuid.as_bytes(),
+    ] {
+        hasher.update(&(identity_part.len() as u64).to_le_bytes());
+        hasher.update(identity_part);
+    }
+    let digest = hasher.finalize().to_hex();
+    let short_id = digest.as_str()[..16].to_string();
     RunWorktreeState {
         path: app.paths.conversation_worktrees_dir().join(&short_id),
         branch: format!("gold-band/conversation/{short_id}"),
@@ -14424,6 +14434,44 @@ mod tests {
     }
 
     #[test]
+    fn conversation_worktree_identity_uses_durable_task_and_run_uuids() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let app = App::new(repo_root);
+        let original = conversation_run_worktree_state(
+            &app,
+            Some("task-uuid-a"),
+            "run-uuid-a",
+            "head-a".to_string(),
+        );
+        let same = conversation_run_worktree_state(
+            &app,
+            Some("task-uuid-a"),
+            "run-uuid-a",
+            "head-b".to_string(),
+        );
+        let different_task = conversation_run_worktree_state(
+            &app,
+            Some("task-uuid-b"),
+            "run-uuid-a",
+            "head-a".to_string(),
+        );
+        let different_run = conversation_run_worktree_state(
+            &app,
+            Some("task-uuid-a"),
+            "run-uuid-b",
+            "head-a".to_string(),
+        );
+
+        assert_eq!(original.path, same.path);
+        assert_eq!(original.branch, same.branch);
+        assert_ne!(original.path, different_task.path);
+        assert_ne!(original.branch, different_task.branch);
+        assert_ne!(original.path, different_run.path);
+        assert_ne!(original.branch, different_run.branch);
+    }
+
+    #[test]
     fn invalid_output_repair_cleanup_removes_output_artifact() {
         let temp = tempdir().unwrap();
         let app = App::with_config(
@@ -14760,14 +14808,13 @@ mod tests {
         };
         persist_runtime_state(&app, task_id, &run, &round, &node).unwrap();
 
-        terminalize_background_drive_error(
-            &app,
-            task_id,
-            &run,
-            &round,
-            &node,
-            &anyhow!("provider startup failed"),
-        );
+        let startup_error = runtime_error(manual_runtime_error_info(
+            RuntimeErrorDomain::Workspace,
+            "workspace.worktree-create-failed",
+            "git worktree add failed",
+            serde_json::json!({ "branch": "gold-band/conversation/conflict" }),
+        ));
+        terminalize_background_drive_error(&app, task_id, &run, &round, &node, &startup_error);
 
         let persisted_run = app.run_status(task_id, &run.id).unwrap();
         let (persisted_round, persisted_node) =
@@ -14783,6 +14830,26 @@ mod tests {
         assert_eq!(persisted_node.status, RunStatus::Paused);
         assert_eq!(persisted_node.outcome, None);
         assert!(persisted_node.finished_at.is_some());
+
+        let run_events =
+            std::fs::read_to_string(app.paths.run_events_file(task_id, &run.id)).unwrap();
+        let paused_event: serde_json::Value = serde_json::from_str(
+            run_events
+                .lines()
+                .last()
+                .expect("background failure must append a canonical pause event"),
+        )
+        .unwrap();
+        assert_eq!(paused_event["type"], "run_paused");
+        assert_eq!(paused_event["timestamp"], persisted_run.updated_at);
+        assert_eq!(
+            paused_event["data"]["controlFailure"]["runtimeError"]["code"]["code"],
+            "workspace.worktree-create-failed"
+        );
+        assert_eq!(
+            paused_event["data"]["controlFailure"]["runtimeError"]["params"]["branch"],
+            "gold-band/conversation/conflict"
+        );
 
         let captured = events.lock().unwrap();
         assert_eq!(

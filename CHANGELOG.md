@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.14.0](https://github.com/diodeme/Gold-Band/compare/v0.13.2...v0.14.0) (2026-08-25)
+
+
+### Features
+
+* **acp:** harden prompt turn admission ([280ad51](https://github.com/diodeme/Gold-Band/commit/280ad51ec33b71ce56f3fec04f7aff9a8f984502))
+* **chat:** collapse long user messages ([6a614db](https://github.com/diodeme/Gold-Band/commit/6a614db3e0fefa3613f8fe5bb8c0a6709cc22979))
+* **conversation:** improve workspace session metadata ([7809176](https://github.com/diodeme/Gold-Band/commit/78091763fda0dac29c3506c45816cae029c37e4b))
+* **migration:** repair worktrees and migrate dynamic paths ([a6cf0d3](https://github.com/diodeme/Gold-Band/commit/a6cf0d3a41d54df739952363e8e3f51beb10675f))
+* **scheduled-tasks:** add creation success notice ([7e599f6](https://github.com/diodeme/Gold-Band/commit/7e599f62767eda110ede5034c8097a985179daee))
+* **scheduled-tasks:** add creation success notice ([dbc0bf8](https://github.com/diodeme/Gold-Band/commit/dbc0bf8c587d1cf0c10c593355ecc2dc75537ad3))
+
+
+### Bug Fixes
+
+* **acp:** align canonical timeline regressions ([8a90056](https://github.com/diodeme/Gold-Band/commit/8a9005606190e84bf5d1d31c5039c8710ed33fcf))
+* **acp:** bound permission parameter previews ([b943f91](https://github.com/diodeme/Gold-Band/commit/b943f911c31f83e0a718434f76aaf674dabdf6d7))
+* **acp:** clamp permission previews to full lines ([f596bcf](https://github.com/diodeme/Gold-Band/commit/f596bcf95670210b1b218fde3758be02dd9b60c2))
+* **acp:** complete lifecycle state convergence ([797b992](https://github.com/diodeme/Gold-Band/commit/797b99296a1cdc2a8c3c4d211d0a40e77c3e72f1))
+* **acp:** converge activity state on lifecycle stop ([ca63a0a](https://github.com/diodeme/Gold-Band/commit/ca63a0aa88c98e8a3768ed7819fd3ec6610b5aaa))
+* **acp:** converge conversation continuation state ([108442e](https://github.com/diodeme/Gold-Band/commit/108442e2fcbc861fcfd88d26a6fc02c61c90a618))
+* **acp:** converge sub-agent lifecycle state ([f5c14d7](https://github.com/diodeme/Gold-Band/commit/f5c14d70f1567488388b28ddde68571ab8b63165))
+* **acp:** fence stale provider lifecycle writes ([7a79219](https://github.com/diodeme/Gold-Band/commit/7a79219dcf42615f8dfe02155aefd0c13af6f53a))
+* **acp:** keep processing spinners rotating ([94714db](https://github.com/diodeme/Gold-Band/commit/94714db742110c89df9f9aacf1e69d3a95834f30))
+* **acp:** preserve Direct chat after early stop ([dd79038](https://github.com/diodeme/Gold-Band/commit/dd79038f770a20aee11cab43a57cc62e62db4d7a))
+* **acp:** preserve initial session model override ([729df57](https://github.com/diodeme/Gold-Band/commit/729df57b6145e08edeb296b4d3747512e80adb6f))
+* **acp:** preserve output through cancel convergence ([1f1a2b0](https://github.com/diodeme/Gold-Band/commit/1f1a2b03a073dc2e86510c9909dc4ec8bb635b03))
+* **acp:** preserve session identity after cancel timeout ([7ffbd5e](https://github.com/diodeme/Gold-Band/commit/7ffbd5ef9edec5d43d6822b0f7caf6bd64f9deb4))
+* **acp:** settle turn file changes by tool outcome ([25ea7b2](https://github.com/diodeme/Gold-Band/commit/25ea7b2967b519a0b66f974df8f696e69769ad4d))
+* **acp:** unify session lifecycle and timeline recovery ([34c614d](https://github.com/diodeme/Gold-Band/commit/34c614dbf4836850777db348c21a7fb97eb841b6))
+* **ai-dynamic:** clarify post-leaf workspace processing ([7ed7c41](https://github.com/diodeme/Gold-Band/commit/7ed7c4142b3982d6e2365835ea561af1162c77df))
+* **ai-dynamic:** converge leaf lifecycle projections ([12a24db](https://github.com/diodeme/Gold-Band/commit/12a24db2a502d3d02ee884cdb7ea67d12a4eeddb))
+* **ai-dynamic:** require turn identity for merge prompts ([9d12bf8](https://github.com/diodeme/Gold-Band/commit/9d12bf8ab905b4a244f06b488299b458801d761d))
+* **brand:** unify logo assets and remove icon halo ([13d4274](https://github.com/diodeme/Gold-Band/commit/13d427411b58a0c5ec1f2c77c6fa0639ad4fceb1))
+* **commands:** restore slash menu in worktree sessions ([c1ed59d](https://github.com/diodeme/Gold-Band/commit/c1ed59d171f0dc8bdf7c1a17730a69d881689a15))
+* **composer:** align mode switch menu labels ([abe61aa](https://github.com/diodeme/Gold-Band/commit/abe61aa529418771dd1f7ac9d20ada52e0a471b2))
+* **composer:** clarify mode switch menu labels ([ec0277e](https://github.com/diodeme/Gold-Band/commit/ec0277e330ad95d3868ceaa433d1c190869ce463))
+* **conversation:** preserve composer draft on workspace switch ([4a19b1d](https://github.com/diodeme/Gold-Band/commit/4a19b1d71830da5b06ebd21b5062318444e0e33c))
+* **conversation:** project current runtime pause errors ([53562b1](https://github.com/diodeme/Gold-Band/commit/53562b161145d67174c6906a9da72ccc46bac569))
+* **conversation:** surface ACP errors and session worktree paths ([7de0a26](https://github.com/diodeme/Gold-Band/commit/7de0a2606de6e0b05cc947ab37b5fb00a0d2fd93))
+* defer workflow profile validation until loaded ([4998de0](https://github.com/diodeme/Gold-Band/commit/4998de070e6f4a7d6bde4aece43632b7d3aa4a4f))
+* **desktop:** prioritize crisp Windows icon frame ([d88f92e](https://github.com/diodeme/Gold-Band/commit/d88f92eb8dd98ab87dc5ec81397839e1b82148bf))
+* **observability:** harden ACP runtime logging ([79b6ac0](https://github.com/diodeme/Gold-Band/commit/79b6ac07cf871481b47ce9480e00ec7e6995abbd))
+* **observability:** persist frontend errors asynchronously ([bf3699f](https://github.com/diodeme/Gold-Band/commit/bf3699fb31ce2a6bbe8e82fc59088f84d4782428))
+* **scheduler:** preserve scheduled task authoring choices ([e3405d9](https://github.com/diodeme/Gold-Band/commit/e3405d91f1ba43e7d37b5d7207050e165893a860))
+* **source-control:** open git recovery in workspace ([10dc784](https://github.com/diodeme/Gold-Band/commit/10dc784a0ec87302230a1ee8ad6c237bf51fa356))
+* **updater:** deduplicate wb background updates ([556cbc7](https://github.com/diodeme/Gold-Band/commit/556cbc7bd84120713d67383bbd81d5e2bf17193b))
+* **workflow:** expose failure edges for manual checks ([5ae4814](https://github.com/diodeme/Gold-Band/commit/5ae4814a50a095b74d5cfa473062f1b80037a432))
+* **workflow:** model profile catalog lifecycle ([1699f96](https://github.com/diodeme/Gold-Band/commit/1699f96b335c1bf4c1e97144df405ed8859183d7))
+* **workflow:** preserve agent binding for quick-added nodes ([4c507ce](https://github.com/diodeme/Gold-Band/commit/4c507cece6c23565bc287a024e62ef06286128bf))
+* **worktree:** use durable identity and surface creation errors ([22f3ffd](https://github.com/diodeme/Gold-Band/commit/22f3ffda79b4412e7686ba8208674732ad5518a3))
+
 ## [0.13.2](https://github.com/diodeme/Gold-Band/compare/v0.13.1...v0.13.2) (2026-08-19)
 
 

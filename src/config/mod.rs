@@ -773,7 +773,6 @@ pub const MAX_SKILL_FILE_SIZE: usize = 100 * 1024;
 pub const MAX_SKILL_DESCRIPTION_LEN: usize = 1024;
 pub const DEFAULT_CONVERSATION_AUTO_TITLE_MAX_CHARS: usize = 18;
 pub const DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS: u64 = 20;
-pub const DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS: u16 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -818,12 +817,11 @@ pub struct SettingsConfig {
     pub desktop_metrics_api_key: Option<String>,
     pub scheduled_keep_awake_enabled: Option<bool>,
     pub scheduled_completion_notifications_enabled: Option<bool>,
-    pub scheduled_occurrence_retention_days: Option<u16>,
     #[serde(default)]
     pub context_servers: Option<Vec<McpServerConfig>>,
 }
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 11;
 const USE_LOCAL_CLAUDE: bool = false;
 
 const LEGACY_CODEX_ACP_PACKAGE_PREFIX: &str = "@zed-industries/codex-acp";
@@ -890,6 +888,10 @@ impl SettingsConfig {
         }
         if version < 10 {
             migrate_desktop_wallpaper_color_schemes(settings);
+            migrated = true;
+        }
+        if version < 11 {
+            settings.remove("scheduledOccurrenceRetentionDays");
             migrated = true;
         }
         if migrated {
@@ -1076,9 +1078,6 @@ fn migrate_scheduled_runtime_settings(settings: &mut serde_json::Map<String, ser
     settings
         .entry("scheduledCompletionNotificationsEnabled".to_string())
         .or_insert_with(|| serde_json::json!(true));
-    settings
-        .entry("scheduledOccurrenceRetentionDays".to_string())
-        .or_insert_with(|| serde_json::json!(DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS));
 }
 
 fn migrate_codex_acp_package(
@@ -1640,7 +1639,6 @@ pub struct RuntimeConfig {
     pub notification_auto_dismiss_target_secs: u64,
     pub scheduled_keep_awake_enabled: bool,
     pub scheduled_completion_notifications_enabled: bool,
-    pub scheduled_occurrence_retention_days: u16,
     pub permission_mode_mapping: BTreeMap<String, BTreeMap<String, String>>,
     pub workspace_layout: WorkspaceLayoutConfig,
     pub workspace_files: WorkspaceFilesConfig,
@@ -1697,7 +1695,6 @@ impl Default for RuntimeConfig {
             notification_auto_dismiss_target_secs: DEFAULT_NOTIFICATION_AUTO_DISMISS_TARGET_SECS,
             scheduled_keep_awake_enabled: false,
             scheduled_completion_notifications_enabled: true,
-            scheduled_occurrence_retention_days: DEFAULT_SCHEDULED_OCCURRENCE_RETENTION_DAYS,
             permission_mode_mapping: BTreeMap::new(),
             workspace_layout: WorkspaceLayoutConfig::default(),
             workspace_files: WorkspaceFilesConfig::default(),
@@ -1752,11 +1749,6 @@ impl RuntimeConfig {
         {
             self.scheduled_completion_notifications_enabled =
                 scheduled_completion_notifications_enabled;
-        }
-        if let Some(scheduled_occurrence_retention_days) =
-            settings.scheduled_occurrence_retention_days
-        {
-            self.scheduled_occurrence_retention_days = scheduled_occurrence_retention_days;
         }
         self
     }
@@ -2783,11 +2775,12 @@ mod tests {
             settings.scheduled_completion_notifications_enabled,
             Some(true)
         );
-        assert_eq!(settings.scheduled_occurrence_retention_days, Some(30));
+        let persisted = serde_json::to_value(settings).unwrap();
+        assert!(persisted.get("scheduledOccurrenceRetentionDays").is_none());
     }
 
     #[test]
-    fn settings_v2_preserves_explicit_scheduled_runtime_values() {
+    fn settings_v2_drops_legacy_retention_and_preserves_runtime_values() {
         let (settings, migrated) =
             SettingsConfig::from_json_value_with_migration(serde_json::json!({
                 "settingsSchemaVersion": 2,
@@ -2803,7 +2796,8 @@ mod tests {
             settings.scheduled_completion_notifications_enabled,
             Some(false)
         );
-        assert_eq!(settings.scheduled_occurrence_retention_days, Some(45));
+        let persisted = serde_json::to_value(settings).unwrap();
+        assert!(persisted.get("scheduledOccurrenceRetentionDays").is_none());
     }
 
     #[test]
@@ -2867,7 +2861,8 @@ mod tests {
             settings.scheduled_completion_notifications_enabled,
             Some(false)
         );
-        assert_eq!(settings.scheduled_occurrence_retention_days, Some(45));
+        let persisted = serde_json::to_value(&settings).unwrap();
+        assert!(persisted.get("scheduledOccurrenceRetentionDays").is_none());
         let agents = settings.agents.unwrap();
         let claude = &agents[&ManagedAgentId::from_str("claude-acp").unwrap()];
         assert_eq!(claude.icon, "claude");
@@ -2910,13 +2905,11 @@ mod tests {
         let config = RuntimeConfig::default().apply_settings(&SettingsConfig {
             scheduled_keep_awake_enabled: Some(true),
             scheduled_completion_notifications_enabled: Some(false),
-            scheduled_occurrence_retention_days: Some(90),
             ..SettingsConfig::default()
         });
 
         assert!(config.scheduled_keep_awake_enabled);
         assert!(!config.scheduled_completion_notifications_enabled);
-        assert_eq!(config.scheduled_occurrence_retention_days, 90);
     }
 
     #[test]

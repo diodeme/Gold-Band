@@ -7,16 +7,20 @@ use gold_band::domain::{RunOutcome, RunStatus};
 use gold_band::runtime::RunState;
 use gold_band::scheduler::coordinator::{DeadlineRegistry, ReconcileReason, ScheduledJobKey};
 use gold_band::scheduler::db::{
-    DueMaterialization, RecoverableScheduledJob, ScheduledJobRecord, ScheduledTaskDatabase,
-    UpdateJobResult,
+    AcceptExecutionResult, DueMaterialization, RecoverableScheduledJob, ScheduledJobRecord,
+    ScheduledTaskDatabase, UpdateJobResult,
+};
+use gold_band::scheduler::execution::{
+    SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS, ScheduledAutomaticTriggerContext,
+    ScheduledExecutionSnapshot, instruction_summary,
 };
 use gold_band::scheduler::occurrence::{
     ClaimResult, LeaseConfig, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind,
     ScheduledError, ScheduledErrorCode, ScheduledOccurrence,
 };
 use gold_band::scheduler::queue::{
-    ActiveExecution, DEFAULT_OCCURRENCE_RETENTION_DAYS, LATE_FIRE_GRACE,
-    MISSED_RECONCILE_BATCH_SIZE, QueueDecision, RETENTION_DELETE_BATCH_SIZE, decide_queue,
+    ActiveExecution, LATE_FIRE_GRACE, MISSED_RECONCILE_BATCH_SIZE, QueueDecision,
+    UNACCEPTED_TERMINAL_CLEANUP_BATCH_SIZE, decide_queue,
 };
 use gold_band::scheduler::{ScheduleKind, ScheduledMode, ScheduledTaskDefinition, SessionPolicy};
 use gold_band::storage::GoldBandPaths;
@@ -96,7 +100,7 @@ pub enum SchedulerCommand {
         reply: oneshot::Sender<ScheduledServiceResult<Option<String>>>,
     },
     SettingsChanged,
-    CleanupWorkspace {
+    CleanupUnacceptedTerminalWorkspace {
         workspace_path: Utf8PathBuf,
     },
     Reconcile {
@@ -1360,7 +1364,7 @@ fn apply_terminal_occurrence_side_effects(
         occurrence,
     );
     if let Ok(coordinator) = app_handle.state::<DesktopState>().scheduler_coordinator() {
-        let _ = coordinator.send(SchedulerCommand::CleanupWorkspace {
+        let _ = coordinator.send(SchedulerCommand::CleanupUnacceptedTerminalWorkspace {
             workspace_path: active.workspace_path,
         });
     }
@@ -1406,10 +1410,6 @@ trait CoordinatorRuntimeDriver: Send + Sync + 'static {
 
     fn now(&self) -> DateTime<Utc> {
         Utc::now()
-    }
-
-    fn scheduled_occurrence_retention_days(&self) -> u16 {
-        DEFAULT_OCCURRENCE_RETENTION_DAYS
     }
 
     fn reconcile_power_state(&self, _enabled_job_count: usize, _app_is_running: bool) {}
@@ -1467,14 +1467,6 @@ impl CoordinatorRuntimeDriver for ScheduledRuntime {
         let state = self.app_handle.state::<DesktopState>();
         let context = state.context()?;
         runtime_app_for_workspace(&state, &context, workspace_path.as_str())
-    }
-
-    fn scheduled_occurrence_retention_days(&self) -> u16 {
-        self.app_handle
-            .state::<DesktopState>()
-            .context()
-            .map(|context| context.config.scheduled_occurrence_retention_days)
-            .unwrap_or(DEFAULT_OCCURRENCE_RETENTION_DAYS)
     }
 
     async fn reconcile_running_occurrences(
@@ -1712,8 +1704,9 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             SchedulerCommand::SettingsChanged => {
                 self.reconcile_all(ReconcileReason::Explicit).await
             }
-            SchedulerCommand::CleanupWorkspace { workspace_path } => {
-                self.run_retention_for_workspace(&workspace_path).await
+            SchedulerCommand::CleanupUnacceptedTerminalWorkspace { workspace_path } => {
+                self.cleanup_unaccepted_terminal_for_workspace(&workspace_path)
+                    .await
             }
             SchedulerCommand::Reconcile { reason } => self.reconcile_all(reason).await,
             SchedulerCommand::Shutdown { .. } => Ok(()),
@@ -1781,7 +1774,10 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.restore_workspace_deadlines(&workspace_path, previous_deadlines);
             return Err(error);
         }
-        if let Err(error) = self.run_retention_for_registration(&candidate).await {
+        if let Err(error) = self
+            .cleanup_unaccepted_terminal_for_registration(&candidate)
+            .await
+        {
             warn!(
                 code = %ScheduledErrorCode::StorageFailed,
                 params = ?serde_json::json!({ "reason": error.to_string() }),
@@ -1844,45 +1840,55 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         }
     }
 
-    async fn run_retention_for_workspace(&self, workspace_path: &Utf8Path) -> anyhow::Result<()> {
+    async fn cleanup_unaccepted_terminal_for_workspace(
+        &self,
+        workspace_path: &Utf8Path,
+    ) -> anyhow::Result<()> {
         let registration = self
             .workspaces
             .get(workspace_path)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("scheduled workspace is not registered"))?;
-        self.run_retention_for_registration(&registration).await
+        self.cleanup_unaccepted_terminal_for_registration(&registration)
+            .await
     }
 
-    async fn run_retention_for_registration(
+    async fn cleanup_unaccepted_terminal_for_registration(
         &self,
         registration: &WorkspaceRegistration,
     ) -> anyhow::Result<()> {
-        let protected_run_ids = active_run_ids(&registration.app)?;
-        let cutoff = self.runtime.now()
-            - Duration::days(i64::from(
-                self.runtime.scheduled_occurrence_retention_days(),
-            ));
         loop {
-            let result = registration.database.cleanup_terminal_occurrences(
-                &registration.app.paths.project_id,
-                cutoff,
-                RETENTION_DELETE_BATCH_SIZE,
-                &protected_run_ids,
-            )?;
-            if !result.has_more {
+            let occurrence_ids = registration
+                .database
+                .list_unaccepted_terminal_occurrence_ids(
+                    &registration.app.paths.project_id,
+                    UNACCEPTED_TERMINAL_CLEANUP_BATCH_SIZE,
+                )?;
+            if occurrence_ids.is_empty() {
                 return Ok(());
+            }
+            for occurrence_id in occurrence_ids {
+                registration
+                    .database
+                    .delete_unaccepted_terminal_occurrence(
+                        &registration.app.paths.project_id,
+                        &occurrence_id,
+                    )?;
             }
             tokio::task::yield_now().await;
         }
     }
 
-    async fn run_retention_best_effort(&self, registration: &WorkspaceRegistration) {
-        if let Err(error) = self.run_retention_for_registration(registration).await {
+    async fn cleanup_unaccepted_terminal_best_effort(&self, registration: &WorkspaceRegistration) {
+        if let Err(error) = self
+            .cleanup_unaccepted_terminal_for_registration(registration)
+            .await
+        {
             warn!(
                 code = %ScheduledErrorCode::StorageFailed,
                 params = ?serde_json::json!({ "reason": error.to_string() }),
                 workspace_path = %registration.app.paths.repo_root,
-                "scheduled occurrence retention cleanup failed"
+                "scheduled unaccepted terminal occurrence cleanup failed"
             );
         }
     }
@@ -1991,7 +1997,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                         )
                         .await?;
                     self.notify_occurrence_best_effort(registration, &occurrence_id);
-                    self.run_retention_best_effort(registration).await;
+                    self.cleanup_unaccepted_terminal_best_effort(registration)
+                        .await;
                     self.refresh_job_from_registration(&key, registration, self.runtime.now())?;
                 } else {
                     self.register_record(key, recovery, now)?;
@@ -2085,7 +2092,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 )
                 .await?;
             self.notify_occurrence_best_effort(&registration, &occurrence_id);
-            self.run_retention_best_effort(&registration).await;
+            self.cleanup_unaccepted_terminal_best_effort(&registration)
+                .await;
             return self.refresh_job(&key, self.runtime.now());
         }
         if registered
@@ -2115,7 +2123,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 )
                 .await?;
             self.notify_occurrence_best_effort(&registration, &occurrence_id);
-            self.run_retention_best_effort(&registration).await;
+            self.cleanup_unaccepted_terminal_best_effort(&registration)
+                .await;
         }
         self.refresh_job(&key, self.runtime.now())
     }
@@ -2163,7 +2172,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
             self.runtime
                 .notify_occurrence(&key.project_id, &manual.occurrence);
         }
-        self.run_retention_best_effort(&registration).await;
+        self.cleanup_unaccepted_terminal_best_effort(&registration)
+            .await;
         let _ = self.refresh_job(&key, self.runtime.now());
         result
     }
@@ -2711,45 +2721,30 @@ fn occurrence_status_for_run_outcome(outcome: RunOutcome) -> OccurrenceStatus {
     }
 }
 
-fn active_run_ids(app: &App) -> anyhow::Result<HashSet<String>> {
-    let mut active = HashSet::new();
-    for task in app.task_list()? {
-        for run in app.run_list(&task.id)? {
-            if run.status != RunStatus::Completed {
-                active.insert(run.id);
-            }
-        }
-    }
-    Ok(active)
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct ExecutionResult {
     pub(super) immediate_links: Option<OccurrenceLinks>,
 }
 
 #[cfg(test)]
-fn accept_occurrence_links_then<T, F>(
+fn accept_occurrence_execution_then<T, F>(
     database: &ScheduledTaskDatabase,
-    project_id: &str,
-    occurrence_id: &str,
     owner_id: &str,
-    now: DateTime<Utc>,
+    definition: &ScheduledTaskDefinition,
+    occurrence: &ScheduledOccurrence,
     links: &OccurrenceLinks,
     launch: F,
 ) -> anyhow::Result<T>
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
-        anyhow::bail!("scheduled occurrence execution links were not accepted");
-    }
+    accept_current_occurrence_execution(database, owner_id, definition, occurrence, links)?;
     match launch() {
         Ok(result) => Ok(result),
         Err(launch_error) => {
             let finish_result = database.finish_occurrence(
-                project_id,
-                occurrence_id,
+                &definition.project_id,
+                &occurrence.id,
                 owner_id,
                 OccurrenceStatus::Failed,
                 None,
@@ -2771,22 +2766,70 @@ where
     }
 }
 
-fn accept_occurrence_links_then_deferred<T, F>(
+fn accept_occurrence_execution_then_deferred<T, F>(
     database: &ScheduledTaskDatabase,
-    project_id: &str,
-    occurrence_id: &str,
     owner_id: &str,
-    now: DateTime<Utc>,
+    definition: &ScheduledTaskDefinition,
+    occurrence: &ScheduledOccurrence,
     links: &OccurrenceLinks,
     launch: F,
 ) -> anyhow::Result<T>
 where
     F: FnOnce() -> anyhow::Result<T>,
 {
-    if !database.accept_occurrence_links(project_id, occurrence_id, owner_id, now, links)? {
-        anyhow::bail!("scheduled occurrence execution links were not accepted");
-    }
+    accept_current_occurrence_execution(database, owner_id, definition, occurrence, links)?;
     launch()
+}
+
+fn accept_current_occurrence_execution(
+    database: &ScheduledTaskDatabase,
+    owner_id: &str,
+    definition: &ScheduledTaskDefinition,
+    occurrence: &ScheduledOccurrence,
+    links: &OccurrenceLinks,
+) -> anyhow::Result<()> {
+    let record = database
+        .get_job_definition(&definition.project_id, definition.id())?
+        .ok_or_else(|| anyhow::anyhow!("scheduled task changed before execution acceptance"))?;
+    let accepted_at = Utc::now();
+    let automatic = match occurrence.trigger_kind {
+        OccurrenceTriggerKind::Scheduled => Some(ScheduledAutomaticTriggerContext {
+            scheduled_at: occurrence.scheduled_at,
+            schedule_summary: definition.display_schedule(),
+            timezone: definition.schedule.timezone().unwrap_or("UTC").to_string(),
+        }),
+        OccurrenceTriggerKind::Manual => None,
+    };
+    let snapshot = ScheduledExecutionSnapshot {
+        accepted_at,
+        definition_revision: record.revision,
+        content_fingerprint: definition.content_fingerprint.clone(),
+        content: definition.content_snapshot.clone(),
+        instruction_summary: instruction_summary(
+            &definition.content_snapshot.instruction,
+            SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS,
+        ),
+        automatic,
+    };
+    match database.accept_occurrence_execution(
+        &definition.project_id,
+        &occurrence.id,
+        owner_id,
+        record.revision,
+        links,
+        &snapshot,
+    )? {
+        AcceptExecutionResult::Accepted(_) | AcceptExecutionResult::AlreadyAccepted(_) => Ok(()),
+        AcceptExecutionResult::DefinitionChanged => {
+            anyhow::bail!("scheduled task changed before execution acceptance")
+        }
+        AcceptExecutionResult::NotFound => {
+            anyhow::bail!("scheduled occurrence disappeared before execution acceptance")
+        }
+        AcceptExecutionResult::LostClaim => {
+            anyhow::bail!("scheduled occurrence claim was lost before execution acceptance")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3113,7 +3156,7 @@ fn execute_definition(
             task_id: binding.task_id,
             run_id: binding.run_id,
             round_id: binding.round_id,
-            node_id: None,
+            node_id: binding.node_id,
             attempt_id: binding.attempt_id,
         }),
     })
@@ -3160,15 +3203,14 @@ pub(super) fn execute_definition_with_action(
                     task_id: Some(task_id),
                     run_id: Some(run_id),
                     round_id: Some(round_id),
-                    node_id: None,
+                    node_id: Some(node_id),
                     attempt_id: Some(attempt_id),
                 };
-                accept_occurrence_links_then_deferred(
+                accept_occurrence_execution_then_deferred(
                     database,
-                    &definition.project_id,
-                    occurrence_id,
                     owner_id,
-                    Utc::now(),
+                    definition,
+                    occurrence,
                     &links,
                     || {
                         thread::Builder::new()
@@ -3234,15 +3276,14 @@ pub(super) fn execute_definition_with_action(
                 task_id: Some(task_id.clone()),
                 run_id: Some(run.id),
                 round_id: run.current_round,
-                node_id: None,
+                node_id: run.current_node,
                 attempt_id: run.current_attempt,
             };
-            accept_occurrence_links_then_deferred(
+            accept_occurrence_execution_then_deferred(
                 database,
-                &definition.project_id,
-                occurrence_id,
                 owner_id,
-                Utc::now(),
+                definition,
+                occurrence,
                 &links,
                 || {
                     scheduled_app
@@ -3280,15 +3321,14 @@ pub(super) fn execute_definition_with_action(
         task_id: Some(task_id.clone()),
         run_id: Some(run.id),
         round_id: run.current_round,
-        node_id: None,
+        node_id: run.current_node,
         attempt_id: run.current_attempt,
     };
-    accept_occurrence_links_then_deferred(
+    accept_occurrence_execution_then_deferred(
         database,
-        &definition.project_id,
-        occurrence_id,
         owner_id,
-        Utc::now(),
+        definition,
+        occurrence,
         &links,
         || {
             let _ = prepared_task.accept();
@@ -3399,6 +3439,7 @@ mod tests {
     use gold_band::scheduler::db::{DueMaterialization, ScheduledTaskDatabase, UpdateJobResult};
     use gold_band::scheduler::occurrence::{
         ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
+        ScheduledOccurrence,
     };
     use gold_band::scheduler::queue::{
         ActiveExecution, MISSED_RECONCILE_BATCH_SIZE, QueueDecision, decide_queue,
@@ -3418,7 +3459,8 @@ mod tests {
         ClaimToHandoffGuard, ClockDriftDetector, CoordinatorRuntimeDriver, LATE_FIRE_GRACE,
         OccurrenceExecutionGuard, PendingGuardJoins, RegisteredDeadline, ScheduledExecutionAction,
         SchedulerCommand, SchedulerCoordinator, SchedulerCoordinatorHandle,
-        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration, accept_occurrence_links_then,
+        WORKSPACE_REGISTRATION_RETRY_DELAY, WorkspaceRegistration,
+        accept_current_occurrence_execution, accept_occurrence_execution_then,
         active_execution_for_run, attempt_tree_has_active_prompt, create_manual_occurrence,
         ensure_definition_workspace, finish_occurrence_for_event, finish_reconciled_occurrence,
         mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
@@ -3824,7 +3866,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn startup_registration_runs_occurrence_retention() {
+    async fn startup_registration_cleans_unaccepted_terminal_occurrences() {
         let directory = tempdir().unwrap();
         let workspace_path =
             camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
@@ -3833,7 +3875,7 @@ mod tests {
         let finished_at = Utc::now();
         let definition = ScheduledTaskDefinition::new(
             &app.paths.project_id,
-            "retention-job",
+            "cleanup-job",
             "direct",
             ScheduleSpec::at(finished_at + Duration::days(60)),
             OverlapPolicy::SkipWhenRunning,
@@ -3855,7 +3897,7 @@ mod tests {
             .claim_occurrence(
                 &definition.project_id,
                 &occurrence.id,
-                "retention-owner",
+                "cleanup-owner",
                 finished_at,
                 finished_at + Duration::minutes(5),
             )
@@ -3864,10 +3906,12 @@ mod tests {
             .finish_occurrence(
                 &definition.project_id,
                 &occurrence.id,
-                "retention-owner",
-                OccurrenceStatus::Succeeded,
+                "cleanup-owner",
+                OccurrenceStatus::Failed,
                 None,
-                None,
+                Some(gold_band::scheduler::occurrence::ScheduledError::new(
+                    ScheduledErrorCode::ExecutionFailed,
+                )),
             )
             .unwrap();
 
@@ -4007,7 +4051,12 @@ mod tests {
         loop_task.await.unwrap();
     }
 
-    fn claimed_occurrence() -> (ScheduledTaskDatabase, String, String) {
+    fn claimed_occurrence_context() -> (
+        ScheduledTaskDatabase,
+        ScheduledTaskDefinition,
+        ScheduledOccurrence,
+        String,
+    ) {
         let directory = tempdir().unwrap();
         let database = ScheduledTaskDatabase::open(directory.path().join("scheduler.db")).unwrap();
         let scheduled_at = Utc::now();
@@ -4045,26 +4094,36 @@ mod tests {
                 .is_claimed()
         );
         std::mem::forget(directory);
+        (database, definition, occurrence, owner_id)
+    }
+
+    fn claimed_occurrence() -> (ScheduledTaskDatabase, String, String) {
+        let (database, _definition, occurrence, owner_id) = claimed_occurrence_context();
         (database, occurrence.id, owner_id)
     }
 
     #[test]
     fn occurrence_accept_failure_never_calls_launch() {
-        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let (database, definition, occurrence, owner_id) = claimed_occurrence_context();
+        let occurrence_id = occurrence.id.clone();
         let launches = AtomicUsize::new(0);
         let links = gold_band::scheduler::occurrence::OccurrenceLinks {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
-            ..Default::default()
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
         };
+        database
+            .delete_job(&definition.project_id, definition.id())
+            .unwrap();
 
         assert!(
-            accept_occurrence_links_then(
+            accept_occurrence_execution_then(
                 &database,
-                "project-1",
-                &occurrence_id,
                 &owner_id,
-                Utc::now() + Duration::minutes(10),
+                &definition,
+                &occurrence,
                 &links,
                 || {
                     launches.fetch_add(1, Ordering::SeqCst);
@@ -4075,19 +4134,18 @@ mod tests {
         );
 
         assert_eq!(launches.load(Ordering::SeqCst), 0);
-        assert_eq!(
+        assert!(
             database
                 .get_occurrence("project-1", &occurrence_id)
                 .unwrap()
-                .unwrap()
-                .links(),
-            gold_band::scheduler::occurrence::OccurrenceLinks::default()
+                .is_none()
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn accepted_launch_failure_finishes_terminal_and_clears_active_guard() {
-        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let (database, definition, occurrence, owner_id) = claimed_occurrence_context();
+        let occurrence_id = occurrence.id.clone();
         let active = Arc::new(Mutex::new(HashMap::new()));
         let pending_stops = Arc::new(Mutex::new(Vec::new()));
         let lease = ActiveOccurrenceMetadata {
@@ -4108,17 +4166,18 @@ mod tests {
         let links = gold_band::scheduler::occurrence::OccurrenceLinks {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
-            ..Default::default()
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
         };
 
         guard.stop().await;
         assert!(
-            accept_occurrence_links_then(
+            accept_occurrence_execution_then(
                 &database,
-                "project-1",
-                &occurrence_id,
                 &owner_id,
-                Utc::now(),
+                &definition,
+                &occurrence,
                 &links,
                 || -> anyhow::Result<()> { anyhow::bail!("injected synchronous launch failure") },
             )
@@ -4189,20 +4248,11 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
-            node_id: None,
+            node_id: Some("node-1".to_string()),
             attempt_id: Some("attempt-1".to_string()),
         };
-        assert!(
-            database
-                .accept_occurrence_links(
-                    &definition.project_id,
-                    &claimed.id,
-                    owner_id,
-                    now,
-                    &links,
-                )
-                .unwrap()
-        );
+        accept_current_occurrence_execution(&database, owner_id, &definition, &claimed, &links)
+            .unwrap();
         let run = RunState {
             version: VERSION.to_string(),
             id: "run-1".to_string(),
@@ -4283,20 +4333,11 @@ mod tests {
             task_id: Some("task-1".to_string()),
             run_id: Some("run-1".to_string()),
             round_id: Some("round-1".to_string()),
-            node_id: None,
+            node_id: Some("node-1".to_string()),
             attempt_id: Some("attempt-1".to_string()),
         };
-        assert!(
-            database
-                .accept_occurrence_links(
-                    &definition.project_id,
-                    &claimed.id,
-                    owner_id,
-                    now,
-                    &links,
-                )
-                .unwrap()
-        );
+        accept_current_occurrence_execution(&database, owner_id, &definition, &claimed, &links)
+            .unwrap();
         let run = RunState {
             version: VERSION.to_string(),
             id: "run-1".to_string(),
@@ -6272,14 +6313,11 @@ mod tests {
             task_id: Some("task-reconcile".to_string()),
             run_id: Some("run-reconcile".to_string()),
             round_id: Some("round-1".to_string()),
-            node_id: None,
+            node_id: Some("node-1".to_string()),
             attempt_id: Some("attempt-1".to_string()),
         };
-        assert!(
-            database
-                .accept_occurrence_links(&definition.project_id, &claimed.id, owner, now, &links)
-                .unwrap()
-        );
+        accept_current_occurrence_execution(&database, owner, &definition, &claimed, &links)
+            .unwrap();
         if let Some(run) = run {
             write_json(&app.paths.run_file("task-reconcile", "run-reconcile"), &run).unwrap();
         }

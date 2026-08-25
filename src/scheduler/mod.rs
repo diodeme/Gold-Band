@@ -153,6 +153,8 @@ pub struct ScheduledTaskDefinition {
     pub id: String,
     pub project_id: String,
     pub enabled: bool,
+    #[serde(default = "default_schedule_revision")]
+    pub schedule_revision: u64,
     pub mode: ScheduledMode,
     pub session_policy: SessionPolicy,
     pub task_id: Option<String>,
@@ -253,6 +255,7 @@ impl ScheduledTaskDefinition {
             id: id.to_string(),
             project_id: project_id.to_string(),
             enabled: true,
+            schedule_revision: default_schedule_revision(),
             mode: scheduled_mode,
             session_policy: SessionPolicy::New,
             task_id: None,
@@ -296,6 +299,10 @@ impl ScheduledTaskDefinition {
         self.session_policy = policy;
         Ok(self)
     }
+}
+
+fn default_schedule_revision() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

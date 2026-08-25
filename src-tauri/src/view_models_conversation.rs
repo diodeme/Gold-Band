@@ -131,7 +131,6 @@ pub struct ScheduledRuntimeSettingsVm {
     pub keep_awake_effective: bool,
     pub completion_notifications_enabled: bool,
     pub enabled_job_count: usize,
-    pub occurrence_retention_days: u16,
     pub power_error_code: Option<String>,
 }
 
@@ -140,7 +139,6 @@ pub struct ScheduledRuntimeSettingsVm {
 pub struct ScheduledRuntimeSettingsInputVm {
     pub keep_awake_enabled: bool,
     pub completion_notifications_enabled: bool,
-    pub occurrence_retention_days: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]

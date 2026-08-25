@@ -225,7 +225,7 @@ git commit -m "feat: define accepted scheduled execution snapshots"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] **Step 1: Write failing repository tests for schema v2 and acceptance**
+- [x] **Step 1: Write failing repository tests for schema v2 and acceptance**
 
 Add tests named exactly:
 
@@ -241,11 +241,12 @@ Add tests named exactly:
 #[test] fn schedule_change_invalidates_unaccepted_automatic_occurrences()
 #[test] fn schedule_change_does_not_invalidate_manual_occurrences()
 #[test] fn content_only_change_keeps_unaccepted_occurrence_runnable()
+#[test] fn disabled_definition_rejects_unaccepted_automatic_acceptance()
 ```
 
 The v1 migration fixture must create a real v1 database, open it through `ScheduledTaskDatabase::open`, and assert schema version `2`. Because legacy occurrence rows cannot prove an accepted snapshot, the migration deliberately drops v1 occurrence rows while preserving `scheduled_jobs` and all Task/Run files outside SQLite. Do not create a compatibility snapshot from mutable current authoring.
 
-- [ ] **Step 2: Run repository tests and verify RED**
+- [x] **Step 2: Run repository tests and verify RED**
 
 ```powershell
 cargo test -p gold-band scheduler::db
@@ -253,7 +254,7 @@ cargo test -p gold-band scheduler::db
 
 Expected: new schema and repository API tests fail.
 
-- [ ] **Step 3: Add schedule revision and schema v2**
+- [x] **Step 3: Add schedule revision and schema v2**
 
 Add a defaulted `schedule_revision: u64` to `ScheduledTaskDefinition`. Increment it only when `schedule` changes; reject automatic acceptance when the materialized occurrence revision differs or the definition is disabled/deleted. Manual occurrences do not depend on schedule revision.
 
@@ -290,7 +291,7 @@ WHERE accepted_at IS NULL
   AND status IN ('missed', 'skipped', 'failed');
 ```
 
-- [ ] **Step 4: Replace link-only acceptance with one CAS API**
+- [x] **Step 4: Replace link-only acceptance with one CAS API**
 
 Replace `accept_occurrence_links` with:
 
@@ -316,7 +317,7 @@ pub enum AcceptExecutionResult {
 
 Within one immediate transaction, verify the owner/lease, load the current job revision and definition, validate schedule revision for automatic occurrences, and validate the trigger invariant (`Scheduled` requires `snapshot.automatic = Some`, `Manual` requires `None`). Then write complete links plus snapshot JSON and `accepted_at`, and return the reloaded occurrence. Identical retries return `AlreadyAccepted`; different locators or snapshot revisions return `LostClaim`/`DefinitionChanged` rather than overwriting history.
 
-- [ ] **Step 5: Remove age-based retention from the backend**
+- [x] **Step 5: Remove age-based retention from the backend**
 
 Delete:
 
@@ -337,7 +338,7 @@ pub fn delete_unaccepted_terminal_occurrence(
 
 It deletes only rows with `accepted_at IS NULL` whose status is terminal (`missed`, `skipped`, or pre-acceptance `failed`). Invalidated automatic work is deleted directly in the same schedule revision transaction instead of being assigned a fake trigger status. The coordinator first emits the existing structured log/notification, then calls this guard; startup repeats the indexed cleanup for terminal unaccepted rows left by a crash. `pending`, live claims, and `retrying` rows are never deleted by this path. Accepted rows are structurally excluded and are removed only by explicit Run-history deletion. Do not expose a replacement retention setting.
 
-- [ ] **Step 6: Run repository/runtime tests and verify GREEN**
+- [x] **Step 6: Run repository/runtime tests and verify GREEN**
 
 ```powershell
 cargo test -p gold-band scheduler::db
@@ -348,7 +349,7 @@ cargo test -p gold-band-desktop scheduled_runtime
 
 Expected: schema v2, acceptance, delete, edit-race, and no-retention tests pass.
 
-- [ ] **Step 7: Update required docs and commit**
+- [x] **Step 7: Update required docs and commit**
 
 Update schema, migration, history ownership, and performance sections. Explicitly mark prior retention phases as superseded rather than silently rewriting historical progress.
 

@@ -416,6 +416,8 @@ export interface AcpCommandItemVm {
 export interface AcpCommandCatalogVm {
   agentType: string;
   projectId: string;
+  acpCommands?: AcpCommandItemVm[] | null;
+  skillCommands?: AcpCommandItemVm[] | null;
   commands: AcpCommandItemVm[];
   updatedAt: string;
 }

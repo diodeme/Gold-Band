@@ -4,7 +4,10 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { streamdownRender } = vi.hoisted(() => ({ streamdownRender: vi.fn() }));
+const { getAgentCommandCatalog, streamdownRender } = vi.hoisted(() => ({
+  getAgentCommandCatalog: vi.fn(),
+  streamdownRender: vi.fn(),
+}));
 
 vi.mock('streamdown', () => ({
   defaultUrlTransform: (url: string) => url,
@@ -17,12 +20,16 @@ vi.mock('streamdown', () => ({
 
 vi.mock('@/api', async () => {
   const actual = await vi.importActual<typeof import('@/api')>('@/api');
-  return { ...actual, getAcpSession: vi.fn().mockResolvedValue(null) };
+  return {
+    ...actual,
+    getAcpSession: vi.fn().mockResolvedValue(null),
+    getAgentCommandCatalog,
+  };
 });
 
 import { ACPChatDialog } from '@/components/acp/ACPChatDialog';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import type { AcpSessionVm } from '@/types';
+import type { AcpSessionVm, ConversationAttemptLifecycleVm } from '@/types';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,11 +78,66 @@ function completedSession(): AcpSessionVm {
   };
 }
 
+function nonRuntimeControlledLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'completed',
+      outcome: 'success',
+      pauseReason: null,
+      resumable: false,
+      current: true,
+      active: false,
+      continuable: false,
+      phase: 'terminal',
+    },
+    control: { mode: 'non-runtime-controlled' },
+    acp: {
+      sessionAvailability: 'established',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'completed',
+      stopping: false,
+    },
+    displayStatus: 'completed',
+    runtimeDisplay: {
+      code: 'completed',
+      tone: 'success',
+      icon: 'check',
+      terminal: true,
+      resumable: false,
+      reasonCode: null,
+      blockingError: false,
+    },
+    continueKind: null,
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'processing',
+      statusKey: null,
+      canStop: false,
+      lockInput: false,
+    },
+  };
+}
+
 beforeEach(() => {
+  getAgentCommandCatalog.mockResolvedValue({
+    agentType: 'test',
+    projectId: 'worktree-project',
+    skillCommands: [{ name: 'worktree-skill', description: 'Scanned from the worktree' }],
+    commands: [
+      { name: 'stale-native', description: 'Cached from an older session update' },
+      { name: 'worktree-skill', description: 'Scanned from the worktree' },
+    ],
+    updatedAt: '2026-08-25T00:00:00Z',
+  });
   vi.stubGlobal('ResizeObserver', class {
     observe() {}
     unobserve() {}
     disconnect() {}
+  });
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: vi.fn(),
   });
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => (
     window.setTimeout(() => callback(performance.now()), 0)
@@ -87,6 +149,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   streamdownRender.mockClear();
+  Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
   document.body.replaceChildren();
 });
 
@@ -164,6 +227,61 @@ describe('ACP composer render isolation', () => {
       expect(textarea?.value).toBe('a');
       expect(streamdownRender).toHaveBeenCalledTimes(initialMarkdownRenders);
       expect(scrollHeight).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens the slash menu with session commands and scanned Skills in a non-runtime-controlled worktree', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const session = {
+      ...completedSession(),
+      providerCwd: 'D:\\repo\\.gold-band\\worktrees\\run-1',
+      availableCommands: [
+        { name: 'native-status', description: 'Current ACP session command' },
+      ],
+    };
+    try {
+      await act(async () => {
+        root.render(
+          <TooltipProvider>
+            <ACPChatDialog
+              session={session}
+              projectId="project-render"
+              taskId="task-render"
+              runId="run-render"
+              roundId="round-render"
+              nodeId="node-render"
+              attemptId="attempt-render"
+              runtimeComposerContext={{
+                isOrchestrated: false,
+                lifecycle: nonRuntimeControlledLifecycle(),
+                workflowValid: true,
+              }}
+              showSystemPromptAction={false}
+              showRawFramesAction={false}
+              usageCompact
+            />
+          </TooltipProvider>,
+        );
+        await Promise.resolve();
+      });
+
+      expect(getAgentCommandCatalog).toHaveBeenCalledWith('test', session.providerCwd);
+      const textarea = container.querySelector<HTMLTextAreaElement>('textarea');
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      await act(async () => {
+        valueSetter?.call(textarea, '/');
+        textarea?.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+      const menu = document.querySelector('[data-slot="slash-command-menu"]');
+      expect(menu).not.toBeNull();
+      expect(menu?.textContent).toContain('/native-status');
+      expect(menu?.textContent).toContain('/worktree-skill');
+      expect(menu?.textContent).not.toContain('/stale-native');
     } finally {
       await act(async () => root.unmount());
     }

@@ -31,6 +31,9 @@ pub struct AcpCommandCatalog {
     /// `Some(Vec::new())` 表示 Agent 已明确返回空列表。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_commands: Option<Vec<AcpCommandItem>>,
+    /// 查询时返回的瞬时 Skill 投影；持久目录不保存该字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_commands: Option<Vec<AcpCommandItem>>,
     pub commands: Vec<AcpCommandItem>,
     pub updated_at: String,
 }
@@ -85,20 +88,36 @@ pub fn merge_native_skill_commands(
     merge_native_skill_commands_at_home(policy, workspace, &home, commands)
 }
 
+pub fn scan_native_skill_commands(
+    policy: &AgentSkillDirectoryPolicy,
+    workspace: &Utf8Path,
+) -> Vec<AcpCommandItem> {
+    merge_native_skill_commands(policy, workspace, Vec::new())
+}
+
+pub fn merge_command_sources(
+    preferred: Vec<AcpCommandItem>,
+    fallback: Vec<AcpCommandItem>,
+) -> Vec<AcpCommandItem> {
+    let mut merged = Vec::new();
+    let mut names = BTreeSet::new();
+    for command in preferred.into_iter().chain(fallback) {
+        if merged.len() >= MAX_COMMANDS_PER_CATALOG {
+            break;
+        }
+        if names.insert(command.name.to_ascii_lowercase()) {
+            merged.push(command);
+        }
+    }
+    merged
+}
+
 fn merge_native_skill_commands_at_home(
     policy: &AgentSkillDirectoryPolicy,
     workspace: &Utf8Path,
     home: &Path,
     commands: Vec<AcpCommandItem>,
 ) -> Vec<AcpCommandItem> {
-    let mut merged = Vec::new();
-    let mut names = BTreeSet::new();
-    for command in commands {
-        if names.insert(command.name.to_ascii_lowercase()) {
-            merged.push(command);
-        }
-    }
-
     let mut skill_commands = native_skill_roots(policy, workspace.as_std_path(), home)
         .into_iter()
         .flat_map(|root| {
@@ -113,16 +132,13 @@ fn merge_native_skill_commands_at_home(
         })
         .collect::<Vec<_>>();
     skill_commands.sort_by(native_skill_candidate_order);
-    for candidate in skill_commands {
-        if merged.len() >= MAX_COMMANDS_PER_CATALOG {
-            break;
-        }
-        let command = candidate.command;
-        if names.insert(command.name.to_ascii_lowercase()) {
-            merged.push(command);
-        }
-    }
-    merged
+    merge_command_sources(
+        commands,
+        skill_commands
+            .into_iter()
+            .map(|candidate| candidate.command)
+            .collect(),
+    )
 }
 
 fn native_skill_roots(

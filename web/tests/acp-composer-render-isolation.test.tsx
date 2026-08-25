@@ -282,6 +282,9 @@ describe('ACP composer render isolation', () => {
       expect(menu?.textContent).toContain('/native-status');
       expect(menu?.textContent).toContain('/worktree-skill');
       expect(menu?.textContent).not.toContain('/stale-native');
+      expect(menu?.classList.contains('bg-popover')).toBe(true);
+      expect(menu?.className).not.toMatch(/bg-popover\/[0-9]/);
+      expect(menu?.className).not.toContain('backdrop-blur');
     } finally {
       await act(async () => root.unmount());
     }

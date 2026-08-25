@@ -1365,6 +1365,7 @@ export function ACPChatDialog(
   const agentCommands = useAgentCommands(
     effective?.provider,
     effective?.providerCwd ?? effective?.cwd,
+    effective?.availableCommands,
   );
   const restoreComposerFocus = useCallback(() => {
     restoreSlashCommandInputFocus(composerTextareaRef);

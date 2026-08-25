@@ -55,6 +55,29 @@ afterEach(() => {
 });
 
 describe('ConversationSidebar workspace expansion intent', () => {
+  it('exposes the absolute workspace path from the heading by hover or keyboard focus', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <ConversationSidebar
+            {...callbacks}
+            vm={sidebarVm()}
+            active={{ kind: 'conversation-home' }}
+            defaultExpandedWorkspaceId="workspace-a"
+          />,
+        );
+      });
+      await act(async () => workspaceButton(container, 'workspace-a').focus());
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('D:\\workspace-a');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps workspace groups on the compact sidebar spacing token', async () => {
     const container = document.createElement('div');
     document.body.append(container);

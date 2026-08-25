@@ -125,6 +125,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
@@ -2172,6 +2173,7 @@ export function App() {
 
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
+    <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
@@ -2349,6 +2351,7 @@ export function App() {
       />
     </Shell>
     </ConversationComposerDraftBoundary>
+    </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
   );
 

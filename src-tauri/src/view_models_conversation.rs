@@ -12,7 +12,7 @@ use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError,
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    session_worktree_path, workflow_graph_vm,
+    session_worktree_projection, workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
@@ -592,6 +592,7 @@ pub struct ConversationSessionLeafVm {
     pub session_id: Option<String>,
     pub session_established: bool,
     pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -807,6 +808,8 @@ pub struct ConversationCreateInputVm {
     pub attachment_paths: Option<Vec<String>>,
     #[serde(default)]
     pub work_location: ConversationWorkLocationVm,
+    #[serde(default)]
+    pub branch_checkpoint: Option<gold_band::git::GitBranchCheckpoint>,
     #[serde(default)]
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -3274,6 +3277,11 @@ pub fn conversation_run_vm(
                                     Some(&node.node_id),
                                     Some(&latest_attempt.attempt_id),
                                 )?;
+                                let session_worktree = session_worktree_projection(
+                                    run_worktree,
+                                    Some(&dynamic_graph),
+                                    Some(&dyn_node.id),
+                                );
 
                                 dyn_leafs.push(ConversationSessionLeafVm {
                                     round_id: round.id.clone(),
@@ -3292,11 +3300,11 @@ pub fn conversation_run_vm(
                                     finished_at: dyn_node.finished_at.clone(),
                                     session_id: session_presence.session_id.clone(),
                                     session_established: session_presence.established,
-                                    worktree_path: session_worktree_path(
-                                        run_worktree,
-                                        Some(&dynamic_graph),
-                                        Some(&dyn_node.id),
-                                    ),
+                                    worktree_path: session_worktree
+                                        .as_ref()
+                                        .map(|workspace| workspace.path.clone()),
+                                    worktree_branch: session_worktree
+                                        .and_then(|workspace| workspace.branch),
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -3427,6 +3435,7 @@ pub fn conversation_run_vm(
                         None,
                         None,
                     )?;
+                    let session_worktree = session_worktree_projection(run_worktree, None, None);
                     leafs.push(ConversationSessionLeafVm {
                         round_id: round.id.clone(),
                         node_id: node.node_id.clone(),
@@ -3444,7 +3453,10 @@ pub fn conversation_run_vm(
                         finished_at: attempt.finished_at.clone(),
                         session_id: session_presence.session_id.clone(),
                         session_established: session_presence.established,
-                        worktree_path: session_worktree_path(run_worktree, None, None),
+                        worktree_path: session_worktree
+                            .as_ref()
+                            .map(|workspace| workspace.path.clone()),
+                        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -4333,12 +4345,22 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationCreateResultVm> {
+    let fork_checkpoint = if input.work_location == ConversationWorkLocationVm::Worktree {
+        Some(
+            gold_band::git::GitSourceControlService::default().resolve_branch_checkpoint(
+                &app.paths.repo_root,
+                input.branch_checkpoint.as_ref(),
+            )?,
+        )
+    } else {
+        None
+    };
     let prepared_task = prepare_conversation_task_vm(app, input)?;
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
 
-    let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
-        app.prepare_run_in_worktree(&task_id, None)?
+    let prepared_run = if let Some(checkpoint) = fork_checkpoint {
+        app.prepare_run_in_worktree_at(&task_id, None, checkpoint.head_oid)?
     } else {
         app.prepare_run(&task_id, None)?
     };
@@ -6425,6 +6447,7 @@ mod tests {
             }),
             attachment_paths: None,
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6532,6 +6555,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6567,6 +6591,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: ConversationWorkLocationVm::Worktree,
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6595,6 +6620,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6623,6 +6649,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6663,6 +6690,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![attachment.to_string()]),
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6702,6 +6730,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
             work_location: Default::default(),
+            branch_checkpoint: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,

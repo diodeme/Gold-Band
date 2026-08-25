@@ -2962,6 +2962,53 @@ pub async fn get_source_control_snapshot(
 }
 
 #[tauri::command]
+pub async fn get_git_branch_picker_snapshot(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitBranchPickerSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .branch_picker_snapshot(&workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn change_git_branch(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitBranchChangeRequest,
+) -> CommandResult<gold_band::git::GitBranchPickerSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .change_branch(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_git_history(
     state: State<'_, DesktopState>,
     project_id: String,

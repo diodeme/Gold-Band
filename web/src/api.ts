@@ -205,6 +205,14 @@ export function getSourceControlSnapshot(projectId: string, workspacePath?: stri
   return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
 }
 
+export function getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getGitBranchPickerSnapshot(projectId, workspacePath);
+}
+
+export function changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['changeGitBranch']>[2]) {
+  return getRuntimeApi().changeGitBranch(projectId, workspacePath, input);
+}
+
 export function getGitHistory(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitHistory']>[2]) {
   return getRuntimeApi().getGitHistory(projectId, workspacePath, query);
 }

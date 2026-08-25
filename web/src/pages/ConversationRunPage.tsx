@@ -591,6 +591,8 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             wallpaperSurface
             worktreePath={selectedLeaf.worktreePath}
+            showBranchControl
+            managedWorktreeBranch={selectedLeaf.worktreeBranch}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

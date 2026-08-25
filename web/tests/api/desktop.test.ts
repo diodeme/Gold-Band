@@ -224,6 +224,22 @@ describe('desktopApi', () => {
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
   });
 
+  it('exposes branch picker reads and mutations through the desktop runtime contract', async () => {
+    await desktopApi.getGitBranchPickerSnapshot('project-1', 'D:/repo');
+    expect(invokeCommand).toHaveBeenCalledWith('get_git_branch_picker_snapshot', {
+      projectId: 'project-1',
+      workspacePath: 'D:/repo',
+    });
+
+    const input = { kind: 'switch' as const, name: 'feature/test', expectedRevision: 'revision-1' };
+    await desktopApi.changeGitBranch('project-1', 'D:/repo', input);
+    expect(invokeCommand).toHaveBeenCalledWith('change_git_branch', {
+      projectId: 'project-1',
+      workspacePath: 'D:/repo',
+      input,
+    });
+  });
+
   it('forwards scheduled occurrence diagnostics commands', async () => {
     await desktopApi.listScheduledTaskOccurrences('project-1', 'scheduled-1', 'cursor-1', 'failed');
     expect(invokeCommand).toHaveBeenCalledWith('list_scheduled_task_occurrences', {

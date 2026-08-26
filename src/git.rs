@@ -637,20 +637,11 @@ impl GitWorkspaceManager {
         branch: &str,
     ) -> Result<()> {
         let repository = GitSourceControlService::default().repository_identity(repository_root)?;
-        let workspace = GitSourceControlService::default().repository_identity(path)?;
         GitCoordinationService.with_runtime_write(
             &repository.common_dir,
-            Some(&workspace.workspace_path),
+            Some(path),
             "runtime-worktree-remove",
-            || {
-                self.ensure_worktree_registration_unlocked(
-                    repository_root,
-                    path,
-                    &repository,
-                    Some(&workspace),
-                )?;
-                self.remove_worktree_unlocked(repository_root, path, branch)
-            },
+            || self.remove_worktree_unlocked(repository_root, path, branch, &repository),
         )
     }
 
@@ -659,24 +650,67 @@ impl GitWorkspaceManager {
         repository_root: &Utf8Path,
         path: &Utf8Path,
         branch: &str,
+        repository: &GitRepositoryIdentity,
     ) -> Result<()> {
-        let remove = self.runner.run(
+        let source_control = GitSourceControlService::default();
+        if registered_worktree(&source_control, repository_root, path)?.is_none()
+            && let Ok(workspace) = source_control.repository_identity(path)
+            && same_filesystem_path(&workspace.workspace_path, path)?
+            && same_filesystem_path(&repository.common_dir, &workspace.common_dir)?
+        {
+            self.ensure_worktree_registration_unlocked(
+                repository_root,
+                path,
+                repository,
+                Some(&workspace),
+            )?;
+        }
+
+        if registered_worktree(&source_control, repository_root, path)?.is_some() {
+            let remove = self.runner.run(
+                repository_root,
+                &["worktree", "remove", "--force", path.as_str()],
+            )?;
+            if !remove.success
+                && registered_worktree(&source_control, repository_root, path)?.is_some()
+            {
+                return Err(runtime_error(manual_runtime_error_info(
+                    RuntimeErrorDomain::Workspace,
+                    "workspace.worktree-remove-failed",
+                    format!("git worktree remove failed: {}", details(&remove)),
+                    serde_json::json!({ "branch": branch }),
+                )));
+            }
+            if !remove.success {
+                tracing::warn!(
+                    repository_root = repository_root.as_str(),
+                    workspace_path = path.as_str(),
+                    branch,
+                    error = %details(&remove),
+                    "git worktree removal reported an error after unregistering the workspace"
+                );
+            }
+        }
+
+        let branch_ref = format!("refs/heads/{branch}");
+        let branch_exists = self.runner.run(
             repository_root,
-            &["worktree", "remove", "--force", path.as_str()],
+            &["show-ref", "--verify", "--quiet", &branch_ref],
         )?;
-        ensure!(
-            remove.success,
-            "git worktree remove failed: {}",
-            details(&remove)
-        );
-        let branch_remove = self
-            .runner
-            .run(repository_root, &["branch", "-D", branch])?;
-        ensure!(
-            branch_remove.success,
-            "git branch -D failed: {}",
-            details(&branch_remove)
-        );
+        if branch_exists.success {
+            let branch_remove = self
+                .runner
+                .run(repository_root, &["branch", "-D", branch])?;
+            if !branch_remove.success {
+                tracing::warn!(
+                    repository_root = repository_root.as_str(),
+                    workspace_path = path.as_str(),
+                    branch,
+                    error = %details(&branch_remove),
+                    "Git branch cleanup failed after the workspace lifecycle was released"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1004,6 +1038,67 @@ mod tests {
             .remove_worktree(&root, &new_worktree, "gb-test-registration")
             .unwrap();
         assert!(!new_worktree.exists());
+    }
+
+    #[test]
+    fn remove_worktree_converges_after_git_already_unregistered_workspace() {
+        let (_dir, root) = initialized_repository();
+        let manager = GitWorkspaceManager::default();
+        let runner = GitCommandRunner::default();
+        let head = GitRepositoryService::default().head(&root).unwrap();
+        let worktree = root.join("runtime-worktrees").join("partially-removed");
+        let branch = "gb-test-partially-removed";
+        manager
+            .create_worktree(&root, &worktree, branch, &head)
+            .unwrap();
+
+        let partial_remove = runner
+            .run(&root, &["worktree", "remove", "--force", worktree.as_str()])
+            .unwrap();
+        assert!(partial_remove.success, "{}", details(&partial_remove));
+        std::fs::create_dir_all(worktree.as_std_path()).unwrap();
+        assert!(
+            registered_worktree(&GitSourceControlService::default(), &root, &worktree)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runner
+                .run(
+                    &root,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{branch}")
+                    ],
+                )
+                .unwrap()
+                .success
+        );
+
+        manager.remove_worktree(&root, &worktree, branch).unwrap();
+        manager.remove_worktree(&root, &worktree, branch).unwrap();
+
+        assert!(
+            registered_worktree(&GitSourceControlService::default(), &root, &worktree)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !runner
+                .run(
+                    &root,
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/heads/{branch}")
+                    ],
+                )
+                .unwrap()
+                .success
+        );
     }
 
     #[test]

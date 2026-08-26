@@ -1,0 +1,91 @@
+name: Build Intel macOS DevTools DMG
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build Intel macOS diagnostic DMG
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Configure optional Apple credentials
+        env:
+          MACOS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MACOS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MACOS_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MACOS_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MACOS_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MACOS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node scripts/configure-macos-signing.mjs
+
+      - name: Build release-profile DevTools DMG
+        run: npm run build -- --devtools
+
+      - name: Verify Intel app and DMG
+        shell: bash
+        run: |
+          shopt -s nullglob
+          app_bundles=(
+            target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.app
+          )
+          dmg_files=(
+            target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
+          )
+          if [[ ${#app_bundles[@]} -ne 1 ]]; then
+            echo "Expected exactly one macOS app bundle, found ${#app_bundles[@]}."
+            exit 1
+          fi
+          if [[ ${#dmg_files[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG, found ${#dmg_files[@]}."
+            exit 1
+          fi
+          app_binaries=("${app_bundles[0]}"/Contents/MacOS/*)
+          if [[ ${#app_binaries[@]} -ne 1 ]]; then
+            echo "Expected exactly one app executable, found ${#app_binaries[@]}."
+            exit 1
+          fi
+          codesign --verify --deep --strict "${app_bundles[0]}"
+          file "${app_binaries[0]}" | tee app-architecture.txt
+          grep -q 'x86_64' app-architecture.txt
+          echo "DMG: ${dmg_files[0]}"
+
+      - name: Upload Intel DevTools DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-band-devtools-macos-intel-${{ github.run_number }}-${{ github.sha }}
+          path: |
+            target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7

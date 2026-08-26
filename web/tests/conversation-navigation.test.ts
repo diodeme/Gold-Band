@@ -4,6 +4,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationSourceControlWorkspacePath,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
@@ -173,6 +174,71 @@ describe('conversation navigation presentation transaction', () => {
     expect(page).toMatchObject(target);
     expect(findConversationLeafForPage(tree, page)).toBe(dynamicLeaf);
   });
+
+  it('binds source control to the selected dynamic worktree instead of its source branch workspace', () => {
+    const mainLeaf = {
+      roundId: 'round-001',
+      nodeId: 'ai-dynamic',
+      attemptId: 'attempt-001',
+      pathLabel: 'ai-dynamic/attempt-001',
+      worktreePath: null,
+    };
+    const dynamicLeaf = {
+      roundId: 'round-001',
+      nodeId: 'worker',
+      attemptId: 'attempt-001',
+      outerNodeId: 'ai-dynamic',
+      outerAttemptId: 'attempt-001',
+      pathLabel: 'worker/attempt-001',
+      worktreePath: 'D:/repo/.gold-band/worktrees/worker',
+    };
+    const run = {
+      ...oldRun,
+      sessionTree: {
+        selectedSessionKey: 'round-001/ai-dynamic/attempt-001/worker/attempt-001',
+        rounds: [{
+          roundId: 'round-001',
+          nodes: [{ attempts: [mainLeaf], outerNodes: [{ attempts: [dynamicLeaf] }] }],
+        }],
+      },
+      selectedSession: null,
+      worktree: null,
+    } as ConversationRunVm;
+    const dynamicPage = conversationPageForSession(run, dynamicLeaf);
+
+    expect(conversationSourceControlWorkspacePath(dynamicPage, run))
+      .toBe('D:/repo/.gold-band/worktrees/worker');
+    expect(conversationSourceControlWorkspacePath({
+      kind: 'conversation-run',
+      projectId: run.projectId,
+      taskId: run.taskId,
+      runId: run.runId,
+    }, run)).toBe('D:/repo/.gold-band/worktrees/worker');
+
+    const staleMainPage = conversationPageForSession(run, mainLeaf);
+    expect(conversationSourceControlWorkspacePath(staleMainPage, run))
+      .toBe('D:/repo/.gold-band/worktrees/worker');
+
+    const mainSelectedRun = {
+      ...run,
+      sessionTree: {
+        ...run.sessionTree,
+        selectedSessionKey: 'round-001/ai-dynamic/attempt-001',
+      },
+    } as ConversationRunVm;
+    expect(conversationSourceControlWorkspacePath(staleMainPage, mainSelectedRun)).toBeNull();
+
+    const selectionMissingRun = {
+      ...run,
+      sessionTree: {
+        ...run.sessionTree,
+        selectedSessionKey: 'round-001/missing/attempt-001',
+      },
+    } as ConversationRunVm;
+    expect(conversationSourceControlWorkspacePath(dynamicPage, selectionMissingRun))
+      .toBe('D:/repo/.gold-band/worktrees/worker');
+    expect(conversationSourceControlWorkspacePath({ kind: 'conversation-home' }, run)).toBeNull();
+  });
 });
 
 describe('conversation sidebar navigation wiring', () => {
@@ -199,6 +265,19 @@ describe('conversation sidebar navigation wiring', () => {
     expect(interventionNavigation).not.toContain('setConversationPage(');
     expect(taskSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
     expect(runSelection).not.toContain('setConversationPage({ kind: \'conversation-run\'');
+  });
+
+  it('commits session selection to React state, the latest-page ref, and history in one event', () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const selection = source.match(/onSelectSession=\{\(leaf, followActive\) => \{[\s\S]*?onLifecycleSnapshot=/)?.[0] ?? '';
+
+    expect(selection).toContain('const nextPage = conversationPageForSession(conversationPage, leaf);');
+    expect(selection).toContain('conversationPageRef.current = nextPage;');
+    expect(selection).toContain('setConversationPage(nextPage);');
+    expect(selection).toContain("pushRoute(\n              'task-orchestration',\n              taskListPage,\n              nextPage,");
+    expect(selection.indexOf('setConversationPage(nextPage);'))
+      .toBeLessThan(selection.indexOf('pushRoute('));
+    expect(selection).toContain('beginConversationSessionSelection(current, key)');
   });
 
   it('keeps one shell-level run-state listener and refreshes only the selected run detail', () => {

@@ -171,6 +171,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationSourceControlWorkspacePath,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
@@ -2191,6 +2192,10 @@ export function App() {
           ? conversationRun.taskUuid
           : null
       }
+      sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
+        presentedConversationPage,
+        conversationRun,
+      )}
       conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
       feedbackEnabled={appInfo.feedbackEnabled}
@@ -2629,12 +2634,15 @@ export function App() {
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
+            const nextPage = conversationPageForSession(conversationPage, leaf);
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            conversationPageRef.current = nextPage;
+            setConversationPage(nextPage);
             pushRoute(
               'task-orchestration',
               taskListPage,
-              conversationPageForSession(conversationPage, leaf),
+              nextPage,
             );
             setConversationRun((current) => {
               if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;

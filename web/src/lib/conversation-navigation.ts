@@ -37,6 +37,18 @@ export function conversationPageMatchesRun(
     && page.runId === run.runId;
 }
 
+export function conversationSourceControlWorkspacePath(
+  page: ConversationPage,
+  run: ConversationRunVm | null | undefined,
+): string | null {
+  if (!run || !conversationPageMatchesRun(page, run)) return null;
+  const selectedLeaf = findConversationLeafByKey(run.sessionTree, run.sessionTree.selectedSessionKey)
+    ?? findConversationLeafForPage(run.sessionTree, page);
+  if (selectedLeaf) return selectedLeaf.worktreePath ?? null;
+  if (run.selectedSession) return run.selectedSession.worktreePath ?? null;
+  return run.worktree?.path ?? null;
+}
+
 export function conversationPageForRun(run: ConversationRunVm): Extract<ConversationPage, { kind: 'conversation-run' }> {
   return {
     kind: 'conversation-run',

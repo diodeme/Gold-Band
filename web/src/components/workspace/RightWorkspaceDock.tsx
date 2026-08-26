@@ -9,7 +9,11 @@ import { AgentConversationPanel } from './AgentConversationPanel';
 import { conversationDirectoryWorkspaceResourceKey, fileBrowserWorkspaceResourceKey, sourceControlWorkspaceResourceKey, useRightWorkspace, type RightWorkspaceResource } from './right-workspace-context';
 import { useFileContentEntry } from './files/file-content-store';
 
-export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
+export const RightWorkspaceDock = memo(function RightWorkspaceDock({
+  sourceControlWorkspacePath = null,
+}: {
+  sourceControlWorkspacePath?: string | null;
+}) {
   const { t } = useTranslation();
   const { tabs, activeTabKey, activateTab, closeTab, renderResource } = useRightWorkspace();
   const active = tabs.find((tab) => tab.key === activeTabKey) ?? null;
@@ -45,9 +49,15 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
   }, [tabs]);
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col bg-background" aria-label={t('workspace.rightWorkspace')} data-right-workspace-dock="true" data-theme-role="panel">
+    <section
+      className="flex h-full min-h-0 min-w-0 flex-col bg-background"
+      aria-label={t('workspace.rightWorkspace')}
+      data-right-workspace-active-source-control-path={active?.kind === 'source-control' ? active.workspacePath ?? 'main' : undefined}
+      data-right-workspace-dock="true"
+      data-theme-role="panel"
+    >
       {tabs.length > 0 ? <div className="flex h-10 shrink-0 items-center border-b border-border/60 bg-muted/10">
-        <WorkspaceEntryOptions presentation="menu" />
+        <WorkspaceEntryOptions presentation="menu" sourceControlWorkspacePath={sourceControlWorkspacePath} />
         <div
           ref={tabStripRef}
           className="gold-themed-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-1"
@@ -103,7 +113,7 @@ export const RightWorkspaceDock = memo(function RightWorkspaceDock() {
         {active && active.kind !== 'agent-transcript' ? renderResource(active) : null}
         {!active ? (
           <div className="flex min-h-0 flex-1 flex-col p-3" data-right-workspace-empty="true">
-            <WorkspaceEntryOptions presentation="empty" />
+            <WorkspaceEntryOptions presentation="empty" sourceControlWorkspacePath={sourceControlWorkspacePath} />
           </div>
         ) : null}
       </div>
@@ -119,7 +129,10 @@ type WorkspaceEntryOption = {
   open: () => void;
 };
 
-function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu' }) {
+function WorkspaceEntryOptions({ presentation, sourceControlWorkspacePath }: {
+  presentation: 'empty' | 'menu';
+  sourceControlWorkspacePath: string | null;
+}) {
   const { t } = useTranslation();
   const { conversationDirectoryEntry, openResource, projectId, scopeKey } = useRightWorkspace();
   const options = useMemo<WorkspaceEntryOption[]>(() => {
@@ -151,6 +164,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
           key: sourceControlWorkspaceResourceKey(projectId),
           scopeKey,
           projectId,
+          workspacePath: sourceControlWorkspacePath,
           title: t('sourceControl.title'),
           description: t('sourceControl.description'),
           attention: false,
@@ -172,7 +186,7 @@ function WorkspaceEntryOptions({ presentation }: { presentation: 'empty' | 'menu
       });
     }
     return entries;
-  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, t]);
+  }, [conversationDirectoryEntry, openResource, projectId, scopeKey, sourceControlWorkspacePath, t]);
 
   if (presentation === 'menu') {
     return (
@@ -337,6 +351,7 @@ function RightWorkspaceTabButton({
   return (
     <div
       data-right-workspace-tab="true"
+      data-right-workspace-resource-key={tab.key}
       data-state={active ? 'active' : 'inactive'}
       className={cn(
         'group relative flex h-8 min-w-36 max-w-56 shrink-0 items-center gap-2 rounded-xl px-2.5 text-xs transition-colors',

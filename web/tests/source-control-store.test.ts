@@ -370,9 +370,20 @@ describe('source control session store', () => {
       store.ensureLoaded('project-1', 'D:/repo/worktree-b'),
     ]);
     store.setActiveTab('project-1', 'd:/REPO/worktree-a', 'github');
+    store.setRepositoryTab('project-1', 'd:/REPO/worktree-a', 'worktrees');
+    store.setSubject('project-1', 'd:/REPO/worktree-a', 'Worktree A draft');
+    store.setActiveTab('project-1', 'D:/repo/worktree-b', 'history');
 
-    expect(store.session('project-1', 'D:/repo/worktree-a').activeTab).toBe('github');
-    expect(store.session('project-1', 'D:/repo/worktree-b').activeTab).toBe('changes');
+    expect(store.session('project-1', 'D:/repo/worktree-a')).toMatchObject({
+      activeTab: 'github',
+      repositoryTab: 'worktrees',
+      subject: 'Worktree A draft',
+    });
+    expect(store.session('project-1', 'D:/repo/worktree-b')).toMatchObject({
+      activeTab: 'history',
+      repositoryTab: 'branches',
+      subject: '',
+    });
     expect(api.getSnapshot).toHaveBeenCalledTimes(2);
   });
 

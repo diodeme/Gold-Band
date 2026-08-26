@@ -6,12 +6,14 @@
 
 ## 2. 工作区绑定
 
-- 资源身份由 `projectId + workspacePath` 组成。
+- 右侧会话树只展示一个项目级“源码管理”Tab；Tab 的展示身份按当前会话 Run 保持稳定，不为 main 和各 linked worktree 创建多个同名 Tab。源码管理数据会话身份由 `projectId + normalized workspacePath` 组成。
 - 未指定 `workspacePath` 时绑定项目主工作区。
 - dynamic child workspace 必须绑定自身 worktree；后端校验其 Git common directory 与项目一致，禁止通过路径参数访问其他仓库。
 - 用户切换源码管理资源时，状态、历史、diff 和写操作必须始终使用同一 workspace 身份。
+- 会话页右侧通用“源码管理”入口必须从 Run 已提交的 `sessionTree.selectedSessionKey` 对应 `ConversationSessionLeafVm.worktreePath` 投影工作位置；页面完整 session locator 只用于 deep-link 尚未收敛到 Run 选择时的回退。顶层主工作区为 `null`，Run worktree 和 dynamic child 使用各自 canonical path。入口不得从分支显示名反查路径，也不得把创建 worktree 时的源分支当作操作作用域。用户选择 session 时，React 页面状态、最新页面引用、URL locator 和 Run selected session 必须在同一事件事务内更新，不能只写 history 后依赖 effect 补同步。
+- 切换 session 时按工作位置 identity 投影源码管理：两个节点都属于 main，或属于同一个 linked worktree 时 identity 不变，已经打开的源码管理组件、滚动位置和数据订阅保持不动，不重新读取 Git；只有 main 与 worktree、或两个不同 worktree 之间切换时，单一源码管理 Tab 才切换到对应的 repository/workspace 会话。源分支如需展示只能作为只读来源信息，不能替代当前 worktree 的 HEAD、index 和 working directory。
 
-源码管理会话状态独立于右侧面板组件生命周期，按 `projectId + canonical workspacePath` 进入最多 24 项的运行期 LRU。普通 Tab 切换、打开 Diff 或暂时收起右栏不会重新加载，也不会丢失当前分区、历史分页、提交多选、详情或 commit 草稿；Git 写操作成功和 Git watcher 事件才使对应会话重新读取。Stage/Unstage 只回写最新 workspace status 与 repository revision，不读取未受影响的 refs、worktree、stash、remote 或 history；Commit、分支、标签和 worktree等改变 repository 结构的 mutation 才并行刷新 snapshot/history。旧的异步请求不得覆盖较新的刷新或操作结果，不同 linked worktree 的缓存必须隔离。
+源码管理会话状态独立于右侧面板组件生命周期，按 `projectId + canonical workspacePath` 进入最多 24 项的运行期 LRU。切换工作位置后再返回时恢复该位置原有的当前分区、repository 子页、历史分页、提交多选、历史滚动位置、详情和 commit 草稿；普通 Tab 切换、打开 Diff 或暂时收起右栏不会重新加载。Git 写操作成功和 Git watcher 事件才使对应会话重新读取。Stage/Unstage 只回写最新 workspace status 与 repository revision，不读取未受影响的 refs、worktree、stash、remote 或 history；Commit、分支、标签和 worktree等改变 repository 结构的 mutation 才并行刷新 snapshot/history。旧的异步请求不得覆盖较新的刷新或操作结果，不同 linked worktree 的缓存必须隔离。
 
 GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命周期，按 `projectId + Git common directory + canonical workspacePath` 进入最多 24 个 repository/workspace 会话的运行期有界 LRU；同一 query 或详情的并发请求必须合并。该会话同时持有轻量导航 locator：PR/Issue 分区、已提交的筛选/搜索条件、选中实体的 kind/number 与详情“概览/文件”子页，不能把完整详情或正文复制进导航状态。普通源码管理 Tab 切换、打开 PR Diff 和返回只读缓存并恢复原详情位置，不重新执行 `gh`；用户显式刷新、登录成功或查询条件改变时才按最小领域重新验证。PR 文件 comparison 以 `host + repository + PR number + base OID + head OID + path` 作为不可变 identity，最多缓存 96 项，PR revision 改变后自然生成新资源，不允许旧 Diff 覆盖新 revision。
 

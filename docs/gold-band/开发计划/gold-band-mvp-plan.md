@@ -1595,3 +1595,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 前端契约：源码管理、分支选择器和 Git 前置对话框都显示明确版本状态、已安装/最低版本、Git 下载与重新检测；分支选择器清除会话期陈旧 snapshot，不显示“无分支”，打开错误态不自动探测覆盖，只有用户显式重试才刷新。中英文对客文案全部由前端 i18n 映射。
 - [x] 回归与验收：Rust Git 领域测试 11 项通过，固定最低版本、Windows/Apple 后缀、RC、异常输出和结构化错误参数；前端 capability store、分支选择器、源码管理状态与 Git 前置对话框 4 个文件共 55 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 使用 `2.35.9.windows.1` 验证普通窗口分支触发器/下拉、源码管理专用能力态、新工作树前置对话框和 `620×780` 窄窗口 Sheet，已安装/最低版本、下载/重新检测动作、按钮层级和换行均正确，控制台无 warning/error；页面、视口和 1420 端口测试进程已清理。
 - 性能与过度设计评审：复用现有 capability gate、Git runner、shadcn 组件和有界分支 snapshot Store，仅增加一次固定大小的版本字符串解析与 Git 服务入口的常量级探测；不可用状态在 snapshot/history 前短路，避免重型请求。未引入协议解析器、版本矩阵、状态机、持久字段、全局缓存、轮询、队列或新 UI 基础组件；初始化路径的低频重复探测不在交互热路径，无需专项 benchmark。
+
+## 2026-08-26：手动 Intel macOS DevTools DMG 工作流
+
+- [x] 目标与方案：Windows 开发环境无法原生构建 macOS DMG，因此新增独立 `workflow_dispatch` 工作流 `Build Intel macOS DevTools DMG`，固定使用 GitHub 托管的 `macos-15-intel` runner，并复用既有 `npm run build -- --devtools` 生产 profile 诊断构建接口；不复制渠道配置或另建诊断发布链路。
+- [x] 产物与发布边界：工作流只上传保留 7 天的 `gold-band-devtools-macos-intel-<run>-<sha>` DMG Artifact，不调用 release action，不创建 tag、GitHub Release、`latest.json` 或 updater 资产。Apple 凭证完整时复用既有签名/公证配置，全部缺失时使用既有 ad-hoc identity，部分缺失时沿用配置脚本的 fail-fast 契约。
+- [x] 验证：契约测试固定仅手动触发、Intel runner、Node/Rust 安装、DevTools 构建命令、DMG Artifact 路径和禁止发布行为；工作流在上传前要求恰好一个 `.app` 与一个 DMG，并执行严格 codesign 校验和 `x86_64` 架构检查。`npm run test:macos-devtools-workflow` 1 项通过；实际 DMG 构建由首次 GitHub macOS runner 执行确认，Win11 本地不作为 macOS 打包有效验收环境。
+- 性能与过度设计评审：该能力只在人工触发的隔离 CI job 中消耗一次 macOS runner、依赖缓存和单次 release 构建资源，不改变应用运行时代码、I/O、内存、队列、锁或发布请求；复用现有渠道构建、Tauri DevTools feature、签名配置脚本和 GitHub Artifact action，不新增应用状态、持久字段、缓存层、并发机制或自研打包器，复杂度与低频诊断需求匹配。

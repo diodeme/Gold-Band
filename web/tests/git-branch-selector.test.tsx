@@ -8,6 +8,7 @@ import type { GitBranchPickerSnapshotVm } from '@/types';
 
 const getSnapshot = vi.fn<() => Promise<GitBranchPickerSnapshotVm>>();
 const changeBranch = vi.fn();
+const openExternalUrl = vi.fn();
 const translate = (key: string, params?: Record<string, unknown>) => {
   if (key === 'conversation.branchPicker.dirtyFiles') return `未提交：${params?.count} 个文件`;
   return key;
@@ -16,6 +17,7 @@ const translate = (key: string, params?: Record<string, unknown>) => {
 vi.mock('@/api', () => ({
   getGitBranchPickerSnapshot: (...args: unknown[]) => getSnapshot(...args as []),
   changeGitBranch: (...args: unknown[]) => changeBranch(...args),
+  openExternalUrl: (...args: unknown[]) => openExternalUrl(...args),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -149,6 +151,32 @@ describe('GitBranchSelector', () => {
       expect(onCheckpointChange).toHaveBeenLastCalledWith({ branch: 'feature/topic', headOid: 'head-topic', revision: 'revision-topic' });
       expect(onMutationPendingChange).toHaveBeenCalledWith(true);
       expect(onMutationPendingChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('shows an explicit unsupported Git version state instead of an empty branch list', async () => {
+    getSnapshot.mockRejectedValueOnce({
+      code: 'git.version-unsupported',
+      params: { installedVersion: '2.35.9', minimumVersion: '2.36.0' },
+    });
+    const store = new GitBranchPickerSnapshotStore();
+    store.set('project-a', undefined, snapshot({ currentBranch: 'stale-branch' }));
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" />,
+      store,
+    );
+    try {
+      await act(async () => Promise.resolve());
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      expect(trigger.textContent).toContain('conversation.branchPicker.versionUnsupportedLabel');
+      await act(async () => trigger.click());
+      expect(document.body.querySelector('[data-git-version-capability-error="git.version-unsupported"]')).not.toBeNull();
+      expect(document.body.textContent).toContain('conversation.branchPicker.versionUnsupportedTitle');
+      expect(document.body.textContent).not.toContain('conversation.branchPicker.empty');
+      expect(document.body.querySelector('[data-slot="command-input"]')).toBeNull();
+      expect(store.get('project-a', undefined)).toBeNull();
     } finally {
       await act(async () => root.unmount());
     }

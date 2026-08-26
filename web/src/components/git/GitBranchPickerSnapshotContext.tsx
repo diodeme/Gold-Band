@@ -33,6 +33,10 @@ export class GitBranchPickerSnapshotStore {
       this.snapshots.delete(oldestKey);
     }
   }
+
+  delete(projectId: string, workspacePath?: string | null) {
+    this.snapshots.delete(branchPickerSnapshotKey(projectId, workspacePath));
+  }
 }
 
 const GitBranchPickerSnapshotContext = createContext<GitBranchPickerSnapshotStore | null>(null);

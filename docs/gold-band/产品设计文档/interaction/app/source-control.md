@@ -27,9 +27,9 @@ GitHub capability、PR/Issue 查询和详情同样独立于 React 组件生命�
 
 ## 3. 信息架构
 
-源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。`not-installed` 显示系统 Git 未安装与官方下载入口；`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
+源码管理入口先读取项目级 Git capability，再决定是否加载 snapshot/history。Gold Band 所有 Git 相关能力统一要求系统 Git `2.36.0+`，该门槛不阻断应用启动，也不按功能拆分版本矩阵。`not-installed` 显示系统 Git 未安装与官方下载入口；`version-unsupported` 展示已安装版本、最低版本、Git 下载入口和重新检测，不得伪装成“无分支”或普通仓库读取失败；`version-unavailable` 表示 Git 可执行文件存在但版本无法可靠识别，与未安装和版本过低严格区分。只有版本 capability 通过后才探测当前 repository、HEAD 与 worktree。`repository-required` 明确显示当前文件夹不是 Git 仓库，并提供“初始化仓库”；初始化只执行 `git init`，不自动暂存或提交目录。初始化后的 unborn repository 是可操作的正常状态：进入“更改”区展示未跟踪文件，历史返回空页，用户自行选择文件并创建首次 Commit。Git porcelain v2 的 `branch.oid (initial)` 必须在领域解析入口规范化为缺失 HEAD，snapshot、history、revision 与 UI 不得各自识别 Git sentinel。`worktree-required / repository-unavailable` 显示各自的恢复建议；只有 capability 可用后完整 snapshot/history 的真实读取失败才进入结构化错误与重试态，不得再把所有情况折叠成“无法读取当前仓库”。探测和初始化必须放到 blocking task，不阻塞桌面 IPC 事件线程。
 
-快速会话选择新工作树但 Git capability 未就绪时，阻塞对话框的恢复动作固定为“取消 / 重新检测 / 使用主工作区 / 打开源码管理”。“重新检测”和“使用主工作区”使用次按钮，“打开源码管理”是唯一主按钮；对话框不再重复提供 Git 下载页入口。点击主按钮通过当前会话作用域的右侧工作区命令，以 `projectId + main workspace` 打开或激活源码管理 Tab，并关闭对话框；紧凑布局必须在 auto-collapse 收敛后自动展开右侧 Sheet，不能只创建隐藏 Tab。用户完成首次提交或其他仓库配置后再显式重新检测。
+快速会话选择新工作树但 repository、HEAD 或 worktree capability 未就绪时，阻塞对话框的恢复动作固定为“取消 / 重新检测 / 使用主工作区 / 打开源码管理”。“重新检测”和“使用主工作区”使用次按钮，“打开源码管理”是唯一主按钮；点击后通过当前会话作用域的右侧工作区命令，以 `projectId + main workspace` 打开或激活源码管理 Tab，并关闭对话框。若状态是 `version-unsupported / version-unavailable`，恢复动作改为“取消 / 重新检测 / 使用主工作区（或其他工作流）/ 打开 Git 下载页面”，Git 下载是唯一主按钮，不再把用户导向同样不可用的源码管理页。紧凑布局必须在 auto-collapse 收敛后自动展开右侧 Sheet，不能只创建隐藏 Tab。用户完成升级、首次提交或其他仓库配置后再显式重新检测。
 
 源码管理包含四个页签：
 
@@ -47,7 +47,7 @@ Worktree 行提供 Git 原生安全删除。当前正在使用的 Worktree 禁�
 
 Pull 采用 Git 原生冲突工作流，不实现三方合并编辑器。`status.operationInProgress` 是 Merge/Rebase 进行中状态的唯一事实源；冲突文件点击后打开普通文件编辑 Tab，用户直接修改冲突块。Merge 显示“完成 Merge / 放弃 Merge”，Rebase 显示“继续 Rebase”，并在危险菜单提供“跳过当前 Commit / 放弃 Rebase”。完成或继续必须先弹确认框；确认后后端在同一 workspace 写锁中读取当前 unmerged 路径，只对这些路径执行 `git add --`，随后调用 `git merge --continue` 或 `git rebase --continue`，不暂存其他普通改动。跳过会丢弃当前正在重放的整个 Commit，确认框必须展示短 SHA 和标题；中止分别调用 `git merge --abort`、`git rebase --abort`。进行中禁止普通 Commit、Pull/Push、Stage/Unstage 和仓库写操作，只允许流程控制动作。
 
-Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`、`rebase-apply` 及 index/HEAD；用户在其他 IDE 中编辑、暂存、继续、跳过或中止后，Gold Band 通过事件去抖重新读取权威 snapshot，不轮询、不保留旁路状态。Rebase 生命周期只由 `rebase-merge` / `rebase-apply` 目录判定，`REBASE_HEAD` 仅用于读取当前 Commit；Git 在成功结束后可能保留该文件，不能据此误报 Rebase 仍在进行。
+Git metadata watcher 必须覆盖 `MERGE_HEAD`、`REBASE_HEAD`、`rebase-merge`、`rebase-apply` 及 index/HEAD；所有 marker 都由 Git 原生 `rev-parse --path-format=absolute --git-path <marker>` 定位，禁止把相对输出按 Gold Band 进程目录判断。用户在其他 IDE 中编辑、暂存、继续、跳过或中止后，Gold Band 通过事件去抖重新读取权威 snapshot，不轮询、不保留旁路状态。Rebase 生命周期只由 `rebase-merge` / `rebase-apply` 目录判定，`REBASE_HEAD` 仅用于读取当前 Commit；Git 在成功结束后可能保留该文件，不能据此误报 Rebase 仍在进行。
 4. GitHub：GitHub CLI 能力状态、PR 和 Issue。
 
 提交历史与分页定位属于 repository/workspace 会话缓存：首次无数据时使用真实请求中间态；普通源码管理 Tab 往返必须直接恢复已缓存列表，不插入延时或伪 loading，不重新请求 history。已经显示的历史数据在后台刷新时继续保留，不退回全屏 loading。

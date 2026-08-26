@@ -35,6 +35,7 @@ export interface GitBranchSelectorProps {
   disabled?: boolean;
   readOnlyBranch?: string | null;
   variant?: 'home' | 'session';
+  responsiveContext?: boolean;
   onCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
   onMutationPendingChange?: (pending: boolean) => void;
 }
@@ -45,6 +46,7 @@ export function GitBranchSelector({
   disabled = false,
   readOnlyBranch,
   variant = 'home',
+  responsiveContext = false,
   onCheckpointChange,
   onMutationPendingChange,
 }: GitBranchSelectorProps) {
@@ -65,18 +67,25 @@ export function GitBranchSelector({
   const [createOpen, setCreateOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const requestSequenceRef = useRef(0);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverUsedPointerRef = useRef(false);
+  const compactPointerClickPendingRef = useRef(false);
   const {
     valueRef: branchValueRef,
     tooltipOpen: branchTooltipOpen,
     showTooltipIfOverflowing: showBranchTooltipIfOverflowing,
     hideTooltip: hideBranchTooltip,
     handleTooltipOpenChange: handleBranchTooltipOpenChange,
-  } = useOverflowTooltip<HTMLSpanElement>();
+  } = useOverflowTooltip<HTMLSpanElement>({ always: responsiveContext });
   const visiblePickerState = pickerState.scopeKey === scopeKey
     ? pickerState
     : { scopeKey, snapshot: cachedSnapshot, loading: readOnlyBranch === undefined && !cachedSnapshot };
   const snapshot = visiblePickerState.snapshot;
   const loading = visiblePickerState.loading;
+  const handleBranchTooltipRootOpenChange = useCallback((next: boolean) => {
+    if (!next && responsiveContext && compactPointerClickPendingRef.current) return;
+    handleBranchTooltipOpenChange(next);
+  }, [handleBranchTooltipOpenChange, responsiveContext]);
 
   const publishCheckpoint = useCallback((next: GitBranchPickerSnapshotVm | null) => {
     onCheckpointChange?.(
@@ -182,8 +191,9 @@ export function GitBranchSelector({
 
   return (
     <>
-      <Tooltip open={branchTooltipOpen} onOpenChange={handleBranchTooltipOpenChange}>
+      <Tooltip open={branchTooltipOpen && !open} onOpenChange={handleBranchTooltipRootOpenChange}>
         <Popover open={open} onOpenChange={(next) => {
+          compactPointerClickPendingRef.current = false;
           setOpen(next);
           hideBranchTooltip();
           if (next && !snapshot && !loading) void loadSnapshot();
@@ -191,24 +201,53 @@ export function GitBranchSelector({
           <TooltipTrigger asChild>
             <PopoverTrigger asChild>
               <Button
+                ref={triggerRef}
                 type="button"
                 variant={null}
                 size="sm"
                 disabled={disabled}
-                aria-label={t('conversation.branchPicker.label')}
+                aria-label={`${t('conversation.branchPicker.label')}: ${currentBranch}`}
                 data-git-branch-selector="editable"
+                data-git-branch-popover-open={open ? 'true' : 'false'}
                 onPointerEnter={showBranchTooltipIfOverflowing}
-                onPointerLeave={hideBranchTooltip}
-                onPointerDown={hideBranchTooltip}
+                onPointerLeave={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
+                onPointerDownCapture={(event) => {
+                  compactPointerClickPendingRef.current = responsiveContext && event.button === 0;
+                  popoverUsedPointerRef.current = event.button === 0;
+                }}
+                onKeyDownCapture={() => {
+                  compactPointerClickPendingRef.current = false;
+                  popoverUsedPointerRef.current = false;
+                }}
+                onPointerCancel={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
+                onClickCapture={() => {
+                  compactPointerClickPendingRef.current = false;
+                }}
                 onFocus={showBranchTooltipIfOverflowing}
-                onBlur={hideBranchTooltip}
+                onBlur={() => {
+                  compactPointerClickPendingRef.current = false;
+                  hideBranchTooltip();
+                }}
                 className={cn(
-                  'h-7 min-w-0 max-w-44 gap-1.5 rounded-md px-1.5 text-sm font-normal shadow-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-primary/10 has-[>svg]:px-1.5 dark:hover:bg-accent/50',
+                  'h-7 min-w-0 max-w-44 gap-1.5 rounded-md px-1.5 text-sm font-normal shadow-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-primary/10 data-[git-branch-popover-open=true]:bg-accent data-[git-branch-popover-open=true]:text-accent-foreground has-[>svg]:px-1.5 dark:hover:bg-accent/50 dark:data-[git-branch-popover-open=true]:bg-accent/50',
                   variant === 'session' && 'max-w-36 text-xs text-foreground/80',
+                  responsiveContext && 'w-7 shrink-0 justify-center gap-0 px-0 has-[>svg]:px-0 @md/conversation-context:w-auto @md/conversation-context:shrink @md/conversation-context:justify-start @md/conversation-context:gap-1.5 @md/conversation-context:px-1.5 @md/conversation-context:has-[>svg]:px-1.5',
                 )}
               >
                 {loading || changing ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : <GitBranch className="size-3.5 shrink-0" />}
-                <span ref={branchValueRef} data-git-branch-value="true" className="truncate">{currentBranch}</span>
+                <span
+                  ref={branchValueRef}
+                  data-git-branch-value="true"
+                  className={cn('truncate', responsiveContext && 'hidden @md/conversation-context:inline')}
+                >
+                  {currentBranch}
+                </span>
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
@@ -217,6 +256,19 @@ export function GitBranchSelector({
             sideOffset={6}
             data-git-branch-popover-align="start"
             className="w-[min(22rem,calc(100vw-2rem))] p-0"
+            onPointerDownCapture={() => {
+              popoverUsedPointerRef.current = true;
+            }}
+            onKeyDownCapture={() => {
+              popoverUsedPointerRef.current = false;
+            }}
+            onCloseAutoFocus={(event) => {
+              hideBranchTooltip();
+              if (!popoverUsedPointerRef.current) return;
+              event.preventDefault();
+              triggerRef.current?.blur();
+              popoverUsedPointerRef.current = false;
+            }}
           >
             <Command>
               <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} />

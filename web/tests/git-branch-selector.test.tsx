@@ -204,6 +204,97 @@ describe('GitBranchSelector', () => {
     }
   });
 
+  it('uses an icon-only compact trigger and keeps its menu one click away', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      const value = container.querySelector<HTMLElement>('[data-git-branch-value="true"]')!;
+      expect(trigger.className.split(' ')).toContain('w-7');
+      expect(trigger.className.split(' ')).toContain('@md/conversation-context:w-auto');
+      expect(trigger.getAttribute('aria-label')).toBe('conversation.branchPicker.label: main');
+      expect(value.className.split(' ')).toContain('hidden');
+      expect(value.className.split(' ')).toContain('@md/conversation-context:inline');
+
+      Object.defineProperties(value, {
+        clientWidth: { configurable: true, value: 80 },
+        scrollWidth: { configurable: true, value: 80 },
+      });
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+      });
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('main');
+
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+      });
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')?.textContent).toBe('main');
+
+      await act(async () => trigger.click());
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).not.toBeNull();
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+      expect(trigger.dataset.gitBranchPopoverOpen).toBe('true');
+      expect(trigger.className.split(' ')).toContain('data-[git-branch-popover-open=true]:bg-accent');
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not restore pointer focus or reopen the compact tooltip after switching branches', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      await act(async () => {
+        trigger.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+        trigger.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        trigger.click();
+      });
+
+      const topic = [...document.body.querySelectorAll<HTMLElement>('[data-slot="command-item"]')]
+        .find((item) => item.textContent?.includes('feature/topic'))!;
+      await act(async () => {
+        topic.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+        topic.click();
+        await Promise.resolve();
+      });
+
+      expect(changeBranch).toHaveBeenCalledTimes(1);
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).toBeNull();
+      expect(document.body.querySelector('[data-slot="tooltip-content"]')).toBeNull();
+      expect(document.activeElement).not.toBe(trigger);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('restores focus to the compact branch trigger after a keyboard close', async () => {
+    const { container, root } = await renderSelector(
+      <GitBranchSelector projectId="project-a" responsiveContext />,
+    );
+    try {
+      const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
+      await act(async () => {
+        trigger.focus();
+        trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+        trigger.click();
+      });
+
+      const input = document.body.querySelector<HTMLInputElement>('[data-slot="command-input"]')!;
+      await act(async () => {
+        input.focus();
+        input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+      });
+
+      expect(document.body.querySelector('[data-git-branch-popover-align="start"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('disables branch mutations while Merge/Rebase or a Git lock is active', async () => {
     getSnapshot.mockResolvedValueOnce(snapshot({
       operationInProgress: { kind: 'rebase', currentOid: null, currentSubject: null },

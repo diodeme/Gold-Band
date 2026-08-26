@@ -783,6 +783,14 @@ fn build_direct_turn_metrics_fact(
             attempt_index: active_turn.attempt_index,
         },
     );
+    fact.fact_id = format!(
+        "direct-turn:{turn_id}:{}",
+        if outcome.is_some() {
+            "completed"
+        } else {
+            "started"
+        }
+    );
     fact.payload.task_title = task.title.clone();
     fact.payload.provider = provider;
     fact.payload.model = model;
@@ -836,10 +844,8 @@ fn build_direct_turn_metrics_fact(
             ended_at: Some(occurred_at),
             acp_session_elapsed_ms: elapsed_sum,
         });
-        fact.payload.code_change_delta = Some(gold_band::app::App::metrics_code_change_delta(
-            attempt_dir.as_path(),
-            Some(turn_id),
-        ));
+        fact.payload.code_changes =
+            app.metrics_code_changes_snapshot(&locator.task_id, &locator.run_id);
     }
     app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
     if outcome.is_some() {

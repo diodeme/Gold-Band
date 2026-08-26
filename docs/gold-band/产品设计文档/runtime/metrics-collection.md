@@ -1,6 +1,6 @@
 # WB 会话指标采集与批量上报设计
 
-> 状态：2026-08-21 客户端破坏式合同升级已完成；服务端待外部仓库实现
+> 状态：2026-08-26 客户端有限投递合同已完成；服务端待外部仓库实现
 >
 > 适用接口：`POST /api/client-report/metrics/batch`
 >
@@ -14,7 +14,7 @@ Gold Band 对 Direct、Workflow、AUTO 的 lifecycle 事件使用统一的 Task 
 2. `runId/roundId/nodeId/attemptId` 定位事件实际描述的 Run、Round 和 attempt；事件主体与 `executionKind` 不得矛盾。
 3. attempt terminal 携带当前 attempt counters；task delivery terminal 携带 Task 累计 counters 和代码变更统计。
 4. Task 创建来源与本次 execution 触发来源分别冻结并逐事件携带。
-5. 已被 collector 接受的事实通过 SQLite transactional outbox 可靠补报；网络与数据库不阻塞 Runtime 热路径。
+5. 已被 collector 接受的事实通过 SQLite transactional outbox 有限投递；单条事件总计最多发起 3 次 HTTP attempt，网络与数据库不阻塞 Runtime 热路径。
 
 能力只在 `wb` 渠道、合法 endpoint 和 API Key 同时可用时启用。指标系统只观察 runtime，不参与业务控制；采集失败不得改变 Task、Run、Round、Attempt 或 ACP 状态。
 
@@ -62,7 +62,7 @@ Runtime producer
 | execution 触发来源 | scheduler occurrence 或用户动作快照 | 当前 Run/Turn | 每事件必填 |
 | attempt counters | `TaskMetricsState.active_attempts` | attempt started 至 terminal | attempt terminal |
 | task counters | `TaskMetricsState.task_counters` | Task 创建至当前 delivery terminal | delivery terminal |
-| 代码变更 | 已 finalized 的 turn file change set | Task 创建至当前 delivery terminal | delivery terminal |
+| 代码变更 | Run 创建时冻结的工作区路径与 Git 基线、delivery terminal 的最终 Git 快照 | Run 创建至 delivery terminal | delivery terminal |
 
 ```rust
 struct TaskMetricsKey {
@@ -121,7 +121,7 @@ struct PendingMetricsFact {
 | `workspace/userId/clientVersion` | 在事实创建时冻结 |
 | `taskOrigin/executionTrigger` | 联合类型；逐事件携带 |
 
-`reportedAt` 使用 collector 生成的 Asia/Shanghai 本地毫秒时间。`occurredAt/scheduledAt` 沿用当前 runtime canonical 时间值，可能是 RFC 3339、Asia/Shanghai 本地毫秒时间或 `<unix-seconds>Z`；服务端按处理合同解析后统一存 UTC。该多格式边界属于现有 runtime 时间模型，本次不新增第四种格式。
+`occurredAt/reportedAt/timing.startedAt/timing.endedAt` 在 metrics wire 边界统一转换为无时区本地毫秒字符串 `YYYY-MM-DDTHH:mm:ss.SSS`。runtime 内部允许继续读取历史 `<unix-seconds>Z` 或 RFC 3339 值，但不得把这些格式直接透传到 wire；四个字段使用同一个 formatter。该合同按产品要求不携带 `Z` 或 offset，服务端不得把它们当作带时区 RFC 3339 字符串解析。可选的 `timing` 无法解析时省略整个 `timing` 并记录结构化诊断，不得因此丢弃 terminal 事件。
 
 `eventRevision` 表示 collector 接受顺序，不表示 `occurredAt` 时间顺序。Task delivery terminal 不是事件流吸收态，同一 Task 后续 `run-002` 或 follow-up 继续使用更高 revision。
 
@@ -137,28 +137,27 @@ struct PendingMetricsFact {
 
 Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/unit-attempt`。找不到 durable active attempt locator 时不构造事件，记录 `METRICS_ACTIVE_ATTEMPT_MISSING`，业务恢复继续。
 
-### 5.2 来源联合类型
+### 5.2 来源与定时触发快照
 
 ```json
 {
-  "taskOrigin": {"kind": "scheduled-task", "scheduledTaskId": "scheduled-task-001"},
+  "taskOrigin": "scheduled",
   "executionTrigger": {
-    "kind": "scheduled-occurrence",
+    "type": "cron",
     "scheduledTaskId": "scheduled-task-001",
     "scheduledOccurrenceId": "occurrence-001",
-    "triggerKind": "scheduled",
-    "scheduledAt": "2026-08-20T10:00:00Z",
-    "sessionPolicy": "new"
+    "scheduledAt": "2026-08-20T10:00:00.000",
+    "expression": "0 0 10 * * MON-FRI",
+    "timezone": "Asia/Shanghai"
   }
 }
 ```
 
-- Task 创建来源为 `user/scheduled-task`，创建后不变。
-- execution 触发来源为 `user/scheduled-occurrence`，描述本次 Run/Turn。
-- “立即执行”仍是 scheduled occurrence，`triggerKind=manual`。
-- 定时 Task 后续用户 follow-up 保持 scheduled task origin，但 trigger 改为 user。
-- 当两个对象都是 scheduled 类型时 `scheduledTaskId` 必须相等。
-- 不上传 instruction、标题、cron 文案等可变或敏感来源字段。
+- `taskOrigin` 只允许字符串 `user/scheduled`；用户来源不输出 `executionTrigger`。
+- scheduled 的 `executionTrigger.type` 只允许 `once/repeat/cron`，并始终携带 `scheduledTaskId/scheduledOccurrenceId/scheduledAt/timezone`。
+- `ScheduleKind::At` 映射 `once`；`Every/Repeat` 映射 `repeat`，通过 `repeatKind` 携带 interval/hourly/daily/weekdays/weekly 及对应 value/unit/anchorAt/hour/minute/weekdays；`Cron` 映射 `cron` 并携带 expression。
+- trigger 必须在 occurrence 创建时从 `ScheduledTaskDefinition.schedule` 冻结，后续编辑定时任务不得改写已经开始的 Run/Turn。
+- 删除 metrics wire 的 `triggerKind/sessionPolicy`，不上传 instruction、标题或其他任务内容。
 
 ## 6. Counters
 
@@ -185,8 +184,8 @@ enum UserExecutionAction {
 
 - ManualContinue：真实 paused -> running 时 `resume + 1`、`manualContinue + 1`。
 - Permission/Elicitation response：真实恢复时只 `resume + 1`。
-- FollowUp：Task 已完成一次交付后接受新目标，只 `task.followUp + 1`。
-- node/unit attempt 的 `followUpCount` 必须为 0。
+- FollowUp：Workflow/AUTO 在 paused attempt 接受一次非空用户输入时，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 actionId 幂等口径。
+- 同一次“带内容人工继续”同时产生 `resume + 1`、`manualContinue + 1`、`followUp + 1`；纯继续、权限/elicitation 回答和自动恢复不增加 follow-up。
 - attempt terminal 从 active map 取快照后移除；task counters 不从 attempt terminal 求和。
 
 ## 7. Task 代码变更
@@ -198,19 +197,19 @@ enum UserExecutionAction {
   "codeChanges": {
     "addedLines": 128,
     "deletedLines": 37,
-    "changedFiles": 9,
-    "completeness": "complete",
-    "limitationCodes": []
+    "changedFiles": 9
   }
 }
 ```
 
-- 数据来自已 finalized 的 `TurnFileChangeSet`，复用其 summary、logical path 和 limitation code。
-- 行数表达 Task edit churn，不声称是 workspace 最终净 diff。
-- 同一路径跨 turn 多次编辑时行数累加，`changedFiles` 去重。
-- 完整且无变更为 complete + `0/0/0`；存在 capture limit、non-linear mutation、二进制或缺失标准 diff 为 partial；完全无可信来源为 unavailable + null。
-- collector 只保存数值、去重 path 和 limitation code；wire、日志和服务端均不包含 path、diff 或源码。
-- task terminal 不调用 Git、不扫描 workspace、不读取全部源码。
+- 数据只表示任务结束时工作区相对 Run 创建时 Git 基线的最终净差异，不累计 turn churn。
+- 指标开启时，Run 创建后、首个节点执行前原子写入独立的 `observability/code-change-baseline.json`，冻结 `workspacePath + baselineCommit`：主工作区 Run 使用 `repoRoot + startup HEAD`，worktree Run 使用 `worktree.path + forkCommit`。
+- 基线快照独立于 `RunState`，不得为指标向 Workflow 状态增加字段或改变创建、继续、停止、恢复和 terminal 流程；已存在的基线不得被后续重启或工作区 HEAD 覆盖。
+- run terminal 调用现有 Git service 一次，按冻结基线覆盖 baseline 后的 commit、staged、unstaged 与未跟踪文件；编辑后恢复原状不计数。
+- rename 按一个最终文件计数；二进制文件计入 `changedFiles`，不虚构增删行；无变更固定为 `0/0/0`。
+- 结果先原子写入 run observability 的 `code-changes.json`，terminal fact 读取或复用该快照；重放不得重新扫描已经结束或清理的工作区。
+- Git 基线或工作区不可用时省略整个 `codeChanges` 并记录结构化诊断；不得用 terminal 时的 HEAD 代替缺失基线，采集失败不得改变 runtime terminal。
+- 删除 `completeness/limitationCodes`、turn-files delta 以及 collector 的跨 attempt code change accumulator。
 
 ## 8. Usage、模型与质量字段
 
@@ -226,20 +225,29 @@ Usage 的权威粒度仍是 Direct turn、Workflow node attempt 和 AUTO unit at
 
 ```rust
 struct TaskMetricsState {
-    last_revision: u64,
-    task_counters: MetricsCounters,
-    active_attempts: HashMap<AttemptMetricsKey, MetricsCounters>,
-    code_changes: TaskCodeChangeAccumulator,
+    counters: MetricsCounters,
+    acceptance_attempts: u32,
 }
 ```
 
+attempt 的 `started/paused/resumed/completed` 由 canonical runtime transition 产生稳定 factId。collector 只按该领域身份幂等，不使用 payload 内容指纹；重复投影不分配新 revision，不重复更新 counters。`started` 只允许来自 attempt 首次进入 Running，paused attempt 的继续只能产生 resumed。
+
+Workflow continue 保持 Runtime 原有控制契约：在后台 drive 启动前，以 attempt locator 和 execution ID 校验当前 paused 事实，一次提交 `Run.status=Running`、清空 pause reason 并推进 `execution.revision`。metrics 不拥有 continue action，不得向 `RunState/RuntimeExecutionState` 增加 `pendingAction`、额外状态或消费分支，也不得改变 continue、stop、重启恢复和启动失败收敛的顺序。
+
+显式 continue 在调用期构造非持久化 metrics context，只冻结提交前的 pause reason、提交成功后的 execution revision、非空输入标记和 prompt ID。drive 首次成功持久化后消费一次：resume factId/transitionId 使用 `run:<runUuid>:resume:<executionRevision>`，人工继续映射 `ManualContinue`；非空输入优先使用 prompt ID 作为 follow-up action ID，缺失 prompt ID 时使用该次 resume transition ID 派生稳定 ID。该 context 只负责指标投影，不参与可继续性判断、CAS、错误恢复或 UI 状态。启动前失败仍按原 execution ID 收敛为 `Paused + RuntimeAbnormal`，不会留下指标专用状态阻塞下一次 continue。
+
+带人工确认的节点使用 `Running -> AwaitingManualCheck(Paused) -> Completed`。Provider 返回仅固化 artifact 并进入等待确认，不发布 terminal；用户确认后才写 outcome/finishedAt 并发布唯一 completed，确认动作本身不计 resume/manualContinue。
+
 SQLite 至少包含：
 
-- `metrics_task_state(project_id, execution_id, last_revision, task_counters_json, code_changes_json, updated_at)`；复合主键为 Project/Task。
-- `metrics_attempt_state(project_id, execution_id, run_id, round_id, node_id, attempt_id, counters_json, request_ids_json, updated_at)`。
+- `metrics_task_state(project_id, execution_id, last_revision, state_json, updated_at)`；复合主键为 Project/Task，`state_json` 只保存 Task counters 与 acceptance 次数。
+- `metrics_attempt_state(project_id, execution_id, run_id, round_id, node_id, attempt_id, counters_json, updated_at)`。
+- `metrics_transition_dedup(project_id, execution_id, transition_kind, transition_id, created_at)` 与 `metrics_fact_dedup(project_id, execution_id, fact_id, payload_json, created_at)`。
 - `metrics_outbox(event_id, project_id, execution_id, event_revision, reported_at, payload_json, status, attempt_count, next_attempt_at, lease_owner, lease_until, acked_at, error_code)`。
 
-collector 使用单 SQLite writer 和短事务。HTTP 永不位于事务或锁内。pending/过期 in-flight 在事务内 claim；accepted/duplicate ack，逐项 rejected 只拒绝对应行；timeout/429/5xx 回到 pending 并有界退避。401/403 先释放当前 lease 回 pending，再停止当前 uploader，避免无效鉴权持续请求；应用重启或指标子系统按新配置重新初始化后恢复。lease 过期可恢复。
+collector 使用单 SQLite writer 和短事务。HTTP 永不位于事务或锁内。pending/过期 in-flight 在事务内 claim；claim 时按事件原子执行 `attempt_count + 1`，首次请求计为第 1 次，只允许领取 `attempt_count < 3` 的行。accepted/duplicate ack，逐项 rejected 只拒绝对应行；网络错误、HTTP 408/429/5xx、无效或不完整响应属于可重试错误，未达到 3 次的事件回到 pending 并按各自 attempt 有界退避。普通 4xx（包含 401/403）和本地 payload 错误属于永久错误，第一次失败即物理删除。可重试错误在第 3 次失败后物理删除，不保留 dropped/dead-letter 状态，应用重启后不可恢复。
+
+失败结算必须在单个 SQLite 事务内逐事件执行，并校验 `event_id + in_flight + lease_owner + attempt_count`；同一 HTTP batch 中不同 attempt 的事件可以分别进入“继续等待”和“立即删除”。应用升级后，claim 事务先恢复过期 lease，再物理删除历史 `pending && attempt_count >= 3` 的记录，避免旧的无限重试数据再次发送。claim 前计数保证任何事件不超过 3 次请求；进程在 claim 后、HTTP 请求前崩溃时，该次额度仍被消耗，因此实际请求可能少于 3 次，这是有限投递策略接受的数据丢失窗口。
 
 Task delivery terminal 不删除 state。只有 Task 明确删除/归档且没有未确认 outbox 时，才按统一保留策略清理。
 
@@ -264,9 +272,9 @@ collector 构造 wire event 前校验：
 1. Project/Task/Run/Round identity 完整且格式合法。
 2. subject 与 session mode、event type、attempt fields 符合矩阵。
 3. counters/codeChanges 只出现在规定 terminal。
-4. node/unit followUp 为 0。
-5. scheduled 联合类型字段成组出现且 ID 一致；Workflow/AUTO 不允许 continuous。
-6. codeChanges complete 时数值完整，unavailable 时数值为 null。
+4. scheduled 来源必须携带合法 `once/repeat/cron` 快照，user 来源必须省略 trigger。
+5. `occurredAt/reportedAt/timing.startedAt/timing.endedAt` 必须符合无时区本地毫秒格式。
+6. codeChanges 出现时三个非负整数必须同时存在。
 
 内部错误使用稳定 code 与结构化 params，不含对客文案：`METRICS_ACTIVE_ATTEMPT_MISSING`、`METRICS_FACT_INVALID`、`METRICS_COLLECTOR_STORAGE_FAILED`、`METRICS_OUTBOX_CLAIM_FAILED`。
 
@@ -276,11 +284,11 @@ collector 构造 wire event 前校验：
 
 - producer 热路径为 O(1) 有界 `try_send`；队列容量沿用 2048，单批最多 100。
 - SQLite 工作在专用 blocking worker；同一时刻一个 writer，不持锁 await，不把 HTTP 放进事务。
-- active attempt terminal 后移除；changed-file set 沿用 turn capture entry 上限；outbox 有状态、lease 和保留策略。
+- active attempt terminal 后移除；outbox 有状态、lease、最多 3 次 attempt 和保留策略，失败事件不会形成无界积压。
 - 不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
-- 日志只记录 event/task identity、稳定错误码、队列/批次/状态和大小，不记录 payload 原文。
+- 每次 HTTP batch attempt 在统一发送边界记录 `requestId + attempt + url + body`；`body` 必须复用实际发送的序列化字符串，允许包含 metrics wire payload，但不得记录认证头。wire payload 继续禁止 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path；日志仍受 20 MB 总量上限保护。
 
-实现已通过有界队列、单 writer、短事务、lease 恢复和真实 HTTP 部分响应测试完成结构性性能验收。当前没有采样证据表明 CPU 或内存存在热点，因此不增加并发 writer、缓存或微优化；release 压测应覆盖连续事件、混合 100 条 batch、SQLite 慢和网络重试，并记录 lifecycle 延迟、队列丢弃与 batch 吞吐基线。
+每次 claim 和失败结算仍为单批最多 100 条的 O(batch size) 点更新；历史超限清理复用 outbox claim 事务且只在 uploader 轮询时执行，不增加 Runtime 热路径 I/O、HTTP 次数、线程、缓存或锁范围。有限尝试会降低长期断网时的数据库行数、日志量和网络请求量。当前没有采样证据表明 CPU 或内存存在热点，因此不增加索引、并发 writer 或缓存；release 压测应覆盖连续事件、混合 100 条 batch、SQLite 慢和有限网络重试，并记录 lifecycle 延迟、队列丢弃与 batch 吞吐基线。
 
 ## 13. 接口级验收
 
@@ -289,9 +297,14 @@ collector 构造 wire event 前校验：
 - Workflow/AUTO 中间态使用 attempt subject；缺失 locator 不伪造事件且业务继续。
 - attempt/task counters 在 permission、elicitation、manual continue、follow-up、retry 与重复 request 下符合精确定义。
 - scheduled new/continuous/manual/follow-up 的 origin/trigger 组合正确。
-- code changes 覆盖 complete/partial/unavailable、同路径多 turn 去重与隐私边界。
+- code changes 覆盖 commit/staged/unstaged/untracked、revert、rename、binary、无变更、快照重放与 Git 不可用。
+- 关闭客户端后继续和停止后带文字继续均只产生 resumed，不重复 started；失败启动后再次 continue 不受任何 metrics 状态阻塞；run terminal counters 固定为对应 canonical action 的投影。
+- 人工确认节点严格按 started -> paused/manual-decision -> completed，terminal 后不得再出现 paused。
 - batch 100 条混合多个 Project/Task/Run/Round 不串 state；部分 rejected 不影响 accepted。
 - producer queue 满、SQLite 慢和网络重试不阻塞 Runtime 事件线程。
+- 单条事件首次请求计为第 1 次；可重试失败最多请求 3 次，第三次失败后物理删除且第 4 次无法 claim；永久错误第一次失败即删除。
+- 混合 attempt batch 按事件独立结算；应用重启不重置 attempt；历史 `attempt_count >= 3` 的 pending 行在 claim 前删除且不发送。
+- request 日志包含批内最大 outbox `attempt_count`、实际 endpoint 和与 HTTP body 字节一致的 JSON，且不包含 API key；失败结算日志包含 retryable、rescheduled、dropped 与最大次数。
 
 ## 14. 实施状态
 
@@ -300,4 +313,6 @@ collector 构造 wire event 前校验：
 - [x] SQLite collector、TaskMetricsState、outbox/uploader 完成。
 - [x] Direct、Workflow、AUTO、scheduler 与 codeChanges producer 完成。
 - [x] 客户端接口测试与真实 batch 部分响应验收完成。
+- [x] uploader request 日志恢复 `attempt + url + body`，并以接口测试固定批次 attempt 与实际 wire body 一致性。
+- [x] uploader 改为单事件总计最多 3 次请求；第三次可重试失败、永久错误和历史超限 pending 均物理删除，并以逐事件、重启持久化接口测试固定合同。
 - [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。

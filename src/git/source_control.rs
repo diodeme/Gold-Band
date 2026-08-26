@@ -1140,6 +1140,14 @@ pub struct GitDiffStats {
     pub deleted_lines: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBaselineDiffStats {
+    pub added_lines: u64,
+    pub deleted_lines: u64,
+    pub changed_files: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFileComparison {
@@ -1315,6 +1323,67 @@ impl GitSourceControlService {
         apply_workspace_stats(&mut status.conflicts, &unstaged_stats);
         apply_workspace_stats(&mut status.conflicts, &staged_stats);
         Ok(status)
+    }
+
+    pub fn baseline_diff_stats(
+        &self,
+        cwd: &Utf8Path,
+        baseline: &str,
+    ) -> Result<GitBaselineDiffStats> {
+        ensure!(!baseline.trim().is_empty(), "Git baseline cannot be empty");
+        self.runner.require(
+            cwd,
+            &["cat-file", "-e", &format!("{baseline}^{{commit}}")],
+            "git.baseline-not-found",
+        )?;
+        let output = self.runner.require(
+            cwd,
+            &[
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "-M",
+                "-C",
+                baseline,
+                "--",
+            ],
+            "git.baseline-diff-query-failed",
+        )?;
+        let mut files = parse_numstat(&output.stdout, "git.baseline-diff-parse-failed")?;
+        let untracked = self.runner.require(
+            cwd,
+            &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+            "git.untracked-files-query-failed",
+        )?;
+        for field in nul_fields(&untracked.stdout) {
+            let relative = text(&field);
+            if relative.is_empty() || files.contains_key(&relative) {
+                continue;
+            }
+            let path = Utf8Path::new(&relative);
+            ensure!(
+                path.is_relative()
+                    && !path
+                        .components()
+                        .any(|component| matches!(component, camino::Utf8Component::ParentDir)),
+                "Git returned an invalid untracked path"
+            );
+            let stats = untracked_file_stats(&cwd.join(path))?;
+            files.insert(relative, stats);
+        }
+        Ok(GitBaselineDiffStats {
+            added_lines: files
+                .values()
+                .filter_map(|stats| stats.added_lines)
+                .fold(0, u64::saturating_add),
+            deleted_lines: files
+                .values()
+                .filter_map(|stats| stats.deleted_lines)
+                .fold(0, u64::saturating_add),
+            changed_files: files.len() as u64,
+        })
     }
 
     fn status_without_stats(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
@@ -4086,6 +4155,41 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
     parse_numstat(bytes, "git.commit-diff-parse-failed")
 }
 
+fn untracked_file_stats(path: &Utf8Path) -> Result<CommitFileStats> {
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("open untracked file `{path}` for Git metrics"))?;
+    let mut buffer = [0_u8; 8192];
+    let mut added_lines = 0_u64;
+    let mut any = false;
+    let mut last = 0_u8;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        if chunk.contains(&0) {
+            return Ok(CommitFileStats {
+                binary: true,
+                added_lines: None,
+                deleted_lines: None,
+            });
+        }
+        added_lines =
+            added_lines.saturating_add(chunk.iter().filter(|byte| **byte == b'\n').count() as u64);
+        any = true;
+        last = chunk[read - 1];
+    }
+    if any && last != b'\n' {
+        added_lines = added_lines.saturating_add(1);
+    }
+    Ok(CommitFileStats {
+        binary: false,
+        added_lines: Some(added_lines),
+        deleted_lines: Some(0),
+    })
+}
+
 fn parse_numstat(
     bytes: &[u8],
     error_code: &'static str,
@@ -5745,6 +5849,60 @@ mod tests {
             .unwrap();
         assert_eq!(unstaged.added_lines, Some(1));
         assert_eq!(unstaged.deleted_lines, Some(0));
+    }
+
+    #[test]
+    fn baseline_diff_stats_include_committed_index_workspace_and_untracked_state() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "tracked.txt", "one\ntwo\n", "baseline");
+        let service = GitSourceControlService::default();
+        assert_eq!(
+            service.baseline_diff_stats(&root, &baseline).unwrap(),
+            GitBaselineDiffStats::default()
+        );
+
+        std::fs::write(root.join("tracked.txt"), "one\nthree\nfour\n").unwrap();
+        std::fs::write(root.join("staged.txt"), "a\nb\n").unwrap();
+        assert!(
+            GitCommandRunner
+                .run(&root, &["add", "--", "staged.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("untracked.txt"), "x\ny\nz\n").unwrap();
+        std::fs::write(root.join("untracked.bin"), [0, 1, 2]).unwrap();
+
+        assert_eq!(
+            service.baseline_diff_stats(&root, &baseline).unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 7,
+                deleted_lines: 1,
+                changed_files: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn baseline_diff_stats_count_a_pure_rename_as_one_changed_file() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "before.txt", "one\ntwo\n", "baseline");
+        assert!(
+            GitCommandRunner
+                .run(&root, &["mv", "--", "before.txt", "after.txt"])
+                .unwrap()
+                .success
+        );
+
+        assert_eq!(
+            GitSourceControlService::default()
+                .baseline_diff_stats(&root, &baseline)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 0,
+                deleted_lines: 0,
+                changed_files: 1,
+            }
+        );
     }
 
     #[test]

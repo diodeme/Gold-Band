@@ -201,45 +201,61 @@ impl MetricsSubject {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase"
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MetricsTaskOrigin {
     User,
-    ScheduledTask { scheduled_task_id: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ScheduledTriggerKind {
     Scheduled,
-    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ScheduledSessionPolicy {
-    New,
-    Continuous,
+pub enum MetricsRepeatKind {
+    Interval,
+    Hourly,
+    Daily,
+    Weekdays,
+    Weekly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
+    tag = "type",
+    rename_all = "lowercase",
     rename_all_fields = "camelCase"
 )]
 pub enum MetricsExecutionTrigger {
-    User,
-    ScheduledOccurrence {
+    Once {
         scheduled_task_id: String,
         scheduled_occurrence_id: String,
-        trigger_kind: ScheduledTriggerKind,
         scheduled_at: String,
-        session_policy: ScheduledSessionPolicy,
+        timezone: String,
+    },
+    Repeat {
+        scheduled_task_id: String,
+        scheduled_occurrence_id: String,
+        scheduled_at: String,
+        timezone: String,
+        repeat_kind: MetricsRepeatKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        anchor_at: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hour: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        minute: Option<u32>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weekdays: Vec<String>,
+    },
+    Cron {
+        scheduled_task_id: String,
+        scheduled_occurrence_id: String,
+        scheduled_at: String,
+        timezone: String,
+        expression: String,
     },
 }
 
@@ -267,6 +283,8 @@ pub enum MetricsTransition {
     Resumed {
         transition_id: String,
         action: UserExecutionAction,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follow_up_action_id: Option<String>,
     },
     PermissionRequested {
         request_id: String,
@@ -289,28 +307,19 @@ impl Default for MetricsTransition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CodeChangeCompleteness {
-    Complete,
-    Partial,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CodeChangeFileDelta {
-    pub logical_path: String,
+pub struct TaskCodeChanges {
     pub added_lines: u64,
     pub deleted_lines: u64,
+    pub changed_files: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskCodeChangeDelta {
-    pub completeness: CodeChangeCompleteness,
-    pub files: Vec<CodeChangeFileDelta>,
-    pub limitation_codes: Vec<String>,
+pub struct RunCodeChangeBaseline {
+    pub workspace_path: Utf8PathBuf,
+    pub baseline_commit: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,12 +382,13 @@ pub struct MetricsPayload {
     pub model_usages: Option<Vec<ModelUsage>>,
     pub timing: Option<LifecycleTiming>,
     pub child_run_id: Option<String>,
-    pub code_change_delta: Option<TaskCodeChangeDelta>,
+    pub code_changes: Option<TaskCodeChanges>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingMetricsFact {
+    pub fact_id: String,
     pub key: TaskMetricsKey,
     pub event_type: LifecycleEventType,
     pub occurred_at: String,
@@ -388,7 +398,8 @@ pub struct PendingMetricsFact {
     pub subject: MetricsSubject,
     pub runtime_locator: MetricsRuntimeLocator,
     pub task_origin: MetricsTaskOrigin,
-    pub execution_trigger: MetricsExecutionTrigger,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_trigger: Option<MetricsExecutionTrigger>,
     #[serde(default)]
     pub transition: MetricsTransition,
     #[serde(default)]
@@ -407,9 +418,10 @@ impl PendingMetricsFact {
         subject: MetricsSubject,
         runtime_locator: MetricsRuntimeLocator,
         task_origin: MetricsTaskOrigin,
-        execution_trigger: MetricsExecutionTrigger,
+        execution_trigger: Option<MetricsExecutionTrigger>,
     ) -> Self {
         Self {
+            fact_id: uuid::Uuid::new_v4().to_string(),
             key,
             event_type,
             occurred_at,
@@ -426,7 +438,8 @@ impl PendingMetricsFact {
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.key.project_id.trim().is_empty()
+        if self.fact_id.trim().is_empty()
+            || self.key.project_id.trim().is_empty()
             || self.key.execution_id.trim().is_empty()
             || self.runtime_locator.run_id.trim().is_empty()
             || self.runtime_locator.round_id.trim().is_empty()
@@ -478,32 +491,12 @@ impl PendingMetricsFact {
         {
             return Err("intermediate lifecycle events require an attempt subject");
         }
-        if let (
-            MetricsTaskOrigin::ScheduledTask {
-                scheduled_task_id: origin_id,
-            },
-            MetricsExecutionTrigger::ScheduledOccurrence {
-                scheduled_task_id: trigger_id,
-                ..
-            },
-        ) = (&self.task_origin, &self.execution_trigger)
-            && origin_id != trigger_id
-        {
-            return Err("scheduled task origin and trigger ids must match");
+        match (self.task_origin, self.execution_trigger.as_ref()) {
+            (MetricsTaskOrigin::User, None) | (MetricsTaskOrigin::Scheduled, Some(_)) => {}
+            _ => return Err("task origin and execution trigger are inconsistent"),
         }
-        if self.session_mode != MetricsSessionMode::Direct
-            && matches!(
-                self.execution_trigger,
-                MetricsExecutionTrigger::ScheduledOccurrence {
-                    session_policy: ScheduledSessionPolicy::Continuous,
-                    ..
-                }
-            )
-        {
-            return Err("continuous scheduled sessions are direct-only");
-        }
-        if self.payload.code_change_delta.is_some() && !terminal {
-            return Err("code change deltas are terminal-only");
+        if self.payload.code_changes.is_some() && (!terminal || !self.subject.is_delivery()) {
+            return Err("code changes require a delivery terminal");
         }
         Ok(())
     }
@@ -932,7 +925,7 @@ mod tests {
                 round_id: "round-001".to_string(),
             },
             MetricsTaskOrigin::User,
-            MetricsExecutionTrigger::User,
+            None,
         );
         assert!(fact.validate().is_ok());
 
@@ -1072,7 +1065,7 @@ mod tests {
                 round_id: "round-001".to_string(),
             },
             MetricsTaskOrigin::User,
-            MetricsExecutionTrigger::User,
+            None,
         )
     }
 
@@ -1102,22 +1095,26 @@ mod tests {
     }
 
     #[test]
-    fn pending_fact_rejects_cross_job_scheduled_provenance() {
+    fn pending_fact_requires_trigger_only_for_scheduled_origin() {
         let mut fact = pending_workflow_fact(MetricsSubject::WorkflowRun);
-        fact.task_origin = MetricsTaskOrigin::ScheduledTask {
-            scheduled_task_id: "job-a".to_string(),
-        };
-        fact.execution_trigger = MetricsExecutionTrigger::ScheduledOccurrence {
-            scheduled_task_id: "job-b".to_string(),
-            scheduled_occurrence_id: "occurrence-1".to_string(),
-            trigger_kind: ScheduledTriggerKind::Scheduled,
-            scheduled_at: "2026-08-20T00:00:00Z".to_string(),
-            session_policy: ScheduledSessionPolicy::New,
-        };
-
+        fact.task_origin = MetricsTaskOrigin::Scheduled;
         assert_eq!(
             fact.validate(),
-            Err("scheduled task origin and trigger ids must match")
+            Err("task origin and execution trigger are inconsistent")
+        );
+
+        fact.execution_trigger = Some(MetricsExecutionTrigger::Once {
+            scheduled_task_id: "job-a".to_string(),
+            scheduled_occurrence_id: "occurrence-1".to_string(),
+            scheduled_at: "2026-08-20T00:00:00Z".to_string(),
+            timezone: "Asia/Shanghai".to_string(),
+        });
+        assert!(fact.validate().is_ok());
+
+        fact.task_origin = MetricsTaskOrigin::User;
+        assert_eq!(
+            fact.validate(),
+            Err("task origin and execution trigger are inconsistent")
         );
     }
 }

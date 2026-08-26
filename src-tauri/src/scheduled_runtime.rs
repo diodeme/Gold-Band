@@ -291,7 +291,11 @@ fn scheduled_task_context_info(
             gold_band::scheduler::SessionPolicy::Continuous => "continuous".to_string(),
         },
         trigger_kind: trigger_kind.to_string(),
-        triggered_at: triggered_at.to_rfc3339(),
+        triggered_at: triggered_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string(),
+        schedule: definition.schedule.clone(),
         instruction: Some(definition.instruction.clone()),
     }
 }

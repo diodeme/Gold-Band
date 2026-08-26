@@ -1,13 +1,12 @@
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use gold_band::app::observability::{
-    CodeChangeCompleteness, ExecutionKind, LifecycleEventType, MetricsCounters,
-    MetricsExecutionTrigger, MetricsInterventionKind, MetricsPauseReason, MetricsSessionMode,
-    MetricsSubject, MetricsTaskOrigin, MetricsTransition, ModelUsage, PendingMetricsFact,
-    TaskCodeChangeDelta, TerminalReason, TokenUsage, UserExecutionAction,
+    ExecutionKind, LifecycleEventType, MetricsCounters, MetricsExecutionTrigger,
+    MetricsInterventionKind, MetricsPauseReason, MetricsSessionMode, MetricsSubject,
+    MetricsTaskOrigin, MetricsTransition, ModelUsage, PendingMetricsFact, TaskCodeChanges,
+    TerminalReason, TokenUsage, UserExecutionAction,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -20,6 +19,7 @@ const OUTBOX_REJECTED: &str = "rejected";
 const MAX_EVENT_BYTES: usize = 64 * 1024;
 const ACK_RETENTION_SECONDS: i64 = 7 * 24 * 60 * 60;
 const REJECTED_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub(super) const MAX_UPLOAD_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WireEventType {
@@ -50,16 +50,6 @@ impl From<LifecycleEventType> for WireEventType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskCodeChanges {
-    pub added_lines: Option<u64>,
-    pub deleted_lines: Option<u64>,
-    pub changed_files: Option<u64>,
-    pub completeness: CodeChangeCompleteness,
-    pub limitation_codes: Vec<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectedMetricsEvent {
@@ -78,7 +68,8 @@ pub struct CollectedMetricsEvent {
     pub run_id: String,
     pub round_id: String,
     pub task_origin: MetricsTaskOrigin,
-    pub execution_trigger: MetricsExecutionTrigger,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_trigger: Option<MetricsExecutionTrigger>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,61 +126,8 @@ pub struct CollectedMetricsEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct TaskCodeChangeAccumulator {
-    added_lines: u64,
-    deleted_lines: u64,
-    changed_paths: BTreeSet<String>,
-    limitation_codes: BTreeSet<String>,
-    observed: bool,
-    incomplete: bool,
-    unavailable: bool,
-}
-
-impl TaskCodeChangeAccumulator {
-    fn apply(&mut self, delta: TaskCodeChangeDelta) {
-        self.observed = true;
-        match delta.completeness {
-            CodeChangeCompleteness::Complete => {}
-            CodeChangeCompleteness::Partial => self.incomplete = true,
-            CodeChangeCompleteness::Unavailable => self.unavailable = true,
-        }
-        for file in delta.files {
-            self.added_lines = self.added_lines.saturating_add(file.added_lines);
-            self.deleted_lines = self.deleted_lines.saturating_add(file.deleted_lines);
-            self.changed_paths.insert(file.logical_path);
-        }
-        self.limitation_codes.extend(delta.limitation_codes);
-    }
-
-    fn snapshot(&self) -> TaskCodeChanges {
-        if !self.observed || (self.unavailable && self.changed_paths.is_empty()) {
-            return TaskCodeChanges {
-                added_lines: None,
-                deleted_lines: None,
-                changed_files: None,
-                completeness: CodeChangeCompleteness::Unavailable,
-                limitation_codes: self.limitation_codes.iter().cloned().collect(),
-            };
-        }
-        TaskCodeChanges {
-            added_lines: Some(self.added_lines),
-            deleted_lines: Some(self.deleted_lines),
-            changed_files: Some(self.changed_paths.len() as u64),
-            completeness: if self.incomplete || self.unavailable {
-                CodeChangeCompleteness::Partial
-            } else {
-                CodeChangeCompleteness::Complete
-            },
-            limitation_codes: self.limitation_codes.iter().cloned().collect(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 struct TaskMetricsState {
     counters: MetricsCounters,
-    code_changes: TaskCodeChangeAccumulator,
     acceptance_attempts: u32,
 }
 
@@ -198,6 +136,25 @@ pub struct OutboxItem {
     pub event_id: String,
     pub payload_json: String,
     pub attempt_count: u32,
+}
+
+#[derive(Debug)]
+pub struct ClaimedBatch {
+    pub items: Vec<OutboxItem>,
+    pub discarded_exhausted_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadFailureItem {
+    pub event_id: String,
+    pub attempt_count: u32,
+    pub next_attempt_at: i64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UploadFailureDisposition {
+    pub rescheduled_count: usize,
+    pub dropped_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +182,7 @@ pub enum CollectorCommand {
         now_epoch_seconds: i64,
         lease_seconds: i64,
         limit: usize,
-        reply: oneshot::Sender<Result<Vec<OutboxItem>>>,
+        reply: oneshot::Sender<Result<ClaimedBatch>>,
     },
     ApplyDisposition {
         owner: String,
@@ -233,12 +190,12 @@ pub enum CollectorCommand {
         now_epoch_seconds: i64,
         reply: oneshot::Sender<Result<()>>,
     },
-    Retry {
+    RecordUploadFailure {
         owner: String,
-        event_ids: Vec<String>,
-        next_attempt_at: i64,
+        items: Vec<UploadFailureItem>,
         error_code: String,
-        reply: oneshot::Sender<Result<()>>,
+        retryable: bool,
+        reply: oneshot::Sender<Result<UploadFailureDisposition>>,
     },
     Cleanup {
         now_epoch_seconds: i64,
@@ -283,19 +240,15 @@ pub fn run_collector_actor(
             } => {
                 let _ = reply.send(store.apply_disposition(&owner, disposition, now_epoch_seconds));
             }
-            CollectorCommand::Retry {
+            CollectorCommand::RecordUploadFailure {
                 owner,
-                event_ids,
-                next_attempt_at,
+                items,
                 error_code,
+                retryable,
                 reply,
             } => {
-                let _ = reply.send(store.retry_claimed(
-                    &owner,
-                    &event_ids,
-                    next_attempt_at,
-                    &error_code,
-                ));
+                let _ =
+                    reply.send(store.record_upload_failure(&owner, &items, &error_code, retryable));
             }
             CollectorCommand::Cleanup { now_epoch_seconds } => {
                 if let Err(error) = store.cleanup(now_epoch_seconds) {
@@ -351,6 +304,14 @@ impl MetricsCollectorStore {
                created_at INTEGER NOT NULL,
                PRIMARY KEY(project_id, execution_id, transition_kind, transition_id)
              );
+             CREATE TABLE IF NOT EXISTS metrics_fact_dedup (
+               project_id TEXT NOT NULL,
+               execution_id TEXT NOT NULL,
+               fact_id TEXT NOT NULL,
+               payload_json TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               PRIMARY KEY(project_id, execution_id, fact_id)
+             );
              CREATE TABLE IF NOT EXISTS metrics_outbox (
                event_id TEXT PRIMARY KEY,
                project_id TEXT NOT NULL,
@@ -402,6 +363,19 @@ impl MetricsCollectorStore {
     ) -> Result<CollectedMetricsEvent> {
         fact.validate().map_err(|message| anyhow!(message))?;
         let transaction = self.connection.transaction()?;
+        let fact_id = fact.fact_id.clone();
+        if let Some(payload_json) = transaction
+            .query_row(
+                "SELECT payload_json FROM metrics_fact_dedup
+                 WHERE project_id = ?1 AND execution_id = ?2 AND fact_id = ?3",
+                params![fact.key.project_id, fact.key.execution_id, fact.fact_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return serde_json::from_str(&payload_json)
+                .context("decode previously collected metrics fact");
+        }
         let (last_revision, mut task_state) = load_task_state(&transaction, &fact)?;
         let attempt_key = fact.subject.attempt_key(&fact.runtime_locator);
         let mut attempt_counters = match attempt_key.as_ref() {
@@ -416,10 +390,6 @@ impl MetricsCollectorStore {
             attempt_key.as_ref().map(|_| &mut attempt_counters),
             now_epoch_seconds,
         )?;
-        if let Some(delta) = fact.payload.code_change_delta.take() {
-            task_state.code_changes.apply(delta);
-        }
-
         if let MetricsTransition::Acceptance { passed, .. } = fact.transition {
             task_state.acceptance_attempts = task_state.acceptance_attempts.saturating_add(1);
             fact.payload.passed = Some(passed);
@@ -436,8 +406,6 @@ impl MetricsCollectorStore {
                 attempt_counters.clone()
             }
         });
-        let code_changes =
-            (terminal && fact.subject.is_delivery()).then(|| task_state.code_changes.snapshot());
         let event = build_collected_event(
             fact,
             event_id,
@@ -445,7 +413,6 @@ impl MetricsCollectorStore {
             reported_at,
             client_version,
             counters,
-            code_changes,
         );
         let payload_json = serde_json::to_string(&event)?;
         let (status, error_code) = if payload_json.len() > MAX_EVENT_BYTES {
@@ -461,6 +428,18 @@ impl MetricsCollectorStore {
             revision,
             &task_state,
             now_epoch_seconds,
+        )?;
+        transaction.execute(
+            "INSERT INTO metrics_fact_dedup(
+               project_id, execution_id, fact_id, payload_json, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                event.project_id,
+                event.execution_id,
+                fact_id,
+                payload_json,
+                now_epoch_seconds,
+            ],
         )?;
         if let Some(key) = attempt_key {
             if terminal {
@@ -502,7 +481,7 @@ impl MetricsCollectorStore {
         now_epoch_seconds: i64,
         lease_seconds: i64,
         limit: usize,
-    ) -> Result<Vec<OutboxItem>> {
+    ) -> Result<ClaimedBatch> {
         ensure!(!owner.trim().is_empty(), "lease owner is required");
         let limit = limit.clamp(1, 100) as i64;
         let transaction = self.connection.transaction()?;
@@ -512,46 +491,72 @@ impl MetricsCollectorStore {
              WHERE status = ?2 AND lease_until <= ?3",
             params![OUTBOX_PENDING, OUTBOX_IN_FLIGHT, now_epoch_seconds],
         )?;
+        let discarded_exhausted_count = transaction.execute(
+            "DELETE FROM metrics_outbox
+             WHERE status = ?1 AND attempt_count >= ?2",
+            params![OUTBOX_PENDING, MAX_UPLOAD_ATTEMPTS],
+        )?;
         let report_month = transaction
             .query_row(
                 "SELECT substr(reported_at, 1, 7) FROM metrics_outbox
-                 WHERE status = ?1 AND next_attempt_at <= ?2
+                 WHERE status = ?1 AND next_attempt_at <= ?2 AND attempt_count < ?3
                  ORDER BY created_at, event_revision LIMIT 1",
-                params![OUTBOX_PENDING, now_epoch_seconds],
+                params![OUTBOX_PENDING, now_epoch_seconds, MAX_UPLOAD_ATTEMPTS],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
         let Some(report_month) = report_month else {
             transaction.commit()?;
-            return Ok(Vec::new());
+            return Ok(ClaimedBatch {
+                items: Vec::new(),
+                discarded_exhausted_count,
+            });
         };
         let ids = {
             let mut statement = transaction.prepare(
                 "SELECT event_id FROM metrics_outbox
                  WHERE status = ?1 AND next_attempt_at <= ?2
-                   AND substr(reported_at, 1, 7) = ?3
+                   AND attempt_count < ?3
+                   AND substr(reported_at, 1, 7) = ?4
                  ORDER BY created_at, event_revision
-                 LIMIT ?4",
+                 LIMIT ?5",
             )?;
             statement
                 .query_map(
-                    params![OUTBOX_PENDING, now_epoch_seconds, report_month, limit],
+                    params![
+                        OUTBOX_PENDING,
+                        now_epoch_seconds,
+                        MAX_UPLOAD_ATTEMPTS,
+                        report_month,
+                        limit
+                    ],
                     |row| row.get::<_, String>(0),
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         if ids.is_empty() {
             transaction.commit()?;
-            return Ok(Vec::new());
+            return Ok(ClaimedBatch {
+                items: Vec::new(),
+                discarded_exhausted_count,
+            });
         }
         let lease_until = now_epoch_seconds.saturating_add(lease_seconds.max(1));
         for id in &ids {
-            transaction.execute(
+            let changed = transaction.execute(
                 "UPDATE metrics_outbox
                  SET status = ?1, lease_owner = ?2, lease_until = ?3, attempt_count = attempt_count + 1
-                 WHERE event_id = ?4 AND status = ?5",
-                params![OUTBOX_IN_FLIGHT, owner, lease_until, id, OUTBOX_PENDING],
+                 WHERE event_id = ?4 AND status = ?5 AND attempt_count < ?6",
+                params![
+                    OUTBOX_IN_FLIGHT,
+                    owner,
+                    lease_until,
+                    id,
+                    OUTBOX_PENDING,
+                    MAX_UPLOAD_ATTEMPTS
+                ],
             )?;
+            ensure!(changed == 1, "outbox claim changed unexpectedly");
         }
         let mut items = Vec::with_capacity(ids.len());
         {
@@ -575,7 +580,10 @@ impl MetricsCollectorStore {
             }
         }
         transaction.commit()?;
-        Ok(items)
+        Ok(ClaimedBatch {
+            items,
+            discarded_exhausted_count,
+        })
     }
 
     pub fn apply_disposition(
@@ -626,32 +634,50 @@ impl MetricsCollectorStore {
         Ok(())
     }
 
-    pub fn retry_claimed(
+    pub fn record_upload_failure(
         &mut self,
         owner: &str,
-        event_ids: &[String],
-        next_attempt_at: i64,
+        items: &[UploadFailureItem],
         error_code: &str,
-    ) -> Result<()> {
+        retryable: bool,
+    ) -> Result<UploadFailureDisposition> {
+        ensure!(!owner.trim().is_empty(), "lease owner is required");
         let transaction = self.connection.transaction()?;
-        for id in event_ids {
-            transaction.execute(
-                "UPDATE metrics_outbox
-                 SET status = ?1, next_attempt_at = ?2, lease_owner = NULL, lease_until = NULL,
-                     last_error_code = ?3
-                 WHERE event_id = ?4 AND status = ?5 AND lease_owner = ?6",
-                params![
-                    OUTBOX_PENDING,
-                    next_attempt_at,
-                    error_code,
-                    id,
-                    OUTBOX_IN_FLIGHT,
-                    owner
-                ],
-            )?;
+        let mut disposition = UploadFailureDisposition::default();
+        for item in items {
+            let changed = if retryable && item.attempt_count < MAX_UPLOAD_ATTEMPTS {
+                let changed = transaction.execute(
+                    "UPDATE metrics_outbox
+                     SET status = ?1, next_attempt_at = ?2, lease_owner = NULL,
+                         lease_until = NULL, last_error_code = ?3
+                     WHERE event_id = ?4 AND status = ?5 AND lease_owner = ?6
+                       AND attempt_count = ?7",
+                    params![
+                        OUTBOX_PENDING,
+                        item.next_attempt_at,
+                        error_code,
+                        item.event_id,
+                        OUTBOX_IN_FLIGHT,
+                        owner,
+                        item.attempt_count
+                    ],
+                )?;
+                disposition.rescheduled_count += changed;
+                changed
+            } else {
+                let changed = transaction.execute(
+                    "DELETE FROM metrics_outbox
+                     WHERE event_id = ?1 AND status = ?2 AND lease_owner = ?3
+                       AND attempt_count = ?4",
+                    params![item.event_id, OUTBOX_IN_FLIGHT, owner, item.attempt_count],
+                )?;
+                disposition.dropped_count += changed;
+                changed
+            };
+            ensure!(changed == 1, "upload failure contains an unclaimed event");
         }
         transaction.commit()?;
-        Ok(())
+        Ok(disposition)
     }
 
     pub fn cleanup(&mut self, now_epoch_seconds: i64) -> Result<usize> {
@@ -851,6 +877,17 @@ fn apply_transition(
                         counters.manual_continue_count.saturating_add(1);
                 }
             }
+            if let MetricsTransition::Resumed {
+                follow_up_action_id: Some(_),
+                ..
+            } = &fact.transition
+            {
+                task_state.counters.follow_up_count =
+                    task_state.counters.follow_up_count.saturating_add(1);
+                if let Some(counters) = attempt_counters.as_mut() {
+                    counters.follow_up_count = counters.follow_up_count.saturating_add(1);
+                }
+            }
         }
         MetricsTransition::PermissionRequested { .. } => {
             task_state.counters.permission_request_count = task_state
@@ -872,6 +909,9 @@ fn apply_transition(
         MetricsTransition::FollowUp { .. } => {
             task_state.counters.follow_up_count =
                 task_state.counters.follow_up_count.saturating_add(1);
+            if let Some(counters) = attempt_counters.as_mut() {
+                counters.follow_up_count = counters.follow_up_count.saturating_add(1);
+            }
         }
         MetricsTransition::Acceptance { .. } | MetricsTransition::None => {}
     }
@@ -885,7 +925,6 @@ fn build_collected_event(
     reported_at: String,
     client_version: &str,
     counters: Option<MetricsCounters>,
-    code_changes: Option<TaskCodeChanges>,
 ) -> CollectedMetricsEvent {
     let (node_id, attempt_id, attempt_index, round_index, role_name, unit_kind) =
         match fact.subject.clone() {
@@ -976,7 +1015,7 @@ fn build_collected_event(
         model_usages: payload.model_usages,
         timing: payload.timing,
         counters,
-        code_changes,
+        code_changes: payload.code_changes,
     }
 }
 
@@ -1014,7 +1053,7 @@ mod tests {
                 round_id: round_id.to_string(),
             },
             MetricsTaskOrigin::User,
-            MetricsExecutionTrigger::User,
+            None,
         );
         if event_type == LifecycleEventType::ExecutionCompleted {
             fact.payload.outcome = Some(gold_band::app::observability::ExecutionOutcome::Success);
@@ -1107,6 +1146,7 @@ mod tests {
         resumed.transition = MetricsTransition::Resumed {
             transition_id: "resume-1".to_string(),
             action: UserExecutionAction::PermissionResponse,
+            follow_up_action_id: None,
         };
         store
             .collect(resumed, "2026-08-20T00:00:03Z".to_string(), "test", 3)
@@ -1145,7 +1185,7 @@ mod tests {
                 round_id: "round-001".to_string(),
             },
             MetricsTaskOrigin::User,
-            MetricsExecutionTrigger::User,
+            None,
         );
         delivery.payload.outcome = Some(gold_band::app::observability::ExecutionOutcome::Success);
         delivery.payload.terminal_reason = Some(TerminalReason::Completed);
@@ -1153,6 +1193,129 @@ mod tests {
             .collect(delivery, "2026-08-20T00:00:06Z".to_string(), "test", 6)
             .unwrap();
         assert_eq!(delivery.counters.unwrap().pause_count, 1);
+    }
+
+    #[test]
+    fn repeated_manual_continue_fact_is_idempotent_and_counts_follow_up_once() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let mut resumed = workflow_fact(
+            LifecycleEventType::ExecutionResumed,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        resumed.fact_id = "continue-action-1".to_string();
+        resumed.transition = MetricsTransition::Resumed {
+            transition_id: "continue-action-1".to_string(),
+            action: UserExecutionAction::ManualContinue,
+            follow_up_action_id: Some("continue-action-1".to_string()),
+        };
+
+        let first = store
+            .collect(
+                resumed.clone(),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        let replay = store
+            .collect(resumed, "2026-08-20T00:00:02.000".to_string(), "test", 2)
+            .unwrap();
+        assert_eq!(replay.event_id, first.event_id);
+        assert_eq!(replay.event_revision, first.event_revision);
+
+        let terminal = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionCompleted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:03.000".to_string(),
+                "test",
+                3,
+            )
+            .unwrap();
+        assert_eq!(terminal.event_revision, 2);
+        let counters = terminal.counters.unwrap();
+        assert_eq!(counters.resume_count, 1);
+        assert_eq!(counters.manual_continue_count, 1);
+        assert_eq!(counters.follow_up_count, 1);
+        let outbox_count: u64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM metrics_outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(outbox_count, 2);
+    }
+
+    #[test]
+    fn one_attempt_can_count_two_manual_resumes_and_one_content_follow_up() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+
+        for (index, has_follow_up) in [(1, false), (2, true)] {
+            let mut paused = workflow_fact(
+                LifecycleEventType::ExecutionPaused,
+                "run-001",
+                "round-001",
+                "attempt-1",
+            );
+            paused.fact_id = format!("pause-revision-{index}");
+            paused.transition = MetricsTransition::Paused {
+                transition_id: format!("pause-revision-{index}"),
+            };
+            store
+                .collect(
+                    paused,
+                    format!("2026-08-20T00:00:0{}.000", index * 2 - 1),
+                    "test",
+                    (index * 2 - 1) as i64,
+                )
+                .unwrap();
+
+            let mut resumed = workflow_fact(
+                LifecycleEventType::ExecutionResumed,
+                "run-001",
+                "round-001",
+                "attempt-1",
+            );
+            resumed.fact_id = format!("continue-action-{index}");
+            resumed.transition = MetricsTransition::Resumed {
+                transition_id: format!("continue-action-{index}"),
+                action: UserExecutionAction::ManualContinue,
+                follow_up_action_id: has_follow_up.then(|| format!("continue-action-{index}")),
+            };
+            store
+                .collect(
+                    resumed,
+                    format!("2026-08-20T00:00:0{}.000", index * 2),
+                    "test",
+                    (index * 2) as i64,
+                )
+                .unwrap();
+        }
+
+        let terminal = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionCompleted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:05.000".to_string(),
+                "test",
+                5,
+            )
+            .unwrap();
+        let counters = terminal.counters.unwrap();
+        assert_eq!(counters.pause_count, 2);
+        assert_eq!(counters.resume_count, 2);
+        assert_eq!(counters.manual_continue_count, 2);
+        assert_eq!(counters.follow_up_count, 1);
     }
 
     #[test]
@@ -1208,10 +1371,16 @@ mod tests {
             )
             .unwrap();
         let first = store.claim_batch("owner-a", 2, 10, 100).unwrap();
-        assert_eq!(first.len(), 1);
-        assert!(store.claim_batch("owner-b", 3, 10, 100).unwrap().is_empty());
+        assert_eq!(first.items.len(), 1);
+        assert!(
+            store
+                .claim_batch("owner-b", 3, 10, 100)
+                .unwrap()
+                .items
+                .is_empty()
+        );
         let recovered = store.claim_batch("owner-b", 12, 10, 100).unwrap();
-        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered.items.len(), 1);
         store
             .apply_disposition(
                 "owner-b",
@@ -1227,51 +1396,267 @@ mod tests {
             store
                 .claim_batch("owner-c", 14, 10, 100)
                 .unwrap()
+                .items
                 .is_empty()
         );
     }
 
     #[test]
-    fn code_change_churn_accumulates_across_attempts_and_deduplicates_paths() {
+    fn retryable_upload_failure_drops_event_after_third_claim() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
-        let delta = |files| TaskCodeChangeDelta {
-            completeness: CodeChangeCompleteness::Complete,
-            files,
-            limitation_codes: Vec::new(),
-        };
-        let file = |path: &str, added_lines, deleted_lines| {
-            gold_band::app::observability::CodeChangeFileDelta {
-                logical_path: path.to_string(),
-                added_lines,
-                deleted_lines,
-            }
-        };
-        let mut first = workflow_fact(
-            LifecycleEventType::ExecutionCompleted,
-            "run-001",
-            "round-001",
-            "attempt-1",
-        );
-        first.payload.code_change_delta = Some(delta(vec![file("src/lib.rs", 10, 2)]));
-        store
-            .collect(first, "2026-08-20T00:00:01Z".to_string(), "test", 1)
-            .unwrap();
-        let mut second = workflow_fact(
-            LifecycleEventType::ExecutionCompleted,
-            "run-001",
-            "round-002",
-            "attempt-2",
-        );
-        second.payload.code_change_delta = Some(TaskCodeChangeDelta {
-            completeness: CodeChangeCompleteness::Partial,
-            files: vec![file("src/lib.rs", 3, 1), file("src/main.rs", 4, 0)],
-            limitation_codes: vec!["NON_LINEAR_MUTATION".to_string()],
-        });
-        store
-            .collect(second, "2026-08-20T00:00:02Z".to_string(), "test", 2)
+        let event = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
             .unwrap();
 
+        for attempt_count in 1..=MAX_UPLOAD_ATTEMPTS {
+            let now = i64::from(attempt_count) * 10;
+            let claimed = store.claim_batch("owner", now, 30, 100).unwrap();
+            assert_eq!(claimed.discarded_exhausted_count, 0);
+            assert_eq!(claimed.items.len(), 1);
+            assert_eq!(claimed.items[0].attempt_count, attempt_count);
+            let disposition = store
+                .record_upload_failure(
+                    "owner",
+                    &[UploadFailureItem {
+                        event_id: event.event_id.clone(),
+                        attempt_count,
+                        next_attempt_at: now + 1,
+                    }],
+                    "METRICS_NETWORK_FAILED",
+                    true,
+                )
+                .unwrap();
+            if attempt_count < MAX_UPLOAD_ATTEMPTS {
+                assert_eq!(
+                    disposition,
+                    UploadFailureDisposition {
+                        rescheduled_count: 1,
+                        dropped_count: 0,
+                    }
+                );
+            } else {
+                assert_eq!(
+                    disposition,
+                    UploadFailureDisposition {
+                        rescheduled_count: 0,
+                        dropped_count: 1,
+                    }
+                );
+            }
+        }
+
+        assert!(
+            store
+                .claim_batch("owner", 100, 30, 100)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        let outbox_count: u64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM metrics_outbox", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(outbox_count, 0);
+    }
+
+    #[test]
+    fn non_retryable_failure_drops_event_on_first_claim() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let event = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        let claimed = store.claim_batch("owner", 2, 30, 100).unwrap();
+
+        let disposition = store
+            .record_upload_failure(
+                "owner",
+                &[UploadFailureItem {
+                    event_id: event.event_id,
+                    attempt_count: claimed.items[0].attempt_count,
+                    next_attempt_at: 3,
+                }],
+                "METRICS_HTTP_401",
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(disposition.rescheduled_count, 0);
+        assert_eq!(disposition.dropped_count, 1);
+        assert!(
+            store
+                .claim_batch("owner", 4, 30, 100)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn claim_discards_legacy_exhausted_pending_without_resending() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let event = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE metrics_outbox SET attempt_count = 100 WHERE event_id = ?1",
+                params![event.event_id],
+            )
+            .unwrap();
+
+        let claimed = store.claim_batch("owner", 2, 30, 100).unwrap();
+
+        assert!(claimed.items.is_empty());
+        assert_eq!(claimed.discarded_exhausted_count, 1);
+    }
+
+    #[test]
+    fn mixed_attempt_batch_records_failure_per_event() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
+        let first = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionStarted,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:01.000".to_string(),
+                "test",
+                1,
+            )
+            .unwrap();
+        let second = store
+            .collect(
+                workflow_fact(
+                    LifecycleEventType::ExecutionPaused,
+                    "run-001",
+                    "round-001",
+                    "attempt-1",
+                ),
+                "2026-08-20T00:00:02.000".to_string(),
+                "test",
+                2,
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE metrics_outbox SET attempt_count = 2 WHERE event_id = ?1",
+                params![second.event_id],
+            )
+            .unwrap();
+
+        let claimed = store.claim_batch("owner", 3, 30, 100).unwrap();
+        assert_eq!(claimed.items.len(), 2);
+        let failure_items = claimed
+            .items
+            .iter()
+            .map(|item| UploadFailureItem {
+                event_id: item.event_id.clone(),
+                attempt_count: item.attempt_count,
+                next_attempt_at: 4,
+            })
+            .collect::<Vec<_>>();
+        let disposition = store
+            .record_upload_failure("owner", &failure_items, "METRICS_HTTP_500", true)
+            .unwrap();
+
+        assert_eq!(
+            disposition,
+            UploadFailureDisposition {
+                rescheduled_count: 1,
+                dropped_count: 1,
+            }
+        );
+        let remaining = store.claim_batch("owner", 4, 30, 100).unwrap();
+        assert_eq!(remaining.items.len(), 1);
+        assert_eq!(remaining.items[0].event_id, first.event_id);
+        assert_eq!(remaining.items[0].attempt_count, 2);
+    }
+
+    #[test]
+    fn upload_attempt_count_survives_store_restart() {
+        let temp = tempdir().unwrap();
+        let database_path = temp.path().join("metrics.sqlite3");
+        let event_id = {
+            let mut store = MetricsCollectorStore::open(&database_path).unwrap();
+            let event = store
+                .collect(
+                    workflow_fact(
+                        LifecycleEventType::ExecutionStarted,
+                        "run-001",
+                        "round-001",
+                        "attempt-1",
+                    ),
+                    "2026-08-20T00:00:01.000".to_string(),
+                    "test",
+                    1,
+                )
+                .unwrap();
+            let claimed = store.claim_batch("owner-a", 2, 30, 100).unwrap();
+            assert_eq!(claimed.items[0].attempt_count, 1);
+            store
+                .record_upload_failure(
+                    "owner-a",
+                    &[UploadFailureItem {
+                        event_id: event.event_id.clone(),
+                        attempt_count: 1,
+                        next_attempt_at: 3,
+                    }],
+                    "METRICS_NETWORK_FAILED",
+                    true,
+                )
+                .unwrap();
+            event.event_id
+        };
+
+        let mut reopened = MetricsCollectorStore::open(&database_path).unwrap();
+        let claimed = reopened.claim_batch("owner-b", 3, 30, 100).unwrap();
+        assert_eq!(claimed.items.len(), 1);
+        assert_eq!(claimed.items[0].event_id, event_id);
+        assert_eq!(claimed.items[0].attempt_count, 2);
+    }
+
+    #[test]
+    fn delivery_uses_terminal_git_baseline_snapshot_without_accumulating_attempt_churn() {
+        let temp = tempdir().unwrap();
+        let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
         let mut delivery = PendingMetricsFact::new(
             TaskMetricsKey {
                 project_id: "project-1".to_string(),
@@ -1288,20 +1673,23 @@ mod tests {
                 round_id: "round-002".to_string(),
             },
             MetricsTaskOrigin::User,
-            MetricsExecutionTrigger::User,
+            None,
         );
         delivery.payload.outcome = Some(gold_band::app::observability::ExecutionOutcome::Success);
         delivery.payload.terminal_reason = Some(TerminalReason::Completed);
+        delivery.payload.code_changes = Some(TaskCodeChanges {
+            added_lines: 17,
+            deleted_lines: 3,
+            changed_files: 2,
+        });
         let changes = store
-            .collect(delivery, "2026-08-20T00:00:04Z".to_string(), "test", 4)
+            .collect(delivery, "2026-08-20T00:00:01Z".to_string(), "test", 1)
             .unwrap()
             .code_changes
             .unwrap();
-        assert_eq!(changes.added_lines, Some(17));
-        assert_eq!(changes.deleted_lines, Some(3));
-        assert_eq!(changes.changed_files, Some(2));
-        assert_eq!(changes.completeness, CodeChangeCompleteness::Partial);
-        assert_eq!(changes.limitation_codes, vec!["NON_LINEAR_MUTATION"]);
+        assert_eq!(changes.added_lines, 17);
+        assert_eq!(changes.deleted_lines, 3);
+        assert_eq!(changes.changed_files, 2);
     }
 
     #[test]
@@ -1327,18 +1715,25 @@ mod tests {
                 .unwrap();
         }
         let august = store.claim_batch("owner-a", 3, 30, 100).unwrap();
-        assert_eq!(august.len(), 1);
+        assert_eq!(august.items.len(), 1);
         store
             .apply_disposition(
                 "owner-a",
                 BatchDisposition {
-                    accepted_event_ids: vec![august[0].event_id.clone()],
+                    accepted_event_ids: vec![august.items[0].event_id.clone()],
                     duplicate_event_ids: Vec::new(),
                     rejected: Vec::new(),
                 },
                 4,
             )
             .unwrap();
-        assert_eq!(store.claim_batch("owner-b", 5, 30, 100).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .claim_batch("owner-b", 5, 30, 100)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
     }
 }

@@ -319,6 +319,7 @@ pub struct ScheduledTaskContextInfo {
     pub session_policy: String,
     pub trigger_kind: String,
     pub triggered_at: String,
+    pub schedule: crate::scheduler::ScheduleSpec,
     pub instruction: Option<String>,
 }
 

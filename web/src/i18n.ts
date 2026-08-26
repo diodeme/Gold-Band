@@ -1748,6 +1748,7 @@ const resources = {
           fieldSeparator: "，",
         },
         usagePanel: {
+          more: "更多会话信息",
           contextWindow: "上下文窗口",
           occupied: "占用",
           tokenUsage: "Token 用量",
@@ -3986,6 +3987,7 @@ const resources = {
           fieldSeparator: ", ",
         },
         usagePanel: {
+          more: "More session information",
           contextWindow: "Context Window",
           occupied: "Used",
           tokenUsage: "Token Usage",

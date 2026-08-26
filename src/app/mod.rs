@@ -914,6 +914,31 @@ pub enum AcpTurnOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectTurnLifecycleTransition {
+    Started,
+    Finished { outcome: AcpTurnOutcome },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectTurnLifecycleEvent {
+    pub project_id: String,
+    pub context: AcpLiveEventContext,
+    pub turn_id: String,
+    pub occurred_at: String,
+    pub repo_root: String,
+    pub transition: DirectTurnLifecycleTransition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsInterventionSourceEvent {
+    pub context: AcpLiveEventContext,
+    pub request_id: String,
+    pub kind: RuntimeInterventionKind,
+    pub occurred_at: String,
+    pub repo_root: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpTurnBatchProgress {
     pub completed_reply_count: u32,
@@ -931,6 +956,7 @@ impl AcpTurnBatchProgress {
 
 #[derive(Debug, Clone)]
 pub struct ActiveMetricTurn {
+    pub turn_id: String,
     pub execution_id: String,
     pub attempt_id: String,
     pub attempt_index: u32,
@@ -939,12 +965,14 @@ pub struct ActiveMetricTurn {
 
 impl ActiveMetricTurn {
     pub fn new(
+        turn_id: String,
         execution_id: String,
         attempt_id: String,
         attempt_index: u32,
         usage_baseline_turn_seq: u64,
     ) -> Self {
         Self {
+            turn_id,
             execution_id,
             attempt_id,
             attempt_index,
@@ -974,6 +1002,8 @@ pub enum RuntimeLifecycleEvent {
         project_id: String,
         scheduled_task_id: String,
     },
+    DirectTurnLifecycle(DirectTurnLifecycleEvent),
+    MetricsInterventionSource(MetricsInterventionSourceEvent),
     PendingMetricsFact(observability::PendingMetricsFact),
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
@@ -1111,6 +1141,8 @@ fn lifecycle_event_kind(event: &RuntimeLifecycleEvent) -> &'static str {
         RuntimeLifecycleEvent::UserActivityObserved => "user-activity-observed",
         RuntimeLifecycleEvent::ConversationRunStarted { .. } => "conversation-run-started",
         RuntimeLifecycleEvent::ScheduledTaskCreated { .. } => "scheduled-task-created",
+        RuntimeLifecycleEvent::DirectTurnLifecycle(_) => "direct-turn-lifecycle",
+        RuntimeLifecycleEvent::MetricsInterventionSource(_) => "metrics-intervention-source",
         RuntimeLifecycleEvent::PendingMetricsFact(_) => "pending-metrics-fact",
         RuntimeLifecycleEvent::NodeStarted { .. } => "node-started",
         RuntimeLifecycleEvent::NodeCompleted { .. } => "node-completed",
@@ -1146,6 +1178,8 @@ impl RuntimeLifecycleEvent {
             | Self::UserActivityObserved
             | Self::ConversationRunStarted { .. }
             | Self::ScheduledTaskCreated { .. }
+            | Self::DirectTurnLifecycle(_)
+            | Self::MetricsInterventionSource(_)
             | Self::NodeStarted { .. }
             | Self::NodeCompleted { .. }
             | Self::PendingMetricsFact(_) => {}
@@ -1197,7 +1231,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
     Arc::new(sqlite::index_task_with_retry)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
     pub run_id: String,
@@ -1215,7 +1249,7 @@ pub enum AcpPromptLifecycleEvent {
     },
     Finished {
         prompt_id: Option<String>,
-        successful: bool,
+        outcome: AcpTurnOutcome,
     },
 }
 
@@ -1711,15 +1745,12 @@ impl App {
         &self,
         context: AcpLiveEventContext,
         prompt_id: Option<String>,
-        successful: bool,
+        outcome: AcpTurnOutcome,
     ) -> Result<()> {
         if let Some(callback) = &self.prompt_turn_lifecycle {
             callback(
                 context,
-                AcpPromptLifecycleEvent::Finished {
-                    prompt_id,
-                    successful,
-                },
+                AcpPromptLifecycleEvent::Finished { prompt_id, outcome },
             )?;
         }
         Ok(())
@@ -1735,13 +1766,31 @@ impl App {
     pub fn create_metrics_fact_producer(&self) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<RuntimeLifecycleEvent>(2048);
         let app = self.clone_for_background();
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("metrics-fact-producer".into())
             .spawn(move || {
                 while let Ok(event) = receiver.recv() {
-                    app.emit_derived_node_metrics_fact(&event);
+                    let event_kind = lifecycle_event_kind(&event);
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        app.emit_derived_metrics_fact(&event);
+                    }))
+                    .is_err()
+                    {
+                        tracing::error!(
+                            code = "METRICS_FACT_PRODUCER_PANIC",
+                            event_kind,
+                            "metrics lifecycle fact worker recovered from a producer panic"
+                        );
+                    }
                 }
-            });
+            })
+        {
+            tracing::error!(
+                code = "METRICS_FACT_PRODUCER_SPAWN_FAILED",
+                error = %error,
+                "failed to start metrics lifecycle fact worker"
+            );
+        }
         Arc::new(move |event| {
             if let Err(error) = sender.try_send(event) {
                 match error {
@@ -1938,21 +1987,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    pub fn direct_metrics_is_follow_up(
-        &self,
-        attempt_key: &str,
-        attempt_dir: Option<&camino::Utf8Path>,
-    ) -> bool {
-        if self.active_metrics_turn(attempt_key).is_some() {
-            return true;
-        }
-        let has_usage_history = attempt_dir
-            .map(|dir| Self::direct_usage_baseline(Some(dir)))
-            .unwrap_or(0)
-            > 0;
-        has_usage_history
-    }
-
     pub fn direct_usage_segments_after(
         attempt_dir: Option<&camino::Utf8Path>,
         baseline_turn_seq: u64,
@@ -2111,6 +2145,497 @@ impl App {
             })
             .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic)
     }
+
+    fn emit_derived_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
+        match event {
+            RuntimeLifecycleEvent::DirectTurnLifecycle(event) => {
+                self.emit_derived_direct_turn_metrics_fact(event)
+            }
+            RuntimeLifecycleEvent::MetricsInterventionSource(event) => {
+                self.emit_derived_intervention_metrics_fact(event)
+            }
+            _ => self.emit_derived_node_metrics_fact(event),
+        }
+    }
+
+    fn emit_derived_direct_turn_metrics_fact(&self, event: &DirectTurnLifecycleEvent) {
+        use observability::{
+            ExecutionOutcome, LifecycleEventType, LifecycleTiming, MetricsSessionMode,
+            MetricsSubject, MetricsTransition, TerminalReason, TokenUsage,
+        };
+
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let mut scoped_app = self.clone_for_background();
+        scoped_app.paths = GoldBandPaths::new(Utf8PathBuf::from(&event.repo_root));
+        if scoped_app.paths.project_id != event.project_id {
+            tracing::warn!(
+                code = "METRICS_PROJECT_ID_MISMATCH",
+                expected_project_id = %event.project_id,
+                actual_project_id = %scoped_app.paths.project_id,
+                task_id = %event.context.task_id,
+                "Direct metrics event workspace identity changed; event dropped"
+            );
+            return;
+        }
+        if direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_none() {
+            tracing::warn!(
+                code = "METRICS_DIRECT_IDENTITY_MISSING",
+                project_id = %event.project_id,
+                task_id = %event.context.task_id,
+                "Direct metrics event has no durable Direct conversation identity; event dropped"
+            );
+            return;
+        }
+        if event.turn_id.trim().is_empty() {
+            tracing::warn!(
+                code = "METRICS_DIRECT_TURN_ID_MISSING",
+                task_id = %event.context.task_id,
+                run_id = %event.context.run_id,
+                "Direct metrics event has no turn identity; event dropped"
+            );
+            return;
+        }
+        let Ok(task) = scoped_app.task_show(&event.context.task_id) else {
+            tracing::warn!(
+                code = "METRICS_TASK_STATE_MISSING",
+                task_id = %event.context.task_id,
+                "Direct metrics task state is unavailable; event dropped"
+            );
+            return;
+        };
+        let Some(task_uuid) = task.uuid.clone() else {
+            tracing::warn!(
+                code = "METRICS_TASK_UUID_MISSING",
+                task_id = %event.context.task_id,
+                "Direct metrics task has no canonical UUID; event dropped"
+            );
+            return;
+        };
+        let attempt_dir = scoped_app.paths.attempt_dir(
+            &event.context.task_id,
+            &event.context.run_id,
+            &event.context.round_id,
+            &event.context.node_id,
+            &event.context.attempt_id,
+        );
+        let attempt_path = scoped_app
+            .paths
+            .run_dir(&event.context.task_id, &event.context.run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let attempt_key = format!("direct:{task_uuid}");
+        let active_turn = match &event.transition {
+            DirectTurnLifecycleTransition::Started => {
+                if let Some(active) = scoped_app.active_metrics_turn(&attempt_key) {
+                    let code = if active.turn_id == event.turn_id {
+                        "METRICS_DIRECT_TURN_DUPLICATE_START"
+                    } else {
+                        "METRICS_DIRECT_TURN_OVERLAP"
+                    };
+                    tracing::warn!(
+                        code,
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        active_turn_id = %active.turn_id,
+                        event_turn_id = %event.turn_id,
+                        "Direct metrics turn start was not applied"
+                    );
+                    return;
+                }
+                let usage_baseline = Self::direct_usage_baseline(Some(attempt_dir.as_path()));
+                let turn = ActiveMetricTurn::new(
+                    event.turn_id.clone(),
+                    task_uuid.clone(),
+                    task_uuid.clone(),
+                    1,
+                    usage_baseline,
+                );
+                scoped_app.begin_metrics_turn(attempt_key.clone(), turn.clone());
+                turn
+            }
+            DirectTurnLifecycleTransition::Finished { .. } => {
+                let Some(active) = scoped_app.active_metrics_turn(&attempt_key) else {
+                    tracing::warn!(
+                        code = "METRICS_DIRECT_TURN_START_MISSING",
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        turn_id = %event.turn_id,
+                        "Direct metrics terminal event has no accepted start; event dropped"
+                    );
+                    return;
+                };
+                if active.turn_id != event.turn_id {
+                    tracing::warn!(
+                        code = "METRICS_DIRECT_TURN_ID_MISMATCH",
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        active_turn_id = %active.turn_id,
+                        event_turn_id = %event.turn_id,
+                        "Direct metrics terminal event does not match the active turn; event dropped"
+                    );
+                    return;
+                }
+                active
+            }
+        };
+        let provider = scoped_app.acp_turn_provider_id(&event.context);
+        let model = crate::acp::events::read_attempt_session_model_name(
+            &attempt_dir.join("acp.session.json"),
+        );
+        let terminal_outcome = match event.transition {
+            DirectTurnLifecycleTransition::Started => None,
+            DirectTurnLifecycleTransition::Finished { outcome } => Some(outcome),
+        };
+        let attempt_state =
+            scoped_app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+                if terminal_outcome.is_none() {
+                    state.record_started_at(event.occurred_at.clone());
+                    return;
+                }
+                let segments = Self::direct_usage_segments_after(
+                    Some(attempt_dir.as_path()),
+                    active_turn.usage_baseline_turn_seq,
+                );
+                for usage in Self::direct_model_usages_from_segments(
+                    &segments,
+                    provider.as_deref(),
+                    model.as_deref(),
+                ) {
+                    state.record_model_usage(usage);
+                }
+                if segments.is_empty()
+                    && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
+                {
+                    let usage = crate::acp::events::read_attempt_metrics(
+                        &attempt_dir.join("acp.session.json"),
+                    );
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            });
+        let event_type = if terminal_outcome.is_some() {
+            LifecycleEventType::ExecutionCompleted
+        } else {
+            LifecycleEventType::ExecutionStarted
+        };
+        let mut fact = scoped_app.pending_metrics_fact(
+            &event.context.task_id,
+            task_uuid,
+            event.context.run_id.clone(),
+            event.context.round_id.clone(),
+            event_type,
+            event.occurred_at.clone(),
+            MetricsSessionMode::Direct,
+            MetricsSubject::DirectTurn {
+                attempt_id: active_turn.attempt_id.clone(),
+                attempt_index: active_turn.attempt_index,
+            },
+        );
+        fact.fact_id = format!(
+            "direct-turn:{}:{}",
+            event.turn_id,
+            if terminal_outcome.is_some() {
+                "completed"
+            } else {
+                "started"
+            }
+        );
+        fact.payload.task_title = task.title;
+        fact.payload.provider = provider;
+        fact.payload.model = model;
+        if event.turn_id != INITIAL_DIRECT_TURN_ID {
+            fact.transition = MetricsTransition::FollowUp {
+                action_id: event.turn_id.clone(),
+            };
+        }
+        if let Some(outcome) = terminal_outcome {
+            fact.payload.outcome = Some(match outcome {
+                AcpTurnOutcome::Completed => ExecutionOutcome::Completed,
+                AcpTurnOutcome::Failed => ExecutionOutcome::Failed,
+                AcpTurnOutcome::Cancelled => ExecutionOutcome::Cancelled,
+            });
+            fact.payload.terminal_reason = Some(match outcome {
+                AcpTurnOutcome::Completed => TerminalReason::Completed,
+                AcpTurnOutcome::Failed => TerminalReason::ProviderError,
+                AcpTurnOutcome::Cancelled => TerminalReason::UserCancelled,
+            });
+            let usages = attempt_state.model_usages();
+            let elapsed_sum = usages
+                .iter()
+                .filter_map(|usage| usage.acp_session_elapsed_ms)
+                .fold(None, |total, value| {
+                    Some(total.unwrap_or(0u64).saturating_add(value))
+                });
+            let sum = |get: fn(&observability::TokenUsage) -> Option<u64>| {
+                usages
+                    .iter()
+                    .filter_map(|usage| get(&usage.usage))
+                    .fold(None, |total, value| {
+                        Some(total.unwrap_or(0u64).saturating_add(value))
+                    })
+            };
+            if !usages.is_empty() {
+                fact.payload.usage = Some(TokenUsage {
+                    input_tokens: sum(|usage| usage.input_tokens),
+                    output_tokens: sum(|usage| usage.output_tokens),
+                    cache_read_tokens: sum(|usage| usage.cache_read_tokens),
+                    total_tokens: sum(|usage| usage.total_tokens),
+                });
+                fact.payload.model_usages = Some(usages);
+            }
+            fact.payload.timing = Some(LifecycleTiming {
+                started_at: attempt_state
+                    .started_at
+                    .clone()
+                    .unwrap_or_else(|| event.occurred_at.clone()),
+                ended_at: Some(event.occurred_at.clone()),
+                acp_session_elapsed_ms: elapsed_sum,
+            });
+            fact.payload.code_changes = scoped_app
+                .metrics_code_changes_snapshot(&event.context.task_id, &event.context.run_id);
+        }
+        if terminal_outcome.is_some() {
+            scoped_app.release_observability_state(&active_turn.execution_id);
+            scoped_app.end_metrics_turn(&attempt_key);
+        }
+        scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+    }
+
+    fn emit_derived_intervention_metrics_fact(&self, event: &MetricsInterventionSourceEvent) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let mut scoped_app = self.clone_for_background();
+        scoped_app.paths = GoldBandPaths::new(Utf8PathBuf::from(&event.repo_root));
+        let Ok(run) = scoped_app.run_status(&event.context.task_id, &event.context.run_id) else {
+            return;
+        };
+        let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+            return;
+        };
+        let is_direct =
+            direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_some();
+        let is_auto = !is_direct && event.context.outer_node_id.is_some();
+        let subject = if is_direct {
+            let Some(turn) = scoped_app.active_metrics_turn(&format!("direct:{task_uuid}")) else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %event.context.task_id,
+                    run_id = %event.context.run_id,
+                    "Direct intervention has no active metrics turn"
+                );
+                return;
+            };
+            observability::MetricsSubject::DirectTurn {
+                attempt_id: turn.attempt_id,
+                attempt_index: turn.attempt_index,
+            }
+        } else {
+            let Some(subject) =
+                scoped_app.intervention_metrics_subject(&event.context, &run_uuid, is_auto)
+            else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %event.context.task_id,
+                    run_id = %event.context.run_id,
+                    "intervention has no canonical metrics attempt"
+                );
+                return;
+            };
+            subject
+        };
+        let session_mode = if is_direct {
+            observability::MetricsSessionMode::Direct
+        } else if is_auto {
+            observability::MetricsSessionMode::Auto
+        } else {
+            observability::MetricsSessionMode::Workflow
+        };
+        let mut fact = scoped_app.pending_metrics_fact(
+            &event.context.task_id,
+            task_uuid,
+            event.context.run_id.clone(),
+            event.context.round_id.clone(),
+            observability::LifecycleEventType::InterventionRequested,
+            event.occurred_at.clone(),
+            session_mode,
+            subject,
+        );
+        fact.payload.intervention_kind = Some(match event.kind {
+            RuntimeInterventionKind::PermissionRequested => {
+                observability::MetricsInterventionKind::Permission
+            }
+            RuntimeInterventionKind::ElicitationRequested => {
+                observability::MetricsInterventionKind::Elicitation
+            }
+            RuntimeInterventionKind::ManualDecisionRequired => {
+                observability::MetricsInterventionKind::ManualDecision
+            }
+            RuntimeInterventionKind::RuntimeAbnormal => {
+                observability::MetricsInterventionKind::RuntimeAbnormal
+            }
+            RuntimeInterventionKind::ErrorBlocked => {
+                observability::MetricsInterventionKind::ErrorBlocked
+            }
+            RuntimeInterventionKind::ProcessInterrupted => {
+                observability::MetricsInterventionKind::ProcessInterrupted
+            }
+        });
+        fact.transition = match event.kind {
+            RuntimeInterventionKind::PermissionRequested => {
+                observability::MetricsTransition::PermissionRequested {
+                    request_id: event.request_id.clone(),
+                }
+            }
+            RuntimeInterventionKind::ElicitationRequested => {
+                observability::MetricsTransition::ElicitationRequested {
+                    request_id: event.request_id.clone(),
+                }
+            }
+            _ => observability::MetricsTransition::None,
+        };
+        scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+    }
+
+    fn intervention_metrics_subject(
+        &self,
+        context: &AcpLiveEventContext,
+        run_uuid: &str,
+        is_auto: bool,
+    ) -> Option<observability::MetricsSubject> {
+        let round_index = read_json::<RoundState>(&self.paths.round_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+        ))
+        .ok()
+        .map(|round| round.index)?;
+        if is_auto {
+            let (Some(outer_node_id), Some(outer_attempt_id)) = (
+                context.outer_node_id.as_deref(),
+                context.outer_attempt_id.as_deref(),
+            ) else {
+                return None;
+            };
+            let graph =
+                read_json::<crate::dynamic::DynamicGraphState>(&self.paths.dynamic_graph_file(
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                ))
+                .ok()?;
+            let dynamic_node = graph.nodes.iter().find(|node| node.id == context.node_id)?;
+            let node_id = dynamic_node.uuid.clone()?;
+            let attempt_id = observability::derive_attempt_id(&node_id, &context.attempt_id)?;
+            let attempt_index = observability::attempt_index_from_local_id(&context.attempt_id)?;
+            return Some(observability::MetricsSubject::AutoUnitAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: dynamic_node.title.clone(),
+                unit_kind: match dynamic_node.kind {
+                    crate::dynamic::DynamicNodeKind::Worker => observability::UnitKind::Worker,
+                    crate::dynamic::DynamicNodeKind::WorkflowInvocation => {
+                        observability::UnitKind::WorkflowInvocation
+                    }
+                    crate::dynamic::DynamicNodeKind::Merge => observability::UnitKind::Merge,
+                    crate::dynamic::DynamicNodeKind::Acceptance => {
+                        observability::UnitKind::Acceptance
+                    }
+                },
+            });
+        }
+        let node = read_json::<NodeState>(&self.paths.node_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+        ))
+        .ok()?;
+        let attempt_index = observability::attempt_index_from_local_id(&node.attempt_id)?;
+        let attempt_id = node.uuid.clone()?;
+        let node_id = observability::derive_execution_id(
+            run_uuid,
+            &format!("round:{round_index}:node:{}", node.node_id),
+        )
+        .unwrap_or_else(|| attempt_id.clone());
+        Some(observability::MetricsSubject::WorkflowNodeAttempt {
+            node_id,
+            attempt_id,
+            attempt_index,
+            round_index,
+            role_name: Self::node_intervention_role_name(&node),
+        })
+    }
+
+    fn node_intervention_role_name(node: &NodeState) -> String {
+        node.resolved_config
+            .get("profileName")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                node.resolved_config
+                    .get("profile")
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| {
+                node.resolved_config
+                    .get("provider")
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or_else(|| node.node_id.as_str())
+            .to_string()
+    }
+
+    pub fn acp_turn_provider_id(&self, context: &AcpLiveEventContext) -> Option<String> {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) {
+            return read_json::<crate::dynamic::DynamicNodeState>(&self.paths.dynamic_node_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &context.node_id,
+            ))
+            .ok()
+            .and_then(|node| node.provider);
+        }
+        read_json::<NodeState>(&self.paths.node_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+        ))
+        .ok()
+        .and_then(|node| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    }
+
     fn emit_derived_node_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
         use observability::{
             ExecutionOutcome, LifecycleEventType, LifecycleTiming, MetricsSessionMode,
@@ -5435,10 +5960,12 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use super::observability;
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
-        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
-        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, AcpTurnOutcome, App,
+        AttemptRuntimePauseResult, AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent,
+        DirectTurnLifecycleTransition, OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate,
+        WorkflowTemplateStore, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -5468,7 +5995,8 @@ mod tests {
     };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -5850,6 +6378,79 @@ mod tests {
     fn test_app(repo_root: Utf8PathBuf) -> App {
         set_test_home(&repo_root);
         App::with_config_and_path_config(repo_root, RuntimeConfig::default(), test_path_config())
+    }
+
+    fn direct_metrics_test_fixture(repo_root: Utf8PathBuf) -> (App, TaskState) {
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let task = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Direct metrics".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "report this Direct turn".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap()
+            .task;
+        write_json(
+            &app.paths
+                .task_dir(&task.id)
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "runMode": "direct",
+                "agentIdentity": { "displayName": "Claude" },
+                "directConfig": { "agentType": "claude-acp" }
+            }),
+        )
+        .unwrap();
+        (app, task)
+    }
+
+    fn direct_metrics_source_event(
+        app: &App,
+        task_id: &str,
+        turn_id: &str,
+        occurred_at: &str,
+        transition: DirectTurnLifecycleTransition,
+    ) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::DirectTurnLifecycle(DirectTurnLifecycleEvent {
+            project_id: app.paths.project_id.clone(),
+            context: AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "direct-agent".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            turn_id: turn_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            repo_root: app.paths.repo_root.to_string(),
+            transition,
+        })
+    }
+
+    fn direct_metrics_fact_receiver(
+        app: &App,
+    ) -> mpsc::Receiver<crate::app::observability::PendingMetricsFact> {
+        app.lifecycle_bus
+            .subscribe_inline(app.create_metrics_fact_producer());
+        let (sender, receiver) = mpsc::channel();
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
+                sender.send(fact).unwrap();
+            }
+        }));
+        receiver
     }
 
     fn test_app_with_provider_capabilities(
@@ -6703,48 +7304,158 @@ mod tests {
     }
 
     #[test]
-    fn direct_metrics_is_follow_up_detects_history_after_turn_ends() {
+    fn direct_metrics_producer_reports_initial_and_follow_up_turns() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app(repo_root).with_metrics_collection_enabled(true);
-        let task_uuid = uuid::Uuid::new_v4().to_string();
-        let attempt_key = format!("direct:{task_uuid}");
-        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt")).unwrap();
-        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, task) = direct_metrics_test_fixture(repo_root);
+        let bus = observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus);
+        let facts = direct_metrics_fact_receiver(&app);
 
-        assert!(!app.direct_metrics_is_follow_up(&attempt_key, Some(&attempt_dir)));
-        app.begin_metrics_turn(
-            attempt_key.clone(),
-            super::ActiveMetricTurn::new(task_uuid.clone(), task_uuid.clone(), 1, 0),
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            super::INITIAL_DIRECT_TURN_ID,
+            "2026-08-26T08:00:00Z",
+            DirectTurnLifecycleTransition::Started,
+        ));
+        let initial_started = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            initial_started.event_type,
+            observability::LifecycleEventType::ExecutionStarted
         );
-        assert!(app.direct_metrics_is_follow_up(&attempt_key, Some(&attempt_dir)));
-        app.end_metrics_turn(&attempt_key);
+        assert_eq!(
+            initial_started.fact_id,
+            "direct-turn:initial-direct-turn:started"
+        );
+        assert_eq!(
+            initial_started.session_mode,
+            observability::MetricsSessionMode::Direct
+        );
+        assert_eq!(
+            initial_started.transition,
+            observability::MetricsTransition::None
+        );
+        assert_eq!(initial_started.key.execution_id, task.uuid.clone().unwrap());
 
-        crate::acp::usage::append_prompt_started(
-            &attempt_dir.join("acp.prompt-usage.jsonl"),
-            "turn-1",
-            1,
-            "2026-08-01T00:00:00Z",
-            Some("provider"),
-            Some("model"),
-        )
-        .unwrap();
-        crate::acp::usage::append_prompt_completed(
-            &attempt_dir.join("acp.prompt-usage.jsonl"),
-            "turn-1",
-            1,
-            "2026-08-01T00:00:01Z",
-            None,
-            &crate::acp::usage::AcpPromptTokenUsage {
-                total_tokens: Some(1),
-                ..Default::default()
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            super::INITIAL_DIRECT_TURN_ID,
+            "2026-08-26T08:00:01Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Cancelled,
             },
-            Some("provider"),
-            Some("model"),
-        )
-        .unwrap();
-        assert!(app.direct_metrics_is_follow_up(&attempt_key, Some(&attempt_dir)));
+        ));
+        let initial_finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            initial_finished.payload.outcome,
+            Some(observability::ExecutionOutcome::Cancelled)
+        );
+        assert_eq!(
+            initial_finished.payload.terminal_reason,
+            Some(observability::TerminalReason::UserCancelled)
+        );
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "queued-turn-002",
+            "2026-08-26T08:00:02Z",
+            DirectTurnLifecycleTransition::Started,
+        ));
+        let follow_up_started = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            follow_up_started.transition,
+            observability::MetricsTransition::FollowUp {
+                action_id: "queued-turn-002".to_string(),
+            }
+        );
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "queued-turn-002",
+            "2026-08-26T08:00:03Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Failed,
+            },
+        ));
+        let follow_up_finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            follow_up_finished.payload.outcome,
+            Some(observability::ExecutionOutcome::Failed)
+        );
+        assert_eq!(
+            follow_up_finished.payload.terminal_reason,
+            Some(observability::TerminalReason::ProviderError)
+        );
+    }
+
+    #[test]
+    fn direct_metrics_producer_rejects_duplicate_and_mismatched_transitions() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, task) = direct_metrics_test_fixture(repo_root);
+        let bus = observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus);
+        let facts = direct_metrics_fact_receiver(&app);
+        let started = direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-001",
+            "2026-08-26T08:10:00Z",
+            DirectTurnLifecycleTransition::Started,
+        );
+
+        app.emit_lifecycle_event(started.clone());
+        assert_eq!(
+            facts
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .event_type,
+            observability::LifecycleEventType::ExecutionStarted
+        );
+        app.emit_lifecycle_event(started);
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-other",
+            "2026-08-26T08:10:01Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Completed,
+            },
+        ));
+        assert!(facts.recv_timeout(Duration::from_millis(250)).is_err());
+        assert_eq!(
+            app.active_metrics_turn(&format!("direct:{}", task.uuid.clone().unwrap()))
+                .map(|turn| turn.turn_id),
+            Some("turn-001".to_string())
+        );
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-001",
+            "2026-08-26T08:10:02Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Completed,
+            },
+        ));
+        assert_eq!(
+            facts
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .payload
+                .outcome,
+            Some(observability::ExecutionOutcome::Completed)
+        );
+        assert!(
+            app.active_metrics_turn(&format!("direct:{}", task.uuid.unwrap()))
+                .is_none()
+        );
     }
 
     #[test]
@@ -6835,8 +7546,12 @@ mod tests {
         };
 
         app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
-        app.notify_prompt_turn_finished(context, Some("turn-queued-001".to_string()), false)
-            .unwrap();
+        app.notify_prompt_turn_finished(
+            context,
+            Some("turn-queued-001".to_string()),
+            AcpTurnOutcome::Failed,
+        )
+        .unwrap();
 
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 2);
@@ -6851,7 +7566,7 @@ mod tests {
             calls[1].1,
             AcpPromptLifecycleEvent::Finished {
                 prompt_id: Some("turn-queued-001".to_string()),
-                successful: false,
+                outcome: AcpTurnOutcome::Failed,
             }
         );
     }

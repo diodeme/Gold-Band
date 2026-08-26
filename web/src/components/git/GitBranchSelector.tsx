@@ -3,7 +3,7 @@ import { Check, GitBranch, Loader2, Plus, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { changeGitBranch, getGitBranchPickerSnapshot, openExternalUrl } from '@/api';
 import { displayAppError } from '@/i18n';
-import type { GitBranchCheckpointVm, GitBranchPickerSnapshotVm } from '@/types';
+import type { GitBranchPickerSnapshotVm } from '@/types';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -37,7 +37,7 @@ export interface GitBranchSelectorProps {
   readOnlyBranch?: string | null;
   variant?: 'home' | 'session';
   responsiveContext?: boolean;
-  onCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
+  onBranchChange?: (branch: string | null) => void;
   onMutationPendingChange?: (pending: boolean) => void;
 }
 
@@ -48,7 +48,7 @@ export function GitBranchSelector({
   readOnlyBranch,
   variant = 'home',
   responsiveContext = false,
-  onCheckpointChange,
+  onBranchChange,
   onMutationPendingChange,
 }: GitBranchSelectorProps) {
   const { t } = useTranslation();
@@ -72,6 +72,7 @@ export function GitBranchSelector({
   const [createOpen, setCreateOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const requestSequenceRef = useRef(0);
+  const onBranchChangeRef = useRef(onBranchChange);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverUsedPointerRef = useRef(false);
   const compactPointerClickPendingRef = useRef(false);
@@ -92,27 +93,27 @@ export function GitBranchSelector({
     handleBranchTooltipOpenChange(next);
   }, [handleBranchTooltipOpenChange, responsiveContext]);
 
-  const publishCheckpoint = useCallback((next: GitBranchPickerSnapshotVm | null) => {
-    onCheckpointChange?.(
-      next?.currentBranch && next.headOid
-        ? { branch: next.currentBranch, headOid: next.headOid, revision: next.revision }
-        : null,
-    );
-  }, [onCheckpointChange]);
+  useEffect(() => {
+    onBranchChangeRef.current = onBranchChange;
+  }, [onBranchChange]);
+
+  const publishBranch = useCallback((next: GitBranchPickerSnapshotVm | null) => {
+    onBranchChangeRef.current?.(next?.currentBranch ?? null);
+  }, []);
 
   const loadSnapshot = useCallback(async () => {
     if (readOnlyBranch !== undefined) return;
     const sequence = ++requestSequenceRef.current;
     const cached = snapshotStore.get(projectId, workspacePath);
     setPickerState({ scopeKey, snapshot: cached, loading: !cached });
-    publishCheckpoint(cached);
+    publishBranch(cached);
     setError(null);
     try {
       const next = await getGitBranchPickerSnapshot(projectId, workspacePath);
       if (sequence !== requestSequenceRef.current) return;
       snapshotStore.set(projectId, workspacePath, next);
       setPickerState({ scopeKey, snapshot: next, loading: false });
-      publishCheckpoint(next);
+      publishBranch(next);
     } catch (cause) {
       if (sequence !== requestSequenceRef.current) return;
       const candidate = cause && typeof cause === 'object'
@@ -126,10 +127,10 @@ export function GitBranchSelector({
       if (versionCapabilityError) snapshotStore.delete(projectId, workspacePath);
       const fallback = versionCapabilityError ? null : cached;
       setPickerState({ scopeKey, snapshot: fallback, loading: false });
-      publishCheckpoint(fallback);
+      publishBranch(fallback);
       setError({ code, params, message: displayAppError(t, cause) });
     }
-  }, [projectId, publishCheckpoint, readOnlyBranch, scopeKey, snapshotStore, t, workspacePath]);
+  }, [projectId, publishBranch, readOnlyBranch, scopeKey, snapshotStore, t, workspacePath]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -156,7 +157,7 @@ export function GitBranchSelector({
       });
       snapshotStore.set(projectId, workspacePath, next);
       setPickerState({ scopeKey, snapshot: next, loading: false });
-      publishCheckpoint(next);
+      publishBranch(next);
       setOpen(false);
       setCreateOpen(false);
       setNewBranchName('');

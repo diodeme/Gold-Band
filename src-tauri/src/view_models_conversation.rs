@@ -809,7 +809,7 @@ pub struct ConversationCreateInputVm {
     #[serde(default)]
     pub work_location: ConversationWorkLocationVm,
     #[serde(default)]
-    pub branch_checkpoint: Option<gold_band::git::GitBranchCheckpoint>,
+    pub selected_branch: Option<String>,
     #[serde(default)]
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -4345,11 +4345,11 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationCreateResultVm> {
-    let fork_checkpoint = if input.work_location == ConversationWorkLocationVm::Worktree {
+    let fork_point = if input.work_location == ConversationWorkLocationVm::Worktree {
         Some(
-            gold_band::git::GitSourceControlService::default().resolve_branch_checkpoint(
+            gold_band::git::GitSourceControlService::default().resolve_branch_fork_point(
                 &app.paths.repo_root,
-                input.branch_checkpoint.as_ref(),
+                input.selected_branch.as_deref(),
             )?,
         )
     } else {
@@ -4359,8 +4359,8 @@ pub fn create_conversation_run_vm(
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
 
-    let prepared_run = if let Some(checkpoint) = fork_checkpoint {
-        app.prepare_run_in_worktree_at(&task_id, None, checkpoint.head_oid)?
+    let prepared_run = if let Some(fork_point) = fork_point {
+        app.prepare_run_in_worktree_at(&task_id, None, fork_point.head_oid)?
     } else {
         app.prepare_run(&task_id, None)?
     };
@@ -6447,7 +6447,7 @@ mod tests {
             }),
             attachment_paths: None,
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6555,7 +6555,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6591,7 +6591,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: ConversationWorkLocationVm::Worktree,
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6620,7 +6620,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6649,7 +6649,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6690,7 +6690,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![attachment.to_string()]),
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6730,7 +6730,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
             work_location: Default::default(),
-            branch_checkpoint: None,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,

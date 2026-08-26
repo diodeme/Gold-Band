@@ -736,12 +736,6 @@ export interface GitSourceControlSnapshotVm {
   stashes: GitStashEntryVm[];
 }
 
-export interface GitBranchCheckpointVm {
-  branch: string;
-  headOid: string;
-  revision: string;
-}
-
 export interface GitBranchPickerItemVm {
   name: string;
   targetOid: string;
@@ -2444,7 +2438,7 @@ export interface ConversationCreateInput {
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
-  branchCheckpoint?: GitBranchCheckpointVm | null;
+  selectedBranch?: string | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

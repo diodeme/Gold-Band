@@ -2699,6 +2699,8 @@ fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccur
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
         | RuntimeLifecycleEvent::PendingMetricsFact(_) => None,
@@ -2820,6 +2822,8 @@ pub(crate) fn finish_occurrence_for_event(
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }

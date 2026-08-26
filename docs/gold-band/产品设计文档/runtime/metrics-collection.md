@@ -257,6 +257,10 @@ Task delivery terminal 不删除 state。只有 Task 明确删除/归档且没�
 
 每个真实 ACP prompt 发布 turn started/terminal；内部 Worker shell 不产生 Workflow 指标。首轮后新目标由 typed FollowUp transition 计数。`executionId` 为 Task UUID，`runId/roundId` 使用实际 Runtime locator。
 
+ACP prompt dispatcher 是 Direct turn 的唯一源头：prompt 被 provider 接受时发布 typed `DirectTurnLifecycle::Started`，命令完成、provider 错误、用户取消或 join failure 时发布对应 `Finished(outcome)`。首轮使用固定内部 turn ID，后续轮使用持久化 prompt ID；started/terminal 必须使用同一 ID。
+
+Direct、Workflow 和 AUTO 的源头事实统一进入 `core.metrics-producer` FIFO worker，再产生 `PendingMetricsFact`。不为 Direct 保留独立 sender/worker/队列，避免队列未初始化、容量不一致或 `try_send` 失败导致只有 Direct 丢失日志。active turn 按 Task UUID 唯一管理并记录 turn ID：重复 started、重叠 turn、不匹配 terminal 和缺失 started 都丢弃异常事实并记录结构化诊断。terminal fact 构造完成后先清理 active turn 与运行期 observability state，再发布下游事实，保证 terminal 对观察者可见时旧状态已不可见。
+
 ### Workflow
 
 run started/terminal 使用 `run` subject；node started/terminal 及 paused/resumed/intervention 使用真实 `node-attempt`。新 Round 更新 round locator，新 Run 更新 run locator，task revision 不重置。恢复只发 resumed，不重复 started。
@@ -305,6 +309,7 @@ collector 构造 wire event 前校验：
 - 单条事件首次请求计为第 1 次；可重试失败最多请求 3 次，第三次失败后物理删除且第 4 次无法 claim；永久错误第一次失败即删除。
 - 混合 attempt batch 按事件独立结算；应用重启不重置 attempt；历史 `attempt_count >= 3` 的 pending 行在 claim 前删除且不发送。
 - request 日志包含批内最大 outbox `attempt_count`、实际 endpoint 和与 HTTP body 字节一致的 JSON，且不包含 API key；失败结算日志包含 retryable、rescheduled、dropped 与最大次数。
+- Direct prompt bridge 对 accepted/finished 发布同一 turn ID 的 typed 源头事实，completed/failed/cancelled 精确映射；重复、重叠和不匹配转换不产生 outbox 事件。
 
 ## 14. 实施状态
 
@@ -315,4 +320,5 @@ collector 构造 wire event 前校验：
 - [x] 客户端接口测试与真实 batch 部分响应验收完成。
 - [x] uploader request 日志恢复 `attempt + url + body`，并以接口测试固定批次 attempt 与实际 wire body 一致性。
 - [x] uploader 改为单事件总计最多 3 次请求；第三次可重试失败、永久错误和历史超限 pending 均物理删除，并以逐事件、重启持久化接口测试固定合同。
+- [x] Direct prompt lifecycle 已收敛到共享 metrics producer，删除容量 512 的独立队列与 worker，并补齐 turn identity/outcome/重复转换接口测试。
 - [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。

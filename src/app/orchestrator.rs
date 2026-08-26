@@ -3798,7 +3798,11 @@ fn emit_run_completed_lifecycle_event(
         },
         super::direct_conversation_agent_label(app, task_id)
             .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
-        outcome == RunOutcome::Success,
+        match outcome {
+            RunOutcome::Success => super::AcpTurnOutcome::Completed,
+            RunOutcome::Failure => super::AcpTurnOutcome::Failed,
+            RunOutcome::Killed => super::AcpTurnOutcome::Cancelled,
+        },
     );
 }
 
@@ -4561,7 +4565,8 @@ fn drive_from_node_with_runtime_candidate(
         SessionMode::New,
         None,
         None,
-        None,
+        super::direct_conversation_agent_label(app, task_id)
+            .map(|_| super::INITIAL_DIRECT_TURN_ID.to_string()),
         None,
         UserPromptRenderMode::RequirementTask,
         Vec::new(),

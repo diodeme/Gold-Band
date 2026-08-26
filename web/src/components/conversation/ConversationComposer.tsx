@@ -111,18 +111,20 @@ export function ConversationWorkspaceControl({
   onWorkspaceChange,
   variant = 'toolbar',
 }: ConversationWorkspaceControlProps) {
+  const { t } = useTranslation();
   const selectedWorkspaceName = workspaces.find((workspace) => workspace.projectId === projectId)?.name ?? workspaceName;
   const selectTriggerRef = useRef<HTMLButtonElement>(null);
   const selectionUsedPointerRef = useRef(false);
+  const [selectOpen, setSelectOpen] = useState(false);
   const {
     valueRef,
     tooltipOpen,
     showTooltipIfOverflowing,
     hideTooltip,
     handleTooltipOpenChange,
-  } = useOverflowTooltip<HTMLSpanElement>();
+  } = useOverflowTooltip<HTMLSpanElement>({ always: variant === 'info' });
   const controlClassName = variant === 'info'
-    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 items-center gap-1.5 rounded-md border border-transparent px-1.5 text-sm shadow-none data-[size=default]:h-7`
+    ? `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-7 w-7 flex-none items-center justify-center gap-1.5 rounded-md border border-transparent px-0 text-sm shadow-none data-[size=default]:h-7 [&>svg:last-child]:hidden @xs/conversation-context:w-fit @xs/conversation-context:max-w-full @xs/conversation-context:flex-initial @xs/conversation-context:justify-between @xs/conversation-context:px-1.5 @xs/conversation-context:[&>svg:last-child]:block`
     : `${CONVERSATION_HOME_COMPOSER_LAYOUT.workspaceControlClassName} flex h-9 items-center gap-2 rounded-full border border-border/50 bg-gold-surface-high/35 px-3 text-sm text-foreground shadow-none`;
   const triggerSurfaceClassName = variant === 'info'
     ? CONTEXT_CONTROL_INTERACTION_CLASS_NAME
@@ -141,24 +143,36 @@ export function ConversationWorkspaceControl({
     onBlur: hideTooltip,
   };
   const value = (
-    <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
-      <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
-      <TooltipTrigger asChild>
-        <span ref={valueRef} data-conversation-workspace-value="true" className="min-w-0 truncate">
+    <TooltipTrigger asChild>
+      <span className={cn('flex min-w-0 flex-1 items-center', variant === 'info' ? 'gap-1.5' : 'gap-2')}>
+        <Folders className={cn('size-3.5 shrink-0', variant === 'info' ? 'text-current' : 'text-muted-foreground/80')} />
+        <span
+          ref={valueRef}
+          data-conversation-workspace-value="true"
+          className={cn('min-w-0 truncate', variant === 'info' && 'hidden @xs/conversation-context:inline')}
+        >
           {selectedWorkspaceName}
         </span>
-      </TooltipTrigger>
-    </span>
+      </span>
+    </TooltipTrigger>
   );
 
   return (
     <TooltipProvider>
-      <Tooltip open={tooltipOpen} onOpenChange={handleTooltipOpenChange}>
+      <Tooltip open={tooltipOpen && !selectOpen} onOpenChange={handleTooltipOpenChange}>
         {workspaces.length > 1 ? (
-          <Select value={projectId} onValueChange={onWorkspaceChange}>
+          <Select
+            value={projectId}
+            onValueChange={onWorkspaceChange}
+            onOpenChange={(open) => {
+              setSelectOpen(open);
+              hideTooltip();
+            }}
+          >
             <SelectTrigger
               ref={selectTriggerRef}
               {...triggerEvents}
+              aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
               data-context-control={variant === 'info' ? 'workspace' : undefined}
               className={`${controlClassName} ${triggerSurfaceClassName} focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10`}
             >
@@ -189,6 +203,7 @@ export function ConversationWorkspaceControl({
           <div
             {...triggerEvents}
             tabIndex={0}
+            aria-label={`${t('conversation.home.workspace')}: ${selectedWorkspaceName}`}
             data-context-control={variant === 'info' ? 'workspace' : undefined}
             className={cn(controlClassName, triggerSurfaceClassName, 'focus-visible:border-primary/30 focus-visible:ring-2 focus-visible:ring-primary/10 focus-visible:outline-none')}
           >
@@ -232,6 +247,8 @@ export function ConversationWorkspaceInfoBar({
 }: ConversationWorkspaceInfoBarProps) {
   const { t } = useTranslation();
   const [checkingLocation, setCheckingLocation] = useState(false);
+  const [locationMenuOpen, setLocationMenuOpen] = useState(false);
+  const [locationTooltipOpen, setLocationTooltipOpen] = useState(false);
   const locationTriggerRef = useRef<HTMLButtonElement>(null);
   const locationMenuUsedPointerRef = useRef(false);
 
@@ -291,73 +308,88 @@ export function ConversationWorkspaceInfoBar({
             variant="info"
           />
           {showWorkLocation ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  ref={locationTriggerRef}
-                  type="button"
-                  variant={null}
-                  size="sm"
-                  disabled={busy || checkingLocation}
-                  aria-label={t('conversation.home.workLocation')}
-                  data-conversation-work-location-trigger="true"
-                  data-context-control="work-location"
-                  onPointerDown={() => {
+            <Tooltip
+              open={locationTooltipOpen && !locationMenuOpen}
+              onOpenChange={(open) => setLocationTooltipOpen(open && !locationMenuOpen)}
+            >
+              <DropdownMenu onOpenChange={(open) => {
+                setLocationMenuOpen(open);
+                setLocationTooltipOpen(false);
+              }}>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      ref={locationTriggerRef}
+                      type="button"
+                      variant={null}
+                      size="sm"
+                      disabled={busy || checkingLocation}
+                      aria-label={`${t('conversation.home.workLocation')}: ${locationLabel}`}
+                      data-conversation-work-location-trigger="true"
+                      data-context-control="work-location"
+                      onPointerDown={() => {
+                        locationMenuUsedPointerRef.current = true;
+                        setLocationTooltipOpen(false);
+                      }}
+                      onKeyDown={() => {
+                        locationMenuUsedPointerRef.current = false;
+                      }}
+                      className={cn('h-7 w-7 min-w-0 shrink-0 gap-0 rounded-md px-0 text-sm font-normal has-[>svg]:px-0 @md/conversation-context:w-auto @md/conversation-context:shrink @md/conversation-context:gap-1.5 @md/conversation-context:px-1.5 @md/conversation-context:has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                    >
+                      {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
+                      <span data-conversation-work-location-value="true" className="hidden truncate @md/conversation-context:inline">{locationLabel}</span>
+                      <ChevronDown className="hidden size-4 text-muted-foreground opacity-50 @md/conversation-context:block" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="min-w-56"
+                  onPointerDownCapture={() => {
                     locationMenuUsedPointerRef.current = true;
                   }}
-                  onKeyDown={() => {
+                  onKeyDownCapture={() => {
                     locationMenuUsedPointerRef.current = false;
                   }}
-                  className={cn('h-7 min-w-0 gap-1.5 rounded-md px-1.5 text-sm font-normal has-[>svg]:px-1.5', CONTEXT_CONTROL_INTERACTION_CLASS_NAME)}
+                  onCloseAutoFocus={(event) => {
+                    if (!locationMenuUsedPointerRef.current) return;
+                    event.preventDefault();
+                    locationTriggerRef.current?.blur();
+                    locationMenuUsedPointerRef.current = false;
+                  }}
                 >
-                  {checkingLocation ? <Loader2 className="size-3.5 animate-spin text-current" /> : <LocationIcon className="size-3.5 text-current" />}
-                  <span className="truncate">{locationLabel}</span>
-                  <ChevronDown className="size-4 text-muted-foreground opacity-50" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="min-w-56"
-                onPointerDownCapture={() => {
-                  locationMenuUsedPointerRef.current = true;
-                }}
-                onKeyDownCapture={() => {
-                  locationMenuUsedPointerRef.current = false;
-                }}
-                onCloseAutoFocus={(event) => {
-                  if (!locationMenuUsedPointerRef.current) return;
-                  event.preventDefault();
-                  locationTriggerRef.current?.blur();
-                  locationMenuUsedPointerRef.current = false;
-                }}
-              >
-                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                  {t('conversation.home.workLocation')}
-                </div>
-                <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
-                  <Laptop className="size-4" />
-                  <span>{t('conversation.home.workLocationMain')}</span>
-                  {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="flex min-w-0 flex-1 items-center gap-2">
-                        <GitFork className="size-4" />
-                        <span>{t('conversation.home.workLocationNewWorktree')}</span>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
-                  </Tooltip>
-                  {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                    {t('conversation.home.workLocation')}
+                  </div>
+                  <DropdownMenuItem onSelect={() => { void selectLocation('main'); }}>
+                    <Laptop className="size-4" />
+                    <span>{t('conversation.home.workLocationMain')}</span>
+                    {workLocation === 'main' ? <Check className="ml-auto size-4" /> : null}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => { void selectLocation('worktree'); }}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <GitFork className="size-4" />
+                          <span>{t('conversation.home.workLocationNewWorktree')}</span>
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">{t('conversation.home.worktreeTip')}</TooltipContent>
+                    </Tooltip>
+                    {workLocation === 'worktree' ? <Check className="ml-auto size-4" /> : null}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <TooltipContent side="top" sideOffset={6}>
+                {t('conversation.home.workLocation')}: {locationLabel}
+              </TooltipContent>
+            </Tooltip>
           ) : null}
           {branchVisible ? (
             <GitBranchSelector
               projectId={projectId}
               disabled={busy || checkingLocation}
+              responsiveContext
               onCheckpointChange={onBranchCheckpointChange}
               onMutationPendingChange={onBranchMutationPendingChange}
             />

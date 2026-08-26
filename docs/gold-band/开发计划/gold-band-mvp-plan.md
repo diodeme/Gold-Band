@@ -1544,6 +1544,15 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [ ] 验收：纯状态测试固定稳定 Tab key、同 identity 引用不变和跨 worktree 投影；DOM 测试固定已打开 Tab 自动跟随路径且不产生第二个同名 Tab；SourceControl Store 测试固定 Windows 规范化路径与不同 worktree 视图状态隔离。完成 TypeScript、定向测试、生产构建以及真实浏览器 normal/narrow/re-expand 验证后勾选。
 - 性能与过度设计评审：不新增 Context、持久字段、缓存、队列、请求或 Git watcher；只抽取轻量路径 identity helper，并复用已有 Store。会话节点切换只做规范化 identity 比较；工作位置相同时保持稳定 scope/context，不触发源码管理订阅切换或 Git I/O，位置变化时仅目标 SourceControl session 按原规则按需加载。
 
+## 2026-08-26：快速对话上下文操作栏响应式收缩
+
+- [x] 根因与方向：工作空间、工作位置和分支作为三个独立上下文选择器的设计正确，但现有信息栏只允许文本截断，没有把完整控件投影成紧凑图标态，属于正确设计的响应式实现不完整。继续保留三个一步直达入口，不增加统一“更多”菜单或按截图尺寸打补丁。
+- [x] 实现：信息栏建立命名 CSS container；窄档三个触发器均保持 28px 图标态，中档只恢复工作空间标签，宽档再恢复工作位置与分支标签及箭头。复用现有 shadcn/Radix Select、DropdownMenu、Popover + Command 和项目 Tooltip；同一控件实例只切换 CSS 展示，图标态提供包含当前值的 Tooltip 与 `aria-label`，菜单打开时抑制对应 Tooltip。
+- [x] 点击时序修复：紧凑分支图标的 Tooltip 不再在 pointerdown 阶段先行退出，而是与后续 Popover open 在同一 React 提交中收敛；触发器使用受控 Popover open 的独立数据属性保持主题强调态，不再读取会被 TooltipTrigger `closed` 覆盖的共享 `data-state`，消除“变深—恢复—弹出”的中间帧。键盘 click、溢出 Tooltip 和原 Popover/Command 生命周期保持不变。
+- [x] 关闭焦点修复：指针点击分支项完成异步切换后，Radix Popover 原本将焦点还给紧凑分支触发器，其 focus Tooltip 因而重新打开并持续显示。现在沿用工作空间/工作位置选择器的输入方式契约：指针关闭时阻止自动还焦、清理 Tooltip 并移除触发器焦点；键盘关闭仍保留 Radix 默认还焦。不使用 timer、延迟或第二套菜单。
+- [x] 验收：3 个定向 Vitest 文件共 32 项通过，固定三档 class、三个控件稳定 identity、当前值无障碍名称、图标 Tooltip、pointerdown→click 时序、指针关闭不还焦与键盘关闭还焦；TypeScript 与 Web 生产构建通过。内置浏览器按操作栏实际宽度验证约 293px 全图标、413px 仅工作空间标签、614px 全标签及重新拉宽恢复；浅色与系统深色仿真均验证 Tooltip 已显示后点击分支图标会当次打开 Popover、同步关闭 Tooltip。在 28px 紧凑分支触发器中实际切换分支后，Popover 与 Tooltip 均收起且焦点不回图标；Escape 键盘关闭则正常还焦。原分支、临时视口、颜色仿真和页签均已恢复或清理。
+- 性能与过度设计评审：响应式完全由浏览器 CSS container query 计算，不增加 ResizeObserver、React 尺寸 state、effect、依赖、缓存、队列、请求或重复选择器实例；窗口连续缩放不触发 React 渲染，分支 snapshot 读取次数和既有有界 Store 不变。每个标签只增加固定 class 与无障碍属性，DOM 数量保持常量，无专项 benchmark 必要。
+
 ## 2026-08-25：Release profile WebView DevTools 诊断包
 
 - [x] 根因与方案：现有 default/wb 渠道构建、Tauri overlay 和 updater 隔离设计正确，但只有渠道维度，没有用于复现生产 WebView 问题的诊断能力维度；普通 release 又未启用 Tauri DevTools。新增正交 `--devtools` 构建选项和 `support-devtools = ["tauri/devtools"]` Cargo feature，不新建诊断渠道，也不使用会改变优化行为的 debug profile。

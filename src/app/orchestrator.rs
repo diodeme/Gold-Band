@@ -170,6 +170,58 @@ struct AcpInvocationPromptState {
     permission_mode_override: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeResumeMetricsContext {
+    previous_pause_reason: PauseReason,
+    transition_revision: u64,
+    follow_up_prompt_id: Option<String>,
+    has_follow_up: bool,
+}
+
+impl RuntimeResumeMetricsContext {
+    fn manual_continue(
+        previous_pause_reason: PauseReason,
+        transition_revision: u64,
+        prompt_id: Option<&str>,
+        input: Option<&ConversationPromptInput>,
+    ) -> Self {
+        Self {
+            previous_pause_reason,
+            transition_revision,
+            follow_up_prompt_id: prompt_id
+                .filter(|prompt_id| !prompt_id.trim().is_empty())
+                .map(str::to_string),
+            has_follow_up: input.is_some_and(|input| {
+                !conversation_prompt_text(&input.display_text, &input.quotes)
+                    .trim()
+                    .is_empty()
+            }),
+        }
+    }
+
+    fn follow_up_action_id(&self, transition_id: &str) -> Option<String> {
+        self.has_follow_up.then(|| {
+            self.follow_up_prompt_id
+                .clone()
+                .unwrap_or_else(|| format!("{transition_id}:follow-up"))
+        })
+    }
+}
+
+fn effective_previous_pause_reason(
+    run_status: RunStatus,
+    run_pause_reason: Option<PauseReason>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
+) -> Option<PauseReason> {
+    resume_context
+        .map(|context| context.previous_pause_reason)
+        .or_else(|| {
+            (run_status == RunStatus::Paused)
+                .then_some(run_pause_reason)
+                .flatten()
+        })
+}
+
 const MAX_INVALID_OUTPUT_REPAIR_PROMPTS: u32 = 3;
 const MAX_DYNAMIC_PROPOSAL_REPAIR_PROMPTS: u32 = 3;
 const AUTO_RETRY_STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -762,6 +814,7 @@ fn terminalize_background_drive_error_with_policy(
                 fallback_round,
                 fallback_node,
                 error,
+                policy == BackgroundDriveFailurePolicy::PausedManualCheck,
             );
         }
         Ok(AttemptRuntimePauseResult::Superseded) => {
@@ -790,6 +843,7 @@ fn terminalize_background_drive_error_with_policy(
                     fallback_round,
                     fallback_node,
                     error,
+                    true,
                 );
             }
         }
@@ -815,6 +869,7 @@ fn terminalize_background_drive_error_with_policy(
                 fallback_round,
                 fallback_node,
                 &combined_error,
+                true,
             );
         }
     }
@@ -881,6 +936,7 @@ fn emit_background_drive_error_from_fallback(
     fallback_round: &RoundState,
     fallback_node: &NodeState,
     error: &anyhow::Error,
+    publish_pause_side_effects: bool,
 ) {
     let mut run = fallback_run.clone();
     let mut round = fallback_round.clone();
@@ -902,10 +958,13 @@ fn emit_background_drive_error_from_fallback(
     node.outcome = None;
     node.runtime_execution_id = None;
     node.finished_at = Some(now);
-    emit_background_drive_error(app, task_id, &run, &round, &node, error);
+    append_background_drive_error_event(app, task_id, &run, &round, &node, error);
+    if publish_pause_side_effects {
+        emit_pause_side_effects(app, task_id, &run, &round, &node);
+    }
 }
 
-fn emit_background_drive_error(
+fn append_background_drive_error_event(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -930,7 +989,6 @@ fn emit_background_drive_error(
             run.pause_reason,
         ),
     );
-    emit_pause_side_effects(app, task_id, run, round, node);
 }
 
 pub(crate) fn launch_prepared_run_background(
@@ -1139,6 +1197,7 @@ fn prepare_run_from_workflow(
     }
     validate_run_state(&run)?;
     write_json(&app.paths.run_file(task_id, &run_id), &run)?;
+    record_run_code_change_baseline_best_effort(app, task_id, &run);
     prepared.runtime_candidate = runtime_candidate;
     write_json(
         &app.paths.workflow_snapshot_file(task_id, &run_id),
@@ -1237,6 +1296,7 @@ fn prepare_run_from_workflow(
         None,
         None,
         None,
+        None,
     );
 
     prepared.data = Some(PreparedRunData {
@@ -1247,6 +1307,32 @@ fn prepare_run_from_workflow(
         node,
     });
     Ok(prepared)
+}
+
+fn record_run_code_change_baseline_best_effort(app: &App, task_id: &str, run: &RunState) {
+    if !app.metrics_collection_enabled() {
+        return;
+    }
+    let (workspace_path, baseline_commit) = if let Some(worktree) = run.worktree.as_ref() {
+        (worktree.path.clone(), worktree.fork_commit.clone())
+    } else {
+        let baseline_commit = match GitRepositoryService::default().head(&app.paths.repo_root) {
+            Ok(commit) => commit,
+            Err(error) => {
+                tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                    task_id,
+                    run_id = %run.id,
+                    workspace_path = %app.paths.repo_root,
+                    error = %error,
+                    "failed to capture Git code change baseline"
+                );
+                return;
+            }
+        };
+        (app.paths.repo_root.clone(), baseline_commit)
+    };
+    app.record_metrics_code_change_baseline(task_id, &run.id, workspace_path, baseline_commit);
 }
 
 fn conversation_run_worktree_state(
@@ -1631,6 +1717,7 @@ pub(crate) fn run_continue(
         permission_mode_override,
         None,
         None,
+        None,
     )
 }
 
@@ -1646,6 +1733,7 @@ fn run_continue_with_launch_signal(
     permission_mode_override: Option<String>,
     launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
     expected_execution_id: Option<String>,
+    resume_metrics_context: Option<RuntimeResumeMetricsContext>,
 ) -> Result<RunState> {
     let workflow = load_run_workflow(app, task_id, run_id)?;
     let validated = validate_workflow_snapshot(workflow)?;
@@ -1847,6 +1935,7 @@ fn run_continue_with_launch_signal(
         initial_parent_continue_input,
         initial_parent_continue_prompt_id,
         None,
+        resume_metrics_context,
         initial_model_override,
         initial_permission_mode_override,
         launch,
@@ -2043,6 +2132,7 @@ fn run_continue_dynamic_inner(
         None,
         None,
         Some(resume_override),
+        None,
         prompt_state.model_override,
         prompt_state.permission_mode_override,
         None,
@@ -2222,6 +2312,7 @@ pub(crate) fn run_continue_background(
     }
     let execution_id = next_runtime_execution_id();
     let runtime_candidate = app.begin_runtime_candidate(task_id, run_id)?;
+    let resume_metrics_context;
     {
         let state_lock = super::attempt_runtime_state_lock(
             app,
@@ -2256,6 +2347,9 @@ pub(crate) fn run_continue_background(
             "current attempt is not resumable by continue"
         );
         node.runtime_execution_id = Some(execution_id.clone());
+        let previous_pause_reason = current_run
+            .pause_reason
+            .ok_or_else(|| anyhow!("continuable run is missing its pause reason"))?;
         let resumed_at = now_rfc3339_like();
         let attempt_dir =
             app.paths
@@ -2274,6 +2368,12 @@ pub(crate) fn run_continue_background(
                 Some(runtime_candidate.token().to_string());
         }
         current_run.transition_current_execution(resume_phase, resumed_at)?;
+        resume_metrics_context = RuntimeResumeMetricsContext::manual_continue(
+            previous_pause_reason,
+            current_run.execution.revision,
+            prompt_id.as_deref(),
+            input.as_ref(),
+        );
         crate::runtime::validate_node_state(&node)?;
         validate_run_state(&current_run)?;
         let node_path =
@@ -2319,6 +2419,7 @@ pub(crate) fn run_continue_background(
                 permission_mode_override,
                 Some(launch_sender),
                 Some(background_execution_id.clone()),
+                Some(resume_metrics_context),
             ) {
                 let info = runtime_continue_launch_error(&err);
                 let convergence = app.pause_attempt_runtime_state_if_active_execution(
@@ -2497,6 +2598,7 @@ pub(crate) fn run_recover_completed_background(
                 None,
                 None,
                 None,
+                None,
                 prompt_state.model_override,
                 prompt_state.permission_mode_override,
                 None,
@@ -2627,6 +2729,7 @@ fn submit_manual_check_with_launch_signal(
     if let Some(runtime_candidate) = runtime_candidate {
         runtime_candidate.commit();
     }
+    emit_node_completed_lifecycle_event(app, task_id, &run, &round, &node);
     let decision = decide_next_step(&validated, &run, &round, &node);
     let next = apply_control_decision(
         app,
@@ -2681,6 +2784,7 @@ fn submit_manual_check_with_launch_signal(
             prompt_state.user_prompt_render_mode,
             prompt_state.input_attachment_paths,
             prompt_state.runtime_control_intent,
+            None,
             None,
             None,
             None,
@@ -3205,6 +3309,14 @@ fn metrics_intervention_kind(
     }
 }
 
+fn metrics_resume_fact_id(run: &RunState, transition_revision: Option<u64>) -> String {
+    format!(
+        "run:{}:resume:{}",
+        run.uuid.as_deref().unwrap_or(&run.id),
+        transition_revision.unwrap_or(run.execution.revision)
+    )
+}
+
 fn emit_run_metrics_fact(
     app: &App,
     run: &RunState,
@@ -3214,6 +3326,7 @@ fn emit_run_metrics_fact(
     pause_reason: Option<PauseReason>,
     intervention_kind: Option<RuntimeInterventionKind>,
     outcome: Option<RunOutcome>,
+    resume_context: Option<&RuntimeResumeMetricsContext>,
 ) {
     if !app.metrics_collection_enabled() {
         return;
@@ -3232,14 +3345,16 @@ fn emit_run_metrics_fact(
         .join("observability")
         .join(&task_uuid)
         .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-    let mut resume_cause = None;
+    let mut resume_cause =
+        resume_context.map(|_| super::observability::ResumeCause::ManualContinue);
     if event_type == super::observability::LifecycleEventType::ExecutionResumed {
         app.update_observability_state(&task_uuid, path, |state| {
-            resume_cause = Some(
-                state
-                    .take_pending_resume_cause()
-                    .unwrap_or(super::observability::ResumeCause::AutomaticRecovery),
-            );
+            let pending_cause = state.take_pending_resume_cause();
+            if resume_cause.is_none() {
+                resume_cause = Some(
+                    pending_cause.unwrap_or(super::observability::ResumeCause::AutomaticRecovery),
+                );
+            }
         });
     }
     let current_node_state = run
@@ -3359,6 +3474,7 @@ fn emit_run_metrics_fact(
         session_mode,
         subject,
     );
+    fact.fact_id = event_id.clone();
     fact.payload.pause_reason = pause_reason.map(metrics_pause_reason);
     fact.payload.previous_pause_reason =
         if event_type == super::observability::LifecycleEventType::ExecutionResumed {
@@ -3391,8 +3507,10 @@ fn emit_run_metrics_fact(
                 }
             };
             super::observability::MetricsTransition::Resumed {
-                transition_id: event_id,
+                transition_id: event_id.clone(),
                 action,
+                follow_up_action_id: resume_context
+                    .and_then(|context| context.follow_up_action_id(&event_id)),
             }
         }
         super::observability::LifecycleEventType::InterventionRequested => {
@@ -3413,6 +3531,7 @@ fn emit_run_metrics_fact(
         _ => super::observability::MetricsTransition::None,
     };
     if let Some(outcome) = outcome {
+        fact.payload.code_changes = app.metrics_code_changes_snapshot(&run.task_id, &run.id);
         fact.payload.outcome = Some(match outcome {
             RunOutcome::Success => super::observability::ExecutionOutcome::Success,
             RunOutcome::Failure => super::observability::ExecutionOutcome::Failure,
@@ -3568,9 +3687,10 @@ fn emit_run_paused_lifecycle_event(
         app,
         run,
         super::observability::LifecycleEventType::ExecutionPaused,
-        event_id,
+        format!("{event_id}:paused:{}", run.execution.revision),
         occurred_at,
         Some(reason),
+        None,
         None,
         None,
     );
@@ -3612,10 +3732,14 @@ fn emit_intervention_requested(
         app,
         run,
         super::observability::LifecycleEventType::InterventionRequested,
-        event_id,
+        format!(
+            "{event_id}:intervention:{kind:?}:{}",
+            run.execution.revision
+        ),
         occurred_at,
         None,
         Some(kind),
+        None,
         None,
     );
 }
@@ -3660,6 +3784,7 @@ fn emit_run_completed_lifecycle_event(
         None,
         None,
         Some(outcome),
+        None,
     );
     let _ = app.notify_prompt_turn_finished(
         crate::app::AcpLiveEventContext {
@@ -3730,7 +3855,7 @@ fn attempt_has_pending_elicitation(attempt_dir: &camino::Utf8Path) -> bool {
     })
 }
 
-fn emit_pause_side_effects(
+pub(crate) fn emit_pause_side_effects(
     app: &App,
     task_id: &str,
     run: &RunState,
@@ -3929,6 +4054,64 @@ fn completed_node_snapshot(
         finished_at: node.finished_at.clone(),
         attempt_dir,
     }
+}
+
+fn emit_node_completed_lifecycle_event(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+    round: &RoundState,
+    node: &NodeState,
+) {
+    if node.status != RunStatus::Completed
+        || node.outcome.is_none()
+        || node.manual_check_pending
+        || node.finished_at.is_none()
+    {
+        tracing::warn!(
+            code = "NODE_COMPLETED_LIFECYCLE_NOT_TERMINAL",
+            task_id,
+            run_id = %run.id,
+            round_id = %round.id,
+            node_id = %node.node_id,
+            attempt_id = %node.attempt_id,
+            "refused to publish node completion before canonical terminal state"
+        );
+        return;
+    }
+    let attempt_dir = app
+        .paths
+        .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
+        .to_string();
+    let snapshot = completed_node_snapshot(round, node, Some(attempt_dir.clone()));
+    app.emit_lifecycle_event(RuntimeLifecycleEvent::NodeCompleted {
+        task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
+        run_id: run.id.clone(),
+        run_uuid: run.uuid.clone(),
+        round_id: round.id.clone(),
+        round_uuid: round.uuid.clone(),
+        round_index: Some(round.index),
+        node_id: node.node_id.clone(),
+        node_uuid: node.uuid.clone(),
+        attempt_id: node.attempt_id.clone(),
+        repo_root: app.paths.repo_root.to_string(),
+        seq: snapshot.seq,
+        node_name: snapshot.node_name,
+        agent_type: snapshot.agent_type,
+        resolved_model: node
+            .resolved_config
+            .get("model")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        started_at: node.started_at.clone(),
+        finished_at: node.finished_at.clone(),
+        outcome: snapshot.status,
+        attempt_dir,
+        suppress_sentinel: false,
+        metrics_unit_kind: None,
+        child_run_id: None,
+    });
 }
 
 fn apply_control_decision(
@@ -4383,6 +4566,7 @@ fn drive_from_node_with_runtime_candidate(
         UserPromptRenderMode::RequirementTask,
         Vec::new(),
         RuntimeControlIntent::Unchanged,
+        None,
         None,
         None,
         None,
@@ -6814,9 +6998,10 @@ fn restore_outer_attempt_running_for_dynamic_resume(
         app,
         &run,
         super::observability::LifecycleEventType::ExecutionResumed,
-        uuid::Uuid::new_v4().to_string(),
+        metrics_resume_fact_id(&run, None),
         now_rfc3339_like(),
         Some(previous_pause_reason),
+        None,
         None,
         None,
     );
@@ -10578,6 +10763,7 @@ pub(crate) fn run_continue_with_prompt_input(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -12571,6 +12757,7 @@ fn drive_from_node_with_initial_session(
     parent_continue_input: Option<ConversationPromptInput>,
     parent_continue_prompt_id: Option<String>,
     dynamic_resume_override: Option<DynamicResumeOverride>,
+    mut resume_metrics_context: Option<RuntimeResumeMetricsContext>,
     initial_model_override: Option<String>,
     initial_permission_mode_override: Option<String>,
     mut launch: Option<mpsc::Sender<RuntimeContinueLaunch>>,
@@ -12599,6 +12786,7 @@ fn drive_from_node_with_initial_session(
     let mut invalid_output_repair_prompts = 0;
 
     loop {
+        let current_resume_metrics_context = resume_metrics_context.take();
         let current_attempt_id = node.attempt_id.clone();
         let current_node_id = node.node_id.clone();
         let current_execution_id = node.runtime_execution_id.clone();
@@ -12606,15 +12794,30 @@ fn drive_from_node_with_initial_session(
             .with_round(round.id.clone())
             .with_node(current_node_id.clone())
             .with_attempt(current_attempt_id.clone());
-        let previous_pause_reason = (run.status == RunStatus::Paused)
-            .then_some(run.pause_reason)
-            .flatten();
+        let previous_pause_reason = effective_previous_pause_reason(
+            run.status,
+            run.pause_reason,
+            current_resume_metrics_context.as_ref(),
+        );
         run.status = RunStatus::Running;
         run.pause_reason = None;
         run.updated_at = now_rfc3339_like();
         let starting_phase = match run.execution.phase {
             RuntimeExecutionPhase::FinalizingArtifact => RuntimeExecutionPhase::FinalizingArtifact,
             RuntimeExecutionPhase::RepairingArtifact => RuntimeExecutionPhase::RepairingArtifact,
+            _ if previous_pause_reason.is_some()
+                && crate::provider::post_turn_projection_checkpoint_is_finalizing(
+                    &app.paths.attempt_dir(
+                        task_id,
+                        &run.id,
+                        &round.id,
+                        &node.node_id,
+                        &node.attempt_id,
+                    ),
+                )? =>
+            {
+                RuntimeExecutionPhase::FinalizingArtifact
+            }
             _ => RuntimeExecutionPhase::StartingNode,
         };
         run.transition_current_execution(starting_phase, run.updated_at.clone())?;
@@ -12663,11 +12866,17 @@ fn drive_from_node_with_initial_session(
                 app,
                 run,
                 super::observability::LifecycleEventType::ExecutionResumed,
-                uuid::Uuid::new_v4().to_string(),
+                metrics_resume_fact_id(
+                    run,
+                    current_resume_metrics_context
+                        .as_ref()
+                        .map(|context| context.transition_revision),
+                ),
                 now_rfc3339_like(),
                 Some(previous_pause_reason),
                 None,
                 None,
+                current_resume_metrics_context.as_ref(),
             );
         }
 
@@ -12988,44 +13197,6 @@ fn drive_from_node_with_initial_session(
 
         if node.status == RunStatus::Completed {
             teardown_node_environment_best_effort(app, task_id, &run.id, &round.id, &node, &ctx);
-
-            // Emit NodeCompleted immediately when the node reaches terminal execution state.
-            // This must happen BEFORE any control flow decisions (manual check, invalid
-            // repair, transition, run completion) so metrics are reported for every node.
-            let node_attempt_dir = app
-                .paths
-                .attempt_dir(task_id, &run.id, &round.id, &node.node_id, &node.attempt_id)
-                .to_string();
-            let node_completed_snapshot =
-                completed_node_snapshot(round, &node, Some(node_attempt_dir.clone()));
-            app.emit_lifecycle_event(super::RuntimeLifecycleEvent::NodeCompleted {
-                task_id: task_id.to_string(),
-                task_uuid: run.task_uuid.clone(),
-                run_id: run.id.clone(),
-                run_uuid: run.uuid.clone(),
-                round_id: round.id.clone(),
-                round_uuid: round.uuid.clone(),
-                round_index: Some(round.index),
-                node_id: node.node_id.clone(),
-                node_uuid: node.uuid.clone(),
-                attempt_id: node.attempt_id.clone(),
-                repo_root: app.paths.repo_root.to_string(),
-                seq: node_completed_snapshot.seq,
-                node_name: node_completed_snapshot.node_name.clone(),
-                agent_type: node_completed_snapshot.agent_type.clone(),
-                resolved_model: node
-                    .resolved_config
-                    .get("model")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
-                started_at: node.started_at.clone(),
-                finished_at: node.finished_at.clone(),
-                outcome: node_completed_snapshot.status.clone(),
-                attempt_dir: node_attempt_dir,
-                suppress_sentinel: false,
-                metrics_unit_kind: None,
-                child_run_id: None,
-            });
         }
 
         if node.status == RunStatus::Paused {
@@ -13247,7 +13418,7 @@ fn drive_from_node_with_initial_session(
             node.status = RunStatus::Paused;
             node.outcome = None;
             node.manual_check_pending = true;
-            node.finished_at = Some(now_rfc3339_like());
+            node.finished_at = None;
             run.status = RunStatus::Paused;
             run.pause_reason = Some(PauseReason::WaitingForUserInput);
             run.updated_at = now_rfc3339_like();
@@ -13332,7 +13503,7 @@ fn drive_from_node_with_initial_session(
             return Ok(());
         }
 
-        // NodeCompleted already emitted above inside the if-completed block.
+        emit_node_completed_lifecycle_event(app, task_id, run, round, &node);
         let completed_snapshot = completed_node_snapshot(
             round,
             &node,
@@ -13376,7 +13547,6 @@ fn drive_from_node_with_initial_session(
             invalid_output_repair_prompts = 0;
             continue;
         }
-        // Workflow ended - NodeCompleted already emitted above before control decision.
         if run.status != RunStatus::Running {
             app.finish_runtime_candidate_best_effort(
                 task_id,
@@ -13512,6 +13682,7 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            None,
         );
         emit_run_metrics_fact(
             &app,
@@ -13522,6 +13693,14 @@ mod tests {
             Some(PauseReason::WaitingForUserInput),
             None,
             None,
+            Some(&RuntimeResumeMetricsContext::manual_continue(
+                PauseReason::WaitingForUserInput,
+                7,
+                Some("prompt-follow-up"),
+                Some(&ConversationPromptInput::from(
+                    "开发完要编写单元测试代码".to_string(),
+                )),
+            )),
         );
 
         let facts = seen.lock().unwrap();
@@ -13550,6 +13729,15 @@ mod tests {
         assert_eq!(
             facts[1].payload.previous_pause_reason,
             Some(crate::app::observability::MetricsPauseReason::WaitingForUserInput)
+        );
+        assert_eq!(facts[1].fact_id, "resumed-1");
+        assert_eq!(
+            facts[1].transition,
+            crate::app::observability::MetricsTransition::Resumed {
+                transition_id: "resumed-1".to_string(),
+                action: crate::app::observability::UserExecutionAction::ManualContinue,
+                follow_up_action_id: Some("prompt-follow-up".to_string()),
+            }
         );
     }
 
@@ -13863,6 +14051,52 @@ mod tests {
         );
         drop(first);
         assert!(FixedRunContinueLease::acquire(&app, "task-001", "run-001").is_ok());
+    }
+
+    #[test]
+    fn resume_metrics_context_counts_each_non_empty_user_input_as_follow_up() {
+        let empty = ConversationPromptInput::from("   ".to_string());
+        let follow_up = ConversationPromptInput::from("开发完要编写单元测试代码".to_string());
+
+        let empty_context = RuntimeResumeMetricsContext::manual_continue(
+            PauseReason::ProcessInterrupted,
+            7,
+            Some("prompt-empty"),
+            Some(&empty),
+        );
+        let follow_up_context = RuntimeResumeMetricsContext::manual_continue(
+            PauseReason::ProcessInterrupted,
+            8,
+            Some("prompt-follow-up"),
+            Some(&follow_up),
+        );
+
+        assert!(!empty_context.has_follow_up);
+        assert!(follow_up_context.has_follow_up);
+        assert_eq!(
+            follow_up_context.follow_up_action_id("resume-8").as_deref(),
+            Some("prompt-follow-up"),
+        );
+        assert_eq!(follow_up_context.transition_revision, 8);
+    }
+
+    #[test]
+    fn committed_continue_context_keeps_running_drive_from_republishing_started() {
+        let context = RuntimeResumeMetricsContext::manual_continue(
+            PauseReason::ProcessInterrupted,
+            9,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, Some(&context)),
+            Some(PauseReason::ProcessInterrupted)
+        );
+        assert_eq!(
+            effective_previous_pause_reason(RunStatus::Running, None, None),
+            None
+        );
     }
 
     #[test]
@@ -14301,6 +14535,59 @@ mod tests {
                 .get("reasoning_effort")
                 .map(String::as_str),
             Some("medium")
+        );
+    }
+
+    #[test]
+    fn main_workspace_run_captures_terminal_code_changes_from_the_start_head() {
+        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
+        let repo_root = app.paths.repo_root.clone();
+        std::fs::write(
+            repo_root.join(".gitignore").as_std_path(),
+            ".gold-band/\n.gold-band-home/\n",
+        )
+        .unwrap();
+        git(&repo_root, &["add", ".gitignore"]);
+        git(&repo_root, &["commit", "-m", "ignore runtime state"]);
+        let expected_head = GitRepositoryService::default().head(&repo_root).unwrap();
+        let app = app.with_metrics_collection_enabled(true);
+        let task_id = create_direct_test_task(&app);
+
+        let prepared = prepare_run(&app, &task_id, None).unwrap();
+        assert!(prepared.run().worktree.is_none());
+        let run_id = prepared.run().id.clone();
+        let baseline_path = app
+            .paths
+            .run_dir(&task_id, &run_id)
+            .join("observability")
+            .join("code-change-baseline.json");
+        let baseline: super::super::observability::RunCodeChangeBaseline =
+            read_json(&baseline_path).unwrap();
+        assert_eq!(baseline.workspace_path, repo_root);
+        assert_eq!(baseline.baseline_commit, expected_head);
+
+        std::fs::write(
+            repo_root.join("README.md").as_std_path(),
+            "hello\nchanged\n",
+        )
+        .unwrap();
+        std::fs::write(repo_root.join("new.txt").as_std_path(), "one\ntwo\n").unwrap();
+        let first = app
+            .metrics_code_changes_snapshot(&task_id, &run_id)
+            .unwrap();
+        assert_eq!(
+            first,
+            super::super::observability::TaskCodeChanges {
+                added_lines: 3,
+                deleted_lines: 0,
+                changed_files: 2,
+            }
+        );
+
+        std::fs::write(repo_root.join("new.txt").as_std_path(), "replaced\n").unwrap();
+        assert_eq!(
+            app.metrics_code_changes_snapshot(&task_id, &run_id),
+            Some(first)
         );
     }
 
@@ -14836,6 +15123,77 @@ mod tests {
         let kind = waiting_for_user_input_intervention_kind(&app, "task-001", &run, &round, &node);
 
         assert_eq!(kind, RuntimeInterventionKind::ManualDecisionRequired);
+    }
+
+    #[test]
+    fn manual_check_attempt_emits_completed_only_after_terminal_state_is_persistable() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let completed_events = Arc::new(Mutex::new(Vec::new()));
+        let captured = completed_events.clone();
+        let app = App::new(repo_root).with_inline_lifecycle_subscriber(Arc::new(move |event| {
+            if matches!(&event, RuntimeLifecycleEvent::NodeCompleted { .. }) {
+                captured.lock().unwrap().push(event);
+            }
+        }));
+        let run = RunState {
+            version: VERSION.to_string(),
+            id: "run-001".to_string(),
+            task_id: "task-001".to_string(),
+            task_uuid: None,
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: "2026-08-25T10:00:00.000".to_string(),
+            updated_at: "2026-08-25T10:00:01.000".to_string(),
+            workflow_snapshot: "workflow.snapshot.json".to_string(),
+            current_round: Some("round-001".to_string()),
+            current_node: Some("review".to_string()),
+            current_attempt: Some("attempt-001".to_string()),
+            new_rounds_opened: 0,
+            pause_reason: Some(PauseReason::WaitingForUserInput),
+            uuid: None,
+            last_executed_node: None,
+            worktree: None,
+            execution: Default::default(),
+        };
+        let round = RoundState {
+            version: VERSION.to_string(),
+            id: "round-001".to_string(),
+            run_id: run.id.clone(),
+            index: 1,
+            status: RunStatus::Paused,
+            outcome: None,
+            trigger: RoundTrigger::Initial,
+            started_at: run.started_at.clone(),
+            trace: Vec::new(),
+            uuid: None,
+        };
+        let mut node = NodeState {
+            version: VERSION.to_string(),
+            node_id: "review".to_string(),
+            node_type: crate::domain::NodeType::Worker,
+            run_id: run.id.clone(),
+            round_id: round.id.clone(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Paused,
+            outcome: None,
+            started_at: run.started_at.clone(),
+            finished_at: None,
+            manual_check_pending: true,
+            runtime_execution_id: None,
+            resolved_config: BTreeMap::new(),
+            uuid: None,
+        };
+
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert!(completed_events.lock().unwrap().is_empty());
+
+        node.status = RunStatus::Completed;
+        node.outcome = Some(NodeOutcome::Success);
+        node.manual_check_pending = false;
+        node.finished_at = Some("2026-08-25T10:00:02.000".to_string());
+        emit_node_completed_lifecycle_event(&app, "task-001", &run, &round, &node);
+        assert_eq!(completed_events.lock().unwrap().len(), 1);
     }
 
     #[test]

@@ -44,6 +44,7 @@ use crate::dynamic::{
     refresh_dynamic_current_leaf_ids,
 };
 use crate::dynamic_store::load_dynamic_graph;
+use crate::git::GitSourceControlService;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
@@ -1769,54 +1770,105 @@ impl App {
         self.metrics_collection_enabled
     }
 
-    fn metrics_task_origin(&self, task_id: &str) -> observability::MetricsTaskOrigin {
-        let metadata_path = self
-            .paths
-            .task_dir(task_id)
-            .join("authoring")
-            .join("conversation.json");
-        let scheduled_task_id = read_json::<serde_json::Value>(&metadata_path)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("scheduledTaskId")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .or_else(|| {
-                self.scheduled_task_context
-                    .as_ref()
-                    .map(|context| context.scheduled_task_id.clone())
-            });
-        match scheduled_task_id {
-            Some(scheduled_task_id) => {
-                observability::MetricsTaskOrigin::ScheduledTask { scheduled_task_id }
-            }
-            None => observability::MetricsTaskOrigin::User,
+    fn metrics_task_origin(&self) -> observability::MetricsTaskOrigin {
+        if self.scheduled_task_context.is_some() {
+            observability::MetricsTaskOrigin::Scheduled
+        } else {
+            observability::MetricsTaskOrigin::User
         }
     }
 
-    fn metrics_execution_trigger(&self) -> observability::MetricsExecutionTrigger {
+    fn metrics_execution_trigger(&self) -> Option<observability::MetricsExecutionTrigger> {
+        use crate::scheduler::{RepeatPreset, ScheduleKind};
+        use observability::{MetricsExecutionTrigger as Trigger, MetricsRepeatKind};
+
         let Some(context) = self.scheduled_task_context.as_ref() else {
-            return observability::MetricsExecutionTrigger::User;
+            return None;
         };
-        let trigger_kind = if context.trigger_kind.eq_ignore_ascii_case("manual") {
-            observability::ScheduledTriggerKind::Manual
-        } else {
-            observability::ScheduledTriggerKind::Scheduled
+        let common = || {
+            (
+                context.scheduled_task_id.clone(),
+                context.scheduled_occurrence_id.clone(),
+                context.triggered_at.clone(),
+            )
         };
-        let session_policy = if context.session_policy.eq_ignore_ascii_case("continuous") {
-            observability::ScheduledSessionPolicy::Continuous
-        } else {
-            observability::ScheduledSessionPolicy::New
-        };
-        observability::MetricsExecutionTrigger::ScheduledOccurrence {
-            scheduled_task_id: context.scheduled_task_id.clone(),
-            scheduled_occurrence_id: context.scheduled_occurrence_id.clone(),
-            trigger_kind,
-            scheduled_at: context.triggered_at.clone(),
-            session_policy,
-        }
+        Some(match &context.schedule.kind {
+            ScheduleKind::At { timezone, .. } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Once {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                }
+            }
+            ScheduleKind::Every {
+                every,
+                anchor_at,
+                timezone,
+            } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Repeat {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    repeat_kind: MetricsRepeatKind::Interval,
+                    value: Some(every.value),
+                    unit: Some(format!("{:?}", every.unit).to_ascii_lowercase()),
+                    anchor_at: Some(anchor_at.to_rfc3339()),
+                    hour: None,
+                    minute: None,
+                    weekdays: Vec::new(),
+                }
+            }
+            ScheduleKind::Repeat {
+                preset,
+                hour,
+                minute,
+                timezone,
+            } => {
+                let (repeat_kind, weekdays) = match preset {
+                    RepeatPreset::Hourly => (MetricsRepeatKind::Hourly, Vec::new()),
+                    RepeatPreset::Daily => (MetricsRepeatKind::Daily, Vec::new()),
+                    RepeatPreset::Weekdays => (MetricsRepeatKind::Weekdays, Vec::new()),
+                    RepeatPreset::Weekly { weekdays } => (
+                        MetricsRepeatKind::Weekly,
+                        weekdays
+                            .iter()
+                            .map(|weekday| weekday.to_string().to_ascii_lowercase())
+                            .collect(),
+                    ),
+                };
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Repeat {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    repeat_kind,
+                    value: None,
+                    unit: None,
+                    anchor_at: None,
+                    hour: Some(*hour),
+                    minute: Some(*minute),
+                    weekdays,
+                }
+            }
+            ScheduleKind::Cron {
+                expression,
+                timezone,
+            } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Cron {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    expression: expression.clone(),
+                }
+            }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1845,7 +1897,7 @@ impl App {
             session_mode,
             subject,
             observability::MetricsRuntimeLocator { run_id, round_id },
-            self.metrics_task_origin(task_id),
+            self.metrics_task_origin(),
             self.metrics_execution_trigger(),
         );
         fact.payload.task_title = self.task_show(task_id).ok().and_then(|task| task.title);
@@ -1939,58 +1991,104 @@ impl App {
             .collect()
     }
 
-    pub fn metrics_code_change_delta(
-        attempt_dir: &camino::Utf8Path,
-        turn_id: Option<&str>,
-    ) -> observability::TaskCodeChangeDelta {
-        use crate::acp::turn_files::{
-            TurnFileCaptureConfig, TurnFileChangeSetStatus, TurnFileStore,
-        };
-        use observability::{CodeChangeCompleteness, CodeChangeFileDelta, TaskCodeChangeDelta};
-
-        let store = TurnFileStore::new(attempt_dir.to_path_buf(), TurnFileCaptureConfig::default());
-        let change_sets = match store.load_change_sets_for_turn(turn_id) {
-            Ok(change_sets) => change_sets,
-            Err(_) => {
-                return TaskCodeChangeDelta {
-                    completeness: CodeChangeCompleteness::Unavailable,
-                    files: Vec::new(),
-                    limitation_codes: vec!["TURN_FILE_CHANGE_SET_READ_FAILED".to_string()],
-                };
-            }
-        };
-        let mut files = Vec::new();
-        let mut limitation_codes = std::collections::BTreeSet::new();
-        let mut partial = false;
-        for change_set in change_sets {
-            if change_set.status != TurnFileChangeSetStatus::Finalized {
-                partial = true;
-            }
-            limitation_codes.extend(change_set.limitation_codes);
-            for change in change_set.changes {
-                match (change.added_lines, change.deleted_lines) {
-                    (Some(added_lines), Some(deleted_lines)) => files.push(CodeChangeFileDelta {
-                        logical_path: change.logical_path,
-                        added_lines,
-                        deleted_lines,
-                    }),
-                    _ => {
-                        partial = true;
-                        if let Some(code) = change.limitation_code {
-                            limitation_codes.insert(code);
-                        }
-                    }
-                }
-            }
+    pub fn metrics_code_changes_snapshot(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Option<observability::TaskCodeChanges> {
+        let snapshot_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("code-changes.json");
+        if let Ok(snapshot) = read_json::<observability::TaskCodeChanges>(&snapshot_path) {
+            return Some(snapshot);
         }
-        TaskCodeChangeDelta {
-            completeness: if partial {
-                CodeChangeCompleteness::Partial
-            } else {
-                CodeChangeCompleteness::Complete
-            },
-            files,
-            limitation_codes: limitation_codes.into_iter().collect(),
+        let baseline_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("code-change-baseline.json");
+        let baseline = match read_json::<observability::RunCodeChangeBaseline>(&baseline_path) {
+            Ok(baseline) => baseline,
+            Err(error) => {
+                tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    path = %baseline_path,
+                    error = %error,
+                    "failed to load terminal Git code change baseline"
+                );
+                return None;
+            }
+        };
+        let stats = match GitSourceControlService::default()
+            .baseline_diff_stats(&baseline.workspace_path, &baseline.baseline_commit)
+        {
+            Ok(stats) => stats,
+            Err(error) => {
+                tracing::warn!(
+                    code = "METRICS_CODE_CHANGES_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    workspace_path = %baseline.workspace_path,
+                    baseline_commit = %baseline.baseline_commit,
+                    error = %error,
+                    "failed to capture terminal Git code changes"
+                );
+                return None;
+            }
+        };
+        let snapshot = observability::TaskCodeChanges {
+            added_lines: stats.added_lines,
+            deleted_lines: stats.deleted_lines,
+            changed_files: stats.changed_files,
+        };
+        if let Err(error) = write_json(&snapshot_path, &snapshot) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGES_SNAPSHOT_FAILED",
+                task_id,
+                run_id,
+                error = %error,
+                "failed to persist terminal Git code changes"
+            );
+            return None;
+        }
+        Some(snapshot)
+    }
+
+    pub fn record_metrics_code_change_baseline(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        workspace_path: Utf8PathBuf,
+        baseline_commit: String,
+    ) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let snapshot_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("code-change-baseline.json");
+        if snapshot_path.is_file() {
+            return;
+        }
+        let snapshot = observability::RunCodeChangeBaseline {
+            workspace_path,
+            baseline_commit,
+        };
+        if let Err(error) = write_json(&snapshot_path, &snapshot) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_SNAPSHOT_FAILED",
+                task_id,
+                run_id,
+                path = %snapshot_path,
+                error = %error,
+                "failed to persist Git code change baseline"
+            );
         }
     }
 
@@ -2284,6 +2382,14 @@ impl App {
             session_mode,
             subject.clone(),
         );
+        fact.fact_id = format!(
+            "node-attempt:{metrics_attempt_id}:{}",
+            match event_type {
+                LifecycleEventType::ExecutionStarted => "started",
+                LifecycleEventType::ExecutionCompleted => "completed",
+                _ => "lifecycle",
+            }
+        );
         fact.payload.provider = provider;
         fact.payload.model = if event_type == LifecycleEventType::ExecutionStarted {
             None
@@ -2340,12 +2446,6 @@ impl App {
                 ended_at: ended_at.clone(),
                 acp_session_elapsed_ms: usage_snapshot.and_then(|usage| usage.elapsed_ms),
             });
-            if let Some(attempt_dir) = attempt_dir.as_deref() {
-                fact.payload.code_change_delta = Some(App::metrics_code_change_delta(
-                    camino::Utf8Path::new(attempt_dir),
-                    None,
-                ));
-            }
         }
         let acceptance_passed = (dynamic_kind == Some(crate::dynamic::DynamicNodeKind::Acceptance)
             && event_type == LifecycleEventType::ExecutionCompleted)
@@ -2363,6 +2463,7 @@ impl App {
                 MetricsSessionMode::Auto,
                 subject,
             );
+            acceptance.fact_id = format!("acceptance:{metrics_attempt_id}");
             acceptance.transition = MetricsTransition::Acceptance {
                 action_id: format!("acceptance:{metrics_attempt_id}"),
                 passed,
@@ -4201,7 +4302,7 @@ impl App {
             let node_path = self
                 .paths
                 .node_file(task_id, run_id, &round_id, &node_id, &attempt_id);
-            if node_path.exists() {
+            let paused_node = if node_path.exists() {
                 let mut node: NodeState = read_json(&node_path)?;
                 if node.status != RunStatus::Completed {
                     node.status = RunStatus::Paused;
@@ -4211,9 +4312,15 @@ impl App {
                     validate_node_state(&node)?;
                     write_json(&node_path, &node)?;
                 }
-            }
+                Some(node)
+            } else {
+                None
+            };
             drop(guard);
 
+            if let Some(node) = paused_node.as_ref() {
+                orchestrator::emit_pause_side_effects(self, task_id, &run, &round, node);
+            }
             self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -4390,6 +4497,7 @@ impl App {
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
+        let mut paused_round = None;
         if round_path.exists() {
             let mut round: RoundState = read_json(&round_path)?;
             if round.status == RunStatus::Running {
@@ -4397,6 +4505,7 @@ impl App {
                 validate_round_state(&round)?;
                 write_json(&round_path, &round)?;
             }
+            paused_round = Some(round);
         }
 
         if let Some(node) = node.as_mut() {
@@ -4412,10 +4521,17 @@ impl App {
 
         let run_became_inactive =
             active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck);
+        let pause_metrics_snapshot = active_attempt
+            .then(|| run.as_ref().zip(paused_round.as_ref()).zip(node.as_ref()))
+            .flatten()
+            .map(|((run, round), node)| (run.clone(), round.clone(), node.clone()));
         let recovery_candidate_token = run
             .as_ref()
             .and_then(|run| run.execution.recovery_candidate_token.clone());
         drop(guard);
+        if let Some((run, round, node)) = pause_metrics_snapshot {
+            orchestrator::emit_pause_side_effects(self, task_id, &run, &round, &node);
+        }
         if run_became_inactive {
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -5443,7 +5559,7 @@ mod tests {
     }
 
     #[test]
-    fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
+    fn background_continue_prelaunch_failure_converges_and_allows_retry() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(
@@ -5468,6 +5584,24 @@ mod tests {
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
         assert_eq!(run.execution.revision, 3);
+
+        let retry_error = app
+            .run_continue_background(
+                "task-001",
+                "run-001",
+                Some("prompt-002".to_string()),
+                Some("需要加至少一个测试案例".to_string()),
+            )
+            .unwrap_err();
+        assert!(
+            !format!("{retry_error:#}").contains("pending continue action"),
+            "a failed launch must not leave metrics state that blocks the next continue"
+        );
+        let retried_run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(retried_run.status, RunStatus::Paused);
+        assert_eq!(retried_run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(retried_run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(retried_run.execution.revision, 5);
     }
 
     #[test]
@@ -6478,6 +6612,8 @@ mod tests {
                 session_policy: "continuous".to_string(),
                 trigger_kind: "cron".to_string(),
                 triggered_at: "2026-08-03T00:00:00Z".to_string(),
+                schedule: crate::scheduler::ScheduleSpec::cron("0 9 * * *", "Asia/Shanghai")
+                    .unwrap(),
                 instruction: Some("Review changes".to_string()),
             }));
 
@@ -6544,49 +6680,25 @@ mod tests {
     }
 
     #[test]
-    fn direct_code_change_delta_is_filtered_by_terminal_turn() {
+    fn terminal_code_changes_reuses_persisted_snapshot() {
         let temp = tempdir().unwrap();
-        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let store = crate::acp::turn_files::TurnFileStore::new(
-            attempt_dir.clone(),
-            crate::acp::turn_files::TurnFileCaptureConfig::default(),
-        );
-        for (turn_id, path) in [("turn-a", "a.rs"), ("turn-b", "b.rs")] {
-            store
-                .capture_event_diffs(
-                    turn_id,
-                    &format!("prompt-{turn_id}"),
-                    "root",
-                    "edit",
-                    1,
-                    "1Z",
-                    &serde_json::json!({
-                        "sessionUpdate": "tool_call_update",
-                        "content": [{
-                            "type": "diff",
-                            "path": path,
-                            "oldText": "old\n",
-                            "newText": "new\nextra\n"
-                        }]
-                    }),
-                )
-                .unwrap();
-            store
-                .finalize_turn_branch(turn_id, &format!("prompt-{turn_id}"), "root", "0Z", "2Z")
-                .unwrap()
-                .unwrap();
-        }
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root);
+        let snapshot = super::observability::TaskCodeChanges {
+            added_lines: 12,
+            deleted_lines: 4,
+            changed_files: 3,
+        };
+        let snapshot_path = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability")
+            .join("code-changes.json");
+        write_json(&snapshot_path, &snapshot).unwrap();
 
-        let delta = App::metrics_code_change_delta(&attempt_dir, Some("turn-b"));
         assert_eq!(
-            delta.completeness,
-            super::observability::CodeChangeCompleteness::Complete
-        );
-        assert_eq!(delta.files.len(), 1);
-        assert_eq!(delta.files[0].logical_path, "b.rs");
-        assert_eq!(
-            (delta.files[0].added_lines, delta.files[0].deleted_lines),
-            (2, 1)
+            app.metrics_code_changes_snapshot("task-001", "run-001"),
+            Some(snapshot)
         );
     }
 

@@ -6,7 +6,9 @@ mod uploader;
 use std::io::Write;
 use std::sync::{Arc, OnceLock};
 
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use gold_band::app::RuntimeLifecycleEvent;
+use gold_band::app::observability::LifecycleTiming;
 use gold_band::config::RuntimeConfig;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
@@ -180,9 +182,58 @@ pub(crate) fn get_system_username() -> String {
 }
 
 fn iso_now() -> String {
-    chrono::Local::now()
-        .format("%Y-%m-%dT%H:%M:%S%.3f")
-        .to_string()
+    format_metrics_local_timestamp(Local::now())
+}
+
+fn format_metrics_local_timestamp(value: DateTime<Local>) -> String {
+    value.format("%Y-%m-%dT%H:%M:%S%.3f").to_string()
+}
+
+fn normalize_metrics_timestamp(value: &str) -> Option<String> {
+    let value = value.trim();
+    if let Some(seconds) = value.strip_suffix('Z')
+        && seconds.chars().all(|character| character.is_ascii_digit())
+    {
+        let seconds = seconds.parse::<i64>().ok()?;
+        return DateTime::from_timestamp(seconds, 0)
+            .map(|timestamp| format_metrics_local_timestamp(timestamp.with_timezone(&Local)));
+    }
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
+        return Some(format_metrics_local_timestamp(
+            timestamp.with_timezone(&Local),
+        ));
+    }
+    let local = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    Local
+        .from_local_datetime(&local)
+        .earliest()
+        .map(format_metrics_local_timestamp)
+}
+
+fn normalize_metrics_timing(timing: &mut Option<LifecycleTiming>) -> bool {
+    let Some(current) = timing.as_ref() else {
+        return true;
+    };
+    let Some(started_at) = normalize_metrics_timestamp(&current.started_at) else {
+        *timing = None;
+        return false;
+    };
+    let ended_at = match current.ended_at.as_deref() {
+        Some(value) => {
+            let Some(value) = normalize_metrics_timestamp(value) else {
+                *timing = None;
+                return false;
+            };
+            Some(value)
+        }
+        None => None,
+    };
+    *timing = Some(LifecycleTiming {
+        started_at,
+        ended_at,
+        acp_session_elapsed_ms: current.acp_session_elapsed_ms,
+    });
+    true
 }
 
 fn metrics_collection_enabled(
@@ -248,9 +299,19 @@ pub fn create_metrics_subscriber<R: Runtime>(
             }
             return;
         }
-        let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event else {
+        let RuntimeLifecycleEvent::PendingMetricsFact(mut fact) = event else {
             return;
         };
+        let Some(occurred_at) = normalize_metrics_timestamp(&fact.occurred_at) else {
+            metrics_log("[lifecycle-metrics] dropped invalid event error=invalid-occurred-at");
+            return;
+        };
+        fact.occurred_at = occurred_at;
+        if !normalize_metrics_timing(&mut fact.payload.timing) {
+            metrics_log(
+                "[lifecycle-metrics] omitted invalid timing error=invalid-lifecycle-timing",
+            );
+        }
         if let Err(error) = fact.validate() {
             metrics_log(&format!(
                 "[lifecycle-metrics] dropped invalid event error={error}"
@@ -359,5 +420,55 @@ mod tests {
             heartbeat_reason_for_event(&event(ConversationRunMode::Auto)),
             Some(heartbeat::HeartbeatReason::AutoStarted)
         );
+    }
+
+    #[test]
+    fn metrics_timestamps_use_one_local_millisecond_wire_format() {
+        let epoch = DateTime::from_timestamp(1_787_572_869, 0)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!(
+            normalize_metrics_timestamp("1787572869Z").unwrap(),
+            format_metrics_local_timestamp(epoch)
+        );
+        assert_eq!(
+            normalize_metrics_timestamp("2026-08-24T20:01:09.306").unwrap(),
+            "2026-08-24T20:01:09.306"
+        );
+        assert!(normalize_metrics_timestamp("not-a-time").is_none());
+    }
+
+    #[test]
+    fn lifecycle_timing_uses_the_same_local_millisecond_wire_format() {
+        let started = DateTime::from_timestamp(1_787_656_092, 0)
+            .unwrap()
+            .with_timezone(&Local);
+        let ended = DateTime::from_timestamp(1_787_656_690, 0)
+            .unwrap()
+            .with_timezone(&Local);
+        let mut timing = Some(LifecycleTiming {
+            started_at: "1787656092Z".to_string(),
+            ended_at: Some("1787656690Z".to_string()),
+            acp_session_elapsed_ms: Some(70_000),
+        });
+
+        assert!(normalize_metrics_timing(&mut timing));
+        let timing = timing.unwrap();
+        assert_eq!(timing.started_at, format_metrics_local_timestamp(started));
+        let expected_ended_at = format_metrics_local_timestamp(ended);
+        assert_eq!(timing.ended_at.as_deref(), Some(expected_ended_at.as_str()));
+        assert_eq!(timing.acp_session_elapsed_ms, Some(70_000));
+    }
+
+    #[test]
+    fn invalid_lifecycle_timing_is_omitted_without_dropping_the_event() {
+        let mut timing = Some(LifecycleTiming {
+            started_at: "not-a-time".to_string(),
+            ended_at: Some("2026-08-25T19:18:10.000".to_string()),
+            acp_session_elapsed_ms: Some(1),
+        });
+
+        assert!(!normalize_metrics_timing(&mut timing));
+        assert!(timing.is_none());
     }
 }

@@ -1253,7 +1253,7 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
     let resume_prompt = merge_continue.resume_prompt.as_deref().unwrap_or_default();
     assert_eq!(resume_prompt.lines().next(), Some("继续"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
     assert!(!resume_prompt.contains("artifact 输出约束"));
     assert!(!resume_prompt.contains("后续独立 turn"));
     assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
@@ -2324,7 +2324,7 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
     let resume_prompt = child_continue.resume_prompt.as_deref().unwrap_or_default();
     assert_eq!(resume_prompt.lines().next(), Some("请继续检查这个会话"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
     assert_eq!(
         child_continue.resume_prompt_id.as_deref(),
         Some("prompt-continue-001")

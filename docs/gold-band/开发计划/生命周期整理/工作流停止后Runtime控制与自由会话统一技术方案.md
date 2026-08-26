@@ -293,19 +293,19 @@ PostTurn 业务 turn 本身未暴露具体 schema，但仍复用相同的 system
 继续并发送必须使用独立条件语义，不能复用上面的纯继续提示。`PostTurnProjection`：
 
 ```text
-请先完整执行本消息中的用户指令。本 turn 不适用此前的 artifact 输出约束，也不要输出 artifact；Runtime 会在后续独立 turn 中完成结果归一化。
+请先完整执行本消息中的用户指令，然后继续完成你之前的任务。本 turn 不适用此前的 artifact 输出约束，也不要输出 artifact；完成后再由 Runtime 在后续独立 turn 中完成结果归一化。
 ```
 
 `InlineControl`：
 
 ```text
-请先完整执行本消息中的用户指令，完成后按当前输出契约输出 artifact。
+请先完整执行本消息中的用户指令，然后继续完成你之前的任务，完成后再按当前输出契约输出 artifact。
 ```
 
 无 artifact contract：
 
 ```text
-请先完整执行本消息中的用户指令。
+请先完整执行本消息中的用户指令，然后继续完成你之前的任务。
 ```
 
 中英文模板必须统一放置在：
@@ -317,7 +317,7 @@ PostTurn 业务 turn 本身未暴露具体 schema，但仍复用相同的 system
 
 用户打断规则直接进入中英文基础 runtime system；AI-DYNAMIC 通过既有 system 组合自然继承。continue 模板必须直接根据当前 artifact contract 的 `OutputEmissionMode` 渲染上述分支，不得根据历史消息是否出现 finalize 文案猜测，也不得在实现代码中硬编码长 prompt。
 
-这里的“继续”只恢复 Runtime 对本轮结果的消费、artifact 校验与后续节点决策，不恢复一份独立的“原始角色流程”快照。Agent 应继续使用同一 ACP 会话历史，并以中断期间针对当前任务的最新明确用户指引决定业务执行方式；无关闲聊不构成任务变更。这些规则由基础 system prompt 稳定承载，resume prompt 只作为控制边界信号，不重复说明指令优先级。
+这里的“继续”只恢复 Runtime 对本轮结果的消费、artifact 校验与后续节点决策，不恢复一份独立的“原始角色流程”快照。Agent 应先执行组合消息中的最新用户指令，再继续完成同一 ACP 会话中此前尚未完成的任务，并以中断期间针对当前任务的最新明确用户指引决定业务执行方式；无关闲聊不构成任务变更。这些规则由基础 system prompt 稳定承载，resume prompt 只作为控制边界信号，不重复说明指令优先级。
 
 ### 7.3 恢复目标
 

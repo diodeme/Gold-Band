@@ -1215,9 +1215,9 @@ fn run_continue_after_process_interrupted_user_input_uses_user_message_render_mo
     let resume_prompt = invocations[1].resume_prompt.as_deref().unwrap();
     assert!(resume_prompt.starts_with("请继续检查这个会话"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
     assert!(resume_prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
-    assert!(resume_prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+    assert!(resume_prompt.contains("完成后再由 Runtime 在后续独立 turn 中完成结果归一化"));
     assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
     assert!(!resume_prompt.contains("当前输出契约（如有）重新生效"));
     assert_eq!(

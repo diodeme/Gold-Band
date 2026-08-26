@@ -1299,7 +1299,7 @@ attempt-001/
 
 - 根因：`artifact-emission.json(finalizing)` 原本只表达“上一业务 turn 已完成”，provider 却把它解释为任何 Runtime continue 都必须直接恢复 finalize；因此 `UserMessage` 类型的继续并发送也会被隐藏 artifact prompt 覆盖。修复扩展既有 checkpoint phase，不建立第二套 Runtime 状态机。
 - 生命周期：`finalizing + RuntimeResume` 继续重新请求完整 artifact；`finalizing + UserMessage` 在发送用户 prompt 前原子切换为 `business-turn`，先执行新的业务 turn，成功后再回写 `finalizing` 并生成新的隐藏 finalize。业务 turn 再次中断时保留 `business-turn`，后续继续不得直接跳 artifact。
-- 提示契约：继续并发送使用独立中英文条件模板，并直接消费现有 `OutputEmissionMode`。`PostTurnProjection` 先执行可见用户指令，本 turn 不适用此前的 artifact 输出约束且不输出 artifact，后续独立归一化；`InlineControl` 先执行用户指令，完成后在同一 turn 按当前契约输出 artifact；无 contract 时只执行用户指令。纯继续模板保持原语义。
+- 提示契约：继续并发送使用独立中英文条件模板，并直接消费现有 `OutputEmissionMode`。三个分支都先执行本消息中的用户指令，再继续完成此前任务；`PostTurnProjection` 本 turn 不适用此前的 artifact 输出约束且不输出 artifact，任务完成后再独立归一化；`InlineControl` 在任务完成后再于同一 turn 按当前契约输出 artifact；无 contract 时不提 artifact。纯继续模板保持原语义。
 - 回归验收：Provider 单元接口 25 项通过，覆盖纯继续、继续并发送、二次停止恢复和损坏 checkpoint；Runtime 继续组合 prompt 定向测试 1 项通过；PostTurn 发射模式与中断完成判定定向测试 4 项通过。`git diff --check` 无空白错误。
 - 本轮增量回归：中英文条件模板覆盖 PostTurn、InlineControl 与无 contract 三个分支；固定 workflow continue 接口固定 PostTurn 组合 prompt；AI-DYNAMIC emission 映射固定 bootstrap=InlineControl、worker/acceptance=PostTurn、merge=无 contract；AI-DYNAMIC 集成测试目标完成编译。
 - 性能与过度设计评审：继续复用 attempt 级单个小型 checkpoint、既有原子 JSON 写入与 canonical `OutputEmissionMode`，只增加一次 O(1) phase/模板分支；动态 leaf 在既有 graph 读取与锁区间内取得目标节点 emission policy，不增加 graph 加载、timeline 扫描、缓存、队列、锁、依赖或渲染订阅。仅在 finalize 边界插入新用户业务 turn 时多写一次 `business-turn`。新增 durable phase 用于表达“新业务 turn 尚未可靠完成”这一现有 `finalizing` 无法表达的具体不变量；提示分支不新增状态或第二套策略事实源，复杂度与恢复正确性风险匹配。
@@ -1536,3 +1536,10 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 构建接口：`npm run build -- --devtools`、`npm run build:wb -- --devtools` 和 `npm run build:channel -- <channel> --devtools` 统一经现有 `build-channel.mjs` 追加 `--features support-devtools`；既有 `critical` 位置参数继续兼容，同时支持 `--critical`，未知参数直接失败，避免拼写错误静默产出普通包。
 - [x] 发布边界：诊断 overlay 显式设置 `bundle.createUpdaterArtifacts=false`，且 post-build 不复制签名更新包、不生成或覆盖渠道 `latest.json`。普通本地渠道构建与 GitHub 正式发布参数不变，默认不启用 DevTools；诊断包只用于定向支持，不进入正式 updater 链路。
 - [x] 回归与评审：Node 接口测试固定普通构建参数不变、DevTools feature 透传、critical 兼容、未知参数拒绝，以及诊断 overlay 在保留渠道 bundle targets 时关闭 updater artifacts；`npm run test:channel-config` 5 项与 `cargo check -p gold-band-desktop --features support-devtools --locked -j 1` 均通过，仅保留项目既有 dead-code warnings。普通构建没有新增运行时代码、I/O 或内存开销；诊断构建仅复用 Tauri 官方能力，不新增依赖、状态机、持久字段、缓存、队列或并发机制，复杂度与实际支持需求匹配。
+
+## 2026-08-26：继续并发送 prompt 显式续接此前任务
+
+- [x] 根因与方案：既有 `resume_with_message` 已正确区分可见用户输入、Runtime hidden 控制段和三种 `OutputEmissionMode`，但控制文案只要求执行本消息，没有显式要求随后继续此前未完成任务，属于正确设计下 prompt 实现不完整。直接完善现有中英文条件模板，不修改 Runtime 状态、checkpoint 或消息投影。
+- [x] 提示契约：三个分支统一要求“先完整执行本消息中的用户指令，然后继续完成你之前的任务”；PostTurn 在任务完成后再由后续独立 turn 归一化，InlineControl 在任务完成后再按当前契约输出 artifact，无 contract 时不提 artifact。
+- [x] 回归验收：模板分支单元测试 1 项、固定工作流继续接口 1 项、AI-DYNAMIC merge/child 继续接口 2 项通过；`cargo fmt --all -- --check` 通过。测试固定中英文续接语义、artifact 动作顺序，以及 visible 用户消息与 hidden Runtime 控制段的投影边界，仅保留项目既有 3 条 dead-code warning。
+- 性能与过度设计评审：只修改现有常量模板并增加常量级字符串断言，不新增数据结构、状态、依赖、持久化、缓存、队列、锁、I/O、扫描或渲染订阅；渲染复杂度和 prompt 分支数不变，无需 benchmark。

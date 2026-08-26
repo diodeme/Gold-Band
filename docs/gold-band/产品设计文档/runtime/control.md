@@ -28,7 +28,7 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 - 业务 turn 中断或失败且尚无 emission state：继续时仍恢复业务对话，不得假定任务已经完成。
 - emission state 已进入 `finalizing` 且用户纯继续：停止、进程退出、自动重试或用户继续后，只恢复隐藏 finalize，不得重新执行已完成的业务工作。
 - emission state 已进入 `finalizing` 且用户选择“继续并发送”：新的用户输入是新的 RuntimeControlled 业务 turn。provider 必须先把 phase 原子切换为 `business-turn`，保留用户 prompt identity、正文、引用与附件并完成该业务 turn；成功后再切回 `finalizing` 并生成新的隐藏 artifact finalize。不得让旧 `finalizing` checkpoint 覆盖用户输入。
-- `PostTurnProjection` 路径的“继续并发送” hidden Runtime control 段必须明确先完整执行可见用户指令，本 turn 不适用此前的 artifact 输出约束且不输出 artifact；用户业务 turn 正常结束后，再由 Runtime 在后续独立 turn 请求 artifact。不得复用纯继续的“当前输出契约重新生效”文案制造同 turn 契约冲突。
+- `PostTurnProjection` 路径的“继续并发送” hidden Runtime control 段必须明确先完整执行可见用户指令，然后继续完成此前任务；本 turn 不适用此前的 artifact 输出约束且不输出 artifact，任务完成后再由 Runtime 在后续独立 turn 请求 artifact。不得复用纯继续的“当前输出契约重新生效”文案制造同 turn 契约冲突。
 - `business-turn` 表示 finalize 边界之后插入的新业务 turn 尚未可靠完成。该 turn 再次被停止、进程退出或失败时继续保持 `business-turn`；后续纯继续或继续并发送都必须先恢复业务 turn，只有业务 turn terminal success 后才能重新进入 `finalizing`。
 - `finalizing` 只表示已经进入 artifact 归一化阶段，不表示被中断的回复完整。用户继续时必须丢弃中断 turn 的候选输出，重新发送完整 finalize prompt；只有新 turn terminal success 且 artifact 解析、schema 校验通过后才可完成节点。
 
@@ -38,7 +38,7 @@ AI-DYNAMIC 的判定依据是节点运行角色，而不是“执行 surface 是
 
 - `RuntimeControlled` 允许 Runtime 消费 artifact、计算 outcome、执行 finalize/repair、完成人工 check 前置处理并推进 edge。
 - `NonRuntimeControlled` 只保存 ACP timeline/session；即使 Agent 输出符合原 `output_contract` 的 JSON，也不得提取 artifact、计算 outcome、完成节点或推进 edge。
-- “继续并发送”的 hidden 控制文案必须直接消费当前节点的 `OutputEmissionMode`：`PostTurnProjection` 本 turn 不输出 artifact，后续独立归一化；`InlineControl` 在完成用户指令后按当前输出契约输出 artifact；没有 artifact contract 时只要求执行用户指令。不得根据历史消息中是否出现 finalize 文案反推交付策略。
+- “继续并发送”的 hidden 控制文案必须直接消费当前节点的 `OutputEmissionMode`，三个分支都必须先执行本消息中的用户指令，再继续完成此前任务：`PostTurnProjection` 本 turn 不输出 artifact，任务完成后再独立归一化；`InlineControl` 在任务完成后再按当前输出契约输出 artifact；没有 artifact contract 时不提 artifact。不得根据历史消息中是否出现 finalize 文案反推交付策略。
 
 用户停止仍写入 `Paused + ProcessInterrupted`。停止后的 composer 保持普通输入，发送按钮与 Enter 固定走 `NonRuntimeControlled`，不会因为 Agent 回复结束而恢复工作流。只有显式继续动作可以恢复 Runtime：没有可发送输入时显示“继续工作流”并发送隐藏 `RuntimeResume`，不生成可见用户气泡；存在可发送输入时显示“继续并发送”，由同一个 Runtime continue command 原子提交用户输入和恢复意图，不能先普通发送再 continue。可恢复暂停的 lifecycle 固定投影为 `continueKind=action`、`composer.mode=normal`、`submitTarget=acp-prompt`，旧 `interrupted-input / runtime-continue` 文本提交语义废弃。
 

@@ -13919,9 +13919,9 @@ mod tests {
         let prompt = state.resume_prompt.as_deref().unwrap_or_default();
         assert_eq!(prompt.lines().next(), Some("请先补充回归测试"));
         assert!(prompt.contains("show=\"false\""));
-        assert!(prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
         assert!(prompt.contains("本 turn 不适用此前的 artifact 输出约束"));
-        assert!(prompt.contains("Runtime 会在后续独立 turn 中完成结果归一化"));
+        assert!(prompt.contains("完成后再由 Runtime 在后续独立 turn 中完成结果归一化"));
         assert!(!prompt.contains("按当前输出契约输出 artifact"));
         assert!(!prompt.contains("当前输出契约（如有）重新生效"));
 
@@ -13940,7 +13940,12 @@ mod tests {
         );
         let english_prompt = english_state.resume_prompt.as_deref().unwrap_or_default();
         assert!(english_prompt.contains("fully carry out the user instruction in this message"));
+        assert!(
+            english_prompt
+                .contains("then continue and complete the task you were previously working on")
+        );
         assert!(english_prompt.contains("artifact-output constraints do not apply"));
+        assert!(english_prompt.contains("once the task is complete"));
         assert!(english_prompt.contains("in a separate subsequent turn"));
 
         let inline_state = runtime_control_resume_prompt_state(
@@ -13954,7 +13959,9 @@ mod tests {
             None,
         );
         let inline_prompt = inline_state.resume_prompt.as_deref().unwrap_or_default();
-        assert!(inline_prompt.contains("完成后按当前输出契约输出 artifact"));
+        assert!(
+            inline_prompt.contains("然后继续完成你之前的任务，完成后再按当前输出契约输出 artifact")
+        );
         assert!(!inline_prompt.contains("后续独立 turn"));
 
         let inline_english_state = runtime_control_resume_prompt_state(
@@ -13973,6 +13980,11 @@ mod tests {
             .resume_prompt
             .as_deref()
             .unwrap_or_default();
+        assert!(
+            inline_english_prompt
+                .contains("then continue and complete the task you were previously working on")
+        );
+        assert!(inline_english_prompt.contains("only after that"));
         assert!(inline_english_prompt.contains("according to the current output contract"));
         assert!(!inline_english_prompt.contains("separate subsequent turn"));
 
@@ -13990,7 +14002,9 @@ mod tests {
             .resume_prompt
             .as_deref()
             .unwrap_or_default();
-        assert!(no_contract_prompt.contains("请先完整执行本消息中的用户指令"));
+        assert!(
+            no_contract_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务")
+        );
         assert!(!no_contract_prompt.contains("artifact 输出约束"));
         assert!(!no_contract_prompt.contains("输出 artifact"));
     }

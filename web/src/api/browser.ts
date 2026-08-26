@@ -180,6 +180,8 @@ function browserAgentIdentity(agentType: string) {
 
 function browserCompletedConversationRun(): ConversationRunVm {
   const run = structuredClone(mockErrorBlockedConversationRun);
+  const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
+  const worktreeBranch = 'gold-band/conversation/browser-completed-run';
   run.runId = 'run-052';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
@@ -188,14 +190,26 @@ function browserCompletedConversationRun(): ConversationRunVm {
   run.runOutcome = 'success';
   run.pauseReason = null;
   run.runtimeErrorMessage = null;
+  run.worktree = {
+    path: worktreePath,
+    branch: worktreeBranch,
+    forkCommit: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+  };
+  const selectedLeaf = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
+  if (selectedLeaf) {
+    selectedLeaf.worktreePath = worktreePath;
+    selectedLeaf.worktreeBranch = worktreeBranch;
+  }
   run.selectedSession = {
     ...mockErrorBlockedConversationSession,
     sessionId: 'browser-session-052',
     roundId: 'round-001',
     nodeId: 'dev',
     attemptId: 'attempt-001',
-    providerCwd: 'D:/Projects/code/ai/Gold-Band',
-    cwd: 'D:/Projects/code/ai/Gold-Band',
+    worktreePath,
+    worktreeBranch,
+    providerCwd: worktreePath,
+    cwd: worktreePath,
     status: 'completed',
     stopReason: 'end_turn',
     systemPromptAppend: [
@@ -204,7 +218,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
       'This **system prompt** verifies the rendered/source workspace modes.',
       '',
       '- Attempt: `attempt-001`',
-      '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+      `- Workspace: \`${worktreePath}\``,
     ].join('\n'),
     usage: {
       used: 25_400,
@@ -1956,7 +1970,7 @@ export const browserApi: RuntimeApi = {
         ? {
           path: `/preview/gold-band/worktrees/${Date.now()}`,
           branch: `gold-band/conversation/${Date.now()}`,
-          forkCommit: input.branchCheckpoint?.headOid ?? 'preview-head',
+          forkCommit: 'preview-head',
         }
         : null,
     };

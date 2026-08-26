@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { displayAppError } from '@/i18n';
 import { Send, Paperclip, Workflow, Route, Bot, Folders, Plus, ChevronDown, Settings2, AlarmClock, X, Laptop, GitFork, Check, Loader2 } from 'lucide-react';
-import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, GitBranchCheckpointVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
+import type { AgentRegistryVm, ConversationAutoConfigVm, ConversationCreateInput, ConversationDirectConfigVm, ConversationRunModeVm, ConversationWorkLocation, ConversationWorkspaceVm, ProfileVm, WorkflowRepairTarget, WorkflowTemplateStore } from '../../types';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -228,7 +228,7 @@ interface ConversationWorkspaceInfoBarProps extends ConversationWorkspaceControl
   onWorkLocationChange: (location: ConversationWorkLocation, projectId: string) => Promise<void> | void;
   showWorkLocation?: boolean;
   showBranch?: boolean;
-  onBranchCheckpointChange?: (checkpoint: GitBranchCheckpointVm | null) => void;
+  onBranchChange?: (branch: string | null) => void;
   onBranchMutationPendingChange?: (pending: boolean) => void;
 }
 
@@ -242,7 +242,7 @@ export function ConversationWorkspaceInfoBar({
   onWorkLocationChange,
   showWorkLocation = true,
   showBranch,
-  onBranchCheckpointChange,
+  onBranchChange,
   onBranchMutationPendingChange,
 }: ConversationWorkspaceInfoBarProps) {
   const { t } = useTranslation();
@@ -390,7 +390,7 @@ export function ConversationWorkspaceInfoBar({
               projectId={projectId}
               disabled={busy || checkingLocation}
               responsiveContext
-              onCheckpointChange={onBranchCheckpointChange}
+              onBranchChange={onBranchChange}
               onMutationPendingChange={onBranchMutationPendingChange}
             />
           ) : null}
@@ -446,7 +446,7 @@ export function ConversationComposer({
   const [workflowTemplateId, setWorkflowTemplateId] = useState(runMode.workflowTemplateId ?? '');
   const [runModeError, setRunModeError] = useState<string | null>(null);
   const [submittingAttachments, setSubmittingAttachments] = useState(false);
-  const [branchCheckpoint, setBranchCheckpoint] = useState<GitBranchCheckpointVm | null>(null);
+  const [branchSelection, setBranchSelection] = useState<{ projectId: string; branch: string } | null>(null);
   const [branchMutationPending, setBranchMutationPending] = useState(false);
   const previousInitialScheduledModeRef = useRef(initialScheduledMode);
   const initialScheduledModeOpenedRef = useRef(false);
@@ -492,6 +492,14 @@ export function ConversationComposer({
     attachments.forEach(closeComposerAttachmentPreview);
     clearAttachments();
   }, [attachments, clearAttachments, closeComposerAttachmentPreview]);
+
+  const handleBranchChange = useCallback((branch: string | null) => {
+    setBranchSelection((current) => {
+      if (!branch) return current === null ? current : null;
+      if (current?.projectId === projectId && current.branch === branch) return current;
+      return { projectId, branch };
+    });
+  }, [projectId]);
 
   useWindowDragGuard();
 
@@ -763,7 +771,9 @@ export function ConversationComposer({
         ))
         : undefined,
       workLocation,
-      branchCheckpoint: workLocation === 'worktree' ? branchCheckpoint : undefined,
+      selectedBranch: workLocation === 'worktree' && branchSelection?.projectId === projectId
+        ? branchSelection.branch
+        : undefined,
     };
     setSubmittingAttachments(true);
     try {
@@ -895,7 +905,7 @@ export function ConversationComposer({
             onWorkLocationChange={onWorkLocationChange}
             showWorkLocation={!scheduledMode}
             showBranch={!scheduledMode}
-            onBranchCheckpointChange={setBranchCheckpoint}
+            onBranchChange={handleBranchChange}
             onBranchMutationPendingChange={setBranchMutationPending}
           />
           <PromptInput

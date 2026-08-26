@@ -229,7 +229,7 @@ describe('Git requirement dialog', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(document.querySelector('[data-workspace-active-tab]')?.getAttribute('data-workspace-active-tab'))
-      .toBe('source-control:project-1:main');
+      .toBe('source-control:project-1');
     expect(document.querySelector('[data-workspace-tab-kinds]')?.getAttribute('data-workspace-tab-kinds'))
       .toBe('source-control');
     await act(async () => root.unmount());

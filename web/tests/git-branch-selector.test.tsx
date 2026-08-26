@@ -97,6 +97,16 @@ async function renderSelector(
   return { container, root, store };
 }
 
+function InlineBranchChangeHarness() {
+  const [branch, setBranch] = React.useState<string | null>(null);
+  return (
+    <>
+      <span data-selected-branch="true">{branch}</span>
+      <GitBranchSelector projectId="project-a" onBranchChange={(next) => setBranch(next)} />
+    </>
+  );
+}
+
 describe('GitBranchSelector', () => {
   it('restores a cached workspace snapshot in the first render without a spinner', async () => {
     const store = new GitBranchPickerSnapshotStore();
@@ -116,12 +126,12 @@ describe('GitBranchSelector', () => {
   });
 
   it('loads the lightweight snapshot and performs a revision-checked real switch', async () => {
-    const onCheckpointChange = vi.fn();
+    const onBranchChange = vi.fn();
     const onMutationPendingChange = vi.fn();
     const { container, root } = await renderSelector(
       <GitBranchSelector
         projectId="project-a"
-        onCheckpointChange={onCheckpointChange}
+        onBranchChange={onBranchChange}
         onMutationPendingChange={onMutationPendingChange}
       />,
     );
@@ -129,7 +139,7 @@ describe('GitBranchSelector', () => {
       expect(getSnapshot).toHaveBeenCalledWith('project-a', undefined);
       const trigger = container.querySelector<HTMLButtonElement>('[data-git-branch-selector="editable"]')!;
       expect(trigger.textContent).toContain('main');
-      expect(onCheckpointChange).toHaveBeenLastCalledWith({ branch: 'main', headOid: 'head-main', revision: 'revision-main' });
+      expect(onBranchChange).toHaveBeenLastCalledWith('main');
 
       await act(async () => trigger.click());
       expect(document.body.textContent).toContain('未提交：12 个文件');
@@ -148,9 +158,19 @@ describe('GitBranchSelector', () => {
         name: 'feature/topic',
         expectedRevision: 'revision-main',
       });
-      expect(onCheckpointChange).toHaveBeenLastCalledWith({ branch: 'feature/topic', headOid: 'head-topic', revision: 'revision-topic' });
+      expect(onBranchChange).toHaveBeenLastCalledWith('feature/topic');
       expect(onMutationPendingChange).toHaveBeenCalledWith(true);
       expect(onMutationPendingChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('does not reload the snapshot when a parent rerender replaces the notification callback', async () => {
+    const { container, root } = await renderSelector(<InlineBranchChangeHarness />);
+    try {
+      expect(container.querySelector('[data-selected-branch="true"]')?.textContent).toBe('main');
+      expect(getSnapshot).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => root.unmount());
     }

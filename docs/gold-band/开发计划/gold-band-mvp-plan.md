@@ -1544,6 +1544,13 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [ ] 验收：纯状态测试固定稳定 Tab key、同 identity 引用不变和跨 worktree 投影；DOM 测试固定已打开 Tab 自动跟随路径且不产生第二个同名 Tab；SourceControl Store 测试固定 Windows 规范化路径与不同 worktree 视图状态隔离。完成 TypeScript、定向测试、生产构建以及真实浏览器 normal/narrow/re-expand 验证后勾选。
 - 性能与过度设计评审：不新增 Context、持久字段、缓存、队列、请求或 Git watcher；只抽取轻量路径 identity helper，并复用已有 Store。会话节点切换只做规范化 identity 比较；工作位置相同时保持稳定 scope/context，不触发源码管理订阅切换或 Git I/O，位置变化时仅目标 SourceControl session 按原规则按需加载。
 
+## 2026-08-26：分支选择器快照刷新回路修复
+
+- [x] 根因：会话创建意图从 checkpoint 收敛为分支名后，父 Composer 用内联 callback 把 `projectId + branch` 写回 draft；分支选择器又把 callback identity 放进 snapshot 加载 effect 的依赖链。快照返回触发父级重渲染后 callback 变化，继而无限重复 Git IPC。分支选择和轻量 snapshot 设计正确，缺陷属于 effect 语义依赖实现不完整，不通过 debounce、缓存或后端限流掩盖。
+- [x] 实现：snapshot 加载只依赖 `projectId + workspacePath + readOnlyBranch` 等语义作用域；最新通知 callback 通过 ref 调用，不参与加载函数 identity。父 Composer 使用按 `projectId` 稳定的函数式更新，同一 `projectId + branch` 返回既有状态对象。
+- [x] 回归：组件测试使用会随父级状态更新而重新创建的内联 callback 复现原路径，并固定父级重渲染后 branch snapshot 仍只请求一次、最终分支正确投影。
+- 性能与过度设计评审：同一选择器挂载的初始化 Git IPC 从无界回路收敛为一次轻量 snapshot 请求；回调更新为 O(1) ref 写入，相同分支写回为 O(1) 比较。不新增依赖、缓存、队列、轮询、持久字段、Context、状态机或后端机制，现有 project/workspace identity、branch draft 和 snapshot Store 已足够表达不变量。
+
 ## 2026-08-26：快速对话上下文操作栏响应式收缩
 
 - [x] 根因与方向：工作空间、工作位置和分支作为三个独立上下文选择器的设计正确，但现有信息栏只允许文本截断，没有把完整控件投影成紧凑图标态，属于正确设计的响应式实现不完整。继续保留三个一步直达入口，不增加统一“更多”菜单或按截图尺寸打补丁。

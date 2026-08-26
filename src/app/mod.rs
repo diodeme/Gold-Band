@@ -75,7 +75,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use self::ids::{generate_uuid, next_workflow_id, now_rfc3339_like, reserve_next_task_dir};
 pub use self::orchestrator::ManualCheckSubmissionLease;
 use self::orchestrator::{
-    dynamic_state_lock_for,
+    dynamic_resume_target_is_active, dynamic_state_lock_for,
     launch_prepared_run_background as orchestrator_launch_prepared_run_background,
     pause_dynamic_leaf_runtime_state, pause_dynamic_leaf_runtime_state_if_active_execution,
     prepare_dynamic_acp_prompt, prepare_run as orchestrator_prepare_run,
@@ -4510,6 +4510,7 @@ impl App {
         outer_node_id: &str,
         outer_attempt_id: &str,
         node_id: &str,
+        attempt_id: &str,
         reason: PauseReason,
     ) -> Result<()> {
         pause_dynamic_leaf_runtime_state(
@@ -4520,7 +4521,31 @@ impl App {
             outer_node_id,
             outer_attempt_id,
             node_id,
+            attempt_id,
             reason,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dynamic_resume_target_is_active(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        round_id: &str,
+        outer_node_id: &str,
+        outer_attempt_id: &str,
+        node_id: &str,
+        attempt_id: &str,
+    ) -> Result<bool> {
+        dynamic_resume_target_is_active(
+            &self.paths.repo_root,
+            task_id,
+            run_id,
+            round_id,
+            outer_node_id,
+            outer_attempt_id,
+            node_id,
+            attempt_id,
         )
     }
 
@@ -7357,6 +7382,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-morning",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();
@@ -7411,6 +7437,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-night",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();
@@ -7469,6 +7496,7 @@ mod tests {
             "ai-dynamic",
             "attempt-001",
             "good-night",
+            "attempt-001",
             PauseReason::ProcessInterrupted,
         )
         .unwrap();

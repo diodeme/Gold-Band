@@ -6550,6 +6550,14 @@ pub fn respond_acp_permission(
     Ok(session)
 }
 
+fn active_session_stop_is_idempotent_noop(
+    has_acp_stop_owner: bool,
+    runtime_was_active: bool,
+    dynamic_resume_was_starting: bool,
+) -> bool {
+    !has_acp_stop_owner && !runtime_was_active && !dynamic_resume_was_starting
+}
+
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
@@ -6559,6 +6567,20 @@ fn persist_active_session_stop(
     let runtime_was_active = app
         .run_status(&locator.task_id, &locator.run_id)
         .is_ok_and(|run| run.status == RunStatus::Running && locator.matches_run_current(&run));
+    let dynamic_resume_was_starting = match (locator.outer_node_id(), locator.outer_attempt_id()) {
+        (Some(outer_node_id), Some(outer_attempt_id)) => app
+            .dynamic_resume_target_is_active(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            )
+            .map_err(command_error)?,
+        _ => false,
+    };
     // Persist the user intent before touching runtime-control files. A failure
     // in pause bookkeeping must not leave the provider turn running without a
     // durable cancellation request that recovery can observe.
@@ -6577,7 +6599,11 @@ fn persist_active_session_stop(
     // owning Runtime generation is already running. Runtime pause is the
     // authoritative durable stop in that startup window. Only a request with
     // neither an ACP owner nor a running Runtime owner is an idempotent no-op.
-    if stop_owner.is_none() && !runtime_was_active {
+    if active_session_stop_is_idempotent_noop(
+        stop_owner.is_some(),
+        runtime_was_active,
+        dynamic_resume_was_starting,
+    ) {
         return Ok((attempt_dir, None, false));
     }
 
@@ -6616,6 +6642,7 @@ fn persist_active_session_stop(
             outer_node_id,
             outer_attempt_id,
             &locator.node_id,
+            &locator.attempt_id,
             PauseReason::ProcessInterrupted,
         )
     } else {
@@ -10627,6 +10654,12 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn dynamic_resume_starting_owner_prevents_stop_from_being_treated_as_noop() {
+        assert!(active_session_stop_is_idempotent_noop(false, false, false));
+        assert!(!active_session_stop_is_idempotent_noop(false, false, true));
     }
 
     #[test]

@@ -449,6 +449,9 @@ Executing
 5. 临界区释放后，停止逻辑暂停 descendants；scheduler 下一轮观察外层已停止，不再启动后继 Agent。
 6. 停止不删除已经创建的 worktree；显式 continue 复用已有 workspace catalog/tree。
 7. 旧 dynamic execution 的迟到成功结果，包括完整合法 completion，也不能跨越用户 stop boundary 恢复 Runtime。
+8. child workspace release 以 Git worktree catalog 是否仍登记目标路径判定完成。`git worktree remove` 非零后重新查询 catalog：仍登记才返回失败；已经注销则继续尝试删除 runtime branch，并把 Graph 收敛为 `Released`。branch 已删除、worktree 已注销或只剩空目录时重复释放均幂等成功，branch 清理失败只记录 diagnostic，不逆转 workspace lifecycle。
+9. 恢复持久化 Graph 时，在 catalog 校验前只重放 `Closed` group 的 child release，并在同一 dynamic state lock 下持久化收敛结果。活动 group 的 worktree 缺失继续作为完整性错误返回，不用历史数据兼容分支掩盖损坏。
+10. prompt ID 按语义 turn 分配：同一输入的 transport 自动重试复用当前 ID；artifact finalize/repair 使用新 ID。AI-DYNAMIC `InlineControl` proposal repair 使用“原始业务 turn ID + repair 序号”稳定派生，repair 内部的 transport retry 继续复用该 repair ID；普通 workflow / dynamic `PostTurnProjection` 保持既有 artifact generation ID。
 
 Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，把当前 dynamic session 投影为 `runtime.phase / composer.processingKind = preparing-workspace`、锁定输入并保留 stop 能力；前端显示“正在准备开发环境…”。本地 stop pending 的 `stopping` 优先级高于该后端 phase。
 
@@ -465,9 +468,11 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 5. finalizing 被中断后重新生成完整 artifact 会增加一次短模型调用，但不会重跑通常更昂贵的业务 turn。这是用有限成本换取 artifact 完整性，不能用拼接中断文本或接受 partial candidate 的方式优化。
 6. `TurnControlMode`、emission mode 与 transition cursor 必须在进入 provider 前一次派生并随 invocation 传递，不能在流式 token、timeline event 或 artifact chunk 处理中重复读取生命周期文件。
 7. 同 session prompt 串行继续复用现有 ACP prompt lock；stop 与 resume CAS 对 cursor 小文件的并发写入使用固定 64 路 attempt path 哈希短锁，避免新增会随 attempt 数增长并在热路径全表清理的锁注册表。该短锁不覆盖 provider 调用；固定 workflow 的 per-run starting lease 也只覆盖启动窗口，不持有全局 lifecycle 锁等待整个 Agent turn。不同 run、session 与 AI-DYNAMIC leaf 仍可并行执行。
-8. continue 启动握手使用单次进程内 channel 通知，不轮询磁盘；Running 落盘后立即释放 fixed per-run starting lease。失败 CAS 使用固定 64 路 attempt 状态短锁或既有 dynamic graph lock，只覆盖少量 JSON 状态收敛，不覆盖 provider turn，也不创建随历史 attempt 增长的锁对象。
+8. continue 启动握手使用单次进程内 channel 通知，不轮询磁盘；Running 落盘后立即释放 fixed per-run starting lease。AI-DYNAMIC 在后台 driver 创建前登记 O(1) request lease，paused outer Runtime 复用固定 64 路 attempt 短锁和既有 execution identity 做一次 O(1) re-arm，启动握手上限为 60 秒；成功、Stop 与超时只在同一个 coordinator key 下做常数次 HashMap 查找/删除，最终 claim 位于 leaf `Running` 持久化后、Agent worker spawn 前。若恢复时检测到停止前已经生成的有效 completion，则不启动新 Agent，先以同一 O(1) claim 赢得 reconciliation 所有权，再执行原有 completion/Graph/workspace 持久化；因此不会新增全局长锁，也不会让 timeout 与 Git/JSON I/O 互相阻塞。该 lease 不覆盖 provider turn，不新增持久字段、轮询、无界队列或跨 graph 扫描。outer re-arm 与失败 CAS 只覆盖少量 JSON 状态收敛，不覆盖 provider turn，也不创建随历史 attempt 增长的锁对象。
 9. `PreparingWorkspace` 不增加轮询、后台任务或 Agent turn。每次 transition 只新增开始阶段的两次权威 JSON 原子写入与两次 session refresh；结束阶段复用本来就需要的完整 Graph 持久化。worktree Git 操作仍受既有全局 Git 锁串行化，不降低不同 Agent session 的并行度；同一 graph 的 stop/continue 等待临界区是有意的一致性约束。
 10. `RuntimeControlIntent` 是 invocation 内的固定大小枚举，只替换原 bool 判断；不增加磁盘读写、timeline 扫描、锁、轮询或 Agent turn。workflow resume 与显式 Runtime resume 只在构造 invocation 时分流一次，流式处理热路径不重复判断来源。
+11. Closed group 恢复收敛只扫描已加载的 group/workspace catalog，复杂度为 O(group + child workspace)，仅对尚未 `Released` 的 runtime workspace 执行既有 Git catalog 查询。它不进入消息流或渲染热路径，不新增缓存、后台清理任务、持久字段或跨 session 锁。
+12. Dynamic repair prompt identity 只增加一次固定长度字符串派生，不增加磁盘读写、ACP 调用、锁范围或 timeline 扫描；原有最多三次 repair 与 transport retry 预算保持不变。
 
 按以上约束，普通 NonRuntime 消息相较旧实现减少一次 cursor 候选判断、一次 hidden 文本拼接及相应 token；主要成本只剩模式切换时的小型 metadata 和恢复后必要的控制 prompt，不存在随消息数线性增长的热路径扫描，也不降低不同 session 的并行度。
 
@@ -480,8 +485,13 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 - `runtime.continue-not-available`
 - `runtime.continue-already-active`
 - `runtime.continue-launch-failed`
+- `runtime.continue-launch-timeout`
+- `runtime.continue-stopped-before-start`
+- `runtime.continue-superseded`
+- `runtime.continue-driver-ended`
 - `runtime.continue-launch-channel-closed`
 - `runtime.control-boundary-invalid`
+- `workspace.worktree-remove-failed`
 
 后端只返回 `code / params / raw diagnostic`；前端根据 i18n 映射展示用户动作。
 
@@ -547,6 +557,17 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 19. continue 启动前失败同步返回结构化错误且保持原 paused 事实，不返回 started。
 20. 已握手后的 fixed / AI-DYNAMIC 意外失败收敛为 RuntimeAbnormal；dynamic re-arm 不遗留 Ready/Running。
 21. 用户 stop 先完成时，迟到失败不覆盖 ProcessInterrupted；目标完成或 attempt 切换时同样不回写旧状态。
+22. AI-DYNAMIC starting request 被 Stop 后，launch receiver 收到 `runtime.continue-stopped-before-start`，`starting / pending / inflight` 清空，同一 leaf 可立即再次 continue。
+23. AI-DYNAMIC 启动握手使用短测试 deadline 超时后返回 `runtime.continue-launch-timeout` 并释放 lease，同一 leaf 的下一次 continue 不返回 already-active。
+24. 超时在 leaf 最终启动提交前撤销 lease 时，即使 driver 已把本地节点准备为 Ready/Running，也不得返回可供 worker spawn 的节点，durable leaf 收敛回 `Paused + ProcessInterrupted`。
+25. Stop 接口在 `ACP owner = none + outer Runtime active = false + dynamic resume starting = true` 时不得判为幂等 no-op。
+26. paused outer AI-DYNAMIC 保留停止前 execution identity 时，continue 必须先持久化 `Run = Running + 新 outer runtime_execution_id`，随后统一 driver execution fence 可以提交；不得只写 `run-progress` 后以 `Ok(false)` 无回执退出。
+27. request lease 在 outer re-arm 前已被 Stop/timeout 撤销时，outer Run/Node 保持原 Paused 与旧 identity；driver 返回但 lease 仍未 claim 时立即返回 `runtime.continue-driver-ended`，不等待 60 秒 deadline。
+28. AI-DYNAMIC 恢复检测到停止前已有有效 completion 时，必须在 completion、Graph 或 workspace 产生任何副作用前 claim request lease；timeout/Stop 先撤销时返回 `runtime.continue-superseded`，Graph 保持 Paused 且不得消费迟到 completion。claim 成功后 reconciliation 失败按已启动 Runtime 的异常路径收敛，不得再返回 launch timeout。
+29. Git worktree 已注销但路径为空且 runtime branch 残留时，workspace release 必须幂等成功并清理 branch；重复释放不得失败。
+30. 持久化 `Closed` group 的 child worktree 已被 Git 部分移除、Graph 仍为 `Active` 时，加载 Graph 必须自动持久化为 `Released`，随后通过 workspace catalog 校验。
+31. `Open` group 的 active child worktree 缺失时，加载 Graph 必须继续返回完整性错误，并保持 durable workspace 为 `Active`。
+32. AI-DYNAMIC bootstrap `InlineControl` 首次缺失或输出无效 artifact 时，第一次 repair 必须在同一 ACP session 使用 `RuntimeRepair + Continue`，但 prompt ID 必须区别于原始 `RequirementTask + New`；repair 成功后 proposal 正常验收。相同 repair attempt 重算 ID 必须稳定，不同 repair attempt 必须不同。
 
 ### 14.2 前端单元测试
 
@@ -612,6 +633,9 @@ Conversation VM 在外层仍 Running 且 phase 为 `PreparingWorkspace` 时，�
 14. AI-DYNAMIC workspace transition 统一进入持久化 `PreparingWorkspace` 临界区；正常时 composer 显示“正在准备开发环境…”，停止 pending 显示“正在停止…”，并在 checkpoint/fork/release 完成后兑现暂停。停止不回滚或删除已创建 worktree，continue 复用 workspace catalog/tree。
 15. AI-DYNAMIC 集成夹具已按当前控制协议固化：proposal 不再输出 Runtime-owned `workspace` 字段；普通业务 invocation、`RuntimeFinalize`、`RuntimeRepair` 与显式 `UserMessage` 按 render mode 区分；finalize 不重复携带业务附件；merge 读取 checkpoint 后的 `forkCommit / checkpointCommit / clean status`。
 16. Conversation VM 以 dynamic run 是否仍拥有执行权判断 Runtime active，而不是只看 selected leaf/ACP 是否 terminal；completed leaf 到下一节点之间投影 `launching-next-node`，进入 workspace 临界区后投影 `preparing-workspace`，两者都保持 composer 锁定与停止入口。
+17. 截至 2026-08-26，AI-DYNAMIC continue starting owner 已接入统一 Stop：request lease 在后台线程前登记，paused outer Runtime 先以新 execution identity 原子 re-arm，60 秒未完成启动确认时返回结构化 timeout、释放登记并按 identity 回收 outer Running；Stop、timeout、driver 失败与成功回执共享同一 lease 终结边界。最终 lease claim 位于 leaf `Running` 持久化之后、Agent worker spawn 之前；已有有效 completion 的无 Agent 分支则在任何 reconciliation 副作用前 claim。撤销方先完成时迟到 driver 不再 re-arm outer Runtime、消费 completion 或启动 Agent；driver 无回执退出立即失败，同一 leaf 随后可以重新 continue。
+18. AI-DYNAMIC runtime workspace release 已按 Git catalog 事实改为幂等收敛：worktree 命令部分成功并注销登记后仍继续清理 branch、持久化 `Released`；加载旧 Graph 时自动重放 `Closed` group 遗留 release，活动 group 缺失仍严格失败。Rust 回归覆盖已注销 worktree、Closed group 恢复和 Open group 拒绝三条接口边界。
+19. AI-DYNAMIC `InlineControl` repair 已与统一 ACP turn identity 契约对齐：原始业务 turn 与每次 proposal repair 使用不同的稳定 prompt ID，同一次 repair 的 transport retry 保持原 ID。保留 `acp.prompt-submission-conflict` 的同 ID/不同输入保护；接口回归固定首次缺失 artifact、同 session repair、合法 proposal 完成链路。
 
 ## 17. 不采用的方案
 

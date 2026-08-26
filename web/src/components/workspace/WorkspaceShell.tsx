@@ -76,6 +76,7 @@ interface WorkspaceShellProps {
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
+  sourceControlWorkspacePath?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
@@ -207,23 +208,36 @@ export function WorkspaceShell(props: WorkspaceShellProps) {
     rightWorkspaceLayout.minWidth,
     rightWorkspaceLayout.maxWidth,
   );
+  const activeConversation = props.active.kind === 'conversation-run' ? props.active : null;
   const rightWorkspaceScope = useMemo(() => {
     if (props.active.kind === 'conversation-home' || props.active.kind === 'scheduled-task-create') {
       return createDraftConversationWorkspaceScope(props.activeWorkspaceId ?? 'default');
     }
-    if (props.active.kind === 'conversation-run') {
+    if (activeConversation) {
       return createConversationWorkspaceScope({
-        projectId: props.active.projectId,
-        taskId: props.active.taskId,
+        projectId: activeConversation.projectId,
+        taskId: activeConversation.taskId,
         taskUuid: props.conversationTaskUuid,
-        runId: props.active.runId,
+        runId: activeConversation.runId,
       });
     }
     return null;
-  }, [props.active, props.activeWorkspaceId, props.conversationTaskUuid]);
+  }, [
+    activeConversation?.projectId,
+    activeConversation?.runId,
+    activeConversation?.taskId,
+    props.active.kind,
+    props.activeWorkspaceId,
+    props.conversationTaskUuid,
+  ]);
   return (
     <TooltipProvider>
-      <RightWorkspaceProvider initialWidth={initialRightWidth} scope={rightWorkspaceScope} store={props.conversationWorkspaceStore}>
+      <RightWorkspaceProvider
+        initialWidth={initialRightWidth}
+        scope={rightWorkspaceScope}
+        sourceControlWorkspacePath={props.sourceControlWorkspacePath}
+        store={props.conversationWorkspaceStore}
+      >
         <WorkspaceFileLinkProvider>
           <WorkspaceShellLayout {...props} />
         </WorkspaceFileLinkProvider>
@@ -258,6 +272,7 @@ function WorkspaceShellLayout({
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
+  sourceControlWorkspacePath,
   children,
 }: WorkspaceShellProps) {
   const { t } = useTranslation();
@@ -731,7 +746,7 @@ function WorkspaceShellLayout({
             !showRightDock && 'pointer-events-none overflow-hidden',
           )}
         >
-          {showRightDock ? <RightWorkspaceDock /> : null}
+          {showRightDock ? <RightWorkspaceDock sourceControlWorkspacePath={sourceControlWorkspacePath} /> : null}
         </ResizablePanel>
       </ResizablePanelGroup>
       <Sheet
@@ -754,7 +769,7 @@ function WorkspaceShellLayout({
           <SheetTitle className="sr-only">{t('workspace.rightWorkspace')}</SheetTitle>
           {rightWorkspaceCompact ? (
             <div className="flex min-h-0 flex-1 flex-col" data-right-workspace-presentation="sheet">
-              <RightWorkspaceDock />
+              <RightWorkspaceDock sourceControlWorkspacePath={sourceControlWorkspacePath} />
             </div>
           ) : null}
         </SheetContent>

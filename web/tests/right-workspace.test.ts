@@ -15,8 +15,10 @@ import {
   fileBrowserWorkspaceResourceKey,
   gitFileComparisonWorkspaceResourceKey,
   hiddenPromptSectionWorkspaceResourceKey,
+  projectSourceControlWorkspaceState,
   rightWorkspaceReducer,
   scheduledTaskConfigWorkspaceResourceKey,
+  sourceControlWorkspaceResourceKey,
   draftAttachmentWorkspaceResourceKey,
   type AgentTranscriptLocator,
   type FileWorkspaceResource,
@@ -44,6 +46,31 @@ const agent = (branchId: string): RightWorkspaceResource => ({
 });
 
 describe('right workspace resource model', () => {
+  it('keeps one source-control tab and only projects a different workspace identity', () => {
+    const resource: RightWorkspaceResource = {
+      kind: 'source-control',
+      key: sourceControlWorkspaceResourceKey('project-1'),
+      scopeKey: 'conversation:project-1:task-1:run-1',
+      projectId: 'project-1',
+      workspacePath: null,
+      title: 'Source control',
+      attention: false,
+    };
+    const main = rightWorkspaceReducer(createInitialRightWorkspaceState(), { type: 'open', resource });
+
+    expect(sourceControlWorkspaceResourceKey('project-1')).toBe('source-control:project-1');
+    expect(projectSourceControlWorkspaceState(main, null)).toBe(main);
+
+    const worktree = projectSourceControlWorkspaceState(main, 'D:/repo/worktrees/worker-a');
+    expect(worktree.tabs).toHaveLength(1);
+    expect(worktree.activeTabKey).toBe(resource.key);
+    expect(worktree.tabs[0]).toMatchObject({
+      key: resource.key,
+      workspacePath: 'D:/repo/worktrees/worker-a',
+    });
+    expect(projectSourceControlWorkspaceState(worktree, 'd:\\REPO\\worktrees\\worker-a\\')).toBe(worktree);
+  });
+
   it('uses stable locator-only keys for conversation and ACP resources', () => {
     const runLocator = { projectId: 'project-1', taskId: 'task-1', runId: 'run-1' };
     expect(conversationRunWorkspaceResourceKey('workflow-view', runLocator)).toBe(

@@ -1530,6 +1530,20 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 回归与验收：确定性门控测试固定 writer 被阻塞且队列满时调用方继续并准确计数丢弃行，异步队列测试固定 guard 释放时 flush 并保持 8 MiB/4 份轮转；Rust observability 相关 21 项、`cargo check -p gold-band-desktop`、`cargo check -p gold-band --bin gold-band -j 1`、Rust 格式与差异检查通过。首次并行验证因同时存在多个 Rust 构建导致 `rustc-LLVM out of memory`，改用 `--lib -j 1` 后通过，确认不是实现或测试失败；编译仅保留项目既有 dead-code warnings。
 - 性能与过度设计评审：调用线程只承担现有事件格式化和一次有界 channel `try_send`，不再获取文件锁或执行 write/flush/rotate；常驻资源为一个 1024 行队列和一个日志线程。使用已有依赖和标准 guard，不新增自研队列、重试、持久状态、业务状态机或第二套 writer；lossy 策略避免异常洪峰把诊断压力传导到业务线程。
 
+## 2026-08-25：右侧源码管理绑定当前会话 Worktree
+
+- [x] 根因：源码管理资源、Store 和后端已按 `projectId + workspacePath` 支持 linked worktree 隔离，但右侧通用入口只传 `projectId`，固定生成 main 资源；AI-DYNAMIC child 会因此显示源分支主工作区，并把 `.gold-band/worktrees/...` 错列为未跟踪目录。该问题属于正确设计下入口投影实现不完整，不修改 Git 或 Runtime canonical workspace 模型。
+- [x] 数据与实现：复用 `ConversationSessionLeafVm.worktreePath`、完整会话导航 locator 和现有 repository/workspace 会话 Store。右侧会话树只保留一个项目级源码管理 Tab；数据会话按 `projectId + normalized workspacePath` 隔离。主工作区保持 `null`，路径不通过分支名或展示文本反查。
+- [x] 接口回归：会话导航测试固定 dynamic leaf 选择、无 attempt 路由下的 selected-session 回退、主工作区和非会话页面；入口测试固定当前 worktree 路径。后续会话树切换收敛修正在 2026-08-26 章节验收。
+- 性能与过度设计评审：每次会话导航只增加常量级 locator 查找；显式 session locator 使用现有树索引遍历，最坏 O(当前 session tree)，无额外 Git I/O、全量文件扫描、轮询、缓存、队列、锁、持久字段或 Context 订阅。源码管理仍只在活动 Tab 按需加载，并继续使用既有 24 项 repository/workspace LRU；现有 identity 足以表达不变量，无需新 aggregate、状态机或依赖。
+
+## 2026-08-26：源码管理单 Tab 跟随会话工作位置
+
+- [x] 缺陷形成路径：前一版只让“打开源码管理”入口携带当前 `worktreePath`，同时把路径写进右侧 Tab key；右侧工作区状态却按整个 Run 保存。因此源码管理已经在 main 打开后，切换 dynamic child 只更新会话分支展示，不会更新已有源码管理 Tab。根因属于正确的 repository/workspace 会话隔离设计与错误的可见 Tab 身份建模叠加，测试也只覆盖了重新点击入口，没有覆盖 Tab 已打开时切换 session。
+- [x] 数据与状态转换：可见源码管理 Tab 改为项目级稳定 key，同一会话树只保留一个；Provider 从 Run 当前 `selectedSessionKey` 投影 `workspacePath`，页面 locator 仅作为 deep-link 回退。session 点击在同一事件中提交 React 页面状态、最新页面 ref、URL locator 与 Run 选择，避免旧 main locator 覆盖已选 worktree。只有 `projectId + normalized workspacePath` 改变时才切换底层 SourceControl session；main 节点之间或同一 worktree 节点之间切换是 identity no-op。底层继续复用现有 24 项 repository/workspace LRU，返回某个位置时恢复其内部页签、历史分页/选择/滚动和 commit 草稿。
+- [ ] 验收：纯状态测试固定稳定 Tab key、同 identity 引用不变和跨 worktree 投影；DOM 测试固定已打开 Tab 自动跟随路径且不产生第二个同名 Tab；SourceControl Store 测试固定 Windows 规范化路径与不同 worktree 视图状态隔离。完成 TypeScript、定向测试、生产构建以及真实浏览器 normal/narrow/re-expand 验证后勾选。
+- 性能与过度设计评审：不新增 Context、持久字段、缓存、队列、请求或 Git watcher；只抽取轻量路径 identity helper，并复用已有 Store。会话节点切换只做规范化 identity 比较；工作位置相同时保持稳定 scope/context，不触发源码管理订阅切换或 Git I/O，位置变化时仅目标 SourceControl session 按原规则按需加载。
+
 ## 2026-08-25：Release profile WebView DevTools 诊断包
 
 - [x] 根因与方案：现有 default/wb 渠道构建、Tauri overlay 和 updater 隔离设计正确，但只有渠道维度，没有用于复现生产 WebView 问题的诊断能力维度；普通 release 又未启用 Tauri DevTools。新增正交 `--devtools` 构建选项和 `support-devtools = ["tauri/devtools"]` Cargo feature，不新建诊断渠道，也不使用会改变优化行为的 debug profile。

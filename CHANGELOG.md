@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.14.1](https://github.com/diodeme/Gold-Band/compare/v0.14.0...v0.14.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **ai-dynamic:** defer routing plans to finalize turn ([de6310a](https://github.com/diodeme/Gold-Band/commit/de6310ac976c29535778e2491e7bd41084b6e364))
+* **conversation:** adapt context controls to narrow widths ([698cc96](https://github.com/diodeme/Gold-Band/commit/698cc963f4aae3f09c05a089b27f6a8a89afb0d9))
+* **conversation:** collapse session info into overflow ([abb4135](https://github.com/diodeme/Gold-Band/commit/abb413576a55041acab805eca20ca49a3f2c9e7e))
+* **conversation:** correct slash menu surface and stacking ([9f07823](https://github.com/diodeme/Gold-Band/commit/9f0782364cca06efbc3fcdd94bf48eb631c13415))
+* **git:** require Git 2.36 for Git features ([deb032e](https://github.com/diodeme/Gold-Band/commit/deb032e3021bcd42afdeac8d74d51442a7b39f11))
+* **git:** stabilize conversation branch selection ([1ea3a88](https://github.com/diodeme/Gold-Band/commit/1ea3a8846b74e51060db53b9d46dcd16aa04d62c))
+* **markdown:** dedupe editor runtime dependencies ([ddb7a95](https://github.com/diodeme/Gold-Band/commit/ddb7a959750dcdea81859e3450699e02dd1ca7c9))
+* **runtime:** harden AI-DYNAMIC resume and recovery ([a932ca5](https://github.com/diodeme/Gold-Band/commit/a932ca5fbb67085cbaa9834f2029b9ec4abef8c2))
+* **runtime:** keep post-turn contract out of system prompt ([c95f131](https://github.com/diodeme/Gold-Band/commit/c95f131caa14a9439a54c38ed05db8e88153581a))
+* **runtime:** resume previous task after user instruction ([2e3d756](https://github.com/diodeme/Gold-Band/commit/2e3d756cdf03fa4f23a5726fd41dcde13b8d2634))
+* **source-control:** follow selected worktree in one tab ([9ea117f](https://github.com/diodeme/Gold-Band/commit/9ea117fa683fb47ab4296cffcf3554fb2d912996))
+
 ## [0.14.0](https://github.com/diodeme/Gold-Band/compare/v0.13.2...v0.14.0) (2026-08-25)
 
 

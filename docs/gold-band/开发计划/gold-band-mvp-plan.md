@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-26：AI-DYNAMIC PostTurn 分发规划后置
+
+- 根因与实现：PostTurn 两阶段设计正确，但 AI-DYNAMIC system prompt 渲染把现有 `OutputEmissionMode` 压缩为 `has_output_contract` 布尔值，导致 `PostTurnProjection` worker / acceptance 与没有控制协议的 merge 同时落入“执行型节点”分支，agent 无法得知正常结束业务 turn 后仍可由 hidden finalize 决定继续分发。现让 AI-DYNAMIC system prompt 直接消费既有 emission mode：InlineControl 保持当前 turn 内联控制；PostTurnProjection 明确 agent 可以直接完成任务，或在判断应继续分发时立即停止并自然结束，且不得在业务 turn 提前拆分任务、选择 Agent 或规划/执行后继节点；只有 hidden finalize 提供完整 artifact 协议与路由上下文后才规划并输出控制结果；无 emission mode 的 merge 保持纯执行语义。continue 规则同步收窄为处理当前节点任务而非继续来源节点旧任务。
+- 验收固化：AI-DYNAMIC prompt 接口单测增加三种 emission mode 的中英文断言，并在 bootstrap、普通 worker 与 acceptance 的完整 PromptBundle 回归中固定控制协议可见性和 PostTurn 业务边界。本次提交阶段按用户要求未再次运行编译或测试；此前定向测试命令被用户中断，未取得可作为验收证据的完成结果，验证状态待后续执行。
+- 性能与过度设计评审：复用现有 `OutputEmissionMode`、PromptBundle 与 hidden finalize 链路，不新增状态机、持久字段、依赖、缓存、队列或兼容分支；每次 AI-DYNAMIC invocation 仅把已有枚举序列化给模板并执行一次 O(1) 分支，I/O、锁范围、调度、恢复次数和数据加载量均不变，无需专项 benchmark。
+
 ## 2026-08-25：PostTurn finalize 控制协议与 system prompt 隔离
 
 - 根因与实现：artifact 后置的两阶段设计正确，但实现为复用控制结果提取逻辑，在隐藏 finalize 前把 `PostTurnProjection` 临时改写成 `InlineControl`；system prompt 渲染又把 `InlineControl` 解释为需要展开完整 output contract，导致 artifact 名称、schema 与 success condition 同时进入隐藏 user prompt 和会话级 system prompt，右侧“系统提示”最终显示 finalize 契约，session load/resume 时还可能真实追加该契约。现保留 contract 的原始 `PostTurnProjection` identity，以既有 `RuntimeFinalize / RuntimeRepair` render mode 单独判定当前 turn 是否消费 artifact；完整契约只由隐藏 user prompt 承载，业务、finalize 和 repair 的稳定 system prompt 均不展开 PostTurn schema。真正首轮内联控制的 AI-DYNAMIC bootstrap 继续使用 `InlineControl`，行为不变。

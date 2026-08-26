@@ -1543,3 +1543,11 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 提示契约：三个分支统一要求“先完整执行本消息中的用户指令，然后继续完成你之前的任务”；PostTurn 在任务完成后再由后续独立 turn 归一化，InlineControl 在任务完成后再按当前契约输出 artifact，无 contract 时不提 artifact。
 - [x] 回归验收：模板分支单元测试 1 项、固定工作流继续接口 1 项、AI-DYNAMIC merge/child 继续接口 2 项通过；`cargo fmt --all -- --check` 通过。测试固定中英文续接语义、artifact 动作顺序，以及 visible 用户消息与 hidden Runtime 控制段的投影边界，仅保留项目既有 3 条 dead-code warning。
 - 性能与过度设计评审：只修改现有常量模板并增加常量级字符串断言，不新增数据结构、状态、依赖、持久化、缓存、队列、锁、I/O、扫描或渲染订阅；渲染复杂度和 prompt 分支数不变，无需 benchmark。
+
+## 2026-08-26：会话信息角标按宽度渐进收起
+
+- [x] 根因与方案：会话详情 composer 的附着信息 tab 已正确集中展示运行状态、累计时间、上下文占用、工作树和分支，但外层强制单行、子项允许收缩，又没有信息优先级或溢出出口；会话栏变窄时所有文本同时被截成半截。该问题属于正确信息模型下响应式投影实现不完整，不修改 Runtime、Git、workspace 或 usage canonical state。
+- [x] 实现：`AcpUsagePanel` 观察 content rail 的真实宽度，以 `560 / 440 / 340px` 三个集中常量投影四个离散档位；按“分支 → 工作树 → 上下文窗口”从右向左将完整原控件移入 shadcn `Popover`，运行状态和会话累计始终行内。ResizeObserver 每动画帧最多处理一次，同一档位不提交 React state；每项只挂载一次，避免复制分支选择器、snapshot 请求与焦点状态。分支选择器保留原 Popover，允许在外层“更多”内继续打开；外层 Popover 默认左对齐三点按钮，移入的分支触发器占满其内容宽度并保持左对齐，行内紧凑样式不变。
+- [x] 打开焦点修复：外层 Popover 原本会自动聚焦内容中的第一项，工作树 Tooltip 因其可键盘聚焦而立即弹出。现仅阻止外层的自动首项聚焦，让焦点保留在“更多”按钮；用户主动 Tab 后 Tooltip 仍可访问，嵌套分支 Popover 仍保持正常层级。该缺陷属于正确可访问性设计下组合浮层的初始焦点契约不完整，不通过禁用 Tooltip focus 或延迟补丁规避。
+- [ ] 回归与验收：纯函数测试固定三个边界，DOM 测试固定正常、分支收起、工作树收起、上下文收起、打开时不自动显示工作树 Tooltip、嵌套分支 Popover 和重新拉宽后的唯一挂载；完成 Web TypeScript、生产构建及内置浏览器 normal/narrow/re-expand、长分支、浅色/深色验证后勾选。
+- 性能与过度设计评审：宽度变化只在本地信息栏发布四值枚举，普通 Timeline、Markdown、Composer 草稿和右侧工作区不订阅；不增加 IPC、Git I/O、轮询、缓存、持久字段、Context、领域状态机或依赖。现有信息项和 shadcn/Radix 浮层已足够表达需求，无需内容测量算法、重复 DOM 或新的 responsive framework；焦点修复只是 Popover 标准事件的一次同步 `preventDefault`，不增加渲染或事件监听。

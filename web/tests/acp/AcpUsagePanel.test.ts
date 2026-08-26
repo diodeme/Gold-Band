@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   AcpUsagePanel,
+  ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS,
+  acpUsagePanelLayoutForWidth,
   contextUsagePercentage,
   contextUsageTone,
   hasAcpUsagePanelContent,
@@ -86,12 +88,12 @@ describe("AcpUsagePanel", () => {
       }),
     );
 
-    const worktree = html.match(/<span class="([^"]+)" tabindex="0" data-acp-worktree="true">/);
+    const worktree = html.match(/<span class="([^"]+)" tabindex="0" data-acp-session-info-item="worktree" data-acp-worktree="true">/);
     expect(html).toContain('data-acp-worktree="true"');
     expect(html).toContain("conversation.runtime.worktree");
     expect(html).toContain("C:/Users/test/AppData/Local/gold-band/projects/p1/worktrees/abc123");
     expect(html.indexOf("acp.usagePanel.contextWindow")).toBeLessThan(html.indexOf('data-acp-worktree="true"'));
-    expect(worktree?.[1].split(' ')).toContain('ml-auto');
+    expect(html).toContain('<span class="ml-auto min-w-0">');
     expect(worktree?.[1].split(' ')).toContain('gap-1');
     expect(worktree?.[1].split(' ')).not.toContain('gap-1.5');
   });
@@ -154,6 +156,17 @@ describe("AcpUsagePanel", () => {
     expect(html).toContain("acp.usagePanel.occupied 120.0K / 100.0K 100%");
     expect(html).toContain(">100</span>");
     expect(html).not.toContain(">100%</span>");
+  });
+});
+
+describe("acpUsagePanelLayoutForWidth", () => {
+  it("moves complete rightmost items into overflow only when a rail crosses a discrete layout boundary", () => {
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.full)).toBe("full");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.full - 1)).toBe("branch-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.workspace)).toBe("branch-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.workspace - 1)).toBe("workspace-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.context)).toBe("workspace-overflow");
+    expect(acpUsagePanelLayoutForWidth(ACP_USAGE_PANEL_LAYOUT_BREAKPOINTS.context - 1)).toBe("context-overflow");
   });
 });
 

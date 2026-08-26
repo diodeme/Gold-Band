@@ -237,6 +237,7 @@ import type {
   ResolvedColorScheme,
   WorkflowRepairTarget,
   WallpaperPreferencesVm,
+  GitCapabilityVm,
 } from './types';
 
 export function workflowRepairTargetFromMissingItems(
@@ -341,20 +342,39 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
   return false;
 }
 
-function gitRequirementStatus(error: unknown) {
+interface GitRequirementState {
+  status: Exclude<GitCapabilityVm['status'], 'ready'>;
+  runKind: 'auto' | 'workflow' | 'worktree';
+  projectId?: string | null;
+  installedVersion: string | null;
+  minimumVersion: string;
+}
+
+function gitRequirementDetails(error: unknown): Pick<GitRequirementState, 'status' | 'installedVersion' | 'minimumVersion'> | null {
   if (!error || typeof error !== 'object') return null;
-  const code = (error as { code?: unknown }).code;
+  const candidate = error as { code?: unknown; params?: unknown };
+  const code = candidate.code;
+  const params = candidate.params && typeof candidate.params === 'object'
+    ? candidate.params as Record<string, unknown>
+    : {};
+  const installedVersion = typeof params.installedVersion === 'string' ? params.installedVersion : null;
+  const minimumVersion = typeof params.minimumVersion === 'string' ? params.minimumVersion : '';
+  const requirement = (status: GitRequirementState['status']) => ({ status, installedVersion, minimumVersion });
   switch (code) {
     case 'run.git-not-installed':
-      return 'not-installed' as const;
+      return requirement('not-installed');
+    case 'run.git-version-unsupported':
+      return requirement('version-unsupported');
+    case 'run.git-version-unavailable':
+      return requirement('version-unavailable');
     case 'run.git-repository-required':
-      return 'repository-required' as const;
+      return requirement('repository-required');
     case 'run.git-head-required':
-      return 'head-required' as const;
+      return requirement('head-required');
     case 'run.git-worktree-required':
-      return 'worktree-required' as const;
+      return requirement('worktree-required');
     case 'run.git-repository-unavailable':
-      return 'repository-unavailable' as const;
+      return requirement('repository-unavailable');
     default:
       return null;
   }
@@ -614,11 +634,7 @@ export function App() {
   const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [gitRequirement, setGitRequirement] = useState<{
-    status: 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
-    runKind: 'auto' | 'workflow' | 'worktree';
-    projectId?: string | null;
-  } | null>(null);
+  const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
 
   const persistConversationWorkLocation = useCallback((
     location: ConversationWorkLocation,
@@ -666,6 +682,8 @@ export function App() {
           status: capability.status,
           runKind: 'worktree',
           projectId,
+          installedVersion: capability.installedVersion,
+          minimumVersion: capability.minimumVersion,
         });
         return;
       }
@@ -1694,12 +1712,12 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
-      const gitStatus = gitRequirementStatus(err);
-      if (gitStatus) {
-        setGitRequirement({ status: gitStatus, runKind: 'workflow', projectId: defaultProjectId });
+      const gitRequirementDetailsValue = gitRequirementDetails(err);
+      if (gitRequirementDetailsValue) {
+        setGitRequirement({ ...gitRequirementDetailsValue, runKind: 'workflow', projectId: defaultProjectId });
       }
       if (options?.surfaceError !== false) {
-        setError(gitStatus ? null : displayAppError(t, err));
+        setError(gitRequirementDetailsValue ? null : displayAppError(t, err));
       }
       if (options?.rethrow) {
         throw err;
@@ -2478,10 +2496,10 @@ export function App() {
               });
               return null;
             } catch (err) {
-              const gitStatus = gitRequirementStatus(err);
-              if (gitStatus) {
+              const gitRequirementDetailsValue = gitRequirementDetails(err);
+              if (gitRequirementDetailsValue) {
                 setGitRequirement({
-                  status: gitStatus,
+                  ...gitRequirementDetailsValue,
                   runKind: input.workLocation === 'worktree'
                     ? 'worktree'
                     : input.runMode === 'auto' ? 'auto' : 'workflow',
@@ -2521,6 +2539,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={async () => {
               const requirement = gitRequirement;
               setGitRequirement(null);
@@ -2749,6 +2769,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={() => setGitRequirement(null)}
             onUseOtherWorkflow={() => {
               setGitRequirement(null);

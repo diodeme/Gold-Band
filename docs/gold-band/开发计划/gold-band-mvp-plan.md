@@ -1574,3 +1574,11 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 打开焦点修复：外层 Popover 原本会自动聚焦内容中的第一项，工作树 Tooltip 因其可键盘聚焦而立即弹出。现仅阻止外层的自动首项聚焦，让焦点保留在“更多”按钮；用户主动 Tab 后 Tooltip 仍可访问，嵌套分支 Popover 仍保持正常层级。该缺陷属于正确可访问性设计下组合浮层的初始焦点契约不完整，不通过禁用 Tooltip focus 或延迟补丁规避。
 - [ ] 回归与验收：纯函数测试固定三个边界，DOM 测试固定正常、分支收起、工作树收起、上下文收起、打开时不自动显示工作树 Tooltip、嵌套分支 Popover 和重新拉宽后的唯一挂载；完成 Web TypeScript、生产构建及内置浏览器 normal/narrow/re-expand、长分支、浅色/深色验证后勾选。
 - 性能与过度设计评审：宽度变化只在本地信息栏发布四值枚举，普通 Timeline、Markdown、Composer 草稿和右侧工作区不订阅；不增加 IPC、Git I/O、轮询、缓存、持久字段、Context、领域状态机或依赖。现有信息项和 shadcn/Radix 浮层已足够表达需求，无需内容测量算法、重复 DOM 或新的 responsive framework；焦点修复只是 Popover 标准事件的一次同步 `preventDefault`，不增加渲染或事件监听。
+
+## 2026-08-26：统一 Git 2.36.0 最低版本门槛
+
+- [x] 根因与方案：系统 Git CLI 作为唯一 Git 后端的设计正确，旧版本异常来自应用无统一协议基线，导致高版本命令在不同 Git 入口中以“无分支”或普通读取失败暴露，属于 capability 实现不完整。统一把所有 Git 功能门槛设为 `2.36.0+`，低版本只禁用 Git 相关能力，不阻断 Gold Band 其他页面；不建立按功能版本矩阵或旧协议 fallback。
+- [x] 后端契约：集中解析 `git --version`，使用 `semver` 比较稳定核心版本并兼容 Windows/Apple 发行后缀，RC 低于正式版；capability 新增 `version-unsupported / version-unavailable` 与 `installedVersion / minimumVersion`，runtime 和 source-control 分别返回稳定结构化错误。通过门槛后继续使用原生 `--path-format=absolute` 与 `worktree list --porcelain -z`；Merge/Rebase marker 的相对路径漏判入口改为原生 absolute 输出。版本不持久化、不新增缓存。
+- [x] 前端契约：源码管理、分支选择器和 Git 前置对话框都显示明确版本状态、已安装/最低版本、Git 下载与重新检测；分支选择器清除会话期陈旧 snapshot，不显示“无分支”，打开错误态不自动探测覆盖，只有用户显式重试才刷新。中英文对客文案全部由前端 i18n 映射。
+- [x] 回归与验收：Rust Git 领域测试 11 项通过，固定最低版本、Windows/Apple 后缀、RC、异常输出和结构化错误参数；前端 capability store、分支选择器、源码管理状态与 Git 前置对话框 4 个文件共 55 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 使用 `2.35.9.windows.1` 验证普通窗口分支触发器/下拉、源码管理专用能力态、新工作树前置对话框和 `620×780` 窄窗口 Sheet，已安装/最低版本、下载/重新检测动作、按钮层级和换行均正确，控制台无 warning/error；页面、视口和 1420 端口测试进程已清理。
+- 性能与过度设计评审：复用现有 capability gate、Git runner、shadcn 组件和有界分支 snapshot Store，仅增加一次固定大小的版本字符串解析与 Git 服务入口的常量级探测；不可用状态在 snapshot/history 前短路，避免重型请求。未引入协议解析器、版本矩阵、状态机、持久字段、全局缓存、轮询、队列或新 UI 基础组件；初始化路径的低频重复探测不在交互热路径，无需专项 benchmark。

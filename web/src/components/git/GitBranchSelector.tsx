@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, GitBranch, Loader2, Plus } from 'lucide-react';
+import { Check, GitBranch, Loader2, Plus, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { changeGitBranch, getGitBranchPickerSnapshot } from '@/api';
+import { changeGitBranch, getGitBranchPickerSnapshot, openExternalUrl } from '@/api';
 import { displayAppError } from '@/i18n';
 import type { GitBranchCheckpointVm, GitBranchPickerSnapshotVm } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useOverflowTooltip } from '@/hooks/useOverflowTooltip';
+import { GIT_DOWNLOAD_URL, isGitVersionCapabilityError } from '@/lib/git-capability';
 import { useGitBranchPickerSnapshotStore } from './GitBranchPickerSnapshotContext';
 
 export interface GitBranchSelectorProps {
@@ -63,7 +64,11 @@ export function GitBranchSelector({
     loading: boolean;
   }>(() => ({ scopeKey, snapshot: cachedSnapshot, loading: readOnlyBranch === undefined && !cachedSnapshot }));
   const [changing, setChanging] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    code: string | null;
+    params: Record<string, unknown>;
+    message: string;
+  } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [newBranchName, setNewBranchName] = useState('');
   const requestSequenceRef = useRef(0);
@@ -110,9 +115,19 @@ export function GitBranchSelector({
       publishCheckpoint(next);
     } catch (cause) {
       if (sequence !== requestSequenceRef.current) return;
-      setPickerState({ scopeKey, snapshot: cached, loading: false });
-      publishCheckpoint(cached);
-      setError(displayAppError(t, cause));
+      const candidate = cause && typeof cause === 'object'
+        ? cause as { code?: unknown; params?: unknown }
+        : null;
+      const code = typeof candidate?.code === 'string' ? candidate.code : null;
+      const params = candidate?.params && typeof candidate.params === 'object'
+        ? candidate.params as Record<string, unknown>
+        : {};
+      const versionCapabilityError = isGitVersionCapabilityError(code);
+      if (versionCapabilityError) snapshotStore.delete(projectId, workspacePath);
+      const fallback = versionCapabilityError ? null : cached;
+      setPickerState({ scopeKey, snapshot: fallback, loading: false });
+      publishCheckpoint(fallback);
+      setError({ code, params, message: displayAppError(t, cause) });
     }
   }, [projectId, publishCheckpoint, readOnlyBranch, scopeKey, snapshotStore, t, workspacePath]);
 
@@ -148,7 +163,7 @@ export function GitBranchSelector({
     } catch (cause) {
       const message = displayAppError(t, cause);
       await loadSnapshot();
-      setError(message);
+      setError({ code: null, params: {}, message });
     } finally {
       setChanging(false);
     }
@@ -178,7 +193,10 @@ export function GitBranchSelector({
     );
   }
 
-  const currentBranch = snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
+  const versionCapabilityError = isGitVersionCapabilityError(error?.code);
+  const currentBranch = versionCapabilityError
+    ? t('conversation.branchPicker.versionUnsupportedLabel')
+    : snapshot?.currentBranch ?? t('conversation.branchPicker.unavailable');
   const blocked = disabled
     || changing
     || Boolean(snapshot?.lock.locked)
@@ -196,7 +214,7 @@ export function GitBranchSelector({
           compactPointerClickPendingRef.current = false;
           setOpen(next);
           hideBranchTooltip();
-          if (next && !snapshot && !loading) void loadSnapshot();
+          if (next && !snapshot && !loading && !error) void loadSnapshot();
         }}>
           <TooltipTrigger asChild>
             <PopoverTrigger asChild>
@@ -271,7 +289,7 @@ export function GitBranchSelector({
             }}
           >
             <Command>
-              <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} />
+              {!versionCapabilityError ? <CommandInput placeholder={t('conversation.branchPicker.search', { workspace: projectId })} /> : null}
               <CommandList className="max-h-72">
               {loading ? (
                 <div className="flex items-center justify-center gap-2 px-3 py-6 text-xs text-muted-foreground">
@@ -279,12 +297,35 @@ export function GitBranchSelector({
                   {t('conversation.branchPicker.loading')}
                 </div>
               ) : null}
-              {!loading && error && !snapshot ? (
+              {!loading && error && !snapshot && !versionCapabilityError ? (
                 <div className="space-y-2 px-3 py-3 text-xs text-destructive">
-                  <p>{error}</p>
+                  <p>{error.message}</p>
                   <Button type="button" variant="outline" size="xs" onClick={() => void loadSnapshot()}>
                     {t('common.retry')}
                   </Button>
+                </div>
+              ) : null}
+              {!loading && error && versionCapabilityError ? (
+                <div className="space-y-3 px-3 py-4" role="alert" data-git-version-capability-error={error.code}>
+                  <div className="flex items-start gap-2">
+                    <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-sm font-medium text-foreground">
+                        {t(`conversation.branchPicker.${error.code === 'git.version-unsupported' ? 'versionUnsupportedTitle' : 'versionUnavailableTitle'}`)}
+                      </p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t(`conversation.branchPicker.${error.code === 'git.version-unsupported' ? 'versionUnsupportedDescription' : 'versionUnavailableDescription'}`, error.params)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pl-6">
+                    <Button type="button" size="xs" onClick={() => void openExternalUrl(GIT_DOWNLOAD_URL)}>
+                      {t('sourceControl.openGitDownload')}
+                    </Button>
+                    <Button type="button" variant="outline" size="xs" onClick={() => void loadSnapshot()}>
+                      {t('sourceControl.checkAgain')}
+                    </Button>
+                  </div>
                 </div>
               ) : null}
                 {!loading && snapshot ? (
@@ -330,7 +371,7 @@ export function GitBranchSelector({
               ) : null}
               {error && snapshot ? (
                 <div className="border-t border-destructive/20 px-3 py-2 text-xs text-destructive" role="alert">
-                  {error}
+                  {error.message}
                 </div>
               ) : null}
               {!loading && snapshot ? (

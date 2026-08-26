@@ -512,7 +512,9 @@ export interface AppErrorVm {
 }
 
 export interface GitCapabilityVm {
-  status: 'ready' | 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  status: 'ready' | 'not-installed' | 'version-unsupported' | 'version-unavailable' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  installedVersion: string | null;
+  minimumVersion: string;
   repoRoot: string | null;
   commonDir: string | null;
   head: string | null;

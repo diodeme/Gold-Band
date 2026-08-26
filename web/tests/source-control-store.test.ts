@@ -27,6 +27,26 @@ describe('source control session store', () => {
     expect(api.getHistory).not.toHaveBeenCalled();
   });
 
+  it('stops at the unsupported Git version capability without repository data requests', async () => {
+    const api = fakeApi();
+    api.getCapability.mockResolvedValueOnce(capability('version-unsupported', '2.35.9'));
+    const store = new SourceControlStore(api);
+
+    await store.ensureLoaded('project-1', 'D:/repo');
+
+    expect(store.session('project-1', 'D:/repo')).toMatchObject({
+      status: 'unavailable',
+      capability: {
+        status: 'version-unsupported',
+        installedVersion: '2.35.9',
+        minimumVersion: '2.36.0',
+      },
+      error: null,
+    });
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+    expect(api.getHistory).not.toHaveBeenCalled();
+  });
+
   it('initializes a non-repository and loads its unborn Git workspace without a second error state', async () => {
     const api = fakeApi();
     api.getCapability
@@ -591,9 +611,11 @@ function fakeApi() {
   };
 }
 
-function capability(status: GitCapabilityVm['status']): GitCapabilityVm {
+function capability(status: GitCapabilityVm['status'], installedVersion = '2.53.0'): GitCapabilityVm {
   return {
     status,
+    installedVersion: status === 'not-installed' || status === 'version-unavailable' ? null : installedVersion,
+    minimumVersion: '2.36.0',
     repoRoot: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo',
     commonDir: status === 'not-installed' || status === 'repository-required' ? null : 'D:/repo/.git',
     head: status === 'ready' ? 'a'.repeat(40) : null,

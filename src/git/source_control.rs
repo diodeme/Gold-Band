@@ -1209,6 +1209,7 @@ impl GitSourceControlService {
         project_root: &Utf8Path,
         requested_workspace: Option<&Utf8Path>,
     ) -> Result<GitRepositoryIdentity> {
+        super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
         let workspace = self.repository_identity(requested_workspace.unwrap_or(project_root))?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
@@ -1242,10 +1243,12 @@ impl GitSourceControlService {
                 "git.repository-not-found",
             )?
             .stdout_text();
-        let workspace_path = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let repo_root = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let common_dir = canonical_utf8_path(Utf8Path::new(&common_dir))?;
+        let workspace_path = repo_root.clone();
         Ok(GitRepositoryIdentity {
-            repo_root: Utf8PathBuf::from(repo_root),
-            common_dir: Utf8PathBuf::from(common_dir),
+            repo_root,
+            common_dir,
             workspace_path,
         })
     }

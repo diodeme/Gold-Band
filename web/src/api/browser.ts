@@ -90,6 +90,19 @@ let browserGitStagePreviewApplied = false;
 const browserGitHubOperations = new Map<string, GitHubOperationVm>();
 const browserGitHubOperationListeners = new Set<(operation: GitHubOperationVm) => void>();
 
+function browserGitVersionCapabilityPreview() {
+  const status = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('gitCapability');
+  if (status === 'version-unsupported') {
+    return { status, installedVersion: '2.35.9.windows.1', minimumVersion: '2.36.0' } as const;
+  }
+  if (status === 'version-unavailable') {
+    return { status, installedVersion: null, minimumVersion: '2.36.0' } as const;
+  }
+  return null;
+}
+
 const browserGitCommits: GitCommitVm[] = [
   {
     oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
@@ -617,10 +630,14 @@ export const browserApi: RuntimeApi = {
     return () => browserScheduledOccurrenceListeners.delete(listener);
   },
   getGitCapability() {
-    return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.resolve({ ...versionCapability, repoRoot: null, commonDir: null, head: null });
+    }
+    return Promise.resolve({ status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   initializeGitRepository() {
-    return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+    return Promise.resolve({ status: 'head-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
@@ -663,6 +680,16 @@ export const browserApi: RuntimeApi = {
     });
   },
   getGitBranchPickerSnapshot(_projectId, workspacePath) {
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.reject({
+        code: `git.${versionCapability.status}`,
+        params: {
+          installedVersion: versionCapability.installedVersion,
+          minimumVersion: versionCapability.minimumVersion,
+        },
+      });
+    }
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
     return Promise.resolve({
       workspacePath: resolvedWorkspacePath,

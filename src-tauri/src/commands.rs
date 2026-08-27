@@ -2972,6 +2972,53 @@ pub async fn get_source_control_snapshot(
 }
 
 #[tauri::command]
+pub async fn get_git_branch_picker_snapshot(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+) -> CommandResult<gold_band::git::GitBranchPickerSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .branch_picker_snapshot(&workspace.workspace_path)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn change_git_branch(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    workspace_path: Option<String>,
+    input: gold_band::git::GitBranchChangeRequest,
+) -> CommandResult<gold_band::git::GitBranchPickerSnapshot> {
+    let app = resolve_command_app(state.inner(), Some(&project_id))?;
+    let project_root = app.paths.repo_root;
+    spawn_blocking_command(move || {
+        let service = gold_band::git::GitSourceControlService::default();
+        let workspace = service
+            .resolve_scoped_workspace(
+                &project_root,
+                workspace_path.as_deref().map(camino::Utf8Path::new),
+            )
+            .map_err(command_error)?;
+        service
+            .change_branch(&workspace.workspace_path, &input)
+            .map_err(command_error)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_git_history(
     state: State<'_, DesktopState>,
     project_id: String,
@@ -4035,6 +4082,126 @@ pub fn update_notification_attention(
     state
         .update_notification_attention(input)
         .map_err(command_error)
+}
+
+const FRONTEND_ERROR_MESSAGE_MAX_CHARS: usize = 4_096;
+const FRONTEND_ERROR_STACK_MAX_CHARS: usize = 16_384;
+const FRONTEND_ERROR_CONTEXT_MAX_CHARS: usize = 2_048;
+const FRONTEND_ERROR_ELEMENT_MAX_CHARS: usize = 1_024;
+const FRONTEND_ERROR_TIMESTAMP_MAX_CHARS: usize = 64;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum FrontendErrorKindInput {
+    WindowError,
+    UnhandledRejection,
+    ReactUncaught,
+}
+
+impl FrontendErrorKindInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WindowError => "window-error",
+            Self::UnhandledRejection => "unhandled-rejection",
+            Self::ReactUncaught => "react-uncaught",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FrontendErrorReportInput {
+    kind: FrontendErrorKindInput,
+    message: String,
+    stack: Option<String>,
+    component_stack: Option<String>,
+    source: Option<String>,
+    line: Option<u32>,
+    column: Option<u32>,
+    active_element: Option<String>,
+    last_pointer_target: Option<String>,
+    last_pointer_at: Option<String>,
+    pathname: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl FrontendErrorReportInput {
+    fn normalize(mut self) -> Self {
+        self.message =
+            truncate_frontend_error_field(self.message, FRONTEND_ERROR_MESSAGE_MAX_CHARS);
+        self.stack =
+            truncate_optional_frontend_error_field(self.stack, FRONTEND_ERROR_STACK_MAX_CHARS);
+        self.component_stack = truncate_optional_frontend_error_field(
+            self.component_stack,
+            FRONTEND_ERROR_STACK_MAX_CHARS,
+        );
+        self.source = sanitize_frontend_error_source(self.source);
+        self.active_element = truncate_optional_frontend_error_field(
+            self.active_element,
+            FRONTEND_ERROR_ELEMENT_MAX_CHARS,
+        );
+        self.last_pointer_target = truncate_optional_frontend_error_field(
+            self.last_pointer_target,
+            FRONTEND_ERROR_ELEMENT_MAX_CHARS,
+        );
+        self.last_pointer_at = truncate_optional_frontend_error_field(
+            self.last_pointer_at,
+            FRONTEND_ERROR_TIMESTAMP_MAX_CHARS,
+        );
+        self.pathname =
+            truncate_optional_frontend_error_field(self.pathname, FRONTEND_ERROR_CONTEXT_MAX_CHARS);
+        self.user_agent = truncate_optional_frontend_error_field(
+            self.user_agent,
+            FRONTEND_ERROR_CONTEXT_MAX_CHARS,
+        );
+        self
+    }
+}
+
+fn truncate_frontend_error_field(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value
+    } else {
+        value.chars().take(max_chars).collect()
+    }
+}
+
+fn truncate_optional_frontend_error_field(
+    value: Option<String>,
+    max_chars: usize,
+) -> Option<String> {
+    value.map(|value| truncate_frontend_error_field(value, max_chars))
+}
+
+fn sanitize_frontend_error_source(value: Option<String>) -> Option<String> {
+    value.map(|value| {
+        let without_query = value
+            .find(|character| character == '?' || character == '#')
+            .map_or(value.as_str(), |index| &value[..index]);
+        truncate_frontend_error_field(without_query.to_string(), FRONTEND_ERROR_CONTEXT_MAX_CHARS)
+    })
+}
+
+#[tauri::command]
+pub fn report_frontend_error(input: FrontendErrorReportInput) -> CommandResult<()> {
+    let report = input.normalize();
+    tracing::error!(
+        target: "gold_band::frontend",
+        kind = report.kind.as_str(),
+        message = %report.message,
+        stack = report.stack.as_deref().unwrap_or(""),
+        component_stack = report.component_stack.as_deref().unwrap_or(""),
+        source = report.source.as_deref().unwrap_or(""),
+        line = ?report.line,
+        column = ?report.column,
+        active_element = report.active_element.as_deref().unwrap_or(""),
+        last_pointer_target = report.last_pointer_target.as_deref().unwrap_or(""),
+        last_pointer_at = report.last_pointer_at.as_deref().unwrap_or(""),
+        pathname = report.pathname.as_deref().unwrap_or(""),
+        user_agent = report.user_agent.as_deref().unwrap_or(""),
+        "frontend fatal error reported"
+    );
+    Ok(())
 }
 
 /// Frontend activity signal: pointerdown, keydown, or business command.
@@ -6499,6 +6666,14 @@ pub fn respond_acp_permission(
     Ok(session)
 }
 
+fn active_session_stop_is_idempotent_noop(
+    has_acp_stop_owner: bool,
+    runtime_was_active: bool,
+    dynamic_resume_was_starting: bool,
+) -> bool {
+    !has_acp_stop_owner && !runtime_was_active && !dynamic_resume_was_starting
+}
+
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
@@ -6508,6 +6683,20 @@ fn persist_active_session_stop(
     let runtime_was_active = app
         .run_status(&locator.task_id, &locator.run_id)
         .is_ok_and(|run| run.status == RunStatus::Running && locator.matches_run_current(&run));
+    let dynamic_resume_was_starting = match (locator.outer_node_id(), locator.outer_attempt_id()) {
+        (Some(outer_node_id), Some(outer_attempt_id)) => app
+            .dynamic_resume_target_is_active(
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &locator.node_id,
+                &locator.attempt_id,
+            )
+            .map_err(command_error)?,
+        _ => false,
+    };
     // Persist the user intent before touching runtime-control files. A failure
     // in pause bookkeeping must not leave the provider turn running without a
     // durable cancellation request that recovery can observe.
@@ -6526,7 +6715,11 @@ fn persist_active_session_stop(
     // owning Runtime generation is already running. Runtime pause is the
     // authoritative durable stop in that startup window. Only a request with
     // neither an ACP owner nor a running Runtime owner is an idempotent no-op.
-    if stop_owner.is_none() && !runtime_was_active {
+    if active_session_stop_is_idempotent_noop(
+        stop_owner.is_some(),
+        runtime_was_active,
+        dynamic_resume_was_starting,
+    ) {
         return Ok((attempt_dir, None, false));
     }
 
@@ -6565,6 +6758,7 @@ fn persist_active_session_stop(
             outer_node_id,
             outer_attempt_id,
             &locator.node_id,
+            &locator.attempt_id,
             PauseReason::ProcessInterrupted,
         )
     } else {
@@ -9561,6 +9755,47 @@ mod tests {
     };
     use std::collections::BTreeMap;
 
+    fn frontend_error_input(message: String) -> FrontendErrorReportInput {
+        FrontendErrorReportInput {
+            kind: FrontendErrorKindInput::ReactUncaught,
+            message,
+            stack: Some("stack".to_string()),
+            component_stack: Some("component-stack".to_string()),
+            source: Some("main.tsx".to_string()),
+            line: Some(12),
+            column: Some(8),
+            active_element: Some("button#send".to_string()),
+            last_pointer_target: Some("button#send".to_string()),
+            last_pointer_at: Some("2026-08-25T10:00:00Z".to_string()),
+            pathname: Some("/conversation/task-001".to_string()),
+            user_agent: Some("GoldBandWebView".to_string()),
+        }
+    }
+
+    #[test]
+    fn frontend_error_report_normalization_enforces_unicode_safe_bounds() {
+        let mut input = frontend_error_input("错".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS + 5));
+        input.source = Some("app://localhost/main.js?token=secret".to_string());
+        let report = input.normalize();
+
+        assert_eq!(
+            report.message.chars().count(),
+            FRONTEND_ERROR_MESSAGE_MAX_CHARS
+        );
+        assert_eq!(
+            report.message,
+            "错".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS)
+        );
+        assert_eq!(report.kind, FrontendErrorKindInput::ReactUncaught);
+        assert_eq!(report.line, Some(12));
+        assert_eq!(report.source.as_deref(), Some("app://localhost/main.js"));
+    }
+
+    #[test]
+    fn frontend_error_command_accepts_bounded_structured_report() {
+        assert!(report_frontend_error(frontend_error_input("render failed".to_string())).is_ok());
+    }
+
     fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {
         RuntimeLifecycleEvent::RunCompleted {
             event_id: "run-event-001".to_string(),
@@ -10538,6 +10773,12 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn dynamic_resume_starting_owner_prevents_stop_from_being_treated_as_noop() {
+        assert!(active_session_stop_is_idempotent_noop(false, false, false));
+        assert!(!active_session_stop_is_idempotent_noop(false, false, true));
     }
 
     #[test]

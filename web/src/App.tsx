@@ -85,7 +85,9 @@ import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
 import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
+  conversationAcpRunRefreshStatus,
   isRuntimeControlledConversationLifecycle,
+  isTerminalConversationSessionStatus,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -127,6 +129,7 @@ import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState }
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { useEventDrivenRefresh } from '@/lib/use-event-driven-refresh';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
@@ -172,6 +175,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationSourceControlWorkspacePath,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
@@ -237,6 +241,7 @@ import type {
   ResolvedColorScheme,
   WorkflowRepairTarget,
   WallpaperPreferencesVm,
+  GitCapabilityVm,
 } from './types';
 
 export function workflowRepairTargetFromMissingItems(
@@ -341,20 +346,39 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
   return false;
 }
 
-function gitRequirementStatus(error: unknown) {
+interface GitRequirementState {
+  status: Exclude<GitCapabilityVm['status'], 'ready'>;
+  runKind: 'auto' | 'workflow' | 'worktree';
+  projectId?: string | null;
+  installedVersion: string | null;
+  minimumVersion: string;
+}
+
+function gitRequirementDetails(error: unknown): Pick<GitRequirementState, 'status' | 'installedVersion' | 'minimumVersion'> | null {
   if (!error || typeof error !== 'object') return null;
-  const code = (error as { code?: unknown }).code;
+  const candidate = error as { code?: unknown; params?: unknown };
+  const code = candidate.code;
+  const params = candidate.params && typeof candidate.params === 'object'
+    ? candidate.params as Record<string, unknown>
+    : {};
+  const installedVersion = typeof params.installedVersion === 'string' ? params.installedVersion : null;
+  const minimumVersion = typeof params.minimumVersion === 'string' ? params.minimumVersion : '';
+  const requirement = (status: GitRequirementState['status']) => ({ status, installedVersion, minimumVersion });
   switch (code) {
     case 'run.git-not-installed':
-      return 'not-installed' as const;
+      return requirement('not-installed');
+    case 'run.git-version-unsupported':
+      return requirement('version-unsupported');
+    case 'run.git-version-unavailable':
+      return requirement('version-unavailable');
     case 'run.git-repository-required':
-      return 'repository-required' as const;
+      return requirement('repository-required');
     case 'run.git-head-required':
-      return 'head-required' as const;
+      return requirement('head-required');
     case 'run.git-worktree-required':
-      return 'worktree-required' as const;
+      return requirement('worktree-required');
     case 'run.git-repository-unavailable':
-      return 'repository-unavailable' as const;
+      return requirement('repository-unavailable');
     default:
       return null;
   }
@@ -614,11 +638,7 @@ export function App() {
   const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [gitRequirement, setGitRequirement] = useState<{
-    status: 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
-    runKind: 'auto' | 'workflow' | 'worktree';
-    projectId?: string | null;
-  } | null>(null);
+  const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
 
   const persistConversationWorkLocation = useCallback((
     location: ConversationWorkLocation,
@@ -666,6 +686,8 @@ export function App() {
           status: capability.status,
           runKind: 'worktree',
           projectId,
+          installedVersion: capability.installedVersion,
+          minimumVersion: capability.minimumVersion,
         });
         return;
       }
@@ -1202,6 +1224,9 @@ export function App() {
         followMode: followStateAtRequest.mode,
         pendingEventSessionKey,
         currentSelectedKey,
+        currentSelectedTerminal: isTerminalConversationSessionStatus(
+          currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+        ),
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
@@ -1225,6 +1250,9 @@ export function App() {
             followMode: latestFollowState.mode,
             pendingEventSessionKey: selectedKey,
             currentSelectedKey: latestSelectedKey,
+            currentSelectedTerminal: isTerminalConversationSessionStatus(
+              latestSelectedLeaf?.lifecycle?.runtime.status ?? latestSelectedLeaf?.status,
+            ),
             currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
             pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
           });
@@ -1317,6 +1345,9 @@ export function App() {
       const currentSelectedActive = Boolean(
         currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
+      const currentSelectedTerminal = isTerminalConversationSessionStatus(
+        currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+      );
       const hasRuntimeSnapshot = Boolean(event.session || event.lifecycle);
       const incomingActive = event.lifecycle
         ? isConversationActiveLifecycle(event.lifecycle)
@@ -1324,18 +1355,29 @@ export function App() {
           ? isConversationActiveStatus(event.session.status)
           : Boolean(event.event);
       const followState = conversationSessionFollowRef.current;
-      const followPending = followState.mode === 'auto'
-        && Boolean(currentSelectedKey)
-        && !currentSelectedActive
-        && incomingActive
-        && currentSelectedRuntimeControlled
-        && incomingRuntimeControlled;
+      const eventSelectedSessionKey = resolveConversationEventSelectedSessionKey({
+        currentSelectedKey,
+        incomingSessionKey: sessionKey,
+        followMode: followState.mode,
+        currentSelectedActive,
+        currentSelectedTerminal,
+        incomingActive,
+        currentSelectedRuntimeControlled,
+        incomingRuntimeControlled,
+      });
+      const followPending = currentSelectedKey !== sessionKey
+        && eventSelectedSessionKey === sessionKey;
+      const refreshStatus = conversationAcpRunRefreshStatus({
+        dynamicSession: Boolean(event.outerNodeId && event.outerAttemptId),
+        lifecycle: event.lifecycle,
+        sessionStatus: event.session?.status,
+      });
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
         hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
-        sessionStatus: event.lifecycle?.displayStatus ?? event.session?.status,
+        sessionStatus: refreshStatus,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
         followPending,
       });
@@ -1356,15 +1398,7 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunRefresh(resolveConversationEventSelectedSessionKey({
-        currentSelectedKey,
-        incomingSessionKey: sessionKey,
-        followMode: followState.mode,
-        currentSelectedActive,
-        incomingActive,
-        currentSelectedRuntimeControlled,
-        incomingRuntimeControlled,
-      }), incomingRuntimeControlled);
+      queueConversationRunRefresh(eventSelectedSessionKey, incomingRuntimeControlled);
     };
     conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 
@@ -1700,12 +1734,12 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
-      const gitStatus = gitRequirementStatus(err);
-      if (gitStatus) {
-        setGitRequirement({ status: gitStatus, runKind: 'workflow', projectId: defaultProjectId });
+      const gitRequirementDetailsValue = gitRequirementDetails(err);
+      if (gitRequirementDetailsValue) {
+        setGitRequirement({ ...gitRequirementDetailsValue, runKind: 'workflow', projectId: defaultProjectId });
       }
       if (options?.surfaceError !== false) {
-        setError(gitStatus ? null : displayAppError(t, err));
+        setError(gitRequirementDetailsValue ? null : displayAppError(t, err));
       }
       if (options?.rethrow) {
         throw err;
@@ -2180,6 +2214,7 @@ export function App() {
 
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
+    <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
@@ -2197,6 +2232,10 @@ export function App() {
           ? conversationRun.taskUuid
           : null
       }
+      sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
+        presentedConversationPage,
+        conversationRun,
+      )}
       conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
       feedbackEnabled={appInfo.feedbackEnabled}
@@ -2357,6 +2396,7 @@ export function App() {
       />
     </Shell>
     </ConversationComposerDraftBoundary>
+    </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
   );
 
@@ -2482,10 +2522,10 @@ export function App() {
               });
               return null;
             } catch (err) {
-              const gitStatus = gitRequirementStatus(err);
-              if (gitStatus) {
+              const gitRequirementDetailsValue = gitRequirementDetails(err);
+              if (gitRequirementDetailsValue) {
                 setGitRequirement({
-                  status: gitStatus,
+                  ...gitRequirementDetailsValue,
                   runKind: input.workLocation === 'worktree'
                     ? 'worktree'
                     : input.runMode === 'auto' ? 'auto' : 'workflow',
@@ -2525,6 +2565,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={async () => {
               const requirement = gitRequirement;
               setGitRequirement(null);
@@ -2654,12 +2696,15 @@ export function App() {
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
+            const nextPage = conversationPageForSession(conversationPage, leaf);
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            conversationPageRef.current = nextPage;
+            setConversationPage(nextPage);
             pushRoute(
               'task-orchestration',
               taskListPage,
-              conversationPageForSession(conversationPage, leaf),
+              nextPage,
             );
             setConversationRun((current) => {
               if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
@@ -2766,6 +2811,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={() => setGitRequirement(null)}
             onUseOtherWorkflow={() => {
               setGitRequirement(null);

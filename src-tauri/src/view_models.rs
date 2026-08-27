@@ -757,6 +757,8 @@ pub struct AcpSessionVm {
     pub adapter_icon_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_cwd: Option<String>,
@@ -3752,8 +3754,8 @@ pub fn dynamic_acp_session_vm(
         outer_node_id,
         outer_attempt_id,
     );
-    let worktree_path =
-        session_worktree_path(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
+    let session_worktree =
+        session_worktree_projection(run_worktree.as_ref(), dynamic_graph.as_ref(), Some(node_id));
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
         parent_branch_id,
@@ -3786,7 +3788,10 @@ pub fn dynamic_acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path,
+        worktree_path: session_worktree
+            .as_ref()
+            .map(|workspace| workspace.path.clone()),
+        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
         cwd,
         provider_cwd,
         status,
@@ -4166,7 +4171,7 @@ pub fn acp_session_vm(
         .map(str::to_string)
         .or_else(|| snapshot_path.parent().map(|path| path.to_string()));
     let run_worktree = run_worktree_state_optional(app, task_id, run_id)?;
-    let worktree_path = session_worktree_path(run_worktree.as_ref(), None, None);
+    let session_worktree = session_worktree_projection(run_worktree.as_ref(), None, None);
 
     let result = AcpSessionVm {
         branch_id: branch_id.clone(),
@@ -4191,7 +4196,10 @@ pub fn acp_session_vm(
             .map(str::to_string),
         adapter_display_name,
         adapter_icon_key,
-        worktree_path,
+        worktree_path: session_worktree
+            .as_ref()
+            .map(|workspace| workspace.path.clone()),
+        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
         cwd,
         provider_cwd,
         status,
@@ -6812,40 +6820,54 @@ fn run_worktree_state_optional(
     Ok(read_json::<RunState>(&path)?.worktree)
 }
 
-pub(crate) fn session_worktree_path(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionWorktreeProjection {
+    pub path: String,
+    pub branch: Option<String>,
+}
+
+pub(crate) fn session_worktree_projection(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     dynamic_graph: Option<&DynamicGraphState>,
     dynamic_node_id: Option<&str>,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     let (graph, dynamic_node_id) = match (dynamic_graph, dynamic_node_id) {
-        (None, None) => return run_worktree.map(|worktree| worktree.path.to_string()),
+        (None, None) => {
+            return run_worktree.map(|worktree| SessionWorktreeProjection {
+                path: worktree.path.to_string(),
+                branch: Some(worktree.branch.clone()),
+            });
+        }
         (Some(graph), Some(dynamic_node_id)) => (graph, dynamic_node_id),
         _ => return None,
     };
     let node = graph.nodes.iter().find(|node| node.id == dynamic_node_id)?;
-    workspace_worktree_path_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
+    workspace_worktree_projection_by_id(run_worktree, &graph.workspaces, &node.workspace_id)
 }
 
-fn workspace_worktree_path_by_id(
+fn workspace_worktree_projection_by_id(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspaces: &[gold_band::dynamic::WorkspaceState],
     workspace_id: &str,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     let workspace = workspaces
         .iter()
         .find(|workspace| workspace.id == workspace_id)?;
-    workspace_worktree_path(run_worktree, workspace)
+    workspace_worktree_projection(run_worktree, workspace)
 }
 
-fn workspace_worktree_path(
+fn workspace_worktree_projection(
     run_worktree: Option<&gold_band::runtime::RunWorktreeState>,
     workspace: &gold_band::dynamic::WorkspaceState,
-) -> Option<String> {
+) -> Option<SessionWorktreeProjection> {
     match workspace.kind {
         WorkspaceKind::Worktree
             if workspace.status != gold_band::dynamic::WorkspaceStatus::Released =>
         {
-            Some(workspace.path.to_string())
+            Some(SessionWorktreeProjection {
+                path: workspace.path.to_string(),
+                branch: workspace.branch.clone(),
+            })
         }
         WorkspaceKind::Worktree => None,
         WorkspaceKind::Main => run_worktree
@@ -6853,7 +6875,10 @@ fn workspace_worktree_path(
                 gold_band::storage::normalize_workspace_path(&worktree.path)
                     == gold_band::storage::normalize_workspace_path(&workspace.path)
             })
-            .map(|worktree| worktree.path.to_string()),
+            .map(|worktree| SessionWorktreeProjection {
+                path: worktree.path.to_string(),
+                branch: Some(worktree.branch.clone()),
+            }),
     }
 }
 
@@ -10106,27 +10131,31 @@ mod tests {
         };
 
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-child",
                     WorkspaceKind::Worktree,
                     child_path.clone()
                 ),
-            )
-            .as_deref(),
-            Some(child_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: child_path.to_string(),
+                branch: Some("gb-dynamic-child".to_string()),
+            }),
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
-            )
-            .as_deref(),
-            Some(outer_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: outer_path.to_string(),
+                branch: Some("gb-conversation-outer".to_string()),
+            }),
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 Some(&run_worktree),
                 &workspace(
                     "workspace-main",
@@ -10137,7 +10166,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            workspace_worktree_path(
+            workspace_worktree_projection(
                 None,
                 &workspace(
                     "workspace-main",
@@ -10148,7 +10177,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            workspace_worktree_path_by_id(
+            workspace_worktree_projection_by_id(
                 Some(&run_worktree),
                 &[
                     workspace("workspace-main", WorkspaceKind::Main, outer_path.clone()),
@@ -10159,9 +10188,11 @@ mod tests {
                     ),
                 ],
                 "workspace-child",
-            )
-            .as_deref(),
-            Some(child_path.as_str()),
+            ),
+            Some(SessionWorktreeProjection {
+                path: child_path.to_string(),
+                branch: Some("gb-dynamic-child".to_string()),
+            }),
         );
         let mut released_child = workspace(
             "workspace-child",
@@ -10170,11 +10201,11 @@ mod tests {
         );
         released_child.status = gold_band::dynamic::WorkspaceStatus::Released;
         assert_eq!(
-            workspace_worktree_path(Some(&run_worktree), &released_child),
+            workspace_worktree_projection(Some(&run_worktree), &released_child),
             None,
         );
         assert_eq!(
-            session_worktree_path(Some(&run_worktree), None, Some("missing-dynamic-node")),
+            session_worktree_projection(Some(&run_worktree), None, Some("missing-dynamic-node")),
             None,
         );
     }

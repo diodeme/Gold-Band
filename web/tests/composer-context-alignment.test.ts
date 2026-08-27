@@ -36,6 +36,7 @@ describe('composer context horizontal alignment', () => {
     expect(quickComposerSource).toContain('data-conversation-composer="quick"');
     expect(quickComposerSource).toContain('className={CONVERSATION_HOME_COMPOSER_LAYOUT.textareaClassName}');
     expect(quickComposerSource).toContain('className="absolute left-0 top-2 z-10 inline-flex"');
+    expect(quickComposerSource).toContain("slashCommands.isOpen && 'z-50'");
     expect(composerLayoutSource).toContain("textareaClassName: `${COMPOSER_TEXTAREA_BASE_CLASS_NAME} w-full overflow-y-hidden px-0`");
     expect(composerLayoutSource).toContain("promptInputClassName: 'relative rounded-2xl border-border bg-card/60 px-2.5 py-2 shadow-sm'");
     expect(stylesSource).toContain('[data-conversation-composer="quick"] [data-composer-context-area="true"]');

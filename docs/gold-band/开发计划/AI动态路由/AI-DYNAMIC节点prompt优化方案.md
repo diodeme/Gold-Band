@@ -24,13 +24,14 @@ AI-DYNAMIC 内部节点目前复用了普通 workflow 的 prompt bundle，但仍
 - `profile` 负责指导 agent 如何完成当前业务任务，例如开发、测试、审查、验收。
 - `dynamic-node-completion` 是 output contract，负责指导 agent 最后输出 runtime 可消费的控制结果。
 
-因此本轮不拆 runtime，不新增独立 router/planner 节点。AI-DYNAMIC worker 继续采用“先完成当前任务，再在最后一步输出 `dynamic-node-completion`”的模式。
+因此本轮不拆 runtime，不新增独立 router/planner 节点。AI-DYNAMIC bootstrap 的 `InlineControl` 继续在当前 turn 执行控制协议；worker / acceptance 的 `PostTurnProjection` 则把业务处理与控制规划分成两个 turn：业务 turn 可以直接完成当前任务，或在判断任务应继续分发时立即停止并自然结束，但不得提前拆分任务、选择 Agent 或规划/执行后继节点；hidden finalize turn 获得完整 artifact 协议和路由上下文后，才规划并输出 `dynamic-node-completion`。
 
 需要优化的是 prompt 明确度：
 
-- 当前任务执行阶段必须优先遵守 profile。
-- 最终输出阶段必须严格遵守 output contract。
-- prompt 不应让模型一开始只规划后续节点而忽略当前任务。
+- 当前任务执行阶段必须优先遵守 profile；选择交回 runtime 时则立即停止业务执行。
+- PostTurn 业务 turn 不得提前规划后继任务或猜测 artifact schema。
+- hidden finalize 阶段必须严格遵守 output contract，并且只在该阶段规划路由。
+- prompt 不应让模型在缺少 artifact 协议、运行预算和 Agent 选项时提前形成无效分发方案。
 
 ### 2.2 merge 不接控制协议，acceptance 接控制协议
 
@@ -494,6 +495,7 @@ acp.diagnostics.jsonl
 - 移除动态事实字段。
 - 保留稳定规则与控制协议说明。
 - 明确“本次运行事实以 Gold Band hidden runtime context 为准”。
+- 直接按既有 `OutputEmissionMode` 渲染三种语义：InlineControl 当前轮次控制、PostTurnProjection 后置规划、无 emission mode 的纯执行节点。
 
 完成标准：
 
@@ -539,7 +541,7 @@ acp.diagnostics.jsonl
 
 完成标准：
 
-- worker / bootstrap / acceptance 的 prompt 均表达“两阶段：先完成任务，再最终输出控制 JSON”。
+- bootstrap prompt 保持当前 turn 内联控制；worker / acceptance prompt 明确业务 turn 只执行或立即交回，hidden finalize turn 才规划并输出控制 JSON。
 
 ### 任务 5：让 acceptance 接入 dynamic proposal 流程
 
@@ -647,6 +649,11 @@ acp.diagnostics.jsonl
   - graph summary
   - remaining budget
   - resumable sessions
+- AI-DYNAMIC system prompt 按 emission mode 区分：
+  - bootstrap 的 `InlineControl` 展示当前 turn 控制协议
+  - worker / acceptance 的 `PostTurnProjection` 展示后置控制规则，不出现 `dynamic-node-completion` 或 `next.type`
+  - merge 的无 emission mode 分支只展示纯执行规则
+- PostTurn 业务 turn 明确禁止提前拆分任务、选择 Agent 或规划/执行后继节点，中英文语义一致。
 - AI-DYNAMIC hidden context 包含：
   - 当前 node id/title/kind/task
   - workspace mode/path/capability

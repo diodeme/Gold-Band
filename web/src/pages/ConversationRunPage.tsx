@@ -28,6 +28,7 @@ import {
 } from '@/lib/conversation-run-cache';
 import {
   isRuntimeControlledConversationLifecycle,
+  isTerminalConversationSessionStatus,
   type ConversationSessionFollowMode,
 } from '@/lib/conversation-session-follow';
 import { pathFromRoute, taskListPage } from '@/routes';
@@ -158,6 +159,7 @@ export function ConversationRunPage({
   const isAtBottomRef = useRef(true);
   const manualAutoFollowDisabledRef = useRef(followMode === 'manual');
   const pendingAutoFollowRestoreSessionKeyRef = useRef<string | null>(null);
+  const scrollPausedAutoFollowSessionKeyRef = useRef<string | null>(null);
   const activeSessionKeys = useMemo(
     () => run.activeSessions.map((session) => activeSessionKey(session)),
     [run.activeSessions],
@@ -165,8 +167,12 @@ export function ConversationRunPage({
 
   useEffect(() => {
     manualAutoFollowDisabledRef.current = followMode === 'manual';
+  }, [followMode]);
+
+  useEffect(() => {
     pendingAutoFollowRestoreSessionKeyRef.current = null;
-  }, [followMode, run.projectId, run.runId, run.taskId]);
+    scrollPausedAutoFollowSessionKeyRef.current = null;
+  }, [run.projectId, run.runId, run.taskId]);
 
   const handleSessionTreeExpansionChange = useCallback((branchKey: string, open: boolean) => {
     const nextExpansion = { ...sessionTreeExpansion, [branchKey]: open };
@@ -221,6 +227,7 @@ export function ConversationRunPage({
     const leaf = conversationSessionLeafForGraphNode(run.sessionTree, graphNode);
     if (!leaf) return;
     pendingAutoFollowRestoreSessionKeyRef.current = null;
+    scrollPausedAutoFollowSessionKeyRef.current = null;
     manualAutoFollowDisabledRef.current = true;
     onAutoFollowChange?.(false);
     onSelectSession(leaf);
@@ -342,15 +349,37 @@ export function ConversationRunPage({
 
   const handleAtBottomChange = useCallback((atBottom: boolean) => {
     isAtBottomRef.current = atBottom;
+    const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     if (!atBottom) {
+      if (!manualAutoFollowDisabledRef.current) {
+        scrollPausedAutoFollowSessionKeyRef.current = selectedKey;
+      }
       manualAutoFollowDisabledRef.current = true;
       onAutoFollowChange?.(false);
       return;
     }
-    const selectedKey = run.sessionTree.selectedSessionKey ?? (selectedLeaf ? leafKey(selectedLeaf) : null);
     const restoreKey = pendingAutoFollowRestoreSessionKeyRef.current;
+    const scrollPausedKey = scrollPausedAutoFollowSessionKeyRef.current;
+    const selectedDynamicLeafTerminal = Boolean(
+      selectedLeaf?.outerNodeId
+      && selectedLeaf.outerAttemptId
+      && isTerminalConversationSessionStatus(
+        selectedLeaf.lifecycle?.runtime.status ?? selectedLeaf.status,
+      )
+    );
     if (!isRuntimeControlledConversationLifecycle(selectedLeaf?.lifecycle)) {
+      if (selectedDynamicLeafTerminal && selectedKey && scrollPausedKey === selectedKey) {
+        scrollPausedAutoFollowSessionKeyRef.current = null;
+        manualAutoFollowDisabledRef.current = false;
+        onAutoFollowChange?.(true);
+        return;
+      }
+      if (selectedDynamicLeafTerminal && !manualAutoFollowDisabledRef.current) {
+        onAutoFollowChange?.(true);
+        return;
+      }
       pendingAutoFollowRestoreSessionKeyRef.current = null;
+      scrollPausedAutoFollowSessionKeyRef.current = null;
       manualAutoFollowDisabledRef.current = true;
       onAutoFollowChange?.(false);
       return;
@@ -358,11 +387,13 @@ export function ConversationRunPage({
     const restorableSelected = isAutoFollowRestorableLeaf(selectedLeaf);
     if (selectedKey && restoreKey === selectedKey && restorableSelected) {
       pendingAutoFollowRestoreSessionKeyRef.current = null;
+      scrollPausedAutoFollowSessionKeyRef.current = null;
       manualAutoFollowDisabledRef.current = false;
       onAutoFollowChange?.(true);
       return;
     }
     if (restorableSelected) {
+      scrollPausedAutoFollowSessionKeyRef.current = null;
       manualAutoFollowDisabledRef.current = false;
       onAutoFollowChange?.(true);
       return;
@@ -377,6 +408,7 @@ export function ConversationRunPage({
     const canRestoreAutoFollow = followActive && isAutoFollowRestorableLeaf(leaf);
     if (canRestoreAutoFollow && isAtBottomRef.current) {
       pendingAutoFollowRestoreSessionKeyRef.current = null;
+      scrollPausedAutoFollowSessionKeyRef.current = null;
       manualAutoFollowDisabledRef.current = false;
       onAutoFollowChange?.(true);
       onSelectSession(leaf, true);
@@ -384,12 +416,14 @@ export function ConversationRunPage({
     }
     if (canRestoreAutoFollow) {
       pendingAutoFollowRestoreSessionKeyRef.current = key;
+      scrollPausedAutoFollowSessionKeyRef.current = null;
       manualAutoFollowDisabledRef.current = true;
       onAutoFollowChange?.(false);
       onSelectSession(leaf, false);
       return;
     }
     pendingAutoFollowRestoreSessionKeyRef.current = null;
+    scrollPausedAutoFollowSessionKeyRef.current = null;
     manualAutoFollowDisabledRef.current = true;
     onAutoFollowChange?.(false);
     onSelectSession(leaf, false);
@@ -493,8 +527,11 @@ export function ConversationRunPage({
 
       {/* Active sessions indicator */}
       {!isDirect && run.activeSessions.length > 1 ? (
-        <div className="shrink-0 border-b bg-muted/5 px-5 py-2">
-          <div className="flex flex-wrap gap-2">
+        <div
+          data-conversation-active-sessions="true"
+          className="shrink-0 border-b border-border/60 bg-content-header px-5 py-1"
+        >
+          <div className="flex flex-wrap gap-1.5">
             {run.activeSessions.map((session) => (
               <button
                 key={`${session.roundId}/${session.nodeId}/${session.attemptId}`}
@@ -554,6 +591,8 @@ export function ConversationRunPage({
             allowEventOnlySessionShell={false}
             wallpaperSurface
             worktreePath={selectedLeaf.worktreePath}
+            showBranchControl
+            managedWorktreeBranch={selectedLeaf.worktreeBranch}
             runtimeComposerContext={runtimeComposerContext}
             manualCheckPending={selectedLeaf.manualCheckPending && selectedLeaf.current}
             showSystemPromptAction={!isDirect}

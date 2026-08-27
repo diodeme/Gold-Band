@@ -3,6 +3,7 @@ import type { AcpCommandItemVm } from '@/types';
 const SLASH_QUERY_RE = /^\/([\p{L}\p{N}._:-]*)$/u;
 const LEADING_SLASH_COMMAND_RE = /^\/([\p{L}\p{N}._:-]+)/u;
 const SLASH_COMMAND_SEPARATOR_RE = /^[\s\p{P}]/u;
+const MAX_VISIBLE_SLASH_COMMANDS = 512;
 const dismissedSlashQueries = new Map<string, string>();
 
 export interface SlashCommandFocusTarget {
@@ -38,6 +39,36 @@ export function filterSlashCommands(
   return commands.filter((command) =>
     command.name.toLocaleLowerCase().includes(keyword),
   );
+}
+
+export function mergeSlashCommandSources(
+  preferred: readonly unknown[] | null | undefined,
+  fallback: readonly unknown[],
+): AcpCommandItemVm[] {
+  const merged: AcpCommandItemVm[] = [];
+  const names = new Set<string>();
+  for (const candidate of [...(preferred ?? []), ...fallback]) {
+    const command = normalizeSlashCommand(candidate);
+    if (!command) continue;
+    const name = command.name.trim().replace(/^\/+/, '');
+    const normalizedName = name.toLocaleLowerCase();
+    if (!name || names.has(normalizedName)) continue;
+    names.add(normalizedName);
+    merged.push(name === command.name ? command : { ...command, name });
+    if (merged.length >= MAX_VISIBLE_SLASH_COMMANDS) break;
+  }
+  return merged;
+}
+
+function normalizeSlashCommand(candidate: unknown): AcpCommandItemVm | null {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const value = candidate as Record<string, unknown>;
+  if (typeof value.name !== 'string') return null;
+  return {
+    name: value.name,
+    description: typeof value.description === 'string' ? value.description : '',
+    ...(typeof value.inputHint === 'string' ? { inputHint: value.inputHint } : {}),
+  };
 }
 
 export function slashCommandText(commandName: string): string {

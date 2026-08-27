@@ -827,6 +827,36 @@ fn apply_transition(
     attempt_counters: Option<&mut MetricsCounters>,
     now_epoch_seconds: i64,
 ) -> Result<()> {
+    let mut attempt_counters = attempt_counters;
+    if let MetricsTransition::FollowUps { action_ids } = &fact.transition {
+        ensure!(!action_ids.is_empty(), "metrics follow-up ids are required");
+        for action_id in action_ids {
+            ensure!(
+                !action_id.trim().is_empty(),
+                "metrics follow-up id is required"
+            );
+            let inserted = transaction.execute(
+                "INSERT OR IGNORE INTO metrics_transition_dedup(
+                   project_id, execution_id, transition_kind, transition_id, created_at
+                 ) VALUES (?1, ?2, 'follow-up', ?3, ?4)",
+                params![
+                    fact.key.project_id,
+                    fact.key.execution_id,
+                    action_id,
+                    now_epoch_seconds,
+                ],
+            )?;
+            if inserted == 0 {
+                continue;
+            }
+            task_state.counters.follow_up_count =
+                task_state.counters.follow_up_count.saturating_add(1);
+            if let Some(counters) = attempt_counters.as_mut() {
+                counters.follow_up_count = counters.follow_up_count.saturating_add(1);
+            }
+        }
+        return Ok(());
+    }
     let (kind, id) = match &fact.transition {
         MetricsTransition::None => return Ok(()),
         MetricsTransition::Paused { transition_id } => ("pause", transition_id.as_str()),
@@ -837,7 +867,7 @@ fn apply_transition(
         MetricsTransition::ElicitationRequested { request_id } => {
             ("elicitation", request_id.as_str())
         }
-        MetricsTransition::FollowUp { action_id } => ("follow-up", action_id.as_str()),
+        MetricsTransition::FollowUps { .. } => unreachable!("follow-ups handled above"),
         MetricsTransition::Acceptance { action_id, .. } => ("acceptance", action_id.as_str()),
     };
     ensure!(!id.trim().is_empty(), "metrics transition id is required");
@@ -856,7 +886,6 @@ fn apply_transition(
     if inserted == 0 {
         return Ok(());
     }
-    let mut attempt_counters = attempt_counters;
     match fact.transition {
         MetricsTransition::Paused { .. } => {
             task_state.counters.pause_count = task_state.counters.pause_count.saturating_add(1);
@@ -877,17 +906,6 @@ fn apply_transition(
                         counters.manual_continue_count.saturating_add(1);
                 }
             }
-            if let MetricsTransition::Resumed {
-                follow_up_action_id: Some(_),
-                ..
-            } = &fact.transition
-            {
-                task_state.counters.follow_up_count =
-                    task_state.counters.follow_up_count.saturating_add(1);
-                if let Some(counters) = attempt_counters.as_mut() {
-                    counters.follow_up_count = counters.follow_up_count.saturating_add(1);
-                }
-            }
         }
         MetricsTransition::PermissionRequested { .. } => {
             task_state.counters.permission_request_count = task_state
@@ -906,13 +924,7 @@ fn apply_transition(
                 counters.elicitation_count = counters.elicitation_count.saturating_add(1);
             }
         }
-        MetricsTransition::FollowUp { .. } => {
-            task_state.counters.follow_up_count =
-                task_state.counters.follow_up_count.saturating_add(1);
-            if let Some(counters) = attempt_counters.as_mut() {
-                counters.follow_up_count = counters.follow_up_count.saturating_add(1);
-            }
-        }
+        MetricsTransition::FollowUps { .. } => unreachable!("follow-ups handled above"),
         MetricsTransition::Acceptance { .. } | MetricsTransition::None => {}
     }
     Ok(())
@@ -1146,7 +1158,6 @@ mod tests {
         resumed.transition = MetricsTransition::Resumed {
             transition_id: "resume-1".to_string(),
             action: UserExecutionAction::PermissionResponse,
-            follow_up_action_id: None,
         };
         store
             .collect(resumed, "2026-08-20T00:00:03Z".to_string(), "test", 3)
@@ -1196,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_manual_continue_fact_is_idempotent_and_counts_follow_up_once() {
+    fn repeated_terminal_follow_up_projection_is_idempotent() {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
         let mut resumed = workflow_fact(
@@ -1209,38 +1220,40 @@ mod tests {
         resumed.transition = MetricsTransition::Resumed {
             transition_id: "continue-action-1".to_string(),
             action: UserExecutionAction::ManualContinue,
-            follow_up_action_id: Some("continue-action-1".to_string()),
         };
+        store
+            .collect(resumed, "2026-08-20T00:00:01.000".to_string(), "test", 1)
+            .unwrap();
 
+        let mut terminal_fact = workflow_fact(
+            LifecycleEventType::ExecutionCompleted,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        terminal_fact.transition = MetricsTransition::FollowUps {
+            action_ids: vec!["prompt-1".to_string(), "prompt-1".to_string()],
+        };
         let first = store
             .collect(
-                resumed.clone(),
-                "2026-08-20T00:00:01.000".to_string(),
+                terminal_fact.clone(),
+                "2026-08-20T00:00:02.000".to_string(),
                 "test",
-                1,
+                2,
             )
             .unwrap();
         let replay = store
-            .collect(resumed, "2026-08-20T00:00:02.000".to_string(), "test", 2)
-            .unwrap();
-        assert_eq!(replay.event_id, first.event_id);
-        assert_eq!(replay.event_revision, first.event_revision);
-
-        let terminal = store
             .collect(
-                workflow_fact(
-                    LifecycleEventType::ExecutionCompleted,
-                    "run-001",
-                    "round-001",
-                    "attempt-1",
-                ),
+                terminal_fact,
                 "2026-08-20T00:00:03.000".to_string(),
                 "test",
                 3,
             )
             .unwrap();
-        assert_eq!(terminal.event_revision, 2);
-        let counters = terminal.counters.unwrap();
+        assert_eq!(replay.event_id, first.event_id);
+        assert_eq!(replay.event_revision, first.event_revision);
+        assert_eq!(first.event_revision, 2);
+        let counters = first.counters.unwrap();
         assert_eq!(counters.resume_count, 1);
         assert_eq!(counters.manual_continue_count, 1);
         assert_eq!(counters.follow_up_count, 1);
@@ -1256,7 +1269,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let mut store = MetricsCollectorStore::open(&temp.path().join("metrics.sqlite3")).unwrap();
 
-        for (index, has_follow_up) in [(1, false), (2, true)] {
+        for index in [1, 2] {
             let mut paused = workflow_fact(
                 LifecycleEventType::ExecutionPaused,
                 "run-001",
@@ -1286,7 +1299,6 @@ mod tests {
             resumed.transition = MetricsTransition::Resumed {
                 transition_id: format!("continue-action-{index}"),
                 action: UserExecutionAction::ManualContinue,
-                follow_up_action_id: has_follow_up.then(|| format!("continue-action-{index}")),
             };
             store
                 .collect(
@@ -1298,14 +1310,18 @@ mod tests {
                 .unwrap();
         }
 
+        let mut terminal_fact = workflow_fact(
+            LifecycleEventType::ExecutionCompleted,
+            "run-001",
+            "round-001",
+            "attempt-1",
+        );
+        terminal_fact.transition = MetricsTransition::FollowUps {
+            action_ids: vec!["prompt-follow-up".to_string()],
+        };
         let terminal = store
             .collect(
-                workflow_fact(
-                    LifecycleEventType::ExecutionCompleted,
-                    "run-001",
-                    "round-001",
-                    "attempt-1",
-                ),
+                terminal_fact,
                 "2026-08-20T00:00:05.000".to_string(),
                 "test",
                 5,

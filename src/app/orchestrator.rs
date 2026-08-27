@@ -174,37 +174,14 @@ struct AcpInvocationPromptState {
 struct RuntimeResumeMetricsContext {
     previous_pause_reason: PauseReason,
     transition_revision: u64,
-    follow_up_prompt_id: Option<String>,
-    has_follow_up: bool,
 }
 
 impl RuntimeResumeMetricsContext {
-    fn manual_continue(
-        previous_pause_reason: PauseReason,
-        transition_revision: u64,
-        prompt_id: Option<&str>,
-        input: Option<&ConversationPromptInput>,
-    ) -> Self {
+    fn manual_continue(previous_pause_reason: PauseReason, transition_revision: u64) -> Self {
         Self {
             previous_pause_reason,
             transition_revision,
-            follow_up_prompt_id: prompt_id
-                .filter(|prompt_id| !prompt_id.trim().is_empty())
-                .map(str::to_string),
-            has_follow_up: input.is_some_and(|input| {
-                !conversation_prompt_text(&input.display_text, &input.quotes)
-                    .trim()
-                    .is_empty()
-            }),
         }
-    }
-
-    fn follow_up_action_id(&self, transition_id: &str) -> Option<String> {
-        self.has_follow_up.then(|| {
-            self.follow_up_prompt_id
-                .clone()
-                .unwrap_or_else(|| format!("{transition_id}:follow-up"))
-        })
     }
 }
 
@@ -1313,26 +1290,18 @@ fn record_run_code_change_baseline_best_effort(app: &App, task_id: &str, run: &R
     if !app.metrics_collection_enabled() {
         return;
     }
-    let (workspace_path, baseline_commit) = if let Some(worktree) = run.worktree.as_ref() {
-        (worktree.path.clone(), worktree.fork_commit.clone())
+    let workspace_path = if let Some(worktree) = run.worktree.as_ref() {
+        worktree.path.clone()
     } else {
-        let baseline_commit = match GitRepositoryService::default().head(&app.paths.repo_root) {
-            Ok(commit) => commit,
-            Err(error) => {
-                tracing::warn!(
-                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
-                    task_id,
-                    run_id = %run.id,
-                    workspace_path = %app.paths.repo_root,
-                    error = %error,
-                    "failed to capture Git code change baseline"
-                );
-                return;
-            }
-        };
-        (app.paths.repo_root.clone(), baseline_commit)
+        app.paths.repo_root.clone()
     };
-    app.record_metrics_code_change_baseline(task_id, &run.id, workspace_path, baseline_commit);
+    let Some(run_uuid) = run.uuid.as_deref() else {
+        return;
+    };
+    let Some(task_uuid) = run.task_uuid.as_deref() else {
+        return;
+    };
+    app.record_metrics_code_change_baseline(task_id, &run.id, task_uuid, run_uuid, workspace_path);
 }
 
 fn conversation_run_worktree_state(
@@ -2371,8 +2340,6 @@ pub(crate) fn run_continue_background(
         resume_metrics_context = RuntimeResumeMetricsContext::manual_continue(
             previous_pause_reason,
             current_run.execution.revision,
-            prompt_id.as_deref(),
-            input.as_ref(),
         );
         crate::runtime::validate_node_state(&node)?;
         validate_run_state(&current_run)?;
@@ -3507,10 +3474,8 @@ fn emit_run_metrics_fact(
                 }
             };
             super::observability::MetricsTransition::Resumed {
-                transition_id: event_id.clone(),
+                transition_id: event_id,
                 action,
-                follow_up_action_id: resume_context
-                    .and_then(|context| context.follow_up_action_id(&event_id)),
             }
         }
         super::observability::LifecycleEventType::InterventionRequested => {
@@ -13701,10 +13666,6 @@ mod tests {
             Some(&RuntimeResumeMetricsContext::manual_continue(
                 PauseReason::WaitingForUserInput,
                 7,
-                Some("prompt-follow-up"),
-                Some(&ConversationPromptInput::from(
-                    "开发完要编写单元测试代码".to_string(),
-                )),
             )),
         );
 
@@ -13741,7 +13702,6 @@ mod tests {
             crate::app::observability::MetricsTransition::Resumed {
                 transition_id: "resumed-1".to_string(),
                 action: crate::app::observability::UserExecutionAction::ManualContinue,
-                follow_up_action_id: Some("prompt-follow-up".to_string()),
             }
         );
     }
@@ -14059,40 +14019,21 @@ mod tests {
     }
 
     #[test]
-    fn resume_metrics_context_counts_each_non_empty_user_input_as_follow_up() {
-        let empty = ConversationPromptInput::from("   ".to_string());
-        let follow_up = ConversationPromptInput::from("开发完要编写单元测试代码".to_string());
+    fn resume_metrics_context_only_carries_resume_lifecycle_fields() {
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 7);
 
-        let empty_context = RuntimeResumeMetricsContext::manual_continue(
-            PauseReason::ProcessInterrupted,
-            7,
-            Some("prompt-empty"),
-            Some(&empty),
-        );
-        let follow_up_context = RuntimeResumeMetricsContext::manual_continue(
-            PauseReason::ProcessInterrupted,
-            8,
-            Some("prompt-follow-up"),
-            Some(&follow_up),
-        );
-
-        assert!(!empty_context.has_follow_up);
-        assert!(follow_up_context.has_follow_up);
         assert_eq!(
-            follow_up_context.follow_up_action_id("resume-8").as_deref(),
-            Some("prompt-follow-up"),
+            context.previous_pause_reason,
+            PauseReason::ProcessInterrupted
         );
-        assert_eq!(follow_up_context.transition_revision, 8);
+        assert_eq!(context.transition_revision, 7);
     }
 
     #[test]
     fn committed_continue_context_keeps_running_drive_from_republishing_started() {
-        let context = RuntimeResumeMetricsContext::manual_continue(
-            PauseReason::ProcessInterrupted,
-            9,
-            None,
-            None,
-        );
+        let context =
+            RuntimeResumeMetricsContext::manual_continue(PauseReason::ProcessInterrupted, 9);
 
         assert_eq!(
             effective_previous_pause_reason(RunStatus::Running, None, Some(&context)),
@@ -14544,7 +14485,7 @@ mod tests {
     }
 
     #[test]
-    fn main_workspace_run_captures_terminal_code_changes_from_the_start_head() {
+    fn main_workspace_run_captures_terminal_code_changes_from_the_start_workspace_tree() {
         let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
         let repo_root = app.paths.repo_root.clone();
         std::fs::write(
@@ -14554,7 +14495,6 @@ mod tests {
         .unwrap();
         git(&repo_root, &["add", ".gitignore"]);
         git(&repo_root, &["commit", "-m", "ignore runtime state"]);
-        let expected_head = GitRepositoryService::default().head(&repo_root).unwrap();
         let app = app.with_metrics_collection_enabled(true);
         let task_id = create_direct_test_task(&app);
 
@@ -14569,7 +14509,8 @@ mod tests {
         let baseline: super::super::observability::RunCodeChangeBaseline =
             read_json(&baseline_path).unwrap();
         assert_eq!(baseline.workspace_path, repo_root);
-        assert_eq!(baseline.baseline_commit, expected_head);
+        assert!(!baseline.baseline_tree.is_empty());
+        assert!(baseline.baseline_ref.starts_with("refs/gold-band/metrics/"));
 
         let embedded = repo_root.join("embedded");
         std::fs::create_dir_all(embedded.as_std_path()).unwrap();

@@ -2035,14 +2035,18 @@ impl App {
             .run_dir(task_id, run_id)
             .join("observability")
             .join("code-changes.json");
-        if let Ok(snapshot) = read_json::<observability::TaskCodeChanges>(&snapshot_path) {
-            return Some(snapshot);
-        }
         let baseline_path = self
             .paths
             .run_dir(task_id, run_id)
             .join("observability")
             .join("code-change-baseline.json");
+        if let Ok(snapshot) = read_json::<observability::TaskCodeChanges>(&snapshot_path) {
+            if let Ok(baseline) = read_json::<observability::RunCodeChangeBaseline>(&baseline_path)
+            {
+                self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
+            }
+            return Some(snapshot);
+        }
         let baseline = match read_json::<observability::RunCodeChangeBaseline>(&baseline_path) {
             Ok(baseline) => baseline,
             Err(error) => {
@@ -2057,9 +2061,46 @@ impl App {
                 return None;
             }
         };
-        let stats = match GitSourceControlService::default()
-            .baseline_diff_stats(&baseline.workspace_path, &baseline.baseline_commit)
-        {
+        let service = GitSourceControlService::default();
+        if let Err(error) = service.protect_tree_ref(
+            &baseline.workspace_path,
+            &baseline.baseline_ref,
+            &baseline.baseline_tree,
+        ) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                task_id,
+                run_id,
+                workspace_path = %baseline.workspace_path,
+                baseline_tree = %baseline.baseline_tree,
+                baseline_ref = %baseline.baseline_ref,
+                error = %error,
+                "failed to validate or restore terminal Git code change baseline ref"
+            );
+            return None;
+        }
+        let temporary_index_path =
+            baseline_path.with_file_name(format!("code-change-index-{}.tmp", uuid::Uuid::new_v4()));
+        let current_tree =
+            match service.create_workspace_tree(&baseline.workspace_path, &temporary_index_path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(
+                        code = "METRICS_CODE_CHANGES_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        workspace_path = %baseline.workspace_path,
+                        error = %error,
+                        "failed to capture terminal Git workspace tree"
+                    );
+                    return None;
+                }
+            };
+        let stats = match service.diff_tree_stats(
+            &baseline.workspace_path,
+            &baseline.baseline_tree,
+            &current_tree.tree_oid,
+        ) {
             Ok(stats) => stats,
             Err(error) => {
                 tracing::warn!(
@@ -2067,7 +2108,8 @@ impl App {
                     task_id,
                     run_id,
                     workspace_path = %baseline.workspace_path,
-                    baseline_commit = %baseline.baseline_commit,
+                    baseline_tree = %baseline.baseline_tree,
+                    current_tree = %current_tree.tree_oid,
                     error = %error,
                     "failed to capture terminal Git code changes"
                 );
@@ -2089,30 +2131,101 @@ impl App {
             );
             return None;
         }
+        self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
         Some(snapshot)
+    }
+
+    fn delete_metrics_code_change_ref_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        baseline: &observability::RunCodeChangeBaseline,
+    ) {
+        if let Err(error) = GitSourceControlService::default().delete_tree_ref(
+            &baseline.workspace_path,
+            &baseline.baseline_ref,
+            &baseline.baseline_tree,
+        ) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_REF_CLEANUP_FAILED",
+                task_id,
+                run_id,
+                baseline_ref = %baseline.baseline_ref,
+                error = %error,
+                "failed to clean up Git code change baseline ref"
+            );
+        }
     }
 
     pub fn record_metrics_code_change_baseline(
         &self,
         task_id: &str,
         run_id: &str,
+        task_uuid: &str,
+        run_uuid: &str,
         workspace_path: Utf8PathBuf,
-        baseline_commit: String,
     ) {
         if !self.metrics_collection_enabled() {
             return;
         }
-        let snapshot_path = self
-            .paths
-            .run_dir(task_id, run_id)
-            .join("observability")
-            .join("code-change-baseline.json");
+        let observability_dir = self.paths.run_dir(task_id, run_id).join("observability");
+        let snapshot_path = observability_dir.join("code-change-baseline.json");
         if snapshot_path.is_file() {
+            match read_json::<observability::RunCodeChangeBaseline>(&snapshot_path) {
+                Ok(snapshot) if snapshot.workspace_path == workspace_path => {
+                    if let Err(error) = GitSourceControlService::default().protect_tree_ref(
+                        &snapshot.workspace_path,
+                        &snapshot.baseline_ref,
+                        &snapshot.baseline_tree,
+                    ) {
+                        tracing::warn!(
+                            code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                            task_id,
+                            run_id,
+                            error = %error,
+                            "failed to restore Git code change baseline ref"
+                        );
+                    }
+                }
+                Ok(_) => tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_WORKSPACE_MISMATCH",
+                    task_id,
+                    run_id,
+                    "existing Git code change baseline belongs to another workspace"
+                ),
+                Err(error) => tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    error = %error,
+                    "existing Git code change baseline is invalid"
+                ),
+            }
             return;
         }
+        let service = GitSourceControlService::default();
+        let temporary_index_path =
+            observability_dir.join(format!("code-change-index-{}.tmp", uuid::Uuid::new_v4()));
+        let baseline_tree =
+            match service.create_workspace_tree(&workspace_path, &temporary_index_path) {
+                Ok(snapshot) => snapshot.tree_oid,
+                Err(error) => {
+                    tracing::warn!(
+                        code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        workspace_path = %workspace_path,
+                        error = %error,
+                        "failed to capture Git workspace tree baseline"
+                    );
+                    return;
+                }
+            };
+        let baseline_ref = format!("refs/gold-band/metrics/{task_uuid}/{run_uuid}");
         let snapshot = observability::RunCodeChangeBaseline {
-            workspace_path,
-            baseline_commit,
+            workspace_path: workspace_path.clone(),
+            baseline_tree: baseline_tree.clone(),
+            baseline_ref: baseline_ref.clone(),
         };
         if let Err(error) = write_json(&snapshot_path, &snapshot) {
             tracing::warn!(
@@ -2122,6 +2235,20 @@ impl App {
                 path = %snapshot_path,
                 error = %error,
                 "failed to persist Git code change baseline"
+            );
+            return;
+        }
+        if let Err(error) = service.protect_tree_ref(&workspace_path, &baseline_ref, &baseline_tree)
+        {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                task_id,
+                run_id,
+                workspace_path = %workspace_path,
+                baseline_tree = %baseline_tree,
+                baseline_ref = %baseline_ref,
+                error = %error,
+                "failed to protect Git code change baseline tree"
             );
         }
     }
@@ -2357,8 +2484,8 @@ impl App {
         fact.payload.provider = provider;
         fact.payload.model = model;
         if event.turn_id != INITIAL_DIRECT_TURN_ID {
-            fact.transition = MetricsTransition::FollowUp {
-                action_id: event.turn_id.clone(),
+            fact.transition = MetricsTransition::FollowUps {
+                action_ids: vec![event.turn_id.clone()],
             };
         }
         if let Some(outcome) = terminal_outcome {
@@ -2971,6 +3098,24 @@ impl App {
                 ended_at: ended_at.clone(),
                 acp_session_elapsed_ms: usage_snapshot.and_then(|usage| usage.elapsed_ms),
             });
+        }
+        if event_type == LifecycleEventType::ExecutionCompleted
+            && let Some(attempt_dir) = attempt_dir.as_ref()
+        {
+            match metrics_follow_up_transition(Utf8Path::new(attempt_dir)) {
+                Ok(transition) => fact.transition = transition,
+                Err(error) => {
+                    tracing::warn!(
+                        diagnostic_code = "METRICS_FOLLOW_UP_PROJECTION_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        round_id,
+                        attempt_id = metrics_attempt_id,
+                        error = %error,
+                        "metrics follow-up projection unavailable"
+                    );
+                }
+            }
         }
         let acceptance_passed = (dynamic_kind == Some(crate::dynamic::DynamicNodeKind::Acceptance)
             && event_type == LifecycleEventType::ExecutionCompleted)
@@ -5958,6 +6103,19 @@ impl App {
     }
 }
 
+fn metrics_follow_up_transition(
+    attempt_dir: &Utf8Path,
+) -> Result<observability::MetricsTransition> {
+    let action_ids = crate::acp::timeline::read_indexed_metric_follow_up_prompt_ids(
+        &attempt_dir.join("acp.timeline.jsonl"),
+    )?;
+    Ok(if action_ids.is_empty() {
+        observability::MetricsTransition::None
+    } else {
+        observability::MetricsTransition::FollowUps { action_ids }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::observability;
@@ -5965,7 +6123,7 @@ mod tests {
         AcpLiveEventContext, AcpPromptLifecycleEvent, AcpTurnOutcome, App,
         AttemptRuntimePauseResult, AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent,
         DirectTurnLifecycleTransition, OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate,
-        WorkflowTemplateStore, next_auto_template_id,
+        WorkflowTemplateStore, metrics_follow_up_transition, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -7304,6 +7462,84 @@ mod tests {
     }
 
     #[test]
+    fn terminal_code_changes_rejects_legacy_commit_baseline_without_fallback() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root.clone());
+        let observability_dir = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability");
+        write_json(
+            &observability_dir.join("code-change-baseline.json"),
+            &serde_json::json!({
+                "workspacePath": repo_root,
+                "baselineCommit": "legacy-commit",
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.metrics_code_changes_snapshot("task-001", "run-001"),
+            None
+        );
+        assert!(!observability_dir.join("code-changes.json").exists());
+    }
+
+    #[test]
+    fn workflow_attempt_terminal_projects_five_canonical_user_prompts() {
+        let temp = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+        let mut store = crate::acp::timeline::TimelineStore::open(
+            timeline_path,
+            crate::acp::timeline::TimelineCompactionPolicy::default(),
+        )
+        .unwrap();
+        for index in 0..=5_u64 {
+            let runtime_controlled = index == 0;
+            let prompt_id = if runtime_controlled {
+                "runtime-initial".to_string()
+            } else {
+                format!("prompt-{index}")
+            };
+            let event = crate::acp::events::AcpUiEvent {
+                id: format!("gold-band-user-prompt-{index}"),
+                seq: index + 1,
+                timestamp: format!("2026-08-27T00:00:0{index}Z"),
+                kind: "userTextDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some(format!("answer {index}")),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: Some(index + 1),
+                ended_seq: Some(index + 1),
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: Some(serde_json::json!({
+                    "source": "goldBandPrompt",
+                    "turnControlMode": if runtime_controlled {
+                        "runtime-controlled"
+                    } else {
+                        "non-runtime-controlled"
+                    },
+                    "promptId": prompt_id,
+                })),
+            };
+            store.upsert(index + 1, &event).unwrap();
+        }
+
+        assert_eq!(
+            metrics_follow_up_transition(&attempt_dir).unwrap(),
+            observability::MetricsTransition::FollowUps {
+                action_ids: (1..=5).map(|index| format!("prompt-{index}")).collect(),
+            }
+        );
+    }
+
+    #[test]
     fn direct_metrics_producer_reports_initial_and_follow_up_turns() {
         let _guard = env_guard();
         let temp = tempdir().unwrap();
@@ -7368,8 +7604,8 @@ mod tests {
         let follow_up_started = facts.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             follow_up_started.transition,
-            observability::MetricsTransition::FollowUp {
-                action_id: "queued-turn-002".to_string(),
+            observability::MetricsTransition::FollowUps {
+                action_ids: vec!["queued-turn-002".to_string()],
             }
         );
 

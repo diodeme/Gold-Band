@@ -14,6 +14,11 @@ import type { ConversationPage, ConversationRunVm, ConversationSessionTreeVm } f
 import fs from 'node:fs';
 import path from 'node:path';
 
+// Normalize CRLF checkouts (Windows core.autocrlf) so literal source matching
+// stays portable against the LF-formatted repo content.
+const readAppSource = () =>
+  fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8').replace(/\r\n/g, '\n');
+
 const oldRun = {
   projectId: 'project-1',
   taskId: 'task-old',
@@ -243,7 +248,7 @@ describe('conversation navigation presentation transaction', () => {
 
 describe('conversation sidebar navigation wiring', () => {
   it('routes run exits plus task and run selections through the cache-aware conversation navigation entry', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';
     const workspaceQuickChatSelection = source.match(/onConversationNewInWorkspace=\{[\s\S]*?onConversationAddWorkspace=/)?.[0] ?? '';
     const taskSelection = source.match(/onConversationSelectTask=\{[\s\S]*?onConversationSelectRun=/)?.[0] ?? '';
@@ -268,7 +273,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('commits session selection to React state, the latest-page ref, and history in one event', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const selection = source.match(/onSelectSession=\{\(leaf, followActive\) => \{[\s\S]*?onLifecycleSnapshot=/)?.[0] ?? '';
 
     expect(selection).toContain('const nextPage = conversationPageForSession(conversationPage, leaf);');
@@ -281,7 +286,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('keeps one shell-level run-state listener and refreshes only the selected run detail', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const subscriptions = source.match(/void subscribeConversationRunStateUpdates\(\(event\) =>/g) ?? [];
     const globalSubscription = source.match(/void subscribeConversationRunStateUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
     const selectedRunRefresh = source.match(/const refreshConversationRun = \(\) => \{[\s\S]*?const queueConversationRunRefresh/)?.[0] ?? '';
@@ -299,7 +304,7 @@ describe('conversation sidebar navigation wiring', () => {
   });
 
   it('keeps one shell-level ACP listener and clears only the matching task activity', () => {
-    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const source = readAppSource();
     const subscriptions = source.match(/void subscribeAcpSessionUpdates\(\(event\) =>/g) ?? [];
     const globalSubscription = source.match(/void subscribeAcpSessionUpdates\(\(event\) => \{[\s\S]*?\}\)\.then/)?.[0] ?? '';
     const selectedRunHandler = source.match(/const refreshSelectedRunFromAcpEvent[\s\S]*?conversationAcpSessionRefreshRef\.current = refreshSelectedRunFromAcpEvent/)?.[0] ?? '';

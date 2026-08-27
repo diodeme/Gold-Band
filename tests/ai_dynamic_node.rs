@@ -154,8 +154,13 @@ impl ProviderAdapter for DynamicProvider {
         _session_update: Option<AcpSessionUpdate<'_>>,
         prompt_accepted: Option<AcpPromptAccepted<'_>>,
     ) -> anyhow::Result<ProviderRunResult> {
+        let prompt_id = req
+            .resume_prompt_id
+            .as_deref()
+            .filter(|prompt_id| !prompt_id.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("acp.prompt-turn-id-required"))?;
         if let Some(callback) = prompt_accepted {
-            callback(req.resume_prompt_id.as_deref().unwrap_or("test-prompt"))?;
+            callback(prompt_id)?;
         }
         if req.output_contract.as_ref().is_some_and(|contract| {
             contract.emission_mode == OutputEmissionMode::PostTurnProjection
@@ -225,6 +230,12 @@ fn with_available_claude_diagnostics(app: App) -> App {
 
 impl DynamicProvider {
     fn run_worker_once(&self, req: WorkerInvocation) -> anyhow::Result<ProviderRunResult> {
+        anyhow::ensure!(
+            req.resume_prompt_id
+                .as_deref()
+                .is_some_and(|prompt_id| !prompt_id.trim().is_empty()),
+            "acp.prompt-turn-id-required"
+        );
         self.invocations.lock().unwrap().push(req.clone());
         if matches!(self.scenario, DynamicScenario::ProviderRuntimeError) {
             return Ok(ProviderRunResult {
@@ -1084,9 +1095,30 @@ fn ai_dynamic_fanout_runs_merge_acceptance_and_persists_graph() {
         .iter()
         .map(|invocation| invocation.runtime_context.node_id.as_str())
         .collect::<Vec<_>>();
+    let prompt_ids = business_invocations
+        .iter()
+        .map(|invocation| {
+            invocation
+                .resume_prompt_id
+                .as_deref()
+                .filter(|prompt_id| !prompt_id.trim().is_empty())
+                .expect("every AI-DYNAMIC business turn must have a stable prompt identity")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        prompt_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        prompt_ids.len(),
+        "distinct AI-DYNAMIC business turns must not share a prompt identity"
+    );
     assert_eq!(node_ids[0], "bootstrap");
     assert_eq!(node_ids[3], "group-core-merge");
     assert_eq!(node_ids[4], "group-core-accept");
+    assert!(prompt_ids[3].starts_with("runtime-turn-"));
+    assert!(prompt_ids[4].starts_with("runtime-turn-"));
     let branch_nodes = node_ids[1..3].to_vec();
     assert!(branch_nodes.contains(&"branch-a"));
     assert!(branch_nodes.contains(&"branch-b"));
@@ -1221,7 +1253,7 @@ fn ai_dynamic_merge_inner_continue_uses_user_message_render_mode() {
     let resume_prompt = merge_continue.resume_prompt.as_deref().unwrap_or_default();
     assert_eq!(resume_prompt.lines().next(), Some("继续"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
     assert!(!resume_prompt.contains("artifact 输出约束"));
     assert!(!resume_prompt.contains("后续独立 turn"));
     assert!(!resume_prompt.contains("按当前输出契约输出 artifact"));
@@ -2292,7 +2324,7 @@ fn ai_dynamic_workflow_invocation_pause_and_continue_uses_user_message_render_mo
     let resume_prompt = child_continue.resume_prompt.as_deref().unwrap_or_default();
     assert_eq!(resume_prompt.lines().next(), Some("请继续检查这个会话"));
     assert!(resume_prompt.contains("show=\"false\""));
-    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令"));
+    assert!(resume_prompt.contains("请先完整执行本消息中的用户指令，然后继续完成你之前的任务"));
     assert_eq!(
         child_continue.resume_prompt_id.as_deref(),
         Some("prompt-continue-001")

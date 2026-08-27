@@ -318,7 +318,7 @@ export function workspaceCanonicalLayoutNeedsConvergence(
   });
 }
 
-export function shouldOpenRightWorkspaceSheet({
+export function resolveRightWorkspaceSheetOpenTransition({
   compact,
   previousOpenRevision,
   openRevision,
@@ -327,7 +327,16 @@ export function shouldOpenRightWorkspaceSheet({
   previousOpenRevision: number;
   openRevision: number;
 }) {
-  return compact && openRevision > previousOpenRevision;
+  if (!compact) {
+    return {
+      openSheet: false,
+      handledOpenRevision: previousOpenRevision,
+    };
+  }
+  return {
+    openSheet: openRevision > previousOpenRevision,
+    handledOpenRevision: openRevision,
+  };
 }
 
 export function workspaceLayoutProfileForPage(

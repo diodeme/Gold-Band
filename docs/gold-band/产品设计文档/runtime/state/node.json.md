@@ -16,6 +16,7 @@
 ```json
 {
   "version": "0.1",
+  "acp_storage_schema_version": 2,
   "nodeId": "dev",
   "nodeType": "worker",
   "runId": "run-001",
@@ -38,6 +39,7 @@
 
 ## 3. 必填字段
 - `version`
+- `acp_storage_schema_version`
 - `nodeId`
 - `nodeType`
 - `runId`
@@ -54,6 +56,26 @@
 ---
 
 ## 4. 字段说明
+
+### `acp_storage_schema_version`
+
+- 类型：非负整数
+- 当前版本：`2`
+- 归属：attempt 内 ACP durable storage 的 canonical schema version
+
+该字段与 `version`、`acp.timeline.index.json.formatVersion` 分属不同领域：`version` 描述 `node.json` 业务状态结构，`acp_storage_schema_version` 描述当前 attempt 的 ACP 存储布局，Timeline index 的 `formatVersion` 只描述可删除、可重建的派生索引格式。
+
+新 attempt 在首次写入 `node.json` 时直接声明当前版本，因此正常启动不得运行 legacy Timeline/Agent result 迁移。旧 `node.json` 缺少该字段时按 `0` 读取，并按 `0 → 1 → 2` 顺序执行幂等迁移；每一步数据改写成功后才原子推进该字段，失败时保留上一步版本以供重试。高于当前实现的版本必须拒绝打开，不能按旧格式猜测读取。
+
+历史 `.acp-branch-timeline-migration-v1` 与 `.acp-agent-result-migration-v2` 不再属于任何判断或清理路径：已有文件原样保留并被忽略，新 attempt 不再创建。生命周期写回 `node.json` 时必须保留已经落盘的更高 ACP schema version，迟到的旧 `NodeState` 不得使版本回退。
+
+路径与字段命名由现有状态领域决定：
+
+- 普通 Workflow/Direct attempt 以 `rounds/<round>/nodes/<node>/<attempt>/node.json.acp_storage_schema_version` 为事实源。
+- AI-DYNAMIC leaf 当前固定使用 `attempt-001`，其 ACP 历史位于 `dynamic/nodes/<leaf>/attempt-001/`，版本事实记录在父级 leaf 状态 `dynamic/nodes/<leaf>/node.json.acpStorageSchemaVersion`；attempt 目录内不再增加一份 manifest。
+- `dynamic/graph.json.nodes` 不持久化该字段。graph 负责拓扑和聚合，leaf `node.json` 负责该 leaf 的 ACP attempt 存储版本，避免同一版本出现两个可独立写回的 durable 副本。
+
+两种路径共享同一个版本常量、`0 → 1 → 2` 迁移步骤和单调写入契约。AI-DYNAMIC 生命周期从 `graph.json` 加载出的内存节点不携带该版本；写回 leaf `node.json` 时必须在文件锁内保留磁盘已提交的更高版本。
 
 ### `nodeType`
 - 类型：string
@@ -117,6 +139,7 @@
 - `status = completed` 但 `outcome = null`
 - `status = completed` 但缺少 `finishedAt`
 - `resolvedConfig` 不是对象
+- `acp_storage_schema_version` 高于当前实现支持的版本
 
 ---
 
@@ -129,6 +152,7 @@
 
 其中：
 - `node.json` 记录 attempt 元信息
+- `node.json.acp_storage_schema_version` 记录 attempt 的 ACP 存储布局版本
 - `worker-ref.json` 记录 provider-specific 会话引用
 - `artifacts/` 保存 canonical artifacts
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ConversationAttemptLifecycleVm } from '@/types';
 import {
   isAcpSessionInitializationFailed,
   isAcpSessionInitializationInterrupted,
@@ -6,8 +7,50 @@ import {
   missingAcpSessionRetryDelay,
   resolveAcpTimelineSurfaceState,
   resolveAcpSessionShellState,
+  shouldCreateCancelledDirectAttemptShell,
   shouldCreateLiveAcpSessionShell,
 } from '@/lib/acp-session-shell';
+
+function cancelledDirectLifecycle(): ConversationAttemptLifecycleVm {
+  return {
+    runtime: {
+      status: 'paused',
+      outcome: null,
+      pauseReason: 'process-interrupted',
+      resumable: true,
+      current: true,
+      active: false,
+      continuable: true,
+      phase: 'paused',
+    },
+    control: { mode: 'non-runtime-controlled' },
+    acp: {
+      sessionAvailability: 'unavailable',
+      liveTurnActivity: 'idle',
+      latestTurnStatus: 'cancelled',
+      stopping: false,
+    },
+    displayStatus: 'paused',
+    runtimeDisplay: {
+      code: 'paused',
+      tone: 'warning',
+      icon: 'pause',
+      terminal: false,
+      resumable: true,
+      reasonCode: 'process-interrupted',
+      blockingError: false,
+    },
+    continueKind: 'continue-current-attempt',
+    composer: {
+      mode: 'normal',
+      submitTarget: 'acp-prompt',
+      processingKind: 'processing',
+      statusKey: null,
+      canStop: false,
+      lockInput: false,
+    },
+  };
+}
 
 describe('shouldCreateLiveAcpSessionShell', () => {
   it('does not create a shell for runtime-active conversation owners that disable event-only fallback', () => {
@@ -181,6 +224,16 @@ describe('resolveAcpSessionShellState', () => {
     })).toBe('available');
   });
 
+  it('treats a settled attempt-only shell as available without a provider session', () => {
+    expect(resolveAcpSessionShellState({
+      hasBaseSession: false,
+      baseSessionReady: false,
+      hasLiveSessionShell: false,
+      hasSettledAttemptShell: true,
+      initialSessionLoading: true,
+    })).toBe('available');
+  });
+
   it('keeps runtime-active session switching in loading without initialization ownership', () => {
     expect(resolveAcpSessionShellState({
       hasBaseSession: false,
@@ -210,6 +263,54 @@ describe('resolveAcpSessionShellState', () => {
       hasLiveSessionShell: false,
       initialSessionLoading: false,
     })).toBe('available');
+  });
+});
+
+describe('shouldCreateCancelledDirectAttemptShell', () => {
+  it('keeps a current Direct attempt usable when startup was stopped before session creation', () => {
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: false,
+      lifecycle: cancelledDirectLifecycle(),
+    })).toBe(true);
+  });
+
+  it('does not apply the free-conversation projection to orchestrated attempts', () => {
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: true,
+      lifecycle: cancelledDirectLifecycle(),
+    })).toBe(false);
+  });
+
+  it('requires the canonical cancelled and unavailable ACP lifecycle', () => {
+    const established = cancelledDirectLifecycle();
+    established.acp.sessionAvailability = 'established';
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: false,
+      lifecycle: established,
+    })).toBe(false);
+
+    const failed = cancelledDirectLifecycle();
+    failed.acp.latestTurnStatus = 'failed';
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: false,
+      lifecycle: failed,
+    })).toBe(false);
+  });
+
+  it('does not unlock an active runtime or a composer without an ACP prompt target', () => {
+    const active = cancelledDirectLifecycle();
+    active.runtime.active = true;
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: false,
+      lifecycle: active,
+    })).toBe(false);
+
+    const blocked = cancelledDirectLifecycle();
+    blocked.composer.submitTarget = 'none';
+    expect(shouldCreateCancelledDirectAttemptShell({
+      isOrchestrated: false,
+      lifecycle: blocked,
+    })).toBe(false);
   });
 });
 

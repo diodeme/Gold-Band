@@ -98,6 +98,17 @@ pub enum AutoClaimResult {
     Suspended,
 }
 
+/// Resolution of a dispatch whose prior logical turn is already terminal.
+/// A prompt present in the timeline is accepted and must leave the queue;
+/// otherwise it receives a fresh execution identity while retaining the
+/// user's durable queue item and payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalDispatchRecovery {
+    Reclaimed(QueuedPrompt),
+    AlreadyAccepted,
+    Missing,
+}
+
 pub fn queue_path(attempt_dir: &Utf8Path) -> Utf8PathBuf {
     attempt_dir.join(PROMPT_QUEUE_FILE_NAME)
 }
@@ -380,6 +391,44 @@ pub fn release_queued_prompt(attempt_dir: &Utf8Path, item_id: &str) -> Result<Pr
     result
 }
 
+/// Recovers one claimed item after its previous turn was found terminal.
+///
+/// This is deliberately scoped to `item_id`: settling every dispatch here
+/// could release another in-flight prompt before its canonical acceptance
+/// event is committed. A terminal turn with no canonical user-prompt event
+/// was never accepted, so it is assigned a new turn ID before being retried.
+pub fn recover_terminal_dispatch(
+    attempt_dir: &Utf8Path,
+    item_id: &str,
+) -> Result<TerminalDispatchRecovery> {
+    let recovery = with_queue_lock(attempt_dir, || {
+        let mut queue = load_queue_unlocked(attempt_dir)?;
+        let Some(index) = queue.items.iter().position(|item| item.id == item_id) else {
+            return Ok(TerminalDispatchRecovery::Missing);
+        };
+        if queue.items[index].state != QueuedPromptState::Dispatching {
+            return Ok(TerminalDispatchRecovery::Missing);
+        }
+        if accepted_prompt_ids(attempt_dir).contains(&queue.items[index].prompt_id) {
+            queue.items.remove(index);
+            persist_mutation_unlocked(attempt_dir, &mut queue)?;
+            return Ok(TerminalDispatchRecovery::AlreadyAccepted);
+        }
+
+        let item = &mut queue.items[index];
+        item.prompt_id = format!("turn-{}", Uuid::new_v4().simple());
+        let reclaimed = item.clone();
+        persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        Ok(TerminalDispatchRecovery::Reclaimed(reclaimed))
+    })?;
+
+    clear_dispatch_active(attempt_dir, item_id)?;
+    if let TerminalDispatchRecovery::Reclaimed(item) = &recovery {
+        mark_dispatch_active(attempt_dir, item)?;
+    }
+    Ok(recovery)
+}
+
 /// Settles every in-process dispatch against the durable timeline.
 ///
 /// A prompt already written to the canonical timeline has left the queue even
@@ -421,6 +470,48 @@ pub fn settle_dispatching_prompts(attempt_dir: &Utf8Path) -> Result<PromptQueue>
         clear_dispatch_active(attempt_dir, &item_id)?;
     }
     Ok(queue)
+}
+
+/// Settles only the dispatch that owns `prompt_id`.
+///
+/// Runtime completion is scoped to the provider turn that just finished. A
+/// broad reconciliation here could release a different prompt that is still
+/// between admission and its canonical acceptance event.
+pub fn settle_dispatching_prompt(attempt_dir: &Utf8Path, prompt_id: &str) -> Result<bool> {
+    let Some(item_id) = ACTIVE_DISPATCHES
+        .lock()
+        .map_err(|_| anyhow!("active prompt dispatch registry poisoned"))?
+        .get(&dispatch_prompt_key(attempt_dir, prompt_id))
+        .map(|dispatch| dispatch.item_id.clone())
+    else {
+        return Ok(false);
+    };
+    let result = with_queue_lock(attempt_dir, || {
+        if !dispatch_prompt_is_active(attempt_dir, prompt_id) {
+            return Ok(false);
+        }
+        let mut queue = load_queue_unlocked(attempt_dir)?;
+        let Some(index) = queue.items.iter().position(|item| {
+            item.id == item_id
+                && item.prompt_id == prompt_id
+                && item.state == QueuedPromptState::Dispatching
+        }) else {
+            return Ok(false);
+        };
+        let accepted = accepted_prompt_ids(attempt_dir).contains(prompt_id);
+        if accepted {
+            queue.items.remove(index);
+        } else {
+            queue.items[index].state = QueuedPromptState::Queued;
+        }
+        persist_mutation_unlocked(attempt_dir, &mut queue)?;
+        Ok(true)
+    });
+    let settled = result?;
+    if settled {
+        clear_dispatch_active(attempt_dir, &item_id)?;
+    }
+    Ok(settled)
 }
 
 /// Removes one active queue dispatch at the durable acceptance boundary.
@@ -871,6 +962,38 @@ mod tests {
     }
 
     #[test]
+    fn runtime_settlement_only_releases_the_matching_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let first = enqueue_prompt(&dir, "first".to_string(), Vec::new()).unwrap();
+        let second = enqueue_prompt(&dir, "second".to_string(), Vec::new()).unwrap();
+        let first = claim_queued_prompt(&dir, &first.id).unwrap();
+        let second = claim_queued_prompt(&dir, &second.id).unwrap();
+
+        assert!(settle_dispatching_prompt(&dir, &first.prompt_id).unwrap());
+        let queue = load_prompt_queue(&dir).unwrap();
+        assert_eq!(
+            queue
+                .items
+                .iter()
+                .find(|item| item.id == first.id)
+                .unwrap()
+                .state,
+            QueuedPromptState::Queued
+        );
+        assert_eq!(
+            queue
+                .items
+                .iter()
+                .find(|item| item.id == second.id)
+                .unwrap()
+                .state,
+            QueuedPromptState::Dispatching
+        );
+        assert!(settle_dispatching_prompt(&dir, &second.prompt_id).unwrap());
+    }
+
+    #[test]
     fn active_prompt_identity_is_scoped_to_its_attempt() {
         let temp = tempfile::tempdir().unwrap();
         let first_dir = Utf8PathBuf::from_path_buf(temp.path().join("attempt-001")).unwrap();
@@ -963,6 +1086,55 @@ mod tests {
         assert_eq!(queue.items.len(), 1);
         assert_eq!(queue.items[0].id, item.id);
         assert_eq!(queue.items[0].state, QueuedPromptState::Queued);
+    }
+
+    #[test]
+    fn terminal_unaccepted_dispatch_receives_a_fresh_turn_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item =
+            enqueue_prompt(&dir, "retry after interruption".to_string(), Vec::new()).unwrap();
+        let claimed = claim_queued_prompt(&dir, &item.id).unwrap();
+
+        let TerminalDispatchRecovery::Reclaimed(reclaimed) =
+            recover_terminal_dispatch(&dir, &claimed.id).unwrap()
+        else {
+            panic!("unaccepted terminal dispatch must be reclaimed");
+        };
+        assert_eq!(reclaimed.id, claimed.id);
+        assert_ne!(reclaimed.prompt_id, claimed.prompt_id);
+        assert_eq!(reclaimed.state, QueuedPromptState::Dispatching);
+        assert!(complete_accepted_prompt(&dir, &reclaimed.prompt_id).unwrap());
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn terminal_accepted_dispatch_is_removed_without_a_retry_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = attempt_dir(&temp);
+        let item = enqueue_prompt(&dir, "already accepted".to_string(), Vec::new()).unwrap();
+        let claimed = claim_queued_prompt(&dir, &item.id).unwrap();
+        let event = user_prompt_event(
+            1,
+            "session-001".to_string(),
+            claimed.content.clone(),
+            Some(claimed.prompt_id.clone()),
+            false,
+            Vec::new(),
+        );
+        append_timeline_patch(
+            &dir.join("acp.timeline.jsonl"),
+            event.id.clone(),
+            event.seq,
+            &event,
+        )
+        .unwrap();
+
+        assert_eq!(
+            recover_terminal_dispatch(&dir, &claimed.id).unwrap(),
+            TerminalDispatchRecovery::AlreadyAccepted
+        );
+        assert!(load_prompt_queue(&dir).unwrap().items.is_empty());
     }
 
     #[test]

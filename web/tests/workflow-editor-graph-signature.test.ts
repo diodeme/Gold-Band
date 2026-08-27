@@ -39,14 +39,32 @@ describe('authoringWorkflowGraphSignature', () => {
           model: 'gpt-5.4(xhigh)',
           profile: 'architect',
           permission_mode: 'ask',
-          output: { kind: 'json', artifact: 'dev-result', schema: { type: 'object' } },
-          success_condition: { expression: '$.ok == true' },
         }),
         worker('test'),
       ],
     });
 
     expect(authoringWorkflowGraphSignature(after)).toBe(authoringWorkflowGraphSignature(before));
+  });
+
+  it('refreshes the lightweight canvas projection when failure outcome capability changes', () => {
+    const before = workflow();
+    const manualCheck = workflow({
+      nodes: [worker('dev', { manual_check: true }), worker('test')],
+    });
+    const aiValidation = workflow({
+      nodes: [
+        worker('dev', {
+          output: { kind: 'json', artifact: 'dev-result', schema: { result: 'boolean' } },
+          success_condition: { expression: '$.result == true' },
+        }),
+        worker('test'),
+      ],
+    });
+
+    expect(authoringWorkflowGraphSignature(manualCheck)).not.toBe(authoringWorkflowGraphSignature(before));
+    expect(authoringWorkflowGraphSignature(aiValidation)).toBe(authoringWorkflowGraphSignature(manualCheck));
+    expect(authoringWorkflowTopologySignature(manualCheck)).toBe(authoringWorkflowTopologySignature(before));
   });
 
   it('changes only when topology or canvas presentation fields change', () => {

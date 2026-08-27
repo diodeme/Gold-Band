@@ -157,6 +157,19 @@ describe('desktopApi', () => {
     });
   });
 
+  it('forwards frontend fatal diagnostics through the bounded Tauri command contract', async () => {
+    const input = {
+      kind: 'react-uncaught' as const,
+      message: 'render failed',
+      stack: 'at ConversationPage',
+      pathname: '/conversation/task-001',
+    };
+
+    await desktopApi.reportFrontendError(input);
+
+    expect(invokeCommand).toHaveBeenCalledWith('report_frontend_error', { input });
+  });
+
   it('copies a path-backed image through the native clipboard command', async () => {
     const input = {
       source: { kind: 'path' as const, path: 'D:/images/shot.png' },
@@ -209,6 +222,22 @@ describe('desktopApi', () => {
     await desktopApi.getConversationWorkspaces();
 
     expect(invokeCommand).toHaveBeenCalledWith('get_conversation_workspaces');
+  });
+
+  it('exposes branch picker reads and mutations through the desktop runtime contract', async () => {
+    await desktopApi.getGitBranchPickerSnapshot('project-1', 'D:/repo');
+    expect(invokeCommand).toHaveBeenCalledWith('get_git_branch_picker_snapshot', {
+      projectId: 'project-1',
+      workspacePath: 'D:/repo',
+    });
+
+    const input = { kind: 'switch' as const, name: 'feature/test', expectedRevision: 'revision-1' };
+    await desktopApi.changeGitBranch('project-1', 'D:/repo', input);
+    expect(invokeCommand).toHaveBeenCalledWith('change_git_branch', {
+      projectId: 'project-1',
+      workspacePath: 'D:/repo',
+      input,
+    });
   });
 
   it('forwards scheduled occurrence diagnostics commands', async () => {

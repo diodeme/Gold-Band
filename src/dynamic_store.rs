@@ -9,12 +9,13 @@ use crate::domain::VERSION;
 use crate::dynamic::{
     DynamicGraphState, WorkspaceKind, WorkspaceOwnership, WorkspaceState, WorkspaceStatus,
     validate_dynamic_group_state, validate_dynamic_node_state, validate_dynamic_run_state,
-    validate_workspace_state, validate_workspace_topology,
+    validate_workspace_state, validate_workspace_topology, write_dynamic_node_state,
 };
 use crate::git::{GitCommandRunner, GitRepositoryService};
 use crate::storage::{read_json, write_json};
 
-pub const CURRENT_DYNAMIC_GRAPH_VERSION: &str = "0.3";
+pub const CURRENT_DYNAMIC_GRAPH_VERSION: &str = "0.4";
+const LEAF_RUNTIME_EXECUTION_DYNAMIC_GRAPH_VERSION: &str = "0.3";
 const WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION: &str = "0.2";
 const LEGACY_DYNAMIC_GRAPH_VERSION: &str = "0.1";
 const MAIN_WORKSPACE_ID: &str = "workspace-main";
@@ -34,9 +35,11 @@ struct LegacyWorkspaceDescriptor {
 ///
 /// Graph v0.1 stored workspace policy and paths on nodes. Graph v0.2 moved
 /// workspace identity and lifecycle into a graph-owned catalog. Graph v0.3
-/// adds the canonical per-leaf Runtime execution projection. Migrations are
-/// deterministic, validated before commit, atomically persisted, and therefore
-/// become a no-op after the first successful load.
+/// added the per-leaf Runtime execution projection. Graph v0.4 replaces its
+/// phase-only revision with one leaf-owned Runtime lifecycle watermark so
+/// graph ownership handoffs and leaf execution share a comparison domain.
+/// Migrations are deterministic, validated before commit, atomically persisted,
+/// and therefore become a no-op after the first successful load.
 pub fn load_dynamic_graph(path: &Utf8Path, repo_root: &Utf8Path) -> Result<DynamicGraphState> {
     let lock = dynamic_graph_load_lock(path)?;
     let _guard = lock
@@ -45,9 +48,26 @@ pub fn load_dynamic_graph(path: &Utf8Path, repo_root: &Utf8Path) -> Result<Dynam
     let value: Value = read_json(path)?;
     let (graph, migrated) = dynamic_graph_from_value_with_migration(value, repo_root)?;
     if migrated {
+        persist_existing_dynamic_node_projections(path, &graph)?;
         write_json(path, &graph)?;
     }
     Ok(graph)
+}
+
+fn persist_existing_dynamic_node_projections(
+    graph_path: &Utf8Path,
+    graph: &DynamicGraphState,
+) -> Result<()> {
+    let Some(dynamic_dir) = graph_path.parent() else {
+        return Ok(());
+    };
+    for node in &graph.nodes {
+        let node_path = dynamic_dir.join("nodes").join(&node.id).join("node.json");
+        if node_path.exists() {
+            write_dynamic_node_state(&node_path, node)?;
+        }
+    }
+    Ok(())
 }
 
 fn dynamic_graph_load_lock(path: &Utf8Path) -> Result<Arc<Mutex<()>>> {
@@ -79,8 +99,15 @@ pub fn dynamic_graph_from_value_with_migration(
             validate_dynamic_graph(&graph)?;
             Ok((graph, false))
         }
+        LEAF_RUNTIME_EXECUTION_DYNAMIC_GRAPH_VERSION => {
+            migrate_v03_leaf_runtime_lifecycle_revision(&mut value)?;
+            let graph = serde_json::from_value(value)?;
+            validate_dynamic_graph(&graph)?;
+            Ok((graph, true))
+        }
         WORKSPACE_CATALOG_DYNAMIC_GRAPH_VERSION => {
             migrate_v02_leaf_runtime_lifecycle(&mut value)?;
+            migrate_v03_leaf_runtime_lifecycle_revision(&mut value)?;
             let graph = serde_json::from_value(value)?;
             validate_dynamic_graph(&graph)?;
             Ok((graph, true))
@@ -93,6 +120,7 @@ pub fn dynamic_graph_from_value_with_migration(
                 migrate_v01_workspace_policy_to_catalog(&mut value, repo_root)?;
             }
             migrate_v02_leaf_runtime_lifecycle(&mut value)?;
+            migrate_v03_leaf_runtime_lifecycle_revision(&mut value)?;
             let graph: DynamicGraphState = serde_json::from_value(value)?;
             validate_dynamic_graph(&graph)?;
             Ok((graph, true))
@@ -241,6 +269,37 @@ fn migrate_v02_leaf_runtime_lifecycle(value: &mut Value) -> Result<()> {
                     Value::String(updated_at),
                 );
             }
+        }
+    }
+    root.insert(
+        "version".to_string(),
+        Value::String(LEAF_RUNTIME_EXECUTION_DYNAMIC_GRAPH_VERSION.to_string()),
+    );
+    Ok(())
+}
+
+fn migrate_v03_leaf_runtime_lifecycle_revision(value: &mut Value) -> Result<()> {
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("dynamic graph must be a JSON object"))?;
+    let nodes = root
+        .get_mut("nodes")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| anyhow!("dynamic graph nodes are missing"))?;
+    for node in nodes {
+        let object = node
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("dynamic graph node must be an object"))?;
+        let revision = object
+            .remove("runtimeExecutionRevision")
+            .and_then(|revision| revision.as_u64())
+            .unwrap_or_default();
+        object.insert(
+            "runtimeLifecycleRevision".to_string(),
+            Value::from(revision),
+        );
+        if let Some(updated_at) = object.remove("runtimeExecutionUpdatedAt") {
+            object.insert("runtimeLifecycleUpdatedAt".to_string(), updated_at);
         }
     }
     root.insert(
@@ -656,6 +715,12 @@ mod tests {
         value
     }
 
+    fn v03_graph_with_leaf_runtime_execution(repo: &Utf8Path) -> Value {
+        let mut value = v02_graph_with_legacy_leaf_lifecycle(repo);
+        migrate_v02_leaf_runtime_lifecycle(&mut value).unwrap();
+        value
+    }
+
     #[test]
     fn v01_single_workspace_migrates_to_catalog_once() {
         let repo = Utf8PathBuf::from_path_buf(tempdir().unwrap().keep()).unwrap();
@@ -710,7 +775,7 @@ mod tests {
             bootstrap.runtime_execution_phase,
             Some(crate::runtime::RuntimeExecutionPhase::Terminal)
         );
-        assert_eq!(bootstrap.runtime_execution_revision, 1);
+        assert_eq!(bootstrap.runtime_lifecycle_revision, 1);
         for node_id in ["hello-worker", "goodbye-worker"] {
             let node = migrated
                 .nodes
@@ -722,7 +787,7 @@ mod tests {
                 node.runtime_execution_phase,
                 Some(crate::runtime::RuntimeExecutionPhase::Paused)
             );
-            assert_eq!(node.runtime_execution_revision, 1);
+            assert_eq!(node.runtime_lifecycle_revision, 1);
         }
         let first_persisted = std::fs::read(graph_path.as_std_path()).unwrap();
 
@@ -758,6 +823,45 @@ mod tests {
             bootstrap.runtime_execution_phase,
             Some(crate::runtime::RuntimeExecutionPhase::FinalizingArtifact)
         );
+    }
+
+    #[test]
+    fn v03_graph_and_existing_leaf_projection_migrate_to_runtime_lifecycle_watermark_once() {
+        let repo = Utf8PathBuf::from_path_buf(tempdir().unwrap().keep()).unwrap();
+        let dynamic_dir = repo.join("dynamic");
+        let graph_path = dynamic_dir.join("graph.json");
+        let legacy = v03_graph_with_leaf_runtime_execution(&repo);
+        let legacy_leaf = legacy["nodes"][0].clone();
+        let leaf_path = dynamic_dir
+            .join("nodes")
+            .join("bootstrap")
+            .join("node.json");
+        write_json(&graph_path, &legacy).unwrap();
+        write_json(&leaf_path, &legacy_leaf).unwrap();
+
+        let migrated = load_dynamic_graph(&graph_path, &repo).unwrap();
+
+        assert_eq!(migrated.version, CURRENT_DYNAMIC_GRAPH_VERSION);
+        assert_eq!(migrated.nodes[0].runtime_lifecycle_revision, 1);
+        let graph_json: Value = read_json(&graph_path).unwrap();
+        assert_eq!(graph_json["nodes"][0]["runtimeLifecycleRevision"], 1);
+        assert!(
+            graph_json["nodes"][0]
+                .get("runtimeExecutionRevision")
+                .is_none()
+        );
+        let leaf_json: Value = read_json(&leaf_path).unwrap();
+        assert_eq!(leaf_json["runtimeLifecycleRevision"], 1);
+        assert!(leaf_json.get("runtimeExecutionRevision").is_none());
+
+        let first_graph = std::fs::read(graph_path.as_std_path()).unwrap();
+        let first_leaf = std::fs::read(leaf_path.as_std_path()).unwrap();
+        load_dynamic_graph(&graph_path, &repo).unwrap();
+        assert_eq!(
+            std::fs::read(graph_path.as_std_path()).unwrap(),
+            first_graph
+        );
+        assert_eq!(std::fs::read(leaf_path.as_std_path()).unwrap(), first_leaf);
     }
 
     #[test]

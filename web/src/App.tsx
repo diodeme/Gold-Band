@@ -18,7 +18,6 @@ import {
   acknowledgeConversationTerminalResult,
   getProfiles,
   getWorkflowTemplates,
-  switchConversationSession,
   markSettingsAdvancedUpdateSeen,
   markSettingsUpdateSeen,
   getAppBootstrap,
@@ -82,8 +81,11 @@ import { Markdown } from '@/components/prompt-kit/markdown';
 import { Shell } from './components/Shell';
 import { BrandLoadingState } from '@/components/BrandLoadingState';
 import i18n, { displayAppError, i18nLanguage } from './i18n';
+import { useScheduledTaskCreatedNotice } from '@/lib/scheduled-task-created-notice';
 import {
+  conversationAcpRunRefreshStatus,
   isRuntimeControlledConversationLifecycle,
+  isTerminalConversationSessionStatus,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -123,6 +125,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { createInitialCreateTaskDraft, TaskListPage, type CreateTaskDraftState } from './pages/TaskListPage';
 import { resetConversationComposerDraft } from '@/lib/conversation-composer-draft';
 import { GitRequirementDialog } from '@/components/git/GitRequirementDialog';
+import { GitBranchPickerSnapshotProvider } from '@/components/git/GitBranchPickerSnapshotContext';
 import { resolveConversationWorkspaceRemovalTransition } from '@/lib/conversation-workspace-removal';
 import { WorkflowPage } from './pages/WorkflowPage';
 import { WorkspaceSelectPage } from './pages/WorkspaceSelectPage';
@@ -168,6 +171,7 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationSourceControlWorkspacePath,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
@@ -233,6 +237,7 @@ import type {
   ResolvedColorScheme,
   WorkflowRepairTarget,
   WallpaperPreferencesVm,
+  GitCapabilityVm,
 } from './types';
 
 export function workflowRepairTargetFromMissingItems(
@@ -337,20 +342,39 @@ function conversationTreeHasSessionKey(tree: ConversationSessionTreeVm, key: str
   return false;
 }
 
-function gitRequirementStatus(error: unknown) {
+interface GitRequirementState {
+  status: Exclude<GitCapabilityVm['status'], 'ready'>;
+  runKind: 'auto' | 'workflow' | 'worktree';
+  projectId?: string | null;
+  installedVersion: string | null;
+  minimumVersion: string;
+}
+
+function gitRequirementDetails(error: unknown): Pick<GitRequirementState, 'status' | 'installedVersion' | 'minimumVersion'> | null {
   if (!error || typeof error !== 'object') return null;
-  const code = (error as { code?: unknown }).code;
+  const candidate = error as { code?: unknown; params?: unknown };
+  const code = candidate.code;
+  const params = candidate.params && typeof candidate.params === 'object'
+    ? candidate.params as Record<string, unknown>
+    : {};
+  const installedVersion = typeof params.installedVersion === 'string' ? params.installedVersion : null;
+  const minimumVersion = typeof params.minimumVersion === 'string' ? params.minimumVersion : '';
+  const requirement = (status: GitRequirementState['status']) => ({ status, installedVersion, minimumVersion });
   switch (code) {
     case 'run.git-not-installed':
-      return 'not-installed' as const;
+      return requirement('not-installed');
+    case 'run.git-version-unsupported':
+      return requirement('version-unsupported');
+    case 'run.git-version-unavailable':
+      return requirement('version-unavailable');
     case 'run.git-repository-required':
-      return 'repository-required' as const;
+      return requirement('repository-required');
     case 'run.git-head-required':
-      return 'head-required' as const;
+      return requirement('head-required');
     case 'run.git-worktree-required':
-      return 'worktree-required' as const;
+      return requirement('worktree-required');
     case 'run.git-repository-unavailable':
-      return 'repository-unavailable' as const;
+      return requirement('repository-unavailable');
     default:
       return null;
   }
@@ -395,6 +419,7 @@ export function App() {
   const [primaryModule, setPrimaryModule] = useState<PrimaryModule>(initialRoute.module);
   const [taskPage, setTaskPage] = useState<TaskPage>(initialRoute.taskPage);
   const [conversationPage, setConversationPage] = useState<ConversationPage>(initialRoute.conversationPage);
+  const scheduledTaskCreatedNotice = useScheduledTaskCreatedNotice();
   const [workflowRepairTarget, setWorkflowRepairTarget] = useState<WorkflowRepairTarget | null>(null);
   const conversationPageRef = useRef<ConversationPage>(initialRoute.conversationPage);
   const conversationStopRequestRef = useRef(0);
@@ -415,6 +440,7 @@ export function App() {
   const [conversationRunCache] = useState(() => new ConversationRunCache());
   const [conversationRun, setConversationRun] = useState<ConversationRunVm | null>(null);
   const conversationRunRef = useRef<ConversationRunVm | null>(null);
+
   const conversationNavigationRequestRef = useRef(0);
   const presentedConversationPage = conversationPage;
   const conversationSessionFollowRef = useRef<ConversationSessionFollowState>({
@@ -608,11 +634,7 @@ export function App() {
   const preferenceSaveGenerationRef = useRef(0);
   const [downloadProgress, setDownloadProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [gitRequirement, setGitRequirement] = useState<{
-    status: 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
-    runKind: 'auto' | 'workflow' | 'worktree';
-    projectId?: string | null;
-  } | null>(null);
+  const [gitRequirement, setGitRequirement] = useState<GitRequirementState | null>(null);
 
   const persistConversationWorkLocation = useCallback((
     location: ConversationWorkLocation,
@@ -660,6 +682,8 @@ export function App() {
           status: capability.status,
           runKind: 'worktree',
           projectId,
+          installedVersion: capability.installedVersion,
+          minimumVersion: capability.minimumVersion,
         });
         return;
       }
@@ -1173,6 +1197,8 @@ export function App() {
     let refreshAgain = false;
     let pendingEventSessionKey: string | null = null;
     let pendingEventRuntimeControlled = false;
+    let pendingCanonicalRunBoundary = false;
+    let canonicalRunBoundaryInFlight = false;
     const { projectId, taskId, runId } = conversationPage;
 
     const refreshConversationRun = () => {
@@ -1194,11 +1220,16 @@ export function App() {
         followMode: followStateAtRequest.mode,
         pendingEventSessionKey,
         currentSelectedKey,
+        currentSelectedTerminal: isTerminalConversationSessionStatus(
+          currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+        ),
         currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(currentSelectedLeaf?.lifecycle),
         pendingEventRuntimeControlled,
       });
+      canonicalRunBoundaryInFlight = pendingCanonicalRunBoundary;
       pendingEventSessionKey = null;
       pendingEventRuntimeControlled = false;
+      pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
           if (!active) return;
@@ -1215,6 +1246,9 @@ export function App() {
             followMode: latestFollowState.mode,
             pendingEventSessionKey: selectedKey,
             currentSelectedKey: latestSelectedKey,
+            currentSelectedTerminal: isTerminalConversationSessionStatus(
+              latestSelectedLeaf?.lifecycle?.runtime.status ?? latestSelectedLeaf?.status,
+            ),
             currentSelectedRuntimeControlled: isRuntimeControlledConversationLifecycle(latestSelectedLeaf?.lifecycle),
             pendingEventRuntimeControlled: isRuntimeControlledConversationLifecycle(responseTargetLeaf?.lifecycle),
           });
@@ -1226,6 +1260,7 @@ export function App() {
         .catch(() => {})
         .finally(() => {
           refreshInFlight = false;
+          canonicalRunBoundaryInFlight = false;
           if (!active || !refreshAgain) return;
           refreshAgain = false;
           if (refreshTimer === null) {
@@ -1238,10 +1273,19 @@ export function App() {
       sessionKey?: string | null,
       runtimeControlled = false,
       delayMs = 120,
+      canonicalRunBoundary = false,
     ) => {
-      if (sessionKey !== undefined) {
+      // A canonical NodeStarted event is the auto-follow boundary. A late ACP
+      // update from the node that just completed must not replace that target,
+      // including while its Run snapshot request is in flight. Newer canonical
+      // Run boundaries may still supersede it.
+      if (sessionKey !== undefined && (
+        canonicalRunBoundary
+        || (!pendingCanonicalRunBoundary && !canonicalRunBoundaryInFlight)
+      )) {
         pendingEventSessionKey = sessionKey;
         pendingEventRuntimeControlled = runtimeControlled;
+        pendingCanonicalRunBoundary = canonicalRunBoundary;
       }
       if (refreshTimer !== null) {
         if (delayMs === 0) {
@@ -1263,8 +1307,11 @@ export function App() {
         : null;
       queueConversationRunRefresh(
         sessionKey,
-        isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
+        event.eventKind === 'node-started'
+          ? true
+          : isRuntimeControlledConversationLifecycle(eventLeaf?.lifecycle),
         0,
+        true,
       );
     };
     conversationRunStateRefreshRef.current = refreshSelectedRunFromStateEvent;
@@ -1294,6 +1341,9 @@ export function App() {
       const currentSelectedActive = Boolean(
         currentSelectedLeaf && (isConversationActiveLifecycle(currentSelectedLeaf.lifecycle) || isConversationActiveStatus(currentSelectedLeaf.status)),
       );
+      const currentSelectedTerminal = isTerminalConversationSessionStatus(
+        currentSelectedLeaf?.lifecycle?.runtime.status ?? currentSelectedLeaf?.status,
+      );
       const hasRuntimeSnapshot = Boolean(event.session || event.lifecycle);
       const incomingActive = event.lifecycle
         ? isConversationActiveLifecycle(event.lifecycle)
@@ -1301,18 +1351,29 @@ export function App() {
           ? isConversationActiveStatus(event.session.status)
           : Boolean(event.event);
       const followState = conversationSessionFollowRef.current;
-      const followPending = followState.mode === 'auto'
-        && Boolean(currentSelectedKey)
-        && !currentSelectedActive
-        && incomingActive
-        && currentSelectedRuntimeControlled
-        && incomingRuntimeControlled;
+      const eventSelectedSessionKey = resolveConversationEventSelectedSessionKey({
+        currentSelectedKey,
+        incomingSessionKey: sessionKey,
+        followMode: followState.mode,
+        currentSelectedActive,
+        currentSelectedTerminal,
+        incomingActive,
+        currentSelectedRuntimeControlled,
+        incomingRuntimeControlled,
+      });
+      const followPending = currentSelectedKey !== sessionKey
+        && eventSelectedSessionKey === sessionKey;
+      const refreshStatus = conversationAcpRunRefreshStatus({
+        dynamicSession: Boolean(event.outerNodeId && event.outerAttemptId),
+        lifecycle: event.lifecycle,
+        sessionStatus: event.session?.status,
+      });
       const updatePlan = planConversationAcpRunUpdate({
         treeHasSession,
         alreadySelected,
         hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
-        sessionStatus: event.lifecycle?.displayStatus ?? event.session?.status,
+        sessionStatus: refreshStatus,
         pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
         followPending,
       });
@@ -1333,15 +1394,7 @@ export function App() {
       if (!updatePlan.queueRunRefresh) {
         return;
       }
-      queueConversationRunRefresh(resolveConversationEventSelectedSessionKey({
-        currentSelectedKey,
-        incomingSessionKey: sessionKey,
-        followMode: followState.mode,
-        currentSelectedActive,
-        incomingActive,
-        currentSelectedRuntimeControlled,
-        incomingRuntimeControlled,
-      }), incomingRuntimeControlled);
+      queueConversationRunRefresh(eventSelectedSessionKey, incomingRuntimeControlled);
     };
     conversationAcpSessionRefreshRef.current = refreshSelectedRunFromAcpEvent;
 
@@ -1631,39 +1684,13 @@ export function App() {
     });
     conversationSelectedSessionKeyRef.current = key;
     updateConversationSessionFollow('manual', key, run);
+    const selectedRun = run;
     setConversationRun((current) => {
-      const base = current && conversationPageMatchesRun(runPage, current) ? current : run;
+      const base = current && conversationPageMatchesRun(runPage, current) ? current : selectedRun;
       const next = beginConversationSessionSelection(base, key);
       conversationRunRef.current = next;
       return next;
     });
-    try {
-      const switched = await switchConversationSession(
-        targetProjectId,
-        event.taskId,
-        event.runId,
-        leaf.roundId,
-        leaf.nodeId,
-        leaf.attemptId,
-        leaf.outerNodeId,
-        leaf.outerAttemptId,
-      );
-      if (conversationSelectedSessionKeyRef.current !== key) return;
-      startTransition(() => {
-        setConversationRun((prev) => {
-          if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-          const next: ConversationRunVm = {
-            ...prev,
-            selectedSession: switched.selectedSession,
-            sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-          };
-          conversationRunRef.current = next;
-          return next;
-        });
-      });
-    } catch {
-      // 切换 session 失败时静默：用户已在 run 页面，可手动选择。
-    }
   }, [
     uiMode,
     taskPage,
@@ -1685,12 +1712,12 @@ export function App() {
       await refresh('background');
       return result;
     } catch (err) {
-      const gitStatus = gitRequirementStatus(err);
-      if (gitStatus) {
-        setGitRequirement({ status: gitStatus, runKind: 'workflow', projectId: defaultProjectId });
+      const gitRequirementDetailsValue = gitRequirementDetails(err);
+      if (gitRequirementDetailsValue) {
+        setGitRequirement({ ...gitRequirementDetailsValue, runKind: 'workflow', projectId: defaultProjectId });
       }
       if (options?.surfaceError !== false) {
-        setError(gitStatus ? null : displayAppError(t, err));
+        setError(gitRequirementDetailsValue ? null : displayAppError(t, err));
       }
       if (options?.rethrow) {
         throw err;
@@ -2165,6 +2192,7 @@ export function App() {
 
   return (
     <AvatarPreferencesProvider preferences={preferences.avatars}>
+    <GitBranchPickerSnapshotProvider>
     <ConversationComposerDraftBoundary ref={composerDraftRef}>
     <Shell
       uiMode={uiMode}
@@ -2182,6 +2210,10 @@ export function App() {
           ? conversationRun.taskUuid
           : null
       }
+      sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
+        presentedConversationPage,
+        conversationRun,
+      )}
       conversationWorkspaceStore={conversationWorkspaceStore}
       appName={appInfo.appName}
       feedbackEnabled={appInfo.feedbackEnabled}
@@ -2342,6 +2374,7 @@ export function App() {
       />
     </Shell>
     </ConversationComposerDraftBoundary>
+    </GitBranchPickerSnapshotProvider>
     </AvatarPreferencesProvider>
   );
 
@@ -2402,6 +2435,7 @@ export function App() {
           busy={busy}
           inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
           initialScheduledMode={conversationPage.kind === 'scheduled-task-create'}
+          scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
           workLocation={conversationWorkLocation}
           onRunModeChange={updateConversationRunMode}
           onLoadProfiles={loadProfiles}
@@ -2462,10 +2496,10 @@ export function App() {
               });
               return null;
             } catch (err) {
-              const gitStatus = gitRequirementStatus(err);
-              if (gitStatus) {
+              const gitRequirementDetailsValue = gitRequirementDetails(err);
+              if (gitRequirementDetailsValue) {
                 setGitRequirement({
-                  status: gitStatus,
+                  ...gitRequirementDetailsValue,
                   runKind: input.workLocation === 'worktree'
                     ? 'worktree'
                     : input.runMode === 'auto' ? 'auto' : 'workflow',
@@ -2481,14 +2515,18 @@ export function App() {
           onCreateScheduledTask={async (input) => {
             await createScheduledTask(input);
           }}
+          onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
           onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+          onOpenScheduledTasks={() => {
+            scheduledTaskCreatedNotice.dismiss();
+            onSelectConversation({ kind: 'scheduled-tasks' });
+          }}
           onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
           onWorkflowRepairTargetChange={setWorkflowRepairTarget}
           onScheduledModeExit={conversationPage.kind === 'scheduled-task-create'
             ? () => onSelectConversation({ kind: 'conversation-home' })
             : undefined}
           onWorkspaceChange={(projectId) => {
-            resetConversationComposerDraft(composerDraftRef.current);
             setDraftConversationWorkspaceId(projectId);
             void loadConversationRunMode(projectId);
           }}
@@ -2501,6 +2539,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={async () => {
               const requirement = gitRequirement;
               setGitRequirement(null);
@@ -2614,12 +2654,15 @@ export function App() {
               ? `${leaf.roundId}/${leaf.outerNodeId}/${leaf.outerAttemptId}/${leaf.nodeId}/${leaf.attemptId}`
               : `${leaf.roundId}/${leaf.nodeId}/${leaf.attemptId}`;
             const followMode: ConversationSessionFollowMode = followActive ? 'auto' : 'manual';
+            const nextPage = conversationPageForSession(conversationPage, leaf);
             conversationSelectedSessionKeyRef.current = key;
             updateConversationSessionFollow(followMode, key);
+            conversationPageRef.current = nextPage;
+            setConversationPage(nextPage);
             pushRoute(
               'task-orchestration',
               taskListPage,
-              conversationPageForSession(conversationPage, leaf),
+              nextPage,
             );
             setConversationRun((current) => {
               if (!current || !conversationPageMatchesRun(conversationPage, current)) return current;
@@ -2627,43 +2670,6 @@ export function App() {
               conversationRunRef.current = next;
               return next;
             });
-            switchConversationSession(
-              conversationPage.projectId,
-              conversationPage.taskId,
-              conversationPage.runId,
-              leaf.roundId,
-              leaf.nodeId,
-              leaf.attemptId,
-              leaf.outerNodeId,
-              leaf.outerAttemptId,
-            ).then((switched) => {
-              if (conversationSelectedSessionKeyRef.current !== key) {
-                return;
-              }
-              startTransition(() => {
-                setConversationRun((prev) => {
-                  if (!prev || conversationSelectedSessionKeyRef.current !== key) return prev;
-                  const next = {
-                    ...prev,
-                    selectedSession: switched.selectedSession,
-                    sessionTree: { ...prev.sessionTree, selectedSessionKey: key },
-                  };
-                  conversationRunRef.current = next;
-                  conversationSelectedSessionKeyRef.current = key;
-                  return next;
-                });
-              });
-              if (conversationRunRef.current && conversationSelectedSessionKeyRef.current === key) {
-                conversationRunRef.current = {
-                  ...conversationRunRef.current,
-                  selectedSession: switched.selectedSession,
-                  sessionTree: {
-                    ...conversationRunRef.current.sessionTree,
-                    selectedSessionKey: key,
-                  },
-                };
-              }
-            }).catch(() => {});
           }}
           onLifecycleSnapshot={(snapshot) => {
             applyConversationLifecycleSnapshotToSidebar(
@@ -2702,14 +2708,19 @@ export function App() {
         profiles={profiles}
         busy={busy}
         inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
+        scheduledTaskCreated={scheduledTaskCreatedNotice.visible}
         workLocation={conversationWorkLocation}
         onRunModeChange={updateConversationRunMode}
         onLoadProfiles={loadProfiles}
         onSubmit={(_input) => null}
+        onScheduledTaskCreated={scheduledTaskCreatedNotice.show}
         onOpenAgentManagement={() => onSelectConversation({ kind: 'agents' })}
+        onOpenScheduledTasks={() => {
+          scheduledTaskCreatedNotice.dismiss();
+          onSelectConversation({ kind: 'scheduled-tasks' });
+        }}
         onOpenRunModeSettings={() => setConversationPage({ kind: 'run-mode-management' })}
         onWorkspaceChange={(projectId) => {
-          resetConversationComposerDraft(composerDraftRef.current);
           setDraftConversationWorkspaceId(projectId);
           void loadConversationRunMode(projectId);
         }}
@@ -2758,6 +2769,8 @@ export function App() {
             projectId={gitRequirement.projectId}
             runKind={gitRequirement.runKind}
             initialStatus={gitRequirement.status}
+            initialInstalledVersion={gitRequirement.installedVersion}
+            initialMinimumVersion={gitRequirement.minimumVersion}
             onReady={() => setGitRequirement(null)}
             onUseOtherWorkflow={() => {
               setGitRequirement(null);

@@ -237,7 +237,7 @@ MVP 中设置页由 `web/src/pages/SettingsPage.tsx` 实现，通过 Tauri comma
 - 2026-08-16 起高级设置移除“使用本地 Claude”开关及其本地探测请求；设置页保存偏好时固定提交 `useLocalClaude = false`，`RuntimeConfig` 加载入口同步固定为 `false`，历史设置中的 `true` 不再进入运行时。后端既有字段、接口与 ACP 本地解析能力保留，未来重新开放时只需恢复这一处配置投影和前端入口。
 - 更新能力使用 Tauri updater：`default` 渠道内置 GitHub Release `latest.json`，`wb` 渠道内置内网占位地址；两个渠道使用不同 updater public key，用户只能覆盖 URL，不能覆盖 public key，因此两个渠道不会通过改 URL 串包更新。default 渠道的安装包、签名和 `latest.json` 由 `release-please` 创建 draft release 后在同一 GitHub Actions workflow 确保 git tag 存在并上传；该 workflow 可由 `main` push 自动触发，也可在 GitHub Actions 页面手动触发以补跑 release-please 主链路，release publish 后才对客户端 latest 检查可见。
 - `wb` 渠道本地执行 `npm run build:wb` 生成 `latest.json` 时，必须优先选择与本次 `--version` 精确匹配的签名安装包；即使 `release/wb` 或构建产物目录里残留旧包，也不能把下载 URL 指回历史安装包。
-- 桌面端启动后后台定时检查更新，发现新版本只更新状态并提示用户，不自动下载或安装；用户可在高级页手动检查，有新版本时再点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 桌面端启动 90 秒后执行首次后台更新检查，此后每 240 分钟检查一次；同一轮检查只请求一次渠道 manifest，检查所得的完整更新对象同时用于状态投影和渠道更新策略，不得为判断静默更新再次请求 manifest。`default` 渠道仍只更新状态并提示用户，不自动下载或安装；`wb` 渠道仅在 manifest 明确声明 `critical: true` 时静默预下载已签名更新包，不立即安装，并在应用退出或后续启动阶段安装。相同版本已经作为完整 pending 文件存在时必须幂等跳过下载；pending 文件使用临时文件加原子替换写入，最终路径存在即代表本次完整写入已经提交。用户仍可在高级页手动检查，有新版本时点击下载并安装；上次检查时间持久化为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
 - 2026-05-27 起更新提示增加三级红点：后台发现当前可更新版本后，左侧 `Settings`、设置页 `Advanced` tab、`Updates` 分组标题同时显示红点。用户进入设置页时只清除 `Settings` 红点；切到 `Advanced` tab 时只清除 `Advanced` 红点；`Updates` 红点不因进入页面消失，只有当前已无可更新版本时才自动消失。
 - 红点状态按“当前可用版本号 + 分层已读版本号”计算，而不是简单布尔值：`Settings`、`Advanced` 和公告关闭状态都持久化到用户级桌面配置，并与版本号绑定；同一版本已读/关闭后不再重复提示，但一旦后台发现更高版本，三级红点和公告都会重新出现。
 - 右侧主内容区顶部新增公告区：首次发现某个新版本且该版本公告尚未被关闭时，页面 header 下方展示一条可关闭公告，提示“发现新版本，可前往 设置 → 高级 → 更新”。点击“查看更新”打开轻量弹窗，明确引导用户前往设置页更新；关闭公告后仅移除公告本身，不影响三级红点。

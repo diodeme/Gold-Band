@@ -3,7 +3,7 @@
   "source": {
     "url": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
     "registryVersion": "1.0.0",
-    "fetchedAt": "2026-08-19T03:01:52.582Z"
+    "fetchedAt": "2026-08-25T10:26:46.733Z"
   },
   "agents": [
     {
@@ -30,7 +30,7 @@
     {
       "id": "codex-acp",
       "label": "Codex",
-      "version": "1.4.0",
+      "version": "1.6.2",
       "description": "ACP adapter for OpenAI's coding assistant",
       "repository": "https://github.com/agentclientprotocol/codex-acp",
       "website": null,
@@ -39,7 +39,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@agentclientprotocol/codex-acp@1.4.0"
+        "@agentclientprotocol/codex-acp@1.6.2"
       ],
       "env": {},
       "primaryAgentDir": ".codex",
@@ -75,7 +75,7 @@
     {
       "id": "gemini",
       "label": "Gemini",
-      "version": "0.55.1",
+      "version": "0.56.0",
       "description": "Google's official CLI for Gemini",
       "repository": "https://github.com/google-gemini/gemini-cli",
       "website": "https://geminicli.com",
@@ -84,7 +84,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@google/gemini-cli@0.55.1",
+        "@google/gemini-cli@0.56.0",
         "--acp"
       ],
       "env": {},
@@ -99,7 +99,7 @@
     {
       "id": "codebuddy-code",
       "label": "CodeBuddy",
-      "version": "2.106.7",
+      "version": "2.138.0",
       "description": "Tencent Cloud's official intelligent coding tool",
       "repository": null,
       "website": "https://www.codebuddy.cn/cli/",
@@ -108,7 +108,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@tencent-ai/codebuddy-code@2.106.7",
+        "@tencent-ai/codebuddy-code@2.138.0",
         "--acp"
       ],
       "env": {},
@@ -121,7 +121,7 @@
     {
       "id": "goose",
       "label": "Goose",
-      "version": "1.46.0",
+      "version": "1.47.0",
       "description": "A local, extensible, open source AI agent that automates engineering tasks",
       "repository": "https://github.com/block/goose",
       "website": "https://block.github.io/goose/",
@@ -141,7 +141,7 @@
     {
       "id": "qwen-code",
       "label": "Qwen Code",
-      "version": "0.21.13",
+      "version": "0.22.0",
       "description": "Alibaba's Qwen coding assistant",
       "repository": "https://github.com/QwenLM/qwen-code",
       "website": "https://qwenlm.github.io/qwen-code-docs/en/users/overview",
@@ -150,7 +150,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@qwen-code/qwen-code@0.21.13",
+        "@qwen-code/qwen-code@0.22.0",
         "--acp",
         "--experimental-skills"
       ],
@@ -164,7 +164,7 @@
     {
       "id": "opencode",
       "label": "OpenCode",
-      "version": "1.18.18",
+      "version": "1.18.23",
       "description": "The open source coding agent",
       "repository": "https://github.com/anomalyco/opencode",
       "website": "https://opencode.ai",

@@ -240,6 +240,8 @@ Tool call update 应按 attempt-scoped `toolCallId` 更新同一条审计项，�
 
 2026-07-28 权限卡片视觉与长文本验收已固化：复用现有 shadcn `Button` / `Tooltip` copy-in 组件，卡片收敛为低边界、低阴影的轻量审批条；前端静态渲染单测覆盖浅色 allow / 中性 reject 层级、截断标签、Tooltip trigger 与完整无障碍名称。UI 验收需在本地会话页同时检查浅色和深色主题，以及长命令选项的鼠标悬浮与键盘聚焦全文展示。
 
+2026-08-21 权限卡片工具参数改为有界摘要预览：使用 CSS line clamp 最多展示 6 个完整文本行，超出部分在末行显示省略号，不裁出残缺行，也不在卡片内增加滚动；决策按钮固定排在摘要之后，确保高熵或超长参数不会把允许/拒绝入口推出可视区域。前端契约测试覆盖行数约束、截断样式及按钮顺序。
+
 ### 6.6 Plan / Mode / Config / SessionInfo
 
 - Plan block 展示 agent 当前计划、step title、status、nested entries。
@@ -337,6 +339,7 @@ docs/gold-band/开发计划/acp接入/acp功能模块todo列表.md
 
 - Rust：覆盖五类 Agent 的读写目录策略；Codex 同时读取 `.codex / .agents`，Claude 不读取 `.agents`；命令 payload 解析、ACP 优先去重、命名空间与 Unicode Skill 名、Skill 增删重扫和旧持久化目录迁移有单测；通知先于 route 注册时仍能按序送达。
 - Frontend：`/`、`/ckm:design` 可匹配，空格、英文逗号、中文逗号会关闭；过滤、插入文本、完整命令标签解析和键盘选中项滚动计算有纯函数单测。标签解析先消费最长合法命令 token，再判断后续分隔符，必须覆盖 `ckm:design-system`、`review.fix` 等包含 `- / . / :` 的命令，禁止回溯成较短标签。标签必须只识别当前 Agent 目录中的完整命令，保留原始大小写和分隔符，并与 textarea 首行使用一致的 `rem` 排版节奏和顶部基线；标签使用主题语义色适配明暗主题，摘要统一使用 shadcn Tooltip，不使用浏览器原生 `title`。删除分隔符或破坏命令后取消标签，再次补充分隔符后恢复。命令行的鼠标与键盘选中态必须统一使用 cmdk `data-selected`，以背景、内描边和左侧强调条保证可辨识；浅色主题采用低透明度 `primary` 蓝色，深色主题采用 `foreground` 叠层。共享菜单还需验证紧凑字号与 hint 标签层级、点击外部关闭、删除后重开，以及切换 Agent 时不展示旧目录快照。
+- 2026-08-25：快速对话的内联覆盖层与会话详情 Popover 统一改用不透明 `popover` 语义表面，移除容器级透明度和 backdrop blur，避免下方输入区、工具栏和正文穿透影响阅读；保留选中行的低透明度状态表达。快速对话同时在菜单打开期间提升输入菜单区域的局部层叠层级，完整覆盖同一 composer 中后绘制的处理模式与 Agent 控件，关闭后撤销。两种入口的 DOM 测试固定 `bg-popover` 且禁止恢复 `bg-popover/*` 与 `backdrop-blur`，内联入口额外固定开合层叠契约。
 - Session Header：静态渲染测试必须固化 Agent 名称与 session id 的 `items-baseline` 组合、一致 `leading-5`、Direct 标题组间距和名称/ID 组内距，并禁止恢复 session id 的垂直 padding 对齐方式；纯函数测试覆盖长 ID 的“前 8 位…后 4 位”投影和短 ID 原样展示，浏览器验收完整值 Tooltip 与复制行为。
 - Session ID 复制反馈状态测试必须覆盖 `idle -> copied -> closing -> idle`；`feedback-elapsed` 只关闭 Tooltip、不清除反馈内容，`closing` 阶段拒绝悬浮重开，防止关闭动画闪现完整 ID。
 - 快速对话验收：命令列表以带圆角、不参与布局的覆盖层紧贴首行输入下方，打开时 composer 高度不变，左右边缘与主输入框对齐；关闭当前 `/query` 后切页返回保持关闭，输入变化后可重新触发，切换 Agent 后新 Agent 菜单重新打开。会话详情仍在 composer 上方显示浮层，浮层宽度使用 composer anchor 实际宽度并与其左右严格对齐。两处 composer 的命令标签显示一致，发送与持久化仍使用包含 `/${name}` 和分隔符的原始文本。标签宽度由共享 `ResizeObserver` hook 测量并只作用于 textarea 首行 `text-indent`，textarea 保持全宽，第二行及后续换行必须从输入区左边缘开始。

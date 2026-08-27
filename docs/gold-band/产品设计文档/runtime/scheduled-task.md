@@ -109,9 +109,9 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 错过的 `at` 或重复时间点记录为 `missed`，不自动补跑；重复任务直接计算下一个未来时间点。第一版不提供错过执行策略配置。
 
-### 6.1 无人值守交互
+### 6.1 用户配置与运行期交互
 
-定时任务必须使用 Agent 支持的 full-auto 能力。创建和编辑时先完成能力校验；不支持无人值守执行的 Agent 不允许保存定时任务。
+定时任务不预判或映射 Agent 的无人值守能力，也不要求特定 permission mode。创建和编辑必须原样保存用户当前选择的 Agent、model、permission mode 和 config options；计划触发与手动立即执行都通过现有 ACP 会话创建链路应用这份冻结配置。不得因为内置或自定义 Agent 未提供已知的 full-auto 标识而阻止定义保存或 occurrence 进入执行。
 
 运行时仍出现 permission request 时，本次 occurrence 结束为 `failed`，错误码为
 `SCHEDULED_PERMISSION_REQUIRED`。系统保留关联 Task、Run、ACP 会话和权限请求，并通过通知引导用户查看详情，不让调度器无限等待。

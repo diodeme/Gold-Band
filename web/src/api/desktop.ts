@@ -1,4 +1,4 @@
-import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSessionSwitchVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
+import type { AcpRawFrameQueryInput, AcpSessionQueryInput, AcpSessionVm, AppearancePreference, AppBootstrapVm, AppExitRequestVm, AutoTemplate, ConversationAutoConfigVm, ConversationCreateInput, ConversationCreateResultVm, ConversationRunModeVm, ConversationRunVm, ConversationSearchResultVm, ConversationSidebarVm, ConversationTaskRowVm, ConversationValidationResultVm, ConversationWorkspaceVm, CreateTaskInput, DesktopLanguage, GitOperationVm, GitStateChangedEventVm, ImportProfilesResult, InterventionNavigateEventVm, ManagedAgentInput, PersonalizationPreference, PreferencesVm, ProfileInput, ResolveAppExitInput, RoundSelection, RunScheduledTaskResultVm, ScheduledNativeNotificationInputVm, ScheduledNotificationEventVm, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, WorkflowDsl, WorkflowModelBindings, WorkspaceFileChangedEventVm } from '../types';
 import type { AcpSessionUpdatedEventVm, ConversationRunStateUpdatedEventVm, ConversationTerminalResultUpdatedEventVm, RuntimeApi, ScheduledOccurrenceUpdatedEventVm, ScheduledTaskUpdatedEventVm } from './client';
 import { invokeCommand, isTauriRuntime, toRoundSelectionInput } from './shared';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -52,6 +52,12 @@ export const desktopApi: RuntimeApi = {
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
+  },
+  getGitBranchPickerSnapshot(projectId, workspacePath) {
+    return invokeCommand('get_git_branch_picker_snapshot', { projectId, workspacePath });
+  },
+  changeGitBranch(projectId, workspacePath, input) {
+    return invokeCommand('change_git_branch', { projectId, workspacePath, input });
   },
   getGitHistory(projectId, workspacePath, query) {
     return invokeCommand('get_git_history', { projectId, workspacePath, query });
@@ -366,9 +372,6 @@ export const desktopApi: RuntimeApi = {
   useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId) {
     return invokeCommand('use_conversation_queued_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId });
   },
-  sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, _fallback, outerNodeId, outerAttemptId, attachmentPaths) {
-    return invokeCommand<AcpSessionVm | null>('send_acp_prompt', { projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, outerNodeId, outerAttemptId, attachmentPaths });
-  },
   setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId) {
     return invokeCommand<AcpSessionVm | null>('set_acp_session_model', { projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId });
   },
@@ -380,9 +383,6 @@ export const desktopApi: RuntimeApi = {
   },
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: string, content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
     return invokeCommand<void>('respond_elicitation', { projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId });
-  },
-  cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, _fallback, outerNodeId, outerAttemptId) {
-    return invokeCommand<AcpSessionVm | null>('cancel_acp_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   getAcpRawFrames(projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId) {
     return invokeCommand('get_acp_raw_frames', { projectId, taskId, runId, roundId, nodeId, attemptId, query, outerNodeId, outerAttemptId });
@@ -453,6 +453,9 @@ export const desktopApi: RuntimeApi = {
   },
   recordActivity() {
     return invokeCommand('record_activity');
+  },
+  reportFrontendError(input) {
+    return invokeCommand('report_frontend_error', { input });
   },
   getUpdateStatus() {
     return invokeCommand('get_update_status');
@@ -549,9 +552,6 @@ export const desktopApi: RuntimeApi = {
   },
   getConversationRun(projectId, taskId, runId, selectedSessionKey) {
     return invokeCommand<ConversationRunVm>('get_conversation_run', { projectId, taskId, runId, selectedSessionKey });
-  },
-  switchConversationSession(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
-    return invokeCommand<ConversationSessionSwitchVm>('switch_conversation_session', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },
   validateConversationCreate(input) {
     return invokeCommand<ConversationValidationResultVm>('validate_conversation_create', { input });

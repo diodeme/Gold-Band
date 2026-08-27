@@ -45,11 +45,12 @@ interface ShellProps {
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
   conversationTaskUuid?: string | null;
+  sourceControlWorkspacePath?: string | null;
   conversationWorkspaceStore: ConversationWorkspaceStore;
   children: React.ReactNode;
 }
 
-export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, conversationWorkspaceStore, children }: ShellProps) {
+export function Shell({ uiMode, active, conversationPage, conversationSidebar, appName, feedbackEnabled, platform, windowFrameStyle = 'native-compositor', appConfig, repoRoot, needsWorkspace, showSettingsUpdateDot = false, sidebarCollapsed, onSelect, onSelectConversation, onToggleSidebar, onChooseWorkspace, onConversationNew, onConversationSearch, onConversationSelectTask, onConversationSelectRun, onConversationPauseRun, onConversationRenameTask, onConversationDeleteTask, onConversationPinTask, onConversationUnpinTask, onConversationNewInWorkspace, onConversationAddWorkspace, onConversationRemoveWorkspace, activeWorkspaceId, defaultExpandedWorkspaceId, workspaceRevealRequest, conversationTaskUuid, sourceControlWorkspacePath, conversationWorkspaceStore, children }: ShellProps) {
   useThemeWallpaperSurface();
   if (uiMode === 'conversation') {
     return (
@@ -80,6 +81,7 @@ export function Shell({ uiMode, active, conversationPage, conversationSidebar, a
         defaultExpandedWorkspaceId={defaultExpandedWorkspaceId}
         workspaceRevealRequest={workspaceRevealRequest}
         conversationTaskUuid={conversationTaskUuid}
+        sourceControlWorkspacePath={sourceControlWorkspacePath}
         conversationWorkspaceStore={conversationWorkspaceStore}
       >
         {children}

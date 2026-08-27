@@ -7,6 +7,7 @@ pub mod control;
 pub mod elicitation;
 pub mod events;
 pub mod history;
+pub mod interaction;
 pub mod permission;
 pub mod prompt_queue;
 pub mod timeline;

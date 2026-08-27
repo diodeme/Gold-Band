@@ -79,14 +79,14 @@ function session(branchId: string, withPermission = false): AcpSessionVm {
       newestCursor: null,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: withPermission ? [{
-      requestId: 'permission-1',
+    pendingInteractions: withPermission ? [{
+      kind: 'permission',
+      interactionId: 'permission-1',
       title: 'Read file',
       toolCallId: 'tool-1',
       raw: { rawInput: { path: 'README.md' } },
       options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }],
     }] : [],
-    pendingElicitations: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
 }

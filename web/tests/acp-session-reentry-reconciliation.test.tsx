@@ -124,8 +124,7 @@ function session(events: AcpUiEventVm[], status = 'running'): AcpSessionVm {
       hasNewer: false,
     },
     timelineProjection: { agents: [], todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: events.length, errorCount: 0 },
   };
 }

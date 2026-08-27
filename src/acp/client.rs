@@ -343,9 +343,9 @@ use crate::acp::connection::{
     SessionEventPump, SessionRouteTryRecvError, SessionRouteWatermark,
 };
 use crate::acp::elicitation::{
-    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+    ELICITATION_DEFAULT_TIMEOUT, ElicitationAction,
     bind_pending_elicitation_timeline_identity, cancel_pending_elicitation_requests,
-    elicitation_response_result, remove_elicitation_signal_files,
+    elicitation_response_result, pending_elicitation_state, remove_elicitation_signal_files,
     wait_for_elicitation_response_until_cancelled, write_pending_elicitation,
 };
 use crate::acp::events::{
@@ -358,6 +358,10 @@ use crate::acp::events::{
     write_session_metadata, write_session_metadata_owned,
 };
 use crate::acp::history::{ProviderHistoryImport, ProviderHistoryReplay, ReplayUpdateDecision};
+use crate::acp::interaction::{
+    AcpPromptInteractionIdentity, AcpPromptInteractionKind,
+    annotate_prompt_interaction_identity,
+};
 use crate::acp::permission::{
     PermissionResponseState, acp_permission_response_result,
     bind_pending_permission_timeline_identity, cancel_pending_permission_requests,
@@ -5305,7 +5309,7 @@ impl<'a> AcpRuntime<'a> {
                 event.status = Some("completed".to_string());
                 event.title = Some("External user prompt".to_string());
             }
-            self.persist_event_inner(&event, false)?;
+            self.persist_event_inner(&event, false, None)?;
         }
         Ok(())
     }
@@ -5332,12 +5336,33 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_permission_request(&mut self, value: Value) -> Result<()> {
-        self.session_update_phase = SessionUpdatePhase::Live;
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP permission request missing JSON-RPC id"))?;
         let request_id = rpc_id_to_string(&rpc_id);
+        let Some(prompt_turn) = self.active_prompt_turn.as_ref() else {
+            append_diagnostic_best_effort(
+                &self.paths.diagnostics,
+                "warn",
+                "ACP permission request arrived without an active prompt turn",
+                Some(json!({
+                    "code": "acp.permission-without-active-turn",
+                    "requestId": request_id,
+                    "sessionId": self.session_id,
+                })),
+            );
+            return self.send_cancelled_permission_response(rpc_id, &request_id);
+        };
+        let turn_id = prompt_turn.id.clone();
+        let prompt_event_id = prompt_turn.prompt_event_id.clone();
+        let interaction_identity = AcpPromptInteractionIdentity::new(
+            request_id.clone(),
+            AcpPromptInteractionKind::Permission,
+            turn_id.clone(),
+            prompt_event_id.clone(),
+        );
+        self.session_update_phase = SessionUpdatePhase::Live;
         let params = value.get("params").cloned().unwrap_or_else(|| json!({}));
         if self.is_prompt_cancel_requested() {
             return self.send_cancelled_permission_response(rpc_id, &request_id);
@@ -5346,6 +5371,8 @@ impl<'a> AcpRuntime<'a> {
         write_pending_permission(
             &self.paths.attempt_dir,
             &request_id,
+            &turn_id,
+            &prompt_event_id,
             params.clone(),
             current_timestamp(),
         )?;
@@ -5361,7 +5388,7 @@ impl<'a> AcpRuntime<'a> {
             event.raw.get_or_insert_with(|| json!({}))["cancelled"] = json!(true);
         }
         let branch_id = event_branch_id(&event);
-        self.persist_event(&event)?;
+        self.persist_prompt_interaction_event(&event, &interaction_identity)?;
         let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
         if let Some(indexed) =
             crate::acp::timeline::read_indexed_pending_permission(&timeline_path, &request_id)?
@@ -5488,12 +5515,33 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn handle_elicitation_request(&mut self, value: Value) -> Result<()> {
-        self.session_update_phase = SessionUpdatePhase::Live;
         let rpc_id = value
             .get("id")
             .cloned()
             .ok_or_else(|| anyhow!("ACP elicitation request missing JSON-RPC id"))?;
         let elicitation_id = format!("elicit-{}", uuid::Uuid::new_v4().simple());
+        let Some(prompt_turn) = self.active_prompt_turn.as_ref() else {
+            append_diagnostic_best_effort(
+                &self.paths.diagnostics,
+                "warn",
+                "ACP elicitation request arrived without an active prompt turn",
+                Some(json!({
+                    "code": "acp.elicitation-without-active-turn",
+                    "elicitationId": elicitation_id,
+                    "sessionId": self.session_id,
+                })),
+            );
+            return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
+        };
+        let turn_id = prompt_turn.id.clone();
+        let prompt_event_id = prompt_turn.prompt_event_id.clone();
+        let interaction_identity = AcpPromptInteractionIdentity::new(
+            elicitation_id.clone(),
+            AcpPromptInteractionKind::Elicitation,
+            turn_id.clone(),
+            prompt_event_id.clone(),
+        );
+        self.session_update_phase = SessionUpdatePhase::Live;
         if self.is_prompt_cancel_requested() {
             return self.send_declined_elicitation_response(rpc_id, &elicitation_id);
         }
@@ -5509,13 +5557,14 @@ impl<'a> AcpRuntime<'a> {
         // 1. 持久化请求到 attempt dir
         write_pending_elicitation(
             &self.paths.attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: elicitation_id.clone(),
-                jsonrpc_id: rpc_id.clone(),
-                request: request.clone(),
-                created_at: current_timestamp(),
-                timeline_identity: None,
-            },
+            &pending_elicitation_state(
+                elicitation_id.clone(),
+                turn_id.clone(),
+                prompt_event_id.clone(),
+                rpc_id.clone(),
+                request.clone(),
+                current_timestamp(),
+            ),
         )?;
 
         // 2. 发送 UI 事件给前端
@@ -5526,7 +5575,7 @@ impl<'a> AcpRuntime<'a> {
             &request,
         );
         let branch_id = event_branch_id(&event);
-        self.persist_event(&event)?;
+        self.persist_prompt_interaction_event(&event, &interaction_identity)?;
         let timeline_path = branch_timeline_path(&self.paths.attempt_dir, &branch_id);
         if let Some(indexed) =
             crate::acp::timeline::read_indexed_pending_elicitation(&timeline_path, &elicitation_id)?
@@ -5982,13 +6031,22 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn persist_event(&mut self, event: &crate::acp::events::AcpUiEvent) -> Result<()> {
-        self.persist_event_inner(event, true)
+        self.persist_event_inner(event, true, None)
+    }
+
+    fn persist_prompt_interaction_event(
+        &mut self,
+        event: &crate::acp::events::AcpUiEvent,
+        identity: &AcpPromptInteractionIdentity,
+    ) -> Result<()> {
+        self.persist_event_inner(event, true, Some(identity))
     }
 
     fn persist_event_inner(
         &mut self,
         event: &crate::acp::events::AcpUiEvent,
         emit_live_update: bool,
+        prompt_interaction: Option<&AcpPromptInteractionIdentity>,
     ) -> Result<()> {
         let mut timeline_item = self.timeline_item_for_event(event);
         if is_semantically_empty_agent_content(event) {
@@ -6004,6 +6062,9 @@ impl<'a> AcpRuntime<'a> {
             })
         });
         annotate_event_branch(&mut timeline_item);
+        if let Some(identity) = prompt_interaction {
+            annotate_prompt_interaction_identity(&mut timeline_item, identity);
+        }
         self.timing_state.observe_event(&timeline_item);
         if let Some(timestamp) = parse_event_epoch_seconds(&timeline_item.timestamp) {
             timeline_item.timing = self
@@ -7358,7 +7419,8 @@ mod tests {
         SessionRestoreCapabilities, SessionRestoreIntent, SessionRestoreMethod, SessionRestorePlan,
         SessionRestorePlanError, SessionUpdatePhase, acp_prompt_rpc_failure,
         active_context_compaction, active_timeline_streams, active_timeline_streams_by_branch,
-        append_bounded, append_diagnostic_best_effort, append_raw_frame_best_effort,
+        append_bounded, append_diagnostic_best_effort,
+        append_raw_frame_best_effort,
         append_structured_diagnostic_best_effort, attached_sync_required, cancel_attempt_prompt,
         canonical_prompt_event_identity, catalog_observation_is_newer,
         cleanup_doctor_acp_dir_after_success, confirmed_context_usage_update,
@@ -7379,6 +7441,40 @@ mod tests {
         take_pending_live_update_for_stream_switch, unregister_provider_control,
         validate_session_restore_target,
     };
+
+    #[test]
+    fn permission_event_is_bound_to_the_active_prompt_turn() {
+        let mut event = crate::acp::events::permission_request_event(
+            2,
+            "request-2".to_string(),
+            json!({ "sessionId": "session-1" }),
+        );
+        crate::acp::branches::annotate_event_branch(&mut event);
+        crate::acp::interaction::annotate_prompt_interaction_identity(
+            &mut event,
+            &crate::acp::interaction::AcpPromptInteractionIdentity::new(
+                "request-2",
+                crate::acp::interaction::AcpPromptInteractionKind::Permission,
+                "turn-2",
+                "prompt-turn-2",
+            ),
+        );
+
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/turnId")),
+            Some(&json!("turn-2")),
+        );
+        assert_eq!(
+            event
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.pointer("/_meta/goldBandConversation/promptEventId")),
+            Some(&json!("prompt-turn-2")),
+        );
+    }
 
     #[test]
     fn canonical_prompt_accepted_error_is_not_downgraded_to_best_effort() {

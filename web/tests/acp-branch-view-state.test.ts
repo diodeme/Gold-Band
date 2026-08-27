@@ -59,8 +59,7 @@ const session = (branchId: string): AcpSessionVm => ({
     hasNewer: false,
   },
   timelineProjection: { agents: [], todoEntries: [] },
-  pendingPermissions: [],
-  pendingElicitations: [],
+  pendingInteractions: [],
   diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
 });
 

@@ -1374,7 +1374,9 @@ export function App() {
         hasRuntimeSnapshot,
         hasLiveEvent: Boolean(event.event),
         sessionStatus: refreshStatus,
-        pendingPermissionCount: event.session?.pendingPermissions?.length ?? 0,
+        pendingPermissionCount: event.session?.pendingInteractions?.filter(
+          (interaction) => interaction.kind === 'permission',
+        ).length ?? 0,
         followPending,
       });
       if (hasRuntimeSnapshot && updatePlan.patchSelectedSession) {

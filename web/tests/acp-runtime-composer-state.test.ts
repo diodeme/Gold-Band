@@ -137,7 +137,7 @@ function baseInput(overrides: Partial<AcpRuntimeComposerStateInput> = {}): AcpRu
     runtimeErrorMessage: null,
     acpStatus: 'completed',
     prompt: 'hello',
-    waitingForPermission: false,
+    waitingForUserInteraction: false,
     sending: false,
     awaitingResponse: false,
     waitingForOptimisticPrompt: false,
@@ -717,14 +717,14 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canSubmit).toBe(true);
   });
 
-  it('keeps permission waits locked when the session has no prompt queue', () => {
+  it('keeps user interaction waits locked when the session has no prompt queue', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle(),
-      waitingForPermission: true,
+      waitingForUserInteraction: true,
       prompt: 'allow?',
     }));
 
-    expect(state.mode).toBe('permission-blocked');
+    expect(state.mode).toBe('interaction-blocked');
     expect(state.submitTarget).toBe('none');
     expect(state.sessionActive).toBe(true);
     expect(state.composerLocked).toBe(true);
@@ -739,7 +739,7 @@ describe('deriveAcpRuntimeComposerState', () => {
   it('lets an accepted stop win over a stale permission snapshot', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({ acp: { stopping: true, latestTurnStatus: 'none' } }),
-      waitingForPermission: true,
+      waitingForUserInteraction: true,
       stopCommandPending: true,
     }));
 
@@ -749,7 +749,7 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
   });
 
-  it('routes a Direct message to the existing queue while permission remains pending', () => {
+  it('routes a Direct message to the existing queue while any user interaction remains pending', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
         acp: {
@@ -761,11 +761,11 @@ describe('deriveAcpRuntimeComposerState', () => {
         promptQueue: { revision: 0, items: [], maxItems: 10 },
       }),
       promptQueueEnabled: true,
-      waitingForPermission: true,
+      waitingForUserInteraction: true,
       prompt: '排队发送',
     }));
 
-    expect(state.mode).toBe('permission-blocked');
+    expect(state.mode).toBe('interaction-blocked');
     expect(state.submitTarget).toBe('queue-prompt');
     expect(state.composerLocked).toBe(false);
     expect(state.inputDisabled).toBe(false);
@@ -1355,8 +1355,8 @@ describe('shouldHidePendingAcpInteractions', () => {
       acp: { turnId: 'turn-1', liveTurnActivity: 'idle', latestTurnStatus: 'cancelled', stopping: false },
     });
 
-    expect(shouldHidePendingAcpInteractions(terminal, 'turn-1', false, false)).toBe(true);
-    expect(shouldHidePendingAcpInteractions(terminal, 'turn-2', false, false)).toBe(false);
+    expect(shouldHidePendingAcpInteractions(terminal, 'turn-1', false, false, 'turn-1')).toBe(true);
+    expect(shouldHidePendingAcpInteractions(terminal, 'turn-2', false, false, 'turn-2')).toBe(false);
   });
 });
 
@@ -1423,6 +1423,30 @@ describe('lifecycle-only terminal composer recovery', () => {
 
     expect(state.mode).toBe('normal');
     expect(state.stopInProgress).toBe(false);
+    expect(state.inputDisabled).toBe(false);
+    expect(state.canSubmit).toBe(true);
+  });
+
+  it('keeps a newer permission turn queued when lifecycle is terminal for the prior turn', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        acp: {
+          revision: 3,
+          turnId: 'turn-previous',
+          sessionAvailability: 'established',
+          liveTurnActivity: 'idle',
+          latestTurnStatus: 'completed',
+          stopping: false,
+        },
+        promptQueue: { revision: 0, items: [], maxItems: 10 },
+      }),
+      promptQueueEnabled: true,
+      waitingForUserInteraction: true,
+      prompt: '继续排队',
+    }));
+
+    expect(state.mode).toBe('interaction-blocked');
+    expect(state.submitTarget).toBe('queue-prompt');
     expect(state.inputDisabled).toBe(false);
     expect(state.canSubmit).toBe(true);
   });

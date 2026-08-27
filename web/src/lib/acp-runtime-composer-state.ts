@@ -6,7 +6,7 @@ export type AcpComposerMode =
   | 'stopping'
   | 'invalid-workflow'
   | 'runtime-error'
-  | 'permission-blocked'
+  | 'interaction-blocked'
   | 'session-superseded'
   | 'submitting';
 
@@ -44,7 +44,7 @@ export interface AcpRuntimeComposerStateInput {
   acpStatus?: string | null;
   prompt: string;
   hasAttachments?: boolean;
-  waitingForPermission: boolean;
+  waitingForUserInteraction: boolean;
   sending: boolean;
   awaitingResponse: boolean;
   waitingForOptimisticPrompt: boolean;
@@ -112,8 +112,8 @@ export function deriveAcpRuntimeComposerState(
   const sending = input.sending && !acpTerminal;
   const acpActive = !acpTerminal && lifecycleAcpRunning;
   // Stop is a control-plane fact. A stale session snapshot must not win over
-  // it and keep the composer in permission-blocked mode.
-  const waitingForPermission = input.waitingForPermission && !stopRequested;
+  // it and keep the composer in interaction-blocked mode.
+  const waitingForUserInteraction = input.waitingForUserInteraction && !stopRequested;
   const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
@@ -131,7 +131,7 @@ export function deriveAcpRuntimeComposerState(
     : reportedBackendMode;
   const mode = sessionSuperseded ? 'session-superseded' : composerModeFromBackend({
     backendMode,
-    waitingForPermission,
+    waitingForUserInteraction,
     stopInProgress,
     turnSubmitting,
     runtimeContinueBlockedByWorkflow,
@@ -151,7 +151,7 @@ export function deriveAcpRuntimeComposerState(
   const queueAtCapacity = submitTarget === 'queue-prompt' && (
     (input.lifecycle?.promptQueue?.items.length ?? 0) >= (input.lifecycle?.promptQueue?.maxItems ?? 10)
   );
-  const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForPermission;
+  const sessionActive = runtimeActive || acpActive || stopInProgress || waitingForUserInteraction;
   const activePromptLocked =
     sending ||
     waitingForOptimisticPrompt ||
@@ -160,7 +160,7 @@ export function deriveAcpRuntimeComposerState(
     sessionActive ||
     stopInProgress;
   const showExternalState = mode === 'invalid-workflow' || mode === 'runtime-error';
-  const composerLocked = waitingForPermission && !directQueueFacet;
+  const composerLocked = waitingForUserInteraction && !directQueueFacet;
   const staleStoppingBackend = acpTerminal && reportedBackendMode === 'stopping';
   const backendInputLocked = !staleStoppingBackend && mode !== 'normal' && Boolean(backend?.lockInput);
   const directInputDisabled =
@@ -192,7 +192,7 @@ export function deriveAcpRuntimeComposerState(
     && !turnSubmitting
     && !awaitingResponse;
   const statusActive = !sessionSuperseded &&
-    !input.waitingForPermission &&
+    !input.waitingForUserInteraction &&
     !composerLocked &&
     !directTurnHandoff &&
     (turnSubmitting || awaitingResponse || initialTimelinePending || sessionActive || stopInProgress || mode === 'runtime-active');
@@ -223,7 +223,7 @@ export function deriveAcpRuntimeComposerState(
     externalMessage,
     processingKind,
     statusActive,
-    showStatus: !sessionSuperseded && !input.waitingForPermission && statusActive,
+    showStatus: !sessionSuperseded && !input.waitingForUserInteraction && statusActive,
     placeholderKind: initialTimelinePending
       ? 'runtime-controlled'
       : directQueueFacet
@@ -312,12 +312,17 @@ export function shouldHidePendingAcpInteractions(
   localTurnId: string | null | undefined,
   cancelling: boolean,
   stopCommandPending: boolean,
+  interactionTurnId?: string | null,
 ) {
   if (cancelling || stopCommandPending || Boolean(lifecycle?.acp.stopping)) {
     return true;
   }
-  return isTerminalAcpLifecycle(lifecycle)
-    && (!localTurnId || lifecycle?.acp.turnId === localTurnId);
+  if (!isTerminalAcpLifecycle(lifecycle)) return false;
+  const terminalTurnId = lifecycle?.acp.turnId ?? null;
+  if (terminalTurnId && interactionTurnId) {
+    return terminalTurnId === interactionTurnId;
+  }
+  return !localTurnId || terminalTurnId === localTurnId;
 }
 
 /**
@@ -374,6 +379,7 @@ function shouldRouteDirectSubmissionToQueue(input: {
   return input.input.sending ||
     input.waitingForOptimisticPrompt ||
     input.awaitingResponse ||
+    input.input.waitingForUserInteraction ||
     input.runtimeActive ||
     input.acpActive;
 }
@@ -576,7 +582,7 @@ function normalizeComposerMode(mode?: string | null): AcpComposerMode {
     normalized === 'stopping' ||
     normalized === 'invalid-workflow' ||
     normalized === 'runtime-error' ||
-    normalized === 'permission-blocked' ||
+    normalized === 'interaction-blocked' ||
     normalized === 'session-superseded' ||
     normalized === 'submitting'
   ) {
@@ -587,13 +593,13 @@ function normalizeComposerMode(mode?: string | null): AcpComposerMode {
 
 function composerModeFromBackend(input: {
   backendMode: AcpComposerMode;
-  waitingForPermission: boolean;
+  waitingForUserInteraction: boolean;
   stopInProgress: boolean;
   turnSubmitting: boolean;
   runtimeContinueBlockedByWorkflow: boolean;
   runtimeErrorMessage: string | null;
 }): AcpComposerMode {
-  if (input.waitingForPermission) return 'permission-blocked';
+  if (input.waitingForUserInteraction) return 'interaction-blocked';
   if (input.stopInProgress) return 'stopping';
   if (input.turnSubmitting) return 'submitting';
   if (input.runtimeContinueBlockedByWorkflow) return 'invalid-workflow';
@@ -605,7 +611,7 @@ function submitTargetFromBackend(
   mode: AcpComposerMode,
   backendSubmitTarget?: string | null,
 ): AcpComposerSubmitTarget {
-  if (mode === 'permission-blocked') return 'none';
+  if (mode === 'interaction-blocked') return 'none';
   if (mode === 'invalid-workflow' || mode === 'runtime-error' || mode === 'stopping') return 'none';
   const normalized = normalizeStatus(backendSubmitTarget);
   if (
@@ -658,7 +664,7 @@ function placeholderKindForMode(
   mode: AcpComposerMode,
   activePromptLocked: boolean,
 ): AcpComposerPlaceholderKind {
-  if (input.waitingForPermission) return 'runtime-controlled';
+  if (input.waitingForUserInteraction) return 'runtime-controlled';
   if (mode === 'stopping') return 'stopping';
   if (mode === 'invalid-workflow' || mode === 'runtime-error') return 'message';
   if (activePromptLocked) return 'runtime-controlled';

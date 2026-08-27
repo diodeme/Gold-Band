@@ -100,6 +100,7 @@
 
 ### 主要任务
 
+- 在创建、重跑、继续、恢复和发送的会话准入边界按 `project_id` 校验 workspace 路径存在、为目录且可读；失败时在 Run / Attempt / ACP turn 写入前返回稳定错误码与路径参数。
 - 执行 `initialize`。
 - 根据 worker-ref 尝试 `session/load`。
 - 不可恢复时创建 `session/new`。
@@ -114,9 +115,11 @@
 
 - 不让 ACP session 替代 Gold Band task / run / round / node canonical state。
 - 不用 legacy CLI continue 恢复会话。
+- 不在 ACP adapter 进程启动边界重复校验 workspace，也不针对 Windows 进程错误码增加兜底分支。
 
 ### 验收标准
 
+- workspace 缺失、不是目录或不可访问时分别返回 `workspace.path-not-found`、`workspace.path-not-directory`、`workspace.path-inaccessible`，包含 `projectId/workspacePath`，且不创建或准入新的运行事实；历史读取和 Agent doctor 状态不受影响。
 - 新建和恢复 session 都能写入一致的 worker-ref。
 - prompt 完成后能记录 stop reason 与 session metadata。
 - cancel 能生成可诊断的结构化状态，并最终让 session metadata 进入 `cancelled`。

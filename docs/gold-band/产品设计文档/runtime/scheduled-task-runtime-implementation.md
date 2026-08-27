@@ -384,3 +384,15 @@ Run 的 SearchIndex identity 必须在移入回收站前通过 `normalize_worksp
 2026-08-27 质量收口接口验收严格串行通过：history deletion 10/10、scheduler DB 59/59、SearchIndex 10/10、conversation commands 23/23、scheduled runtime 90/90、scheduled service 30/30、durable stop integrations 3/3。新增定向证据覆盖 `deleting` 失败保持 phase、attempt 只加一次并可重试，真实 occurrence DB listener 只在终态后被调用，dispatch `Err` 保留 cancelling owner 与 `stopping` history，alias target 删除后仍使用预先冻结 identity，以及两个删除表的 `EXPLAIN QUERY PLAN` 均命中 `attempt_path` 主键索引且无 `SCAN`。
 
 SearchIndex v6 的启动 backfill 与 Run 删除共享同一个 index mutex 形成提交顺序，但文件加载不得占用该锁。`index_session` 先在锁外构造模块私有 owned candidate：在 attempt 仍存在时冻结 normalized identity，并一次性读取/解析 snapshot 与 timeline prompt；获得 mutex 后、开启 SQLite transaction 或执行任何 upsert 前，再确认原 `attempt_dir` 仍存在。backfill 先提交时，后续 Run delete 按同一 mutex 顺序清除行；delete 先完成时，迟到 candidate 因目录不存在而幂等跳过，不能回写 stale session/prompt。该修复只增加一次锁内有界 metadata probe，移除原有锁内 timeline 文件 I/O，不增加队列、缓存、generation 字段、后台 worker 或通用 hook。并发重复 finalizer 的次要 TOCTOU 不在本轮扩展范围。
+
+### Phase 10.12 执行历史与会话生命周期解耦（2026-08-27）
+
+本节取代 Phase 10.11 中“删除执行历史等于停止并物理删除 Run”的设计。Run 是可继续交互的会话事实，accepted occurrence 是该 Run 曾由某个定时任务触发的 scheduler 历史事实；详情页按 Run 聚合展示不改变两者的领域归属。人工“移除执行历史”只删除 scheduler 拥有的 occurrence，不再隐式停止或删除 Run，也不清理 Task/Round/ACP/Timeline/SearchIndex，不修改 definition 的持续会话 `task_id` 绑定。Run 内已经冻结的 `scheduledTrigger` Timeline 事件继续作为不可变来源说明保留；其中的 occurrence ID 是历史 provenance，不要求被删除的 scheduler 行仍可反向解析。
+
+只有 `RunStatus::Completed` 的历史项允许删除。运行中、暂停中、等待权限或等待用户输入的 Run 仍依赖 occurrence 承接 lease、完成事件、恢复、definition 投影和通知，前后端都必须拒绝删除并返回稳定结构化错误；用户先显式完成或取消运行后才能移除历史。“移除历史”本身不调用 stop controller，也不改变 Run 状态。该边界避免为了即时隐藏活动项新增 tombstone、soft-delete 字段或第二套生命周期。
+
+删除命令使用 `projectId + scheduledTaskId + taskId + runId + throughOccurrenceId`。`throughOccurrenceId` 必须是当前分组中真实 accepted occurrence，并作为用户所见历史窗口的稳定水位；repository 在一个 immediate transaction 中校验水位归属后，只删除同一 Run 分组中排序不晚于该水位的 accepted occurrence。这样重复请求收敛到相同目标状态，且删除与新的持续会话触发并发时，不会误删用户提交后才接受的新 occurrence。新 occurrence 存在时，该 Run 会按新的 scheduler 事实重新出现在历史中。
+
+旧 `scheduled_history_deletions` durable operation、`accepted/stopping/deleting` phase、startup reconcile、terminal lifecycle finalizer、Run trash 和 SearchIndex delete 均不再服务该命令，开发阶段通过 scheduler schema 破坏式升级删除这些表、索引和消费路径。批量接口仍固定最多 20 项并返回逐项 `completed | failed`、完整 locator 与结构化 `code + params`；某项失败不得阻断其他项。完成响应表示 occurrence 删除事务已提交，不再包含 operation ID 或停止进度。
+
+性能与过度设计复核：每项删除只读取一次 Run 状态，并在单 project/scheduled task/Run/watermark 索引范围内执行有界 SQLite 删除；批量上限保持 20，不触碰 Run 文件、Timeline 或全局 SearchIndex。方案删除 durable operation 状态机和启动扫描，不新增聚合、缓存、队列、并发 worker、软删除字段或依赖。水位字段复用现有 occurrence identity，只用于保护实际存在的并发接受竞态，复杂度与不变量匹配。

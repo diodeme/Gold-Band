@@ -83,7 +83,7 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 状态筛选和定义状态统一使用“全部 / 已启用 / 已停用”。“已启用”只表达定义开关，不得写成“运行中”；真实执行中状态只能来自 occurrence/runtime 生命周期。首次加载失败显示错误，刷新失败保留已有任务行；任务操作以 task ID 维护独立 pending 状态，失败时保留权威实体和删除确认框，其他任务仍可操作。
 
-详情页以 accepted Run 作为历史主实体，occurrence 只作为精确定位锚点；不展示 skipped、missed 等调度诊断作为执行历史。历史固定每页 20 条并使用上一页/下一页游标栈。行支持单选、多选和按完整 `projectId + scheduledTaskId + taskId + runId` 删除；后端返回 completed 时局部移除，stopping/deleting 保留进行状态，failed 保持选中并按结构化错误码显示反馈。
+详情页以 accepted Run 作为历史分组实体，occurrence 仍是 scheduler 领域中可删除的历史事实；不展示 skipped、missed 等调度诊断作为执行历史。历史固定每页 20 条并使用上一页/下一页游标栈。只有 canonical Run 已为 `Completed` 的行可以单选或多选“移除所选历史”；运行中、暂停中或等待用户交互的行保留打开入口，但不提供历史删除。删除命令携带完整 `projectId + scheduledTaskId + taskId + runId` 和当前历史项的最新 occurrence 水位，只删除该水位及以前属于同一分组的 accepted occurrence。Run、Task、Round、ACP 会话、Timeline、SearchIndex 和 definition `task_id` 均不删除、不停止、不改写；用户仍可从普通会话历史进入 Run 并继续交互。后端返回 completed 时局部移除当前投影；若删除期间同一持续会话产生了更新的 occurrence，刷新后该 Run 按新事实重新出现在执行历史中。逐项失败保持选中，并按结构化错误码显示反馈。
 
 替换历史投影不得改变定义操作：详情页继续保留原有诊断区、启停、立即执行、编辑 Sheet、保存/关闭/错误反馈、删除确认和任务/occurrence 更新订阅；仅删除旧 occurrence 状态筛选与其列表投影。
 

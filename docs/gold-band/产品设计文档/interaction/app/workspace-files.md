@@ -41,6 +41,7 @@ CodeMirror 不启用上游固定浅色主题。编辑器背景、正文、行号
 ### 3.1 Markdown 实时预览编辑
 
 - Markdown 使用 `@atomic-editor/editor` 的 CodeMirror 6 公开扩展实现实时预览，不创建 HTML/富文本副本，也不执行 DOM 到 Markdown 的反向序列化。
+- Markdown renderer 的构建契约要求 React、CodeMirror 与 Lezer 的身份敏感运行时包在 Vite 产物中保持单实例；生产构建与 Vitest 共用同一份显式 dedupe 清单。包管理器允许存在的多版本或重复物理副本不得改变 parser、Facet、StateField、Context 与 decoration 的模块身份，也不得使实时预览静默退化为源码展示。
 - 用户可直接编辑标题、强调、列表、任务项、链接、代码块和表格；当前结构的 Markdown 标记按成熟组件规则显露。
 - 实时预览正文基准字号为 14px，标题、表格、代码块继续使用相对层级，不放大成文档页式展示。
 - 内容区域右上角提供“复制 Markdown 源码”和“源码 / 实时预览”两个悬浮按钮。复制内容取自当前 `EditorState.doc`，包含尚处于自动保存等待期的最新输入。

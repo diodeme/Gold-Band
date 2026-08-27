@@ -378,6 +378,7 @@ impl ScheduledTaskService {
             auto_config: input.auto_config.clone(),
             attachment_paths: input.attachment_paths.clone(),
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -445,15 +446,6 @@ impl ScheduledTaskService {
             "directConfig": input.direct_config,
             "autoConfig": input.auto_config,
         });
-        if let Some(error) =
-            crate::scheduled_runtime::scheduled_agent_unattended_error(&workspace.app, &definition)
-        {
-            return Err(ScheduledServiceError::new(
-                error.code,
-                error.params.unwrap_or_else(|| serde_json::json!({})),
-            ));
-        }
-
         let job_dir = workspace.app.paths.scheduled_task_dir(&id);
         let staging_dir = job_dir.join(format!("inputs.staging-{}", Uuid::new_v4().simple()));
         let input_dir = job_dir.join("inputs");
@@ -554,6 +546,7 @@ impl ScheduledTaskService {
             auto_config: input.auto_config.clone(),
             attachment_paths: Some(attachment_paths),
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -664,15 +657,6 @@ impl ScheduledTaskService {
         } else {
             expected_updated_at + chrono::Duration::milliseconds(1)
         };
-        if let Some(error) =
-            crate::scheduled_runtime::scheduled_agent_unattended_error(&workspace.app, &definition)
-        {
-            return Err(ScheduledServiceError::new(
-                error.code,
-                error.params.unwrap_or_else(|| serde_json::json!({})),
-            ));
-        }
-
         let definition_id = definition.id().to_string();
         let mut swap = if let Some(paths) = replacement_paths {
             Some(stage_replacement_inputs(
@@ -1279,8 +1263,8 @@ mod tests {
         should_reset_task_association,
     };
     use crate::view_models_conversation::{
-        CreateScheduledTaskInputVm, ScheduledEveryInputVm, ScheduledScheduleInputVm,
-        UpdateScheduledTaskInputVm,
+        ConversationDirectConfigVm, CreateScheduledTaskInputVm, ScheduledEveryInputVm,
+        ScheduledScheduleInputVm, UpdateScheduledTaskInputVm,
     };
 
     #[derive(Default)]
@@ -1576,6 +1560,37 @@ mod tests {
                 .scheduled_task_dir(result.definition.id())
                 .join("inputs/report.txt")
                 .is_file()
+        );
+    }
+
+    #[test]
+    fn create_direct_preserves_the_user_selected_permission_mode_without_capability_gating() {
+        let fixture = Fixture::new();
+        let mut input = fixture.create_input();
+        input.run_mode = "direct".to_string();
+        input.workflow_template_id = None;
+        input.include_optional_entry = None;
+        input.direct_config = Some(ConversationDirectConfigVm {
+            agent_type: "claude-acp".to_string(),
+            model_id: Some("sonnet".to_string()),
+            permission_mode: Some("plan".to_string()),
+            config_options: BTreeMap::new(),
+        });
+
+        let created = fixture.service.create(input).unwrap();
+
+        assert_eq!(created.definition.mode, ScheduledMode::Direct);
+        assert_eq!(
+            created.definition.execution_config["directConfig"]["permissionMode"],
+            "plan"
+        );
+        assert_eq!(
+            created
+                .definition
+                .content_snapshot
+                .direct_agent_id
+                .as_deref(),
+            Some("claude-acp")
         );
     }
 

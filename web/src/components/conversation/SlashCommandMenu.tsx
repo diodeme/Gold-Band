@@ -120,12 +120,12 @@ export function SlashCommandMenu({
 
   if (variant === 'inline') {
     return (
-      <div ref={inlineRootRef} className="relative min-w-0">
+      <div ref={inlineRootRef} className={cn('relative min-w-0', open && 'z-50')}>
         {children}
         {open ? (
           <div
             data-slot="slash-command-menu"
-            className="absolute inset-x-[-1rem] top-8 z-50 w-[calc(100%+2rem)] rounded-xl border border-border/45 bg-popover/98 px-2 py-1 shadow-[0_18px_42px_-20px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+            className="absolute inset-x-[-1rem] top-8 z-50 w-[calc(100%+2rem)] rounded-xl border border-border/45 bg-popover px-2 py-1 text-popover-foreground shadow-[0_18px_42px_-20px_rgba(0,0,0,0.42)]"
           >
             {commandMenu}
           </div>
@@ -144,7 +144,7 @@ export function SlashCommandMenu({
         side="top"
         align="start"
         sideOffset={8}
-        className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-1rem)] rounded-xl border-border/50 bg-popover/95 p-1.5 shadow-[0_18px_48px_-20px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+        className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-1rem)] rounded-xl border-border/50 bg-popover p-1.5 text-popover-foreground shadow-[0_18px_48px_-20px_rgba(0,0,0,0.45)]"
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
       >

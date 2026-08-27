@@ -14,6 +14,7 @@ import {
   validateWorkflowForSave,
 } from '@/components/WorkflowEditor';
 import type { WorkflowDsl, WorkflowWorkerNodeDsl } from '@/types';
+import { readyWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import {
   NODE_HEIGHT,
   NODE_WIDTH,
@@ -190,18 +191,105 @@ describe('workflow editor interaction contracts', () => {
     expect(runtimeGraphSource).toContain('const path = route?.path ?? smoothPath;');
   });
 
-  it('derives failure handles from AI output validation instead of node kind', () => {
-    const value = workflow();
+  it('derives failure handles from AI output validation or manual check instead of node kind', () => {
+    const value = workflow({
+      nodes: [
+        worker('plan', { manual_check: true }),
+        worker('build'),
+        worker('review', {
+          output: { kind: 'json', artifact: 'review-result' },
+          success_condition: { expression: '$.result == true' },
+        }),
+      ],
+    });
     const projection = createAuthoringFlowProjection(value, createAuthoringGraphLayout(value), null, null, new Set(), new Map(), t);
 
-    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'plan'))).toBe(false);
+    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'plan'))).toBe(true);
+    expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'build'))).toBe(false);
     expect(nodeSupportsFailureOutcome(value.nodes.find((node) => node.id === 'review'))).toBe(true);
-    expect(projection.nodes.find((node) => node.id === 'plan')?.data.supportsFailureOutcome).toBe(false);
+    expect(projection.nodes.find((node) => node.id === 'plan')?.data.supportsFailureOutcome).toBe(true);
+    expect(projection.nodes.find((node) => node.id === 'build')?.data.supportsFailureOutcome).toBe(false);
     expect(projection.nodes.find((node) => node.id === 'review')?.data.supportsFailureOutcome).toBe(true);
 
-    const invalid = workflow({ edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }] });
-    const validation = validateWorkflowForSave(invalid, [], [], t);
-    expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresOutputValidation')).toBe(true);
+    const manualFailure = workflow({
+      nodes: value.nodes,
+      edges: [...value.edges, { from: 'plan', to: 'review', on: 'failure' }],
+    });
+    const manualValidation = validateWorkflowForSave(manualFailure, readyWorkflowProfileCatalog([]), [], t);
+    expect(manualValidation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(false);
+
+    const invalid = workflow({ edges: [...value.edges, { from: 'build', to: 'plan', on: 'failure' }] });
+    const validation = validateWorkflowForSave(invalid, readyWorkflowProfileCatalog([]), [], t);
+    expect(validation.issues.some((issue) => issue.message === 'workflowEditor.validationFailureOutcomeRequiresResultDecision')).toBe(true);
+  });
+
+  it('defers only profile reference validation while the profile catalog is loading', () => {
+    const value = workflow({
+      id: '',
+      nodes: [
+        worker('plan', { executionSlotId: 'slot-plan', profile: 'missing-profile' }),
+        worker('build', { executionSlotId: 'slot-build' }),
+        worker('review', {
+          executionSlotId: 'slot-review',
+          output: { kind: 'json', artifact: 'review-result' },
+          success_condition: { expression: '$.result == true' },
+        }),
+      ],
+    });
+
+    const loadingValidation = validateWorkflowForSave(
+      value,
+      { status: 'loading', profiles: [] },
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+    );
+    const readyValidation = validateWorkflowForSave(
+      value,
+      readyWorkflowProfileCatalog([]),
+      [],
+      t,
+      null,
+      null,
+      null,
+      true,
+      { definitionRevision: '', bindingRevision: 0, bindings: [] },
+      false,
+    );
+
+    expect(loadingValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationWorkflowIdRequired');
+    expect(loadingValidation.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+    expect(readyValidation.issues.map((issue) => issue.message)).toContain('workflowEditor.validationNodeProfileVisibilityChanged');
+
+    const dynamicValue = workflow({
+      nodes: [{
+        id: 'dynamic',
+        type: 'ai-dynamic',
+        agentStrategy: { mode: 'fixed', provider: 'claude-acp' },
+        allowedProfiles: ['missing-profile'],
+        allowedWorkflows: [],
+        control: {
+          maxDynamicNodes: 20,
+          maxFanout: 5,
+          maxDepth: 6,
+          maxParallel: 3,
+          maxGroupDepth: 1,
+          maxWorkflowInvocations: 10,
+          allowNestedDynamic: false,
+        },
+      }],
+      edges: [{ from: 'dynamic', to: '$end', on: 'success' }],
+    });
+    const dynamicLoading = validateWorkflowForSave(dynamicValue, { status: 'loading', profiles: [] }, [], t);
+    const dynamicReady = validateWorkflowForSave(dynamicValue, readyWorkflowProfileCatalog([]), [], t);
+
+    expect(dynamicLoading.issues.map((issue) => issue.message)).not.toContain('workflowEditor.validationAllowedProfileMissing');
+    expect(dynamicReady.issues.map((issue) => issue.message)).toContain('workflowEditor.validationAllowedProfileMissing');
   });
 
   it('selects terminal projections without a node toolbar and deletes their incoming edges as one domain operation', () => {
@@ -240,6 +328,8 @@ describe('workflow editor interaction contracts', () => {
     expect(editorSource).toContain("const WORKFLOW_NODE_SPLIT_OUTCOME_TOP = { success: '34%', failure: '66%' } as const;");
     expect(editorSource).toContain('data.supportsFailureOutcome ? WORKFLOW_NODE_SPLIT_OUTCOME_TOP.success : WORKFLOW_NODE_SINGLE_OUTCOME_TOP');
     expect(editorSource).toContain('style={{ top: WORKFLOW_NODE_SPLIT_OUTCOME_TOP.failure }}');
+    expect(editorSource).toContain('updateNodeInternals(id);');
+    expect(editorSource).toContain('[data.supportsFailureOutcome, id, updateNodeInternals]');
   });
 
   it('routes node, terminal, and edge deletion through the canvas toolbar', () => {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getAcpRawFrames, getAcpSession, getAgentRegistry, getProfiles, getWorkflow } from '@/api';
+import { getAcpRawFrames, getAcpSession, getAgentRegistry, getWorkflow } from '@/api';
 import { RawFrameViewer, SystemPromptPanel } from '@/components/acp/ACPChatDialog';
 import { resolveGoldBandHiddenSection } from '@/components/acp/hiddenPromptSections';
 import { GraphView } from '@/components/GraphView';
@@ -11,13 +11,13 @@ import { BoundedLruCache } from '@/lib/bounded-lru-cache';
 import { displayAppError } from '@/i18n';
 import { goldThemedScrollbarClassName } from '@/lib/themed-scrollbar';
 import { workflowEditorSessionDraftIsDirty } from '@/lib/workflow-editor-session-draft';
+import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 import type {
   AcpRawFramePageVm,
   AcpRawFrameQueryInput,
   AgentRegistryVm,
   ConversationRunVm,
   GraphNodeVm,
-  ProfileVm,
   WorkflowDsl,
   WorkflowModelBindings,
   WorkflowVm,
@@ -152,7 +152,7 @@ function WorkflowEditPanel({
   const [baselineWorkflow, setBaselineWorkflow] = useState<WorkflowDsl | null>(() => cached?.baselineWorkflow ?? null);
   const [baselineModelBindings, setBaselineModelBindings] = useState<WorkflowModelBindings | null>(() => cached?.baselineModelBindings ?? null);
   const [registry, setRegistry] = useState(initialAgentRegistry);
-  const [profiles, setProfiles] = useState<ProfileVm[]>([]);
+  const profileCatalog = useWorkflowProfileCatalog();
   const [dependenciesLoading, setDependenciesLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -168,16 +168,14 @@ function WorkflowEditPanel({
     let active = true;
     Promise.all([
       initialAgentRegistry ? Promise.resolve(initialAgentRegistry) : getAgentRegistry().catch(() => ({ agents: [], catalog: [] })),
-      getProfiles().then((result) => result.profiles).catch(() => []),
       getWorkflow(run.taskId, run.projectId),
     ])
-      .then(([nextRegistry, nextProfiles, nextAuthoring]) => {
+      .then(([nextRegistry, nextAuthoring]) => {
         if (!active) return;
         const nextWorkflow = parseWorkflowJson(nextAuthoring.workflowJson);
         if (!nextWorkflow) throw new Error('workflow.authoring.invalid');
         const cachedDraft = workflowDraftCache.peek(resource.key);
         setRegistry(nextRegistry);
-        setProfiles(nextProfiles);
         setAuthoring(nextAuthoring);
         setDraft(cachedDraft?.draft ?? nextWorkflow);
         setEditorDraft(cachedDraft?.editorDraft ?? null);
@@ -252,7 +250,7 @@ function WorkflowEditPanel({
           value={draft}
           modelBindings={editorDraft?.modelBindings ?? authoring?.modelBindings}
           agentRegistry={registry}
-          profiles={profiles}
+          profileCatalog={profileCatalog}
           saving={saving}
           validationRequestId={repairMode ? 1 : 0}
           initialSessionDraft={cached?.editorDraft ?? null}

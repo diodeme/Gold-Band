@@ -61,7 +61,7 @@ const resources = {
             later: "较晚（{{offset}}）",
           },
         },
-        composer: { create: "创建定时任务", unconfigured: "尚未配置执行计划", repeat: "重复计划", at: "单次计划", creating: "定时任务创建", exit: "退出定时任务创建", configure: "配置定时任务", moreSendOptions: "更多发送选项" },
+        composer: { create: "创建定时任务", created: "定时任务已创建，<tasks>查看定时任务</tasks>", unconfigured: "尚未配置执行计划", repeat: "重复计划", at: "单次计划", creating: "定时任务创建", exit: "退出定时任务创建", configure: "配置定时任务", moreSendOptions: "更多发送选项", switchTo: "切换为" },
         errors: {
           SCHEDULED_POWER_INHIBITOR_FAILED: "无法阻止系统自动休眠", SCHEDULED_PERMISSION_REQUIRED: "需要权限审批", SCHEDULED_USER_INPUT_REQUIRED: "需要用户输入",
           SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "前序运行需处理", SCHEDULED_QUEUE_BUSY: "队列繁忙已跳过", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent 不支持无人值守模式", SCHEDULED_EXECUTION_FAILED: "执行失败", SCHEDULED_LEASE_LOST: "执行超时租约丢失",
@@ -292,10 +292,15 @@ const resources = {
         SCHEDULED_NOT_FOUND: "待恢复的定时任务执行已不存在，请刷新后重试。",
         SCHEDULED_STORAGE_FAILED: "无法更新定时任务执行状态，请重试。",
         git: {
+          "version-unsupported": "当前 Git 版本 {{installedVersion}} 过低，需要 Git {{minimumVersion}} 或更高版本。",
+          "version-unavailable": "无法识别当前 Git 版本，请安装 Git {{minimumVersion}} 或更高版本后重试。",
           "workspace-outside-project": "所选 Worktree 不属于当前项目。",
           "ref-changed": "仓库状态已变化，请刷新后重试。",
           "repository-locked": "仓库正在执行其他写操作。",
           "workspace-locked": "当前工作空间正在执行其他写操作。",
+          "operation-in-progress": "当前 Git 流程尚未结束，请完成或中止后重试。",
+          "branch-required": "当前工作区未检出分支，请先选择分支。",
+          "head-required": "当前仓库还没有可用的 HEAD Commit。",
           "nothing-to-stash": "没有可保存到 Stash 的更改。",
           "stash-not-found": "所选 Stash 已不存在。",
           "remote-not-found": "所选远程仓库已不存在。",
@@ -470,6 +475,7 @@ const resources = {
           "task-delete-failed": "删除会话失败：{{message}}",
           "workspace-not-found": "找不到该工作空间。",
           "session-restore-unsupported": "当前 Agent 不支持恢复已有会话。",
+          "session-restore-reference-missing": "当前会话缺少可恢复的 Provider 会话引用。",
           "history-sync-unsupported": "当前 Agent 不支持同步已有会话的完整历史。",
           "prompt-empty": "请输入要发送的内容。",
           "prompt-quote-invalid": "引用数据无效，请删除后重新引用。",
@@ -483,6 +489,9 @@ const resources = {
           "prompt-queue-revision-conflict": "待发送顺序已发生变化，请在列表更新后重试。",
           "prompt-queue-invalid-order": "待发送顺序无效，请重试。",
           "prompt-queue-session-busy": "当前会话仍在运行，请停止后再手动使用。",
+          "prompt-session-busy": "上一条消息仍在处理中，请稍候或先停止当前回复。",
+          "prompt-submission-conflict": "这条消息的发送标识已被其他内容使用，请重新发送。",
+          "prompt-submission-missing": "已接纳的消息内容无法读取，请重新发送。",
           "prompt-queue-storage-failed": "待发送队列保存失败，请重试。",
         },
         workflow: {
@@ -990,6 +999,10 @@ const resources = {
         noDoctorReadyAgents:
           "暂无通过 doctor 的 Agent，请先到 Agent 管理运行 doctor。",
         agentDoctorUnavailable: "Agent 未通过 doctor",
+        profileCatalogLoading: "正在加载角色目录",
+        profileCatalogLoadingDescription: "角色目录就绪后才能保存工作流。",
+        profileCatalogLoadFailed: "角色目录加载失败",
+        profileCatalogRetry: "重新加载",
         selectHint: "选择画布中的节点或边进行配置。",
         terminalSelectionHint: "终点节点无需配置，可通过画布上方的删除操作移除。",
         currentSelection: "当前选择",
@@ -1199,8 +1212,8 @@ const resources = {
         validationEdgeTargetRequired: "第 {{index}} 条边缺少目标节点。",
         validationEdgeTargetMissing: "边的目标节点 {{node}} 不存在。",
         validationEdgeOutcomeRequired: "第 {{index}} 条边类型无效。",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} 只有开启 AI 输出验证后才能配置失败分支。",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} 只有开启 AI 输出验证或人工 check 后才能配置失败分支。",
         validationDuplicateEdgeOutcome:
           "{{node}} 有 {{num}} 条 {{outcome}} 边，同类型边最多只能有一条。",
         validationSuccessNewRoundTarget:
@@ -1343,6 +1356,8 @@ const resources = {
         initializeRepository: "初始化仓库",
         initializingRepository: "正在初始化…",
         capability: {
+          "version-unsupported": { title: "Git 版本过低", description: "当前版本为 {{installedVersion}}，源码管理需要 Git {{minimumVersion}} 或更高版本。" },
+          "version-unavailable": { title: "无法识别 Git 版本", description: "源码管理需要 Git {{minimumVersion}} 或更高版本。请更新或重新安装 Git 后重试。" },
           "head-required": { title: "Git 仓库还没有首次提交", description: "可以先在“更改”中选择文件、暂存并创建首次提交。" },
           "worktree-required": { title: "当前 Git 不支持 Worktree", description: "请更新系统 Git 后重新检测。" },
           "repository-unavailable": { title: "Git 仓库暂时不可用", description: "仓库元数据无法读取，请检查目录权限或 Git 状态后重试。" },
@@ -1640,6 +1655,8 @@ const resources = {
         hiddenStableSystemPrompt: "隐藏系统提示",
         hiddenPromptCharacters: "{{count}} 字符",
         hiddenPromptUnavailable: "无法读取这段隐藏提示",
+        userMessageShowMore: "查看更多",
+        userMessageCollapse: "收起",
         todo: "任务列表",
         manualCheckPending: "等待人工判定",
         manualCheckDescription:
@@ -1735,6 +1752,7 @@ const resources = {
           fieldSeparator: "，",
         },
         usagePanel: {
+          more: "更多会话信息",
           contextWindow: "上下文窗口",
           occupied: "占用",
           tokenUsage: "Token 用量",
@@ -2002,6 +2020,26 @@ const resources = {
           },
           settings: "设置",
         },
+        branchPicker: {
+          label: "分支",
+          search: "搜索 {{workspace}} 分支",
+          loading: "正在读取分支…",
+          unavailable: "无分支",
+          versionUnsupportedLabel: "Git 版本不受支持",
+          versionUnsupportedTitle: "Git 版本过低",
+          versionUnsupportedDescription: "当前版本为 {{installedVersion}}，分支功能需要 Git {{minimumVersion}} 或更高版本。",
+          versionUnavailableTitle: "无法识别 Git 版本",
+          versionUnavailableDescription: "分支功能需要 Git {{minimumVersion}} 或更高版本。请更新或重新安装 Git 后重试。",
+          branches: "分支",
+          empty: "没有匹配的本地分支",
+          dirtyFiles: "未提交：{{count}} 个文件",
+          checkedOutElsewhere: "已在其他 Worktree 中检出",
+          createAndCheckout: "创建并检出新分支…",
+          createTitle: "创建并检出新分支",
+          createDescription: "从 {{branch}} 创建新分支，并将当前工作区切换到该分支。",
+          locked: "Git 正在执行其他写操作，暂时不能切换分支。",
+          operationInProgress: "{{operation}} 正在进行，完成或中止后才能切换分支。",
+        },
         home: {
           greeting: {
             morning: "早上好，今天想一起做点什么？",
@@ -2072,8 +2110,19 @@ const resources = {
           runtimeErrorBlocked: "当前运行因错误阻塞，请查看错误原因",
           pauseReasonWaitingForUserInput: "等待用户输入",
           pauseReasonFallback: "已暂停",
+          sessionConfigThoughtLevelUnsupported:
+            "当前选择的模型不支持思考强度，请清除思考强度或更换模型后重试",
+          sessionConfigThoughtLevelValueUnavailable:
+            "思考强度 {{value}} 不可用，可选：{{values}}",
+          sessionConfigValueUnavailable:
+            "配置项 {{configId}} 不支持所选值 {{value}}，可选：{{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "配置项 {{configId}} 不支持所选值 {{value}}，请调整后重试",
+          worktreeCreateFailed:
+            "无法创建新工作树，请检查当前仓库的工作树状态后重试",
           launchingNextNode: "拉起下一节点中",
           preparingDevelopmentEnvironment: "正在准备开发环境…",
+          processingWorkspace: "正在处理工作区…",
           worktree: "工作树",
           composerRuntimeControlledPlaceholder:
             "当前会话由 runtime 运行中，暂不可输入",
@@ -2082,6 +2131,10 @@ const resources = {
             "当前会话已停止，你可以输入任何内容继续运行",
         },
         gitRequirement: {
+          versionUnsupportedTitle: "Git 版本过低",
+          versionUnavailableTitle: "无法识别 Git 版本",
+          versionUnsupportedDescription: "当前版本为 {{installedVersion}}，Gold Band 的 Git 功能需要 Git {{minimumVersion}} 或更高版本。",
+          versionUnavailableDescription: "Gold Band 无法识别当前 Git 版本。请安装 Git {{minimumVersion}} 或更高版本后重新检测。",
           repositoryTitle: "当前文件夹还不是 Git 仓库",
           headTitle: "Git 仓库需要首次提交",
           autoTitle: "Auto 模式需要 Git",
@@ -2095,7 +2148,7 @@ const resources = {
           useOtherWorkflow: "使用其他工作流",
           useMainWorkspace: "使用主工作区",
           initialize: "初始化仓库",
-          openDownloads: "打开 Git 下载页面",
+          openSourceControl: "打开源码管理",
           checking: "检测中…",
           recheck: "重新检测",
         },
@@ -2217,7 +2270,7 @@ const resources = {
             later: "Later ({{offset}})",
           },
         },
-        composer: { create: "Create scheduled task", unconfigured: "No schedule configured", repeat: "Repeating schedule", at: "One-time schedule", creating: "Scheduled task creation", exit: "Exit scheduled task creation", configure: "Configure scheduled task", moreSendOptions: "More send options" },
+        composer: { create: "Create scheduled task", created: "Scheduled task created. <tasks>View scheduled tasks</tasks>", unconfigured: "No schedule configured", repeat: "Repeating schedule", at: "One-time schedule", creating: "Scheduled task creation", exit: "Exit scheduled task creation", configure: "Configure scheduled task", moreSendOptions: "More send options", switchTo: "Switch to" },
         errors: {
           SCHEDULED_POWER_INHIBITOR_FAILED: "Unable to prevent automatic system sleep", SCHEDULED_PERMISSION_REQUIRED: "Permission approval required", SCHEDULED_USER_INPUT_REQUIRED: "User input required",
           SCHEDULED_PREVIOUS_RUN_REQUIRES_ATTENTION: "Previous run needs attention", SCHEDULED_QUEUE_BUSY: "Skipped because the queue is busy", SCHEDULED_AGENT_UNATTENDED_MODE_UNSUPPORTED: "Agent does not support unattended mode", SCHEDULED_EXECUTION_FAILED: "Execution failed", SCHEDULED_LEASE_LOST: "Execution lease expired",
@@ -2448,10 +2501,15 @@ const resources = {
         SCHEDULED_NOT_FOUND: "The scheduled run to resume no longer exists. Refresh and try again.",
         SCHEDULED_STORAGE_FAILED: "The scheduled run state could not be updated. Try again.",
         git: {
+          "version-unsupported": "Git {{installedVersion}} is too old. Git {{minimumVersion}} or later is required.",
+          "version-unavailable": "The installed Git version could not be identified. Install Git {{minimumVersion}} or later and try again.",
           "workspace-outside-project": "The selected worktree does not belong to this project.",
           "ref-changed": "Repository state changed. Refresh and try again.",
           "repository-locked": "Another repository write operation is running.",
           "workspace-locked": "Another workspace write operation is running.",
+          "operation-in-progress": "A Git workflow is still in progress. Complete or abort it and try again.",
+          "branch-required": "The current workspace has no checked-out branch. Select a branch first.",
+          "head-required": "The repository does not have a usable HEAD commit yet.",
           "nothing-to-stash": "There are no changes to stash.",
           "stash-not-found": "The selected stash no longer exists.",
           "remote-not-found": "The selected remote no longer exists.",
@@ -2631,6 +2689,7 @@ const resources = {
           "task-delete-failed": "Failed to delete conversation: {{message}}",
           "workspace-not-found": "This workspace could not be found.",
           "session-restore-unsupported": "This Agent cannot restore an existing session.",
+          "session-restore-reference-missing": "This session is missing its Provider session reference.",
           "history-sync-unsupported": "This Agent cannot synchronize the full history of an existing session.",
           "prompt-empty": "Enter a message to send.",
           "prompt-quote-invalid": "The quoted text is invalid. Remove it and quote the message again.",
@@ -2644,6 +2703,9 @@ const resources = {
           "prompt-queue-revision-conflict": "The pending order changed. Try again after the list updates.",
           "prompt-queue-invalid-order": "The pending order is invalid. Try again.",
           "prompt-queue-session-busy": "Stop the active session before using a queued prompt manually.",
+          "prompt-session-busy": "The previous message is still processing. Wait or stop the current response first.",
+          "prompt-submission-conflict": "This message identifier is already associated with different content. Send it again.",
+          "prompt-submission-missing": "The accepted message content could not be read. Send it again.",
           "prompt-queue-storage-failed": "The pending queue could not be saved. Try again.",
         },
         workflow: {
@@ -3169,6 +3231,10 @@ const resources = {
         noDoctorReadyAgents:
           "No doctor-ready agents yet. Run doctor in Agent Management first.",
         agentDoctorUnavailable: "Agent has not passed doctor",
+        profileCatalogLoading: "Loading profile catalog",
+        profileCatalogLoadingDescription: "The workflow can be saved after the profile catalog is ready.",
+        profileCatalogLoadFailed: "Profile catalog failed to load",
+        profileCatalogRetry: "Reload",
         selectHint: "Select a node or edge on the canvas to configure it.",
         terminalSelectionHint:
           "Terminal nodes need no configuration and can be removed with the delete action above the canvas.",
@@ -3396,8 +3462,8 @@ const resources = {
         validationEdgeTargetMissing:
           "Edge target node {{node}} does not exist.",
         validationEdgeOutcomeRequired: "Edge {{index}} has an invalid outcome.",
-        validationFailureOutcomeRequiresOutputValidation:
-          "{{node}} can only have a failure branch when AI output validation is enabled.",
+        validationFailureOutcomeRequiresResultDecision:
+          "{{node}} can only have a failure branch when AI output validation or manual check is enabled.",
         validationDuplicateEdgeOutcome:
           "{{node}} has {{num}} {{outcome}} edges; each outcome type can only have one edge.",
         validationSuccessNewRoundTarget:
@@ -3541,6 +3607,8 @@ const resources = {
         initializeRepository: "Initialize repository",
         initializingRepository: "Initializing…",
         capability: {
+          "version-unsupported": { title: "Git is out of date", description: "The installed version is {{installedVersion}}. Source control requires Git {{minimumVersion}} or later." },
+          "version-unavailable": { title: "Git version could not be identified", description: "Source control requires Git {{minimumVersion}} or later. Update or reinstall Git and try again." },
           "head-required": { title: "The repository has no initial commit", description: "Select files in Changes, stage them, and create the initial commit." },
           "worktree-required": { title: "This Git version does not support worktrees", description: "Update system Git and check again." },
           "repository-unavailable": { title: "The Git repository is unavailable", description: "Repository metadata could not be read. Check directory permissions or Git state and try again." },
@@ -3839,6 +3907,8 @@ const resources = {
         hiddenStableSystemPrompt: "Hidden system prompt",
         hiddenPromptCharacters: "{{count}} characters",
         hiddenPromptUnavailable: "This hidden prompt section is unavailable",
+        userMessageShowMore: "Show more",
+        userMessageCollapse: "Collapse",
         todo: "Tasks",
         manualCheckPending: "Manual check required",
         manualCheckDescription:
@@ -3934,6 +4004,7 @@ const resources = {
           fieldSeparator: ", ",
         },
         usagePanel: {
+          more: "More session information",
           contextWindow: "Context Window",
           occupied: "Used",
           tokenUsage: "Token Usage",
@@ -4208,6 +4279,26 @@ const resources = {
           },
           settings: "Settings",
         },
+        branchPicker: {
+          label: "Branch",
+          search: "Search {{workspace}} branches",
+          loading: "Loading branches…",
+          unavailable: "No branch",
+          versionUnsupportedLabel: "Git version unsupported",
+          versionUnsupportedTitle: "Git is out of date",
+          versionUnsupportedDescription: "The installed version is {{installedVersion}}. Branch features require Git {{minimumVersion}} or later.",
+          versionUnavailableTitle: "Git version could not be identified",
+          versionUnavailableDescription: "Branch features require Git {{minimumVersion}} or later. Update or reinstall Git and try again.",
+          branches: "Branches",
+          empty: "No matching local branches",
+          dirtyFiles: "Uncommitted: {{count}} files",
+          checkedOutElsewhere: "Checked out in another worktree",
+          createAndCheckout: "Create and check out new branch…",
+          createTitle: "Create and check out a new branch",
+          createDescription: "Create a branch from {{branch}} and switch the current workspace to it.",
+          locked: "Another Git write is running. Branch switching is temporarily unavailable.",
+          operationInProgress: "A {{operation}} is in progress. Complete or abort it before switching branches.",
+        },
         home: {
           greeting: {
             morning: "Good morning. What shall we work on?",
@@ -4281,8 +4372,19 @@ const resources = {
             "The current run is blocked by an error. Review the reason.",
           pauseReasonWaitingForUserInput: "Waiting for user input",
           pauseReasonFallback: "Paused",
+          sessionConfigThoughtLevelUnsupported:
+            "The selected model does not support reasoning effort. Clear the reasoning effort or switch models, then retry.",
+          sessionConfigThoughtLevelValueUnavailable:
+            "Reasoning effort {{value}} is unavailable. Available: {{values}}",
+          sessionConfigValueUnavailable:
+            "Config option {{configId}} does not support value {{value}}. Available: {{values}}",
+          sessionConfigValueUnavailableNoValues:
+            "Config option {{configId}} does not support value {{value}}. Adjust it and retry.",
+          worktreeCreateFailed:
+            "Unable to create a new worktree. Check the repository worktree state and try again.",
           launchingNextNode: "Launching next node",
           preparingDevelopmentEnvironment: "Preparing development environment…",
+          processingWorkspace: "Processing workspace…",
           worktree: "worktree",
           composerRuntimeControlledPlaceholder:
             "This session is being controlled by the runtime, so input is temporarily unavailable",
@@ -4291,6 +4393,10 @@ const resources = {
             "This session has stopped. You can enter any message to continue the run",
         },
         gitRequirement: {
+          versionUnsupportedTitle: "Git is out of date",
+          versionUnavailableTitle: "Git version could not be identified",
+          versionUnsupportedDescription: "The installed version is {{installedVersion}}. Gold Band Git features require Git {{minimumVersion}} or later.",
+          versionUnavailableDescription: "Gold Band could not identify the installed Git version. Install Git {{minimumVersion}} or later, then check again.",
           repositoryTitle: "This folder is not a Git repository",
           headTitle: "An initial Git commit is required",
           autoTitle: "Auto mode requires Git",
@@ -4304,7 +4410,7 @@ const resources = {
           useOtherWorkflow: "Use another workflow",
           useMainWorkspace: "Use main workspace",
           initialize: "Initialize repository",
-          openDownloads: "Open Git downloads",
+          openSourceControl: "Open source control",
           checking: "Checking…",
           recheck: "Check again",
         },

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src-tauri/icons/icon.png" alt="Gold Band" width="128" />
+<img src="web/public/logo.svg" alt="Gold Band" width="128" />
 
 # Gold Band
 
@@ -183,6 +183,6 @@ npm run web:build
 
 ## Community and Feedback
 
-Issues and pull requests about Agent integration, conversation UX, workflows, AUTO decomposition quality, and error recovery are welcome.
+This project actively participates in and supports the [linux.do community](https://linux.do). Issues and pull requests about Agent integration, conversation UX, workflows, AUTO decomposition quality, and error recovery are welcome.
 
 AGPL-3.0-only. See [LICENSE](LICENSE).

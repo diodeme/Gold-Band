@@ -94,13 +94,18 @@ describe('completed Agent message Markdown copy action', () => {
     try {
       const assistantContent = container.querySelector<HTMLElement>('[data-agent-quotable-text="true"]');
       const actionRow = container.querySelector<HTMLElement>('[data-agent-message-actions="true"]');
+      const detailedTime = actionRow?.querySelector<HTMLElement>('[data-agent-message-detailed-time="true"]');
       const userContent = container.querySelector<HTMLElement>('[data-acp-message-row="user"] .bg-message-user');
 
       expect(assistantContent?.classList.contains('pt-2')).toBe(true);
       expect(assistantContent?.classList.contains('pb-0')).toBe(true);
       expect(assistantContent?.classList.contains('py-3')).toBe(false);
       expect(actionRow?.classList.contains('h-5')).toBe(true);
+      expect(actionRow?.className).toContain('group-hover/message:opacity-100');
+      expect(actionRow?.className).toContain('group-focus-within/message:opacity-100');
       expect(actionRow?.querySelector('[data-agent-message-copy="true"]')?.classList.contains('size-5')).toBe(true);
+      expect(detailedTime?.textContent).toMatch(/^\d{2}:\d{2}  \d+y  01\/01\/1970$/);
+      expect(detailedTime?.classList.contains('tabular-nums')).toBe(true);
       expect(userContent?.classList.contains('py-3')).toBe(true);
     } finally {
       await act(async () => root.unmount());

@@ -48,9 +48,9 @@ pending
 
 `attention_required` 不会创建下一条同一问题的并发会话；用户回答后继续原 Run，完成时回写原 occurrence。Occurrence 的 claim 和去重均受完整 `project_id` 作用域保护。
 
-## 无人值守策略
+## 用户配置与权限交互
 
-创建或更新时预检 Direct Agent 的 full-auto 能力。预检失败返回结构化错误码，不保存一个必然等待权限的定义。
+创建、更新、计划触发和手动立即执行均不预检 Direct Agent 的 full-auto 能力，也不维护内置或自定义 Agent 的定时任务能力映射。`directConfig` 中的 Agent、model、permission mode 与 config options 原样冻结并交给现有 ACP 启动链路解释。
 
 运行时仍出现 permission request 时，写入 `failed + SCHEDULED_PERMISSION_REQUIRED`，保留 ACP 请求现场并发通知。出现 `AskUserQuestion` 时，写入 `attention_required + SCHEDULED_USER_INPUT_REQUIRED`，暂停 Run、释放 lease，并通知用户进入详情回答。
 

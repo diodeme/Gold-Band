@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use super::GoldBandPaths;
 
 const CORE_SCHEMA_VERSION: i64 = 2;
-pub const WORKSPACE_IDENTITY_SCHEMA_VERSION: i64 = 2;
+pub const WORKSPACE_IDENTITY_SCHEMA_VERSION: i64 = 3;
 pub const RUNTIME_RECOVERY_CANDIDATE_LIMIT: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

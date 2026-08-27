@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band"
-version = "0.13.2"
+version = "0.14.1"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -2081,6 +2081,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
  "schemars 0.8.22",
+ "semver",
  "serde",
  "serde_json",
  "serde_json_lenient",
@@ -2105,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "gold-band-desktop"
-version = "0.13.2"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "arboard",

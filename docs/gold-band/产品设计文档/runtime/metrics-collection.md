@@ -185,7 +185,7 @@ enum UserExecutionAction {
 
 - ManualContinue：真实 paused -> running 时 `resume + 1`、`manualContinue + 1`。
 - Permission/Elicitation response：真实恢复时只 `resume + 1`。
-- FollowUp：Workflow/AUTO attempt 内，canonical timeline 每接受一个 `kind=userTextDelta`、`raw.source=goldBandPrompt`、`raw.turnControlMode=non-runtime-controlled`、`hiddenFromChat=false` 且具有非空 `raw.promptId` 的普通用户 prompt，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 prompt identity 幂等口径。
+- FollowUp：Workflow/AUTO attempt 内，canonical timeline 每接受一个 `kind=userTextDelta`、`raw.source=goldBandPrompt`、`raw.turnControlMode=non-runtime-controlled`、`hiddenFromChat=false` 且具有非空 `raw.promptId` 的普通用户 prompt，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 prompt identity 幂等口径。当前 timeline index format V9 在上游 V8 有界 runtime restore 投影上增加该指标 prompt ID 集合，旧 index 必须从 canonical timeline 完整重建，不能以 serde 默认值静默补齐。
 - Runtime 初始 prompt、hidden prompt、provider history、permission response、structured elicitation response、纯继续和 automatic recovery 不增加 follow-up。相同文本的不同 `promptId` 分别计数，同一 `promptId` 的 replay、patch、重试和 terminal 重放只计一次。
 - 同一次“带内容人工继续”产生独立的 resume/manual continue lifecycle fact；其中的内容只有被 canonical timeline 接受后才通过同一 prompt ID 投影 `followUp + 1`，resume transition 不再旁路推导 follow-up。
 - attempt terminal 从 active map 取快照后移除；task counters 不从 attempt terminal 求和。

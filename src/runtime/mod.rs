@@ -3,9 +3,11 @@ use crate::domain::{
     SessionMode, VERSION,
 };
 use anyhow::{Result, ensure};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub const CURRENT_ACP_STORAGE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{msg}")]
@@ -324,6 +326,10 @@ pub struct RoundTraceStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeState {
     pub version: String,
+    /// Canonical version of the ACP storage layout owned by this attempt.
+    /// Legacy node.json files omit the field and deserialize as version 0.
+    #[serde(default)]
+    pub acp_storage_schema_version: u32,
     pub node_id: String,
     pub node_type: NodeType,
     pub run_id: String,
@@ -343,6 +349,54 @@ pub struct NodeState {
     pub resolved_config: ResolvedConfig,
     #[serde(default)]
     pub uuid: Option<String>,
+}
+
+/// Persists lifecycle state without allowing a stale in-memory NodeState to
+/// lower an ACP storage version already committed by the migration boundary.
+pub fn write_node_state(path: &Utf8Path, state: &NodeState) -> Result<()> {
+    crate::storage::with_file_lock(path, || {
+        let mut durable = state.clone();
+        if path.exists() {
+            let current = crate::storage::read_json::<NodeState>(path)?;
+            durable.acp_storage_schema_version = durable
+                .acp_storage_schema_version
+                .max(current.acp_storage_schema_version);
+        }
+        crate::storage::write_json(path, &durable)
+    })
+}
+
+/// Advances only the ACP storage version while preserving the latest durable
+/// lifecycle fields written by Runtime. The version is monotonic and each
+/// migration step calls this only after its idempotent data rewrite succeeds.
+pub fn advance_node_acp_storage_schema_version(path: &Utf8Path, target: u32) -> Result<bool> {
+    crate::storage::with_file_lock(path, || {
+        let mut current = crate::storage::read_json::<serde_json::Value>(path)?;
+        let object = current
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-invalid"))?;
+        let current_version = object
+            .get("acp_storage_schema_version")
+            .or_else(|| object.get("acpStorageSchemaVersion"))
+            .map(|version| {
+                version
+                    .as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("acp.attempt-state-invalid"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if current_version >= u64::from(target) {
+            return Ok(false);
+        }
+        let field = if object.contains_key("node_id") {
+            "acp_storage_schema_version"
+        } else {
+            "acpStorageSchemaVersion"
+        };
+        object.insert(field.to_string(), serde_json::Value::from(target));
+        crate::storage::write_json(path, &current)?;
+        Ok(true)
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +516,10 @@ pub fn validate_round_state(state: &RoundState) -> Result<()> {
 pub fn validate_node_state(state: &NodeState) -> Result<()> {
     ensure!(state.version == VERSION, "unsupported node state version");
     ensure!(
+        state.acp_storage_schema_version <= CURRENT_ACP_STORAGE_SCHEMA_VERSION,
+        "acp.storage-schema-version-unsupported"
+    );
+    ensure!(
         !(state.status != RunStatus::Completed && state.outcome.is_some()),
         "non-completed node cannot have outcome"
     );
@@ -488,6 +546,26 @@ pub fn validate_worker_ref_state(state: &WorkerRefState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_node(storage_version: u32) -> NodeState {
+        NodeState {
+            version: VERSION.to_string(),
+            acp_storage_schema_version: storage_version,
+            node_id: "node-a".to_string(),
+            node_type: NodeType::Worker,
+            run_id: "run-001".to_string(),
+            round_id: "round-001".to_string(),
+            attempt_id: "attempt-001".to_string(),
+            status: RunStatus::Running,
+            outcome: None,
+            started_at: "t0".to_string(),
+            finished_at: None,
+            manual_check_pending: false,
+            runtime_execution_id: Some("execution-001".to_string()),
+            resolved_config: ResolvedConfig::new(),
+            uuid: None,
+        }
+    }
 
     fn test_run(status: RunStatus, phase: RuntimeExecutionPhase) -> RunState {
         RunState {
@@ -528,6 +606,28 @@ mod tests {
         let uuid = task.uuid.expect("TaskState::new must generate a uuid");
         assert_eq!(uuid.len(), 32);
         assert!(uuid.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn stale_lifecycle_write_cannot_lower_acp_storage_schema_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(temp.path().join("node.json")).unwrap();
+        let mut stale = test_node(0);
+        crate::storage::write_json(&path, &stale).unwrap();
+
+        assert!(
+            advance_node_acp_storage_schema_version(&path, CURRENT_ACP_STORAGE_SCHEMA_VERSION)
+                .unwrap()
+        );
+        stale.manual_check_pending = true;
+        write_node_state(&path, &stale).unwrap();
+
+        let durable = crate::storage::read_json::<NodeState>(&path).unwrap();
+        assert_eq!(
+            durable.acp_storage_schema_version,
+            CURRENT_ACP_STORAGE_SCHEMA_VERSION
+        );
+        assert!(durable.manual_check_pending);
     }
 
     #[test]

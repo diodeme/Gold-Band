@@ -847,23 +847,6 @@ impl ScheduledRuntime {
                 immediate_links: None,
             });
         }
-        if let Some(error) = scheduled_agent_unattended_error(app, &definition) {
-            self.finish_immediate_failure(
-                &database,
-                &mut definition,
-                &claimed,
-                &mut expected_revision,
-                &mut handoff,
-                error,
-            )
-            .await?;
-            return Ok(ManualRunResult {
-                occurrence: database
-                    .get_occurrence(&definition.project_id, &claimed.id)?
-                    .ok_or_else(|| anyhow::anyhow!("manual occurrence disappeared"))?,
-                immediate_links: None,
-            });
-        }
         let execution = match execute_definition(
             &self.app_handle,
             app,
@@ -1039,18 +1022,6 @@ impl ScheduledRuntime {
             &mut definition,
             &mut expected_revision,
         )?;
-        if let Some(error) = scheduled_agent_unattended_error(app, &definition) {
-            self.finish_immediate_failure(
-                database,
-                &mut definition,
-                &claimed,
-                &mut expected_revision,
-                &mut handoff,
-                error,
-            )
-            .await?;
-            return Ok(());
-        }
         let execution = match execute_definition(
             &self.app_handle,
             app,
@@ -1127,36 +1098,6 @@ impl ScheduledRuntime {
                 "scheduled running occurrence reconciled to terminal (lifecycle event likely lost)"
             );
         }
-        Ok(())
-    }
-
-    async fn finish_immediate_failure(
-        &self,
-        database: &ScheduledTaskDatabase,
-        definition: &mut ScheduledTaskDefinition,
-        occurrence: &ScheduledOccurrence,
-        expected_revision: &mut Option<i64>,
-        handoff: &mut ClaimToHandoffGuard,
-        error: ScheduledError,
-    ) -> anyhow::Result<()> {
-        let error_code = error.code;
-        handoff.stop().await;
-        let finished = database.finish_occurrence(
-            &definition.project_id,
-            &occurrence.id,
-            &self.owner_id,
-            OccurrenceStatus::Failed,
-            None,
-            Some(error),
-        )?;
-        if !finished {
-            anyhow::bail!("failed to finish scheduled occurrence before execution handoff");
-        }
-        handoff.disarm();
-        definition.last_trigger_status = Some("failed".to_string());
-        definition.last_error = Some(error_code.to_string());
-        definition.updated_at = Utc::now();
-        self.persist_active_projection(&occurrence.id, database, definition, expected_revision)?;
         Ok(())
     }
 
@@ -2607,70 +2548,6 @@ pub(crate) fn create_manual_occurrence(
         .ok_or_else(|| anyhow::anyhow!("scheduled job no longer exists"))
 }
 
-pub(crate) fn scheduled_agent_unattended_error(
-    app: &App,
-    definition: &ScheduledTaskDefinition,
-) -> Option<ScheduledError> {
-    if definition.mode != ScheduledMode::Direct {
-        return None;
-    }
-    let provider = definition
-        .execution_config
-        .get("directConfig")
-        .and_then(|value| value.get("agentType"))
-        .and_then(serde_json::Value::as_str)
-        .or(definition.content_snapshot.direct_agent_id.as_deref())?;
-    let diagnostics = app.provider_diagnostics();
-    let available_modes = diagnostics
-        .get(provider)
-        .map(|diagnostic| {
-            gold_band::provider::supported_modes_from_capabilities(diagnostic.capabilities.as_ref())
-        })
-        .unwrap_or_default();
-    // When a provider exposes no ACP mode config options at all (e.g. Codex ACP,
-    // which manages permissions internally), we cannot evaluate its unattended
-    // capability through the standard mode contract. Treat an empty mode list
-    // as "provider-managed permissions" and skip the gate so that such agents
-    // are not blocked from scheduled execution.
-    if available_modes.is_empty() {
-        return None;
-    }
-    let resolved_full_auto = app.config.resolve_permission_mode(provider, "full_access");
-    let configured_mode = definition
-        .execution_config
-        .get("directConfig")
-        .and_then(|value| value.get("permissionMode"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let configured_is_full_auto = configured_mode.map(is_full_auto_mode).unwrap_or(true);
-    let resolved_is_available = available_modes.iter().any(|mode| {
-        mode.id.eq_ignore_ascii_case(&resolved_full_auto) || is_full_auto_mode(&mode.id)
-    });
-    if configured_is_full_auto && resolved_is_available {
-        return None;
-    }
-    Some(ScheduledError::with_params(
-        ScheduledErrorCode::AgentUnattendedModeUnsupported,
-        serde_json::json!({
-            "provider": provider,
-            "requestedMode": configured_mode,
-            "resolvedFullAutoMode": resolved_full_auto,
-            "availableModes": available_modes.iter().map(|mode| mode.id.clone()).collect::<Vec<_>>(),
-        }),
-    ))
-}
-
-fn is_full_auto_mode(value: &str) -> bool {
-    matches!(
-        value
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['_', '-'], "")
-            .as_str(),
-        "fullaccess" | "bypass" | "bypasspermissions" | "fullauto" | "agentfullaccess"
-    )
-}
-
 fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccurrenceKey> {
     match event {
         RuntimeLifecycleEvent::RunPaused {
@@ -3495,6 +3372,7 @@ fn scheduled_create_input(
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
         work_location: Default::default(),
+        selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,
@@ -3522,7 +3400,6 @@ mod tests {
 
     use chrono::{Duration, TimeZone, Utc};
     use gold_band::app::{RuntimeInterventionKind, RuntimeLifecycleEvent};
-    use gold_band::config::ProviderDiagnosticSnapshot;
     use gold_band::domain::{PauseReason, RunOutcome, RunStatus, VERSION};
     use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::scheduler::coordinator::{DeadlineRegistry, ReconcileReason, ScheduledJobKey};
@@ -3553,9 +3430,8 @@ mod tests {
         ensure_definition_workspace, finish_occurrence_for_event, finish_reconciled_occurrence,
         mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
         project_resumed_attention, reconcile_missed_deadlines, recover_accepted_occurrence,
-        scheduled_agent_unattended_error, scheduled_execution_action,
-        scheduled_execution_action_for_fingerprint, scheduled_occurrence_updated_event,
-        shutdown_active_occurrences, task_has_active_execution,
+        scheduled_execution_action, scheduled_execution_action_for_fingerprint,
+        scheduled_occurrence_updated_event, shutdown_active_occurrences, task_has_active_execution,
         task_has_active_execution_with_prompt_probe,
     };
 
@@ -6089,134 +5965,6 @@ mod tests {
         let occurrence = create_manual_occurrence(&database, "project-1", "job-1").unwrap();
         assert_eq!(occurrence.trigger_kind, OccurrenceTriggerKind::Manual);
         assert_eq!(definition.next_due(next - Duration::hours(1)), before);
-    }
-
-    #[test]
-    fn scheduled_direct_rejects_agent_without_full_auto_mode() {
-        let directory = tempdir().unwrap();
-        let repo_root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
-        let app = gold_band::app::App::new(repo_root).with_provider_diagnostics_source(
-            std::sync::Arc::new(|| {
-                Ok([(
-                    "claude-acp".to_string(),
-                    ProviderDiagnosticSnapshot {
-                        available: true,
-                        reason: None,
-                        checked_at: "2026-08-03T00:00:00Z".to_string(),
-                        capabilities: Some(serde_json::json!({
-                            "configOptions": [{
-                                "id": "mode",
-                                "category": "mode",
-                                "options": [{ "value": "ask", "name": "Ask" }]
-                            }]
-                        })),
-                    },
-                )]
-                .into_iter()
-                .collect())
-            }),
-        );
-        let mut definition = ScheduledTaskDefinition::new(
-            "project-1",
-            "job-1",
-            "direct",
-            ScheduleSpec::at(Utc.with_ymd_and_hms(2026, 8, 4, 10, 0, 0).unwrap()),
-            OverlapPolicy::SkipWhenRunning,
-        )
-        .unwrap();
-        definition.content_snapshot.direct_agent_id = Some("claude-acp".to_string());
-        definition.execution_config = serde_json::json!({
-            "directConfig": { "agentType": "claude-acp", "permissionMode": "ask" }
-        });
-        let error = scheduled_agent_unattended_error(&app, &definition).unwrap();
-        assert_eq!(
-            error.code,
-            ScheduledErrorCode::AgentUnattendedModeUnsupported
-        );
-    }
-
-    #[test]
-    fn scheduled_direct_accepts_supported_full_auto_mode() {
-        let directory = tempdir().unwrap();
-        let repo_root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
-        let app = gold_band::app::App::new(repo_root).with_provider_diagnostics_source(
-            std::sync::Arc::new(|| {
-                Ok([(
-                    "claude-acp".to_string(),
-                    ProviderDiagnosticSnapshot {
-                        available: true,
-                        reason: None,
-                        checked_at: "2026-08-03T00:00:00Z".to_string(),
-                        capabilities: Some(serde_json::json!({
-                            "configOptions": [{
-                                "id": "mode",
-                                "category": "mode",
-                                "options": [{ "value": "bypassPermissions", "name": "Bypass" }]
-                            }]
-                        })),
-                    },
-                )]
-                .into_iter()
-                .collect())
-            }),
-        );
-        let mut definition = ScheduledTaskDefinition::new(
-            "project-1",
-            "job-1",
-            "direct",
-            ScheduleSpec::at(Utc.with_ymd_and_hms(2026, 8, 4, 10, 0, 0).unwrap()),
-            OverlapPolicy::SkipWhenRunning,
-        )
-        .unwrap();
-        definition.content_snapshot.direct_agent_id = Some("claude-acp".to_string());
-        definition.execution_config = serde_json::json!({
-            "directConfig": { "agentType": "claude-acp" }
-        });
-        assert!(scheduled_agent_unattended_error(&app, &definition).is_none());
-    }
-
-    #[test]
-    fn scheduled_direct_accepts_codex_agent_full_access_mode() {
-        let directory = tempdir().unwrap();
-        let repo_root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
-        let app = gold_band::app::App::new(repo_root).with_provider_diagnostics_source(
-            std::sync::Arc::new(|| {
-                Ok([(
-                    "codex-acp".to_string(),
-                    ProviderDiagnosticSnapshot {
-                        available: true,
-                        reason: None,
-                        checked_at: "2026-08-05T00:00:00Z".to_string(),
-                        capabilities: Some(serde_json::json!({
-                            "configOptions": [{
-                                "id": "mode",
-                                "category": "mode",
-                                "options": [
-                                    { "value": "read-only", "name": "Read-only" },
-                                    { "value": "agent", "name": "Agent" },
-                                    { "value": "agent-full-access", "name": "Agent (full access)" }
-                                ]
-                            }]
-                        })),
-                    },
-                )]
-                .into_iter()
-                .collect())
-            }),
-        );
-        let mut definition = ScheduledTaskDefinition::new(
-            "project-1",
-            "job-codex",
-            "direct",
-            ScheduleSpec::at(Utc.with_ymd_and_hms(2026, 8, 5, 10, 0, 0).unwrap()),
-            OverlapPolicy::SkipWhenRunning,
-        )
-        .unwrap();
-        definition.content_snapshot.direct_agent_id = Some("codex-acp".to_string());
-        definition.execution_config = serde_json::json!({
-            "directConfig": { "agentType": "codex-acp" }
-        });
-        assert!(scheduled_agent_unattended_error(&app, &definition).is_none());
     }
 
     #[test]

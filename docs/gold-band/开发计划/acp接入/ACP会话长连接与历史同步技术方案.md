@@ -904,3 +904,12 @@ session/connection 被有界驱逐或失效：reload
 resume/load 请求都携带 `sessionId`、`cwd`、过滤后的 `mcpServers` 与可选 `_meta.systemPrompt.append`。成功响应先更新 `models/modes/configOptions`，再在同一个 session config transaction 内依次应用模型、权限模式和其他 config option，最后才发送 `session/prompt`。Tauri command 层识别 `RuntimeError` 并只向前端返回结构化 `code + params`；Raw Frame 过滤器分别显示 Resume 与 Load，系统提示解析和 close fuse 生命周期边界同时识别 `session/resume`。
 
 接口回归覆盖 capability 解析、六类恢复决策、resume/load 参数、resume 无 replay 状态、load 延迟 replay 抑制、structured command error、resume 系统提示解析、close fuse 清除以及 Raw Frame i18n 映射。
+
+## 21. 会话停止继续与 Timeline 运行态恢复根因修复（2026-08-20）
+
+- stop 的协议语义是取消当前 turn，不发送 session close，也不把 session availability 写成 `closing`。持久化 stop intent 后在锁外调用 provider cancel，再由 control owner 通过 revision/CAS 幂等结算 `cancelled`；provider 迟到 completion/error、重复 stop 和重启孤儿不得回退 canonical terminal。
+- attached session reuse 仍优先于 detached restore，且四种路径分流明确：attached 直接复用，resume 只恢复 provider context，load 才执行历史回放，new 不读取旧正文。只有 load 且启用 external history sync 时读取本地 Gold Band prompt anchors；同步关闭时 replay content 全部抑制并只保留 raw 诊断边界。
+- Runtime 从 Timeline materialized index 恢复 seq、timing、pending permission/elicitation、retry、context compaction 和 branch stream hot state。索引 locator 只读必要小记录，Blob 保持 reference；usage repair 通过 journal/prompt locator 恢复，不再全量 hydrate。
+- index hit、bounded tail replay、full rebuild/compaction 会分别写入 restore diagnostics。index 不存在、版本变更、prefix 不匹配、tail 超限或 compaction 才允许 O(N) 重建，正常 continue/follow-up 的 I/O、解析和分配不随历史正文或 Blob 总量增长。
+
+回归门槛包括：stop 后 established/restorable availability 保持不变、cancel intent 胜过 provider completion、active stream 在 tool/revision/branch 场景与完整重放一致、attached/resume Blob hydrated bytes 为 0、load 只读取 prompt anchors，以及 restore mode 诊断不把 full rebuild 误报为 index hit。

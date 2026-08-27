@@ -205,6 +205,14 @@ export function getSourceControlSnapshot(projectId: string, workspacePath?: stri
   return getRuntimeApi().getSourceControlSnapshot(projectId, workspacePath);
 }
 
+export function getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null) {
+  return getRuntimeApi().getGitBranchPickerSnapshot(projectId, workspacePath);
+}
+
+export function changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: Parameters<ReturnType<typeof getRuntimeApi>['changeGitBranch']>[2]) {
+  return getRuntimeApi().changeGitBranch(projectId, workspacePath, input);
+}
+
 export function getGitHistory(projectId: string, workspacePath: string | null | undefined, query: Parameters<ReturnType<typeof getRuntimeApi>['getGitHistory']>[2]) {
   return getRuntimeApi().getGitHistory(projectId, workspacePath, query);
 }
@@ -382,10 +390,6 @@ export function useConversationQueuedPrompt(projectId: string | null | undefined
   return getRuntimeApi().useConversationQueuedPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, itemId, outerNodeId, outerAttemptId);
 }
 
-export function sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['sendAcpPrompt']>[8], outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]) {
-  return getRuntimeApi().sendAcpPrompt(projectId, taskId, runId, roundId, nodeId, attemptId, prompt, promptId, fallback, outerNodeId, outerAttemptId, attachmentPaths);
-}
-
 export function setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().setAcpSessionModel(projectId, taskId, runId, roundId, nodeId, attemptId, modelId, outerNodeId, outerAttemptId);
 }
@@ -400,10 +404,6 @@ export function respondAcpPermission(projectId: string | null | undefined, taskI
 
 export function respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null) {
   return getRuntimeApi().respondElicitation(projectId, taskId, runId, roundId, nodeId, attemptId, elicitationId, action, content, outerNodeId, outerAttemptId);
-}
-
-export function cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: Parameters<ReturnType<typeof getRuntimeApi>['cancelAcpSession']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().cancelAcpSession(projectId, taskId, runId, roundId, nodeId, attemptId, fallback, outerNodeId, outerAttemptId);
 }
 
 export function getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: Parameters<ReturnType<typeof getRuntimeApi>['getAcpRawFrames']>[6], outerNodeId?: string | null, outerAttemptId?: string | null) {
@@ -509,6 +509,10 @@ export function saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | n
 export function recordActivity() {
   return getRuntimeApi().recordActivity();
 }
+
+export function reportFrontendError(input: import('./api/client').FrontendErrorReportInput) {
+  return getRuntimeApi().reportFrontendError(input);
+}
 // ── Conversation UI ──
 export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
@@ -568,10 +572,6 @@ export function runScheduledTaskNow(projectId: string, scheduledTaskId: string) 
 
 export function getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null) {
   return getRuntimeApi().getConversationRun(projectId, taskId, runId, selectedSessionKey);
-}
-
-export function switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null) {
-  return getRuntimeApi().switchConversationSession(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId);
 }
 
 export function validateConversationCreate(input: Parameters<ReturnType<typeof getRuntimeApi>['validateConversationCreate']>[0]) {

@@ -292,14 +292,22 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   const isWsCollapsed = collapsedPinnedWorkspaces[projectId] ?? false;
                   return (
                     <div key={`pinned-ws-${projectId}`}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
-                        onClick={() => togglePinnedWorkspace(projectId)}
-                      >
-                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
-                        <span className="truncate">{ws?.name ?? projectId}</span>
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            data-conversation-pinned-workspace-id={projectId}
+                            className="flex w-full items-center gap-1.5 px-1 py-1 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground"
+                            onClick={() => togglePinnedWorkspace(projectId)}
+                          >
+                            <ChevronDown className={cn('size-3 shrink-0 transition-transform', isWsCollapsed && '-rotate-90')} />
+                            <span className="truncate">{ws?.name ?? projectId}</span>
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+                          {ws?.workspacePath ?? projectId}
+                        </TooltipContent>
+                      </Tooltip>
                       {!isWsCollapsed ? (
                         <div className="space-y-0.5">
                           {tasks.map((task) => (
@@ -345,16 +353,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                 className="mb-2"
               >
                 <div className="group sticky top-0 z-[1] flex w-full items-center gap-1.5 bg-sidebar px-1 py-1">
-                  <button
-                    type="button"
-                    data-conversation-workspace-id={ws.projectId}
-                    aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
-                    onClick={() => toggleWorkspace(ws.projectId)}
-                  >
-                    <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
-                    <span className="truncate">{ws.name}</span>
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        data-conversation-workspace-id={ws.projectId}
+                        aria-expanded={Boolean(expandedWorkspaces[ws.projectId])}
+                        className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold leading-5 text-sidebar-foreground/80 hover:text-sidebar-accent-foreground group-hover:pr-11"
+                        onClick={() => toggleWorkspace(ws.projectId)}
+                      >
+                        <ChevronDown className={cn('size-3 shrink-0 transition-transform', !expandedWorkspaces[ws.projectId] && '-rotate-90')} />
+                        <span className="truncate">{ws.name}</span>
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-[min(36rem,calc(100vw-2rem))] break-all">
+                      {ws.workspacePath}
+                    </TooltipContent>
+                  </Tooltip>
                   <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
                     {onNewConversationInWorkspace ? (
                       <Button variant="ghost" size="icon" className="size-5 active:scale-90 transition-transform" onClick={(e) => { e.stopPropagation(); onNewConversationInWorkspace(ws.projectId); }}>

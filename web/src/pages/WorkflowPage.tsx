@@ -2,9 +2,9 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
-import type { AgentRegistryVm, GraphVm, ProfileListVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
+import type { AgentRegistryVm, GraphVm, RoundSummaryVm, RunGroupVm, RunSummaryVm, TaskPage, TaskRowVm, WorkflowDsl, WorkflowModelBindings, WorkflowTemplateStore, WorkflowVm } from '../types';
 import { displayAppError, displayStatus, displayWorkflowError } from '../i18n';
-import { getAgentRegistry, getProfiles, getWorkflowTemplates } from '../api';
+import { getAgentRegistry, getWorkflowTemplates } from '../api';
 import { GraphView } from '../components/GraphView';
 import { WorkflowEditor, parseWorkflowJson } from '../components/WorkflowEditor';
 import { StatusBadge } from '../components/StatusBadge';
@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { isRunStoppable, normalizeTone } from '@/lib/status';
 import { formatCurrentNode } from '@/lib/nodes';
+import { useWorkflowProfileCatalog } from '@/lib/workflow-profile-catalog';
 
 interface WorkflowPageProps {
   vm: WorkflowVm | null;
@@ -64,7 +65,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
   const [workflowDrawerMode, setWorkflowDrawerMode] = useState<WorkflowDrawerMode | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const [agentRegistry, setAgentRegistry] = useState<AgentRegistryVm | null>(null);
-  const [profileList, setProfileList] = useState<ProfileListVm | null>(null);
+  const profileCatalog = useWorkflowProfileCatalog(workflowDrawerMode !== null && workflowDrawerMode !== 'view');
   const [templateStore, setTemplateStore] = useState<WorkflowTemplateStore | null>(null);
   const [savingWorkflow, setSavingWorkflow] = useState(false);
   const [workflowDraft, setWorkflowDraft] = useState<WorkflowDsl | null>(null);
@@ -87,7 +88,6 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     setWorkflowDrawerMode(mode);
     if (mode !== 'view') {
       if (!agentRegistry) getAgentRegistry().then(setAgentRegistry).catch(() => setAgentRegistry({ agents: [], catalog: [] }));
-      if (!profileList) getProfiles().then(setProfileList).catch(() => setProfileList({ profiles: [] }));
       if (!templateStore) getWorkflowTemplates().then(setTemplateStore).catch(() => setTemplateStore({ version: '0.1', lastUsedTemplateId: null, lastCreatedWorkflow: null, templates: [] }));
     }
   };
@@ -133,12 +133,8 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
     const workflow = workflowDraft ?? parseWorkflowJson(vm.workflowJson) ?? defaultWorkflow;
     if (workflow) setWorkflowDraft(workflow);
     if (workflowDrawerMode === 'view' || workflowDrawerMode === null) setWorkflowDrawerMode('repair');
-    const [registry, profiles] = await Promise.all([
-      agentRegistry ? Promise.resolve(agentRegistry) : getAgentRegistry(),
-      profileList ? Promise.resolve(profileList) : getProfiles(),
-    ]);
+    const registry = await (agentRegistry ? Promise.resolve(agentRegistry) : getAgentRegistry());
     if (!agentRegistry) setAgentRegistry(registry);
-    if (!profileList) setProfileList(profiles);
     setValidationRequestId((value) => value + 1);
   };
 
@@ -298,7 +294,7 @@ export function WorkflowPage({ vm, busy, refreshing, breadcrumbs, onNavigate, on
                 workflowDraft ? (
                   <>
                     {workflowSaveError ? <div className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-sm text-destructive">{workflowSaveError}</div> : null}
-                    <WorkflowEditor value={workflowDraft} modelBindings={modelBindingsDraft ?? vm.modelBindings} agentRegistry={agentRegistry} profiles={profileList?.profiles ?? []} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} validateModelBindings={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} onModelBindingsChange={setModelBindingsDraft} />
+                    <WorkflowEditor value={workflowDraft} modelBindings={modelBindingsDraft ?? vm.modelBindings} agentRegistry={agentRegistry} profileCatalog={profileCatalog} onOpenProfileManagement={onOpenProfileManagement} defaultWorkflow={defaultWorkflow} workflowTemplates={templateStore} validateTemplateDuplicateId={false} validateModelBindings={false} allowAiDynamic saving={savingWorkflow || busy} validationRequestId={validationRequestId} onSave={saveWorkflow} onChange={(next) => { setWorkflowDraft(next); setWorkflowSaveError(null); }} onModelBindingsChange={setModelBindingsDraft} />
                   </>
                 ) : <EmptyState>{templateStore ? t('workflow.noWorkflowTemplate') : t('common.loading')}</EmptyState>
               ) : vm.task.workflowExists ? (

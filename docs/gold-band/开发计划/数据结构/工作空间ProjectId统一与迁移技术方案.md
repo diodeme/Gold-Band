@@ -23,7 +23,7 @@ normalized_workspace_path
 
 `workspace_path` 继续保存当前位置，`name` 继续作为用户可编辑展示字段，`normalized_repo_root` 只参与 ID 生成、路径比较和 manifest 归属校验。三者都不是第二套业务 ID。现有 `workspace_key` 从 Runtime recovery 的结构、主键和接口中删除。
 
-本方案包含旧项目目录、用户状态、`core.db` Runtime recovery 数据、项目 manifest、运行恢复文件中明确持久化的旧 runtime 绝对路径和搜索索引迁移。定时任务表与 Git linked-worktree 元数据修复不在本次范围内。
+本方案包含旧项目目录、用户状态、`core.db` Runtime recovery 数据、项目 manifest、运行恢复文件中明确持久化的旧 runtime 绝对路径、AI-DYNAMIC workspace catalog、普通会话 Git linked-worktree 登记和搜索索引迁移。定时任务表仍不在本次范围内。
 
 ## 2. 根因与目标
 
@@ -45,7 +45,7 @@ normalized_workspace_path
 ### 2.3 非目标
 
 - 本阶段不修改 `scheduled-tasks.db` 的 schema、记录 `project_id` 或 definition JSON。
-- 本阶段不执行 `git worktree move/repair`，不修复主仓库 `.git/worktrees/*/gitdir` 等 Git 元数据；项目父目录改名后，Gold Band 自身持久化的 `RunWorktreeState.path` 必须同步改写到新 runtime root。
+- 不直接读写主仓库 `.git/worktrees/*` 私有元数据；项目父目录改名后，Gold Band 改写 `RunWorktreeState.path`，并通过 Git 原生 `worktree repair` 修复主仓库登记。
 - workspace 展示名称修改不触发 ID 变更或数据迁移。
 - workspace 源目录被移动或重命名后的显式重新关联，不属于本次旧 ID 算法升级。
 
@@ -193,6 +193,8 @@ CREATE TABLE runtime_recovery_candidates (
 | `acp.session.json.cwd / acp.snapshot.json.cwd` | 仅当明确位于旧 runtime root 下时替换根前缀 |
 | `acp.turn-file-mutations.jsonl.logicalPath` | 逐条解析，仅替换旧 runtime root 前缀 |
 | `turn-file-change-sets/turn-files-*.json` | 改写 `changes[].logicalPath / previousLogicalPath` 的旧 runtime root 前缀 |
+| AI-DYNAMIC `dynamic/graph.json` | 仅改写 `workspaces[*].path` 中命中旧 runtime root 的 locator，并从 canonical graph 同步 `dynamic/workspaces/*.json` 投影 |
+| 普通会话 linked worktree | 只处理 `run.json` 引用、实际存在且 canonical path 位于新 `runtime/worktrees/` 下的候选；校验与主仓库 common-dir 相同且不是 main worktree，未登记时执行 Git 原生 repair |
 | `gold-band.db` 搜索数据 | 清空旧投影并从新目录重建 |
 
 普通 Task、Run、Attempt 的层级编号、业务身份和生命周期状态保持不变。迁移器只遍历当前 workspace runtime 目录并按已知文件名、已知 JSON 字段结构改写 executable locator，禁止对全部 JSON 做无类型字符串替换。`acp.raw.jsonl`、`acp.timeline.jsonl` 和 diagnostics 是历史审计/展示事实，保持字节与历史内容不变，不参与会话恢复。
@@ -203,9 +205,11 @@ CREATE TABLE runtime_recovery_candidates (
 
 开发可以拆分提交；如果已有用户依赖定时任务，发布版本必须在后续全局 Scheduler 数据迁移完成后再交付，不能把该中间状态作为完整升级发布。
 
-### 6.3 Worktree 边界
+### 6.3 Worktree 与 AI-DYNAMIC 边界
 
-本阶段不执行 `git worktree move/repair`，不重写主仓库 `.git/worktrees/*/gitdir` 等 Git 自身管理的绝对回链。项目父目录整体 rename 后，迁移器会改写 `run.json.worktree.path` 和 ACP `continue_ref.cwd`，确保 Gold Band 不再请求已消失的旧目录；这不等于承诺所有历史 linked worktree 的 Git 管理操作均已 repair。普通 Task/Run 历史不因此丢失，该边界必须在验收记录中明确。
+迁移器不递归进入 `runtime/worktrees/` checkout，避免扫描或改写用户源码中的同名 JSON。普通会话 worktree 候选只来自 `run.json.worktree.path`，同一迁移轮次按 canonical path 去重；主仓库已经登记新路径时不执行 repair，未登记时在既有 Git coordination lock 内调用 `git worktree repair <new-path>`。repair 失败只记录逐项结果并允许桌面继续启动，后续真正使用或删除该 worktree 前再次按 Git catalog 事实条件式补偿；Git catalog 本身是持久权威，不新增 repair 状态表。
+
+AI-DYNAMIC 只迁移外层运行于普通会话 worktree 时保存在 graph workspace catalog 中的旧 runtime 路径。外层主工作区路径和仓库 `.gold-band/worktrees/` 下由 AI-DYNAMIC 创建的隔离 worktree 不命中旧 runtime root。`graph.json` 是 canonical state，workspace projection 从 graph 同步；格式损坏的单条 graph 局部隔离并记录，不阻断全局身份迁移。graph/projection 的读写 I/O 失败也不阻断桌面本次启动，但不得提交 v3 完成门闩，下次启动继续重试；只有不可恢复的内容损坏才隔离后推进其它数据。
 
 ## 7. 一次性迁移与幂等设计
 
@@ -215,10 +219,10 @@ CREATE TABLE runtime_recovery_candidates (
 
 ```text
 component = "workspace_identity"
-version = 2
+version = 3
 ```
 
-只有目录、manifest、用户状态、Runtime recovery schema/data、全部 executable locator 和搜索旧投影都完成后，才在最后一个短事务中写入该版本。v1 只完成了目录与部分 `cwd` 迁移；版本低于 2 时必须补跑 locator 改写。版本已经达到 2 时，启动不再枚举旧目录或改写状态。
+只有目录、manifest、用户状态、Runtime recovery schema/data、全部 executable locator、AI-DYNAMIC workspace catalog、普通会话 worktree 登记检查和搜索旧投影都完成后，才在最后一个短事务中写入该版本。v1 只完成了目录与部分 `cwd` 迁移，v2 补齐通用 locator；版本低于 3 时必须继续补跑 AI-DYNAMIC locator 与 linked-worktree repair。版本已经达到 3 时，启动不再枚举旧目录或改写状态。
 
 `StateConfig.state_schema_version` 同步提升并负责 JSON 字段引用迁移；它不是跨文件系统迁移的唯一完成标记。跨存储迁移是否完整以 `core_schema.workspace_identity` 为准。
 
@@ -264,7 +268,7 @@ version = 2
   -> 事务迁移 core.db recovery table
   -> 清空搜索旧投影
   -> 同步完成搜索 backfill
-  -> 写入 workspace_identity=2
+  -> 写入 workspace_identity=3
   -> 初始化正常搜索服务
   -> 执行 Runtime recovery
   -> 启动 Scheduler
@@ -321,7 +325,7 @@ WorkspaceIdentityMigrationReport
 3. 增加 manifest 读取与归属校验，禁止静默写入错误目录。
 4. 将 Runtime recovery 从 `workspace_key` 改为 `project_id`，升级 `core.db` schema。
 5. 实现只在启动早期运行的 workspace identity migrator。
-6. 迁移 StateConfig 和明确持久化的 runtime 绝对路径。
+6. 迁移 StateConfig、明确持久化的 runtime 绝对路径和 AI-DYNAMIC workspace catalog，并条件式 repair 普通会话 linked worktree 登记。
 7. 清空并同步复用现有搜索 backfill 完整重建索引。
 8. 接入完成版本门闩，删除运行期旧 ID fallback 和 alias 消费路径。
 9. 更新产品设计、MVP 开发记录并完成接口级回归。
@@ -349,7 +353,7 @@ WorkspaceIdentityMigrationReport
 - 完整迁移执行第二次只读取版本，不枚举或写入 workspace 数据。
 - 目标冲突和已知 workspace 的损坏/缺失 manifest 不覆盖任何目录；无 manifest 且无状态归属的异常目录原样保留并跳过。
 - `scheduled-tasks.db` 字节保持原样；其表功能不计入本阶段验收。
-- `RunWorktreeState.path` 与 ACP worktree `cwd` 不再引用旧 root；Git linked-worktree 元数据 repair 和完整 Git 管理操作不计入本阶段验收，并在报告中明确该边界。
+- `RunWorktreeState.path`、ACP worktree `cwd` 与 AI-DYNAMIC 外层 workspace path 不再引用旧 root；真实 linked-worktree 父目录移动后 repair 一次，重复 ensure 不再执行 repair，dirty 文件保持不变，删除恢复正常。
 
 ### 11.3 验证命令
 
@@ -363,7 +367,7 @@ WorkspaceIdentityMigrationReport
 - 目录同卷 rename 主要是文件系统元数据操作，不按 Task/Run 文件体积复制。
 - Runtime recovery 数据迁移受现有 4096 条上限约束，单个 SQLite 短事务完成。
 - 搜索重建与 Task/Session 数量线性相关，属于一次性投影恢复；先清除旧路径和上次可能留下的部分结果，再在最终版本提交前完成全量 backfill，避免永久保留不完整索引。
-- 不增加常驻扫描、轮询、缓存、队列、N+1 请求或 UI 订阅。
+- locator 改写复用同一次 runtime 遍历并跳过 worktree checkout；Git 查询与历史普通会话 worktree 数量线性，后续只在使用或删除的低频边界按 Git catalog 检查，不增加常驻扫描、轮询、缓存、队列、N+1 请求或 UI 订阅。
 
 ### 12.2 过度设计
 
@@ -377,8 +381,8 @@ WorkspaceIdentityMigrationReport
 - Runtime recovery 与 ACP command catalog 已删除运行期 `workspace_key`；`core.db` schema v2 使用 `project_id + task_id + run_id`，旧 v1 表在单个 SQLite 事务中重建。
 - 迁移器已覆盖“workspace 已删除但合法 manifest 与旧项目目录仍保留”的情况，并将迁移测试的 HOME 完全隔离，避免测试写入真实用户 `state.json`。
 - 无 manifest 且不被 StateConfig 识别的异常历史目录不再阻断启动，迁移器保持目录原样并跳过，不猜测归属或并入其它 workspace。
-- 桌面启动在正常 manifest provision、Runtime recovery 和 Scheduler 之前执行 `WorkspaceIdentityMigrator`。迁移器全量预检查后移动旧目录，重写 manifest、StateConfig，以及 `run.json`、`worker-ref.json`、ACP session/snapshot 和文件变更记录中的明确 executable locator，同步清空并重建搜索投影，最后写入 `core_schema.workspace_identity=2`。已完成 v1 的机器会补跑 locator 修复；raw/timeline/diagnostics 历史记录不改写。
+- 桌面启动在正常 manifest provision、Runtime recovery 和 Scheduler 之前执行 `WorkspaceIdentityMigrator`。迁移器全量预检查后移动旧目录，重写 manifest、StateConfig，以及 `run.json`、`worker-ref.json`、ACP session/snapshot、文件变更记录和 AI-DYNAMIC graph 中的明确 executable locator，条件式 repair 普通会话 linked worktree，同步清空并重建搜索投影，最后写入 `core_schema.workspace_identity=3`。已完成 v1/v2 的机器会补跑缺失步骤；raw/timeline/diagnostics 历史记录不改写。
 - workspace 注册、同步、切换、Runtime recovery 与 Scheduler 注册均执行严格 manifest 归属校验；缺失、损坏或归属不一致不再静默覆盖或继续写入。迁移完成后 workspace 解析只接受持久化 canonical `project_id` 精确匹配，不保留大小写 alias 或路径重算 fallback。
 - 桌面上下文初始化已删除 manifest I/O 失败的读取侧吞错分支；当前 workspace 的 manifest 无法读取、创建或原子提交时直接阻止初始化，并由定向单元测试固定 I/O 与完整性失败契约。
 - 定向测试已固定配置派生、固定哈希向量、长度截断、manifest mismatch、core v1→v2、recovery token fencing、目录迁移、状态映射、rename 后 v1 marker 补跑、全部 executable locator、raw 审计不变、搜索重建、Scheduler DB 字节不变和完成 marker 二次短路。
-- 按本次验收约定仅执行 Rust 格式检查、两个 crate 构建和相关定向测试；未执行全量回归与前端验证。Git worktree 修复及 Scheduler 表/definition schema 迁移仍明确不在本方案范围内。
+- 2026-08-21：workspace identity 迁移门闩提升为 v3。迁移器补齐 AI-DYNAMIC 外层普通会话 worktree 的 graph workspace path，并从 canonical graph 同步 workspace projection；损坏 graph 局部隔离。普通会话 worktree 通过 common-dir、linked-worktree 身份和主仓库 catalog 条件式执行 Git 原生 repair，迁移 repair 失败不阻断桌面启动，后续使用/删除前复用同一 ensure 补偿；同一轮按 path 去重，不新增持久 repair 状态。runtime 扫描跳过 worktree checkout。真实 Git 测试覆盖父目录移动、v2→v3 补跑、重复 ensure、dirty 文件保留和 remove 恢复；Scheduler 表/definition schema 迁移仍不在本方案范围内。

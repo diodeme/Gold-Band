@@ -117,6 +117,8 @@ describe('ConversationRunPage follow mode reentry', () => {
       current: false,
       manualCheckPending: false,
       sessionEstablished: true,
+      worktreePath: 'D:/repo/.gold-band/worktrees/child',
+      worktreeBranch: 'gb-dynamic-child',
       artifactCount: 0,
       attachmentCount: 0,
     };
@@ -128,22 +130,7 @@ describe('ConversationRunPage follow mode reentry', () => {
       runMode: 'auto',
       activeSessions: [],
       inputAttachments: [],
-      selectedSession: {
-        roundId: leaf.roundId,
-        nodeId: leaf.nodeId,
-        attemptId: leaf.attemptId,
-        outerNodeId: leaf.outerNodeId,
-        outerAttemptId: leaf.outerAttemptId,
-        provider: 'codex-acp',
-        status: 'completed',
-        restored: true,
-        worktreePath: 'D:/repo/.gold-band/worktrees/child',
-        events: [],
-        eventPage: { loadedCount: 0, total: 0, hasOlder: false, hasNewer: false },
-        pendingPermissions: [],
-        pendingElicitations: [],
-        diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
-      },
+      selectedSession: null,
       sessionTree: {
         selectedSessionKey: selectedKey,
         rounds: [{
@@ -193,10 +180,145 @@ describe('ConversationRunPage follow mode reentry', () => {
     });
 
     expect(chatMocks.render).toHaveBeenCalledWith(
-      expect.objectContaining({ worktreePath: 'D:/repo/.gold-band/worktrees/child' }),
+      expect.objectContaining({
+        worktreePath: 'D:/repo/.gold-band/worktrees/child',
+        managedWorktreeBranch: 'gb-dynamic-child',
+      }),
       undefined,
     );
 
     await act(async () => root.unmount());
   });
+
+  it('restores dynamic session auto-follow after a scroll-only pause returns to bottom', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const changes: boolean[] = [];
+    const run = terminalDynamicRun();
+
+    function FollowHarness() {
+      const [followMode, setFollowMode] = React.useState<'auto' | 'manual'>('auto');
+      return (
+        <ConversationRunPage
+          run={run}
+          taskTitle="AUTO run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode={followMode}
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={(enabled) => {
+            changes.push(enabled);
+            setFollowMode(enabled ? 'auto' : 'manual');
+          }}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />
+      );
+    }
+
+    await act(async () => root.render(<FollowHarness />));
+    const leaveBottom = chatMocks.render.mock.lastCall?.[0].onAtBottomChange as ((atBottom: boolean) => void);
+    await act(async () => leaveBottom(false));
+    const returnToBottom = chatMocks.render.mock.lastCall?.[0].onAtBottomChange as ((atBottom: boolean) => void);
+    await act(async () => returnToBottom(true));
+
+    expect(changes).toEqual([false, true]);
+    await act(async () => root.unmount());
+  });
+
+  it('does not restore dynamic auto-follow by scrolling a manually selected terminal leaf to bottom', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onAutoFollowChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <ConversationRunPage
+          run={terminalDynamicRun()}
+          taskTitle="AUTO run"
+          appConfig={{ turnFiles: { cardPreviewLimit: 10 } } as AppConfigVm}
+          agentRegistry={null}
+          followMode="manual"
+          onRerun={vi.fn()}
+          onEditWorkflow={vi.fn()}
+          onSelectSession={vi.fn()}
+          onAutoFollowChange={onAutoFollowChange}
+          initialSessionTreeExpansion={{}}
+          onSessionTreeExpansionChange={vi.fn()}
+        />,
+      );
+    });
+    const returnToBottom = chatMocks.render.mock.lastCall?.[0].onAtBottomChange as ((atBottom: boolean) => void);
+    await act(async () => returnToBottom(true));
+
+    expect(onAutoFollowChange).not.toHaveBeenCalledWith(true);
+    await act(async () => root.unmount());
+  });
 });
+
+function terminalDynamicRun() {
+  const selectedKey = 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001';
+  const leaf = {
+    roundId: 'round-001',
+    nodeId: 'bootstrap',
+    attemptId: 'attempt-001',
+    outerNodeId: 'ai-dynamic',
+    outerAttemptId: 'attempt-001',
+    pathLabel: selectedKey,
+    status: 'completed',
+    outcome: 'success',
+    current: false,
+    manualCheckPending: false,
+    sessionEstablished: true,
+    artifactCount: 0,
+    attachmentCount: 0,
+    runtimeDisplay: { code: 'success', tone: 'success' },
+    lifecycle: {
+      runtime: { status: 'completed', active: false },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { liveTurnActivity: 'idle', stopping: false },
+      composer: { mode: 'normal', supersededBy: null },
+    },
+  };
+  return {
+    projectId: 'project-1',
+    taskId: 'task-028',
+    runId: 'run-001',
+    runStatus: 'running',
+    runMode: 'auto',
+    activeSessions: [],
+    inputAttachments: [],
+    selectedSession: null,
+    sessionTree: {
+      selectedSessionKey: selectedKey,
+      rounds: [{
+        roundId: 'round-001',
+        index: 1,
+        label: 'Round 1',
+        status: 'running',
+        nodes: [{
+          nodeId: 'ai-dynamic',
+          label: 'AUTO',
+          nodeType: 'ai-dynamic',
+          status: 'running',
+          attempts: [],
+          outerNodes: [{
+            nodeId: 'bootstrap',
+            label: 'Bootstrap',
+            nodeType: 'worker',
+            status: 'completed',
+            attempts: [leaf],
+          }],
+        }],
+      }],
+    },
+    workflowStatus: 'valid',
+    workflowValid: true,
+    workflowGraph: { nodes: [], edges: [] },
+    resumable: false,
+  } as unknown as ConversationRunVm;
+}

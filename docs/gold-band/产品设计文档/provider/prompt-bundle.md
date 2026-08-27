@@ -29,17 +29,17 @@
 
 `systemPrompt` 负责稳定、规则性的运行约束，回答：
 
-> 当前是谁、处在哪个 run/node、必须遵守什么规则、最后输出必须是什么格式。
+> 当前是谁、处在哪个 run/node、必须遵守什么稳定规则；只有 `InlineControl` 业务 turn 才同时声明本 turn 的输出格式。
 
 它承载：
 
 - 当前 project / task / run / node 基础信息
 - Gold Band / ACP 文件夹规则中的稳定部分
 - 当前节点 profile id 解析出的完整角色说明
-- 当前节点 `output` DSL 派生出的 artifact 规则与输出约束
+- 当前节点 `output` DSL 派生出的发射规则：`InlineControl` 展开 artifact 契约；`PostTurnProjection` 只声明业务 turn 自然完成、控制结果随后后置归一化，不暴露 artifact 名称、schema 或 success condition
 - 现有 `extra_system_sections`，本期继续按原样放在 system prompt
 
-`systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要和本轮反馈。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
+`systemPrompt` 不承载 resume 时可能变化的运行事实，例如当前 attempt、前序节点链、前序产物摘要、本轮反馈以及 PostTurn finalize / repair 的完整控制协议。它也不再承载旧的 `InvocationKind` 语义，不根据 artifact 名称内置 `节点输出产物` / `验收输出产物` 之类特殊输出规则，不注入 runtime `skill_catalog`。
 
 内置审查 profile 的审查边界固定为当前开发节点 / 当前迭代改动：优先以 `dev-report.md` 中列出的文件和行号为范围；前序存在开发节点但未产出报告不构成阻塞条件，直接以当前 git 工作区对应改动为准。相邻代码只作为理解上下文，未被当前改动引入或放大的历史问题不应阻塞本轮 review 裁决。
 
@@ -57,10 +57,10 @@
 - 普通 new 请求的原始 `requirement`
 - 普通 new 请求中由 `worker.goal` 映射得到的 `taskInstruction`
 - workflow resume 请求的简短 `Goal`
-- runtime repair 请求的修复提示原文
+- runtime finalize / repair 请求的完整 artifact 协议与修复提示原文；两者都是隐藏 user prompt，不回写 system prompt
 - 用户手动追问 / stopped-completed session follow-up 的用户输入原文
 
-profile 正文、output DSL、`extra_system_sections` 不放在 `userPrompt` 中；`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
+profile 正文、`extra_system_sections` 不放在 `userPrompt` 中；output DSL 只在隐藏 `RuntimeFinalize / RuntimeRepair` 控制 turn 中作为 user prompt 协议出现，普通业务 user prompt 不携带。`Cold Artifact Index` / `Cold Attachment Index` 本期从 prompt 中删除。
 
 ### 3.3 Profile 动态模板
 
@@ -79,7 +79,7 @@ Profile 数据增加 `dynamicTemplate: boolean`，默认值为 `false`。该字�
 | `execution.has_output_contract` | `boolean` | 当前 turn 是否启用了 `InlineControl` output contract；`PostTurnProjection` 的业务 turn 为 `false`，隐藏 finalize turn 才负责控制输出 |
 | `execution.session_mode` | `new \| continue` | 当前 ACP session 调用模式 |
 
-`execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 turn 使用 `InlineControl` 时为 `true`。`PostTurnProjection` 业务 turn 即使 invocation 保留原始 contract，也必须渲染为 `false`，避免 Profile 提前要求 artifact；Runtime 后续以独立隐藏 finalize prompt 提供完整控制协议。
+`execution.surface` 必须由 invocation 创建入口显式赋值：普通 workflow worker 使用 `workflow`，AI-DYNAMIC 内部 worker / merge / acceptance 使用 `aiDynamic`。枚举值统一采用 camelCase，不得通过 `runtime_node_id`、目录结构、output artifact 名称或其他身份字段反推执行面；`runtime_node_id` 只保留动态节点定位职责。`execution.can_route_next` 在显式执行面为 `aiDynamic` 且当前 turn 使用 `InlineControl` 时为 `true`。`PostTurnProjection` 从业务 turn 到隐藏 finalize / repair 始终保留原始 emission identity，并渲染为 `false`，避免 Profile 或 system prompt 提前或重复要求 artifact；Runtime 只在独立隐藏 user prompt 中提供完整控制协议，并根据 render mode 消费控制结果。
 
 角色编辑页提供“启用动态模板”开关，默认关闭；问号提示展示上述变量和枚举值。自定义角色可以复用同一套判断，不需要复制内置角色或修改 runtime 代码。内置角色扫描结果中，仅 `plan` 和 `dev` 需要根据执行面切换规则，因此两者开启该开关，其余内置角色保持关闭。
 
@@ -129,6 +129,11 @@ Gold Band 文件规则：
 runtime 将使用以下条件判断节点结果：
 {{output_contract.success_condition}}
 {{/if}}
+{{else if output_deferred}}
+当前节点 artifact 规则：
+- 当前业务执行 turn 不需要输出 canonical artifact。
+- runtime 会在本 turn 正常结束后，通过单独的隐藏 finalize turn 请求控制结果；本 turn 只需完成任务并自然回复。
+- 不要提前输出、猜测或查找 artifact schema。
 {{else}}
 当前节点 artifact 规则：
 - 当前节点未声明 output DSL，不需要产出 canonical artifact。
@@ -140,7 +145,7 @@ Gold Band 可能会在 user prompt 中提供 `<hidden data-gold-band-hidden="tru
 
 说明：
 
-- 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。
+- 当前节点的输出约束只来自节点配置中的 `output` DSL；没有 `output` DSL 就不追加结构化输出格式要求。`PostTurnProjection` 的业务、finalize 和 repair system prompt 都不展开契约，完整协议只出现在隐藏 finalize / repair user prompt；`InlineControl` 才在 system prompt 展开契约。
 - 若节点没有声明 `output`，system prompt 必须明确说明无需产出 canonical artifact，也无需查找或推断 artifact/output 约束。
 - `extra_system_sections` 本期继续原样保留在 system prompt，不拆分、不迁移。
 - `skill_catalog` 不再注入 runtime prompt。
@@ -313,7 +318,7 @@ AI-DYNAMIC 内部 agent 阶段（bootstrap / worker / merge / acceptance）与�
 
 当 render mode 为 `WorkflowResume` 时：
 
-- `systemPrompt` 仍渲染当前节点的稳定规则、角色、文件规则与 output DSL 约束
+- `systemPrompt` 仍渲染当前节点的稳定规则、角色和文件规则；只有 `InlineControl` 展开 output DSL，`PostTurnProjection` 不因 finalize / repair 改写稳定 system prompt
 - `userPrompt` 必须包含 Gold Band hidden runtime context
 - `resume_prompt`、分支原因或 runtime 恢复原因进入 hidden context 的 `Invocation reason`
 - 可见正文只发送简短 `# 目标` / `# Goal`、可选用户提示和当前恢复任务，不重传完整原始 user prompt
@@ -324,13 +329,13 @@ ACP 会话展示按 Gold Band 的 session 策略聚合：`session=new` 始终创
 
 说明：Claude Agent ACP 的 `session/load` 会在恢复已有 Claude 会话时创建新的 SDK query 进程；这里的 create session 是 provider 进程内的查询对象创建，不表示 Gold Band 开启了新的对话语义。
 
-Provider 能力中新增 `supports_system_prompt`。支持该能力的 provider 会在 `session/new` / `session/load` 中通过 `_meta.systemPrompt.append` 接收稳定 system prompt；不支持该能力的 provider 不发送 `_meta.systemPrompt`，Gold Band 会把稳定 system prompt 作为额外 `<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">` 段内联到 user prompt 前。Codex ACP 当前按不支持 system prompt 处理。
+Provider 能力中新增 `supports_system_prompt`。支持该能力的 provider 会在 `session/new` / `session/load` / `session/resume` 中通过 `_meta.systemPrompt.append` 接收稳定 system prompt；PostTurn finalize / repair 不得把隐藏 user prompt 的完整控制协议提升为 system prompt。不支持该能力的 provider 不发送 `_meta.systemPrompt`，Gold Band 会把稳定 system prompt 作为额外 `<hidden data-gold-band-hidden="true" title="Gold Band stable system prompt">` 段内联到 user prompt 前。Codex ACP 当前按不支持 system prompt 处理。
 
 ---
 
 ## 8. 一句话总结
 
-> `prompt bundle` 是 provider 调用前的最终模型输入层：system prompt 承载工作流运行约束和输出 DSL，user prompt 承载任务目标、反馈和冷数据索引。
+> `prompt bundle` 是 provider 调用前的最终模型输入层：system prompt 承载稳定工作流约束及 `InlineControl` 契约；user prompt 承载任务目标、运行事实，以及 PostTurn 隐藏 finalize / repair 控制协议。
 
 ## 9. Prompt Envelope
 

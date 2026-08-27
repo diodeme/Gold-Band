@@ -17,7 +17,6 @@ import type {
   ConversationRunModeVm,
   ConversationRunVm,
   ConversationSearchResultVm,
-  ConversationSessionSwitchVm,
   ConversationSidebarVm,
   ConversationTaskRowVm,
   ConversationValidationResultVm,
@@ -76,6 +75,8 @@ import type {
   FeedbackResult,
   FeedbackArchivePreview,
   GitCapabilityVm,
+  GitBranchChangeRequestVm,
+  GitBranchPickerSnapshotVm,
   GitCommitDetailVm,
   GitCommitReachabilityQueryVm,
   GitCommitReachabilityVm,
@@ -122,6 +123,8 @@ import { isTauriRuntime } from './shared';
 
 export interface AcpSessionUpdatedEventVm {
   branchId?: string | null;
+  timelineGeneration?: number | null;
+  timelineRevision?: number | null;
   projectId?: string | null;
   taskId: string;
   runId: string;
@@ -137,6 +140,7 @@ export interface AcpSessionUpdatedEventVm {
 }
 
 export interface ConversationRunStateUpdatedEventVm {
+  eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';
   projectId: string;
   taskId: string;
   runId: string;
@@ -182,10 +186,13 @@ export interface ScheduledOccurrenceUpdatedEventVm {
 }
 
 export interface ConversationPromptSubmitVm {
-  kind: 'acp-session' | 'runtime-continue-started' | 'runtime-recovery-started' | 'queued' | 'rejected' | string;
+  kind: 'acp-session' | 'acp-session-started' | 'runtime-continue-started' | 'runtime-recovery-started' | 'queued' | 'rejected' | string;
   session?: AcpSessionVm | null;
   run?: RunSummaryVm | null;
   lifecycle?: ConversationAttemptLifecycleVm | null;
+  turnId?: string | null;
+  revision?: number | null;
+  operationId?: string | null;
 }
 
 export interface ConversationPromptQueueMutationVm {
@@ -211,10 +218,29 @@ export interface MaterializeAttachmentFileInput {
   dataBase64: string;
 }
 
+export type FrontendErrorKind = 'window-error' | 'unhandled-rejection' | 'react-uncaught';
+
+export interface FrontendErrorReportInput {
+  kind: FrontendErrorKind;
+  message: string;
+  stack?: string | null;
+  componentStack?: string | null;
+  source?: string | null;
+  line?: number | null;
+  column?: number | null;
+  activeElement?: string | null;
+  lastPointerTarget?: string | null;
+  lastPointerAt?: string | null;
+  pathname?: string | null;
+  userAgent?: string | null;
+}
+
 export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
+  changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
   getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;
@@ -309,13 +335,11 @@ export interface RuntimeApi {
   restoreConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueRestoreVm>;
   deleteConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptQueueMutationVm>;
   useConversationQueuedPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, itemId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationPromptSubmitVm>;
-  sendAcpPrompt(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, prompt: string, promptId?: string | null, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null, attachmentPaths?: string[]): Promise<AcpSessionVm | null>;
   setAcpSessionModel(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, modelId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionPermissionMode(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, permissionModeId: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   setAcpSessionConfigOption(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, optionId: string, optionValue: string | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondAcpPermission(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, requestId: string, optionId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   respondElicitation(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, elicitationId: string, action: "accept" | "decline", content?: Record<string, unknown> | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<void>;
-  cancelAcpSession(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, fallback?: AcpSessionVm | null, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpSessionVm | null>;
   getAcpRawFrames(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, query?: AcpRawFrameQueryInput, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<AcpRawFramePageVm>;
   showArtifact(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
   showAttachment(projectId: string | null | undefined, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, name: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ContentVm>;
@@ -336,6 +360,7 @@ export interface RuntimeApi {
   getMetricsSettings(): Promise<MetricsSettingsVm>;
   saveMetricsSettings(enabled: boolean, metricsBaseUrl: string | null, apiKey: string | null): Promise<MetricsSettingsVm>;
   recordActivity(): Promise<void>;
+  reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
@@ -357,7 +382,6 @@ export interface RuntimeApi {
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;
   getConversationRun(projectId: string, taskId: string, runId: string, selectedSessionKey?: string | null): Promise<ConversationRunVm>;
-  switchConversationSession(projectId: string, taskId: string, runId: string, roundId: string, nodeId: string, attemptId: string, outerNodeId?: string | null, outerAttemptId?: string | null): Promise<ConversationSessionSwitchVm>;
   validateConversationCreate(input: ConversationCreateInput): Promise<ConversationValidationResultVm>;
   createConversationRun(input: ConversationCreateInput): Promise<ConversationCreateResultVm>;
   rerunConversationTask(projectId: string, taskId: string): Promise<ConversationRunVm>;

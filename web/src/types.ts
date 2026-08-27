@@ -416,6 +416,8 @@ export interface AcpCommandItemVm {
 export interface AcpCommandCatalogVm {
   agentType: string;
   projectId: string;
+  acpCommands?: AcpCommandItemVm[] | null;
+  skillCommands?: AcpCommandItemVm[] | null;
   commands: AcpCommandItemVm[];
   updatedAt: string;
 }
@@ -510,7 +512,9 @@ export interface AppErrorVm {
 }
 
 export interface GitCapabilityVm {
-  status: 'ready' | 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  status: 'ready' | 'not-installed' | 'version-unsupported' | 'version-unavailable' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  installedVersion: string | null;
+  minimumVersion: string;
   repoRoot: string | null;
   commonDir: string | null;
   head: string | null;
@@ -731,6 +735,32 @@ export interface GitSourceControlSnapshotVm {
   worktrees: GitWorktreeVm[];
   stashes: GitStashEntryVm[];
 }
+
+export interface GitBranchPickerItemVm {
+  name: string;
+  targetOid: string;
+  checkedOutWorktreePaths: string[];
+}
+
+export interface GitBranchPickerSnapshotVm {
+  workspacePath: string;
+  currentBranch?: string | null;
+  headOid?: string | null;
+  revision: string;
+  dirtyFileCount: number;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
+  lock: GitLockVm;
+  branches: GitBranchPickerItemVm[];
+}
+
+export type GitBranchChangeRequestVm = (
+  | { kind: 'switch'; name: string }
+  | { kind: 'create-and-switch'; name: string; startPoint: string }
+) & { expectedRevision: string };
 
 export type GitMutationVm =
   | { kind: 'stage-paths'; paths: string[] }
@@ -1445,6 +1475,7 @@ export interface AcpSessionVm {
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
   worktreePath?: string | null;
+  worktreeBranch?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -1480,6 +1511,7 @@ export interface AcpSessionQueryInput {
   branchId?: string;
   beforeSeq?: number;
   afterSeq?: number;
+  afterRevision?: number;
   beforeCursor?: string;
   afterCursor?: string;
   eventLimit?: number;
@@ -1487,6 +1519,9 @@ export interface AcpSessionQueryInput {
 }
 
 export interface AcpEventPageVm {
+  generation?: number;
+  coveredRevision?: number;
+  newestRevision?: number | null;
   loadedCount: number;
   total: number;
   oldestSeq?: number | null;
@@ -2239,6 +2274,8 @@ export interface ConversationSessionLeafVm {
   finishedAt?: string | null;
   sessionId?: string | null;
   sessionEstablished?: boolean;
+  worktreePath?: string | null;
+  worktreeBranch?: string | null;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2291,8 +2328,28 @@ export interface ConversationRunVm {
   resumable: boolean;
   pauseReason?: string | null;
   runtimeErrorMessage?: string | null;
+  runtimeError?: RuntimeErrorInfoVm | null;
   scheduledTaskId?: string | null;
   worktree?: ConversationRunWorktreeVm | null;
+}
+
+export interface ScheduledTaskConfig {
+  schedule: ScheduledScheduleInput;
+  overlapPolicy: ScheduledOverlapPolicy;
+  sessionPolicy: ScheduledSessionPolicy;
+}
+
+export interface RuntimeErrorInfoVm {
+  code: {
+    domain: string;
+    code: string;
+  };
+  domain: string;
+  recovery: string;
+  retryPolicy?: unknown | null;
+  params?: Record<string, unknown> | null;
+  diagnostic: string;
+  raw?: unknown | null;
 }
 
 export interface ConversationCreateResultVm {
@@ -2310,10 +2367,6 @@ export interface ConversationRunWorktreeVm {
   path: string;
   branch: string;
   forkCommit: string;
-}
-
-export interface ConversationSessionSwitchVm {
-  selectedSession?: AcpSessionVm | null;
 }
 
 export interface ConversationActiveSessionVm {
@@ -2385,6 +2438,7 @@ export interface ConversationCreateInput {
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
+  selectedBranch?: string | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

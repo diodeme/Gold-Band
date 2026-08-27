@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use camino::Utf8Path;
@@ -11,7 +12,7 @@ use gold_band::scheduler::{LocalTimeDisambiguation, RepeatPreset, ScheduleError,
 use crate::view_models::{
     AssetItemVm, GraphVm, RuntimeDisplayVm, acp_session_status, dynamic_acp_session_status,
     dynamic_runtime_graph_vm, latest_control_failure_vm, round_detail_vm, runtime_display_vm,
-    workflow_graph_vm,
+    session_worktree_projection, workflow_graph_vm,
 };
 use gold_band::acp::client::{PromptActivity, prompt_activity, prompt_activity_under};
 use gold_band::acp::control::load_runtime_control_cursor;
@@ -22,18 +23,19 @@ use gold_band::app::{
 };
 use gold_band::config::ConversationRunMode;
 use gold_band::config::StateConfig;
-use gold_band::domain::NodeType;
-use gold_band::domain::RunStatus;
-use gold_band::domain::{SessionMode, TurnControlMode};
+use gold_band::domain::{
+    NodeOutcome, NodeType, PauseReason, RunStatus, SessionMode, TurnControlMode,
+};
 use gold_band::dsl::{
     AiDynamicAgentStrategy, AiDynamicNode, DynamicAgentRef, DynamicControlDsl, END_NODE, EdgeDsl,
     EdgeOutcome, NodeDsl, PromptEnvelopeMode, WorkerNode, WorkflowDsl,
 };
-use gold_band::dynamic::{DynamicGraphState, DynamicRunStatus};
+use gold_band::dynamic::{DynamicRunPhase, DynamicRunStatus};
 use gold_band::dynamic_store::load_dynamic_graph;
 use gold_band::runtime::{
     RoundState, RunState, RuntimeExecutionPhase, RuntimeExecutionState, TaskState, WorkerRefState,
 };
+use gold_band::runtime_error::RuntimeErrorInfo;
 use gold_band::storage::{read_json, write_json};
 use gold_band::workflow_model_binding::{
     TaskAuthoringWorkflow, WorkflowModelBindings, migrate_authoring_workflow, validate_and_inject,
@@ -520,6 +522,7 @@ pub struct ConversationRunVm {
     pub resumable: bool,
     pub pause_reason: Option<String>,
     pub runtime_error_message: Option<String>,
+    pub runtime_error: Option<RuntimeErrorInfo>,
     pub scheduled_task_id: Option<String>,
     pub worktree: Option<ConversationRunWorktreeVm>,
 }
@@ -537,12 +540,6 @@ pub struct ConversationRunWorktreeVm {
     pub path: String,
     pub branch: String,
     pub fork_commit: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationSessionSwitchVm {
-    pub selected_session: Option<crate::view_models::AcpSessionVm>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -594,6 +591,8 @@ pub struct ConversationSessionLeafVm {
     pub finished_at: Option<String>,
     pub session_id: Option<String>,
     pub session_established: bool,
+    pub worktree_path: Option<String>,
+    pub worktree_branch: Option<String>,
     pub artifact_count: usize,
     pub attachment_count: usize,
 }
@@ -809,6 +808,8 @@ pub struct ConversationCreateInputVm {
     pub attachment_paths: Option<Vec<String>>,
     #[serde(default)]
     pub work_location: ConversationWorkLocationVm,
+    #[serde(default)]
+    pub selected_branch: Option<String>,
     #[serde(default)]
     pub scheduled_task_id: Option<String>,
     #[serde(default)]
@@ -1386,7 +1387,7 @@ fn display_pause_reason_for_dynamic_attempt(
 }
 
 fn acp_session_file_is_cancelled(path: &camino::Utf8Path) -> bool {
-    gold_band::acp::events::load_session_metadata_value(path, None)
+    gold_band::acp::events::read_session_metadata_value(path, None)
         .ok()
         .and_then(|session| {
             let stop_reason = session
@@ -1693,12 +1694,20 @@ fn runtime_error_message(
     run_id: &str,
     pause_reason: Option<&str>,
     run_outcome: Option<&str>,
+    paused_runtime_error: Option<&RuntimeErrorInfo>,
 ) -> Option<String> {
     if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("error-blocked") {
         return latest_control_failure_vm(app, task_id, run_id)
             .ok()
             .flatten()
             .map(|failure| failure.message);
+    }
+
+    if pause_reason.map(normalize_lifecycle_code).as_deref() == Some("runtime-abnormal") {
+        return paused_runtime_error
+            .map(|error| error.diagnostic.trim())
+            .filter(|diagnostic| !diagnostic.is_empty())
+            .map(str::to_string);
     }
 
     if !matches!(
@@ -1718,6 +1727,73 @@ fn runtime_error_message(
                 format!("{}：{}", failure.title, failure.message)
             }
         })
+}
+
+const RUN_PAUSED_EVENT_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Reads a bounded tail of an append-only JSONL event file.
+///
+/// The leading partial line is discarded so JSON parsing never consumes a
+/// truncated event. An individual event larger than the bound is omitted
+/// instead of forcing the conversation summary path to load the whole log.
+fn run_event_tail(path: &Utf8Path) -> Option<String> {
+    let mut file = fs::File::open(path.as_std_path()).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let start = file_len.saturating_sub(RUN_PAUSED_EVENT_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity((file_len - start) as usize);
+    file.read_to_end(&mut bytes).ok()?;
+    if start > 0 {
+        let newline = bytes.iter().position(|byte| *byte == b'\n')?;
+        bytes.drain(..=newline);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Reads the structured error for the current `runtime-abnormal` pause only.
+///
+/// `run.json` is the lifecycle authority. Events remain audit records, and can
+/// provide diagnostics only after their pause timestamp matches that authority.
+fn current_run_paused_runtime_error(
+    app: &App,
+    task_id: &str,
+    run: &RunState,
+) -> Option<RuntimeErrorInfo> {
+    if run.status != RunStatus::Paused || run.pause_reason != Some(PauseReason::RuntimeAbnormal) {
+        return None;
+    }
+
+    let events = run_event_tail(&app.paths.run_events_file(task_id, &run.id))?;
+    for line in events.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if event.get("type").and_then(|value| value.as_str()) != Some("run_paused") {
+            continue;
+        }
+        if event.get("timestamp").and_then(|value| value.as_str()) != Some(&run.updated_at)
+            || event
+                .pointer("/data/pauseReason")
+                .or_else(|| event.pointer("/data/pause_reason"))
+                .and_then(|value| value.as_str())
+                .map(normalize_lifecycle_code)
+                .as_deref()
+                != Some("runtime-abnormal")
+        {
+            return None;
+        }
+        let runtime_error = event
+            .pointer("/data/controlFailure/runtimeError")
+            .cloned()
+            .or_else(|| {
+                event
+                    .pointer("/data/control_failure/runtime_error")
+                    .cloned()
+            });
+        return runtime_error
+            .and_then(|value| serde_json::from_value::<RuntimeErrorInfo>(value).ok());
+    }
+    None
 }
 
 fn dynamic_leaf_runtime_error_message(
@@ -1834,12 +1910,13 @@ fn is_runtime_continue_pause_reason(pause_reason: Option<&str>) -> bool {
 fn runtime_continue_kind(
     runtime_status: &str,
     runtime_outcome: Option<&str>,
+    runtime_continue_owner: bool,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
     is_orchestrated: bool,
 ) -> Option<String> {
-    if !is_orchestrated || manual_check_pending || !runtime_resumable {
+    if !runtime_continue_owner || !is_orchestrated || manual_check_pending || !runtime_resumable {
         return None;
     }
     if !matches!(
@@ -1909,12 +1986,12 @@ fn dynamic_node_runtime_execution(
 ) -> Option<RuntimeExecutionState> {
     node.runtime_execution_phase
         .map(|phase| RuntimeExecutionState {
-            revision: node.runtime_execution_revision,
+            revision: node.runtime_lifecycle_revision,
             phase,
             locator: None,
             recovery_candidate_token: None,
             updated_at: node
-                .runtime_execution_updated_at
+                .runtime_lifecycle_updated_at
                 .clone()
                 .unwrap_or_default(),
         })
@@ -1926,41 +2003,45 @@ fn dynamic_attempt_runtime_execution(
     node: &gold_band::dynamic::DynamicNodeState,
 ) -> Option<RuntimeExecutionState> {
     let graph_owns_transitional_leaf = graph.run.status == DynamicRunStatus::Running
-        && (dynamic_runtime_owns_completed_leaf(graph, &node.id)
+        && (gold_band::dynamic::dynamic_runtime_owns_leaf_projection(graph, node)
             || (node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                 && graph
                     .run
                     .current_node_ids
                     .iter()
                     .any(|node_id| node_id == &node.id)));
-    if (run.status == RunStatus::Paused && node.outcome.is_none())
-        || (graph.run.phase == gold_band::dynamic::DynamicRunPhase::PreparingWorkspace
-            && run.execution.phase == RuntimeExecutionPhase::PreparingWorkspace)
+    let execution = if (run.status == RunStatus::Paused && node.outcome.is_none())
         || graph_owns_transitional_leaf
     {
-        return Some(run.execution.clone());
-    }
-    dynamic_node_runtime_execution(node).or_else(|| {
-        (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
-            RuntimeExecutionState {
-                revision: node.runtime_execution_revision,
-                phase: RuntimeExecutionPhase::StartingNode,
-                locator: None,
-                recovery_candidate_token: None,
-                updated_at: node
-                    .runtime_execution_updated_at
-                    .clone()
-                    .unwrap_or_else(|| graph.run.updated_at.clone()),
-            }
+        Some(run.execution.clone())
+    } else {
+        dynamic_node_runtime_execution(node).or_else(|| {
+            (node.status == gold_band::dynamic::DynamicNodeStatus::Ready).then(|| {
+                RuntimeExecutionState {
+                    revision: node.runtime_lifecycle_revision,
+                    phase: RuntimeExecutionPhase::StartingNode,
+                    locator: None,
+                    recovery_candidate_token: None,
+                    updated_at: node
+                        .runtime_lifecycle_updated_at
+                        .clone()
+                        .unwrap_or_else(|| graph.run.updated_at.clone()),
+                }
+            })
         })
+    };
+    execution.map(|mut execution| {
+        // Phase ownership may temporarily move to the outer AI-DYNAMIC run,
+        // but ordering remains leaf-owned. Graph transitions advance this
+        // watermark before publishing the corresponding leaf session update.
+        execution.revision = node.runtime_lifecycle_revision;
+        execution
     })
 }
 
 fn acp_session_availability(session_status: Option<&str>, established: bool) -> String {
     let normalized = session_status.map(normalize_lifecycle_code);
-    if matches!(normalized.as_deref(), Some("closing")) {
-        "closing".to_string()
-    } else if matches!(normalized.as_deref(), Some("restorable")) {
+    if matches!(normalized.as_deref(), Some("restorable")) {
         "restorable".to_string()
     } else if established || matches!(normalized.as_deref(), Some("established")) {
         "established".to_string()
@@ -2046,14 +2127,24 @@ fn composer_for_lifecycle(
     }
 }
 
-fn dynamic_runtime_owns_completed_leaf(graph: &DynamicGraphState, node_id: &str) -> bool {
-    graph.run.status == DynamicRunStatus::Running
-        && graph.run.current_node_ids.is_empty()
-        && graph.nodes.last().is_some_and(|node| {
-            node.id == node_id
-                && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
-                && node.outcome.is_some()
-        })
+fn apply_dynamic_workspace_transition_composer(
+    graph: &gold_band::dynamic::DynamicGraphState,
+    node: &gold_band::dynamic::DynamicNodeState,
+    lifecycle: &mut ConversationAttemptLifecycleVm,
+) {
+    let processing_completed_leaf_workspace = graph.run.phase
+        == DynamicRunPhase::PreparingWorkspace
+        && node.status == gold_band::dynamic::DynamicNodeStatus::Completed
+        && node.outcome == Some(NodeOutcome::Success)
+        && gold_band::dynamic::dynamic_runtime_owns_leaf_projection(graph, node)
+        && lifecycle.runtime.active
+        && lifecycle.runtime.phase == "preparing-workspace";
+    if !processing_completed_leaf_workspace {
+        return;
+    }
+
+    lifecycle.composer.processing_kind = "processing-workspace".to_string();
+    lifecycle.composer.status_key = Some("conversation.runtime.processingWorkspace".to_string());
 }
 
 fn derive_conversation_attempt_lifecycle_with_facets(
@@ -2062,6 +2153,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     runtime_status: &str,
     runtime_outcome: Option<&str>,
     current: bool,
+    runtime_continue_owner: bool,
     pause_reason: Option<&str>,
     runtime_resumable: bool,
     manual_check_pending: bool,
@@ -2166,6 +2258,7 @@ fn derive_conversation_attempt_lifecycle_with_facets(
     let continue_kind = runtime_continue_kind(
         runtime_status,
         runtime_outcome,
+        runtime_continue_owner,
         pause_reason,
         runtime_resumable,
         manual_check_pending,
@@ -2202,9 +2295,14 @@ fn derive_conversation_attempt_lifecycle_with_facets(
             active: runtime_active,
             continuable: continue_kind.is_some(),
             phase: runtime_phase,
-            revision: runtime_execution
-                .filter(|_| execution_current)
-                .map(|execution| execution.revision),
+            // The revision is the watermark of the Runtime snapshot used to
+            // derive this facet, not proof that this attempt currently owns
+            // execution. Non-current workflow leaves must still advance this
+            // watermark so a fresh inactive projection can replace an older
+            // locally cached active facet. `active` and `phase` remain gated
+            // by the exact execution locator above. Direct passes no Runtime
+            // execution, while AI-DYNAMIC supplies its leaf-owned execution.
+            revision: runtime_execution.map(|execution| execution.revision),
         },
         control: ConversationControlFacetVm {
             mode: match effective_control_mode {
@@ -2266,6 +2364,7 @@ fn derive_conversation_attempt_lifecycle(
         prompt_activity,
         runtime_status,
         runtime_outcome,
+        current,
         current,
         pause_reason,
         runtime_resumable,
@@ -2336,7 +2435,7 @@ pub fn conversation_attempt_lifecycle_vm(
             run_pause_reason.as_deref(),
         );
         let dynamic_runtime_owns_leaf =
-            dynamic_runtime_owns_completed_leaf(&dynamic_graph, node_id);
+            gold_band::dynamic::dynamic_runtime_owns_leaf_projection(&dynamic_graph, dynamic_node);
         let runtime_status = if dynamic_runtime_owns_leaf {
             "running".to_string()
         } else if run.status == RunStatus::Paused
@@ -2365,6 +2464,9 @@ pub fn conversation_attempt_lifecycle_vm(
                 || (run_paused_for_current_leaf
                     && dynamic_node.status == gold_band::dynamic::DynamicNodeStatus::Paused
                     && dynamic_node.outcome.is_none()));
+        let runtime_continue_owner = run.current_round.as_deref() == Some(round_id)
+            && run.current_node.as_deref() == Some(outer_node_id)
+            && run.current_attempt.as_deref() == Some(outer_attempt_id);
         let leaf_resumable = runtime_status == "paused"
             && outcome.is_none()
             && is_runtime_continue_pause_reason(pause_reason.as_deref());
@@ -2385,6 +2487,7 @@ pub fn conversation_attempt_lifecycle_vm(
             &runtime_status,
             outcome.as_deref(),
             current,
+            runtime_continue_owner,
             pause_reason.as_deref(),
             leaf_resumable,
             false,
@@ -2396,6 +2499,7 @@ pub fn conversation_attempt_lifecycle_vm(
         );
         attach_acp_lifecycle_header(&attempt_dir, &mut lifecycle);
         attach_direct_prompt_queue(app, task_id, &attempt_dir, &mut lifecycle);
+        apply_dynamic_workspace_transition_composer(&dynamic_graph, dynamic_node, &mut lifecycle);
         return Ok(lifecycle);
     }
 
@@ -2428,6 +2532,7 @@ pub fn conversation_attempt_lifecycle_vm(
         &runtime_status,
         outcome.as_deref(),
         current,
+        current,
         pause_reason.as_deref(),
         runtime_resumable,
         node.manual_check_pending,
@@ -2459,7 +2564,7 @@ fn attach_acp_lifecycle_header(
     let header = [snapshot.as_path(), session.as_path()]
         .into_iter()
         .find_map(|path| {
-            gold_band::acp::events::read_lifecycle_header(path)
+            gold_band::acp::events::read_lifecycle_header_snapshot(path)
                 .ok()
                 .flatten()
         });
@@ -2493,15 +2598,44 @@ fn attach_acp_lifecycle_header(
         header.live_turn_activity == gold_band::acp::events::AcpLiveTurnActivity::CancelRequested;
     lifecycle.acp.stop_reason = header.stop_reason;
     lifecycle.acp.operation_id = header.operation_id;
-    if lifecycle.acp.stopping {
-        lifecycle.display_status = "cancelling".to_string();
-        lifecycle.composer.mode = "stopping".to_string();
-        lifecycle.composer.submit_target = "none".to_string();
-        lifecycle.composer.processing_kind = "stopping".to_string();
-        lifecycle.composer.status_key = Some("acp.stopping".to_string());
-        lifecycle.composer.can_stop = true;
-        lifecycle.composer.lock_input = true;
-    }
+    // The snapshot header may arrive after the broader runtime facet. Rebuild
+    // the derived projection from the merged canonical facets so a terminal
+    // header cannot leave the composer locked by an older running projection.
+    let acp_active = matches!(
+        header.live_turn_activity,
+        gold_band::acp::events::AcpLiveTurnActivity::Starting
+            | gold_band::acp::events::AcpLiveTurnActivity::Accepted
+            | gold_band::acp::events::AcpLiveTurnActivity::Running
+    );
+    let display_status = if lifecycle.acp.stopping {
+        "cancelling".to_string()
+    } else if acp_active && !lifecycle.runtime.active {
+        match header.live_turn_activity {
+            gold_band::acp::events::AcpLiveTurnActivity::Starting => "starting".to_string(),
+            _ => "running".to_string(),
+        }
+    } else if lifecycle.runtime.active {
+        lifecycle.runtime.status.clone()
+    } else {
+        lifecycle.display_status.clone()
+    };
+    lifecycle.display_status = display_status.clone();
+    lifecycle.runtime_display = runtime_display_vm(
+        Some(&display_status),
+        lifecycle.runtime.outcome.as_deref(),
+        lifecycle.runtime.current,
+        lifecycle.runtime.pause_reason.as_deref(),
+        lifecycle.runtime.resumable,
+    );
+    lifecycle.composer = composer_for_lifecycle(
+        &lifecycle.runtime.phase,
+        lifecycle.runtime.active,
+        acp_active,
+        lifecycle.acp.stopping,
+        &lifecycle.acp.live_turn_activity,
+        lifecycle.continue_kind.as_deref(),
+        &lifecycle.runtime_display,
+    );
 }
 
 #[cfg(test)]
@@ -2927,6 +3061,7 @@ pub fn conversation_run_vm(
     };
     let mut tree_rounds: Vec<ConversationRoundNodeVm> = Vec::new();
     let mut active_sessions: Vec<ConversationActiveSessionVm> = Vec::new();
+    let run_worktree = run.worktree.as_ref();
     let run_pause_reason = run.pause_reason.as_ref().map(enum_label);
     let runtime_resumable = is_run_continuable(&run);
 
@@ -3014,20 +3149,30 @@ pub fn conversation_run_vm(
                                     normalize_lifecycle_code(reason) == "error-blocked"
                                         || is_runtime_continue_pause_reason(Some(reason))
                                 });
-                            let dyn_current = run.current_round.as_deref() == Some(&round.id)
+                            let dynamic_parent_current = run.current_round.as_deref()
+                                == Some(&round.id)
                                 && run.current_node.as_deref() == Some(&node.node_id)
                                 && run.current_attempt.as_deref()
-                                    == Some(&latest_attempt.attempt_id)
+                                    == Some(&latest_attempt.attempt_id);
+                            let graph_owns_dyn_leaf =
+                                gold_band::dynamic::dynamic_runtime_owns_leaf_projection(
+                                    &dynamic_graph,
+                                    dyn_node,
+                                );
+                            let dyn_current = dynamic_parent_current
                                 && (dynamic_graph
                                     .run
                                     .current_node_ids
                                     .iter()
                                     .any(|id| id == &dyn_node.id)
+                                    || graph_owns_dyn_leaf
                                     || (run_paused_for_dyn_leaf
                                         && dyn_node.status
                                             == gold_band::dynamic::DynamicNodeStatus::Paused
                                         && dyn_node.outcome.is_none()));
-                            let dyn_base_status = if run.status == RunStatus::Paused
+                            let dyn_base_status = if graph_owns_dyn_leaf {
+                                "running".to_string()
+                            } else if run.status == RunStatus::Paused
                                 && dyn_runtime_status == "running"
                                 && dyn_node.outcome.is_none()
                                 && is_runtime_continue_pause_reason(run_pause_reason.as_deref())
@@ -3059,7 +3204,9 @@ pub fn conversation_run_vm(
                                     dyn_node,
                                     run_pause_reason.as_deref(),
                                 );
-                                let dyn_status = if run.status == RunStatus::Paused
+                                let dyn_status = if graph_owns_dyn_leaf {
+                                    "running".to_string()
+                                } else if run.status == RunStatus::Paused
                                     && dyn_runtime_status == "running"
                                     && dyn_node.outcome.is_none()
                                     && is_runtime_continue_pause_reason(dyn_pause_reason.as_deref())
@@ -3095,6 +3242,7 @@ pub fn conversation_run_vm(
                                         &dyn_status,
                                         dyn_outcome.as_deref(),
                                         dyn_current,
+                                        dynamic_parent_current,
                                         dyn_pause_reason.as_deref(),
                                         dyn_leaf_resumable,
                                         false,
@@ -3108,6 +3256,11 @@ pub fn conversation_run_vm(
                                     app,
                                     task_id,
                                     &dyn_attempt_dir,
+                                    &mut lifecycle,
+                                );
+                                apply_dynamic_workspace_transition_composer(
+                                    &dynamic_graph,
+                                    dyn_node,
                                     &mut lifecycle,
                                 );
                                 let dyn_status = lifecycle.display_status.clone();
@@ -3124,6 +3277,11 @@ pub fn conversation_run_vm(
                                     Some(&node.node_id),
                                     Some(&latest_attempt.attempt_id),
                                 )?;
+                                let session_worktree = session_worktree_projection(
+                                    run_worktree,
+                                    Some(&dynamic_graph),
+                                    Some(&dyn_node.id),
+                                );
 
                                 dyn_leafs.push(ConversationSessionLeafVm {
                                     round_id: round.id.clone(),
@@ -3142,6 +3300,11 @@ pub fn conversation_run_vm(
                                     finished_at: dyn_node.finished_at.clone(),
                                     session_id: session_presence.session_id.clone(),
                                     session_established: session_presence.established,
+                                    worktree_path: session_worktree
+                                        .as_ref()
+                                        .map(|workspace| workspace.path.clone()),
+                                    worktree_branch: session_worktree
+                                        .and_then(|workspace| workspace.branch),
                                     artifact_count: artifacts.len(),
                                     attachment_count: attachments.len(),
                                 });
@@ -3239,6 +3402,7 @@ pub fn conversation_run_vm(
                         &runtime_status,
                         outcome.as_deref(),
                         current,
+                        current,
                         display_pause_reason.as_deref(),
                         runtime_resumable,
                         manual_check_pending,
@@ -3271,6 +3435,7 @@ pub fn conversation_run_vm(
                         None,
                         None,
                     )?;
+                    let session_worktree = session_worktree_projection(run_worktree, None, None);
                     leafs.push(ConversationSessionLeafVm {
                         round_id: round.id.clone(),
                         node_id: node.node_id.clone(),
@@ -3288,6 +3453,10 @@ pub fn conversation_run_vm(
                         finished_at: attempt.finished_at.clone(),
                         session_id: session_presence.session_id.clone(),
                         session_established: session_presence.established,
+                        worktree_path: session_worktree
+                            .as_ref()
+                            .map(|workspace| workspace.path.clone()),
+                        worktree_branch: session_worktree.and_then(|workspace| workspace.branch),
                         artifact_count: artifacts.len(),
                         attachment_count: attachments.len(),
                     });
@@ -3398,51 +3567,16 @@ pub fn conversation_run_vm(
 
     let effective_key: Option<String> = selected_leaf.as_ref().map(conversation_leaf_key);
 
-    // Load the selected ACP session
-    let selected_session = if selected_session_key.is_some()
-        && let Some(ref leaf) = selected_leaf
-    {
-        if let (Some(outer_id), Some(outer_attempt)) = (
-            leaf.outer_node_id.as_deref(),
-            leaf.outer_attempt_id.as_deref(),
-        ) {
-            crate::view_models::dynamic_acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                &leaf.round_id,
-                outer_id,
-                outer_attempt,
-                &leaf.node_id,
-                &leaf.attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            crate::view_models::acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                &leaf.round_id,
-                &leaf.node_id,
-                &leaf.attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        }
-    } else {
-        None
-    };
+    // The run aggregate owns navigation and lifecycle only. ACPChatDialog is
+    // the single bounded正文 query boundary for the selected branch.
+    let selected_session: Option<crate::view_models::AcpSessionVm> = None;
 
     let input_attachments = input_attachments_vm(app, task_id);
 
     let run_outcome = run.outcome.map(|o| enum_label(&o));
     let resumable = gold_band::app::is_run_continuable(&run);
     let run_status = enum_label(&run.status);
+    let paused_runtime_error = current_run_paused_runtime_error(app, task_id, &run);
     let runtime_error_message = selected_leaf
         .as_ref()
         .and_then(|leaf| dynamic_leaf_runtime_error_message(app, task_id, run_id, leaf))
@@ -3453,6 +3587,7 @@ pub fn conversation_run_vm(
                 run_id,
                 run_pause_reason.as_deref(),
                 run_outcome.as_deref(),
+                paused_runtime_error.as_ref(),
             )
         });
 
@@ -3532,6 +3667,7 @@ pub fn conversation_run_vm(
         resumable,
         pause_reason: run.pause_reason.map(|r| enum_label(&r)),
         runtime_error_message,
+        runtime_error: paused_runtime_error,
         scheduled_task_id: conversation_metadata
             .as_ref()
             .and_then(|metadata| metadata.scheduled_task_id.clone()),
@@ -4209,12 +4345,22 @@ pub fn create_conversation_run_vm(
     app: &App,
     input: &ConversationCreateInputVm,
 ) -> anyhow::Result<ConversationCreateResultVm> {
+    let fork_point = if input.work_location == ConversationWorkLocationVm::Worktree {
+        Some(
+            gold_band::git::GitSourceControlService::default().resolve_branch_fork_point(
+                &app.paths.repo_root,
+                input.selected_branch.as_deref(),
+            )?,
+        )
+    } else {
+        None
+    };
     let prepared_task = prepare_conversation_task_vm(app, input)?;
     let task_id = prepared_task.task_id().to_string();
     let task_uuid = prepared_task.task_uuid().map(ToOwned::to_owned);
 
-    let prepared_run = if input.work_location == ConversationWorkLocationVm::Worktree {
-        app.prepare_run_in_worktree(&task_id, None)?
+    let prepared_run = if let Some(fork_point) = fork_point {
+        app.prepare_run_in_worktree_at(&task_id, None, fork_point.head_oid)?
     } else {
         app.prepare_run(&task_id, None)?
     };
@@ -4260,6 +4406,7 @@ pub fn create_conversation_run_vm(
                 resumable: false,
                 pause_reason: None,
                 runtime_error_message: None,
+                runtime_error: None,
                 scheduled_task_id: input.scheduled_task_id.clone(),
                 worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
             }
@@ -4341,6 +4488,7 @@ pub fn rerun_conversation_task_vm(
             resumable: false,
             pause_reason: None,
             runtime_error_message: None,
+            runtime_error: None,
             scheduled_task_id: None,
             worktree: conversation_run_worktree_vm(run.worktree.as_ref()),
         })
@@ -4374,44 +4522,6 @@ fn conversation_run_worktree_vm(
     })
 }
 
-pub fn switch_conversation_session_vm(
-    app: &App,
-    task_id: &str,
-    run_id: &str,
-    round_id: &str,
-    node_id: &str,
-    attempt_id: &str,
-    outer_node_id: Option<&str>,
-    outer_attempt_id: Option<&str>,
-) -> anyhow::Result<ConversationSessionSwitchVm> {
-    let selected_session =
-        if let (Some(outer_id), Some(outer_attempt)) = (outer_node_id, outer_attempt_id) {
-            crate::view_models::dynamic_acp_session_vm(
-                app,
-                task_id,
-                run_id,
-                round_id,
-                outer_id,
-                outer_attempt,
-                node_id,
-                attempt_id,
-                None,
-                None,
-            )
-            .ok()
-            .flatten()
-        } else {
-            crate::view_models::acp_session_vm(
-                app, task_id, run_id, round_id, node_id, attempt_id, None, None,
-            )
-            .ok()
-            .flatten()
-        };
-
-    let result = ConversationSessionSwitchVm { selected_session };
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -4431,9 +4541,8 @@ mod tests {
         create_conversation_run_vm, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
         find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
-        scheduled_content_snapshot, scheduled_task_vms_from_sources,
-        switch_conversation_session_vm, update_task_metadata_vm, validate_conversation_create_vm,
-        workflow_binding_missing_item,
+        scheduled_content_snapshot, scheduled_task_vms_from_sources, update_task_metadata_vm,
+        validate_conversation_create_vm, workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -4835,6 +4944,7 @@ mod tests {
             "running",
             None,
             true,
+            true,
             None,
             false,
             false,
@@ -4852,6 +4962,74 @@ mod tests {
     }
 
     #[test]
+    fn initial_workspace_preparation_keeps_development_environment_copy() {
+        let execution = RuntimeExecutionState {
+            revision: 8,
+            phase: RuntimeExecutionPhase::PreparingWorkspace,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: "t2".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            None,
+            None,
+            "running",
+            None,
+            true,
+            true,
+            None,
+            false,
+            false,
+            true,
+            Some(&execution),
+            true,
+            TurnControlMode::RuntimeControlled,
+            false,
+        );
+
+        assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
+        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(
+            lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.preparingDevelopmentEnvironment")
+        );
+    }
+
+    #[test]
+    fn non_current_workflow_leaf_carries_run_revision_without_becoming_active() {
+        let execution = RuntimeExecutionState {
+            revision: 8,
+            phase: RuntimeExecutionPhase::RunningNode,
+            locator: None,
+            recovery_candidate_token: None,
+            updated_at: "t2".to_string(),
+        };
+        let lifecycle = derive_conversation_attempt_lifecycle_with_facets(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            false,
+            false,
+            None,
+            false,
+            false,
+            true,
+            Some(&execution),
+            false,
+            TurnControlMode::NonRuntimeControlled,
+            true,
+        );
+
+        assert_eq!(lifecycle.runtime.revision, Some(8));
+        assert_eq!(lifecycle.runtime.phase, "idle");
+        assert!(!lifecycle.runtime.current);
+        assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.control.mode, "non-runtime-controlled");
+        assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
+    }
+
+    #[test]
     fn manual_check_follow_up_completion_keeps_authoritative_waiting_phase() {
         let execution = RuntimeExecutionState {
             revision: 4,
@@ -4865,6 +5043,7 @@ mod tests {
             None,
             "paused",
             None,
+            true,
             true,
             Some("waiting-for-user-input"),
             false,
@@ -4918,6 +5097,7 @@ mod tests {
             "completed",
             Some("success"),
             true,
+            true,
             None,
             false,
             false,
@@ -4966,6 +5146,24 @@ mod tests {
         assert_eq!(lifecycle.composer.mode, "normal");
         assert_eq!(lifecycle.composer.submit_target, "acp-prompt");
         assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn legacy_closing_projection_keeps_session_available_for_turn_cancel() {
+        let lifecycle = derive_conversation_attempt_lifecycle(
+            Some("closing"),
+            None,
+            "paused",
+            None,
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(lifecycle.acp.session_availability, "established");
+        assert_eq!(lifecycle.acp.latest_turn_status, "none");
     }
 
     #[test]
@@ -5176,6 +5374,137 @@ mod tests {
         );
         assert!(lifecycle.runtime.continuable);
         assert_eq!(lifecycle.composer.mode, "normal");
+    }
+
+    #[test]
+    fn non_current_attempt_never_inherits_runtime_continue_action() {
+        let historical_completed = derive_conversation_attempt_lifecycle(
+            Some("completed"),
+            None,
+            "completed",
+            Some("success"),
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+        let historical_paused = derive_conversation_attempt_lifecycle(
+            Some("cancelled"),
+            None,
+            "paused",
+            None,
+            false,
+            Some("process-interrupted"),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(historical_completed.continue_kind, None);
+        assert!(!historical_completed.runtime.continuable);
+        assert_eq!(historical_paused.continue_kind, None);
+        assert!(!historical_paused.runtime.continuable);
+    }
+
+    #[test]
+    fn lifecycle_vm_scopes_continue_action_to_run_current_attempt() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        let task_id = "task-current-continue";
+        let run_id = "run-001";
+        let round_id = "round-001";
+        let historical_node_id = "dev-test";
+        let current_node_id = "test";
+        let attempt_id = "attempt-001";
+        gold_band::storage::write_json(
+            &app.paths.run_file(task_id, run_id),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": run_id,
+                "task_id": task_id,
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-08-22T00:00:00Z",
+                "updated_at": "2026-08-22T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": round_id,
+                "current_node": current_node_id,
+                "current_attempt": attempt_id,
+                "new_rounds_opened": 0,
+                "pause_reason": "process-interrupted",
+                "execution": {
+                    "revision": 3,
+                    "phase": "paused",
+                    "locator": {
+                        "roundId": round_id,
+                        "nodeId": current_node_id,
+                        "attemptId": attempt_id
+                    },
+                    "updatedAt": "2026-08-22T00:00:03Z"
+                }
+            }),
+        )
+        .unwrap();
+        for (node_id, status, outcome) in [
+            (historical_node_id, "completed", json!("success")),
+            (current_node_id, "paused", json!(null)),
+        ] {
+            gold_band::storage::write_json(
+                &app.paths
+                    .node_file(task_id, run_id, round_id, node_id, attempt_id),
+                &json!({
+                    "version": gold_band::domain::VERSION,
+                    "acp_storage_schema_version": 2,
+                    "node_id": node_id,
+                    "node_type": "worker",
+                    "run_id": run_id,
+                    "round_id": round_id,
+                    "attempt_id": attempt_id,
+                    "status": status,
+                    "outcome": outcome,
+                    "started_at": "2026-08-22T00:00:00Z",
+                    "finished_at": "2026-08-22T00:00:03Z",
+                    "manual_check_pending": false,
+                    "runtime_execution_id": null,
+                    "resolved_config": {}
+                }),
+            )
+            .unwrap();
+        }
+
+        let historical = conversation_attempt_lifecycle_vm(
+            &app,
+            task_id,
+            run_id,
+            round_id,
+            historical_node_id,
+            attempt_id,
+            None,
+            None,
+        )
+        .unwrap();
+        let current = conversation_attempt_lifecycle_vm(
+            &app,
+            task_id,
+            run_id,
+            round_id,
+            current_node_id,
+            attempt_id,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(!historical.runtime.current);
+        assert_eq!(historical.continue_kind, None);
+        assert!(!historical.runtime.continuable);
+        assert!(current.runtime.current);
+        assert_eq!(
+            current.continue_kind.as_deref(),
+            Some("continue-current-attempt")
+        );
+        assert!(current.runtime.continuable);
     }
 
     #[test]
@@ -5627,7 +5956,69 @@ mod tests {
     }
 
     #[test]
-    fn preparing_workspace_projects_runtime_owned_composer_state() {
+    fn newer_dynamic_leaf_lifecycle_releases_terminal_processing_projection() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture(&app, "running", json!(null), "completed", Vec::new());
+        let graph_path = app.paths.dynamic_graph_file(
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "ai-dynamic",
+            "attempt-001",
+        );
+        let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        graph["nodes"][0]["runtimeLifecycleRevision"] = json!(5);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+        let run_path = app.paths.run_file("task-dyn", "run-dyn");
+        let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
+        run["execution"]["revision"] = json!(20);
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let transitional = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert!(transitional.runtime.active);
+        assert_eq!(transitional.runtime.revision, Some(5));
+
+        graph["run"]["status"] = json!("paused");
+        graph["run"]["pauseReason"] = json!("process-interrupted");
+        graph["nodes"][0]["runtimeLifecycleRevision"] = json!(6);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "good-morning",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(lifecycle.runtime.status, "completed");
+        assert_eq!(lifecycle.runtime.phase, "terminal");
+        assert_eq!(lifecycle.runtime.revision, Some(6));
+        assert!(lifecycle.runtime.revision > transitional.runtime.revision);
+        assert!(!lifecycle.runtime.active);
+        assert_eq!(lifecycle.composer.mode, "normal");
+        assert!(!lifecycle.composer.can_stop);
+        assert!(!lifecycle.composer.lock_input);
+    }
+
+    #[test]
+    fn completed_dynamic_leaf_projects_workspace_processing_composer_state() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
         write_dynamic_lifecycle_fixture(
@@ -5645,11 +6036,18 @@ mod tests {
             "attempt-001",
         );
         let mut graph: serde_json::Value = gold_band::storage::read_json(&graph_path).unwrap();
+        let mut parallel = graph["nodes"][0].clone();
+        parallel["id"] = json!("parallel-worker");
+        parallel["title"] = json!("Parallel worker");
+        parallel["runtimeLifecycleRevision"] = json!(4);
         graph["run"]["phase"] = json!("preparing-workspace");
-        graph["run"]["currentNodeIds"] = json!([]);
+        graph["run"]["currentNodeIds"] = json!(["parallel-worker"]);
         graph["nodes"][0]["status"] = json!("completed");
         graph["nodes"][0]["outcome"] = json!("success");
+        graph["nodes"][0]["runtimeExecutionId"] = json!(null);
+        graph["nodes"][0]["runtimeExecutionPhase"] = json!("preparing-workspace");
         graph["nodes"][0]["finishedAt"] = json!("2026-06-15T00:00:02Z");
+        graph["nodes"].as_array_mut().unwrap().push(parallel);
         gold_band::storage::write_json(&graph_path, &graph).unwrap();
         let run_path = app.paths.run_file("task-dyn", "run-dyn");
         let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
@@ -5673,13 +6071,74 @@ mod tests {
         assert_eq!(lifecycle.runtime.phase, "preparing-workspace");
         assert_eq!(lifecycle.composer.mode, "runtime-active");
         assert_eq!(lifecycle.composer.submit_target, "none");
-        assert_eq!(lifecycle.composer.processing_kind, "preparing-workspace");
+        assert_eq!(lifecycle.composer.processing_kind, "processing-workspace");
         assert_eq!(
             lifecycle.composer.status_key.as_deref(),
-            Some("conversation.runtime.preparingDevelopmentEnvironment")
+            Some("conversation.runtime.processingWorkspace")
         );
         assert!(lifecycle.composer.can_stop);
         assert!(lifecycle.composer.lock_input);
+
+        let run_vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let tree_leaf = run_vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|node| node.node_id == "good-morning")
+            .unwrap()
+            .attempts
+            .first()
+            .unwrap();
+        assert_eq!(
+            tree_leaf.lifecycle.composer.processing_kind,
+            "processing-workspace"
+        );
+        assert_eq!(
+            tree_leaf.lifecycle.composer.status_key.as_deref(),
+            Some("conversation.runtime.processingWorkspace")
+        );
+
+        let parallel_lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "parallel-worker",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(parallel_lifecycle.runtime.revision, Some(4));
+        assert_eq!(parallel_lifecycle.runtime.phase, "starting-node");
+        assert_eq!(parallel_lifecycle.composer.processing_kind, "processing");
+
+        let mut historical = graph["nodes"][0].clone();
+        historical["id"] = json!("historical-worker");
+        historical["title"] = json!("Historical worker");
+        historical["runtimeLifecycleRevision"] = json!(7);
+        historical["runtimeExecutionPhase"] = json!("terminal");
+        graph["nodes"].as_array_mut().unwrap().insert(0, historical);
+        gold_band::storage::write_json(&graph_path, &graph).unwrap();
+
+        let historical_lifecycle = conversation_attempt_lifecycle_vm(
+            &app,
+            "task-dyn",
+            "run-dyn",
+            "round-001",
+            "historical-worker",
+            "attempt-001",
+            Some("ai-dynamic"),
+            Some("attempt-001"),
+        )
+        .unwrap();
+
+        assert_eq!(historical_lifecycle.runtime.revision, Some(7));
+        assert_eq!(historical_lifecycle.runtime.phase, "terminal");
+        assert!(!historical_lifecycle.runtime.active);
+        assert_eq!(historical_lifecycle.composer.mode, "normal");
     }
 
     #[test]
@@ -5803,6 +6262,43 @@ mod tests {
         );
         assert_eq!(persisted["nodes"][0]["workspaceId"], "workspace-main");
         assert!(persisted["workspaces"].is_array());
+    }
+
+    #[test]
+    fn conversation_run_vm_projects_worktree_on_leaf_without_selected_session_payload() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_dynamic_lifecycle_fixture_with_cancelled_session(
+            &app,
+            "paused",
+            json!("process-interrupted"),
+            "completed",
+            Vec::new(),
+            true,
+        );
+
+        let run_path = app.paths.run_file("task-dyn", "run-dyn");
+        let mut run: serde_json::Value = gold_band::storage::read_json(&run_path).unwrap();
+        run["worktree"] = json!({
+            "path": app.paths.repo_root,
+            "branch": "gb-conversation-test",
+            "forkCommit": "test-head"
+        });
+        gold_band::storage::write_json(&run_path, &run).unwrap();
+
+        let vm = conversation_run_vm(&app, "default", "task-dyn", "run-dyn", None).unwrap();
+        let leaf = vm.session_tree.rounds[0].nodes[0]
+            .outer_nodes
+            .as_ref()
+            .unwrap()[0]
+            .attempts[0]
+            .clone();
+
+        assert!(vm.selected_session.is_none());
+        assert_eq!(
+            leaf.worktree_path.as_deref(),
+            Some(app.paths.repo_root.as_str())
+        );
     }
 
     #[test]
@@ -5951,6 +6447,7 @@ mod tests {
             }),
             attachment_paths: None,
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6058,6 +6555,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6093,6 +6591,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: ConversationWorkLocationVm::Worktree,
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6121,6 +6620,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6149,6 +6649,7 @@ mod tests {
             auto_config: None,
             attachment_paths: None,
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6189,6 +6690,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![attachment.to_string()]),
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6228,6 +6730,7 @@ mod tests {
             auto_config: None,
             attachment_paths: Some(vec![app.paths.repo_root.join("missing.txt").to_string()]),
             work_location: Default::default(),
+            selected_branch: None,
             scheduled_task_id: None,
             scheduled_content_fingerprint: None,
             workflow_authoring: None,
@@ -6512,6 +7015,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(vm.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        assert!(
+            vm.selected_session.is_none(),
+            "run aggregate must not query selected ACP正文"
+        );
         let serialized = serde_json::to_value(&vm).unwrap();
         assert!(serialized.get("title").is_none());
         assert!(serialized.get("autoTitle").is_none());
@@ -6759,6 +7266,224 @@ mod tests {
     }
 
     #[test]
+    fn conversation_run_vm_exposes_runtime_abnormal_pause_error() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"run_started","timestamp":"2026-07-08T00:00:00Z","data":{"taskId":"task-trace","runId":"run-001"}}
+{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"config","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert_eq!(
+            vm.runtime_error_message.as_deref(),
+            Some("ACP session config value `high` is unavailable for `reasoning_effort`")
+        );
+        let runtime_error = vm.runtime_error.as_ref().unwrap();
+        assert_eq!(
+            runtime_error.code.code,
+            "acp.session-config-value-unavailable"
+        );
+        assert_eq!(
+            runtime_error
+                .params
+                .get("configId")
+                .and_then(serde_json::Value::as_str),
+            Some("reasoning_effort")
+        );
+        assert_eq!(
+            runtime_error
+                .params
+                .get("availableValues")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn conversation_run_vm_exposes_worktree_creation_failure() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:03Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"workspace","code":"workspace.worktree-create-failed"},"domain":"workspace","recovery":"manual","retryPolicy":null,"params":{"branch":"gold-band/conversation/conflict"},"diagnostic":"git worktree add failed: branch already exists","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+        let runtime_error = vm.runtime_error.as_ref().unwrap();
+
+        assert_eq!(runtime_error.code.code, "workspace.worktree-create-failed");
+        assert_eq!(
+            runtime_error
+                .params
+                .get("branch")
+                .and_then(serde_json::Value::as_str),
+            Some("gold-band/conversation/conflict")
+        );
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_project_runtime_error_after_resume() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "completed",
+                "outcome": "success",
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.run_events_file("task-trace", "run-001").as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_fall_back_past_current_pause_event() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "runtime-abnormal"
+            }),
+        )
+        .unwrap();
+        let historical_pause = r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#;
+        let current_pause = r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:04Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal"}}"#;
+        std::fs::write(
+            app.paths
+                .run_events_file("task-trace", "run-001")
+                .as_std_path(),
+            format!("{historical_pause}\n{current_pause}"),
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
+    }
+
+    #[test]
+    fn conversation_run_vm_does_not_project_runtime_error_for_other_pause_reason() {
+        let repo_root = temp_repo_root();
+        let app = App::new(repo_root);
+        write_trace_order_fixture(&app);
+        gold_band::storage::write_json(
+            &app.paths.run_file("task-trace", "run-001"),
+            &json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-001",
+                "task_id": "task-trace",
+                "status": "paused",
+                "outcome": null,
+                "started_at": "2026-07-08T00:00:00Z",
+                "updated_at": "2026-07-08T00:00:04Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-001",
+                "current_node": "验收",
+                "current_attempt": "attempt-001",
+                "new_rounds_opened": 0,
+                "pause_reason": "process-interrupted"
+            }),
+        )
+        .unwrap();
+        std::fs::write(
+            app.paths.run_events_file("task-trace", "run-001").as_std_path(),
+            r#"{"version":"0.1","type":"run_paused","timestamp":"2026-07-08T00:00:03Z","data":{"taskId":"task-trace","runId":"run-001","pauseReason":"runtime-abnormal","controlFailure":{"runtimeError":{"code":{"domain":"config","code":"acp.session-config-value-unavailable"},"domain":"config","recovery":"manual","retryPolicy":null,"params":{"category":"thought_level","configId":"reasoning_effort","value":"high","availableValues":[]},"diagnostic":"ACP session config value `high` is unavailable for `reasoning_effort`","raw":null}}}}"#,
+        )
+        .unwrap();
+
+        let vm = conversation_run_vm(&app, "project-001", "task-trace", "run-001", None).unwrap();
+
+        assert!(vm.runtime_error.is_none());
+        assert!(vm.runtime_error_message.is_none());
+    }
+
+    #[test]
     fn conversation_run_vm_restores_manual_check_pending_from_node_state() {
         let repo_root = temp_repo_root();
         let app = App::new(repo_root);
@@ -6789,31 +7514,6 @@ mod tests {
                 .iter()
                 .any(|session| session.node_id == "测试" && session.manual_check_pending)
         );
-    }
-
-    #[test]
-    fn switch_conversation_session_vm_returns_only_the_selected_session() {
-        let repo_root = temp_repo_root();
-        let app = App::new(repo_root);
-        write_conversation_assets_fixture(&app);
-
-        let switched = switch_conversation_session_vm(
-            &app,
-            "task-046",
-            "run-060",
-            "round-001",
-            "测试",
-            "attempt-002",
-            None,
-            None,
-        )
-        .unwrap();
-
-        assert!(switched.selected_session.is_none());
-        let serialized = serde_json::to_value(switched).unwrap();
-        assert!(serialized.get("selectedSession").is_some());
-        assert!(serialized.get("artifacts").is_none());
-        assert!(serialized.get("attachments").is_none());
     }
 
     fn temp_repo_root() -> Utf8PathBuf {
@@ -7059,8 +7759,8 @@ mod tests {
                 "ready" => json!(null),
                 _ => json!("starting-node"),
             },
-            "runtimeExecutionRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
-            "runtimeExecutionUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
+            "runtimeLifecycleRevision": if dynamic_node_status == "ready" { 0 } else { 1 },
+            "runtimeLifecycleUpdatedAt": if dynamic_node_status == "ready" { json!(null) } else { json!("2026-06-15T00:00:02Z") },
             "groupId": null,
             "chainId": dynamic_node_id,
             "depth": 1,

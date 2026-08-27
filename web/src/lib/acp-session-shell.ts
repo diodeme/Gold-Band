@@ -1,3 +1,5 @@
+import type { ConversationAttemptLifecycleVm } from '@/types';
+
 export interface AcpLiveSessionShellPolicyInput {
   runtimeActive: boolean;
   allowEventOnlySessionShell: boolean;
@@ -31,6 +33,7 @@ export interface AcpSessionShellStateInput {
   baseSessionReady: boolean;
   hasLiveSessionShell: boolean;
   hasEstablishedSessionShell?: boolean;
+  hasSettledAttemptShell?: boolean;
   initialSessionLoading: boolean;
   initialSessionLoadFailed?: boolean;
   initializationInterrupted?: boolean;
@@ -71,14 +74,45 @@ export interface AcpSessionInitializationFailedInput {
   loadedEventCount: number;
 }
 
+export interface AcpCancelledDirectAttemptShellInput {
+  isOrchestrated: boolean;
+  lifecycle?: ConversationAttemptLifecycleVm | null;
+}
+
 export function shouldCreateLiveAcpSessionShell(input: AcpLiveSessionShellPolicyInput) {
   if (!input.allowEventOnlySessionShell) return false;
   return input.runtimeActive || input.loadedEventCount > 0;
 }
 
+/**
+ * A Direct attempt remains a usable conversation even when its first turn is
+ * stopped before the provider session is materialized. The attempt lifecycle
+ * is authoritative here; this shell must not be treated as a provider session.
+ */
+export function shouldCreateCancelledDirectAttemptShell(
+  input: AcpCancelledDirectAttemptShellInput,
+) {
+  const lifecycle = input.lifecycle;
+  return Boolean(
+    !input.isOrchestrated &&
+    lifecycle?.runtime.current &&
+    !lifecycle.runtime.active &&
+    normalizeLifecycleCode(lifecycle.runtime.status) === 'paused' &&
+    normalizeLifecycleCode(lifecycle.runtime.pauseReason) === 'process-interrupted' &&
+    normalizeLifecycleCode(lifecycle.acp.sessionAvailability) === 'unavailable' &&
+    normalizeLifecycleCode(lifecycle.acp.liveTurnActivity) === 'idle' &&
+    normalizeLifecycleCode(lifecycle.acp.latestTurnStatus) === 'cancelled' &&
+    !lifecycle.acp.stopping &&
+    normalizeLifecycleCode(lifecycle.composer.mode) === 'normal' &&
+    normalizeLifecycleCode(lifecycle.composer.submitTarget) === 'acp-prompt' &&
+    !lifecycle.composer.lockInput
+  );
+}
+
 export function resolveAcpSessionShellState(input: AcpSessionShellStateInput): AcpSessionShellState {
   if (input.initializationFailed) return 'error';
   if (input.initializationInterrupted) return 'interrupted';
+  if (input.hasSettledAttemptShell) return 'available';
   if (input.initialSessionLoadFailed) return 'error';
   if (
     input.showInitializingShell &&

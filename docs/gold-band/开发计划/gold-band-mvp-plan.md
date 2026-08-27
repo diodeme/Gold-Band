@@ -1,12 +1,54 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-26：AI-DYNAMIC PostTurn 分发规划后置
+
+- 根因与实现：PostTurn 两阶段设计正确，但 AI-DYNAMIC system prompt 渲染把现有 `OutputEmissionMode` 压缩为 `has_output_contract` 布尔值，导致 `PostTurnProjection` worker / acceptance 与没有控制协议的 merge 同时落入“执行型节点”分支，agent 无法得知正常结束业务 turn 后仍可由 hidden finalize 决定继续分发。现让 AI-DYNAMIC system prompt 直接消费既有 emission mode：InlineControl 保持当前 turn 内联控制；PostTurnProjection 明确 agent 可以直接完成任务，或在判断应继续分发时立即停止并自然结束，且不得在业务 turn 提前拆分任务、选择 Agent 或规划/执行后继节点；只有 hidden finalize 提供完整 artifact 协议与路由上下文后才规划并输出控制结果；无 emission mode 的 merge 保持纯执行语义。continue 规则同步收窄为处理当前节点任务而非继续来源节点旧任务。
+- 验收固化：AI-DYNAMIC prompt 接口单测增加三种 emission mode 的中英文断言，并在 bootstrap、普通 worker 与 acceptance 的完整 PromptBundle 回归中固定控制协议可见性和 PostTurn 业务边界。本次提交阶段按用户要求未再次运行编译或测试；此前定向测试命令被用户中断，未取得可作为验收证据的完成结果，验证状态待后续执行。
+- 性能与过度设计评审：复用现有 `OutputEmissionMode`、PromptBundle 与 hidden finalize 链路，不新增状态机、持久字段、依赖、缓存、队列或兼容分支；每次 AI-DYNAMIC invocation 仅把已有枚举序列化给模板并执行一次 O(1) 分支，I/O、锁范围、调度、恢复次数和数据加载量均不变，无需专项 benchmark。
+
+## 2026-08-25：PostTurn finalize 控制协议与 system prompt 隔离
+
+- 根因与实现：artifact 后置的两阶段设计正确，但实现为复用控制结果提取逻辑，在隐藏 finalize 前把 `PostTurnProjection` 临时改写成 `InlineControl`；system prompt 渲染又把 `InlineControl` 解释为需要展开完整 output contract，导致 artifact 名称、schema 与 success condition 同时进入隐藏 user prompt 和会话级 system prompt，右侧“系统提示”最终显示 finalize 契约，session load/resume 时还可能真实追加该契约。现保留 contract 的原始 `PostTurnProjection` identity，以既有 `RuntimeFinalize / RuntimeRepair` render mode 单独判定当前 turn 是否消费 artifact；完整契约只由隐藏 user prompt 承载，业务、finalize 和 repair 的稳定 system prompt 均不展开 PostTurn schema。真正首轮内联控制的 AI-DYNAMIC bootstrap 继续使用 `InlineControl`，行为不变。
+- 验收：Provider 接口单测固定 PostTurn 业务、隐藏 finalize 与隐藏 repair 的 system prompt 一致且都不含 artifact 名称/schema，finalize user prompt 仍包含完整协议、上下文与禁止继续业务工作的约束，并确认 finalize/repair 仍启用控制结果提取；AI-DYNAMIC acceptance prompt 回归固定 finalize 不再把 `dynamic-node-completion` 或 `next.type` 投影到 system prompt。Provider 单元测试 35 项、prompt bundle 接口测试 30 项、普通 workflow `worker_bootstrap` 20 项、AI-DYNAMIC 集成测试 25 项全部通过，Rust 格式与差异检查通过。
+- 性能与过度设计评审：复用现有 `OutputEmissionMode`、`UserPromptRenderMode`、PromptBundle 和 artifact 提取链路，不新增状态机、持久字段、依赖、缓存、队列、扫描或兼容分支。每个 provider turn 只增加一次 O(1) 枚举匹配，不改变 ACP I/O、prompt 体积上限、锁范围、恢复次数或渲染范围；同时减少 PostTurn finalize system prompt 中的重复 schema 字节，无需专项 benchmark。
+
+## 2026-08-24：ACP 取消超时后严格恢复原 Provider 会话
+
+- 根因与实现：cancel drain timeout 把“本地 live route/attached runtime 不可安全复用”错误等同为“Provider session identity 不可继续”，通过 `write_worker_ref(..., reusable=false)` 清除了 `continue_ref`；同时既有 attempt 的人工/队列 turn 虽已按 Continue 渲染 PromptBundle，Tauri command 却再次读取首次 worker mode，可能向 ACP client 传入 `New + continue_ref`，恢复失败后便可静默进入 `session/new`。本次拆开两类事实：timeout 继续 shutdown 并隔离本地 runtime，但 worker ref 始终保留原 `acpSessionId`；既有 attempt 的 Direct、停止后追问、节点完成后 non-runtime-controlled 追问、队列派发和 dynamic 人工追问统一以本次执行意图 `SessionMode::Continue` 调用 ACP。公共 prompt 入口校验 Continue 必须携带有效恢复引用，缺失时返回 `acp.session-restore-reference-missing`；恢复按 capability 选择 resume/load，禁止新建 session。首轮节点启动、工作流迁移、dynamic 首轮、显式 runtime resume 和 hidden finalize/repair 仍由 orchestrator 的既有 invocation 规则决定，不建立 command 特判。
+- 验收：Rust 回归固定 `worker_ref.mode=New + continue_ref=Some` 的既有 attempt 用户 turn 仍解析为 Continue，并固定 Continue 缺少 Provider session identity 时返回 blocked 结构化错误；恢复能力选择继续沿用 resume 优先、load fallback、strict unsupported 不得 StartNew 的既有测试。取消尾部 chunk 投影由独立修改负责，本项不改变其 terminal watermark、quiet drain 或 10 秒 deadline。
+- 性能与过度设计评审：复用现有 `SessionMode`、worker continue ref、attached runtime shutdown 与 capability-driven resume/load，不新增状态机、持久字段、缓存、队列、锁或网络等待。新增工作仅为 O(1) session identity 校验与既有 worker-ref 常数级写入，不扫描 Timeline/raw，不改变正常首轮、attached reuse 或流式热路径复杂度，无需专项 benchmark。
+
+## 2026-08-24：ACP 取消尾部输出按 prompt terminal 收敛
+
+- 根因与实现：早期 durable cancel 实现把 `CancelRequested` 同时当作控制意图和正文截断点，导致已经进入 session route、甚至位于 outbound cancel 之前的 text/thought/tool update 只写入 raw 而不进入 Timeline；后续已有的原 `session/prompt` response watermark、200 ms quiet drain 和统一 10 秒 deadline 实际已经提供了正确终态屏障，但旧过滤没有随设计演进删除。本次删除该旁路过滤，取消期间继续有界投影 terminal 收敛前的当前 turn 内容，cancelled 仍拥有终态优先级；deadline 内正常确认取消后继续保留 attached session，只有超时未收敛才隔离 live route。
+- 验收：Rust 回归固定 `ProviderControl=CancelRequested` 时 terminal drain 仍观察并保留正文 chunk，同时沿用既有 response watermark 顺序、route generation 隔离、200 ms quiet drain、10 秒总 deadline、超时 cancelled outcome 和 cancel redelivery 测试；Direct、Workflow、AUTO、AI-DYNAMIC 与 NonRuntime follow-up 继续共用同一 ACP prompt 入口，不增加模式特判。
+- 性能与过度设计评审：复用现有 pending response watermark、event pump 和 terminal drain，不新增状态、持久字段、缓存、队列、锁或跨线程事务，也不扫描 Timeline/raw。取消低频路径只为本来已经读取、解析并写 raw 的 terminal 前尾部事件补齐必要的 Timeline 投影，仍受 64 帧/25 ms 排空时间片、既有队列上限和统一 10 秒 deadline 约束；正常 prompt 与正常取消后的 session reuse 路径复杂度不变，无需专项 benchmark。
+
+## 2026-08-19：品牌 Logo 统一替换
+
+- 实现：将用户提供的 `gold-band-logo-final-v6-transparent.svg` 作为唯一品牌矢量源复制到 `web/public/logo.svg`，以同一路径生成 `src-tauri/icons/logo-source.svg` 的 2048 正方形投影，并通过 Tauri 官方 icon generator 重建 Windows、macOS、PNG、Android 与 iOS 图标；README 中英文头标改为直接引用 `web/public/logo.svg`。
+- 验收：品牌资产契约测试固定 1254 正方形、6 条路径、无内嵌位图，Tauri 源与前端 Logo 使用相同 path 序列，并检查标题栏、品牌加载态、默认 Agent 图标、workspace 选择页、favicon 和 README 继续使用 canonical `/logo.svg`/`web/public/logo.svg`；相关前端测试、生产构建和浅色 / 深色浏览器视觉验证通过。
+- 性能与过度设计评审：继续复用既有单一 `/logo.svg` 消费路径，不新增运行时依赖、状态、请求或缓存；透明 SVG 由浏览器原生渲染，平台图标仍由 Tauri 官方生成器产出，避免手工维护每个尺寸。README 中已烘焙旧 Logo 的功能截图不属于本次自动同步范围。
+
+## 2026-08-19：标题栏品牌标识对齐
+
+- 根因与实现：此前标题栏沿用横向 `36px × 24px` 品牌框；新的 canonical Logo 为正方形，Grid 内 `<img>` 的 intrinsic minimum size 又阻止其缩入内容区，导致实际绘制尺寸超出品牌框而产生视觉错位。品牌框收敛为 `24px × 24px` 正方形，图片以 `size-full + min-h-0 + min-w-0 + object-contain` 约束在其可用内容区内，产品名继续由同一 flex 行的垂直中心线对齐。
+- 验收：标题栏契约测试固定正方形品牌框、canonical Logo 路径和可收缩图片约束；浏览器在浅色、深色及窄窗口下确认图形不越过边框，且与标题视觉中心一致。
+- 性能与过度设计评审：这是现有布局约束的常数级 CSS 修正，不增加 DOM、状态、依赖、请求或重渲染；不为单一资源增加位移变量或运行时测量逻辑。
+
+## 2026-08-19：Windows 任务栏图标透明边缘
+
+- 根因与实现：Tauri 的 SVG rasterizer 在小尺寸平台 PNG 的抗锯齿边缘写入了低 Alpha 的白色 RGB matte；Windows 深色任务栏进行透明合成时会把这些像素显示为白色晕边，SVG 标题栏渲染不受影响。保留同一 SVG 品牌源，并校正已生成平台 PNG 与 Windows 多尺寸 `.ico` 的透明边缘颜色，避免白色 matte 进入最终打包资源。
+- 验收：品牌资产契约测试固定任务栏 `32×32` PNG 不含低 Alpha 白色像素；重新生成后的 `.ico` 包含透明的 16、24、32、48、64、256 尺寸，Windows 任务栏深色背景不出现白色晕边。
+- 性能与过度设计评审：后处理只在开发期生成资产时执行，逐像素线性扫描有限图标文件；运行时不增加依赖、状态、I/O、缓存或渲染成本。
+
 ## 2026-08-19：workspace ProjectId 统一与一次性迁移
 
 - 根因：旧 `project_id` 只是路径 slug，存在字符折叠和路径截断碰撞；Runtime recovery 与 ACP command catalog 又以规范化路径 `workspace_key` 建立平行身份。这是 workspace canonical identity 的根本缺陷，不是调用点漏传作用域。现统一为 `{最多 70 位可读 slug}--{8 位 BLAKE3}`，完整上限 80，三项源参数只从 `configs/app-config.toml [projectIdentity]` 读取。
-- 数据与迁移：`project_id` 成为目录、状态引用、缓存、Runtime recovery 与 Scheduler 阻塞集合的唯一 workspace 身份。`core.db` recovery schema v2 删除 `workspace_key`；`stateSchemaVersion=2` 重写 workspace、last、pin 和 run mode。启动迁移器预检查后执行旧目录 rename、manifest，以及 `run.json`、`worker-ref.json`、ACP session/snapshot 和文件变更记录中 executable locator 的结构化改写，再同步重建搜索投影，最后写入 `core_schema.workspace_identity=2`；已完成 v1 的机器会补跑 locator 修复。raw/timeline/diagnostics 历史不改写，rename 后中断与重复启动均按当前磁盘事实继续，完成版本命中后不再扫描。
-- 边界与失败：workspace 注册和恢复严格校验 manifest，`workspace.already-exists`、`workspace.project-id-collision` 与 `workspace.manifest-mismatch` 分开返回，不保留旧 ID alias、大小写兼容或按路径重算 fallback。项目目录整体移动时 Scheduler DB 字节原样保留，但不迁移 Scheduler 表/definition schema；Git worktree 修复不在本次范围。
-- 验收：ProjectId 配置/固定向量/长度、manifest、core v1→v2、recovery fencing、ACP catalog、目录与状态迁移、rename 后续跑、搜索重建、Scheduler DB 字节不变及 marker 幂等定向测试通过；两个 Rust crate 构建与格式/diff 检查通过。按约定未执行全量回归或前端验证。
-- 性能与过度设计评审：日常只增加单路径规范化与 BLAKE3 的 O(path length) 成本；目录同卷 rename 为元数据操作，recovery 迁移受 4096 条上限约束，搜索 O(tasks + sessions) 重建只发生一次。复用现有配置、manifest、StateConfig、core schema、SQLite transaction 和搜索 backfill，没有新增长期 alias 表、双写、轮询、队列、无界缓存或第二套 workspace aggregate。
+- 数据与迁移：`project_id` 成为目录、状态引用、缓存、Runtime recovery 与 Scheduler 阻塞集合的唯一 workspace 身份。`core.db` recovery schema v2 删除 `workspace_key`；`stateSchemaVersion=2` 重写 workspace、last、pin 和 run mode。启动迁移器预检查后执行旧目录 rename、manifest，以及 `run.json`、`worker-ref.json`、ACP session/snapshot、文件变更记录和 AI-DYNAMIC graph workspace locator 的结构化改写；普通会话 linked worktree 通过 Git common-dir 和 catalog 条件式 repair；再同步重建搜索投影，最后写入 `core_schema.workspace_identity=3`。已完成 v1/v2 的机器会补跑缺失步骤；raw/timeline/diagnostics 历史不改写，rename 后中断与重复启动均按当前磁盘事实继续，完成版本命中后不再扫描。
+- 边界与失败：workspace 注册和恢复严格校验 manifest，`workspace.already-exists`、`workspace.project-id-collision` 与 `workspace.manifest-mismatch` 分开返回，不保留旧 ID alias、大小写兼容或按路径重算 fallback。项目目录整体移动时 Scheduler DB 字节原样保留，但不迁移 Scheduler 表/definition schema；Git repair 失败只产生逐项告警，不阻断桌面启动，后续使用/删除前按登记事实重试；单条损坏 AI-DYNAMIC graph 隔离，不阻断其它 workspace。
+- 验收：ProjectId 配置/固定向量/长度、manifest、core v1→v2、recovery fencing、ACP catalog、目录与状态迁移、rename 后续跑、AI-DYNAMIC graph 与 projection、真实 linked-worktree 父目录移动/repair/重复 ensure/dirty 保留/remove、搜索重建、Scheduler DB 字节不变及 v3 marker 幂等定向测试通过；两个 Rust crate 构建与格式检查通过。全量 workspace 测试仍受仓库现有无关夹具缺少 `acp_storage_schema_version` 阻断，未执行前端验证。
+- 性能与过度设计评审：日常只增加单路径规范化与 BLAKE3 的 O(path length) 成本；locator 复用一次 runtime 遍历并跳过 worktree checkout，Git 检查与历史普通 worktree 数量线性，后续仅在使用/删除低频边界检查，搜索 O(tasks + sessions) 重建只发生一次。复用现有配置、manifest、StateConfig、core schema、SQLite transaction、Git coordination lock 和原生 repair，没有新增长期 alias 表、双写、轮询、队列、无界缓存或第二套 workspace aggregate。
 
 ## 2026-08-19：workspace manifest 写放大与原子写入口收敛
 
@@ -102,6 +144,7 @@
 
 - 根因：运行中追问的正文与附件此前由 `ACPChatDialog` 本地 state 持有，而会话/节点切换会按 session key 重建组件；状态生命周期短于业务草稿生命周期，导致未发送内容丢失。
 - 数据与接口：新增进程内 ACP composer draft store，以完整 session/event-window locator 为键统一保存正文与附件；React hook 只暴露当前 locator 的 `draft / setContent / setAttachments`，现有 prompt-kit composer 和附件选择器继续消费该接口。
+- 快速对话 composer 的 workspace 切换沿用 App 层草稿边界：composer 选择器与左侧 workspace“新会话”入口都只切换 workspace 上下文，不清空未提交正文或附件；仅创建成功或用户明确清空/放弃时 reset，并以 Vitest 契约固定两条入口一致。
 - 生命周期：普通切换保留，发送或明确清空删除对应内容，应用 `pagehide` 统一释放；不接入任何 durable storage，因此重启不恢复。store 限制 64 个草稿和 100 MiB 附件总量，LRU 淘汰同步释放 object URL。
 - 验收：单元测试固定跨会话恢复与隔离、发送清空、容量淘汰和退出释放；执行定向 Web 测试、TypeScript/生产构建，并以 `/chat` deep link 验证文字和附件切换恢复。
 - 性能评审：正文输入只更新当前 composer hook 与 O(1) Map 条目，不进入页面壳或历史消息订阅；附件总量有界，无全量历史扫描、I/O、请求、持久化、队列或后台轮询。容量检查最多扫描 64 个小草稿元数据，且只在草稿写入时发生。
@@ -208,6 +251,7 @@
 - 2026-07-09：历史 task / run 兼容旧 `$new-round` 边：运行启动、重跑冻结 snapshot、以及运行态读取 frozen snapshot 时，若 `$new-round` 边缺失 `new_round_entry`，snapshot 专用规范化会补为 `$entry` 后再走严格校验，并只把补齐结果写入本次 `workflow.snapshot.json`；`authoring/workflow.json` 不回写，作者态新建/保存 workflow 仍保持必填校验。
 - 2026-07-08：默认工作流的 `accept.failure -> $new-round` 起点从 `$entry` 调整为 `dev`，避免验收失败后重复执行方案节点；默认 workflow 节点 goal 改为按桌面语言生成中英文文案，不再硬编码英文。
 - 2026-07-08：工作流控制默认分支语义调整：节点产生 `success` 或 `failure` 后若没有匹配同类型 edge，runtime 不再进入 `error-blocked`，而是等价于隐式指向 `$end`，按当前 outcome 完成 run；显式 edge 仍优先。
+- 2026-08-21：工作流作者态将 failure outcome 能力收敛为 AI 输出验证或人工 check 二者共享的投影契约。开启人工 check 后画布立即展示 success / failure 双出口，允许拖线、快捷新增和边编辑；未配置 failure 边仍复用现有隐式 `failure -> $end` 语义，不增加必填校验。结果能力只进入轻量画布展示签名，不进入拓扑布局签名；结果判定模式切换不引入新状态、依赖、I/O 或整图重排。
 - 2026-07-07：作者态工作流入口改为由画布拓扑自动派生：没有普通入边的真实节点显示“入口”标识；唯一入口候选自动写入 `workflow.entry`，多个或零个入口候选会阻止保存。`new_round_entry` 仅表示下一轮 Round 起点，不参与初始入口推导，也不会在拖线到 `$new-round` 时自动补默认值。
 - 2026-07-09：作者态入口推导验收修正：failure 回退边指回 success 主链前序节点时不再计入初始入口入边，避免“开发 -> 测试 -> 验收，测试失败回开发”这类合法工作流被误判为没有入口；非回退的前向 failure 分支仍计入入边，防止分支节点被误识别为第二入口。
 - 2026-07-07：作者态工作流画布自动整形改为使用 success 主链拓扑顺序，不再用 `workflow.nodes` 数组追加顺序判断边是否回退；后追加的前置入口节点连到原入口后会排到主链前方，failure 边继续作为分支/回退线。
@@ -217,7 +261,7 @@
 - 2026-07-08：默认审查 profile 明确只 review 当前开发节点 / 本轮迭代改动，优先使用 `dev-report.md` 中的文件与行号限定范围，缺失时退回当前 git diff；历史遗留问题只有被当前改动引入、放大或直接影响当前改动时才阻塞裁决。
 - 2026-07-08：会话消息流新增 runtime control JSON 展示优化。普通 worker output contract 与 AI-DYNAMIC `dynamic-node-completion` 继续复用 Rust 端既有 JSON artifact 提取和校验链路；runtime 在实际消费控制输出或将非法 JSON 控制候选送入 repair 时为对应 ACP `textDelta` 写入 `raw.runtimeControlOutputDisplay`，前端只基于该标记把自然语言和控制 JSON 拆分展示，控制 JSON 收起态只显示单行 Gold Band 工作流控制条，非法候选使用告警色和告警图标，未标记 JSON 保持普通 Markdown 消息。
 - 2026-08-01：会话 thought / reasoning 从 Streamdown Markdown 渲染切回 prompt-kit `ChainOfThoughtText` 纯文本展示，Markdown 标记按字面显示；展示层裁掉整段首尾空白并保留内部换行。assistant 正文继续使用现有流式 Markdown presentation。后端在独立完整 thought chunk 之间只补一个换行，避免多个思考粘连且不产生额外空白行，token 级 chunk 继续无缝累计。接口回归必须验证 `**...**`、列表符号和代码围栏不会生成 Markdown DOM，首尾换行不会撑高内容区，同时 active thought 收起时仍不占布局。
-- 2026-05-07：桌面端品牌 Logo 从临时菱形字形替换为用户提供的红蓝金无限环 SVG；Web 品牌区和 favicon 共用 `web/public/logo.svg`，Tauri 平台图标由同一 Logo 生成。
+- 历史记录：桌面端品牌 Logo 曾从临时占位图替换为旧版矢量资产；该资产已由本节记录的用户提供透明 SVG 统一替换，Web、README 与 Tauri 平台图标不再保留旧品牌内容。
 - 2026-05-07：修复任务编排面包屑上级项 hover/focus 高亮在页面跳转后残留的问题；可点击上级项改为纯 CSS 的 hover/focus-visible 临时反馈，Round 详情只保留当前 round 的常驻高亮。
 - 2026-05-07：工作流 execution history 的 run 分组保持一致黑色背景，不使用黄色背景或左侧金线表达展开态，避免被误解为选中态；2026-05-08 起初始态所有 run 默认收起，点击整行或左侧箭头即可展开/收起。
 - 2026-05-07：任务工作流页删除无效 Tabs、继续运行、停止 Run 和禁用态查看需求按钮；Workflow 与 Task Preview 的需求展示统一为单行 / 100 字截断预览，且仅在确实截断时显示完整需求入口；任务列表在当前右侧 Sheet 内切换到完整需求视图并提供返回图标。
@@ -271,6 +315,7 @@
 - 2026-08-11：Release Please 明确启用 `bump-minor-pre-major`。在正式进入 `1.0.0` 前，带 `!` 或 `BREAKING CHANGE` 的提交从当前 `0.x` 版本提升 minor 并归零 patch，例如 `0.12.4` 发布为 `0.13.0`；进入稳定版后的 major 版本规则不受影响。配置契约由 `npm run test:release-config` 固化，避免发布策略被后续配置调整意外移除。
 - 2026-05-25：桌面端接入 Tauri updater，按 `default` / `wb` 构建渠道隔离更新配置和 public key。default 渠道指向 `https://github.com/diodeme/Gold-Band/releases/latest/download/latest.json`，`release-please` 在创建 draft release 后会先确保对应 git tag 指向 release commit，再于同一 workflow 构建 default 桌面安装包、签名并上传 `latest.json`；该 workflow 支持 `main` push 自动触发和 GitHub Actions 页面手动触发，手动触发用于补跑 release-please 主链路；updater manifest 生成时显式使用 release tag，避免 workflow_dispatch 分支名进入 `version` 或下载 URL；Windows 平台优先选择签名的 setup exe 作为更新安装包；macOS arm64 使用 `macos-15`，macOS x64 使用 `macos-15-intel`；publish 后客户端才通过 latest 地址看到更新。独立 `Release` workflow 仅作为手动输入 tag 的重建 fallback，重建时应用源码来自 release tag，发布脚本和 manifest 生成逻辑来自所选 workflow 分支。wb 渠道使用内网占位地址，本地 `npm run build:wb` 打包后由人工上传内网包与 JSON；本地生成 `latest.json` 时必须优先匹配本次构建 version 对应的签名安装包，避免目录残留旧包时 URL 指回历史 exe。
 - 2026-05-25：设置页改为 `通用 / 外观 / 高级` tabs，高级页支持保存用户级 `desktopUpdaterUrlOverride`、恢复内置地址、手动检查更新和展示后台检查状态；用户覆盖 URL 不改变渠道 public key，避免 default / wb 串包；`desktopUpdaterLastCheckedAt` 持久化最近一次检查时间，展示为本地系统时区 `YYYY-MM-DD HH:MM:SS`。
+- 2026-08-21：修复 `wb` 静默关键更新轮询的重复 I/O。后台单轮检查保留 Tauri `Update` 作为该轮唯一结果，同时投影 UI 状态并判断 `critical`，不再由静默下载路径第二次请求 manifest；同一版本已有完整 pending 文件时跳过安装包下载，下载完成后通过既有原子写入能力提交最终文件，再登记 pending 状态。接口回归以本地 HTTP updater 固定静默渠道单轮仅一次 manifest GET，并覆盖相同/不同/缺失 pending 文件与完整落盘；`default` 渠道的静默更新配置保持关闭。
 - 2026-06-12：高级设置中“记录详细日志”“开启指标上报”的常驻说明文案改为 tips icon tooltip 形式，减少长说明占位；“开启指标上报”标题颜色与相邻设置项统一为 muted heading 样式；这两项开关统一放到标题行内而不是远端右对齐。
 - 2026-08-16：高级设置移除“使用本地 Claude”开关和页面挂载时的本地可执行文件探测；前端保存设置时固定提交 `useLocalClaude = false`，后端 `RuntimeConfig` 加载入口也固定投影为 `false`，历史持久化的 `true` 不再影响运行时，旧用户升级后立即使用 ACP npm 包内版本。后端字段、接口和既有 ACP 解析代码继续保留，未来重新开放时恢复单一配置投影与前端入口即可。
 - 2026-05-27：更新提示新增分层红点：后台发现当前可更新版本时，左侧 Settings、设置页 Advanced tab 和 Updates 分组标题同时提醒；Settings 和 Advanced 的已读状态按版本号持久化，用户逐层进入时只清当前层，Updates 红点仅在当前无可更新版本时消失。
@@ -783,6 +828,8 @@ attempt-001/
 - ACP 传输：每 session event pump 使用 4 MiB / 256 帧 FIFO 消费窗口；2026-08-05 起共享 stdout reader 不再等待该窗口，改由 64 MiB / 16,384 帧 session ingress 隔离过载，避免一个 session 反压 RPC 与其他会话。
 - Timeline：磁盘 `acp.timeline.jsonl` 是 canonical base + patch journal 规范索引，大字段使用 attempt Blob；内存只保留当前 text/thought/plan 流、未终态 tool、未决 permission/elicitation 及 metadata/usage/timing。会话树只加载 metadata/lifecycle，显式选择会话后才加载分页事件详情。
 - 日志：未路由 frame 仅记录摘要并按连接/事件类型限频；`runtime.log` 8 MiB 轮转、保留 4 份并继续执行 30 天清理，`acp.raw.jsonl` 保持现状。
+- 2026-08-20：修复 Windows ACP adapter stderr 被强制按 UTF-8 逐行读取、首次解码失败即停止消费的问题。stderr 改为 4 KiB buffer 流式读取与 16 KiB 单行有界保留，非法 UTF-8 使用 lossy 文本继续消费，并在详细日志附带编码、大小、截断状态及最多 256 字节十六进制前缀。stdout/stderr/进程退出日志统一携带 canonical provider id、adapter identity 与实际 command，异常 stdout EOF 补记可获得的 exit code/status，避免多个 npx Agent 无法归因及真实 npm 错误被 `ACP adapter transport interrupted` 覆盖。接口测试固化非法字节后的后续行仍可读、超长无换行输出内存有界；未新增依赖、缓存、队列或持久状态，读取整体 O(n) 且不进入 ACP stdout/消息处理热路径。
+- 2026-08-21：完成桌面 `runtime.log` 会话审计与分级收敛。创建、prompt admission/queue、continue、stop、terminal 等用户低频边界使用结构化 `INFO`，同步/后台失败及自动队列、MCP 降级使用 `WARN`；每 60 秒 doctor/命令目录周期、ACP raw/RPC、adapter stderr 正文及非 UTF-8 摘要统一为“记录详细日志”控制的 `DEBUG`。日志只携带 canonical locator、turn/operation/revision/outcome，不记录 prompt、附件路径、工具内容、Token 或原始 frame。`runtime.log`、`acp.raw.jsonl`、`acp.diagnostics.jsonl` 明确为 best-effort 旁路，写入失败不得覆盖 provider 原错误或改变 RPC、取消、队列与 terminal；canonical timeline/session/worker/run 状态仍保持强一致写入。补充不可写 sidecar、非 UTF-8 连续消费、有界长行与 prompt 队列生命周期回归测试，并同步修正桌面测试夹具的 ACP storage schema version；5 项日志定向测试、1 项桌面队列接口测试及 `cargo check --workspace` 均通过。未新增依赖、状态、缓存或重试，单个用户动作只增加 O(1) 结构化事件，周期日志默认关闭。
 - 兼容边界：Tauri command、Runtime API、ViewModel JSON、前端类型、既有事件窗口配置、75ms/125ms 流式刷新、消息/工具/权限/分页/自动跟随与 workflow 并行度全部不变；不包含 WebView 恢复和高内存降并行。
 - 回归固化：覆盖具名订阅幂等、10,000 帧 FIFO、session ingress 过载隔离、超大帧与关闭、热状态释放后 timeline 可读、tool input/output/Blob 合并、permission/elicitation timing、非选中不可读 timeline、日志限频和 size rotation。合入前必须通过 Rust workspace、Web test/build 与桌面 deep-link 验证。
 - 本次结果：Rust workspace 全量通过；Release ACP route 10 项通过；Web 54 个测试文件、362 项通过且生产构建成功；桌面端现有 run/session deep-link 冒烟通过，测试实例与 dev server 已清理。字体测试仅修正元素定位，未改变 UI。
@@ -1059,8 +1106,8 @@ attempt-001/
 - 根因修复：原实现把“业务执行”和“runtime 控制结果归一化”压在同一个 prompt turn，导致 agent 在工作开始前就被结构化 artifact 协议约束，自然业务回复与控制 JSON 相互污染。保留现有 `output_contract` 作为 runtime 控制契约，并新增 `PostTurnProjection / InlineControl` 发射模式，不拆出第二套 contract 领域。
 - 执行契约：普通 workflow worker 与 AI-DYNAMIC 的 worker / workflow invocation / acceptance 先以 Conversation 策略完成可见业务 turn，再复用同一 ACP session 发送隐藏 `RuntimeFinalize` prompt 生成 artifact；AI-DYNAMIC bootstrap dispatcher 的职责就是分发，继续使用 `InlineControl` 在首轮接收并输出完整动态协议。Direct / `RawAgent` 不变。
 - 生命周期：业务 turn 成功后先原子写入 `artifact-emission.json(finalizing)`，再开始隐藏 finalize。纯继续、进程恢复和自动重试观察到 `finalizing` 时跳过已完成的业务执行并继续 finalization；无 phase 时仍按业务 turn 恢复。若用户在 finalize 暂停边界选择继续并发送，则先原子改写为 `business-turn` 并执行新的用户业务 turn，成功后再回到 `finalizing`；该业务 turn 再次中断时不得直接跳 artifact。finalize 输出 repair 只修复 artifact，不重新执行任务；损坏或版本不支持的 phase 不允许静默回退。
-- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；可见业务 turn 不暴露 schema，隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
-- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、业务 prompt 不含 schema、隐藏 finalize 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
+- 提示词与观测：中英文 finalize 模板统一放入 `src/prompts/<language>/runtime/artifact_finalize.md`；业务、隐藏 finalize 与隐藏 repair 的稳定 system prompt 均不暴露 PostTurn schema，完整协议只进入隐藏 user prompt；隐藏 timeline reason 区分 `artifactFinalize` 与 `invalidOutputRepair`。
+- 回归固化：Rust 单元测试覆盖发射模式到 ACP 输出策略的映射、PostTurn 业务/finalize/repair system prompt 不含 schema、隐藏 finalize user prompt 内容与 reason、durable finalizing 恢复、workflow 默认后置，以及 AI-DYNAMIC bootstrap/普通 worker/acceptance 的模式分流。
 
 ---
 
@@ -1130,6 +1177,12 @@ attempt-001/
 - 活动摘要与 composer/compact 用量栏复用同一个 CSS 边框圆环组件，统一 900ms transform 动画、`will-change` 与 reduced-motion 行为，不再让高频更新中的 Lucide SVG stroke spinner 参与重绘。
 - 同一 `activityStartSeq` 的活动摘要采用单调 `live -> archived` 展示生命周期。停止期间一旦归档，迟到的 active snapshot 不能把它重新投影为“正在操作”；后续新活动通过新的 start sequence 建立新 identity。
 - 回归验收覆盖隐藏段展示投影、CSS spinner 契约、活动摘要在 `running -> cancelled -> stale running` 序列中不复活，以及既有 Activity 披露/详情交互；聚焦 46 项 Web 测试和 Web 生产构建通过。该改动不新增 I/O、定时器、缓存或历史扫描，每次稳定合并仅作常数级 lifecycle 判断，渲染范围保持在当前活动行。
+
+### 2026-08-25：ACP 处理圆环无条件旋转
+
+- [x] 根因与方案：共享 `AcpProcessingSpinner` 原先通过 `motion-safe:animate-spin + motion-reduce:animate-none` 响应系统动态效果偏好；Windows 关闭动画效果时 WebView2 会投影 `prefers-reduced-motion: reduce`，导致“思考中”和“处理中”圆环同时静止。按桌面产品运行反馈要求，破坏式删除该降级分支，统一使用 Tailwind `animate-spin`，不增加设置项、兼容层或第二套 spinner。
+- [ ] 回归与验收：组件契约测试固定 `animate-spin` 始终存在且禁止重新引入 `motion-safe` / `motion-reduce`；执行相关 Web 单元测试、TypeScript 生产构建，并在正常与 reduced-motion 两种媒体条件下验证 computed animation。
+- 性能与过度设计评审：继续使用单个 900ms `transform` CSS 动画和既有 `will-change` 合成提示，不新增 React 状态、计时器、订阅、I/O、缓存或依赖，渲染范围不变；仅在系统 reduced-motion 环境中增加两个小圆环的持续合成工作，与明确的常驻运行反馈需求匹配。
 
 ---
 
@@ -1252,7 +1305,7 @@ attempt-001/
 
 - 根因：`artifact-emission.json(finalizing)` 原本只表达“上一业务 turn 已完成”，provider 却把它解释为任何 Runtime continue 都必须直接恢复 finalize；因此 `UserMessage` 类型的继续并发送也会被隐藏 artifact prompt 覆盖。修复扩展既有 checkpoint phase，不建立第二套 Runtime 状态机。
 - 生命周期：`finalizing + RuntimeResume` 继续重新请求完整 artifact；`finalizing + UserMessage` 在发送用户 prompt 前原子切换为 `business-turn`，先执行新的业务 turn，成功后再回写 `finalizing` 并生成新的隐藏 finalize。业务 turn 再次中断时保留 `business-turn`，后续继续不得直接跳 artifact。
-- 提示契约：继续并发送使用独立中英文条件模板，并直接消费现有 `OutputEmissionMode`。`PostTurnProjection` 先执行可见用户指令，本 turn 不适用此前的 artifact 输出约束且不输出 artifact，后续独立归一化；`InlineControl` 先执行用户指令，完成后在同一 turn 按当前契约输出 artifact；无 contract 时只执行用户指令。纯继续模板保持原语义。
+- 提示契约：继续并发送使用独立中英文条件模板，并直接消费现有 `OutputEmissionMode`。三个分支都先执行本消息中的用户指令，再继续完成此前任务；`PostTurnProjection` 本 turn 不适用此前的 artifact 输出约束且不输出 artifact，任务完成后再独立归一化；`InlineControl` 在任务完成后再于同一 turn 按当前契约输出 artifact；无 contract 时不提 artifact。纯继续模板保持原语义。
 - 回归验收：Provider 单元接口 25 项通过，覆盖纯继续、继续并发送、二次停止恢复和损坏 checkpoint；Runtime 继续组合 prompt 定向测试 1 项通过；PostTurn 发射模式与中断完成判定定向测试 4 项通过。`git diff --check` 无空白错误。
 - 本轮增量回归：中英文条件模板覆盖 PostTurn、InlineControl 与无 contract 三个分支；固定 workflow continue 接口固定 PostTurn 组合 prompt；AI-DYNAMIC emission 映射固定 bootstrap=InlineControl、worker/acceptance=PostTurn、merge=无 contract；AI-DYNAMIC 集成测试目标完成编译。
 - 性能与过度设计评审：继续复用 attempt 级单个小型 checkpoint、既有原子 JSON 写入与 canonical `OutputEmissionMode`，只增加一次 O(1) phase/模板分支；动态 leaf 在既有 graph 读取与锁区间内取得目标节点 emission policy，不增加 graph 加载、timeline 扫描、缓存、队列、锁、依赖或渲染订阅。仅在 finalize 边界插入新用户业务 turn 时多写一次 `business-turn`。新增 durable phase 用于表达“新业务 turn 尚未可靠完成”这一现有 `finalizing` 无法表达的具体不变量；提示分支不新增状态或第二套策略事实源，复杂度与恢复正确性风险匹配。
@@ -1350,5 +1403,202 @@ attempt-001/
 - 启停恢复：Tauri setup 先开放窗口壳，在 blocking worker 中只读候选并以 workspace identity 与 canonical run 校验；不存在、已非 Running 或 `recoveryCandidateToken` 与候选 token 不一致的 run 只条件消费旧候选，不改动 canonical run，只有 Running 且 token 一致时才收敛为 `Paused + ProcessInterrupted` 后消费。成功候选用完即删，下一次启动不再看到；恢复 lifecycle 通过既有局部 event 更新。scheduler 以恢复完成为启动门闩；退出先关闭 admission、等待 scheduler 停止，再仅暂停 registry 快照中的活跃 locator。
 - 失败隔离：SQLite 使用 WAL、FULL synchronous、短事务和 3 秒 busy timeout；registry 锁内不做 SQLite、文件、provider、scheduler I/O，也不跨 await。候选全集无法读取时维持全局恢复门闩；单 workspace 或单候选恢复/删除失败只隔离对应 workspace，其它工作空间继续，避免为跨 workspace 强一致引入全局长锁或死锁。
 - 进程边界：用户级 `core.db` 与桌面 Runtime 统一为同用户、同发布渠道单实例。复用 Tauri 官方 single-instance plugin 作为第一个 plugin 建立进程互斥；第二次启动只恢复并聚焦已有主窗口，不进入 setup、恢复或 scheduler，不新增自研 lease、heartbeat 或 PID fencing。
-- 验收要求：接口测试固定跨 workspace 候选恢复、不扫描无候选历史、stale token 不能删除新 generation、已 Paused 候选只消费且下一次启动 no-op、候选登记失败不进入 active registry、未成功持久化 Running 的 provisional registration 会撤销、正常退出暂停并清理后候选表为空，以及 scheduler 只在恢复 gate 后注册。执行 core/desktop 定向测试、两个 Rust crate check、格式与 diff 检查，并以 production build 对候选为空和跨 workspace 候选场景复测 Windows 启动耗时。
+- 验收要求：接口测试固定跨 workspace 候选恢复、不扫描无候选历史、stale token 不能删除新 generation、已 Paused 候选只消费且下一次启动 no-op、候选登记失败不进入 active registry、未成功持久化 Running 的 provisional registration 会撤销、正常退出暂停并清理后候选表为空，以及 scheduler 只在恢复 gate 后注册。另以三个依次销毁和重建的 `DesktopState` 固定完整启动边界：第一个实例写入隔离的物理 `core.db`，第二个实例通过生产恢复入口消费并删除，第三个实例确认候选为零且 run 未被重复改写。执行 core/desktop 定向测试、两个 Rust crate check、格式与 diff 检查，并以 production build 对候选为空和跨 workspace 候选场景复测 Windows 启动耗时。
 - 性能与过度设计评审：启动复杂度从无界 `O(W + Σ(tasks + runs))` 收敛为 `O(C)`，`C <= 4096` 且正常只等于可能非终态 run 数量；空候选只有一次 SQLite 小查询。只新增一张索引表、一个进程级 coordinator 和一个 token metadata，不新增轮询、历史缓存、无界队列、全量 UI refresh 或跨文件事务，复杂度与防漏恢复及 generation 竞态相匹配。
+# 2026-08-19：修复 ACP 连续发送生命周期竞态
+
+- 根因：prompt admission 引入后，迟到的上一轮 metadata 可能与新 turn 的 `starting` header 合并，执行器检查失败却静默 `Ok(())`，导致第二条 Direct 消息没有 ACP RPC 且 composer 长期禁用。该问题属于 lifecycle identity fencing 未实现完整，不通过前端解锁按钮规避。
+- 实现：新增 `turnId + lifecycleOperationId + acpRevision` 的原子 execution claim；claim 是不可变 `AcpLifecycleOwner` 的唯一创建边界，并把它贯穿到 provider runtime。`acpRevision` 定义为 ownership generation，只在 admission、claim、stop 接管或 terminal 时推进；provider 的 `Accepted/Running/terminal` lifecycle 写入及外层失败结算全部用 runtime 原始 owner 做精确 CAS，不再从当前 snapshot 反推执行身份。stop 接管后由持有新 control-plane owner 的停止控制方在 cancel dispatch 后结算 `cancelled`，不等待已失权的 provider runtime 回写。取消、完成、revision 推进或新 turn 接管时，旧 owner 写入均为 stale no-op，不升级为执行失败。
+- 回归：Rust 接口测试覆盖 claim 单次消费、空/错误身份拒绝、同一 owner 的 running 写入保留 generation、owned terminal 推进 generation 且旧 owner 不可复用、stop 接管后旧 provider running/terminal 写入不得覆盖 `CancelRequested`、stop owner 可以结算 `cancelled`，以及 execution failure 只能结算拥有者。ACP events 92 项测试、desktop crate check、Rust 格式与 diff 检查均通过。
+- 性能与过度设计评审：复用现有 attempt 文件锁、revision 和 active registry；新增操作均为 O(1) JSON header 条件写入，不扫描 timeline、不增加缓存/队列/依赖，也不扩大 provider 网络调用锁范围。
+
+## 2026-08-21：本轮文件变更按工具成功终态结算
+
+- 根因：turn 文件聚合此前把 ACP `content[type=diff]` 直接视为已发生变更；Codex 在授权前会先以 `in_progress` 发布候选 diff，用户拒绝后同一工具以 `failed` 收敛，但候选版本仍被固化成 `fileChangeSet`。这是 diff 证据与工具生命周期契约缺失，不是前端卡片过滤问题。
+- 数据与接口：中间 diff 继续写入既有 BLAKE3 CAS 与 mutation journal，供工具卡片预览；运行时只为本 turn 出现 diff 的 `branchId + toolCallId` 维护终态投影。`TurnFileStore::finalize_turn_branch` 必须显式接收结构化工具终态，只有 `completed/success/succeeded` 纳入，`failed/error/cancelled/canceled` 及无终态调用排除。permission 的选择、取消和文案不进入该接口，不形成第二套文件事实源。
+- 历史收敛：change set schema 升级为 v4；读取旧 schema 时只在迁移慢路径扫描该 branch canonical timeline，并按同一工具终态重建。没有成功终态的旧集合写回 v4 空集合，前端既有 `fileCount === 0` 契约会移除错误卡片；正常 v4 读取与新 turn 结算不扫描 timeline。
+- 回归与验收：核心接口测试覆盖 `in_progress(diff) → completed(无重复 diff)` 生成变更、缺失成功终态不生成、`in_progress(diff) → failed(重复 diff)` 不生成、终态映射与 permission 无关，以及 schema v3 失败工具集合迁移为空。定向 `cargo test --lib acp::turn_files` 17 项通过；宽泛 package test 被既有 `tests/entity_uuid_test.rs` 缺少 `NodeState.acp_storage_schema_version` 的夹具编译错误阻塞，未在本需求中修改该无关用户改动。
+- 性能与过度设计评审：新 turn 每个 diff 工具只增加一次 `HashMap` 常数级记录，状态随 turn 结算清空；聚合仍只遍历该 turn 已有的有界 mutation，不新增依赖、持久字段、队列、缓存、锁或普通路径 timeline 扫描。历史全 timeline 读取只发生在 schema v1-v3 的一次性迁移慢路径。现有 `toolCallId`、timeline status 与 change-set 模型足以表达不变量，无需 permission→diff 关联、新 aggregate 或第二套状态机。
+
+## 2026-08-21：Direct 首轮停止后的空会话投影
+
+- 根因：后端为避免把只有 `initialize`/outbound raw frame、尚未完成 `session/new` 的占位数据误报为真实 ACP session，正确过滤了 `unavailable + no sessionId + empty Timeline` 的 Provider session；前端只实现了 Workflow/AUTO 的“初始化被中断”投影，却没有按 Direct attempt lifecycle 建立可继续对话的空壳，最终把合法的 `paused + cancelled` 状态降级为通用“ACP 会话失败”。
+- 实现：保留后端 Provider session 物化边界；仅当当前 Direct attempt 同时满足 `paused + process-interrupted`、runtime inactive、ACP `unavailable + idle + cancelled`、非 stopping 且 composer 为 `normal + acp-prompt + input unlocked` 时，前端从 canonical lifecycle 投影无 sessionId 的空 Timeline shell，并复用现有 prompt-kit composer。该状态停止无意义的 session 查询；下一次发送返回 active lifecycle 后恢复既有查询与 `initialize -> session/new -> session/prompt` 路径。Workflow/AUTO 与真实失败投影不变。
+- 回归与验收：纯策略测试固定 Direct 正向条件及 orchestrated、active、established、failed、无 submit target 等反例；DOM 接口测试以 `session=null` 挂载早停 Direct attempt，固定不显示 ACP failure/Workflow continue、composer 可输入且发送调用携带当前 attempt locator 与无 sessionId shell。定向 Web 51 项测试、TypeScript 检查与生产 Vite 构建通过；内置浏览器使用同构的 Direct 早停夹具 deep link 验证空 Timeline、普通 composer、无错误页、无 Workflow continue、发送前按钮可用，点击后草稿清空且无 console error/warn。验收后已删除临时夹具并关闭页面与开发服务。
+- 性能与过度设计评审：复用既有 attempt lifecycle、session shell 和 composer，不新增持久字段、状态机、依赖、缓存、队列或兼容层；判断与渲染均为 O(1)，早停空会话还会停止最长约 30 秒的 missing-session 轮询。现有 canonical lifecycle 已足够表达不变量，无需恢复旧 placeholder session 或建立 Direct 专用数据模型。
+
+## 2026-08-21：Git 前置条件对话框接入右侧源码管理
+
+- 根因与实现：快速会话选择新工作树遇到缺失首次提交等 Git 前置条件时，对话框仍提供外部 Git 下载页，却没有接入已经存在的右侧源码管理恢复入口。现复用 shadcn Dialog/Button 与 `RightWorkspaceCommands`，按当前会话 `projectId + scopeKey` 打开或激活主工作区源码管理 Tab。真实窄窗口验收同时发现显式 open revision 会在 auto-collapse 判定紧凑布局前被提前消费，导致只创建隐藏 Tab；修复后的 transition 仅在紧凑状态就绪时消费 revision 并展开 Sheet，不新增页面、Git 状态或旁路导航。
+- 交互契约：恢复动作按“取消 / 重新检测 / 使用主工作区 / 打开源码管理”排列；前两项业务恢复动作使用 outline，“打开源码管理”作为唯一主按钮，删除对话框内“打开 Git 下载页面”。源码管理工作区仍可按 capability 提供对应安装或仓库操作，完成后由用户显式重新检测。
+- 回归要求：组件接口测试固定中文按钮顺序、下载入口缺失、主次按钮 variant，并在真实 `RightWorkspaceProvider` 中点击主按钮，断言对话框关闭且 active Tab 收敛为当前项目的 `source-control:<projectId>:main`；布局 transition 测试固定非紧凑中间态不提前消费 open revision，紧凑态收敛后自动展开 Sheet。执行定向 Web 测试、TypeScript 检查、生产构建，并用内置浏览器 deep link 验证正常与窄宽度下的对话框及右侧 Tab 切换。
+- 验收结果：Git 对话框、低频工作区命令和 auto-collapse 定向回归 28 项通过，TypeScript 检查与生产 Vite 构建通过。内置浏览器 deep link `/chat` 验证 1280px 下按钮顺序与主按钮黑色样式正确、点击后直接打开源码管理 Dock；520px 下按钮纵向同序且无溢出、点击后直接打开源码管理 Sheet；页面无 console error/warn。Web 全量 1546 项中 1544 项通过：ACP 重入计时用例单独重跑通过；唯一稳定失败是与本需求无关的 `ConversationPromptQueue` 既有组件仍使用共享 `border` class、测试却断言 `border-0` 的基线不一致。
+- 性能与过度设计评审：点击只提交一次 O(1) 工作区资源 locator 与局部导航状态；源码管理内容继续在活动 Tab 中按需加载。不新增依赖、持久字段、缓存、队列、扫描、轮询、宽 Context 订阅或重复 Git 检测；现有 workspace identity 与低频命令 Context 已足够表达不变量，无需新 aggregate、状态机或专项 benchmark。
+
+## 2026-08-21：Windows 任务栏图标 DPI 清晰度契约
+
+- 根因：Windows ICO 已包含 `16 / 24 / 32 / 48 / 64 / 256` 多档图层，但 16px 位于目录首层。Tauri 2 在 Windows 的 `generate_context!()` 中只解码 ICO 首层作为实时窗口图标；Windows 任务栏在实时窗口图标、EXE 多分辨率资源和 Shell 缓存之间选择来源时，可能把该 16px 位图放大，因此同一开发进程或生产安装版在不同 DPI、固定和激活状态下清晰度不一致。
+- 实现：继续复用 Tauri 官方多分辨率 ICO 与既有品牌矢量源，只把 32px 调整为首层，保留 16/24/48/64/256 图层和 32 位 RGBA，不增加运行时 `set_icon`、任务栏特判、Explorer 缓存清理或新图标生成依赖。开发窗口与生产 EXE 继续消费同一 `src-tauri/icons/icon.ico`。
+- 回归要求：品牌资源测试直接解析 ICO directory，固定图层顺序为 `32 / 16 / 24 / 48 / 64 / 256`、全部 32 位，并继续逐层检查无白色 matte 像素；执行定向 Vitest、Web 生产构建、Tauri debug 构建资源检查和 Windows 原生任务栏验证。
+- 性能与过度设计评审：改动仅调整 6 个 ICO directory entry 的顺序，不改变像素数据或文件规模；运行时仍只加载一个固定尺寸窗口图标，不新增状态、依赖、I/O、缓存、队列、锁、渲染或后台任务，对启动和运行性能无可测影响。现有资源契约足以表达问题，无需新增图标服务或平台状态机。
+
+## 2026-08-21：超长用户消息折叠
+
+- [x] 用户消息正文超过 240px 时默认折叠，在气泡正文下方使用现有 shadcn `Button` 提供“查看更多 / 收起”；短消息不显示入口，中英文文案同步维护。
+- [x] 折叠状态保存在单条消息组件，不修改 canonical Timeline、event window、分页 cursor、分页 anchor 或偏好存储；展开/收起复用既有 chat content-expansion controller，保留自动贴底意图，并尊重展开期间的用户主动滚动。
+- [x] DOM 接口回归覆盖短消息、超长消息默认折叠、展开/收起与 controller token 配对；同时回归自动贴底与 ACP 分页测试，执行前端类型检查、生产构建及会话 deep-link 长文本验证。
+- 性能与过度设计评审：每条用户消息只增加一个局部 `ResizeObserver` 和两个布尔展示状态，测量为 O(1) 高度比较且仅在结果变化时提交状态；不扫描 timeline、不重解析 Markdown、不增加网络 I/O、依赖、缓存、队列、并发或持久字段。现有 prompt-kit/shadcn 组件和滚动 controller 已足以表达不变量，无需新消息模型或第二套滚动状态机。
+
+## 2026-08-21 ACP lifecycle consistency follow-up
+
+- [x] Unified metadata patching under the existing attempt lock and made `acp.snapshot.json` the only production write target; runtime control, catalog/config updates, stop cleanup, and provider metadata preserve the latest lifecycle owner and revision. Legacy `acp.session.json` is read-only fallback that seeds the first canonical snapshot write for old attempts, with no continued dual write.
+- [x] Centralized the owner terminal fallback at `client::run_prompt()` for Direct、Workflow、AUTO and hidden finalize/repair, and propagated canonical `prompt_accepted` failures through desktop production wiring. Startup/setup/callback or durable prompt-queue failures therefore cannot leave a claimed turn permanently active or make finalize fail with a false session-busy state.
+- [x] Added generation-scoped artifact finalize identities with durable checkpointing. Recovery reuses a checkpointed generation until its matching control turn is canonical terminal, then creates a fresh generation so an already-settled prompt identity is never resubmitted.
+- [x] Made lifecycle ViewModel reads non-mutating and removed normal query dependence on complete `acp.raw.jsonl` recovery. Frontend lifecycle merge now rejects stale revisions, re-derives projection fields, and uses project/outer/branch-complete cache locators.
+
+Scope deliberately excludes Timeline index decomposition, a new database/state machine, and speculative optimization of low-frequency background paths. The acceptance target is functional convergence after stop/continue/follow-up and bounded I/O on normal conversation reads.
+
+Final audit kept provider-owned catalog fields (`models/modes/configOptions/observedAt`) replaceable while protecting command-owned overrides and refresh markers. The terminal fallback now belongs to the shared ACP client prompt boundary instead of Direct-specific outer settlement, preventing preparation/provider/join failures from diverging by execution mode. Round-detail optimistic state includes the effective branch in the same complete locator as session/event caches. These are constant-size metadata/key operations and remove redundant legacy writes; no new scan, cache, queue, lock, dependency, or benchmark is introduced.
+
+## 2026-08-21：ACP terminal 展示与 Workflow 节点跟随
+
+- [x] Composer 只在 ACP live turn active 时使用 Timeline 最新 `thought/tool/textDelta` 细化当前状态；terminal 后历史 `textDelta` 不再维持“回复生成中”，Workflow 仍处理时改由 Runtime phase 显示中性处理状态。
+- [x] 普通 Workflow/AUTO attempt VM 携带 `run.execution.revision` 水位，同时继续以完整 locator 限定 `current/active/phase`；Direct 无该 revision，AI-DYNAMIC leaf 使用自身 execution。
+- [x] 普通节点 durable `NodeStarted` 通过完整 project/session locator 触发局部 Run 刷新和 RuntimeControlled auto-follow；manual/NonRuntimeControlled 不抢焦点，Dynamic 内部 metrics leaf 不映射。canonical Run 边界在合并刷新 pending/in-flight 期间优先于迟到 ACP 更新；`NodeCompleted` 保持 repair/metrics 原顺序，不作为详情刷新入口。
+- [x] 自动回归与编译：Composer、session follow/navigation、sidebar event DTO 共 123 项通过；Rust Run event mapping 与 lifecycle VM revision 定向接口测试各 1 项通过；Web TypeScript/生产构建、`gold-band` 与 `gold-band-desktop` 编译检查、Rust 格式与 diff 检查通过。
+- 性能与过度设计评审：所有新增判断和事件映射均为 O(1)，复用单 in-flight 合并刷新；无 Timeline/raw 扫描、轮询、缓存、持久字段、队列、依赖或新状态机。现有 ACP lifecycle、Run revision 和完整 locator 足够表达问题，不为低频边界或剩余单体 index 成本扩建设计。
+
+## 2026-08-21：首轮 ACP 模型覆盖值持久化边界
+
+- [x] 修复首轮 provider 元数据写回时的配置覆盖丢失：admission 快照尚未有 `sessionId` 时保留本次执行显式的 `modelOverride`、`permissionModeOverride` 与 `configOptionOverrides`；已建立 session 后继续以用户命令写入的覆盖字段为准，字段被清除时迟到 provider 快照不能复活旧值。
+- [x] Rust 接口级回归覆盖“首次写回保留 `sonnet/high`”与“已建立 session 的显式清空保持为空”两条路径；前端继续只显示 Gold Band override，不从 Agent `currentValue` 反推用户选择。
+- 性能与过度设计评审：复用现有 attempt metadata 锁、lifecycle owner 和 override 字段，仅增加常量级存在性判断与字段合并；不新增状态机、持久字段、RPC、扫描、缓存或队列，正常路径 I/O 与复杂度不变。
+
+The final desktop regression audit also fixed a V7 index contract gap: canonical Agent launches carrying only `goldBandConversation.launchedAgentExecutionId` were grouped into an activity summary, so pagination and Agent links diverged after re-entry. V8 recognizes the canonical identity as both an indexed launch and a standalone semantic block; older indexes rebuild once, while steady-state page and runtime reads retain the same bounded behavior. Desktop fixtures now declare the current attempt storage schema instead of weakening production validation.
+
+## 2026-08-21：子 Agent execution 跟随父 prompt turn 终止
+
+- 根因：Agent index 用当前 session 是否 active 推导全部历史 execution。Turn 1 取消后，Turn 2 把同一 session 重新置为 running，Turn 1 中没有结果证据的旧 Agent 因而被重新投影为 running；异步 launch tool 的 completed 回执还可能在 session 正常结束时被误当作子 Agent 完成。
+- 数据与接口：复用 root timeline index 已有的 Gold Band prompt locator、`startedSeq / endedSeq / status / endedAt` 与 Agent launch sequence，建立可删除重建的父 turn 边界投影，不增加子 Agent canonical 状态机。顶层 launch 绑定最近的前序 prompt；嵌套 launch 继承父 execution 的 turn。prompt terminal sequence 覆盖 launch sequence，或已有下一 prompt 时，该 turn 对此 execution 已终止；只有 branch result 证据保留 completed，否则统一 interrupted 并清除 attention。当前 turn 活跃时继续按 branch 事件投影 queued/running/waiting_permission。
+- 身份与回归：`AgentExecutionId` 继续由 session id 与本次 launch tool id 生成；新 turn 即使 Agent 名称、描述或 prompt 相同，只要发生新的 launch 就形成新的 execution。Rust 接口回归固定“Turn 1 cancel + Turn 2 active 不复活旧 Agent”“新 turn 同描述创建独立 execution”“父 turn completed 但只有异步启动回执仍 interrupted”以及真实 Agent result 保持 completed，并要求完整重建与 materialized index 两条路径结果一致。
+- 性能与过度设计评审：正常查询只在已加载的 timeline materialized index locator 上生成并排序 prompt 边界，不读取 prompt body、不扫描 `acp.raw.jsonl` 或完整 timeline，也不按 Agent 重复 I/O；Agent 与 prompt 的内存匹配为现有 attempt 小集合上的有界处理。未新增依赖、持久字段、缓存、队列、锁或独立生命周期 aggregate，现有 prompt sequence/revision 和 branch result 已足以表达不变量。
+
+## 2026-08-22：子 Agent 前端 live 状态终态收敛
+
+- [x] 根因：Tauri 停止完成发布的是不含 session 正文的 lifecycle patch；前端全局 conversation event router 只消费 event/session，导致子 Agent 最后一条普通事件留下的 running snapshot 跨会话切换继续覆盖后端 interrupted projection，只有应用重启清空内存后才恢复正确显示。
+- [x] 状态与接口：复用现有完整 attempt locator、ACP lifecycle revision、`latestTurnStatus/liveTurnActivity` 和 `AcpSessionVm.branchExecution/timelineProjection`，在同一个有界 branch live store 中统一收敛 lifecycle-only terminal、session event 与显式 session query。terminal patch 只中断仍为 queued/running/waiting_permission 的 execution并保留既有终态；Agent execution 终态不被迟到普通事件或较旧 lifecycle revision 复活，新的父 turn 仍通过新 launch ID 建立独立 execution。
+- [x] 展示与回归：Agent 外层 link 和右侧 branch 标题共享终态优先解析，权威 interrupted/completed/failed 不再被旧 live running 覆盖。接口与 DOM 回归覆盖 lifecycle-only cancel、completed 保留、attention 清理、迟到事件/revision、权威 branch query 校正以及外层/右侧一致显示；切换会话无需重启即可看到已中断。
+- 性能与过度设计评审：终止 patch 只扫描现有最多 64 个 branch snapshot，复杂度 O(64)；session 校正只遍历响应已携带的直属 Agent projection，不增加 IPC、Timeline/raw 读取、轮询、持久字段、依赖、缓存、队列或状态机。现有 canonical lifecycle 和 session projection 已足以表达不变量，无需扩展后端协议。
+
+## 2026-08-22：后台追问 terminal lifecycle 重进恢复
+
+- [x] 根因：切出会话期间的 Timeline live event 已由有界 replay 保留，因此重进能显示 Agent 最终回复；但 lifecycle-only terminal 只发送给事件发生时已挂载的详情页，路由快照只保存派生 status/revision，不足以收敛恢复出的 `awaitingResponse + activeTurnPromptId`，导致 Composer 持续显示“回复生成中”。后端 ACP snapshot、raw RPC、Timeline 与 Workflow paused 状态均已正确落定。
+- [x] 实现：复用现有 conversation event router 与最多 64 个最近活跃 branch 的内存上限，在 root branch snapshot 保留完整 lifecycle，并通过既有 `mergeConversationAttemptLifecycle()` 按 ACP、Runtime 与 prompt queue revision 分域单调合并。root 会话挂载或重进时把 retained lifecycle 投影到既有 Composer 状态机；普通 live subscription、停止后追问、Direct 与 NonRuntimeControlled follow-up 共用同一入口，只读 Agent branch 不消费 root Composer lifecycle。
+- [x] 接口回归：router 测试固定 terminal lifecycle 完整保留以及较旧 running revision 不得复活 terminal；DOM 重进测试固定“后台 terminal + stale running session + sending optimistic prompt”必须展示最终正文、不显示“回复生成中”且 textarea 已解锁。
+- [x] 验证：conversation router、重进恢复、Composer 状态和 Runtime continue 相邻回归共 99 项通过；Web TypeScript 检查与生产 Vite 构建通过。按用户约定不进行桌面端手工验证，由用户使用真实会话验收。
+- 性能与过度设计评审：每个既有 branch snapshot 仅增加一份常量级 lifecycle 对象，Map 定位、revision 合并和挂载读取均为 O(1)；容量仍为 64，不新增后端状态、持久字段、IPC、轮询、Timeline/raw 扫描、依赖、缓存层或状态机。现有 canonical lifecycle 与有界 live snapshot 足以覆盖真实切页窗口，不为被淘汰后的低频边界扩展长期缓存。
+
+## 2026-08-22：工作流继续动作按当前 attempt 归属
+
+- [x] 根因：会话生命周期投影使用 Run 级 `process-interrupted` 判断 continue 类型，却没有先校验恢复命令的完整 locator 所有权，导致历史 `completed/success` attempt 也得到 `recover-completed-attempt`，显示“恢复工作流”；实际后端命令已有 current locator 校验，点击只会被拒绝。
+- [x] 状态与接口：复用 `run.currentRound/currentNode/currentAttempt` 作为普通 Workflow/AUTO 的 continue owner。只有当前 attempt 可以投影 continue action：未完成断点使用 `continue-current-attempt`（“继续工作流”），已成功完成但后继边尚未提交的断点使用 `recover-completed-attempt`（“恢复工作流”）；历史 attempt 固定 `continueKind=null`。AI-DYNAMIC 保留既有复合节点语义，以当前 outer attempt 作为命令 owner，dynamic leaf 继续描述内部断点。
+- [x] 回归：Rust ViewModel 接口测试固定同一 paused Run 下“历史成功 dev-test 无 continue action、当前 paused test 显示继续工作流”，并保留 dynamic parent running/paused、stale cancelled leaf 和 launching suppression 的既有覆盖；83 项 Conversation ViewModel 测试通过。
+- 性能与过度设计评审：只复用已加载 Run 的三个 locator 字段增加 O(1) 身份比较，不新增协议字段、持久状态、状态机、依赖、缓存、I/O、Timeline/raw 扫描或锁范围；现有 canonical current identity 已足够表达动作所有权，无需复制 UI 状态。
+
+## 2026-08-24：快速会话工作树身份与启动错误贯穿
+
+- [x] 根因：会话工作树实现虽然声明使用 run identity，实际短哈希只包含规范化仓库路径与 `taskId/runId` 顺序编号；`.gold-band` 与 `.maling` 等独立数据域操作同一 Git repository 时会重复产生相同编号，继而与共享 `.git` 中的既有分支和 linked-worktree 登记冲突。该问题属于 canonical identity 作用域设计缺陷，不通过自动 prune、删除历史分支或重试补丁规避。
+- [x] 数据与实现：run 创建时先生成并复用现有 `run.uuid`，与既有 `projectId/taskUuid` 一起通过项目已有 BLAKE3 生成 16 位稳定短 ID；路径继续归属当前通道受管 `worktrees/`，Git 分支继续使用 `gold-band/conversation/<shortId>`。同一 durable run 重算保持幂等，不同通道独立创建的 run 不再因显示编号相同而碰撞；不迁移或改写已失败空会话和历史 worktree。
+- [x] 错误契约：Git worktree 创建边界返回 `workspace.worktree-create-failed` 结构化 `RuntimeErrorInfo`；后台准备失败复用 canonical `run_paused` 事件并写入 `controlFailure.runtimeError`，timestamp 与 durable `run.updatedAt` 对齐。会话页沿用既有 runtime error 映射按错误码显示中英文恢复文案，原始 Git diagnostic 只保留给日志和诊断，不新增对客后端文案。
+- [x] 回归与验收：Rust 测试固定相同 durable identity 幂等、task/run UUID 任一变化均生成不同 worktree、Git 创建失败保留结构化错误，以及后台失败事件可由 Conversation VM 按当前 pause timestamp 读取；前端映射测试固定中英文错误码文案。`cargo test --lib worktree` 17 项、后台错误定向测试、desktop Conversation VM 定向测试、两个 crate check、前端 6 项定向测试、TypeScript 与生产构建均通过。WB/MALING 桌面实测在 Test 工作空间新建 `task-008/run-001` 的工作树 + AUTO 会话，使用独立 `task_uuid/run_uuid` 生成 `.maling/.../worktrees/439c32bbd972b134` 与 `gold-band/conversation/439c32bbd972b134`，顺利越过 workspace preparation 并以 success 完成；验收后已移除这个零独有提交的临时 worktree/branch，测试 task 已移入回收站。未迁移失败会话，未 prune、删除或改写任何既有 `.gold-band` worktree/branch。
+- 性能与过度设计评审：identity 计算只哈希三个固定长度字段，错误事件只增加一个常量大小对象，均为 O(1)；不新增 Git 查询、全量扫描、迁移器、状态机、持久字段、依赖、缓存、队列、轮询、锁或渲染订阅。现有 UUID、BLAKE3、`RuntimeErrorInfo`、run event 与 i18n 已足够表达不变量，无需清理其他产品通道的 Git 资源。
+
+## 2026-08-25：AI-DYNAMIC 后置工作区状态文案
+
+- [x] 根因：Runtime 使用同一个 `PreparingWorkspace` canonical phase 表达初始环境准备和 AI-DYNAMIC leaf 完成后的 checkpoint、fork、release；后端 Composer 与前端合并投影都把该 phase 无条件翻译为“正在准备开发环境…”。生命周期所有权和状态转换正确，缺陷属于正确设计下的展示投影实现不完整，不拆分或复制 Runtime 状态机。
+- [x] 实现：复用 dynamic graph phase、leaf `completed/success`、graph 对 causal leaf 的既有投影所有权和 leaf lifecycle revision。仅在该组合成立时，Conversation VM 输出 `processing-workspace + conversation.runtime.processingWorkspace`；初始 workspace preparation 保持原文案，Direct 和普通 Workflow 不变。前端 Composer 合并按 Runtime revision 选择权威 facet 后保留该后端展示语义，并继续让停止态优先。
+- [x] 回归范围：Rust ViewModel 接口覆盖初始准备原文案、已完成 causal leaf 的详情与 session tree 新文案、并行运行 leaf 和历史 leaf 不继承新文案；前端状态测试覆盖后端新投影消费、ACP facet 合并保持和停止优先级。
+- 性能与过度设计评审：所有判断均针对已加载 graph、leaf 和 lifecycle 做 O(1) 比较，不增加 I/O、Timeline/raw 扫描、React 订阅或渲染范围；不新增 aggregate、持久字段、revision、状态机、依赖、缓存、队列、并发或锁。现有 canonical lifecycle 已足够表达区别，因此只完善消费端投影。
+
+## 2026-08-25：Release WebView 致命错误写入 runtime.log
+
+- [x] 根因：Release WebView 已有 `window.error`、`unhandledrejection` 和 React uncaught 入口，但只针对 Maximum update depth 输出 page console；macOS WebKit 默认不把 page message 转发到系统日志，导致页面已加载但黑屏/渲染失败时 `runtime.log` 没有前端异常。该问题属于全局观测设计正确但持久化实现不完整；本次补齐统一诊断边界，不把某个用户现场特征硬编码为特例，也不假定已经定位黑屏业务根因。
+- [x] 数据与接口：新增固定 `FrontendErrorReportInput`，只包含 `window-error / unhandled-rejection / react-uncaught`、错误与 component stack、脚本行列、pathname/user agent 和不含文本内容的 DOM 结构摘要。前端经 Runtime API 的单一 `report_frontend_error` command 上报，Rust 二次规范化后用现有 tracing 写 `runtime.log`；browser preview 保持 no-op。禁止输入值、聊天正文、prompt、附件路径、工具内容、Token、query 和任意对象透传。
+- [x] 资源与失败边界：message 4096 字符、stack/component stack 16384 字符、其余字段 64–2048 字符，前后端独立限长；同一 message+stack 5 秒去重，10 秒最多 5 条。调用同步抛错、Promise reject 或日志失败全部静默收敛，不能形成新的 unhandled rejection、改变页面行为或覆盖 canonical Runtime 错误。
+- [x] 回归与验收：前端固化三种入口、结构化字段、所有字段限长、去重/异常风暴限流、sink/context throw/reject 和既有 Maximum update depth 控制台诊断；桌面 API 固化 command/参数契约，Rust 固化 Unicode 安全二次限长和 command 接受结构化 DTO。Web 定向 2 个文件 25 项、Rust 定向 2 项通过；`npm run web:build`、`cargo check -p gold-band-desktop` 和 `cargo fmt --all -- --check` 通过，只有项目既有 dead-code 和 Vite chunk-size warnings。
+- 性能与过度设计评审：正常路径仅有三个全局 listener 和一次 pointer 摘要更新，不发生 IPC、扫描或轮询；只有异常路径执行 O(受限字符串长度) 规范化与最多 5 次/10 秒 IPC，内存去重集合受相同窗口约束。复用现有 Runtime API、Tauri command 和 tracing/轮转日志，不新增依赖、持久字段、状态机、缓存层、后台队列、重试或 UI；一个有界 reporter 足以补齐观测缺口。
+
+## 2026-08-25：runtime.log 有界异步 writer
+
+- [x] 根因：`runtime.log` 已有 8 MiB/4 份轮转和高频事件限流，但 tracing subscriber 仍在每个调用线程同步获取 `Mutex<FileRotate>` 并执行磁盘写入；日志调用扩展到桌面 IPC、Runtime 与 ACP 后，慢磁盘、杀毒扫描或轮转可能把 best-effort 诊断反向变成业务线程延迟。该问题属于正确容量设计下线程隔离实现不完整，不通过只移动 WebView error command 的局部补丁规避。
+- [x] 数据与生命周期：复用已有 `tracing-appender`，以单一 1024 行 lossy 队列连接全局 subscriber 与专用 `gold-band-runtime-log` writer 线程；`FileRotate` 只归 writer 线程所有。队列满时丢弃并累计 dropped-lines，不反压调用线程；CLI 在整个 command 作用域持有 `RuntimeLogGuard`，桌面端由 Tauri managed state 持有到进程退出，正常退出执行有界 flush。强制终止允许损失队列尾部，符合 `runtime.log` 非 canonical、best-effort 的既有契约。
+- [x] 范围：只替换 `runtime.log` writer，不修改 `events.jsonl`、ACP Timeline/raw/diagnostics、session metadata、run/node/dynamic graph、配置或其他文件写入语义；8 MiB/4 份轮转、日志级别、target filter、格式和调用点保持不变。
+- [x] 回归与验收：确定性门控测试固定 writer 被阻塞且队列满时调用方继续并准确计数丢弃行，异步队列测试固定 guard 释放时 flush 并保持 8 MiB/4 份轮转；Rust observability 相关 21 项、`cargo check -p gold-band-desktop`、`cargo check -p gold-band --bin gold-band -j 1`、Rust 格式与差异检查通过。首次并行验证因同时存在多个 Rust 构建导致 `rustc-LLVM out of memory`，改用 `--lib -j 1` 后通过，确认不是实现或测试失败；编译仅保留项目既有 dead-code warnings。
+- 性能与过度设计评审：调用线程只承担现有事件格式化和一次有界 channel `try_send`，不再获取文件锁或执行 write/flush/rotate；常驻资源为一个 1024 行队列和一个日志线程。使用已有依赖和标准 guard，不新增自研队列、重试、持久状态、业务状态机或第二套 writer；lossy 策略避免异常洪峰把诊断压力传导到业务线程。
+
+## 2026-08-25：右侧源码管理绑定当前会话 Worktree
+
+- [x] 根因：源码管理资源、Store 和后端已按 `projectId + workspacePath` 支持 linked worktree 隔离，但右侧通用入口只传 `projectId`，固定生成 main 资源；AI-DYNAMIC child 会因此显示源分支主工作区，并把 `.gold-band/worktrees/...` 错列为未跟踪目录。该问题属于正确设计下入口投影实现不完整，不修改 Git 或 Runtime canonical workspace 模型。
+- [x] 数据与实现：复用 `ConversationSessionLeafVm.worktreePath`、完整会话导航 locator 和现有 repository/workspace 会话 Store。右侧会话树只保留一个项目级源码管理 Tab；数据会话按 `projectId + normalized workspacePath` 隔离。主工作区保持 `null`，路径不通过分支名或展示文本反查。
+- [x] 接口回归：会话导航测试固定 dynamic leaf 选择、无 attempt 路由下的 selected-session 回退、主工作区和非会话页面；入口测试固定当前 worktree 路径。后续会话树切换收敛修正在 2026-08-26 章节验收。
+- 性能与过度设计评审：每次会话导航只增加常量级 locator 查找；显式 session locator 使用现有树索引遍历，最坏 O(当前 session tree)，无额外 Git I/O、全量文件扫描、轮询、缓存、队列、锁、持久字段或 Context 订阅。源码管理仍只在活动 Tab 按需加载，并继续使用既有 24 项 repository/workspace LRU；现有 identity 足以表达不变量，无需新 aggregate、状态机或依赖。
+
+## 2026-08-26：源码管理单 Tab 跟随会话工作位置
+
+- [x] 缺陷形成路径：前一版只让“打开源码管理”入口携带当前 `worktreePath`，同时把路径写进右侧 Tab key；右侧工作区状态却按整个 Run 保存。因此源码管理已经在 main 打开后，切换 dynamic child 只更新会话分支展示，不会更新已有源码管理 Tab。根因属于正确的 repository/workspace 会话隔离设计与错误的可见 Tab 身份建模叠加，测试也只覆盖了重新点击入口，没有覆盖 Tab 已打开时切换 session。
+- [x] 数据与状态转换：可见源码管理 Tab 改为项目级稳定 key，同一会话树只保留一个；Provider 从 Run 当前 `selectedSessionKey` 投影 `workspacePath`，页面 locator 仅作为 deep-link 回退。session 点击在同一事件中提交 React 页面状态、最新页面 ref、URL locator 与 Run 选择，避免旧 main locator 覆盖已选 worktree。只有 `projectId + normalized workspacePath` 改变时才切换底层 SourceControl session；main 节点之间或同一 worktree 节点之间切换是 identity no-op。底层继续复用现有 24 项 repository/workspace LRU，返回某个位置时恢复其内部页签、历史分页/选择/滚动和 commit 草稿。
+- [ ] 验收：纯状态测试固定稳定 Tab key、同 identity 引用不变和跨 worktree 投影；DOM 测试固定已打开 Tab 自动跟随路径且不产生第二个同名 Tab；SourceControl Store 测试固定 Windows 规范化路径与不同 worktree 视图状态隔离。完成 TypeScript、定向测试、生产构建以及真实浏览器 normal/narrow/re-expand 验证后勾选。
+- 性能与过度设计评审：不新增 Context、持久字段、缓存、队列、请求或 Git watcher；只抽取轻量路径 identity helper，并复用已有 Store。会话节点切换只做规范化 identity 比较；工作位置相同时保持稳定 scope/context，不触发源码管理订阅切换或 Git I/O，位置变化时仅目标 SourceControl session 按原规则按需加载。
+
+## 2026-08-26：分支选择器快照刷新回路修复
+
+- [x] 根因：会话创建意图从 checkpoint 收敛为分支名后，父 Composer 用内联 callback 把 `projectId + branch` 写回 draft；分支选择器又把 callback identity 放进 snapshot 加载 effect 的依赖链。快照返回触发父级重渲染后 callback 变化，继而无限重复 Git IPC。分支选择和轻量 snapshot 设计正确，缺陷属于 effect 语义依赖实现不完整，不通过 debounce、缓存或后端限流掩盖。
+- [x] 实现：snapshot 加载只依赖 `projectId + workspacePath + readOnlyBranch` 等语义作用域；最新通知 callback 通过 ref 调用，不参与加载函数 identity。父 Composer 使用按 `projectId` 稳定的函数式更新，同一 `projectId + branch` 返回既有状态对象。
+- [x] 回归：组件测试使用会随父级状态更新而重新创建的内联 callback 复现原路径，并固定父级重渲染后 branch snapshot 仍只请求一次、最终分支正确投影。
+- 性能与过度设计评审：同一选择器挂载的初始化 Git IPC 从无界回路收敛为一次轻量 snapshot 请求；回调更新为 O(1) ref 写入，相同分支写回为 O(1) 比较。不新增依赖、缓存、队列、轮询、持久字段、Context、状态机或后端机制，现有 project/workspace identity、branch draft 和 snapshot Store 已足够表达不变量。
+
+## 2026-08-26：快速对话上下文操作栏响应式收缩
+
+- [x] 根因与方向：工作空间、工作位置和分支作为三个独立上下文选择器的设计正确，但现有信息栏只允许文本截断，没有把完整控件投影成紧凑图标态，属于正确设计的响应式实现不完整。继续保留三个一步直达入口，不增加统一“更多”菜单或按截图尺寸打补丁。
+- [x] 实现：信息栏建立命名 CSS container；窄档三个触发器均保持 28px 图标态，中档只恢复工作空间标签，宽档再恢复工作位置与分支标签及箭头。复用现有 shadcn/Radix Select、DropdownMenu、Popover + Command 和项目 Tooltip；同一控件实例只切换 CSS 展示，图标态提供包含当前值的 Tooltip 与 `aria-label`，菜单打开时抑制对应 Tooltip。
+- [x] 点击时序修复：紧凑分支图标的 Tooltip 不再在 pointerdown 阶段先行退出，而是与后续 Popover open 在同一 React 提交中收敛；触发器使用受控 Popover open 的独立数据属性保持主题强调态，不再读取会被 TooltipTrigger `closed` 覆盖的共享 `data-state`，消除“变深—恢复—弹出”的中间帧。键盘 click、溢出 Tooltip 和原 Popover/Command 生命周期保持不变。
+- [x] 关闭焦点修复：指针点击分支项完成异步切换后，Radix Popover 原本将焦点还给紧凑分支触发器，其 focus Tooltip 因而重新打开并持续显示。现在沿用工作空间/工作位置选择器的输入方式契约：指针关闭时阻止自动还焦、清理 Tooltip 并移除触发器焦点；键盘关闭仍保留 Radix 默认还焦。不使用 timer、延迟或第二套菜单。
+- [x] 验收：3 个定向 Vitest 文件共 32 项通过，固定三档 class、三个控件稳定 identity、当前值无障碍名称、图标 Tooltip、pointerdown→click 时序、指针关闭不还焦与键盘关闭还焦；TypeScript 与 Web 生产构建通过。内置浏览器按操作栏实际宽度验证约 293px 全图标、413px 仅工作空间标签、614px 全标签及重新拉宽恢复；浅色与系统深色仿真均验证 Tooltip 已显示后点击分支图标会当次打开 Popover、同步关闭 Tooltip。在 28px 紧凑分支触发器中实际切换分支后，Popover 与 Tooltip 均收起且焦点不回图标；Escape 键盘关闭则正常还焦。原分支、临时视口、颜色仿真和页签均已恢复或清理。
+- 性能与过度设计评审：响应式完全由浏览器 CSS container query 计算，不增加 ResizeObserver、React 尺寸 state、effect、依赖、缓存、队列、请求或重复选择器实例；窗口连续缩放不触发 React 渲染，分支 snapshot 读取次数和既有有界 Store 不变。每个标签只增加固定 class 与无障碍属性，DOM 数量保持常量，无专项 benchmark 必要。
+
+## 2026-08-25：Release profile WebView DevTools 诊断包
+
+- [x] 根因与方案：现有 default/wb 渠道构建、Tauri overlay 和 updater 隔离设计正确，但只有渠道维度，没有用于复现生产 WebView 问题的诊断能力维度；普通 release 又未启用 Tauri DevTools。新增正交 `--devtools` 构建选项和 `support-devtools = ["tauri/devtools"]` Cargo feature，不新建诊断渠道，也不使用会改变优化行为的 debug profile。
+- [x] 构建接口：`npm run build -- --devtools`、`npm run build:wb -- --devtools` 和 `npm run build:channel -- <channel> --devtools` 统一经现有 `build-channel.mjs` 追加 `--features support-devtools`；既有 `critical` 位置参数继续兼容，同时支持 `--critical`，未知参数直接失败，避免拼写错误静默产出普通包。
+- [x] 发布边界：诊断 overlay 显式设置 `bundle.createUpdaterArtifacts=false`，且 post-build 不复制签名更新包、不生成或覆盖渠道 `latest.json`。普通本地渠道构建与 GitHub 正式发布参数不变，默认不启用 DevTools；诊断包只用于定向支持，不进入正式 updater 链路。
+- [x] 回归与评审：Node 接口测试固定普通构建参数不变、DevTools feature 透传、critical 兼容、未知参数拒绝，以及诊断 overlay 在保留渠道 bundle targets 时关闭 updater artifacts；`npm run test:channel-config` 5 项与 `cargo check -p gold-band-desktop --features support-devtools --locked -j 1` 均通过，仅保留项目既有 dead-code warnings。普通构建没有新增运行时代码、I/O 或内存开销；诊断构建仅复用 Tauri 官方能力，不新增依赖、状态机、持久字段、缓存、队列或并发机制，复杂度与实际支持需求匹配。
+
+## 2026-08-26：继续并发送 prompt 显式续接此前任务
+
+- [x] 根因与方案：既有 `resume_with_message` 已正确区分可见用户输入、Runtime hidden 控制段和三种 `OutputEmissionMode`，但控制文案只要求执行本消息，没有显式要求随后继续此前未完成任务，属于正确设计下 prompt 实现不完整。直接完善现有中英文条件模板，不修改 Runtime 状态、checkpoint 或消息投影。
+- [x] 提示契约：三个分支统一要求“先完整执行本消息中的用户指令，然后继续完成你之前的任务”；PostTurn 在任务完成后再由后续独立 turn 归一化，InlineControl 在任务完成后再按当前契约输出 artifact，无 contract 时不提 artifact。
+- [x] 回归验收：模板分支单元测试 1 项、固定工作流继续接口 1 项、AI-DYNAMIC merge/child 继续接口 2 项通过；`cargo fmt --all -- --check` 通过。测试固定中英文续接语义、artifact 动作顺序，以及 visible 用户消息与 hidden Runtime 控制段的投影边界，仅保留项目既有 3 条 dead-code warning。
+- 性能与过度设计评审：只修改现有常量模板并增加常量级字符串断言，不新增数据结构、状态、依赖、持久化、缓存、队列、锁、I/O、扫描或渲染订阅；渲染复杂度和 prompt 分支数不变，无需 benchmark。
+
+## 2026-08-26：会话信息角标按宽度渐进收起
+
+- [x] 根因与方案：会话详情 composer 的附着信息 tab 已正确集中展示运行状态、累计时间、上下文占用、工作树和分支，但外层强制单行、子项允许收缩，又没有信息优先级或溢出出口；会话栏变窄时所有文本同时被截成半截。该问题属于正确信息模型下响应式投影实现不完整，不修改 Runtime、Git、workspace 或 usage canonical state。
+- [x] 实现：`AcpUsagePanel` 观察 content rail 的真实宽度，以 `560 / 440 / 340px` 三个集中常量投影四个离散档位；按“分支 → 工作树 → 上下文窗口”从右向左将完整原控件移入 shadcn `Popover`，运行状态和会话累计始终行内。ResizeObserver 每动画帧最多处理一次，同一档位不提交 React state；每项只挂载一次，避免复制分支选择器、snapshot 请求与焦点状态。分支选择器保留原 Popover，允许在外层“更多”内继续打开；外层 Popover 默认左对齐三点按钮，移入的分支触发器占满其内容宽度并保持左对齐，行内紧凑样式不变。
+- [x] 打开焦点修复：外层 Popover 原本会自动聚焦内容中的第一项，工作树 Tooltip 因其可键盘聚焦而立即弹出。现仅阻止外层的自动首项聚焦，让焦点保留在“更多”按钮；用户主动 Tab 后 Tooltip 仍可访问，嵌套分支 Popover 仍保持正常层级。该缺陷属于正确可访问性设计下组合浮层的初始焦点契约不完整，不通过禁用 Tooltip focus 或延迟补丁规避。
+- [ ] 回归与验收：纯函数测试固定三个边界，DOM 测试固定正常、分支收起、工作树收起、上下文收起、打开时不自动显示工作树 Tooltip、嵌套分支 Popover 和重新拉宽后的唯一挂载；完成 Web TypeScript、生产构建及内置浏览器 normal/narrow/re-expand、长分支、浅色/深色验证后勾选。
+- 性能与过度设计评审：宽度变化只在本地信息栏发布四值枚举，普通 Timeline、Markdown、Composer 草稿和右侧工作区不订阅；不增加 IPC、Git I/O、轮询、缓存、持久字段、Context、领域状态机或依赖。现有信息项和 shadcn/Radix 浮层已足够表达需求，无需内容测量算法、重复 DOM 或新的 responsive framework；焦点修复只是 Popover 标准事件的一次同步 `preventDefault`，不增加渲染或事件监听。
+
+## 2026-08-26：统一 Git 2.36.0 最低版本门槛
+
+- [x] 根因与方案：系统 Git CLI 作为唯一 Git 后端的设计正确，旧版本异常来自应用无统一协议基线，导致高版本命令在不同 Git 入口中以“无分支”或普通读取失败暴露，属于 capability 实现不完整。统一把所有 Git 功能门槛设为 `2.36.0+`，低版本只禁用 Git 相关能力，不阻断 Gold Band 其他页面；不建立按功能版本矩阵或旧协议 fallback。
+- [x] 后端契约：集中解析 `git --version`，使用 `semver` 比较稳定核心版本并兼容 Windows/Apple 发行后缀，RC 低于正式版；capability 新增 `version-unsupported / version-unavailable` 与 `installedVersion / minimumVersion`，runtime 和 source-control 分别返回稳定结构化错误。通过门槛后继续使用原生 `--path-format=absolute` 与 `worktree list --porcelain -z`；Merge/Rebase marker 的相对路径漏判入口改为原生 absolute 输出。版本不持久化、不新增缓存。
+- [x] 前端契约：源码管理、分支选择器和 Git 前置对话框都显示明确版本状态、已安装/最低版本、Git 下载与重新检测；分支选择器清除会话期陈旧 snapshot，不显示“无分支”，打开错误态不自动探测覆盖，只有用户显式重试才刷新。中英文对客文案全部由前端 i18n 映射。
+- [x] 回归与验收：Rust Git 领域测试 11 项通过，固定最低版本、Windows/Apple 后缀、RC、异常输出和结构化错误参数；前端 capability store、分支选择器、源码管理状态与 Git 前置对话框 4 个文件共 55 项通过；TypeScript 与 Web 生产构建通过。内置浏览器 deep link 使用 `2.35.9.windows.1` 验证普通窗口分支触发器/下拉、源码管理专用能力态、新工作树前置对话框和 `620×780` 窄窗口 Sheet，已安装/最低版本、下载/重新检测动作、按钮层级和换行均正确，控制台无 warning/error；页面、视口和 1420 端口测试进程已清理。
+- 性能与过度设计评审：复用现有 capability gate、Git runner、shadcn 组件和有界分支 snapshot Store，仅增加一次固定大小的版本字符串解析与 Git 服务入口的常量级探测；不可用状态在 snapshot/history 前短路，避免重型请求。未引入协议解析器、版本矩阵、状态机、持久字段、全局缓存、轮询、队列或新 UI 基础组件；初始化路径的低频重复探测不在交互热路径，无需专项 benchmark。
+
+## 2026-08-26：手动 Intel macOS DevTools DMG 工作流
+
+- [x] 目标与方案：Windows 开发环境无法原生构建 macOS DMG，因此新增独立 `workflow_dispatch` 工作流 `Build Intel macOS DevTools DMG`，固定使用 GitHub 托管的 `macos-15-intel` runner，并复用既有 `npm run build -- --devtools` 生产 profile 诊断构建接口；不复制渠道配置或另建诊断发布链路。
+- [x] 产物与发布边界：工作流只上传保留 7 天的 `gold-band-devtools-macos-intel-<run>-<sha>` DMG Artifact，不调用 release action，不创建 tag、GitHub Release、`latest.json` 或 updater 资产。Apple 凭证完整时复用既有签名/公证配置，全部缺失时使用既有 ad-hoc identity，部分缺失时沿用配置脚本的 fail-fast 契约。
+- [x] 验证：契约测试固定仅手动触发、Intel runner、Node/Rust 安装、DevTools 构建命令、DMG Artifact 路径和禁止发布行为；工作流在上传前要求恰好一个 `.app` 与一个 DMG，并执行严格 codesign 校验和 `x86_64` 架构检查。`npm run test:macos-devtools-workflow` 1 项通过；实际 DMG 构建由首次 GitHub macOS runner 执行确认，Win11 本地不作为 macOS 打包有效验收环境。
+- 性能与过度设计评审：该能力只在人工触发的隔离 CI job 中消耗一次 macOS runner、依赖缓存和单次 release 构建资源，不改变应用运行时代码、I/O、内存、队列、锁或发布请求；复用现有渠道构建、Tauri DevTools feature、签名配置脚本和 GitHub Artifact action，不新增应用状态、持久字段、缓存层、并发机制或自研打包器，复杂度与低频诊断需求匹配。

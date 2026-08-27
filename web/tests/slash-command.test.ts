@@ -4,6 +4,7 @@ import {
   getScrollTopForActiveSlashCommand,
   clearSlashCommandDismissal,
   matchSlashCommandQuery,
+  mergeSlashCommandSources,
   parseCommittedSlashCommand,
   rememberSlashCommandDismissal,
   restoreSlashCommandInputFocus,
@@ -34,6 +35,42 @@ describe('slash command input contract', () => {
     ];
     expect(filterSlashCommands(commands, 'DES')).toEqual([commands[0]]);
     expect(slashCommandText('/ckm:design')).toBe('/ckm:design ');
+  });
+
+  it('merges current session commands with a worktree skill scan', () => {
+    const sessionCommands = [
+      { name: 'review', description: 'Current ACP command', inputHint: 'target' },
+      { name: 'status', description: 'Current session status' },
+    ];
+    const worktreeSkills = [
+      { name: 'REVIEW', description: 'Scanned Skill metadata' },
+      { name: 'project-skill', description: 'Visible in the worktree' },
+    ];
+
+    expect(mergeSlashCommandSources(sessionCommands, worktreeSkills)).toEqual([
+      sessionCommands[0],
+      sessionCommands[1],
+      worktreeSkills[1],
+    ]);
+  });
+
+  it('keeps scanned Skills available before a worktree command cache exists', () => {
+    const worktreeSkills = [
+      { name: 'project-skill', description: 'Visible in the worktree' },
+    ];
+
+    expect(mergeSlashCommandSources(null, worktreeSkills)).toEqual(worktreeSkills);
+  });
+
+  it('ignores malformed commands from the raw ACP session payload', () => {
+    expect(mergeSlashCommandSources([
+      null,
+      { description: 'missing name' },
+      { name: 42, description: 'invalid name' },
+      { name: '/review', description: 42, inputHint: false },
+    ], [])).toEqual([
+      { name: 'review', description: '' },
+    ]);
   });
 
   it('restores composer focus after command selection has committed', () => {

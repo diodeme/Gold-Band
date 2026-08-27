@@ -53,6 +53,12 @@ export const desktopApi: RuntimeApi = {
   getSourceControlSnapshot(projectId, workspacePath) {
     return invokeCommand('get_source_control_snapshot', { projectId, workspacePath });
   },
+  getGitBranchPickerSnapshot(projectId, workspacePath) {
+    return invokeCommand('get_git_branch_picker_snapshot', { projectId, workspacePath });
+  },
+  changeGitBranch(projectId, workspacePath, input) {
+    return invokeCommand('change_git_branch', { projectId, workspacePath, input });
+  },
   getGitHistory(projectId, workspacePath, query) {
     return invokeCommand('get_git_history', { projectId, workspacePath, query });
   },
@@ -498,6 +504,9 @@ export const desktopApi: RuntimeApi = {
   },
   recordActivity() {
     return invokeCommand('record_activity');
+  },
+  reportFrontendError(input) {
+    return invokeCommand('report_frontend_error', { input });
   },
   getUpdateStatus() {
     return invokeCommand('get_update_status');

@@ -80,6 +80,8 @@ import type {
   FeedbackResult,
   FeedbackArchivePreview,
   GitCapabilityVm,
+  GitBranchChangeRequestVm,
+  GitBranchPickerSnapshotVm,
   GitCommitDetailVm,
   GitCommitReachabilityQueryVm,
   GitCommitReachabilityVm,
@@ -221,10 +223,29 @@ export interface MaterializeAttachmentFileInput {
   dataBase64: string;
 }
 
+export type FrontendErrorKind = 'window-error' | 'unhandled-rejection' | 'react-uncaught';
+
+export interface FrontendErrorReportInput {
+  kind: FrontendErrorKind;
+  message: string;
+  stack?: string | null;
+  componentStack?: string | null;
+  source?: string | null;
+  line?: number | null;
+  column?: number | null;
+  activeElement?: string | null;
+  lastPointerTarget?: string | null;
+  lastPointerAt?: string | null;
+  pathname?: string | null;
+  userAgent?: string | null;
+}
+
 export interface RuntimeApi {
   getGitCapability(projectId?: string | null): Promise<GitCapabilityVm>;
   initializeGitRepository(projectId?: string | null): Promise<GitCapabilityVm>;
   getSourceControlSnapshot(projectId: string, workspacePath?: string | null): Promise<GitSourceControlSnapshotVm>;
+  getGitBranchPickerSnapshot(projectId: string, workspacePath?: string | null): Promise<GitBranchPickerSnapshotVm>;
+  changeGitBranch(projectId: string, workspacePath: string | null | undefined, input: GitBranchChangeRequestVm): Promise<GitBranchPickerSnapshotVm>;
   getGitHistory(projectId: string, workspacePath: string | null | undefined, query: GitHistoryQueryVm): Promise<GitHistoryPageVm>;
   getGitCommitDetail(projectId: string, workspacePath: string | null | undefined, oid: string): Promise<GitCommitDetailVm>;
   getGitCommitReview(projectId: string, workspacePath: string | null | undefined, query: GitCommitReviewQueryVm): Promise<GitCommitReviewVm>;
@@ -360,6 +381,7 @@ export interface RuntimeApi {
   removeMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   setActiveMulticaWorkspace(workspaceId: string): Promise<MulticaSettingsVm>;
   recordActivity(): Promise<void>;
+  reportFrontendError(input: FrontendErrorReportInput): Promise<void>;
   getUpdateStatus(): Promise<UpdateStatusVm>;
   markSettingsUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;
   markSettingsAdvancedUpdateSeen(version: string): Promise<UpdateBadgeStateVm>;

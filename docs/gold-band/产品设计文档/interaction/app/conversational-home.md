@@ -59,6 +59,9 @@
    - 工作空间和工作位置菜单关闭后的焦点归还都按输入方式处理：鼠标或触控选择、再次点击触发器或点击外部关闭后，不把焦点重新放回触发器，也不保留误导性的选中描边；键盘选择或关闭后仍由 Radix 将焦点归还触发器并显示 `focus-visible`，保证后续键盘导航连续。禁止通过删除共享 focus ring 或强制 blur 所有输入方式掩盖该差异。
    - 普通快速对话当前选择的工作空间属于应用运行期的 draft 上下文：用户切换后，无论进入设置还是查看其他工作空间的会话详情，再点击全局“快速对话”都必须恢复该 draft。只有 draft 尚不存在时，才先使用当前会话所属工作空间，非会话页再回退最近会话工作空间。只有在某个工作空间下显式点击“新会话”，才将 draft 切换为该工作空间。draft 选择不得写入或重排 `lastConversationWorkspace`，左侧工作空间置顶仍只由最近实际创建、重跑或进入的会话驱动。
    - 同一区域提供工作位置选择器，仅包含“主工作区”和“新工作树 / New worktree”。“新工作树”使用 Git fork 图标，悬浮或键盘聚焦提示“创建副本，以便并行工作 / Create a copy for parallel work”。工作位置触发器与工作空间触发器统一使用 28px 高度、相同圆角、水平内边距、图标和箭头规格，宽度仅随各自内容自然收缩；不得让 shadcn `SelectTrigger` 的默认 size variant 把工作空间控件撑高。工作位置偏好按 `projectId` 记忆，切换工作空间后恢复该工作空间最后一次选择，不使用跨工作空间的单一全局值。
+   - 快速对话顶部上下文栏必须按自身容器宽度渐进收缩，不依赖窗口 viewport：宽档展示工作空间、工作位置和分支的图标与当前值；中档只保留工作空间当前值，工作位置与分支收为 28px 图标触发器；窄档三个控件都收为 28px 图标触发器。三个选择器保持各自一步直达，不合并进“更多”，也不得因档位变化重复挂载控件、清空焦点/菜单状态或重复读取分支 snapshot。图标态通过项目 Tooltip 在悬浮或键盘聚焦时展示“领域：当前值”，同时提供包含当前值的 `aria-label`；打开对应 Select、DropdownMenu 或 Popover 时必须在同一次 open 状态提交中关闭 Tooltip，不能在 Popover 的 click 打开之前先于 pointerdown 单独关闭而制造按压态回闪；菜单出现后触发器持续使用 Popover 自身受控 open 投影的强调态，不能依赖 TooltipTrigger 与 PopoverTrigger 竞争写入的共享 `data-state`。分支 Popover 关闭后的焦点归还必须区分输入方式：鼠标或触控选择分支、再次点击触发器或点击外部关闭时，不把焦点还给紧凑图标，并收起其 Tooltip；键盘选择或关闭后继续由 Radix 归还触发器焦点，保留键盘导航连续性。容器重新变宽后按同一 CSS 投影恢复标签。
+   - 普通快速对话的信息栏最右侧提供当前工作目录的分支选择器，复用 shadcn `Popover + Command` 与源码管理 Git 能力，读取轻量 branch snapshot，不加载 status numstat、历史或 Diff。选择已有本地分支以及“创建并检出新分支”都是真实 Git checkout；主工作区与用户选中的普通工作树遵循相同规则，Git 拒绝即返回结构化错误，不伪造选择态。Popover 默认与分支触发按钮左边缘对齐；搜索框固定在顶部，分支列表独立滚动，“创建并检出新分支”作为左对齐 action 固定在底部，不进入滚动列表。列表支持搜索；分支名在触发器中单行截断，只有真实溢出时才在鼠标悬浮或键盘聚焦后通过项目 Tooltip 查看全称。切换期间禁用发送，成功后只使用后端返回的当前分支更新本次 draft 的分支选择；snapshot 中的 `HEAD` 与 revision 只服务选择器展示、缓存校准和后续 Git mutation CAS，不进入会话创建意图。已读取 snapshot 按 `projectId + workspacePath` 进入 App 会话期最多 24 项的有界 Store；切换 workspace、进入会话再返回时先同步恢复已有 snapshot，不显示 loading spinner，同时后台读取轻量 snapshot 校准。缓存不持久化、不替代后端 revision，LRU 淘汰后按首次加载处理。
+   - 分支 snapshot 加载 effect 只允许由 `projectId + workspacePath + readOnlyBranch` 等语义作用域变化触发；父级通知 callback 的引用变化不得重新读取 snapshot 或产生 Git IPC。通知始终调用最新 callback，同一 `projectId + branch` 写回 draft 必须幂等。
    - 非 Git 工作空间仍展示“新工作树”；用户选择时先复用 AI-DYNAMIC 的 Git capability preflight，并通过既有 `GitRequirementDialog` 展示结构化错误与恢复动作。校验失败不得保存 worktree 偏好、创建 task/run 或静默回退主工作区。
    - 定时任务创建模式在与普通快速对话一致的顶部信息栏展示工作空间选择器；定时任务固定使用主工作区，不展示或继承快速对话的工作位置选择，也不向定时任务定义提交 `workLocation`。
    - composer 底栏必须按自身可用宽度而不是整窗 viewport 响应。普通快速对话底栏只承载附件、配置与发送，并与会话详情 command bar 共用紧凑尺寸基线：附件入口为 28px，模型、权限和发送为 32px；正文与底栏之间只使用留白，不绘制额外顶部分割线。WORKFLOW / AUTO 没有内联模型与权限控件时，附件与发送 split-button 在紧凑的 `xs` composer 容器档位即直接同排。Direct 保留配置型布局：最窄容器下附件独立占据操作起点，模型、权限按可用宽度换行；中等宽度中模型与权限等宽并列、发送位于下一行末列；达到桌面宽度后再恢复完整单行。模型与权限等配置选择器必须允许布局层覆盖为 `w-full / max-w-none`，禁止组件内部最小宽度决定偶然换行结果。
@@ -89,9 +92,10 @@
 ### 工作树创建与运行目录
 
 - `RunState.worktree { path, branch, fork_commit }` 是会话运行工作位置的 canonical fact；缺少该字段表示主工作区。会话 metadata 中的 `work_location` 只保存创建与重跑意图，详情页和执行路径不得从偏好反推当前 run 的事实。
-- 选择 worktree 后，run 先进入既有 `PreparingWorkspace` 阶段，在 Gold Band 用户数据目录的受管 `worktrees/` 下创建独立目录，并以源仓库当前 `HEAD` 创建专用分支。路径和分支使用 run identity 的确定性短哈希生成，不把 worktree 写入源仓库，也不使用名称反查身份。
+- 选择 worktree 后，用户选中的分支先在发起 composer 所绑定的真实工作目录完成 checkout；选择阶段只保留分支名这一用户意图，不提前保存 `HEAD`、revision 或 `forkCommit`。点击发送后，创建命令必须在同一 repository/workspace Git 写锁内校验当前检出的仍是用户所选分支，并读取该时刻的最新 `HEAD`，随后立即把它固化为本次 Run 的 `forkCommit`。因此发送前在同一分支发生任意次数 commit 都合法；若工作目录已切换到其他分支则以结构化 `git.ref-changed` 失败，不能从隐藏的新分支派发。run 随后进入既有 `PreparingWorkspace` 阶段，在当前产品通道用户数据目录的受管 `worktrees/` 下从固定 `forkCommit` 创建 Run 专属分支和独立目录；锁释放后的新 commit 不得改变已创建 Run 的 fork 点。路径和分支使用 `projectId + taskUuid + runUuid` canonical identity 的稳定 BLAKE3 短哈希生成；不得使用会在数据目录重建、产品通道切换或历史迁移后重复的 `task-006/run-001` 顺序编号。不同产品通道可以操作同一 Git repository，但独立创建的 run 必须获得不同分支；同一 run 重试必须稳定复用原 identity。不把 worktree 写入源仓库，也不使用名称反查身份。
+- `PreparingWorkspace` 是 Runtime 的 canonical 工作区阶段，可同时覆盖初始环境准备和 AI-DYNAMIC leaf 成功后的 checkpoint、fork、release 等后置转换。Composer 根据已有 graph/leaf lifecycle 事实区分展示语义：初始阶段继续显示“正在准备开发环境…”，只有 graph 正在执行 workspace transition 且拥有的 leaf 已 `completed/success` 时显示“正在处理工作区…”。该区别只属于 ViewModel 展示投影，不新增持久状态，也不改变 Direct 和普通 Workflow 的阶段映射。
 - Agent 的 `workspace_dir` 使用该 run worktree；adapter 的 `adapter_workspace_dir` 继续指向原项目工作空间，以保持配置和能力发现边界。AI-DYNAMIC 的 main workspace 使用外层 run 的实际工作目录，因此可以在会话 worktree 内继续按现有 fanout 机制创建子 worktree。
-- 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
+- 创建工作树沿用 AI-DYNAMIC 已有的 Git helper、结构化错误、创建清理和停止 UI。创建边界失败必须返回 `workspace.worktree-create-failed` 等稳定 `RuntimeErrorInfo`，后台启动统一持久化与当前 pause timestamp 对齐的 `run_paused.controlFailure.runtimeError`；会话页按错误码显示本地化恢复文案，原始 Git diagnostic 只用于日志与诊断，不得只落入旁路文本文件或通用系统通知。Git 命令本身不强制中断；若用户在创建期间停止，外层 run 先持久化 Paused，创建完成后重新读取 durable run，禁止启动 Agent，并保留已创建工作树供检查。重跑 worktree 会话时从当时新的 `HEAD` 创建新的 run worktree，不复用旧 run 目录。
 
 ### 附件上传
 
@@ -160,6 +164,7 @@
 3. 功能入口：Agent 管理、上下文管理、运行模式管理、定时任务
 4. 置顶区：用户置顶的会话，支持折叠/展开；与工作空间列表共用会话滚动区，整体使用对称上下分隔线包裹。展开后“置顶”标题 sticky 吸附在滚动区顶部，吸附范围受置顶容器约束，首个 workspace 标题到达时自然接替
 5. 工作空间区：多 workspace 并列，每个下含 task 列表；与置顶区连续滚动，标题 sticky 吸附；hover 显示 +（新建对话）和删除按钮
+   - 普通工作空间分组标题与置顶区中的工作空间标题都必须在鼠标悬浮或键盘聚焦时通过项目 Tooltip 展示 canonical absolute path；名称继续作为视觉标题，禁止使用原生 `title`，也不得用展示名反查路径。
 
 顶部快捷入口与功能入口组成固定导航区，设置入口固定在侧栏底部；两者不随会话列表滚动。固定导航区采用紧凑但可呼吸的间距，优先把垂直空间留给置顶和工作空间会话列表，同时避免入口按钮被压得过紧。
 - 快捷入口、功能入口、“置顶”、“添加工作空间”和设置入口使用 UI 基准字号；快捷与功能入口使用统一的紧凑按钮高度。workspace 标题使用同档字号与半粗体建立分组层级，会话项通过字重和元信息颜色继续表达层级
@@ -220,7 +225,7 @@
 - 会话主页与消息流分别消费 Theme Contract v2 的 `panel`、`composer`、`message-user`、`message-assistant`、`message-disclosure`、`runtime-control`、`activity`、`tool-card` 和 `permission-card` role；Markdown 标题密度与 ACP 卡片结构仍由产品交互规则约束，主题不能改变 DOM、信息层级或业务状态。
 - 用户消息中的系统提示/运行上下文折叠块统一使用 `message-disclosure`，AI 输出判定与控制产物统一使用 `runtime-control`。两者的背景、前景、完整边框、圆角、材质和 elevation 由主题 recipe 声明；展开状态、内容分隔、joined artifact 操作、focus ring 与 invalid/destructive 变体仍由共享组件负责，组件不得读取 `themeId` 或写死正常态主题色。
 - 思考、工具审计批次和上下文压缩等非正文结构行消费 `activity`；两个内置主题的折叠 Activity 摘要统一呈现为无背景、无边框、无圆角的一行文本，静态态使用 `muted-foreground` 弱化文字，hover、键盘 focus 或展开态只切换为普通 `foreground`，不得使用主题强调色或重新增加整行背景。权限申请与 Elicitation 等等待用户介入的表面消费 `permission-card`，外层统一使用透明底、hairline 边界和零 elevation，状态强调限制在选项、按钮、错误或选中局部，不允许铺满整张决策卡；权限卡中的 Allow 系列选项静态文字使用 `accent-foreground`，hover/focus 复用 Elicitation 选项的 `accent/60` 背景与强调边界，Reject 保持中性；每轮文件变更摘要复用 shadcn `Card` 的 `card` role。会话树弹层与选择器分别复用 `popover`、`input`，不得在业务组件重新声明完整背景、perimeter、圆角或 elevation。
-- AI 正文后的复制操作属于消息级次要动作，使用 prompt-kit `MessageActions` 与 shadcn `Button` 的紧凑图标尺寸；不得以空白操作行拉大正文与下一条 Activity 之间的垂直间距，同时保留 Tooltip、键盘焦点和复制完成反馈。
+- AI 正文后的复制操作属于消息级次要动作，使用 prompt-kit `MessageActions` 与 shadcn `Button` 的紧凑图标尺寸；不得以空白操作行拉大正文与下一条 Activity 之间的垂直间距，同时保留 Tooltip、键盘焦点和复制完成反馈。复制按钮右侧显示该消息的详细时间，并跟随同一 `hover / focus-within` 状态出现：基础格式为 `HH:MM  相对时间`，超过一周追加 `MM/DD`，不同年份追加 `MM/DD/YYYY`。时间来自消息已有 timestamp 和共享时间解析函数，不新增后端字段、消息级定时器或缓存；头像下方时间继续保持既有 `HH:MM`。
 - 会话内容区标记稳定 `conversation` wallpaper surface。运行时只预加载当前可见槽，资源失败或 performance 档关闭壁纸时回退语义背景色；overlay 位于内容下方，不在每条消息重复创建合成层。
 - `ThemeAssetsContext` 只提供低频图标 descriptor，不保存二进制资源，也不承载流式消息状态；主题或明暗切换不得导致已完成 Markdown 重新解析。
 

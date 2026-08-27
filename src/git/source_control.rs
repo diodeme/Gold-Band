@@ -859,6 +859,53 @@ pub struct GitSourceControlSnapshot {
     pub stashes: Vec<GitStashEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchForkPoint {
+    pub branch: String,
+    pub head_oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchPickerItem {
+    pub name: String,
+    pub target_oid: String,
+    pub checked_out_worktree_paths: Vec<Utf8PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchPickerSnapshot {
+    pub workspace_path: Utf8PathBuf,
+    pub current_branch: Option<String>,
+    pub head_oid: Option<String>,
+    pub revision: String,
+    pub dirty_file_count: usize,
+    pub operation_in_progress: Option<GitInProgressOperation>,
+    pub lock: GitLockSnapshot,
+    pub branches: Vec<GitBranchPickerItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum GitBranchChange {
+    Switch { name: String },
+    CreateAndSwitch { name: String, start_point: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranchChangeRequest {
+    pub expected_revision: String,
+    #[serde(flatten)]
+    pub change: GitBranchChange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GitTagStyle {
@@ -1161,6 +1208,7 @@ impl GitSourceControlService {
         project_root: &Utf8Path,
         requested_workspace: Option<&Utf8Path>,
     ) -> Result<GitRepositoryIdentity> {
+        super::require_supported_git_version_for_service()?;
         let project = self.repository_identity(project_root)?;
         let workspace = self.repository_identity(requested_workspace.unwrap_or(project_root))?;
         let project_common_dir = canonical_utf8_path(&project.common_dir)?;
@@ -1194,10 +1242,12 @@ impl GitSourceControlService {
                 "git.repository-not-found",
             )?
             .stdout_text();
-        let workspace_path = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let repo_root = canonical_utf8_path(Utf8Path::new(&repo_root))?;
+        let common_dir = canonical_utf8_path(Utf8Path::new(&common_dir))?;
+        let workspace_path = repo_root.clone();
         Ok(GitRepositoryIdentity {
-            repo_root: Utf8PathBuf::from(repo_root),
-            common_dir: Utf8PathBuf::from(common_dir),
+            repo_root,
+            common_dir,
             workspace_path,
         })
     }
@@ -1294,6 +1344,148 @@ impl GitSourceControlService {
             refs,
             worktrees,
             stashes,
+        })
+    }
+
+    pub fn branch_picker_snapshot(&self, cwd: &Utf8Path) -> Result<GitBranchPickerSnapshot> {
+        let identity = self.repository_identity(cwd)?;
+        self.branch_picker_snapshot_for_identity(cwd, &identity)
+    }
+
+    pub fn change_branch(
+        &self,
+        cwd: &Utf8Path,
+        request: &GitBranchChangeRequest,
+    ) -> Result<GitBranchPickerSnapshot> {
+        let identity = self.repository_identity(cwd)?;
+        let operation = match &request.change {
+            GitBranchChange::Switch { .. } => "branch-switch",
+            GitBranchChange::CreateAndSwitch { .. } => "branch-create",
+        };
+        GitCoordinationService.try_with_user_write(
+            &identity.common_dir,
+            Some(&identity.workspace_path),
+            operation,
+            || {
+                let current = self.branch_picker_snapshot_for_identity(cwd, &identity)?;
+                ensure_expected_branch_revision(&request.expected_revision, &current)?;
+                ensure_branch_change_allowed(&current)?;
+                match &request.change {
+                    GitBranchChange::Switch { name } => self.branch_switch(cwd, name)?,
+                    GitBranchChange::CreateAndSwitch { name, start_point } => {
+                        self.branch_create(cwd, name, Some(start_point), true)?;
+                    }
+                }
+                let mut updated = self.branch_picker_snapshot_for_identity(cwd, &identity)?;
+                // The snapshot is produced while this operation owns both locks. They are
+                // released before the value reaches the caller, so do not expose our own
+                // transient lock as if the workspace remained unavailable.
+                updated.lock = GitLockSnapshot::unlocked();
+                Ok(updated)
+            },
+        )
+    }
+
+    pub fn resolve_branch_fork_point(
+        &self,
+        cwd: &Utf8Path,
+        selected_branch: Option<&str>,
+    ) -> Result<GitBranchForkPoint> {
+        let identity = self.repository_identity(cwd)?;
+        GitCoordinationService.try_with_user_write(
+            &identity.common_dir,
+            Some(&identity.workspace_path),
+            "conversation-fork-point",
+            || {
+                let operation = self.in_progress_operation(cwd)?;
+                ensure_no_branch_operation(operation.as_ref())?;
+                let branch_output = self
+                    .runner
+                    .run(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+                if !branch_output.success {
+                    return Err(
+                        GitServiceError::new("git.branch-required", serde_json::json!({})).into(),
+                    );
+                }
+                let branch = branch_output.stdout_text();
+                if let Some(selected_branch) = selected_branch {
+                    if branch != selected_branch {
+                        return Err(GitServiceError::new(
+                            "git.ref-changed",
+                            serde_json::json!({
+                                "expectedBranch": selected_branch,
+                                "actualBranch": branch,
+                            }),
+                        )
+                        .into());
+                    }
+                }
+                let head_output = self.runner.run(cwd, &["rev-parse", "HEAD"])?;
+                if !head_output.success {
+                    return Err(
+                        GitServiceError::new("git.head-required", serde_json::json!({})).into(),
+                    );
+                }
+                let head_oid = head_output.stdout_text();
+                Ok(GitBranchForkPoint { branch, head_oid })
+            },
+        )
+    }
+
+    fn branch_picker_snapshot_for_identity(
+        &self,
+        cwd: &Utf8Path,
+        identity: &GitRepositoryIdentity,
+    ) -> Result<GitBranchPickerSnapshot> {
+        let status = self.status_without_stats(cwd)?;
+        let refs = self.refs(cwd)?;
+        let worktrees = self.worktrees(cwd)?;
+        let revision = workspace_snapshot_revision(&status, &refs);
+        let mut dirty_paths = HashSet::new();
+        for change in status
+            .conflicts
+            .iter()
+            .chain(status.staged.iter())
+            .chain(status.unstaged.iter())
+            .chain(status.untracked.iter())
+        {
+            dirty_paths.insert(change.path.as_str());
+        }
+        let worktree_paths = worktrees
+            .iter()
+            .filter_map(|worktree| {
+                worktree
+                    .branch
+                    .as_ref()
+                    .map(|branch| (branch.as_str(), worktree.path.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        let branches = refs
+            .iter()
+            .filter(|git_ref| git_ref.kind == GitRefKind::LocalBranch)
+            .map(|git_ref| GitBranchPickerItem {
+                name: git_ref.short_name.clone(),
+                target_oid: git_ref.target_oid.clone(),
+                checked_out_worktree_paths: worktree_paths
+                    .get(git_ref.full_name.as_str())
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+            })
+            .collect();
+        Ok(GitBranchPickerSnapshot {
+            workspace_path: identity.workspace_path.clone(),
+            current_branch: status
+                .branch
+                .head
+                .clone()
+                .filter(|head| head != "(detached)"),
+            head_oid: status.branch.oid.clone(),
+            revision,
+            dirty_file_count: dirty_paths.len(),
+            operation_in_progress: status.operation_in_progress,
+            lock: combined_lock_snapshot(identity),
+            branches,
         })
     }
 
@@ -2150,6 +2342,22 @@ impl GitSourceControlService {
                 },
             );
         }
+        if let GitMutation::BranchSwitch { name } = &request.mutation {
+            return GitCoordinationService.try_with_user_write(
+                &identity.common_dir,
+                Some(&identity.workspace_path),
+                "branch-switch",
+                || {
+                    let current = self.branch_picker_snapshot_for_identity(cwd, &identity)?;
+                    if let Some(expected_revision) = request.expected_revision.as_deref() {
+                        ensure_expected_branch_revision(expected_revision, &current)?;
+                    }
+                    ensure_branch_change_allowed(&current)?;
+                    self.branch_switch(cwd, name)?;
+                    Ok(GitMutationResult::Repository)
+                },
+            );
+        }
         if let Some(expected_revision) = request.expected_revision.as_deref() {
             let status = self.status_without_stats(cwd)?;
             let refs = self.refs(cwd)?;
@@ -2185,10 +2393,9 @@ impl GitSourceControlService {
                 "branch-create",
                 || self.branch_create(cwd, name, start_point.as_deref(), *checkout),
             )?,
-            GitMutation::BranchSwitch { name } => GitCoordinationService
-                .try_with_user_workspace_write(&identity.workspace_path, "branch-switch", || {
-                    self.branch_switch(cwd, name)
-                })?,
+            GitMutation::BranchSwitch { .. } => {
+                unreachable!("branch switch returns before other repository mutations")
+            }
             GitMutation::BranchRename { old_name, new_name } => GitCoordinationService
                 .try_with_user_write(
                     &identity.common_dir,
@@ -4277,6 +4484,38 @@ fn workspace_snapshot_revision(status: &GitWorkspaceStatus, refs: &[GitRef]) -> 
     hasher.finalize().to_hex().to_string()
 }
 
+fn ensure_expected_branch_revision(
+    expected_revision: &str,
+    snapshot: &GitBranchPickerSnapshot,
+) -> Result<()> {
+    if expected_revision == snapshot.revision {
+        return Ok(());
+    }
+    Err(GitServiceError::new(
+        "git.ref-changed",
+        serde_json::json!({
+            "expectedRevision": expected_revision,
+            "actualRevision": snapshot.revision,
+        }),
+    )
+    .into())
+}
+
+fn ensure_branch_change_allowed(snapshot: &GitBranchPickerSnapshot) -> Result<()> {
+    ensure_no_branch_operation(snapshot.operation_in_progress.as_ref())
+}
+
+fn ensure_no_branch_operation(operation: Option<&GitInProgressOperation>) -> Result<()> {
+    if let Some(operation) = operation {
+        return Err(GitServiceError::new(
+            "git.operation-in-progress",
+            serde_json::json!({ "operation": operation.kind }),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn combined_lock_snapshot(identity: &GitRepositoryIdentity) -> GitLockSnapshot {
     let coordination = GitCoordinationService;
     let workspace = coordination.workspace_lock(&identity.workspace_path);
@@ -4413,6 +4652,121 @@ mod tests {
         assert_eq!(snapshot.status.untracked[0].path, "untracked file.txt");
         assert!(!snapshot.refs.is_empty());
         assert_eq!(snapshot.worktrees.len(), 1);
+    }
+
+    #[test]
+    fn branch_picker_snapshot_is_lightweight_and_counts_unique_dirty_paths() {
+        let (_temp, root) = initialized_repository();
+        let head = commit_file(&root, "tracked.txt", "one\n", "first");
+        std::fs::write(root.join("tracked.txt"), "two\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "new\n").unwrap();
+
+        let snapshot = GitSourceControlService::default()
+            .branch_picker_snapshot(&root)
+            .unwrap();
+
+        assert_eq!(snapshot.head_oid.as_deref(), Some(head.as_str()));
+        assert_eq!(snapshot.dirty_file_count, 2);
+        assert!(snapshot.current_branch.is_some());
+        assert!(
+            snapshot
+                .branches
+                .iter()
+                .any(|branch| branch.name == snapshot.current_branch.as_deref().unwrap())
+        );
+    }
+
+    #[test]
+    fn branch_change_switches_real_checkout_and_rejects_stale_revision() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "first");
+        let runner = GitCommandRunner;
+        assert!(runner.run(&root, &["branch", "topic"]).unwrap().success);
+        let service = GitSourceControlService::default();
+        let initial = service.branch_picker_snapshot(&root).unwrap();
+
+        let switched = service
+            .change_branch(
+                &root,
+                &GitBranchChangeRequest {
+                    expected_revision: initial.revision.clone(),
+                    change: GitBranchChange::Switch {
+                        name: "topic".to_string(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(switched.current_branch.as_deref(), Some("topic"));
+        assert_eq!(
+            runner
+                .run(&root, &["branch", "--show-current"])
+                .unwrap()
+                .stdout,
+            "topic"
+        );
+
+        let created = service
+            .change_branch(
+                &root,
+                &GitBranchChangeRequest {
+                    expected_revision: switched.revision,
+                    change: GitBranchChange::CreateAndSwitch {
+                        name: "new-topic".to_string(),
+                        start_point: "topic".to_string(),
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(created.current_branch.as_deref(), Some("new-topic"));
+
+        let error = service
+            .change_branch(
+                &root,
+                &GitBranchChangeRequest {
+                    expected_revision: initial.revision,
+                    change: GitBranchChange::CreateAndSwitch {
+                        name: "stale".to_string(),
+                        start_point: "topic".to_string(),
+                    },
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.ref-changed"
+        );
+    }
+
+    #[test]
+    fn branch_fork_point_uses_the_latest_head_of_the_selected_branch() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\n", "first");
+        let service = GitSourceControlService::default();
+        let snapshot = service.branch_picker_snapshot(&root).unwrap();
+        let selected_branch = snapshot.current_branch.unwrap();
+        let latest = commit_file(&root, "tracked.txt", "two\n", "second");
+
+        assert_eq!(
+            service
+                .resolve_branch_fork_point(&root, Some(&selected_branch))
+                .unwrap()
+                .head_oid,
+            latest
+        );
+
+        assert!(
+            GitCommandRunner
+                .run(&root, &["checkout", "-b", "other"])
+                .unwrap()
+                .success
+        );
+        let error = service
+            .resolve_branch_fork_point(&root, Some(&selected_branch))
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<GitServiceError>().unwrap().code,
+            "git.ref-changed"
+        );
     }
 
     #[test]

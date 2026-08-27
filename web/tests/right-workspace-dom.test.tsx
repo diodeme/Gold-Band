@@ -28,6 +28,7 @@ import {
   createConversationWorkspaceScope,
   createDraftConversationWorkspaceScope,
   RightWorkspaceProvider,
+  sourceControlWorkspaceResourceKey,
   useRightWorkspace,
   type AgentTranscriptLocator,
 } from '@/components/workspace/right-workspace-context';
@@ -145,6 +146,10 @@ function SeedWorkflowResource({ guarded = false }: { guarded?: boolean }) {
 function WorkspaceProbe() {
   const workspace = useRightWorkspace();
   const runDirectory = workspace.tabs.find((tab) => tab.kind === 'conversation-directory');
+  const sourceControl = workspace.tabs.find((tab) => tab.kind === 'source-control');
+  const sourceControlPaths = workspace.tabs.flatMap((tab) => (
+    tab.kind === 'source-control' ? [tab.workspacePath ?? ''] : []
+  ));
   return (
     <output
       data-workspace-tab-count={workspace.tabs.length}
@@ -153,6 +158,8 @@ function WorkspaceProbe() {
       data-workspace-open={workspace.requestedOpen}
       data-workspace-open-revision={workspace.openRevision}
       data-workspace-run-directory-attempt={runDirectory?.kind === 'conversation-directory' ? runDirectory.locator.attemptId : ''}
+      data-workspace-source-control-path={sourceControl?.kind === 'source-control' ? sourceControl.workspacePath ?? '' : ''}
+      data-workspace-source-control-paths={sourceControlPaths.join(',')}
     >
       {workspace.tabs.map((tab) => tab.kind === 'agent-transcript' ? tab.locator.branchId : tab.key).join(',')}
     </output>
@@ -420,6 +427,67 @@ describe('right workspace DOM lifecycle', () => {
         newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
       });
       expect(document.querySelector('[data-right-workspace-entry-option="conversation-directory"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('keeps one source-control tab while following the current workspace identity', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const scope = createConversationWorkspaceScope({ projectId: 'project-1', taskId: 'task-1', runId: 'run-1' });
+    const firstPath = 'D:/repo/.gold-band/worktrees/worker-a';
+    const secondPath = 'D:/repo/.gold-band/worktrees/worker-b';
+    try {
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope} sourceControlWorkspacePath={firstPath}>
+            <OpenEmptyWorkspace />
+            <RightWorkspaceDock sourceControlWorkspacePath={firstPath} />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      const emptyOption = container.querySelector<HTMLButtonElement>('[data-right-workspace-empty-option="source-control"]');
+      await act(async () => emptyOption?.click());
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceActiveTab: sourceControlWorkspaceResourceKey('project-1'),
+        workspaceSourceControlPath: firstPath,
+      });
+      expect(container.querySelector('[data-right-workspace-tab][data-state="active"]')?.getAttribute('data-right-workspace-resource-key'))
+        .toBe(sourceControlWorkspaceResourceKey('project-1'));
+
+      await act(async () => {
+        root.render(
+          <RightWorkspaceProvider scope={scope} sourceControlWorkspacePath={secondPath}>
+            <OpenEmptyWorkspace />
+            <RightWorkspaceDock sourceControlWorkspacePath={secondPath} />
+            <WorkspaceProbe />
+          </RightWorkspaceProvider>,
+        );
+      });
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceTabCount: '1',
+        workspaceActiveTab: sourceControlWorkspaceResourceKey('project-1'),
+        workspaceSourceControlPath: secondPath,
+      });
+      expect(container.querySelector('[data-right-workspace-dock="true"]')?.getAttribute('data-right-workspace-active-source-control-path'))
+        .toBe(secondPath);
+      const newTabMenu = container.querySelector<HTMLButtonElement>('[data-right-workspace-new-tab-menu="true"]');
+      await act(async () => {
+        newTabMenu?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, buttons: 1 }));
+      });
+      const sourceControlOption = document.querySelector<HTMLElement>('[data-right-workspace-entry-option="source-control"]');
+      await act(async () => sourceControlOption?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      expect(container.querySelector('output')?.dataset).toMatchObject({
+        workspaceTabCount: '1',
+        workspaceActiveTab: sourceControlWorkspaceResourceKey('project-1'),
+        workspaceSourceControlPath: secondPath,
+        workspaceSourceControlPaths: secondPath,
+      });
+      expect(container.querySelector('[data-right-workspace-tab][data-state="active"]')?.getAttribute('data-right-workspace-resource-key'))
+        .toBe(sourceControlWorkspaceResourceKey('project-1'));
     } finally {
       await act(async () => root.unmount());
     }

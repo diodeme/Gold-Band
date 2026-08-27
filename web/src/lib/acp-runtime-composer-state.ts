@@ -25,6 +25,7 @@ export type AcpComposerProcessingKind =
   | 'responding'
   | 'stopping'
   | 'preparing-workspace'
+  | 'processing-workspace'
   | 'launching-next-node';
 
 export type AcpComposerPlaceholderKind =
@@ -84,8 +85,11 @@ export function deriveAcpRuntimeComposerState(
 ): AcpRuntimeComposerState {
   const backend = input.lifecycle?.composer;
   const backendProcessingKind = normalizeProcessingKind(backend?.processingKind);
-  const backendWorkspacePreparing = backend?.mode === 'runtime-active'
-    && backendProcessingKind === 'preparing-workspace';
+  const backendWorkspaceTransition = backend?.mode === 'runtime-active'
+    && (
+      backendProcessingKind === 'preparing-workspace'
+      || backendProcessingKind === 'processing-workspace'
+    );
   const runtimeActive = Boolean(input.lifecycle?.runtime.active);
   const lifecycleAcpRunning = ['starting', 'accepted', 'running'].includes(
     input.lifecycle?.acp.liveTurnActivity ?? 'idle',
@@ -113,7 +117,7 @@ export function deriveAcpRuntimeComposerState(
   const initialTimelinePending = Boolean(input.initialTimelinePending);
   const staleTerminalSnapshot = acpTerminal;
   const cancelling = !acpTerminal && input.cancelling;
-  const stopCommandPending = (!acpTerminal || backendWorkspacePreparing) && input.stopCommandPending;
+  const stopCommandPending = (!acpTerminal || backendWorkspaceTransition) && input.stopCommandPending;
   const stopInProgress = cancelling || stopCommandPending || backendStopping;
   const waitingForOptimisticPrompt = !staleTerminalSnapshot && input.waitingForOptimisticPrompt;
   const turnSubmitting = (sending || waitingForOptimisticPrompt) && !input.turnAccepted;
@@ -201,7 +205,7 @@ export function deriveAcpRuntimeComposerState(
     canSubmit,
     canStop: !sessionSuperseded && (
       (!acpTerminal && Boolean(backend?.canStop)) ||
-      (backendWorkspacePreparing && Boolean(backend?.canStop)) ||
+      (backendWorkspaceTransition && Boolean(backend?.canStop)) ||
       sessionActive ||
       awaitingResponse ||
       sending ||
@@ -436,6 +440,8 @@ function deriveMergedLifecycleProjection(
     runtimeSource.runtimeDisplay,
   );
   const preserveSuperseded = runtimeSource.composer.mode === 'session-superseded';
+  const processingCompletedLeafWorkspace = runtimeSource.composer.processingKind === 'processing-workspace'
+    && lifecycle.runtime.phase === 'preparing-workspace';
   const mode = preserveSuperseded
     ? 'session-superseded'
     : acpStopping
@@ -450,7 +456,9 @@ function deriveMergedLifecycleProjection(
     : mode === 'runtime-active' && lifecycle.runtime.phase === 'launching-next-node'
       ? 'launching-next-node'
       : mode === 'runtime-active' && lifecycle.runtime.phase === 'preparing-workspace'
-        ? 'preparing-workspace'
+        ? processingCompletedLeafWorkspace
+          ? 'processing-workspace'
+          : 'preparing-workspace'
         : mode === 'runtime-active' && !runtimeActive && lifecycle.acp.liveTurnActivity === 'starting'
           ? 'launching'
           : 'processing';
@@ -466,7 +474,9 @@ function deriveMergedLifecycleProjection(
           : mode === 'runtime-active' && lifecycle.runtime.phase === 'launching-next-node'
             ? 'conversation.runtime.launchingNextNode'
             : mode === 'runtime-active' && lifecycle.runtime.phase === 'preparing-workspace'
-              ? 'conversation.runtime.preparingDevelopmentEnvironment'
+              ? processingCompletedLeafWorkspace
+                ? 'conversation.runtime.processingWorkspace'
+                : 'conversation.runtime.preparingDevelopmentEnvironment'
               : mode === 'runtime-active'
                 ? 'conversation.runtime.runtimeActive'
                 : null,
@@ -619,6 +629,7 @@ function processingKindForInput(
   if (stopInProgress) return 'stopping';
   if (turnSubmitting) return 'sending';
   if (backendProcessingKind === 'preparing-workspace') return 'preparing-workspace';
+  if (backendProcessingKind === 'processing-workspace') return 'processing-workspace';
   if (backendProcessingKind === 'launching-next-node') return 'launching-next-node';
   if (awaitingResponse && input.turnAccepted && !input.hasResponseAfterTurn) return 'processing';
   if (input.initialTimelinePending) return 'launching';
@@ -688,6 +699,7 @@ function normalizeProcessingKind(kind?: string | null): AcpComposerProcessingKin
     normalized === 'responding' ||
     normalized === 'stopping' ||
     normalized === 'preparing-workspace' ||
+    normalized === 'processing-workspace' ||
     normalized === 'launching-next-node'
   ) {
     return normalized;

@@ -473,6 +473,8 @@ export interface AcpCommandItemVm {
 export interface AcpCommandCatalogVm {
   agentType: string;
   projectId: string;
+  acpCommands?: AcpCommandItemVm[] | null;
+  skillCommands?: AcpCommandItemVm[] | null;
   commands: AcpCommandItemVm[];
   updatedAt: string;
 }
@@ -567,7 +569,9 @@ export interface AppErrorVm {
 }
 
 export interface GitCapabilityVm {
-  status: 'ready' | 'not-installed' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  status: 'ready' | 'not-installed' | 'version-unsupported' | 'version-unavailable' | 'repository-required' | 'head-required' | 'worktree-required' | 'repository-unavailable';
+  installedVersion: string | null;
+  minimumVersion: string;
   repoRoot: string | null;
   commonDir: string | null;
   head: string | null;
@@ -788,6 +792,32 @@ export interface GitSourceControlSnapshotVm {
   worktrees: GitWorktreeVm[];
   stashes: GitStashEntryVm[];
 }
+
+export interface GitBranchPickerItemVm {
+  name: string;
+  targetOid: string;
+  checkedOutWorktreePaths: string[];
+}
+
+export interface GitBranchPickerSnapshotVm {
+  workspacePath: string;
+  currentBranch?: string | null;
+  headOid?: string | null;
+  revision: string;
+  dirtyFileCount: number;
+  operationInProgress?: {
+    kind: 'merge' | 'rebase' | 'cherry-pick' | 'revert';
+    currentOid?: string | null;
+    currentSubject?: string | null;
+  } | null;
+  lock: GitLockVm;
+  branches: GitBranchPickerItemVm[];
+}
+
+export type GitBranchChangeRequestVm = (
+  | { kind: 'switch'; name: string }
+  | { kind: 'create-and-switch'; name: string; startPoint: string }
+) & { expectedRevision: string };
 
 export type GitMutationVm =
   | { kind: 'stage-paths'; paths: string[] }
@@ -1502,6 +1532,7 @@ export interface AcpSessionVm {
   adapterDisplayName?: string | null;
   adapterIconKey?: string | null;
   worktreePath?: string | null;
+  worktreeBranch?: string | null;
   cwd?: string | null;
   providerCwd?: string | null;
   status: string;
@@ -2302,6 +2333,7 @@ export interface ConversationSessionLeafVm {
   sessionId?: string | null;
   sessionEstablished?: boolean;
   worktreePath?: string | null;
+  worktreeBranch?: string | null;
   artifactCount: number;
   attachmentCount: number;
 }
@@ -2464,6 +2496,7 @@ export interface ConversationCreateInput {
   autoConfig?: ConversationAutoConfigVm | null;
   attachmentPaths?: string[];
   workLocation?: ConversationWorkLocation;
+  selectedBranch?: string | null;
 }
 
 export type ConversationWorkLocation = 'main' | 'worktree';

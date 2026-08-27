@@ -946,6 +946,28 @@ describe('deriveAcpRuntimeComposerState', () => {
     expect(state.canStop).toBe(true);
   });
 
+  it('shows AI-DYNAMIC post-leaf workspace processing from the backend lifecycle', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'preparing-workspace' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'processing-workspace',
+          statusKey: 'conversation.runtime.processingWorkspace',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'completed',
+    }));
+
+    expect(state.mode).toBe('runtime-active');
+    expect(state.processingKind).toBe('processing-workspace');
+    expect(state.canStop).toBe(true);
+  });
+
   it('keeps stopping ahead of workspace preparation after stop is clicked', () => {
     const state = deriveAcpRuntimeComposerState(baseInput({
       lifecycle: lifecycle({
@@ -955,6 +977,29 @@ describe('deriveAcpRuntimeComposerState', () => {
           mode: 'runtime-active',
           submitTarget: 'none',
           processingKind: 'preparing-workspace',
+          canStop: true,
+          lockInput: true,
+        },
+      }),
+      acpStatus: 'completed',
+      stopCommandPending: true,
+    }));
+
+    expect(state.mode).toBe('stopping');
+    expect(state.processingKind).toBe('stopping');
+    expect(state.stopInProgress).toBe(true);
+  });
+
+  it('keeps stopping ahead of AI-DYNAMIC post-leaf workspace processing', () => {
+    const state = deriveAcpRuntimeComposerState(baseInput({
+      lifecycle: lifecycle({
+        runtime: { status: 'running', active: true, current: true, phase: 'preparing-workspace' },
+        acp: { sessionAvailability: 'established', liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+        composer: {
+          mode: 'runtime-active',
+          submitTarget: 'none',
+          processingKind: 'processing-workspace',
+          statusKey: 'conversation.runtime.processingWorkspace',
           canStop: true,
           lockInput: true,
         },
@@ -1076,6 +1121,98 @@ describe('mergeConversationAttemptLifecycle', () => {
     });
 
     expect(mergeConversationAttemptLifecycle(terminal, staleRunning).acp).toBe(terminal.acp);
+  });
+
+  it('uses a strictly newer AI-DYNAMIC leaf watermark for terminal convergence', () => {
+    const transitional = lifecycle({
+      runtime: {
+        revision: 25,
+        status: 'running',
+        outcome: null,
+        current: true,
+        active: true,
+        phase: 'preparing-workspace',
+      },
+      control: { mode: 'runtime-controlled' },
+      displayStatus: 'running',
+      composer: { mode: 'runtime-active', submitTarget: 'none', lockInput: true },
+    });
+    const terminal = lifecycle({
+      runtime: {
+        revision: 26,
+        status: 'completed',
+        outcome: 'success',
+        current: false,
+        active: false,
+        phase: 'terminal',
+      },
+      control: { mode: 'non-runtime-controlled' },
+      acp: { liveTurnActivity: 'idle', latestTurnStatus: 'completed', stopping: false },
+      displayStatus: 'completed',
+      composer: { mode: 'normal', submitTarget: 'acp-prompt', lockInput: false },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(transitional, terminal);
+
+    expect(merged.runtime).toBe(terminal.runtime);
+    expect(merged.runtime.phase).toBe('terminal');
+    expect(merged.composer.mode).toBe('normal');
+    expect(merged.composer.lockInput).toBe(false);
+
+    const afterStaleTransition = mergeConversationAttemptLifecycle(terminal, transitional);
+    expect(afterStaleTransition.runtime).toBe(terminal.runtime);
+    expect(afterStaleTransition.composer.mode).toBe('normal');
+  });
+
+  it('preserves AI-DYNAMIC workspace processing when a newer ACP facet is merged', () => {
+    const workspaceTransition = lifecycle({
+      runtime: {
+        revision: 25,
+        status: 'running',
+        outcome: null,
+        current: true,
+        active: true,
+        phase: 'preparing-workspace',
+      },
+      acp: {
+        revision: 40,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
+        stopping: false,
+      },
+      composer: {
+        mode: 'runtime-active',
+        submitTarget: 'none',
+        processingKind: 'processing-workspace',
+        statusKey: 'conversation.runtime.processingWorkspace',
+        canStop: true,
+        lockInput: true,
+      },
+    });
+    const newerAcp = lifecycle({
+      runtime: {
+        revision: 24,
+        status: 'completed',
+        outcome: 'success',
+        current: false,
+        active: false,
+        phase: 'terminal',
+      },
+      acp: {
+        revision: 41,
+        turnId: 'turn-1',
+        liveTurnActivity: 'idle',
+        latestTurnStatus: 'completed',
+        stopping: false,
+      },
+    });
+
+    const merged = mergeConversationAttemptLifecycle(workspaceTransition, newerAcp);
+
+    expect(merged.runtime).toBe(workspaceTransition.runtime);
+    expect(merged.composer.processingKind).toBe('processing-workspace');
+    expect(merged.composer.statusKey).toBe('conversation.runtime.processingWorkspace');
   });
 
   it('keeps a newer Direct queue when a stale lifecycle snapshot arrives after stop', () => {

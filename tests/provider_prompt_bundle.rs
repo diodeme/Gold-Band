@@ -416,6 +416,31 @@ fn render_prompt_bundle_renders_predecessor_chain_and_defers_output_dsl() {
 }
 
 #[test]
+fn render_post_turn_control_prompts_keep_contract_out_of_system_prompt() {
+    let business_prompt = render_prompt_bundle(&invocation()).unwrap();
+    let control_protocol = "artifact: dev-result\nCONTROL_SCHEMA_MARKER\n$.result == true";
+
+    for (render_mode, hidden_reason) in [
+        (UserPromptRenderMode::RuntimeFinalize, "artifactFinalize"),
+        (UserPromptRenderMode::RuntimeRepair, "invalidOutputRepair"),
+    ] {
+        let mut req = invocation();
+        req.session_mode = SessionMode::Continue;
+        req.user_prompt_render_mode = render_mode;
+        req.resume_prompt_visibility = PromptVisibility::Hidden;
+        req.resume_prompt = Some(control_protocol.to_string());
+
+        let prompt = render_prompt_bundle(&req).unwrap();
+
+        assert_eq!(prompt.visibility, PromptVisibility::Hidden);
+        assert_eq!(prompt.hidden_reason.as_deref(), Some(hidden_reason));
+        assert_eq!(prompt.system_prompt, business_prompt.system_prompt);
+        assert!(!prompt.system_prompt.contains("CONTROL_SCHEMA_MARKER"));
+        assert_eq!(prompt.user_prompt, control_protocol);
+    }
+}
+
+#[test]
 fn render_prompt_bundle_workflow_resume_uses_hidden_context_and_goal() {
     let mut req = invocation();
     req.session_mode = SessionMode::Continue;

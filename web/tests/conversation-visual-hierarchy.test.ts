@@ -17,6 +17,19 @@ describe('conversation visual hierarchy contract', () => {
     expect(header).toContain('h-7 gap-1.5 px-2 text-xs font-normal');
   });
 
+  it('joins the parallel-session selector to the solid compact header surface', () => {
+    const page = source('../src/pages/ConversationRunPage.tsx');
+    const activeSessions = page.slice(
+      page.indexOf('data-conversation-active-sessions="true"'),
+      page.indexOf('{/* Main chat area */}'),
+    );
+
+    expect(activeSessions).toContain('border-b border-border/60 bg-content-header px-5 py-1');
+    expect(activeSessions).toContain('flex flex-wrap gap-1.5');
+    expect(activeSessions).not.toContain('bg-muted/5');
+    expect(activeSessions).not.toContain('py-2');
+  });
+
   it('uses tighter spacing inside groups and wider spacing between message groups', () => {
     const dialog = source('../src/components/acp/ACPChatDialog.tsx');
     const usagePanel = source('../src/components/acp/AcpUsagePanel.tsx');

@@ -3358,6 +3358,7 @@ fn scheduled_create_input(
         auto_config,
         attachment_paths: (!attachment_paths.is_empty()).then_some(attachment_paths),
         work_location: Default::default(),
+        selected_branch: None,
         scheduled_task_id: Some(definition.id.clone()),
         scheduled_content_fingerprint: Some(definition.content_fingerprint.clone()),
         workflow_authoring,

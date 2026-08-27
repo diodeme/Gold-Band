@@ -28,6 +28,10 @@ import type {
   GitSourceControlSnapshotVm,
   WorkspaceFileChangedEventVm,
 } from '@/types';
+import {
+  normalizeSourceControlWorkspacePath,
+  sourceControlWorkspaceSessionKey,
+} from './source-control-identity';
 
 export type SourceControlTab = 'changes' | 'history' | 'repository' | 'github';
 export type SourceControlRepositoryTab = 'branches' | 'tags' | 'worktrees' | 'stashes';
@@ -555,7 +559,7 @@ export class SourceControlStore {
   }
 
   clear(projectId: string, workspacePath?: string | null) {
-    const routeKey = sessionRouteKey(projectId, workspacePath);
+    const routeKey = sourceControlWorkspaceSessionKey(projectId, workspacePath);
     const storageKey = this.aliases.get(routeKey) ?? routeKey;
     const runtime = this.sessions.get(storageKey);
     if (runtime) this.disposeRuntime(runtime);
@@ -759,7 +763,7 @@ export class SourceControlStore {
   }
 
   private runtime(projectId: string, workspacePath: string | null | undefined, touch = true) {
-    const routeKey = sessionRouteKey(projectId, workspacePath);
+    const routeKey = sourceControlWorkspaceSessionKey(projectId, workspacePath);
     const storageKey = this.aliases.get(routeKey) ?? routeKey;
     let runtime = this.sessions.get(storageKey);
     if (!runtime) {
@@ -791,7 +795,7 @@ export class SourceControlStore {
   }
 
   private registerCanonicalAlias(runtime: SessionRuntime, canonicalWorkspacePath: string) {
-    this.aliases.set(sessionRouteKey(runtime.snapshot.projectId, canonicalWorkspacePath), runtime.storageKey);
+    this.aliases.set(sourceControlWorkspaceSessionKey(runtime.snapshot.projectId, canonicalWorkspacePath), runtime.storageKey);
   }
 
   private prune(protectedStorageKey: string) {
@@ -876,18 +880,12 @@ function resetHistoryState(snapshot: SourceControlSessionSnapshot): SourceContro
   };
 }
 
-function sessionRouteKey(projectId: string, workspacePath: string | null | undefined) {
-  return `${projectId}\u0000${normalizeWorkspacePath(workspacePath)}`;
-}
-
 function commitReviewCacheKey(storageKey: string, revision: string, selectedOids: readonly string[]) {
   return `${storageKey}\u0000${revision}\u0000${selectedOids.join(',')}`;
 }
 
 function normalizeWorkspacePath(workspacePath: string | null | undefined) {
-  if (!workspacePath) return '__main__';
-  const normalized = workspacePath.replaceAll('\\', '/').replace(/\/$/u, '');
-  return /^[a-z]:\//iu.test(normalized) ? normalized.toLowerCase() : normalized;
+  return normalizeSourceControlWorkspacePath(workspacePath) ?? '__main__';
 }
 
 function sameWorkspacePath(left: string, right: string) {

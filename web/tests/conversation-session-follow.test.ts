@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  areDynamicConversationSiblingSessionKeys,
+  conversationAcpRunRefreshStatus,
   planConversationAcpRunUpdate,
   resolveConversationEventSelectedSessionKey,
   resolveConversationRefreshSelectedSessionKey,
@@ -134,6 +136,56 @@ describe('conversation session follow helpers', () => {
     })).toBe('round-001/node-a/attempt-001');
   });
 
+  it('follows an active AI-DYNAMIC sibling after the selected leaf becomes terminal', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+      incomingSessionKey: 'round-001/ai-dynamic/attempt-001/branch-a/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: false,
+      currentSelectedTerminal: true,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: false,
+      incomingRuntimeControlled: true,
+    })).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
+  });
+
+  it('keeps the current active AI-DYNAMIC leaf when a parallel sibling starts', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/branch-a/attempt-001',
+      incomingSessionKey: 'round-001/ai-dynamic/attempt-001/branch-b/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: true,
+      currentSelectedTerminal: false,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: true,
+      incomingRuntimeControlled: true,
+    })).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
+  });
+
+  it('does not follow an AI-DYNAMIC leaf from another outer attempt', () => {
+    expect(resolveConversationEventSelectedSessionKey({
+      currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+      incomingSessionKey: 'round-001/ai-dynamic/attempt-002/branch-a/attempt-001',
+      followMode: 'auto',
+      currentSelectedActive: false,
+      currentSelectedTerminal: true,
+      incomingActive: true,
+      currentSelectedRuntimeControlled: false,
+      incomingRuntimeControlled: true,
+    })).toBe('round-001/ai-dynamic/attempt-001/bootstrap/attempt-001');
+  });
+
+  it('recognizes dynamic siblings only from complete inner locators', () => {
+    expect(areDynamicConversationSiblingSessionKeys(
+      'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
+      'round-001/ai-dynamic/attempt-001/branch-a/attempt-001',
+    )).toBe(true);
+    expect(areDynamicConversationSiblingSessionKeys(
+      'round-001/node-a/attempt-001',
+      'round-001/node-b/attempt-001',
+    )).toBe(false);
+  });
+
   it('does not let an outer AI-DYNAMIC event steal an internal selection', () => {
     expect(resolveConversationEventSelectedSessionKey({
       currentSelectedKey: 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001',
@@ -224,6 +276,28 @@ describe('conversation session follow helpers', () => {
     })).toBe('round-001/dev/attempt-001');
   });
 
+  it('keeps a terminal AI-DYNAMIC sibling target during in-flight refresh revalidation', () => {
+    const currentSelectedKey = 'round-001/ai-dynamic/attempt-001/bootstrap/attempt-001';
+    const requestedKey = resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: 'round-001/ai-dynamic/attempt-001/branch-a/attempt-001',
+      currentSelectedKey,
+      currentSelectedTerminal: true,
+      currentSelectedRuntimeControlled: false,
+      pendingEventRuntimeControlled: true,
+    });
+    expect(requestedKey).toBe('round-001/ai-dynamic/attempt-001/branch-a/attempt-001');
+
+    expect(resolveConversationRefreshSelectedSessionKey({
+      followMode: 'auto',
+      pendingEventSessionKey: requestedKey,
+      currentSelectedKey,
+      currentSelectedTerminal: true,
+      currentSelectedRuntimeControlled: false,
+      pendingEventRuntimeControlled: true,
+    })).toBe(requestedKey);
+  });
+
   it('refreshes an outer AI-DYNAMIC event with the selected internal session key', () => {
     expect(resolveConversationRefreshSelectedSessionKey({
       followMode: 'auto',
@@ -262,6 +336,31 @@ describe('conversation session follow helpers', () => {
       hasSessionSnapshot: true,
       sessionStatus: 'cancel_requested',
     })).toBe(false);
+  });
+
+  it('uses canonical runtime status for AI-DYNAMIC lifecycle refreshes', () => {
+    const lifecycle = {
+      displayStatus: 'idle',
+      runtime: { status: 'completed' },
+    } as Parameters<typeof conversationAcpRunRefreshStatus>[0]['lifecycle'];
+    const refreshStatus = conversationAcpRunRefreshStatus({
+      dynamicSession: true,
+      lifecycle,
+      sessionStatus: 'idle',
+    });
+    expect(refreshStatus).toBe('completed');
+    expect(planConversationAcpRunUpdate({
+      treeHasSession: true,
+      alreadySelected: true,
+      hasRuntimeSnapshot: true,
+      hasLiveEvent: false,
+      sessionStatus: refreshStatus,
+    }).queueRunRefresh).toBe(true);
+    expect(conversationAcpRunRefreshStatus({
+      dynamicSession: false,
+      lifecycle,
+      sessionStatus: 'idle',
+    })).toBe('idle');
   });
 
   it('ignores high-frequency live events from a known background session', () => {

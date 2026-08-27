@@ -90,6 +90,19 @@ let browserGitStagePreviewApplied = false;
 const browserGitHubOperations = new Map<string, GitHubOperationVm>();
 const browserGitHubOperationListeners = new Set<(operation: GitHubOperationVm) => void>();
 
+function browserGitVersionCapabilityPreview() {
+  const status = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('gitCapability');
+  if (status === 'version-unsupported') {
+    return { status, installedVersion: '2.35.9.windows.1', minimumVersion: '2.36.0' } as const;
+  }
+  if (status === 'version-unavailable') {
+    return { status, installedVersion: null, minimumVersion: '2.36.0' } as const;
+  }
+  return null;
+}
+
 const browserGitCommits: GitCommitVm[] = [
   {
     oid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
@@ -167,6 +180,8 @@ function browserAgentIdentity(agentType: string) {
 
 function browserCompletedConversationRun(): ConversationRunVm {
   const run = structuredClone(mockErrorBlockedConversationRun);
+  const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
+  const worktreeBranch = 'gold-band/conversation/browser-completed-run';
   run.runId = 'run-052';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
@@ -175,14 +190,26 @@ function browserCompletedConversationRun(): ConversationRunVm {
   run.runOutcome = 'success';
   run.pauseReason = null;
   run.runtimeErrorMessage = null;
+  run.worktree = {
+    path: worktreePath,
+    branch: worktreeBranch,
+    forkCommit: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+  };
+  const selectedLeaf = run.sessionTree.rounds[0]?.nodes[0]?.attempts[0];
+  if (selectedLeaf) {
+    selectedLeaf.worktreePath = worktreePath;
+    selectedLeaf.worktreeBranch = worktreeBranch;
+  }
   run.selectedSession = {
     ...mockErrorBlockedConversationSession,
     sessionId: 'browser-session-052',
     roundId: 'round-001',
     nodeId: 'dev',
     attemptId: 'attempt-001',
-    providerCwd: 'D:/Projects/code/ai/Gold-Band',
-    cwd: 'D:/Projects/code/ai/Gold-Band',
+    worktreePath,
+    worktreeBranch,
+    providerCwd: worktreePath,
+    cwd: worktreePath,
     status: 'completed',
     stopReason: 'end_turn',
     systemPromptAppend: [
@@ -191,7 +218,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
       'This **system prompt** verifies the rendered/source workspace modes.',
       '',
       '- Attempt: `attempt-001`',
-      '- Workspace: `D:/Projects/code/ai/Gold-Band`',
+      `- Workspace: \`${worktreePath}\``,
     ].join('\n'),
     usage: {
       used: 25_400,
@@ -617,10 +644,14 @@ export const browserApi: RuntimeApi = {
     return () => browserScheduledOccurrenceListeners.delete(listener);
   },
   getGitCapability() {
-    return Promise.resolve({ status: 'repository-required', repoRoot: null, commonDir: null, head: null });
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.resolve({ ...versionCapability, repoRoot: null, commonDir: null, head: null });
+    }
+    return Promise.resolve({ status: 'repository-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   initializeGitRepository() {
-    return Promise.resolve({ status: 'head-required', repoRoot: null, commonDir: null, head: null });
+    return Promise.resolve({ status: 'head-required', installedVersion: '2.53.0', minimumVersion: '2.36.0', repoRoot: null, commonDir: null, head: null });
   },
   getSourceControlSnapshot(projectId, workspacePath) {
     const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
@@ -661,6 +692,49 @@ export const browserApi: RuntimeApi = {
       worktrees: [{ path: resolvedWorkspacePath, headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', branch: 'refs/heads/feature/source-control', main: workspacePath == null, detached: false, locked: false, lockReason: null, prunable: false, ownership: 'user', runtimeStatus: null }],
       stashes: [],
     });
+  },
+  getGitBranchPickerSnapshot(_projectId, workspacePath) {
+    const versionCapability = browserGitVersionCapabilityPreview();
+    if (versionCapability) {
+      return Promise.reject({
+        code: `git.${versionCapability.status}`,
+        params: {
+          installedVersion: versionCapability.installedVersion,
+          minimumVersion: versionCapability.minimumVersion,
+        },
+      });
+    }
+    const resolvedWorkspacePath = workspacePath ?? '/preview/gold-band';
+    return Promise.resolve({
+      workspacePath: resolvedWorkspacePath,
+      currentBranch: 'feature/source-control',
+      headOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241',
+      revision: 'browser-preview-revision',
+      dirtyFileCount: 3,
+      operationInProgress: null,
+      lock: { locked: false, owner: null, operation: null },
+      branches: [
+        { name: 'feature/source-control', targetOid: '9e1d4f31c17c9bb7f382e130e8db2ab98cf58241', checkedOutWorktreePaths: [resolvedWorkspacePath] },
+        { name: 'main', targetOid: '8dc4ac2a3fc32f88e2348c0ea6682907c38acc89', checkedOutWorktreePaths: [] },
+        { name: 'gold-band/conversation/5aa4c2b45fc6', targetOid: '1dc4ac2a3fc32f88e2348c0ea6682907c38acc11', checkedOutWorktreePaths: ['/preview/gold-band/worktrees/5aa4c2b45fc6'] },
+      ],
+    });
+  },
+  async changeGitBranch(projectId, workspacePath, input) {
+    const snapshot = await browserApi.getGitBranchPickerSnapshot(projectId, workspacePath);
+    const name = input.name;
+    const targetOid = input.kind === 'create-and-switch'
+      ? snapshot.headOid ?? 'browser-preview-head'
+      : snapshot.branches.find((branch) => branch.name === name)?.targetOid ?? 'browser-preview-head';
+    return {
+      ...snapshot,
+      currentBranch: name,
+      headOid: targetOid,
+      revision: `${snapshot.revision}:${name}`,
+      branches: snapshot.branches.some((branch) => branch.name === name)
+        ? snapshot.branches
+        : [...snapshot.branches, { name, targetOid, checkedOutWorktreePaths: [snapshot.workspacePath] }],
+    };
   },
   getGitHistory(_projectId, _workspacePath, query) {
     const cursorMatch = query.cursor?.match(/^browser-history:(\d+)$/);
@@ -1609,6 +1683,9 @@ export const browserApi: RuntimeApi = {
     });
   },
   recordActivity() {
+    return Promise.resolve();
+  },
+  reportFrontendError(_input) {
     return Promise.resolve();
   },
   saveMetricsSettings(_enabled: boolean, _metricsBaseUrl: string | null, _apiKey: string | null) {

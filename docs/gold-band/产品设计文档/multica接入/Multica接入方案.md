@@ -1025,6 +1025,13 @@ App ──POST /api/issues/<id>/rerun──▶ Srv   force_fresh_session=true �
   - **契约影响（对外行为不变）**：claim-at-send 事务边界、终态桥接、断点续跑、App.tsx 双路径发送流均零变化；仅 main 改名 `ConversationSessionSwitchVm` → `ConversationSessionTreeVm` 等类型对齐。
   - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；定向 vitest 24/24（draft union + 互斥语义 + i18n 合规）；全量 vitest **1627/1627**；`web:build` 成功；Rust 定向测试 `multica::` 83/83、lib feature 差异模块 53/53、desktop crate（除 updater 挂起外）593/594——唯一失败经 origin/main blob 比对为 **main 自身失败**（配置值 64000→20000 未同步断言），非合并引入；本机测试环境备注（updater 挂起 / E 盘限额）见开发设计 §12.32。
 
+- [x] **M5-au**（本轮）四次合并 origin/main——composer 分支选择 × multica 表面同域合取（开发设计 §12.33）：
+  - **背景**：main 新增 31 commit（release 0.14.0/0.14.1、composer 工作区分支选择 `1ea3a884`/`9ea117fa`、ACP/AI-DYNAMIC 修复、slash 菜单层级），与 multica 触面重叠 4 文件冲突。策略同前：冲突保 main，合并后修复。备份分支 `feature_multica_premerge3_20260827`。
+  - **核心语义决策（canSubmit 同域正交合取）**：main 新增「分支切换中禁发」（`branchMutationPending`）与 multica 既有「远程任务缺本地工作区禁发」叠加为条件合取——两条件正交无混合态，不需互斥设计；M5-at 的 draft 互斥状态机与 onSubmit 双路径（第二参数传 multica 绑定）经自动合并完整存活、零回插。
+  - **multica 表面回插**：`forceSelector` 并进 main 的 Tooltip×下拉互斥逻辑；`emptyWorkspaceHint` 挂信息条；`multicaActive` 门进 `canSubmit`；App.tsx 全部 multica 增量（路由块/双路径发送/事件驱动侧栏刷新）自动合并存活。
+  - **main 自身缺陷分诊（两例，合并验收浮出）**：① conversation-navigation 测试以字面 `\n` 匹配源码，Windows autocrlf 检出必挂（测试与被测代码均与 origin/main 字节一致）——读取边界 `readAppSource()` 归一化行尾修复（`4d06ae8e`）；② main release 0.14.1 未重新生成 Cargo.lock——本地 cargo 自动补齐（`8377eab3`）。
+  - **验证**：`cargo check --workspace --all-targets` exit 0；tsc 零错；`web:build` 成功；全量 vitest **1684/1684**（一次 ACP 重试计数负载抖动单独重跑通过，判 flake）；Rust 定向 `multica::` 83/83。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-08-27.md`。
+
 - [ ] **M6 · 测试**（开发设计 8）
   - [ ] 登录链路 / 全量 register / 任务执行循环 / 失败恢复 / 会话级续跑 各一条端到端集成测试（mock multica server）
 

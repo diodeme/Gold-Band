@@ -1490,8 +1490,7 @@ export interface AcpSessionVm {
   events: AcpUiEventVm[];
   eventPage: AcpEventPageVm;
   timelineProjection: AcpTimelineProjectionVm | null;
-  pendingPermissions: AcpPermissionRequestVm[];
-  pendingElicitations: AcpElicitationRequestVm[];
+  pendingInteractions: AcpPromptInteractionVm[];
   availableCommands?: unknown[] | null;
   usage?: AcpUsageVm | null;
   diagnostics: AcpDiagnosticsVm;
@@ -1589,8 +1588,14 @@ export interface AcpSessionTimingVm {
   paused: boolean;
 }
 
-export interface AcpPermissionRequestVm {
-  requestId: string;
+export interface AcpPromptInteractionIdentityVm {
+  interactionId: string;
+  turnId?: string | null;
+  promptEventId?: string | null;
+}
+
+export interface AcpPermissionRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'permission';
   title: string;
   toolCallId?: string | null;
   options: AcpPermissionOptionVm[];
@@ -1678,13 +1683,17 @@ export interface FileComparisonVm {
   limitationCode?: string | null;
 }
 
-export interface AcpElicitationRequestVm {
-  elicitationId: string;
+export interface AcpElicitationRequestVm extends AcpPromptInteractionIdentityVm {
+  kind: 'elicitation';
   message: string;
   toolCallId?: string | null;
   requestedSchema: Record<string, unknown>;
   raw: unknown;
 }
+
+export type AcpPromptInteractionVm =
+  | AcpPermissionRequestVm
+  | AcpElicitationRequestVm;
 
 // Navigation payload emitted after clicking "View details" in a system toast.
 // It carries the complete attempt locator and a deduplication key.
@@ -2192,7 +2201,7 @@ export interface ConversationAcpFacetVm {
 }
 
 export interface ConversationComposerVm {
-  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'permission-blocked' | 'submitting' | string;
+  mode: 'normal' | 'runtime-active' | 'stopping' | 'invalid-workflow' | 'runtime-error' | 'interaction-blocked' | 'submitting' | string;
   submitTarget: 'acp-prompt' | 'queue-prompt' | 'permission-response' | 'none' | string;
   processingKind: 'sending' | 'launching' | 'processing' | 'thinking' | 'tool' | 'compacting' | 'responding' | 'stopping' | 'launching-next-node' | string;
   statusKey?: string | null;

@@ -69,8 +69,7 @@ function sessionUpdate(status: string, agents: AcpAgentExecutionVm[]): AcpSessio
       hasNewer: false,
     },
     timelineProjection: { agents, todoEntries: [] },
-    pendingPermissions: [],
-    pendingElicitations: [],
+    pendingInteractions: [],
     diagnostics: { rawFrameCount: 0, eventCount: 0, errorCount: 0 },
   };
   return { ...locator, session };

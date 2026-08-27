@@ -9,6 +9,11 @@ use serde_json::Value;
 use crate::{
     acp::{
         events::current_timestamp,
+        interaction::{
+            AcpPromptInteractionIdentity, AcpPromptInteractionKind,
+            PendingAcpPromptInteractionState, bind_pending_prompt_interaction_timeline_identity,
+            write_pending_prompt_interaction,
+        },
         timeline::{
             TimelineIndexedItem, TimelineItemIdentity, append_elicitation_response_item,
             read_indexed_pending_elicitation, read_indexed_timeline_item,
@@ -32,14 +37,13 @@ pub enum ElicitationAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PendingElicitationState {
-    pub elicitation_id: String,
+pub struct PendingElicitationPayload {
     pub jsonrpc_id: Value,
     pub request: CreateElicitationRequest,
-    pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeline_identity: Option<TimelineItemIdentity>,
 }
+
+pub type PendingElicitationState =
+    PendingAcpPromptInteractionState<PendingElicitationPayload>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,8 +77,32 @@ pub fn write_pending_elicitation(
     attempt_dir: &Utf8Path,
     state: &PendingElicitationState,
 ) -> Result<()> {
-    let path = pending_elicitation_file(attempt_dir, &state.elicitation_id);
-    write_json(&path, state)
+    let path = pending_elicitation_file(attempt_dir, &state.identity.interaction_id);
+    write_pending_prompt_interaction(&path, state)
+}
+
+pub fn pending_elicitation_state(
+    elicitation_id: impl Into<String>,
+    turn_id: impl Into<String>,
+    prompt_event_id: impl Into<String>,
+    jsonrpc_id: Value,
+    request: CreateElicitationRequest,
+    created_at: String,
+) -> PendingElicitationState {
+    PendingAcpPromptInteractionState {
+        identity: AcpPromptInteractionIdentity::new(
+            elicitation_id,
+            AcpPromptInteractionKind::Elicitation,
+            turn_id,
+            prompt_event_id,
+        ),
+        payload: PendingElicitationPayload {
+            jsonrpc_id,
+            request,
+        },
+        created_at,
+        timeline_identity: None,
+    }
 }
 
 pub fn bind_pending_elicitation_timeline_identity(
@@ -83,9 +111,7 @@ pub fn bind_pending_elicitation_timeline_identity(
     identity: TimelineItemIdentity,
 ) -> Result<()> {
     let path = pending_elicitation_file(attempt_dir, elicitation_id);
-    let mut pending: PendingElicitationState = read_json(&path)?;
-    pending.timeline_identity = Some(identity);
-    write_json(&path, &pending)
+    bind_pending_prompt_interaction_timeline_identity::<PendingElicitationPayload>(&path, identity)
 }
 
 // ── 前端写入响应（由 Tauri command 调用）──
@@ -184,12 +210,13 @@ pub fn cancel_pending_elicitation_requests(
         let Ok(pending) = read_json::<PendingElicitationState>(&path) else {
             continue;
         };
-        let response_path = elicitation_response_file(attempt_dir, &pending.elicitation_id);
+        let elicitation_id = &pending.identity.interaction_id;
+        let response_path = elicitation_response_file(attempt_dir, elicitation_id);
         if response_path.exists() {
             if let Ok(response) = read_json::<ElicitationResponseState>(&response_path) {
                 upsert_elicitation_response_event(
                     attempt_dir,
-                    &pending.elicitation_id,
+                    elicitation_id,
                     &response.action,
                     response.content,
                 )?;
@@ -198,7 +225,7 @@ pub fn cancel_pending_elicitation_requests(
         }
         write_elicitation_response(
             attempt_dir,
-            &pending.elicitation_id,
+            elicitation_id,
             ElicitationAction::Decline,
             None,
             decided_at.clone(),
@@ -252,7 +279,9 @@ fn resolve_elicitation_identity(
         }
     }
     for (branch_id, path) in crate::acp::branches::existing_branch_timeline_paths(attempt_dir)? {
-        if let Some(indexed) = read_indexed_pending_elicitation(&path, &pending.elicitation_id)? {
+        if let Some(indexed) =
+            read_indexed_pending_elicitation(&path, &pending.identity.interaction_id)?
+        {
             return Ok(Some((
                 TimelineItemIdentity {
                     branch_id,
@@ -262,11 +291,13 @@ fn resolve_elicitation_identity(
                 indexed,
             )));
         }
-        if let Some(indexed) = read_indexed_timeline_item(&path, &pending.elicitation_id)? {
+        if let Some(indexed) =
+            read_indexed_timeline_item(&path, &pending.identity.interaction_id)?
+        {
             return Ok(Some((
                 TimelineItemIdentity {
                     branch_id,
-                    item_id: pending.elicitation_id.clone(),
+                    item_id: pending.identity.interaction_id.clone(),
                     revision: indexed.revision,
                 },
                 indexed,
@@ -407,20 +438,24 @@ mod tests {
     #[test]
     fn write_and_read_pending_elicitation() {
         let (_dir, attempt_dir) = dummy_attempt_dir();
-        let state = PendingElicitationState {
-            elicitation_id: "elicit-abc123".to_string(),
-            jsonrpc_id: serde_json::json!(42),
-            request: test_elicitation_request("请选择数据库"),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            timeline_identity: None,
-        };
+        let state = pending_elicitation_state(
+            "elicit-abc123",
+            "turn-2",
+            "prompt-turn-2",
+            serde_json::json!(42),
+            test_elicitation_request("请选择数据库"),
+            "2026-01-01T00:00:00Z".to_string(),
+        );
         write_pending_elicitation(&attempt_dir, &state).unwrap();
         let path = pending_elicitation_file(&attempt_dir, "elicit-abc123");
         assert!(path.exists());
         let read_back: PendingElicitationState = read_json(&path).unwrap();
-        assert_eq!(read_back.elicitation_id, "elicit-abc123");
-        assert_eq!(read_back.request.message, "请选择数据库");
-        let request = serde_json::to_value(read_back.request).unwrap();
+        assert_eq!(read_back.identity.interaction_id, "elicit-abc123");
+        assert_eq!(read_back.identity.kind, AcpPromptInteractionKind::Elicitation);
+        assert_eq!(read_back.identity.turn_id, "turn-2");
+        assert_eq!(read_back.identity.prompt_event_id, "prompt-turn-2");
+        assert_eq!(read_back.payload.request.message, "请选择数据库");
+        let request = serde_json::to_value(read_back.payload.request).unwrap();
         assert_eq!(request["toolCallId"], "tool-test");
         assert_eq!(request["_meta"]["requestSource"], "test");
         assert_eq!(request["requestedSchema"]["_meta"]["schemaSource"], "test");
@@ -463,13 +498,14 @@ mod tests {
         let elicitation_id = "elicit-completed-session-follow-up";
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: elicitation_id.to_string(),
-                jsonrpc_id: serde_json::json!(42),
-                request: test_elicitation_request("Continue the completed session"),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+            &pending_elicitation_state(
+                elicitation_id,
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(42),
+                test_elicitation_request("Continue the completed session"),
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
         write_elicitation_response(
@@ -586,13 +622,14 @@ mod tests {
         let request = test_elicitation_request("Choose a database");
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: "elicit-answered".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: request.clone(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+            &pending_elicitation_state(
+                "elicit-answered",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                request.clone(),
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
         write_timeline_items(
@@ -645,13 +682,14 @@ mod tests {
         // 写入一个 pending 请求
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: "elicit-cancel-me".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: test_elicitation_request("test"),
-                created_at: "t".to_string(),
-                timeline_identity: None,
-            },
+            &pending_elicitation_state(
+                "elicit-cancel-me",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                test_elicitation_request("test"),
+                "t".to_string(),
+            ),
         )
         .unwrap();
         write_timeline_items(
@@ -692,13 +730,14 @@ mod tests {
         let elicitation_id = "elicit-cleanup";
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: elicitation_id.to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: test_elicitation_request("Question"),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+            &pending_elicitation_state(
+                elicitation_id,
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                test_elicitation_request("Question"),
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
         write_elicitation_response(

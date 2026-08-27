@@ -2470,7 +2470,7 @@ mod tests {
     use crate::{
         acp::{
             elicitation::{
-                ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, PendingElicitationState,
+                ELICITATION_DEFAULT_TIMEOUT, ElicitationAction, pending_elicitation_state,
                 wait_for_elicitation_response, write_pending_elicitation,
             },
             events::{load_timeline_items, permission_request_event, write_timeline_items},
@@ -2535,19 +2535,20 @@ mod tests {
         let elicitation_id = "elicit-close";
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: elicitation_id.to_string(),
-                jsonrpc_id: json!(1),
-                request: serde_json::from_value(json!({
+            &pending_elicitation_state(
+                elicitation_id,
+                "turn-1",
+                "prompt-turn-1",
+                json!(1),
+                serde_json::from_value(json!({
                     "mode": "form",
                     "sessionId": session_id,
                     "message": "Choose",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 
@@ -2935,6 +2936,8 @@ mod tests {
         write_pending_permission(
             &attempt_dir,
             request_id,
+            "turn-1",
+            "prompt-event-1",
             json!({
                 "sessionId": "session-1",
                 "toolCall": {

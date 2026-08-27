@@ -14356,7 +14356,7 @@ fn drive_from_node_with_initial_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::elicitation::{PendingElicitationState, write_pending_elicitation};
+    use crate::acp::elicitation::{pending_elicitation_state, write_pending_elicitation};
     use crate::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use crate::dsl::{AiDynamicAgentStrategy, DynamicControlDsl};
     use crate::provider::{
@@ -16010,19 +16010,20 @@ mod tests {
         std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
         write_pending_elicitation(
             &attempt_dir,
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "请选择",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 

@@ -5405,7 +5405,7 @@ mod tests {
         AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
         WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
     };
-    use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
+    use crate::acp::elicitation::{pending_elicitation_file, pending_elicitation_state};
     use crate::config::{
         AppearancePreference, ColorSchemePreference, ConsoleThemeName, DesktopLanguage,
         DesktopUpdateBadgeState, FontSizePreference, FontStackPreference,
@@ -7672,19 +7672,20 @@ mod tests {
         .unwrap();
         write_json(
             &pending_elicitation_file(&attempt_dir, "elicit-001"),
-            &PendingElicitationState {
-                elicitation_id: "elicit-001".to_string(),
-                jsonrpc_id: serde_json::json!(1),
-                request: serde_json::from_value(serde_json::json!({
+            &pending_elicitation_state(
+                "elicit-001",
+                "turn-1",
+                "prompt-turn-1",
+                serde_json::json!(1),
+                serde_json::from_value(serde_json::json!({
                     "mode": "form",
                     "sessionId": "session-test",
                     "message": "继续吗",
                     "requestedSchema": { "type": "object", "properties": {} }
                 }))
                 .unwrap(),
-                created_at: "1Z".to_string(),
-                timeline_identity: None,
-            },
+                "1Z".to_string(),
+            ),
         )
         .unwrap();
 

@@ -6843,7 +6843,7 @@ fn canonical_permission_request_id(attempt_dir: &camino::Utf8Path, request_id: &
     for candidate in candidates {
         let path = gold_band::acp::permission::pending_permission_file(attempt_dir, &candidate);
         if let Ok(pending) = read_json::<PendingPermissionState>(&path) {
-            return pending.request_id;
+            return pending.identity.interaction_id;
         }
     }
     stripped_request_id
@@ -12318,6 +12318,8 @@ mod tests {
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-1",
+            "prompt-event-1",
             serde_json::json!({}),
             "1778771541Z".to_string(),
         )
@@ -12364,6 +12366,8 @@ mod tests {
         gold_band::acp::permission::write_pending_permission(
             &attempt_dir,
             "0",
+            "turn-1",
+            "prompt-event-1",
             params.clone(),
             "1778771541Z".to_string(),
         )

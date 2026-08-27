@@ -562,6 +562,14 @@ export function listScheduledTaskOccurrences(projectId: string, scheduledTaskId:
   return getRuntimeApi().listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status);
 }
 
+export function listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null) {
+  return getRuntimeApi().listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor);
+}
+
+export function deleteScheduledExecutionHistory(items: import('./types').ScheduledExecutionHistoryDeleteInputVm[]) {
+  return getRuntimeApi().deleteScheduledExecutionHistory(items);
+}
+
 export function getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string) {
   return getRuntimeApi().getScheduledTaskDiagnostics(projectId, scheduledTaskId);
 }

@@ -1,29 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Clock3, ExternalLink, ListChecks, MoreHorizontal, Pause, Play, Pencil, RotateCw, Trash2, XCircle } from 'lucide-react';
-import { deleteScheduledTask, getScheduledTask, getScheduledTaskDiagnostics, listScheduledTaskOccurrences, listScheduledTasks, runScheduledTaskNow, setScheduledTaskEnabled, subscribeScheduledOccurrenceUpdates, subscribeScheduledTaskUpdates, updateScheduledTask } from '@/api';
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, ListChecks, MoreHorizontal, Pause, Play, Pencil, Trash2 } from 'lucide-react';
+import { deleteScheduledExecutionHistory, deleteScheduledTask, getScheduledTask, getScheduledTaskDiagnostics, listScheduledExecutionHistory, listScheduledTasks, runScheduledTaskNow, setScheduledTaskEnabled, subscribeScheduledOccurrenceUpdates, subscribeScheduledTaskUpdates, updateScheduledTask } from '@/api';
 import { Button } from '@/components/ui/button';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { ScheduledTaskDialog, type ScheduledTaskInitialConfig } from '@/components/conversation/ScheduledTaskDialog';
 import { formatTimestamp, scheduledTaskStatusLabel } from './ScheduledTaskManagementPage';
 import { formatScheduledSchedule, scheduledScheduleTimezone } from '@/lib/scheduled-task-formatting';
-import { scheduledOccurrenceTarget } from '@/lib/scheduled-task-navigation';
+import { scheduledHistoryTarget } from '@/lib/scheduled-task-navigation';
 import { createScheduledTaskDetailRefreshCoordinator, type ScheduledTaskDetailRefreshCoordinator } from '@/lib/scheduled-task-detail-refresh';
-import type { ConversationPage, ScheduledOccurrenceVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm } from '@/types';
+import { displayAppError, displayStatus } from '@/i18n';
+import type { ConversationPage, ScheduledExecutionHistoryVm, ScheduledTaskDiagnosticsVm, ScheduledTaskEditVm, ScheduledTaskVm } from '@/types';
 
 const modeLabels: Record<string, string> = {
   direct: 'Direct',
   workflow: 'Workflow',
   auto: 'AUTO',
 };
-
-const historyStatusOptions = ['pending', 'running', 'retrying', 'succeeded', 'failed', 'skipped', 'missed', 'attention_required'] as const;
 
 function occurrenceStatusLabel(t: TFunction, status: string) {
   return t(`scheduled.status.${status}`, { defaultValue: status });
@@ -36,29 +35,49 @@ function occurrenceStatusClass(status: string) {
   return 'text-muted-foreground';
 }
 
-function occurrenceStatusIcon(status: string) {
-  if (status === 'succeeded') return CheckCircle2;
-  if (status === 'failed' || status === 'attention_required') return XCircle;
-  if (status === 'running' || status === 'retrying') return RotateCw;
-  return Clock3;
-}
-
 function errorCodeLabel(t: TFunction, code?: string | null) {
   if (!code) return '--';
   return t(`scheduled.errors.${code}`, { defaultValue: code });
 }
 
+function executionHistoryStatusLabel(t: TFunction, item: ScheduledExecutionHistoryVm) {
+  return item.run
+    ? displayStatus(t, item.run.status)
+    : t(`scheduled.detail.historyAvailability.${item.availability}`);
+}
+
 interface DetailSnapshotRefreshRequest {
   projectId: string;
   scheduledTaskId: string;
-  status: string;
 }
 
-export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, onOpenOccurrence }: { projectId: string; scheduledTaskId: string; onBack: () => void; onOpenOccurrence?: (page: ConversationPage) => void }) {
+interface HistoryDeleteState {
+  status: 'stopping' | 'deleting' | 'failed';
+  code?: string | null;
+  params?: Record<string, unknown>;
+}
+
+type HistoryPageLocation =
+  | { kind: 'latest' }
+  | { kind: 'anchor'; taskId: string; runId: string }
+  | { kind: 'cursor'; cursor: string };
+
+function initialHistoryLocations(taskId?: string, runId?: string): HistoryPageLocation[] {
+  return taskId && runId
+    ? [{ kind: 'latest' }, { kind: 'anchor', taskId, runId }]
+    : [{ kind: 'latest' }];
+}
+
+function executionHistoryKey(item: Pick<ScheduledExecutionHistoryVm, 'projectId' | 'scheduledTaskId' | 'taskId' | 'runId'>) {
+  return `${item.projectId}\0${item.scheduledTaskId}\0${item.taskId}\0${item.runId}`;
+}
+
+export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, runId, occurrenceId, onBack, onOpenOccurrence }: { projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string; onBack: () => void; onOpenOccurrence?: (page: ConversationPage) => void }) {
   const { t } = useTranslation();
   const [task, setTask] = useState<ScheduledTaskVm | null>(null);
+  const [definitionLoading, setDefinitionLoading] = useState(true);
   const [diagnostics, setDiagnostics] = useState<ScheduledTaskDiagnosticsVm | null>(null);
-  const [occurrences, setOccurrences] = useState<ScheduledOccurrenceVm[]>([]);
+  const [history, setHistory] = useState<ScheduledExecutionHistoryVm[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -66,30 +85,30 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
   const [editLoading, setEditLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pendingAction, setPendingAction] = useState<'enable' | 'edit' | 'delete' | null>(null);
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [historyCursorStack, setHistoryCursorStack] = useState<Array<string | null>>([null]);
+  const [historyLocationStack, setHistoryLocationStack] = useState<HistoryPageLocation[]>(() => initialHistoryLocations(taskId, runId));
   const [historyNextCursor, setHistoryNextCursor] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState(false);
+  const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set());
+  const [historyDeleteStates, setHistoryDeleteStates] = useState<Record<string, HistoryDeleteState>>({});
+  const [historyDeletePending, setHistoryDeletePending] = useState(false);
   const snapshotRefreshCoordinatorRef = useRef<ScheduledTaskDetailRefreshCoordinator<DetailSnapshotRefreshRequest> | null>(null);
+  const historyMutationGenerationRef = useRef(0);
+  const historyDeleteInFlightRef = useRef(false);
   const foregroundRequestInFlightRef = useRef(false);
+  const definitionRequestGenerationRef = useRef(0);
   const pendingActionRef = useRef<'enable' | 'edit' | 'delete' | 'run' | null>(null);
 
   if (!snapshotRefreshCoordinatorRef.current) {
     snapshotRefreshCoordinatorRef.current = createScheduledTaskDetailRefreshCoordinator({
       load: async (request: DetailSnapshotRefreshRequest) => {
         const [page, nextDiagnostics] = await Promise.all([
-          listScheduledTaskOccurrences(
-            request.projectId,
-            request.scheduledTaskId,
-            null,
-            request.status === 'all' ? null : request.status,
-          ),
-          getScheduledTaskDiagnostics(request.projectId, request.scheduledTaskId),
+          listScheduledExecutionHistory(request.projectId, request.scheduledTaskId, null),
+          getScheduledTaskDiagnostics(request.projectId, request.scheduledTaskId).catch(() => null),
         ]);
         return { page, nextDiagnostics };
       },
       commit: ({ page, nextDiagnostics }) => {
-        setOccurrences(page.items);
+        setHistory(page.items);
         setHistoryNextCursor(page.nextCursor ?? null);
         setDiagnostics(nextDiagnostics);
         setHistoryError(false);
@@ -98,69 +117,81 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     });
   }
 
-  const resolvedProjectId = task?.projectId ?? projectId;
-
-  const requestSnapshotRefresh = useCallback((pid: string, sid: string, status: string) => {
+  const requestSnapshotRefresh = useCallback((pid: string, sid: string) => {
     snapshotRefreshCoordinatorRef.current?.request({
       projectId: pid,
       scheduledTaskId: sid,
-      status,
     });
   }, []);
 
-  const loadDetail = useCallback(async (pid: string, sid: string) => {
+  const loadDetail = useCallback((pid: string, sid: string) => {
     const coordinator = snapshotRefreshCoordinatorRef.current!;
     const generation = coordinator.beginForegroundRequest();
+    const definitionGeneration = ++definitionRequestGenerationRef.current;
+    const initialLocations = initialHistoryLocations(taskId, runId);
+    const initialLocation = initialLocations.at(-1)!;
     foregroundRequestInFlightRef.current = true;
+    setDefinitionLoading(true);
     setLoading(true);
     setError(null);
     setTask(null);
     setDiagnostics(null);
-    setOccurrences([]);
+    setHistory([]);
     setHistoryError(false);
-    setStatusFilter('all');
-    setHistoryCursorStack([null]);
+    setHistoryLocationStack(initialLocations);
     setHistoryNextCursor(null);
-    try {
-      let found: ScheduledTaskVm | undefined;
-      let effectiveProjectId = pid;
-      if (!effectiveProjectId) {
-        const all = await listScheduledTasks(null);
-        found = all.find((item) => item.id === sid);
-        effectiveProjectId = found?.projectId ?? '';
-      } else {
-        const all = await listScheduledTasks(null);
-        found = all.find((item) => item.id === sid && item.projectId === effectiveProjectId) ?? all.find((item) => item.id === sid);
-        effectiveProjectId = found?.projectId ?? effectiveProjectId;
-      }
-      if (!found) {
+    setSelectedRuns(new Set());
+    setHistoryDeleteStates({});
+    setHistoryDeletePending(false);
+    historyDeleteInFlightRef.current = false;
+    historyMutationGenerationRef.current += 1;
+    void listScheduledTasks(pid)
+      .then((items) => {
+        if (definitionGeneration !== definitionRequestGenerationRef.current) return;
+        const resolvedTask = items.find((item) => item.id === sid);
+        setTask(resolvedTask ?? null);
+        if (resolvedTask) {
+          void getScheduledTaskDiagnostics(pid, sid)
+            .then((nextDiagnostics) => {
+              if (definitionGeneration === definitionRequestGenerationRef.current) setDiagnostics(nextDiagnostics);
+            })
+            .catch(() => undefined);
+        }
+      })
+      .catch(() => {
+        if (definitionGeneration === definitionRequestGenerationRef.current) setError(t('scheduled.detail.loadFailed'));
+      })
+      .finally(() => {
+        if (definitionGeneration === definitionRequestGenerationRef.current) setDefinitionLoading(false);
+      });
+
+    void listScheduledExecutionHistory(
+      pid,
+      sid,
+      initialLocation.kind === 'cursor' ? initialLocation.cursor : null,
+      initialLocation.kind === 'anchor' ? { taskId: initialLocation.taskId, runId: initialLocation.runId } : null,
+    )
+      .then((page) => {
         if (!coordinator.isCurrent(generation)) return;
-        setError(t('scheduled.detail.notFound'));
-        return;
-      }
-      const [page, nextDiagnostics] = await Promise.all([
-        listScheduledTaskOccurrences(effectiveProjectId, sid, null, null),
-        getScheduledTaskDiagnostics(effectiveProjectId, sid),
-      ]);
-      if (!coordinator.isCurrent(generation)) return;
-      setTask(found);
-      setOccurrences(page.items);
-      setHistoryNextCursor(page.nextCursor ?? null);
-      setDiagnostics(nextDiagnostics);
-    } catch {
-      if (coordinator.isCurrent(generation)) setError(t('scheduled.detail.loadFailed'));
-    } finally {
-      if (coordinator.isCurrent(generation)) {
-        foregroundRequestInFlightRef.current = false;
-        setLoading(false);
-      }
-    }
-  }, [t]);
+        setHistory(page.items);
+        setHistoryNextCursor(page.nextCursor ?? null);
+      })
+      .catch(() => {
+        if (coordinator.isCurrent(generation)) setHistoryError(true);
+      })
+      .finally(() => {
+        if (coordinator.isCurrent(generation)) {
+          foregroundRequestInFlightRef.current = false;
+          setLoading(false);
+        }
+      });
+  }, [runId, t, taskId]);
 
   useEffect(() => {
-    void loadDetail(projectId, scheduledTaskId);
+    loadDetail(projectId, scheduledTaskId);
     return () => {
       snapshotRefreshCoordinatorRef.current?.invalidate();
+      definitionRequestGenerationRef.current += 1;
       foregroundRequestInFlightRef.current = false;
     };
   }, [loadDetail, projectId, scheduledTaskId]);
@@ -170,7 +201,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void subscribeScheduledTaskUpdates((event) => {
-      if (event.scheduledTaskId !== scheduledTaskId) return;
+      if (event.projectId !== (task?.projectId ?? projectId) || event.scheduledTaskId !== scheduledTaskId) return;
       if (event.task) {
         setTask((prev) => (prev ? { ...event.task!, workspaceName: prev.workspaceName } : event.task!));
       }
@@ -179,22 +210,24 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
       else unlisten = dispose;
     });
     return () => { disposed = true; unlisten?.(); };
-  }, [scheduledTaskId]);
+  }, [projectId, scheduledTaskId, task?.projectId]);
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void subscribeScheduledOccurrenceUpdates((event) => {
-      if (event.scheduledTaskId !== scheduledTaskId) return;
-      if (!task || task.id !== scheduledTaskId || historyCursorStack.length !== 1) return;
+      const effectiveProjectId = task?.projectId ?? projectId;
+      if (!effectiveProjectId || event.projectId !== effectiveProjectId || event.scheduledTaskId !== scheduledTaskId) return;
+      if (taskId && runId) return;
+      if (historyLocationStack.length !== 1 || historyLocationStack[0]?.kind !== 'latest') return;
       if (foregroundRequestInFlightRef.current) return;
-      requestSnapshotRefresh(task.projectId, scheduledTaskId, statusFilter);
+      requestSnapshotRefresh(effectiveProjectId, scheduledTaskId);
     }).then((dispose) => {
       if (disposed) dispose();
       else unlisten = dispose;
     });
     return () => { disposed = true; unlisten?.(); };
-  }, [historyCursorStack.length, requestSnapshotRefresh, scheduledTaskId, statusFilter, task]);
+  }, [historyLocationStack, projectId, requestSnapshotRefresh, runId, scheduledTaskId, task, taskId]);
 
   const updateEnabled = useCallback(async (enabled: boolean) => {
     if (!task) return;
@@ -205,14 +238,14 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     try {
       const updated = await setScheduledTaskEnabled(task.projectId, task.id, enabled);
       setTask((current) => current ? { ...updated, workspaceName: current.workspaceName } : updated);
-      requestSnapshotRefresh(task.projectId, task.id, statusFilter);
+      requestSnapshotRefresh(task.projectId, task.id);
     } catch {
       setError(t('scheduled.detail.actionFailed'));
     } finally {
       pendingActionRef.current = null;
       setPendingAction(null);
     }
-  }, [requestSnapshotRefresh, statusFilter, t, task]);
+  }, [requestSnapshotRefresh, t, task]);
 
   const runNow = useCallback(async () => {
     if (!task || pendingActionRef.current) return;
@@ -221,15 +254,15 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     setError(null);
     try {
       await runScheduledTaskNow(task.projectId, task.id);
-      setHistoryCursorStack([null]);
-      requestSnapshotRefresh(task.projectId, task.id, statusFilter);
+      setHistoryLocationStack([{ kind: 'latest' }]);
+      requestSnapshotRefresh(task.projectId, task.id);
     } catch {
       setError(t('scheduled.detail.runFailed'));
     } finally {
       pendingActionRef.current = null;
       setRunning(false);
     }
-  }, [requestSnapshotRefresh, statusFilter, t, task]);
+  }, [requestSnapshotRefresh, t, task]);
 
   const openEdit = useCallback(async () => {
     if (!task) return;
@@ -250,24 +283,29 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     }
   }, [pendingAction, t, task]);
 
-  const loadHistoryPage = useCallback(async (nextStack: Array<string | null>) => {
-    if (!task) return;
+  const loadHistoryPage = useCallback(async (nextStack: HistoryPageLocation[]) => {
+    if (loading || historyDeleteInFlightRef.current) return;
+    const location = nextStack.at(-1);
+    if (!location) return;
     const coordinator = snapshotRefreshCoordinatorRef.current!;
     const generation = coordinator.beginForegroundRequest();
     foregroundRequestInFlightRef.current = true;
     setLoading(true);
     setHistoryError(false);
+    setSelectedRuns(new Set());
+    setHistoryDeleteStates({});
+    historyMutationGenerationRef.current += 1;
     try {
-      const page = await listScheduledTaskOccurrences(
-        task.projectId,
-        task.id,
-        nextStack.at(-1) ?? null,
-        statusFilter === 'all' ? null : statusFilter,
+      const page = await listScheduledExecutionHistory(
+        projectId,
+        scheduledTaskId,
+        location.kind === 'cursor' ? location.cursor : null,
+        location.kind === 'anchor' ? { taskId: location.taskId, runId: location.runId } : null,
       );
       if (!coordinator.isCurrent(generation)) return;
-      setOccurrences(page.items);
+      setHistory(page.items);
       setHistoryNextCursor(page.nextCursor ?? null);
-      setHistoryCursorStack(nextStack);
+      setHistoryLocationStack(nextStack);
     } catch {
       if (coordinator.isCurrent(generation)) setHistoryError(true);
     } finally {
@@ -276,36 +314,46 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
         setLoading(false);
       }
     }
-  }, [statusFilter, task]);
+  }, [loading, projectId, scheduledTaskId]);
 
-  const changeStatusFilter = useCallback(async (status: string) => {
-    setStatusFilter(status);
-    setHistoryCursorStack([null]);
-    if (!task) return;
-    const coordinator = snapshotRefreshCoordinatorRef.current!;
-    const generation = coordinator.beginForegroundRequest();
-    foregroundRequestInFlightRef.current = true;
-    setLoading(true);
-    setHistoryError(false);
+  const deleteSelectedHistory = useCallback(async () => {
+    if (loading || historyDeleteInFlightRef.current) return;
+    const candidates = history.filter((item) => selectedRuns.has(executionHistoryKey(item)));
+    if (!candidates.length) return;
+    const generation = ++historyMutationGenerationRef.current;
+    historyDeleteInFlightRef.current = true;
+    setHistoryDeletePending(true);
+    setHistoryDeleteStates((current) => ({ ...current, ...Object.fromEntries(candidates.map((item) => [executionHistoryKey(item), { status: 'deleting' as const }])) }));
     try {
-      const page = await listScheduledTaskOccurrences(
-        task.projectId,
-        task.id,
-        null,
-        status === 'all' ? null : status,
-      );
-      if (!coordinator.isCurrent(generation)) return;
-      setOccurrences(page.items);
-      setHistoryNextCursor(page.nextCursor ?? null);
+      const results = await deleteScheduledExecutionHistory(candidates.map((item) => ({ projectId: item.projectId, scheduledTaskId: item.scheduledTaskId, taskId: item.taskId, runId: item.runId })));
+      if (generation !== historyMutationGenerationRef.current) return;
+      const completed = new Set(results.filter((result) => result.status === 'completed').map(executionHistoryKey));
+      setHistory((current) => current.filter((item) => !completed.has(executionHistoryKey(item))));
+      setSelectedRuns((current) => new Set([...current].filter((key) => !completed.has(key))));
+      setHistoryDeleteStates((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          const key = executionHistoryKey(result);
+          if (result.status === 'completed') delete next[key];
+          else next[key] = {
+            status: result.status === 'failed' ? 'failed' : result.status === 'stopping' ? 'stopping' : 'deleting',
+            code: result.code,
+            params: result.params,
+          };
+        }
+        return next;
+      });
     } catch {
-      if (coordinator.isCurrent(generation)) setHistoryError(true);
+      if (generation === historyMutationGenerationRef.current) {
+        setHistoryDeleteStates((current) => ({ ...current, ...Object.fromEntries(candidates.map((item) => [executionHistoryKey(item), { status: 'failed' as const }])) }));
+      }
     } finally {
-      if (coordinator.isCurrent(generation)) {
-        foregroundRequestInFlightRef.current = false;
-        setLoading(false);
+      if (generation === historyMutationGenerationRef.current) {
+        historyDeleteInFlightRef.current = false;
+        setHistoryDeletePending(false);
       }
     }
-  }, [task]);
+  }, [history, loading, selectedRuns]);
 
   const editConfig = useCallback((definition: ScheduledTaskEditVm): ScheduledTaskInitialConfig => ({
     schedule: definition.schedule,
@@ -313,15 +361,15 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     sessionPolicy: definition.sessionPolicy,
   }), []);
 
-  if (loading && !task) {
+  if (loading && definitionLoading && !task) {
     return (
-      <main className="mx-auto flex h-full w-full max-w-4xl items-center justify-center text-sm text-muted-foreground">
-        {t('scheduled.detail.loading')}
+      <main className="mx-auto h-full w-full max-w-4xl px-4 py-6 sm:px-6 sm:py-8" aria-busy="true">
+        <div className="space-y-4"><div className="h-6 w-48 animate-pulse rounded bg-muted" /><div className="h-24 animate-pulse rounded bg-muted" /></div>
       </main>
     );
   }
 
-  if (error && !task) {
+  if (error && !task && historyError) {
     return (
       <main className="mx-auto flex h-full w-full max-w-4xl flex-col gap-4 px-6 py-8">
         <Button variant="ghost" size="sm" className="w-fit gap-1.5" onClick={onBack}><ArrowLeft className="size-3.5" />{t('scheduled.detail.back')}</Button>
@@ -330,7 +378,15 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
     );
   }
 
-  if (!task) return null;
+  if (!task) {
+    return (
+      <main className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-auto px-4 py-6 sm:px-6 sm:py-8">
+        <Button variant="ghost" size="sm" className="w-fit gap-1.5" onClick={onBack}><ArrowLeft className="size-3.5" />{t('scheduled.detail.back')}</Button>
+        <p className={`mt-5 text-sm ${error ? 'text-destructive' : 'text-muted-foreground'}`}>{error ?? (definitionLoading ? t('scheduled.detail.loading') : t('scheduled.detail.deleted'))}</p>
+        <RunHistorySection readOnly t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void deleteSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-auto overflow-x-hidden px-4 py-6 sm:px-6 sm:py-8">
@@ -386,49 +442,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
 
       {diagnostics?.lastError ? <p className="mt-2 text-xs text-destructive">{errorCodeLabel(t, diagnostics.lastError)}</p> : null}
 
-      <section className="mt-6" aria-label="Execution history">
-        <div className="mb-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ListChecks className="size-4 text-foreground" />
-            <h2 className="text-sm font-semibold">{t('scheduled.detail.history')}</h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <Select value={statusFilter} onValueChange={(value) => void changeStatusFilter(value)}>
-              <SelectTrigger className="h-8 w-36 text-xs" aria-label={t('scheduled.detail.filter')}><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="all">{t('scheduled.detail.allStatuses')}</SelectItem>{historyStatusOptions.map((status) => <SelectItem key={status} value={status}>{occurrenceStatusLabel(t, status)}</SelectItem>)}</SelectContent>
-            </Select>
-            <span className="text-xs text-muted-foreground">{occurrences.length}</span>
-          </div>
-        </div>
-        {historyError ? <p className="mb-2 text-xs text-destructive">{t('scheduled.detail.historyLoadFailed')}</p> : null}
-        {occurrences.length === 0 ? (
-          <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground">{t('scheduled.detail.noHistory')}</div>
-        ) : (
-          <div className="divide-y divide-border/60 border-y border-border/60">
-            {occurrences.map((occurrence) => {
-              const StatusIcon = occurrenceStatusIcon(occurrence.status);
-              const target = scheduledOccurrenceTarget(resolvedProjectId, occurrence);
-              return (
-                <div key={occurrence.id} className="grid min-w-0 grid-cols-1 gap-2 px-3 py-3 text-xs sm:grid-cols-[minmax(0,1fr)_minmax(110px,0.7fr)_minmax(100px,0.6fr)_minmax(0,1fr)] sm:items-center sm:gap-4">
-                  <div><div className="font-medium">{formatTimestamp(occurrence.scheduledAt)}</div><div className="mt-1 text-muted-foreground">{t(`scheduled.trigger.${occurrence.triggerKind}`, { defaultValue: occurrence.triggerKind })}</div></div>
-                  <div className={`flex items-center gap-1.5 font-medium ${occurrenceStatusClass(occurrence.status)}`}><StatusIcon className={`size-3.5 ${occurrence.status === 'running' || occurrence.status === 'retrying' ? 'animate-spin' : ''}`} />{occurrenceStatusLabel(t, occurrence.status)}</div>
-                  <div className="text-muted-foreground">{t('scheduled.detail.attempt', { count: occurrence.attempt })}</div>
-                  <div className="flex min-w-0 items-center gap-2"><span className="truncate text-muted-foreground">{occurrence.errorCode ? errorCodeLabel(t, occurrence.errorCode) : (occurrence.runId ?? '--')}</span>{target && onOpenOccurrence ? <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => onOpenOccurrence(target)} aria-label={t('scheduled.detail.openRun')}><ExternalLink className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('scheduled.detail.openRun')}</TooltipContent></Tooltip> : null}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || historyCursorStack.length === 1} onClick={() => void loadHistoryPage(historyCursorStack.slice(0, -1))}>
-            <ChevronLeft className="size-3.5" />{t('scheduled.detail.previousPage')}
-          </Button>
-          <span className="min-w-8 text-center text-xs text-muted-foreground">{historyCursorStack.length}</span>
-          <Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || !historyNextCursor} onClick={() => historyNextCursor && void loadHistoryPage([...historyCursorStack, historyNextCursor])}>
-            {t('scheduled.detail.nextPage')}<ChevronRight className="size-3.5" />
-          </Button>
-        </div>
-      </section>
+      <RunHistorySection t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void deleteSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
 
       <Sheet open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="scheduled-task-detail/edit" defaultSize={720} minSize={520} maxSize={960} closeLabel={t('common.close')}>
@@ -495,4 +509,33 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, onBack, on
       </AlertDialog>
     </main>
   );
+}
+
+function RunHistorySection({ t, history, loading, historyError, deletePending, locationStack, nextCursor, selectedRuns, deleteStates, focusedTaskId, focusedRunId, occurrenceId, onToggle, onDelete, onPage, onOpen, readOnly = false }: {
+  t: TFunction;
+  history: ScheduledExecutionHistoryVm[];
+  loading: boolean;
+  historyError: boolean;
+  deletePending: boolean;
+  locationStack: HistoryPageLocation[];
+  nextCursor: string | null;
+  selectedRuns: Set<string>;
+  deleteStates: Record<string, HistoryDeleteState>;
+  focusedTaskId?: string;
+  focusedRunId?: string;
+  occurrenceId?: string;
+  readOnly?: boolean;
+  onToggle: (key: string, checked: boolean) => void;
+  onDelete: () => void;
+  onPage: (stack: HistoryPageLocation[]) => void;
+  onOpen?: (page: ConversationPage) => void;
+}) {
+  const allSelected = history.length > 0 && history.every((item) => selectedRuns.has(executionHistoryKey(item)));
+  const anchoredWindow = locationStack.some((location) => location.kind === 'anchor');
+  return <section className="mt-6" aria-label={t('scheduled.detail.history')}>
+    <div className="mb-2 flex items-center justify-between gap-2"><div className="flex items-center gap-2"><ListChecks className="size-4 text-foreground" /><h2 className="text-sm font-semibold">{t('scheduled.detail.history')}</h2></div>{readOnly ? null : <Button size="sm" variant="outline" disabled={loading || selectedRuns.size === 0 || deletePending} onClick={onDelete}><Trash2 className="mr-1 size-3.5" />{t('scheduled.detail.deleteSelected')}</Button>}</div>
+    {historyError ? <p className="mb-2 text-xs text-destructive">{t('scheduled.detail.historyLoadFailed')}</p> : null}
+    {loading && history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground" aria-busy="true">{t('scheduled.detail.loading')}</div> : history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground">{t('scheduled.detail.noHistory')}</div> : <div className="divide-y divide-border/60 border-y border-border/60">{readOnly ? null : <div className="flex items-center gap-3 px-3 py-2 text-xs text-muted-foreground"><Checkbox aria-label={t('scheduled.detail.selectAllRuns')} checked={allSelected} disabled={loading || deletePending} onCheckedChange={(checked) => history.forEach((item) => onToggle(executionHistoryKey(item), checked === true))} /><span>{history.length}</span></div>}{history.map((item) => { const key = executionHistoryKey(item); const state = deleteStates[key]; const focused = item.taskId === focusedTaskId && item.runId === focusedRunId; return <div key={key} data-focused={focused || undefined} className={`flex min-w-0 items-center gap-3 px-3 py-3 text-xs ${focused ? 'bg-accent/50' : ''}`}>{readOnly ? null : <Checkbox aria-label={t('scheduled.detail.selectRun', { summary: item.latestSummary })} checked={selectedRuns.has(key)} disabled={loading || deletePending || Boolean(state && state.status !== 'failed')} onCheckedChange={(checked) => onToggle(key, checked === true)} />}<button type="button" className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpen?.(scheduledHistoryTarget(item, focused && occurrenceId ? occurrenceId : item.latestOccurrenceId))}><div className="flex min-w-0 items-center justify-between gap-3"><span className="truncate font-medium">{item.latestSummary}</span><span className="shrink-0 text-muted-foreground">{formatTimestamp(item.lastAcceptedAt)}</span></div><div className="mt-1 flex min-w-0 gap-3 text-muted-foreground"><span>{item.occurrenceCount}</span><span className="truncate">{executionHistoryStatusLabel(t, item)}</span>{item.error ? <span className="truncate text-destructive">{displayAppError(t, item.error)}</span> : null}{state ? <span className={state.status === 'failed' ? 'text-destructive' : ''}>{state.status === 'failed' ? state.code ? displayAppError(t, { code: state.code, params: state.params ?? {} }) : t('scheduled.detail.actionFailed') : t('scheduled.detail.deleting')}</span> : null}</div></button><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => onOpen?.({ kind: 'conversation-run', projectId: item.projectId, taskId: item.taskId, runId: item.runId })} aria-label={t('scheduled.detail.openRun')}><ExternalLink className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('scheduled.detail.openRun')}</TooltipContent></Tooltip></div>; })}</div>}
+    <div className="mt-3 flex items-center justify-end gap-2"><Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || deletePending || locationStack.length === 1} onClick={() => onPage(locationStack.slice(0, -1))}><ChevronLeft className="size-3.5" />{t('scheduled.detail.previousPage')}</Button><span className="min-w-8 text-center text-xs text-muted-foreground">{anchoredWindow ? t('scheduled.detail.locatedHistory') : locationStack.length}</span><Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || deletePending || !nextCursor} onClick={() => nextCursor && onPage([...locationStack, { kind: 'cursor', cursor: nextCursor }])}>{t('scheduled.detail.nextPage')}<ChevronRight className="size-3.5" /></Button></div>
+  </section>;
 }

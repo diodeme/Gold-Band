@@ -83,16 +83,18 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 状态筛选和定义状态统一使用“全部 / 已启用 / 已停用”。“已启用”只表达定义开关，不得写成“运行中”；真实执行中状态只能来自 occurrence/runtime 生命周期。首次加载失败显示错误，刷新失败保留已有任务行；任务操作以 task ID 维护独立 pending 状态，失败时保留权威实体和删除确认框，其他任务仍可操作。
 
-详情页显示 occurrence 历史、Task/Run/ACP 跳转、下次执行时间、最近错误、运行次数和重试次数。`attention_required` 状态直接提供“进入会话回答”入口。
+详情页以 accepted Run 作为历史主实体，occurrence 只作为精确定位锚点；不展示 skipped、missed 等调度诊断作为执行历史。历史固定每页 20 条并使用上一页/下一页游标栈。行支持单选、多选和按完整 `projectId + scheduledTaskId + taskId + runId` 删除；后端返回 completed 时局部移除，stopping/deleting 保留进行状态，failed 保持选中并按结构化错误码显示反馈。
 
-历史固定每页 20 条并使用上一页/下一页游标栈；状态条件由后端先筛选再分页，保证一页最多显示 20 条匹配记录。第一页可响应当前任务的 occurrence 事件，用户查看后续页时不得被实时事件强制跳回第一页。窄屏历史行改为单列堆叠，页面禁止横向溢出。
+替换历史投影不得改变定义操作：详情页继续保留原有诊断区、启停、立即执行、编辑 Sheet、保存/关闭/错误反馈、删除确认和任务/occurrence 更新订阅；仅删除旧 occurrence 状态筛选与其列表投影。
+
+历史深链为 `/chat/projects/:projectId/scheduled-tasks/:scheduledTaskId/history/:taskId/:runId/occurrences/:occurrenceId`，普通详情也使用 `/chat/projects/:projectId/scheduled-tasks/:scheduledTaskId`，必须携带完整 workspace 作用域，不得在重载后按名称、当前工作区或默认工作区反查。页面导航先完成 locator 激活并显示目标骨架，再异步加载定义与历史；历史接口接收可选完整 Run anchor，由数据库从同一索引直接返回以目标 Run 开始的有界页，不允许前端循环翻页定位。历史读取不依赖定义诊断成功，定义已删除时仍展示相同的只读 Run 历史及“原定时任务已删除”，不得降级为通用未找到页面。
 
 ## 5. 会话标识
 
 - 会话页头标题旁显示 `AlarmClock`，作为定时任务主标识。
 - 左侧会话行显示较小的同款图标。
 - 不使用 `[定时]` 前缀或高噪声 badge。
-- Direct continuous 会话的每次定时触发使用轻量 AlarmClock 分隔线。
+- Direct continuous 会话的每次定时触发使用轻量 AlarmClock 分隔线。该行消费结构化 `ScheduledTriggerPayload`，自动/手动标签来自 i18n，长摘要截断；隐藏 provider prompt 不进入消息流，重试按 occurrence ID 保持一条 trigger 行。
 
 ## 7. 全局列表与刷新
 
@@ -124,10 +126,10 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 
 ## 9. 统一完善交互（2026-08-05）
 
-- “保持系统唤醒”、完成通知和历史保留天数只在设置页提供；定时任务管理页专注任务列表、筛选与任务操作，不重复展示全局运行设置。
+- “保持系统唤醒”和完成通知只在设置页提供；执行历史不按年龄自动清理，因此不提供历史保留天数设置。
 - 时区选择展示运行环境支持的完整 IANA 时区，首次默认系统时区，之后默认最近一次选择，不再限制为少数硬编码选项。
-- 详情页默认展示全部 occurrence，包括 `skipped`、`missed`、`failed` 和 `attention_required`；状态筛选只改变视图，不删除诊断记录。
-- occurrence 有 Task、Run 或 ACP session 引用时提供对应跳转；需要用户回答时直接进入原问题位置。
+- 详情页的可管理执行历史只展示已绑定完整 Task/Run locator 的 accepted Run；`skipped`、`missed` 等未触发诊断不进入执行历史。
+- accepted occurrence 通过完整 workspace/Task/Run locator 定位历史，并可继续进入对应 Run；需要用户回答时直接进入原问题位置。
 - 完成、失败、需要处理和聚合后的错过通知复用系统通知；点击后 deep link 到最有行动价值的目标。
 - 所有新增可见文案进入前端 i18n；后端只返回错误码和结构化参数。
 - 后端通过 `gold-band://scheduled-notification` 只发送 `kind/projectId/scheduledTaskId/occurrenceId/error/links/missedCount`，不生成对客文案；前端按当前语言生成标题和正文后调用既有原生通知管线。
@@ -138,9 +140,9 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 ### 2026-08-07 实现收口
 
 - `ScheduledTaskVm` 只返回 typed `ScheduleSpec`、原始 IANA 时区和 RFC 3339 时间；计划、时区、最近状态与空标题均由前端按当前语言生成，不再消费后端中文展示字段。
-- 详情页历史不再过滤 `skipped`、`missed`，默认显示全部状态，并提供只改变当前视图的状态筛选。
+- 本条历史方案已由 Phase 22 取代：详情页的可管理执行历史只展示 accepted Run，不再展示或筛选 `skipped`、`missed` 调度诊断。
 - occurrence 同时具备 Task 与 Run 链接时显示图标跳转；存在 Round/Attempt 时写入 conversation deep link，目标 Run 加载后直接选择对应 session attempt。
-- `ScheduledRuntimeSettings` 只挂载在设置页，使用 shadcn/ui `Switch` 与数值 `Input` 管理保持唤醒、完成通知和 `1..=3650` 天保留期；管理页不提供第二入口。
+- 本条保留期方案已由 Phase 22 取代：`ScheduledRuntimeSettings` 只管理保持唤醒和完成通知，不再提供执行历史自动清理设置。
 - 时区控件使用 `Intl.supportedValuesOf('timeZone')`，并以 `@vvo/tzdb` 作为不支持该 API 时的维护型数据回退；列表去重、排序并始终包含 UTC 与系统时区。
 - 窄屏由工作区临时自动收起 Shell 侧栏；不得把响应式折叠写入 `gold-band-sidebar-collapsed` 手动偏好。窗口拉宽时按既有状态机先恢复右侧工作区、再恢复用户原本展开的左侧栏。管理页 header 改为纵向信息区与可换行操作区，避免固定桌面侧栏或筛选工具把任务标题、开关标签压成逐字换行。
 - 详情 deep link 必须在会话导航回调完成初始化后才求值页面内容；直接点击任务行和通知跳转都不得因回调暂时性死区导致 React 根节点崩溃。
@@ -158,9 +160,9 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 管理页区分首次加载、手动刷新、空数据和加载失败。刷新失败保留现有任务并显示可重试错误；首次加载失败不得伪装成空列表。
 - 启停、立即执行、编辑和删除分别维护目标任务级 pending 状态。请求成功前不关闭删除确认，不允许同一任务重复提交；失败时保留原实体和当前工作流，并显示本地化反馈。
 - 状态筛选不得把 `enabled` 命名为“运行中”。列表没有权威 active occurrence 时使用“已启用”；只有获得真实 running 状态后才允许展示“运行中”。
-- 详情历史固定每页 20 条，使用后端 `nextCursor` 前进并保留已选状态筛选；翻页失败保留当前页。第一页在 occurrence 更新事件后刷新，非第一页不被实时事件强制跳回。
+- 详情历史固定每页 20 条，使用后端 `nextCursor` 前进；Phase 22 移除旧 occurrence 状态筛选。翻页失败保留当前页；第一页在 occurrence 更新事件后刷新，非第一页不被实时事件强制跳回。
 - 历史桌面宽度使用表格行；窄容器切换为纵向信息布局，时间、状态、次数、错误和会话入口均无需横向滚动。页头操作区允许换行，任务标题保持安全截断。
-- 保留天数非法输入显示字段级范围错误，不静默回滚；失焦保存与开关保存串行化，屏幕展示值与提交快照保持一致。
+- 本条保留天数交互已由 Phase 22 删除；保持唤醒与完成通知仍按原有串行保存契约处理。
 
 验收结果：接口级回归覆盖加载、刷新和 CRUD 失败保留现有实体，以及同一任务重复提交防护；全量 Web 168 个测试文件、1089 项测试通过。内置浏览器以 21 条真实预览记录确认第一页 20 条、第二页 1 条；390×844 下页面 `clientWidth` 与 `scrollWidth` 均为 390，历史信息、状态筛选和翻页控件无溢出，页面 warning/error 日志为空。
 
@@ -178,3 +180,12 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 用户翻页、切换筛选或切换任务属于更高优先级的 foreground request：开始时递增 generation 并取消尚未开始的事件尾随刷新。已经在途的旧请求可以自然结束，但结果不能回退当前页、计数、错误或 loading。
 - 非第一页继续保持浏览位置，不响应 occurrence 事件强制回到第一页。刷新协调器只管理请求生命周期，不复制 ScheduledTask/Occurrence canonical 数据；页面仍只保存当前页、有限游标栈和当前 diagnostics。
 - 接口验收覆盖旧失败晚于新请求、旧 diagnostics 晚到、burst event 仅产生一个 in-flight 加一个最新 follow-up，以及旧任务/旧页面结果不得覆盖新选择。该机制不增加依赖、轮询、全量历史加载或跨任务刷新。
+
+### 2026-08-27 Run 历史定位与管理边界
+
+- 定时任务详情只接受包含 `projectId + scheduledTaskId` 的 project-scoped 路由；开发阶段删除无项目作用域的旧详情入口，禁止按全局 `scheduledTaskId` 反查定义。
+- 历史 deep link 的 `taskId + runId` anchor 必须精确命中 accepted Run。目标缺失返回结构化 `SCHEDULED_NOT_FOUND`，不得静默回退最新页；目标为最新 Run 与目标缺失是两个不同结果。
+- 页面用 `latest / anchor / cursor` 显式表示当前历史窗口。anchor 窗口不消费 occurrence 实时刷新；用户可返回最新窗口，也可继续向更旧历史分页，定位事实不会被新触发替换。
+- 定义与 Run 历史并行但独立提交：页面 locator generation 管理定义，history generation 管理分页和 occurrence 刷新；同一任务内翻页不得废弃仍有效的定义响应。定义查询慢或失败不得延迟已经返回的历史；定义缺失后历史保持只读，定义仍在加载时也不开放写操作。
+- 翻页开始立即清空当前页选择，并在请求完成前禁用历史选择和删除；同一时刻只允许翻页或删除之一提交，迟到的旧删除结果不得改写新页面。
+- browser 与 desktop 对定义删除、anchor 查询和 Run 删除使用相同完整 locator；project、Task 或 Run 任一不匹配均返回 not-found，不得把不存在的删除目标报告为完成。

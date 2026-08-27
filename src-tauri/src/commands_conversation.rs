@@ -335,15 +335,27 @@ pub fn list_scheduled_execution_history(
     project_id: String,
     scheduled_task_id: String,
     cursor: Option<String>,
+    task_id: Option<String>,
+    run_id: Option<String>,
 ) -> CommandResult<crate::view_models_conversation::ScheduledExecutionHistoryPageVm> {
     let cursor = cursor
         .as_deref()
         .map(decode_execution_history_cursor)
         .transpose()?;
+    let anchor = match (task_id.as_deref(), run_id.as_deref()) {
+        (Some(task_id), Some(run_id)) => Some((task_id, run_id)),
+        (None, None) => None,
+        _ => return Err(invalid_occurrence_query("anchor", "incomplete-anchor")),
+    };
     let page = state
         .scheduled_service()
         .map_err(command_error)?
-        .list_execution_history_page(&project_id, &scheduled_task_id, cursor.as_ref())
+        .list_execution_history_page_anchored(
+            &project_id,
+            &scheduled_task_id,
+            cursor.as_ref(),
+            anchor,
+        )
         .map_err(scheduled_service_error)?;
     let app = resolve_command_app(&state, Some(&project_id))?;
     let items = page

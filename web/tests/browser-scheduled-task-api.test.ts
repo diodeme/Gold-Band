@@ -77,6 +77,8 @@ describe('browser scheduled task API', () => {
     });
 
     expect(updated.content).toBe('edited content');
+    await expect(browserApi.deleteScheduledTask('another-project', first.id)).rejects.toMatchObject({ code: 'scheduled-task.not-found' });
+    expect((await browserApi.listScheduledTasks('default')).some((task) => task.id === first.id)).toBe(true);
     await browserApi.deleteScheduledTask('default', first.id);
     expect((await browserApi.listScheduledTasks('default')).some((task) => task.id === first.id)).toBe(false);
   });
@@ -85,8 +87,12 @@ describe('browser scheduled task API', () => {
     const task = await browserApi.createScheduledTask(input('run me now'));
 
     const updates: string[] = [];
+    let runningHistory: ReturnType<typeof browserApi.listScheduledExecutionHistory> | null = null;
     const unlisten = await browserApi.subscribeScheduledOccurrenceUpdates?.((event) => {
       updates.push(event.status);
+      if (event.status === 'running') {
+        runningHistory = browserApi.listScheduledExecutionHistory('default', task.id);
+      }
     });
     const result = await browserApi.runScheduledTaskNow('default', task.id);
     const occurrencePage = await browserApi.listScheduledTaskOccurrences('default', task.id);
@@ -100,6 +106,67 @@ describe('browser scheduled task API', () => {
     expect(diagnostics.occurrences[0]?.status).toBe('succeeded');
     expect(updates).toContain('running');
     expect(updates).toContain('succeeded');
+    expect(runningHistory).not.toBeNull();
+    expect((await runningHistory!).items[0]).toMatchObject({ taskId: result.taskId, runId: result.runId, run: { status: 'running', outcome: null } });
+  });
+
+  it('groups accepted occurrences by Run and retains history after definition deletion', async () => {
+    const task = await browserApi.createScheduledTask(input('accepted history'));
+    const first = await browserApi.runScheduledTaskNow('default', task.id);
+    const history = await browserApi.listScheduledExecutionHistory('default', task.id);
+    expect(history.items).toHaveLength(1);
+    expect(history.items[0]).toMatchObject({ taskId: first.taskId, runId: first.runId, occurrenceCount: 1, latestOccurrenceId: first.occurrence.id });
+    await browserApi.deleteScheduledTask('default', task.id);
+    expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(1);
+    const rejected = await browserApi.deleteScheduledExecutionHistory([{ projectId: 'another-project', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId! }]);
+    expect(rejected[0]).toMatchObject({ status: 'failed', code: 'SCHEDULED_NOT_FOUND' });
+    expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(1);
+    await browserApi.deleteScheduledExecutionHistory([{ projectId: 'default', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId! }]);
+    expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(0);
+  });
+
+  it('keeps accepted history immutable when later executions use edited content', async () => {
+    const task = await browserApi.createScheduledTask(input('accepted original'));
+    await browserApi.runScheduledTaskNow('default', task.id);
+    const originalHistory = await browserApi.listScheduledExecutionHistory('default', task.id);
+    const originalFingerprint = originalHistory.items[0]?.latestContentFingerprint;
+
+    const edit = await browserApi.getScheduledTask('default', task.id);
+    await browserApi.updateScheduledTask({
+      scheduledTaskId: task.id,
+      projectId: 'default',
+      expectedUpdatedAt: edit.expectedUpdatedAt,
+      content: 'edited future execution',
+      runMode: edit.runMode,
+      directConfig: { agentType: 'claude-acp' },
+      schedule: scheduleInput,
+      overlapPolicy: edit.overlapPolicy,
+      sessionPolicy: edit.sessionPolicy,
+    });
+
+    const afterEdit = await browserApi.listScheduledExecutionHistory('default', task.id);
+    expect(afterEdit.items[0]).toMatchObject({ latestSummary: 'accepted original', latestContentFingerprint: originalFingerprint });
+
+    await browserApi.runScheduledTaskNow('default', task.id);
+    const afterNextRun = await browserApi.listScheduledExecutionHistory('default', task.id);
+    expect(afterNextRun.items.map((item) => item.latestSummary)).toEqual(['edited future execution', 'accepted original']);
+    expect(afterNextRun.items[0]?.latestContentFingerprint).not.toBe(originalFingerprint);
+  });
+
+  it('loads the page anchored at an older Run without scanning pages in the client', async () => {
+    const task = await browserApi.createScheduledTask(input('anchored history'));
+    const runs = [];
+    for (let index = 0; index < 21; index += 1) runs.push(await browserApi.runScheduledTaskNow('default', task.id));
+    const oldest = runs[0];
+
+    const anchored = await browserApi.listScheduledExecutionHistory('default', task.id, null, { taskId: oldest.taskId!, runId: oldest.runId! });
+    expect(anchored.items[0]).toMatchObject({ taskId: oldest.taskId, runId: oldest.runId });
+    await expect(browserApi.listScheduledExecutionHistory('default', task.id, null, { taskId: 'missing-task', runId: 'missing-run' })).rejects.toMatchObject({ code: 'scheduled-task.not-found' });
+
+    const deletion = await browserApi.deleteScheduledExecutionHistory([{
+      projectId: 'default', scheduledTaskId: task.id, taskId: 'missing-task', runId: 'missing-run',
+    }]);
+    expect(deletion[0]).toMatchObject({ status: 'failed', code: 'SCHEDULED_NOT_FOUND' });
   });
 
   it('keeps cursor pages stable when a newer occurrence is inserted', async () => {

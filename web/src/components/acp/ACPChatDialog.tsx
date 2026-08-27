@@ -66,6 +66,7 @@ import {
   useOptionalChatContainerContentExpansion,
 } from "@/components/prompt-kit/chat-container";
 import { ConversationViewport } from "@/components/conversation/ConversationViewport";
+import { ScheduledTriggerRow } from "@/components/conversation/ScheduledTriggerRow";
 import { InterventionLayer } from "@/components/conversation/InterventionLayer";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
@@ -5173,6 +5174,10 @@ const ACPTimelineItemRenderer = memo(function ACPTimelineItemRenderer({
     );
   if (event.kind === "attemptSeparator")
     return <AttemptSeparator event={event} />;
+  if (event.kind === "scheduledTrigger") {
+    const payload = scheduledTriggerPayload(event);
+    return payload ? <ScheduledTriggerRow payload={payload} onOpen={() => { window.dispatchEvent(new CustomEvent('gold-band:scheduled-trigger-open', { detail: payload })); }} /> : null;
+  }
   if (event.kind === "contextCompaction")
     return nested ? (
       <ContextCompactionRow event={event} />
@@ -7755,6 +7760,25 @@ function isRenderableEvent(event: AcpUiEventVm) {
     typeof sessionUpdate !== "string" ||
     !hiddenSessionUpdates.has(sessionUpdate)
   );
+}
+
+function scheduledTriggerPayload(event: AcpTimelineEvent) {
+  const value = rawObject(rawObject(event.raw)?.scheduledTrigger);
+  if (!value) return null;
+  const projectId = stringValue(value.projectId);
+  const scheduledTaskId = stringValue(value.scheduledTaskId);
+  const occurrenceId = stringValue(value.occurrenceId);
+  const acceptedAt = stringValue(value.acceptedAt);
+  const instructionSummary = stringValue(value.instructionSummary);
+  const contentFingerprint = stringValue(value.contentFingerprint);
+  const triggerKind: 'manual' | 'scheduled' | null = value.triggerKind === 'manual'
+    ? 'manual'
+    : value.triggerKind === 'scheduled'
+      ? 'scheduled'
+      : null;
+  if (!projectId || !scheduledTaskId || !occurrenceId || !acceptedAt || !instructionSummary || !contentFingerprint || !triggerKind) return null;
+  const links = rawObject(value.links) ?? {};
+  return { projectId, scheduledTaskId, occurrenceId, acceptedAt, instructionSummary, contentFingerprint, triggerKind, scheduledAt: stringValue(value.scheduledAt), links: { taskId: stringValue(links.taskId), runId: stringValue(links.runId), roundId: stringValue(links.roundId), attemptId: stringValue(links.attemptId), nodeId: stringValue(links.nodeId) } };
 }
 
 function userPromptDedupKey(event: AcpUiEventVm) {

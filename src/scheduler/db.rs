@@ -53,6 +53,35 @@ GROUP BY page.id, page.task_id, page.run_id,
          page.accepted_at, page.execution_snapshot_json
 ORDER BY page.accepted_at DESC, page.id DESC";
 
+const EXECUTION_HISTORY_ANCHOR_CURSOR_QUERY: &str = "WITH latest_runs AS (
+    SELECT id, task_id, run_id, accepted_at
+    FROM scheduled_occurrences AS latest
+    WHERE project_id = ?1 AND job_id = ?2
+      AND accepted_at IS NOT NULL
+      AND NOT EXISTS (
+          SELECT 1
+          FROM scheduled_occurrences AS newer
+          WHERE newer.project_id = latest.project_id
+            AND newer.job_id = latest.job_id
+            AND newer.task_id = latest.task_id
+            AND newer.run_id = latest.run_id
+            AND newer.accepted_at IS NOT NULL
+            AND (newer.accepted_at > latest.accepted_at
+                 OR (newer.accepted_at = latest.accepted_at AND newer.id > latest.id))
+      )
+), target AS (
+    SELECT id, accepted_at
+    FROM latest_runs
+    WHERE task_id = ?3 AND run_id = ?4
+)
+SELECT newer.accepted_at, newer.id
+FROM target
+LEFT JOIN latest_runs AS newer
+  ON newer.accepted_at > target.accepted_at
+  OR (newer.accepted_at = target.accepted_at AND newer.id > target.id)
+ORDER BY newer.accepted_at ASC, newer.id ASC
+LIMIT 1";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledJobRecord {
     pub definition: ScheduledTaskDefinition,
@@ -102,6 +131,13 @@ pub struct ScheduledExecutionHistoryRecord {
 pub struct ScheduledExecutionHistoryCursor {
     pub last_accepted_at: DateTime<Utc>,
     pub latest_occurrence_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduledExecutionHistoryAnchor {
+    Missing,
+    Newest,
+    After(ScheduledExecutionHistoryCursor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1423,6 +1459,43 @@ impl ScheduledTaskDatabase {
         Ok(ScheduledExecutionHistoryPage { items, next_cursor })
     }
 
+    pub fn execution_history_cursor_before_run(
+        &self,
+        project_id: &str,
+        job_id: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> Result<ScheduledExecutionHistoryAnchor> {
+        let connection = self.lock_connection()?;
+        let row = connection
+            .query_row(
+                EXECUTION_HISTORY_ANCHOR_CURSOR_QUERY,
+                params![project_id, job_id, task_id, run_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(SchedulerDatabaseError::from)?;
+        match row {
+            None => Ok(ScheduledExecutionHistoryAnchor::Missing),
+            Some((None, None)) => Ok(ScheduledExecutionHistoryAnchor::Newest),
+            Some((Some(last_accepted_at), Some(latest_occurrence_id))) => Ok(
+                ScheduledExecutionHistoryAnchor::After(ScheduledExecutionHistoryCursor {
+                    last_accepted_at: from_timestamp_millis(last_accepted_at)
+                        .map_err(SchedulerDatabaseError::InvalidValue)?,
+                    latest_occurrence_id,
+                }),
+            ),
+            Some(_) => Err(SchedulerDatabaseError::InvalidValue(
+                "execution history anchor cursor is incomplete".to_string(),
+            )),
+        }
+    }
+
     pub fn delete_execution_history_run(
         &self,
         project_id: &str,
@@ -2624,8 +2697,8 @@ fn to_conversion_error(error: impl std::fmt::Display) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        DueMaterialization, OCCURRENCE_HISTORY_PAGE_SIZE, ScheduledTaskDatabase, UpdateJobResult,
-        derived_next_run_at,
+        DueMaterialization, OCCURRENCE_HISTORY_PAGE_SIZE, ScheduledExecutionHistoryAnchor,
+        ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
     };
     use crate::scheduler::execution::{
         SCHEDULED_INSTRUCTION_SUMMARY_MAX_CHARS, ScheduledAutomaticTriggerContext,
@@ -3299,6 +3372,49 @@ mod tests {
             vec!["run-a"]
         );
         assert!(second.next_cursor.is_none());
+
+        let anchor_cursor = match database
+            .database
+            .execution_history_cursor_before_run(
+                TEST_PROJECT_ID,
+                definition.id(),
+                "task-1",
+                "run-a",
+            )
+            .unwrap()
+        {
+            ScheduledExecutionHistoryAnchor::After(cursor) => cursor,
+            other => panic!("expected cursor before old Run, got {other:?}"),
+        };
+        let anchored = database
+            .database
+            .list_execution_history_page(TEST_PROJECT_ID, definition.id(), Some(&anchor_cursor), 2)
+            .unwrap();
+        assert_eq!(anchored.items[0].run_id, "run-a");
+        assert_eq!(
+            database
+                .database
+                .execution_history_cursor_before_run(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-1",
+                    "run-c",
+                )
+                .unwrap(),
+            ScheduledExecutionHistoryAnchor::Newest
+        );
+        assert_eq!(
+            database
+                .database
+                .execution_history_cursor_before_run(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-missing",
+                    "run-missing",
+                )
+                .unwrap(),
+            ScheduledExecutionHistoryAnchor::Missing
+        );
     }
 
     #[test]

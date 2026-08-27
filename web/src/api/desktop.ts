@@ -538,6 +538,12 @@ export const desktopApi: RuntimeApi = {
   listScheduledTaskOccurrences(projectId, scheduledTaskId, cursor, status) {
     return invokeCommand<import('../types').ScheduledOccurrencePageVm>('list_scheduled_task_occurrences', { projectId, scheduledTaskId, cursor, status });
   },
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryPageVm>('list_scheduled_execution_history', { projectId, scheduledTaskId, cursor, taskId: anchor?.taskId, runId: anchor?.runId });
+  },
+  deleteScheduledExecutionHistory(items) {
+    return invokeCommand<import('../types').ScheduledExecutionHistoryDeleteResultVm[]>('delete_scheduled_execution_history', { items });
+  },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     return invokeCommand<ScheduledTaskDiagnosticsVm>('get_scheduled_task_diagnostics', { projectId, scheduledTaskId });
   },

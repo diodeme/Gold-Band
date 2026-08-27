@@ -1080,6 +1080,7 @@ struct AcpSessionUpdatedEventVm {
     timeline_revision: Option<u64>,
     project_id: Option<String>,
     task_id: String,
+    task_uuid: Option<String>,
     run_id: String,
     round_id: String,
     node_id: String,
@@ -1098,6 +1099,7 @@ struct ConversationRunStateUpdatedEventVm {
     event_kind: String,
     project_id: String,
     task_id: String,
+    task_uuid: Option<String>,
     run_id: String,
     round_id: String,
     node_id: String,
@@ -1116,6 +1118,7 @@ pub(crate) fn emit_recovered_conversation_run_state(
             event_kind: "run-recovered".to_string(),
             project_id: recovered.project_id.clone(),
             task_id: recovered.task_id.clone(),
+            task_uuid: recovered.task_uuid.clone(),
             run_id: recovered.run_id.clone(),
             round_id: recovered.round_id.clone(),
             node_id: recovered.node_id.clone(),
@@ -1340,6 +1343,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::NodeStarted {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1350,6 +1354,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "node-started".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1360,6 +1365,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::RunPaused {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1369,6 +1375,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "run-paused".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1379,6 +1386,7 @@ fn conversation_run_state_update_for_event(
         RuntimeLifecycleEvent::RunCompleted {
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -1389,6 +1397,7 @@ fn conversation_run_state_update_for_event(
             event_kind: "run-completed".to_string(),
             project_id,
             task_id,
+            task_uuid,
             run_id,
             round_id,
             node_id,
@@ -4277,6 +4286,7 @@ pub(crate) fn acp_live_update_emitter(
             &app_handle,
             notification_app.as_ref(),
             project_id.clone(),
+            context.task_uuid.clone(),
             &context.task_id,
             &context.run_id,
             &context.round_id,
@@ -4801,10 +4811,15 @@ fn emit_acp_session_update(
     session: Option<AcpSessionVm>,
 ) {
     let activity = conversation_task_prompt_activity_vm(app, task_id);
+    let task_uuid = app
+        .run_status(task_id, run_id)
+        .ok()
+        .and_then(|run| run.task_uuid);
     emit_acp_update(
         app_handle,
         Some(app),
         project_id,
+        task_uuid,
         task_id,
         run_id,
         round_id,
@@ -4823,6 +4838,7 @@ fn emit_acp_event_update(
     app_handle: &AppHandle,
     activity_app: Option<&App>,
     project_id: Option<String>,
+    task_uuid: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -4838,6 +4854,7 @@ fn emit_acp_event_update(
         app_handle,
         None,
         project_id,
+        task_uuid,
         task_id,
         run_id,
         round_id,
@@ -4865,6 +4882,7 @@ fn emit_acp_update(
     app_handle: &AppHandle,
     app: Option<&App>,
     project_id: Option<String>,
+    task_uuid: Option<String>,
     task_id: &str,
     run_id: &str,
     round_id: &str,
@@ -4904,6 +4922,7 @@ fn emit_acp_update(
             timeline_revision,
             project_id,
             task_id: task_id.to_string(),
+            task_uuid,
             run_id: run_id.to_string(),
             round_id: round_id.to_string(),
             node_id: node_id.to_string(),
@@ -4920,6 +4939,7 @@ fn emit_acp_update(
 
 fn acp_live_event_context(
     task_id: &str,
+    task_uuid: Option<String>,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -4929,6 +4949,7 @@ fn acp_live_event_context(
 ) -> gold_band::app::AcpLiveEventContext {
     gold_band::app::AcpLiveEventContext {
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
@@ -5669,6 +5690,7 @@ async fn submit_conversation_prompt_inner(
             if let Err(error) = app.notify_prompt_turn_finished(
                 acp_live_event_context(
                     &locator.task_id,
+                    run.task_uuid.clone(),
                     &locator.run_id,
                     &locator.round_id,
                     &locator.node_id,
@@ -5953,6 +5975,11 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let attempt_id_for_emit = attempt_id.clone();
     let outer_node_id_for_emit = outer_node_id.clone();
     let outer_attempt_id_for_emit = outer_attempt_id.clone();
+    let task_uuid_for_emit = app
+        .run_status(&task_id, &run_id)
+        .ok()
+        .and_then(|run| run.task_uuid);
+    let task_uuid_for_execution = task_uuid_for_emit.clone();
     let app_for_emit = app.clone_for_background();
     let app_handle_for_task = app_handle.clone();
     let lifecycle_path_for_stop = lifecycle_path.clone();
@@ -6063,6 +6090,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             );
             let session_update = app.acp_session_update_for(acp_live_event_context(
                 &task_id_for_live,
+                task_uuid_for_execution.clone(),
                 &run_id_for_live,
                 &round_id_for_live,
                 &node_id_for_live,
@@ -6072,6 +6100,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
             ));
             let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
                 &task_id_for_live,
+                task_uuid_for_execution.clone(),
                 &run_id_for_live,
                 &round_id_for_live,
                 &node_id_for_live,
@@ -6105,6 +6134,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                     live_update(
                         acp_live_event_context(
                             &task_id_for_live,
+                            task_uuid_for_execution.clone(),
                             &run_id_for_live,
                             &round_id_for_live,
                             &node_id_for_live,
@@ -6231,6 +6261,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         );
         let session_update = app.acp_session_update_for(acp_live_event_context(
             &task_id_for_live,
+            task_uuid_for_execution.clone(),
             &run_id_for_live,
             &round_id_for_live,
             &node_id_for_live,
@@ -6240,6 +6271,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
         ));
         let prompt_accepted = app.acp_prompt_accepted_for(acp_live_event_context(
             &task_id_for_live,
+            task_uuid_for_execution.clone(),
             &run_id_for_live,
             &round_id_for_live,
             &node_id_for_live,
@@ -6274,6 +6306,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
                 live_update(
                     acp_live_event_context(
                         &task_id_for_live,
+                        task_uuid_for_execution.clone(),
                         &run_id_for_live,
                         &round_id_for_live,
                         &node_id_for_live,
@@ -6427,6 +6460,7 @@ async fn execute_admitted_acp_prompt_with_configured_app(
     let _ = app_for_emit.notify_prompt_turn_finished(
         acp_live_event_context(
             &locator.task_id,
+            task_uuid_for_emit,
             &locator.run_id,
             &locator.round_id,
             &locator.node_id,
@@ -9684,6 +9718,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-001".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: Some("task-uuid-001".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -10514,6 +10549,7 @@ mod tests {
             timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -10533,6 +10569,7 @@ mod tests {
             serde_json::json!({ "phase": "running", "stopping": false })
         );
         assert!(active_json["lifecycle"].is_null());
+        assert_eq!(active_json["taskUuid"], "task-uuid-a");
 
         let terminal = AcpSessionUpdatedEventVm {
             branch_id: None,
@@ -10540,6 +10577,7 @@ mod tests {
             timeline_revision: None,
             project_id: Some("project-a".to_string()),
             task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "direct-agent".to_string(),
@@ -11208,6 +11246,7 @@ mod tests {
             .notify_prompt_turn_finished(
                 acp_live_event_context(
                     "task-001",
+                    Some("task-uuid-001".to_string()),
                     "run-001",
                     "round-001",
                     "node-001",
@@ -11290,6 +11329,7 @@ mod tests {
     fn acp_live_event_context_preserves_standard_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
+            Some("task-uuid-001".to_string()),
             "run-001",
             "round-001",
             "dev",
@@ -11299,6 +11339,7 @@ mod tests {
         );
 
         assert_eq!(context.task_id, "task-001");
+        assert_eq!(context.task_uuid.as_deref(), Some("task-uuid-001"));
         assert_eq!(context.run_id, "run-001");
         assert_eq!(context.round_id, "round-001");
         assert_eq!(context.node_id, "dev");
@@ -11311,6 +11352,7 @@ mod tests {
     fn acp_live_event_context_preserves_dynamic_attempt_locator() {
         let context = acp_live_event_context(
             "task-001",
+            Some("task-uuid-001".to_string()),
             "run-001",
             "round-001",
             "bootstrap",
@@ -11507,6 +11549,7 @@ mod tests {
             scheduled_occurrence_id: None,
             project_id: "project-1".to_string(),
             task_id: "task-001".to_string(),
+            task_uuid: Some("task-uuid-001".to_string()),
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
@@ -11519,12 +11562,17 @@ mod tests {
         assert_eq!(paused.event_kind, "run-paused");
         assert_eq!(paused.project_id, "project-1");
         assert_eq!(paused.task_id, "task-001");
+        assert_eq!(paused.task_uuid.as_deref(), Some("task-uuid-001"));
         assert_eq!(paused.run_id, "run-001");
         assert_eq!(paused.round_id, "round-001");
         assert_eq!(paused.node_id, "plan");
         assert_eq!(paused.attempt_id, "attempt-001");
         assert_eq!(paused.status, RunStatus::Paused);
         assert_eq!(paused.outcome, None);
+        assert_eq!(
+            serde_json::to_value(&paused).unwrap()["taskUuid"],
+            "task-uuid-001"
+        );
 
         let completed =
             conversation_run_state_update_for_event(RuntimeLifecycleEvent::RunCompleted {
@@ -11533,6 +11581,7 @@ mod tests {
                 scheduled_occurrence_id: None,
                 project_id: "project-1".to_string(),
                 task_id: "task-001".to_string(),
+                task_uuid: Some("task-uuid-001".to_string()),
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12452,6 +12501,7 @@ mod tests {
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12483,6 +12533,7 @@ mod tests {
             Some(&app),
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12544,6 +12595,7 @@ mod tests {
         }));
         let context = gold_band::app::AcpLiveEventContext {
             task_id: "task-001".to_string(),
+            task_uuid: None,
             run_id: "run-001".to_string(),
             round_id: "round-001".to_string(),
             node_id: "plan".to_string(),
@@ -12614,6 +12666,7 @@ mod tests {
             None,
             &gold_band::app::AcpLiveEventContext {
                 task_id: "task-001".to_string(),
+                task_uuid: None,
                 run_id: "run-001".to_string(),
                 round_id: "round-001".to_string(),
                 node_id: "plan".to_string(),
@@ -12740,6 +12793,7 @@ mod tests {
             &app,
             &gold_band::app::AcpLiveEventContext {
                 task_id: task_id.to_string(),
+                task_uuid: None,
                 run_id: run_id.to_string(),
                 round_id: round_id.to_string(),
                 node_id: "plan".to_string(),
@@ -12921,6 +12975,7 @@ mod tests {
             &app,
             &gold_band::app::AcpLiveEventContext {
                 task_id: task_id.to_string(),
+                task_uuid: None,
                 run_id: run_id.to_string(),
                 round_id: round_id.to_string(),
                 node_id: "bootstrap".to_string(),

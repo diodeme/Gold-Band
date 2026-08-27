@@ -144,7 +144,8 @@ export function ConversationRunPage({
   };
   const localizedRuntimeErrorMessage = acpRuntimeErrorBannerCopy(t, run.runtimeError);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = useState(false);
-  const sessionTreeExpansionRunKey = conversationRunCacheKey(run);
+  const sessionTreeExpansionRunKey = conversationRunCacheKey(run)
+    ?? `uncached:${run.projectId}:${run.taskId}:${run.runId}`;
   const [sessionTreeExpansionState, setSessionTreeExpansionState] = useState<{
     runKey: string;
     expansion: ConversationSessionTreeExpansion;
@@ -186,8 +187,9 @@ export function ConversationRunPage({
   const workflowLocator = useMemo(() => ({
     projectId: run.projectId,
     taskId: run.taskId,
+    taskUuid: run.taskUuid,
     runId: run.runId,
-  }), [run.projectId, run.runId, run.taskId]);
+  }), [run.projectId, run.runId, run.taskId, run.taskUuid]);
 
   const openWorkflowEditor = useCallback((mode: 'edit' | 'repair') => {
     onEditWorkflow();
@@ -576,6 +578,7 @@ export function ConversationRunPage({
             sessionReferenceId={selectedLeaf.sessionId}
             projectId={run.projectId}
             taskId={run.taskId}
+            taskUuid={run.taskUuid}
             runId={run.runId}
             roundId={selectedLeaf.roundId}
             nodeId={selectedLeaf.nodeId}

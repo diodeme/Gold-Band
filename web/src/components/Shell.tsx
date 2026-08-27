@@ -31,11 +31,11 @@ interface ShellProps {
   onChooseWorkspace: () => void;
   onConversationNew: () => void;
   onConversationSearch: () => void;
-  onConversationSelectTask: (projectId: string, taskId: string) => void;
-  onConversationSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  onConversationSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onConversationSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onConversationPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onConversationRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onConversationDeleteTask: (projectId: string, taskId: string) => void;
+  onConversationDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onConversationPinTask: (projectId: string, taskId: string) => void;
   onConversationUnpinTask: (projectId: string, taskId: string) => void;
   onConversationNewInWorkspace?: (projectId: string) => void;

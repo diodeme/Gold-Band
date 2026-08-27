@@ -17,6 +17,7 @@ import path from 'node:path';
 const oldRun = {
   projectId: 'project-1',
   taskId: 'task-old',
+  taskUuid: 'task-uuid-old',
   runId: 'run-1',
 } as ConversationRunVm;
 
@@ -57,17 +58,50 @@ describe('conversation navigation presentation transaction', () => {
     expect(isConversationRunNavigationLoading(requested, oldRun)).toBe(true);
   });
 
+  it('keeps a UUID-less deep link closed until its canonical snapshot is loaded', () => {
+    const requested: ConversationPage = {
+      kind: 'conversation-run',
+      projectId: oldRun.projectId,
+      taskId: oldRun.taskId,
+      runId: oldRun.runId,
+    };
+
+    expect(conversationPageMatchesRun(requested, oldRun)).toBe(false);
+    expect(isConversationRunNavigationLoading(requested, oldRun)).toBe(true);
+    expect(shouldCommitConversationNavigation(1, 1, requested, oldRun)).toBe(true);
+  });
+
   it('commits the target page only when the full project/task/run identity matches', () => {
     const requested: ConversationPage = {
       kind: 'conversation-run',
       projectId: 'project-1',
       taskId: 'task-new',
+      taskUuid: 'task-uuid-new',
       runId: 'run-2',
     };
-    const targetRun = { ...oldRun, taskId: 'task-new', runId: 'run-2' } as ConversationRunVm;
+    const targetRun = { ...oldRun, taskId: 'task-new', taskUuid: 'task-uuid-new', runId: 'run-2' } as ConversationRunVm;
     expect(conversationPageMatchesRun(requested, targetRun)).toBe(true);
     expect(isConversationRunNavigationLoading(requested, targetRun)).toBe(false);
     expect(conversationPageMatchesRun(requested, { ...targetRun, projectId: 'project-2' })).toBe(false);
+  });
+
+  it('rejects a stale response from a deleted task when the readable locator is reused', () => {
+    const requested: ConversationPage = {
+      kind: 'conversation-run',
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'new-task-uuid',
+      runId: 'run-001',
+    };
+    const staleRun = {
+      ...oldRun,
+      taskId: 'task-004',
+      taskUuid: 'old-task-uuid',
+      runId: 'run-001',
+    } as ConversationRunVm;
+
+    expect(conversationPageMatchesRun(requested, staleRun)).toBe(false);
+    expect(shouldCommitConversationNavigation(2, 2, requested, staleRun)).toBe(false);
   });
 
   it('switches non-conversation destinations immediately', () => {
@@ -137,9 +171,10 @@ describe('conversation navigation presentation transaction', () => {
       kind: 'conversation-run',
       projectId: 'project-1',
       taskId: 'task-new',
+      taskUuid: 'task-uuid-new',
       runId: 'run-2',
     };
-    const targetRun = { ...oldRun, taskId: 'task-new', runId: 'run-2' } as ConversationRunVm;
+    const targetRun = { ...oldRun, taskId: 'task-new', taskUuid: 'task-uuid-new', runId: 'run-2' } as ConversationRunVm;
     expect(shouldCommitConversationNavigation(1, 2, requested, targetRun)).toBe(false);
     expect(shouldCommitConversationNavigation(2, 2, requested, targetRun)).toBe(true);
   });
@@ -212,6 +247,7 @@ describe('conversation navigation presentation transaction', () => {
       kind: 'conversation-run',
       projectId: run.projectId,
       taskId: run.taskId,
+      taskUuid: run.taskUuid,
       runId: run.runId,
     }, run)).toBe('D:/repo/.gold-band/worktrees/worker');
 
@@ -274,7 +310,7 @@ describe('conversation sidebar navigation wiring', () => {
     expect(selection).toContain('const nextPage = conversationPageForSession(conversationPage, leaf);');
     expect(selection).toContain('conversationPageRef.current = nextPage;');
     expect(selection).toContain('setConversationPage(nextPage);');
-    expect(selection).toContain("pushRoute(\n              'task-orchestration',\n              taskListPage,\n              nextPage,");
+    expect(selection).toMatch(/pushRoute\(\r?\n\s+'task-orchestration',\r?\n\s+taskListPage,\r?\n\s+nextPage,/u);
     expect(selection.indexOf('setConversationPage(nextPage);'))
       .toBeLessThan(selection.indexOf('pushRoute('));
     expect(selection).toContain('beginConversationSessionSelection(current, key)');

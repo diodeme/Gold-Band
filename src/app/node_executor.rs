@@ -740,6 +740,10 @@ pub(crate) fn execute_ai_node(
     tracing::debug!(task_id, run_id, round_id, node_id, attempt_id, provider_id, stage = ?ProgressStage::CallingProvider, "calling provider");
     let live_update_context = AcpLiveEventContext {
         task_id: task_id.to_string(),
+        task_uuid: app
+            .run_status(task_id, run_id)
+            .ok()
+            .and_then(|run| run.task_uuid),
         run_id: run_id.to_string(),
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),

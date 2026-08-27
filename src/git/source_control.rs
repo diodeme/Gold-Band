@@ -1370,8 +1370,9 @@ impl GitSourceControlService {
                         .any(|component| matches!(component, camino::Utf8Component::ParentDir)),
                 "Git returned an invalid untracked path"
             );
-            let stats = untracked_file_stats(&cwd.join(path))?;
-            files.insert(relative, stats);
+            if let Some(stats) = untracked_file_stats(&cwd.join(path))? {
+                files.insert(relative, stats);
+            }
         }
         Ok(GitBaselineDiffStats {
             added_lines: files
@@ -4155,7 +4156,20 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
     parse_numstat(bytes, "git.commit-diff-parse-failed")
 }
 
-fn untracked_file_stats(path: &Utf8Path) -> Result<CommitFileStats> {
+fn untracked_file_stats(path: &Utf8Path) -> Result<Option<CommitFileStats>> {
+    let file_type = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspect untracked entry `{path}` for Git metrics"))?
+        .file_type();
+    if file_type.is_dir() {
+        return Ok(None);
+    }
+    if !file_type.is_file() {
+        return Ok(Some(CommitFileStats {
+            binary: true,
+            added_lines: None,
+            deleted_lines: None,
+        }));
+    }
     let mut file = std::fs::File::open(path)
         .with_context(|| format!("open untracked file `{path}` for Git metrics"))?;
     let mut buffer = [0_u8; 8192];
@@ -4169,11 +4183,11 @@ fn untracked_file_stats(path: &Utf8Path) -> Result<CommitFileStats> {
         }
         let chunk = &buffer[..read];
         if chunk.contains(&0) {
-            return Ok(CommitFileStats {
+            return Ok(Some(CommitFileStats {
                 binary: true,
                 added_lines: None,
                 deleted_lines: None,
-            });
+            }));
         }
         added_lines =
             added_lines.saturating_add(chunk.iter().filter(|byte| **byte == b'\n').count() as u64);
@@ -4183,11 +4197,11 @@ fn untracked_file_stats(path: &Utf8Path) -> Result<CommitFileStats> {
     if any && last != b'\n' {
         added_lines = added_lines.saturating_add(1);
     }
-    Ok(CommitFileStats {
+    Ok(Some(CommitFileStats {
         binary: false,
         added_lines: Some(added_lines),
         deleted_lines: Some(0),
-    })
+    }))
 }
 
 fn parse_numstat(
@@ -5878,6 +5892,53 @@ mod tests {
                 added_lines: 7,
                 deleted_lines: 1,
                 changed_files: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn baseline_diff_stats_skips_an_untracked_embedded_repository_directory() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "tracked.txt", "base\n", "baseline");
+        let nested = root.join("embedded");
+        std::fs::create_dir_all(&nested).unwrap();
+        let runner = GitCommandRunner;
+        assert!(runner.run(&nested, &["init"]).unwrap().success);
+        assert!(
+            runner
+                .run(&nested, &["config", "user.name", "Nested Test"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&nested, &["config", "user.email", "nested@gold-band.local"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(nested.join("nested.txt"), "nested repository\n").unwrap();
+        assert!(
+            runner
+                .run(&nested, &["add", "--", "nested.txt"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&nested, &["commit", "-m", "nested"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("untracked.txt"), "one\ntwo\n").unwrap();
+
+        assert_eq!(
+            GitSourceControlService::default()
+                .baseline_diff_stats(&root, &baseline)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 2,
+                deleted_lines: 0,
+                changed_files: 1,
             }
         );
     }

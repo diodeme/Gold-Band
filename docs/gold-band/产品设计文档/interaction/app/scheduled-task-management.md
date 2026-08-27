@@ -189,3 +189,10 @@ Workflow/AUTO 隐藏 Direct session policy，并强制新会话。
 - 定义与 Run 历史并行但独立提交：页面 locator generation 管理定义，history generation 管理分页和 occurrence 刷新；同一任务内翻页不得废弃仍有效的定义响应。定义查询慢或失败不得延迟已经返回的历史；定义缺失后历史保持只读，定义仍在加载时也不开放写操作。
 - 翻页开始立即清空当前页选择，并在请求完成前禁用历史选择和删除；同一时刻只允许翻页或删除之一提交，迟到的旧删除结果不得改写新页面。
 - browser 与 desktop 对定义删除、anchor 查询和 Run 删除使用相同完整 locator；project、Task 或 Run 任一不匹配均返回 not-found，不得把不存在的删除目标报告为完成。
+
+### 2026-08-27 Scheduler Schema 错位恢复
+
+- scheduler schema version 不能单独证明物理表已完成升级。打开 v2 scheduler 数据库时必须同时校验 `scheduled_occurrences` 是否具备 `schedule_revision`、`node_id`、`accepted_at` 和 `execution_snapshot_json` 四项 v2 capability。
+- v2 marker 下四项 capability 全部缺失表示已确认的 v1 occurrence 表错位：必须在同一 SQLite immediate transaction 内复用 v1 到 v2 重建，再继续 v2 到 v3 并提交版本号。`scheduled_jobs` definition 完整保留；旧 occurrence 因缺少 immutable execution snapshot 和完整 acceptance locator，属于不能进入新版 Run 历史的脏数据，统一删除且不得伪造、归档为 canonical history 或增加兼容消费路径。
+- 四项 capability 只出现一部分属于未知半升级状态，必须保持原数据和版本不变并返回结构化存储错误，不得按 v1 清理。合法 v1、合法 v2、当前 v3 和高于支持版本的拒绝语义保持不变。
+- capability 校验只读取固定规模的 SQLite table metadata，不扫描 definition 或 occurrence，不增加缓存、队列、后台任务、持久状态或第二套历史模型。

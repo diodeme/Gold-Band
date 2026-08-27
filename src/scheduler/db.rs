@@ -6,6 +6,7 @@ use super::occurrence::{
 };
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -14,6 +15,12 @@ use uuid::Uuid;
 const SCHEMA_VERSION: i64 = 3;
 const BUSY_TIMEOUT_MILLIS: u64 = 3_000;
 const SCHEMA_COMPONENT: &str = "scheduler";
+const SCHEMA_V2_OCCURRENCE_COLUMNS: [&str; 4] = [
+    "schedule_revision",
+    "node_id",
+    "accepted_at",
+    "execution_snapshot_json",
+];
 pub const OCCURRENCE_HISTORY_PAGE_SIZE: usize = 20;
 pub const EXECUTION_HISTORY_BATCH_MAX: usize = OCCURRENCE_HISTORY_PAGE_SIZE;
 
@@ -2006,6 +2013,9 @@ fn ensure_schema(connection: &mut Connection) -> Result<()> {
         Some(2) => {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if !occurrence_schema_has_v2_capability(&transaction)? {
+                migrate_schema_v1_to_v2(&transaction)?;
+            }
             migrate_schema_v2_to_v3(&transaction)?;
             transaction.execute(
                 "UPDATE core_schema SET version = ?2 WHERE component = ?1",
@@ -2029,6 +2039,24 @@ fn ensure_schema(connection: &mut Connection) -> Result<()> {
             transaction.commit()?;
             Ok(())
         }
+    }
+}
+
+fn occurrence_schema_has_v2_capability(transaction: &Transaction<'_>) -> Result<bool> {
+    let mut statement = transaction.prepare("PRAGMA table_info(scheduled_occurrences)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<HashSet<_>, _>>()?;
+    let present = SCHEMA_V2_OCCURRENCE_COLUMNS
+        .iter()
+        .filter(|column| columns.contains(**column))
+        .count();
+    match present {
+        0 => Ok(false),
+        count if count == SCHEMA_V2_OCCURRENCE_COLUMNS.len() => Ok(true),
+        _ => Err(SchedulerDatabaseError::InvalidValue(
+            "scheduler occurrence schema is partially upgraded".to_string(),
+        )),
     }
 }
 
@@ -3066,6 +3094,207 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()
             .unwrap();
         assert!(cascades.is_empty());
+    }
+
+    #[test]
+    fn schema_v2_marker_with_v1_occurrences_recovers_without_losing_definitions() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("core.db");
+        let definition = definition(
+            TEST_PROJECT_ID,
+            "job-schema-drift",
+            ScheduleSpec::every(1, "hours", fixed_time()).unwrap(),
+        );
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE core_schema (
+                         component TEXT PRIMARY KEY NOT NULL,
+                         version INTEGER NOT NULL
+                     );",
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            super::create_schema_v1(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO core_schema(component, version)
+                     VALUES ('scheduler', 2), ('unrelated-component', 17)",
+                    [],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_jobs (
+                         project_id, id, enabled, definition_json, created_at, updated_at,
+                         revision, next_run_at
+                     ) VALUES (?1, ?2, 1, ?3, ?4, ?4, 1, NULL)",
+                    params![
+                        TEST_PROJECT_ID,
+                        definition.id(),
+                        serde_json::to_string(&definition).unwrap(),
+                        fixed_time().timestamp_millis(),
+                    ],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_occurrences (
+                         project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
+                         created_at, updated_at
+                     ) VALUES (?1, 'dirty-occurrence', ?2, ?3, 'manual', 'succeeded', 1, ?3, ?3)",
+                    params![
+                        TEST_PROJECT_ID,
+                        definition.id(),
+                        fixed_time().timestamp_millis(),
+                    ],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let migrated = ScheduledTaskDatabase::open(&path).unwrap();
+
+        assert_eq!(migrated.schema_version().unwrap(), 3);
+        assert_eq!(
+            migrated
+                .get_job_definition(TEST_PROJECT_ID, definition.id())
+                .unwrap()
+                .map(|record| record.definition),
+            Some(definition)
+        );
+        assert!(
+            migrated
+                .list_occurrences(TEST_PROJECT_ID, "job-schema-drift", 20)
+                .unwrap()
+                .is_empty()
+        );
+        let connection = migrated.lock_connection().unwrap();
+        let columns = connection
+            .prepare("PRAGMA table_info(scheduled_occurrences)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<std::result::Result<HashSet<_>, _>>()
+            .unwrap();
+        for column in [
+            "schedule_revision",
+            "node_id",
+            "accepted_at",
+            "execution_snapshot_json",
+        ] {
+            assert!(columns.contains(column), "missing migrated column {column}");
+        }
+        for index_name in [
+            "idx_scheduled_history_deletions_pending",
+            "idx_scheduled_execution_history",
+            "idx_scheduled_execution_run_group",
+        ] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master
+                         WHERE type = 'index' AND name = ?1
+                     )",
+                    params![index_name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing migrated v3 index {index_name}");
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT version FROM core_schema WHERE component = 'unrelated-component'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            17
+        );
+    }
+
+    #[test]
+    fn schema_v2_marker_with_partial_v2_occurrence_columns_is_rejected_without_mutation() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("core.db");
+        let definition = definition(
+            TEST_PROJECT_ID,
+            "partial-job",
+            ScheduleSpec::at(fixed_time()),
+        );
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE core_schema (
+                         component TEXT PRIMARY KEY NOT NULL,
+                         version INTEGER NOT NULL
+                     );",
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            super::create_schema_v1(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO core_schema(component, version) VALUES ('scheduler', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_jobs (
+                         project_id, id, enabled, definition_json, created_at, updated_at,
+                         revision, next_run_at
+                     ) VALUES (?1, ?2, 1, ?3, ?4, ?4, 1, NULL)",
+                    params![
+                        TEST_PROJECT_ID,
+                        definition.id(),
+                        serde_json::to_string(&definition).unwrap(),
+                        fixed_time().timestamp_millis(),
+                    ],
+                )
+                .unwrap();
+            transaction
+                .execute_batch(
+                    "ALTER TABLE scheduled_occurrences ADD COLUMN accepted_at INTEGER;
+                     INSERT INTO scheduled_occurrences (
+                         project_id, id, job_id, scheduled_at, trigger_kind, status, attempt,
+                         created_at, updated_at
+                     ) VALUES (
+                         'project-a', 'partial-occurrence', 'partial-job', 1,
+                         'manual', 'succeeded', 1, 1, 1
+                     );",
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+
+        assert!(matches!(
+            ScheduledTaskDatabase::open(&path),
+            Err(super::SchedulerDatabaseError::InvalidValue(message))
+                if message == "scheduler occurrence schema is partially upgraded"
+        ));
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT version FROM core_schema WHERE component = 'scheduler'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM scheduled_occurrences", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

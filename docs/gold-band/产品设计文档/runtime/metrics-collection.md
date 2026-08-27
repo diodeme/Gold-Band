@@ -1,6 +1,6 @@
 # WB 会话指标采集与批量上报设计
 
-> 状态：2026-08-26 客户端有限投递合同已完成；服务端待外部仓库实现
+> 状态：2026-08-27 follow-up canonical prompt 投影与 workspace tree 代码变更口径已完成；客户端有限投递合同已完成；服务端待外部仓库实现
 >
 > 适用接口：`POST /api/client-report/metrics/batch`
 >
@@ -62,7 +62,8 @@ Runtime producer
 | execution 触发来源 | scheduler occurrence 或用户动作快照 | 当前 Run/Turn | 每事件必填 |
 | attempt counters | `TaskMetricsState.active_attempts` | attempt started 至 terminal | attempt terminal |
 | task counters | `TaskMetricsState.task_counters` | Task 创建至当前 delivery terminal | delivery terminal |
-| 代码变更 | Run 创建时冻结的工作区路径与 Git 基线、delivery terminal 的最终 Git 快照 | Run 创建至 delivery terminal | delivery terminal |
+| 普通用户输入 | ACP canonical timeline 中已接受的非 Runtime 控制 `goldBandPrompt` 与 `raw.promptId` | 当前 attempt | attempt terminal 投影 counters |
+| 代码变更 | Run 首节点执行前冻结并由内部 ref 保护的 workspace tree、delivery terminal 的最终 workspace tree | Run 创建至 delivery terminal | delivery terminal |
 
 ```rust
 struct TaskMetricsKey {
@@ -103,7 +104,7 @@ struct PendingMetricsFact {
 
 `MetricsSubject` 是 tagged enum：`DirectTurn`、`WorkflowRun`、`WorkflowNodeAttempt`、`AutoOuterRun`、`AutoUnitAttempt`。`executionKind` 只能由 subject 映射，producer 不接受裸 kind 与平行 node 字段。
 
-`MetricsTransition` 只表达 collector 需要累加的受控动作：pause、带 `UserExecutionAction` 的 resume、permission/elicitation request、follow-up 或 none。重复 request ID、重复 action ID 和未产生状态转换的命令必须幂等。
+`MetricsTransition` 只表达 collector 需要累加的受控动作：pause、带 `UserExecutionAction` 的 resume、permission/elicitation request、批量 follow-up prompt IDs 或 none。Direct 后续 turn 可提交单元素 follow-up 集合；Workflow/AUTO attempt terminal 从 canonical timeline 提交该 attempt 的全部集合。重复 request ID、重复 action ID、重复 prompt ID 和未产生状态转换的命令必须幂等。
 
 ## 5. Wire 合同
 
@@ -184,8 +185,9 @@ enum UserExecutionAction {
 
 - ManualContinue：真实 paused -> running 时 `resume + 1`、`manualContinue + 1`。
 - Permission/Elicitation response：真实恢复时只 `resume + 1`。
-- FollowUp：Workflow/AUTO 在 paused attempt 接受一次非空用户输入时，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 actionId 幂等口径。
-- 同一次“带内容人工继续”同时产生 `resume + 1`、`manualContinue + 1`、`followUp + 1`；纯继续、权限/elicitation 回答和自动恢复不增加 follow-up。
+- FollowUp：Workflow/AUTO attempt 内，canonical timeline 每接受一个 `kind=userTextDelta`、`raw.source=goldBandPrompt`、`raw.turnControlMode=non-runtime-controlled`、`hiddenFromChat=false` 且具有非空 `raw.promptId` 的普通用户 prompt，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 prompt identity 幂等口径。
+- Runtime 初始 prompt、hidden prompt、provider history、permission response、structured elicitation response、纯继续和 automatic recovery 不增加 follow-up。相同文本的不同 `promptId` 分别计数，同一 `promptId` 的 replay、patch、重试和 terminal 重放只计一次。
+- 同一次“带内容人工继续”产生独立的 resume/manual continue lifecycle fact；其中的内容只有被 canonical timeline 接受后才通过同一 prompt ID 投影 `followUp + 1`，resume transition 不再旁路推导 follow-up。
 - attempt terminal 从 active map 取快照后移除；task counters 不从 attempt terminal 求和。
 
 ## 7. Task 代码变更
@@ -202,14 +204,15 @@ enum UserExecutionAction {
 }
 ```
 
-- 数据只表示任务结束时工作区相对 Run 创建时 Git 基线的最终净差异，不累计 turn churn。
-- 指标开启时，Run 创建后、首个节点执行前原子写入独立的 `observability/code-change-baseline.json`，冻结 `workspacePath + baselineCommit`：主工作区 Run 使用 `repoRoot + startup HEAD`，worktree Run 使用 `worktree.path + forkCommit`。
-- 基线快照独立于 `RunState`，不得为指标向 Workflow 状态增加字段或改变创建、继续、停止、恢复和 terminal 流程；已存在的基线不得被后续重启或工作区 HEAD 覆盖。
-- run terminal 调用现有 Git service 一次，按冻结基线覆盖 baseline 后的 commit、staged、unstaged 与未跟踪文件；编辑后恢复原状不计数。
+- 数据表示 `startupWorkspaceTree -> terminalWorkspaceTree` 的最终净差异，不累计 Run 内 churn，也不包含 Run 启动前已有且之后未变化的 staged、unstaged 或 untracked 内容。
+- 指标开启时，Run 创建后、首个节点执行前使用 `GIT_INDEX_FILE` 指向 observability 目录的临时 index，将当前 tracked 修改/删除和 Git 未忽略的普通文件、符号链接吸收到 tree object；不修改真实 index、分支或工作区，不递归未跟踪目录和嵌套 Git repository boundary。
+- 基线按“生成 tree → 原子写入 `code-change-baseline.json` 的 `workspacePath + baselineTree + baselineRef` → `git update-ref` 保护 tree object”顺序建立。ref 失败则基线不可用；重启时 JSON 存在、ref 缺失但 tree 可解析，可幂等恢复同一 ref。
+- 基线快照独立于 `RunState`，不得为指标向 Workflow 状态增加字段或改变创建、继续、停止、恢复和 terminal 流程；已存在的基线不得被后续重启或工作区 HEAD 覆盖，不保留 `baselineCommit` fallback。
+- run terminal 生成当前 workspace tree，并使用等价于 `git diff --numstat -z -M -C <baselineTree> <currentTree>` 的 Git service 接口统计。Run 内提交或 HEAD 变化不影响结果，编辑后恢复到启动内容固定为 `0/0/0`。
 - rename 按一个最终文件计数；二进制文件计入 `changedFiles`，不虚构增删行；无变更固定为 `0/0/0`。
 - `git ls-files --others` 返回的嵌套 Git 仓库目录是独立 repository boundary，不作为根仓库文件计数且不得递归读取；未跟踪符号链接或其他非普通文件计入 `changedFiles`，但不得跟随链接或虚构增删行。
-- 结果先原子写入 run observability 的 `code-changes.json`，terminal fact 读取或复用该快照；重放不得重新扫描已经结束或清理的工作区。
-- Git 基线或工作区不可用时省略整个 `codeChanges` 并记录结构化诊断；不得用 terminal 时的 HEAD 代替缺失基线，采集失败不得改变 runtime terminal。
+- 结果先原子写入 run observability 的 `code-changes.json`，再删除内部 baseline ref；terminal fact 读取或复用该快照，重放不得重新扫描已经结束或清理的工作区，并 best-effort 清理遗留 ref。
+- Git baseline JSON、ref、tree 或工作区不可用时省略整个 `codeChanges` 并记录结构化诊断；不得用 terminal 时的 HEAD、commit diff 或第二套基线替代，采集失败不得改变 runtime terminal。
 - 删除 `completeness/limitationCodes`、turn-files delta 以及 collector 的跨 attempt code change accumulator。
 
 ## 8. Usage、模型与质量字段
@@ -235,7 +238,7 @@ attempt 的 `started/paused/resumed/completed` 由 canonical runtime transition 
 
 Workflow continue 保持 Runtime 原有控制契约：在后台 drive 启动前，以 attempt locator 和 execution ID 校验当前 paused 事实，一次提交 `Run.status=Running`、清空 pause reason 并推进 `execution.revision`。metrics 不拥有 continue action，不得向 `RunState/RuntimeExecutionState` 增加 `pendingAction`、额外状态或消费分支，也不得改变 continue、stop、重启恢复和启动失败收敛的顺序。
 
-显式 continue 在调用期构造非持久化 metrics context，只冻结提交前的 pause reason、提交成功后的 execution revision、非空输入标记和 prompt ID。drive 首次成功持久化后消费一次：resume factId/transitionId 使用 `run:<runUuid>:resume:<executionRevision>`，人工继续映射 `ManualContinue`；非空输入优先使用 prompt ID 作为 follow-up action ID，缺失 prompt ID 时使用该次 resume transition ID 派生稳定 ID。该 context 只负责指标投影，不参与可继续性判断、CAS、错误恢复或 UI 状态。启动前失败仍按原 execution ID 收敛为 `Paused + RuntimeAbnormal`，不会留下指标专用状态阻塞下一次 continue。
+显式 continue 在调用期构造非持久化 metrics context，只冻结提交前的 pause reason 和提交成功后的 execution revision。drive 首次成功持久化后消费一次：resume factId/transitionId 使用 `run:<runUuid>:resume:<executionRevision>`，人工继续映射 `ManualContinue`。continue context 不再携带或推导 follow-up；带内容继续的 prompt 与所有普通用户 prompt 一样，只在 attempt terminal 由 canonical timeline 的 `raw.promptId` 投影。该 context 只负责 resume 指标投影，不参与可继续性判断、CAS、错误恢复或 UI 状态。启动前失败仍按原 execution ID 收敛为 `Paused + RuntimeAbnormal`，不会留下指标专用状态阻塞下一次 continue。
 
 带人工确认的节点使用 `Running -> AwaitingManualCheck(Paused) -> Completed`。Provider 返回仅固化 artifact 并进入等待确认，不发布 terminal；用户确认后才写 outcome/finishedAt 并发布唯一 completed，确认动作本身不计 resume/manualContinue。
 
@@ -290,6 +293,8 @@ collector 构造 wire event 前校验：
 - producer 热路径为 O(1) 有界 `try_send`；队列容量沿用 2048，单批最多 100。
 - SQLite 工作在专用 blocking worker；同一时刻一个 writer，不持锁 await，不把 HTTP 放进事务。
 - active attempt terminal 后移除；outbox 有状态、lease、最多 3 次 attempt 和保留策略，失败事件不会形成无界积压。
+- follow-up timeline 写入为 HashSet 均摊 O(1)，attempt terminal 只读取当前 attempt 的已建索引并按 prompt 数线性写入 SQLite dedup。
+- codeChanges 每个启用指标的 Run 只在启动和 terminal 各生成一次 workspace tree 并执行一次 tree diff；未跟踪文件内容由 Git 流式 hash，Rust 侧只持有 NUL 分隔路径列表，不读取完整文件内容。
 - 不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
 - 每次 HTTP batch attempt 在统一发送边界记录 `requestId + attempt + url + body`；`body` 必须复用实际发送的序列化字符串，允许包含 metrics wire payload，但不得记录认证头。wire payload 继续禁止 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path；日志仍受 20 MB 总量上限保护。
 
@@ -322,4 +327,6 @@ collector 构造 wire event 前校验：
 - [x] uploader request 日志恢复 `attempt + url + body`，并以接口测试固定批次 attempt 与实际 wire body 一致性。
 - [x] uploader 改为单事件总计最多 3 次请求；第三次可重试失败、永久错误和历史超限 pending 均物理删除，并以逐事件、重启持久化接口测试固定合同。
 - [x] Direct prompt lifecycle 已收敛到共享 metrics producer，删除容量 512 的独立队列与 worker，并补齐 turn identity/outcome/重复转换接口测试。
+- [x] Workflow/AUTO 普通用户 prompt 已从 canonical timeline index 按 `raw.promptId` 批量投影，resume follow-up 旁路已删除，collector 在同一事务内逐 ID 幂等累计。
+- [x] Run codeChanges 已从 `baselineCommit` 破坏式切换到受内部 ref 保护的 `baselineTree`，terminal 使用 workspace tree diff 并在 snapshot 后清理 ref。
 - [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。

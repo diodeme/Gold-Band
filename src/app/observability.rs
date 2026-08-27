@@ -283,8 +283,6 @@ pub enum MetricsTransition {
     Resumed {
         transition_id: String,
         action: UserExecutionAction,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        follow_up_action_id: Option<String>,
     },
     PermissionRequested {
         request_id: String,
@@ -292,8 +290,8 @@ pub enum MetricsTransition {
     ElicitationRequested {
         request_id: String,
     },
-    FollowUp {
-        action_id: String,
+    FollowUps {
+        action_ids: Vec<String>,
     },
     Acceptance {
         action_id: String,
@@ -319,7 +317,8 @@ pub struct TaskCodeChanges {
 #[serde(rename_all = "camelCase")]
 pub struct RunCodeChangeBaseline {
     pub workspace_path: Utf8PathBuf,
-    pub baseline_commit: String,
+    pub baseline_tree: String,
+    pub baseline_ref: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

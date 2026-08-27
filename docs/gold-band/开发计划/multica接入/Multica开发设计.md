@@ -1901,6 +1901,27 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **本机测试环境备注（非代码问题）**：`updater::tests::polling_reuses_one_manifest_check_for_silent_channel` 在本机无限挂起（main 既有，mock server 127.0.0.1，>20min 无进展，需 `-- --skip updater::`）；E 盘 50G 限额被 target/（24G）填满导致编译中断一次，`cargo clean` 后恢复——全量 workspace 测试在本机不可行，以「check 全绿 + 定向模块测试 + 全量 vitest」为合并验收标准。
 
+### 12.33 改动三十一：四次合并 origin/main——composer 分支选择 × multica 表面同域合取（M5-au，2026-08-27）
+
+**背景**：M5-at 合并提交（`6ec3ab91`）后 origin/main 又新增 31 commit（`6ec3ab91..9eb71f58`，含 release 0.14.0/0.14.1）：**composer 工作区分支选择**（`1ea3a884`/`9ea117fa`，worktree 模式下每工作区可选 git 分支、`branchMutationPending` 切换中禁发）、ACP 动画/生命周期修复（`94714db7`/`12a24db2`）、AI-DYNAMIC 路由与恢复加固（`de6310ac`/`a932ca5f`）、slash 菜单层级（`9f078236`）、菜单文案统一（`abe61aa5`/`ec0277e3`）、Git 2.36 最低版本（`deb032e3`）。策略同前三次：冲突优先保 main，合并后在结果上修复 multica。
+
+**安全网**：合并前打备份分支 `feature_multica_premerge3_20260827`（于工作区分诊提交 `0cf5af57` 后）。
+
+**冲突（4 文件）与解决**：
+- `resources/agent-catalog.json` / `resources/acp-registry.snapshot.json`（整取一侧）：两侧均为 registry 快照例行刷新（我方 `0cf5af57` 09:00 fetch vs main `8d567601`/`0ffa9c9c` 10:26），取 main 较新版本。
+- `src-tauri/src/main.rs`（2 处，机械并集）：命令 import 并集——main 新增 git 分支命令（`change_git_branch`/`get_git_branch_picker_snapshot` 等）+ multica 命令块按字母序归位保留。
+- `web/src/components/conversation/ConversationComposer.tsx`（9 处，**本轮唯一业务冲突**，详见下）：main 为底座 + multica 表面增量回插，`canSubmit` 条件合取。
+
+**核心语义决策（canSubmit 同域正交合取）**：main 新增 `!branchMutationPending`（分支切换中禁发）与 multica 既有 `!(multicaActive && !hasLocalWorkspaces)`（远程任务缺本地工作区禁发）叠加为合取——两条件正交、无混合态，不需要 M5-at 式互斥设计；**关键是验证旧设计未被破坏**：M5-at 的 draft 互斥状态机（`{content, attachments, multica, submission}`）本轮 main 未触碰、自动合并完整存活；`onSubmit` 双路径（第二参数传 multica 绑定）保持 M5-at 结果。
+
+**multica 表面回插清单**：`forceSelector` 并进 main 的「Tooltip × 下拉展开互斥」逻辑（`onOpenChange` 联动 `selectOpen`/`hideTooltip`）；`emptyWorkspaceHint` 挂信息条 props；`multicaActive` 门进 `canSubmit`；props/destructure/InfoBar 三处接口并集（`showBranch={!scheduledMode}` 与 multica 两 prop 共存）；main 的 `branchMutationPending` 同时进发送键与 PromptInput 禁用条件、slash 菜单 `z-50`、菜单 switchTo 文案整取不动。`web/src/App.tsx`（+44/−2，全部 multica 增量）经自动合并存活零回插。
+
+**main 自身缺陷分诊（合并验收时浮出，两例）**：
+1. `web/tests/conversation-navigation.test.ts` 以字面 `\n` 匹配 App.tsx 源码（全文件唯一一条内嵌换行断言），Windows `autocrlf` 检出的 CRLF 工作区必挂；测试文件与被测代码块均与 origin/main 字节一致 → **main 自身 Windows 可移植性缺陷**。修复（`4d06ae8e`）：读取边界收敛 `readAppSource()` 统一归一化 `\r\n → \n`，属 main 正确性改进。
+2. main release 0.14.1 提交（`0b341452`）只改 Cargo.toml 版本未重新生成 Cargo.lock（origin/main blob 证实 lock 仍 0.14.0），本地 cargo 自动补齐（`8377eab3`）。
+
+**验证**：`cargo check --workspace --all-targets` exit 0（余量 warning 为 main 既有）；`tsc` 零错；`web:build` 成功；全量 vitest **1684/1684**（CRLF 修复后；一次 `acp-session-reentry` 全量负载时序抖动单独重跑 12/12、全量重跑全绿，判 flake）；Rust 定向 `multica::` **83/83**。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-08-27.md`。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

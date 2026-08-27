@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { agentIconClass, agentIconSrc } from '@/lib/agent-icons';
+import { conversationRunIdentityKey, conversationTaskIdentityKey } from '@/lib/conversation-run-identity';
 import { formatCompactRelativeTime } from '@/lib/datetime';
 
 export const conversationSidebarActivityIconClass = 'motion-safe:animate-pulse';
@@ -57,12 +58,12 @@ interface ConversationSidebarProps {
   onSelect: (page: ConversationPage) => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string) => void;
-  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
@@ -105,7 +106,7 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     return acc;
   }, {}), [vm.pinnedTasks]);
   const pinnedTaskKeys = useMemo(
-    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId))),
+    () => new Set(vm.pinnedTasks.map((task) => conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid))),
     [vm.pinnedTasks],
   );
   const workspacesByProjectId = useMemo(
@@ -159,10 +160,10 @@ export const ConversationSidebar = memo(function ConversationSidebar({
   };
 
   const activeTaskKey = active.kind === 'conversation-run'
-    ? conversationSidebarTaskKey(active.projectId, active.taskId)
+    ? conversationSidebarTaskKey(active.projectId, active.taskId, active.taskUuid)
     : null;
   const activeRunKey = active.kind === 'conversation-run'
-    ? conversationSidebarRunKey(active.projectId, active.taskId, active.runId)
+    ? conversationSidebarRunKey(active.projectId, active.taskId, active.runId, active.taskUuid)
     : null;
 
   useEffect(() => {
@@ -184,18 +185,18 @@ export const ConversationSidebar = memo(function ConversationSidebar({
     setActiveRunListScope(scope);
   };
 
-  const toggleTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
-    const taskKey = conversationSidebarTaskKey(projectId, taskId);
+  const toggleTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
+    const taskKey = conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid);
     markRunListInteraction(scope);
     setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(prev, scope, taskKey, 'toggle'));
   };
 
-  const expandTaskRuns = (scope: ConversationSidebarRunListScope, projectId: string, taskId: string) => {
+  const expandTaskRuns = (scope: ConversationSidebarRunListScope, task: ConversationTaskRowVm) => {
     markRunListInteraction(scope);
     setExpandedTaskKeys((prev) => updateConversationSidebarExpandedTaskKeys(
       prev,
       scope,
-      conversationSidebarTaskKey(projectId, taskId),
+      conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid),
       'expand',
     ));
   };
@@ -312,22 +313,22 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                         <div className="space-y-0.5">
                           {tasks.map((task) => (
                             <TaskRow
-                              key={`pinned-${task.projectId}-${task.taskId}`}
+                              key={`pinned-${conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}`}
                               task={task}
                               pinned
-                              isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                              isActive={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                               activeRunKey={isConversationSidebarRunListScopeActive('pinned', activeRunListScope) ? activeRunKey : null}
-                              expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                              onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                              expanded={expandedTaskKeys.pinned === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
+                              onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
                               onSelectRun={(runId) => {
                                 markRunListInteraction('pinned');
-                                onSelectRun(task.projectId, task.taskId, runId);
+                                onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
                               }}
-                              onToggleRuns={() => toggleTaskRuns('pinned', task.projectId, task.taskId)}
-                              onExpandRuns={() => expandTaskRuns('pinned', task.projectId, task.taskId)}
+                              onToggleRuns={() => toggleTaskRuns('pinned', task)}
+                              onExpandRuns={() => expandTaskRuns('pinned', task)}
                               onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                               onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                              onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                              onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                               onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                               t={t}
                             />
@@ -397,23 +398,23 @@ export const ConversationSidebar = memo(function ConversationSidebar({
                   <div className="space-y-0.5">
                     {(vm.tasksByWorkspace[ws.projectId] ?? []).map((task) => (
                       <TaskRow
-                        key={`${task.projectId}-${task.taskId}`}
+                        key={conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         task={task}
-                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId))}
-                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && active.kind === 'conversation-run' && active.projectId === task.projectId && active.taskId === task.taskId}
+                        pinned={pinnedTaskKeys.has(conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid))}
+                        isActive={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) && activeTaskKey === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
                         activeRunKey={isConversationSidebarRunListScopeActive('workspace', activeRunListScope) ? activeRunKey : null}
-                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId)}
-                        onSelect={() => onSelectTask(task.projectId, task.taskId)}
+                        expanded={expandedTaskKeys.workspace === conversationSidebarTaskKey(task.projectId, task.taskId, task.taskUuid)}
+                        onSelect={() => onSelectTask(task.projectId, task.taskId, task.taskUuid)}
                         onSelectRun={(runId) => {
                           markRunListInteraction('workspace');
-                          onSelectRun(task.projectId, task.taskId, runId);
+                          onSelectRun(task.projectId, task.taskId, task.taskUuid, runId);
                         }}
-                        onToggleRuns={() => toggleTaskRuns('workspace', task.projectId, task.taskId)}
-                        onExpandRuns={() => expandTaskRuns('workspace', task.projectId, task.taskId)}
+                        onToggleRuns={() => toggleTaskRuns('workspace', task)}
+                        onExpandRuns={() => expandTaskRuns('workspace', task)}
                         onPin={() => onPinTask(task.projectId, task.taskId)}
                         onUnpin={() => onUnpinTask(task.projectId, task.taskId)}
                         onRename={(title) => onRenameTask(task.projectId, task.taskId, title)}
-                        onDelete={() => onDeleteTask(task.projectId, task.taskId)}
+                        onDelete={() => onDeleteTask(task.projectId, task.taskId, task.taskUuid)}
                         onPauseRun={(runId) => onPauseRun?.(task.projectId, task.taskId, runId)}
                         t={t}
                       />
@@ -814,7 +815,7 @@ function TaskRow({
                 <div
                   className={cn(
                     'flex items-center gap-2 rounded-md px-2 py-1 cursor-pointer text-xs leading-4',
-                    isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId)
+                    isConversationSidebarRunActive(activeRunKey, task.projectId, task.taskId, run.runId, task.taskUuid)
                       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                       : 'hover:bg-sidebar-accent',
                   )}
@@ -925,12 +926,19 @@ export function reconcileConversationSidebarExpandedWorkspaces(
   return changed ? next : current;
 }
 
-export function conversationSidebarTaskKey(projectId: string, taskId: string) {
-  return `${projectId}\u0000${taskId}`;
+export function conversationSidebarTaskKey(projectId: string, taskId: string, taskUuid?: string | null) {
+  return conversationTaskIdentityKey({ projectId, taskId, taskUuid })
+    ?? JSON.stringify(['invalid-task-identity', projectId, taskId]);
 }
 
-export function conversationSidebarRunKey(projectId: string, taskId: string, runId: string) {
-  return `${conversationSidebarTaskKey(projectId, taskId)}\u0000${runId}`;
+export function conversationSidebarRunKey(
+  projectId: string,
+  taskId: string,
+  runId: string,
+  taskUuid?: string | null,
+) {
+  return conversationRunIdentityKey({ projectId, taskId, taskUuid, runId })
+    ?? JSON.stringify(['invalid-run-identity', projectId, taskId, runId]);
 }
 
 export function isConversationSidebarRunActive(
@@ -938,6 +946,7 @@ export function isConversationSidebarRunActive(
   projectId: string,
   taskId: string,
   runId: string,
+  taskUuid?: string | null,
 ) {
-  return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId);
+  return activeRunKey === conversationSidebarRunKey(projectId, taskId, runId, taskUuid);
 }

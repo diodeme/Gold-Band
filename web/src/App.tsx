@@ -960,6 +960,8 @@ export function App() {
     let dispose: (() => void) | undefined;
     void subscribeConversationRunStateUpdates((event) => {
       if (!active) return;
+      const task = findConversationTask(conversationSidebarRef.current, event.projectId, event.taskId);
+      if (!event.taskUuid || task?.taskUuid !== event.taskUuid) return;
       setConversationSidebar((current) => {
         const next = applyConversationSidebarRunStateUpdate(current, event);
         if (next !== current) conversationSidebarRef.current = next;
@@ -1036,7 +1038,11 @@ export function App() {
     void subscribeAcpSessionUpdates((event) => {
       if (!active) return;
       const projectId = event.projectId?.trim();
-      if (projectId) {
+      const taskUuid = event.taskUuid?.trim();
+      const sidebarTask = projectId
+        ? findConversationTask(conversationSidebarRef.current, projectId, event.taskId)
+        : null;
+      if (projectId && taskUuid && sidebarTask?.taskUuid === taskUuid) {
         const sidebarActivity = conversationTaskActivityFromUpdate(event);
         if (event.lifecycle) {
           applyConversationLifecycleSnapshotToSidebar(
@@ -1141,6 +1147,14 @@ export function App() {
           conversationPageRef.current,
           run,
         )) return;
+        const currentPage = conversationPageRef.current;
+        if (currentPage.kind !== 'conversation-run') return;
+        const canonicalPage = {
+          ...currentPage,
+          taskUuid: run.taskUuid,
+        };
+        conversationPageRef.current = canonicalPage;
+        setConversationPage(canonicalPage);
         const latestFollowState = conversationSessionFollowRef.current.runKey === targetRunKey
           ? conversationSessionFollowRef.current
           : followStateAtRequest;
@@ -1191,6 +1205,8 @@ export function App() {
   useEffect(() => {
     if (!bootstrap || uiMode !== 'conversation' || conversationPage.kind !== 'conversation-run') return undefined;
     if (!conversationPageMatchesRun(conversationPage, conversationRun)) return undefined;
+    const taskUuid = conversationRun?.taskUuid?.trim();
+    if (!taskUuid) return undefined;
     let active = true;
     let refreshTimer: number | null = null;
     let refreshInFlight = false;
@@ -1232,7 +1248,7 @@ export function App() {
       pendingCanonicalRunBoundary = false;
       getConversationRun(projectId, taskId, runId, selectedKey)
         .then((run) => {
-          if (!active) return;
+          if (!active || run.taskUuid !== taskUuid) return;
           const latestFollowState = conversationSessionFollowRef.current;
           const latestSelectedKey = latestFollowState.selectedSessionKey
             ?? conversationSelectedSessionKeyRef.current
@@ -1299,7 +1315,7 @@ export function App() {
 
     const refreshSelectedRunFromStateEvent: Parameters<typeof subscribeConversationRunStateUpdates>[0] = (event) => {
       if (!active) return;
-      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const eventLeaf = currentRun
@@ -1318,7 +1334,7 @@ export function App() {
 
     const refreshSelectedRunFromAcpEvent: Parameters<typeof subscribeAcpSessionUpdates>[0] = (event) => {
       if (!active) return;
-      if (event.projectId !== projectId || event.taskId !== taskId || event.runId !== runId) return;
+      if (event.projectId !== projectId || event.taskUuid !== taskUuid || event.runId !== runId) return;
       const sessionKey = conversationSessionKeyFromParts(event);
       const currentRun = conversationRunRef.current;
       const currentSelectedKey = conversationSelectedSessionKeyRef.current
@@ -1410,7 +1426,7 @@ export function App() {
         conversationAcpSessionRefreshRef.current = null;
       }
     };
-  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.runId]);
+  }, [applyConversationRunSnapshot, bootstrap, uiMode, conversationPage, conversationRun?.projectId, conversationRun?.taskId, conversationRun?.taskUuid, conversationRun?.runId]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
@@ -2206,10 +2222,8 @@ export function App() {
       workspaceRevealRequest={workspaceRevealRequest}
       conversationTaskUuid={
         presentedConversationPage.kind === 'conversation-run'
-        && conversationRun?.projectId === presentedConversationPage.projectId
-        && conversationRun.taskId === presentedConversationPage.taskId
-        && conversationRun.runId === presentedConversationPage.runId
-          ? conversationRun.taskUuid
+        && conversationPageMatchesRun(presentedConversationPage, conversationRun)
+          ? conversationRun?.taskUuid
           : null
       }
       sourceControlWorkspacePath={conversationSourceControlWorkspacePath(
@@ -2246,16 +2260,16 @@ export function App() {
         onSelectConversation({ kind: 'conversation-home' });
       }}
       onConversationSearch={() => setConversationSearchOpen(true)}
-      onConversationSelectTask={(projectId, taskId) => {
+      onConversationSelectTask={(projectId, taskId, taskUuid) => {
         const tasks = conversationSidebar.tasksByWorkspace[projectId] ?? [];
         const task = tasks.find((t) => t.taskId === taskId);
         const runId = task?.latestRun?.runId;
         if (runId) {
-          onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
+          onSelectConversation({ kind: 'conversation-run', projectId, taskId, taskUuid, runId });
         }
       }}
-      onConversationSelectRun={(projectId, taskId, runId) => {
-        onSelectConversation({ kind: 'conversation-run', projectId, taskId, runId });
+      onConversationSelectRun={(projectId, taskId, taskUuid, runId) => {
+        onSelectConversation({ kind: 'conversation-run', projectId, taskId, taskUuid, runId });
       }}
       onConversationPauseRun={onConversationPauseRun}
       onConversationRenameTask={(projectId, taskId, title) => {
@@ -2264,14 +2278,31 @@ export function App() {
           .then(applyConversationTask)
           .catch((err) => setError(displayAppError(t, err)));
       }}
-      onConversationDeleteTask={(projectId, taskId) => {
+      onConversationDeleteTask={(projectId, taskId, taskUuid) => {
         deleteConversationTask(projectId, taskId)
           .then((sidebar) => {
             conversationWorkspaceStore.deleteConversation(projectId, taskId);
+            if (taskUuid) {
+              conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
+            }
             applyConversationSidebar(sidebar);
-            if (conversationPage.kind === 'conversation-run' && conversationPage.projectId === projectId && conversationPage.taskId === taskId) {
+            if (conversationPage.kind === 'conversation-run'
+              && conversationPage.projectId === projectId
+              && conversationPage.taskId === taskId
+              && (!taskUuid || conversationPage.taskUuid === taskUuid)) {
+              conversationNavigationRequestRef.current += 1;
+              conversationRunRef.current = null;
+              conversationSelectedSessionKeyRef.current = null;
+              conversationSessionFollowRef.current = {
+                runKey: null,
+                mode: 'auto',
+                selectedSessionKey: null,
+                version: conversationSessionFollowRef.current.version + 1,
+              };
               setConversationRun(null);
-              setConversationPage({ kind: 'conversation-home' });
+              const homePage: ConversationPage = { kind: 'conversation-home' };
+              conversationPageRef.current = homePage;
+              setConversationPage(homePage);
             }
           })
           .catch((err) => setError(displayAppError(t, err)));
@@ -2488,12 +2519,14 @@ export function App() {
                 kind: 'conversation-run',
                 projectId: run.projectId,
                 taskId: run.taskId,
+                taskUuid: run.taskUuid,
                 runId: run.runId,
               });
               pushRoute('task-orchestration', taskListPage, {
                 kind: 'conversation-run',
                 projectId: run.projectId,
                 taskId: run.taskId,
+                taskUuid: run.taskUuid,
                 runId: run.runId,
               });
               return null;
@@ -2628,6 +2661,7 @@ export function App() {
                   kind: 'conversation-run',
                   projectId: run.projectId,
                   taskId: run.taskId,
+                  taskUuid: run.taskUuid,
                   runId: run.runId,
                 });
                 getConversationSidebar().then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});
@@ -2635,6 +2669,7 @@ export function App() {
                   kind: 'conversation-run',
                   projectId: run.projectId,
                   taskId: run.taskId,
+                  taskUuid: run.taskUuid,
                   runId: run.runId,
                 });
               })

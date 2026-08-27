@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-27：顺序 Task locator 复用导致会话混显修复
+
+- 根因与实现：Task 已有每次创建都生成的稳定 `taskUuid`，`task-004` 等顺序 `taskId` 在旧实体删除后可被新实体复用，该数据设计能够正确区分两个实体；缺陷属于正确设计的身份传播与消费实现不完整。现统一以 `projectId + taskUuid + runId` 作为 canonical Run identity，`taskId` 只保留为可读路径 locator；后端 Runtime lifecycle 与 ACP live event 补齐 `taskUuid`，前端导航提交、响应校验、Run/ACP 缓存、快照合并、侧栏 key、右侧工作区和删除清理都消费同一身份接口。不同 UUID 即使复用相同 `taskId/runId` 也必须原子换代或隔离，迟到响应和旧会话事件不得覆盖新实体。
+- 验收：先以最小失败测试构造同 `projectId/taskId/runId/attempt`、不同 `taskUuid` 的旧新 Run，确认旧 `selectedSession`、ACP sessionId 与“你好”历史会被错误合并；实现后使用同一用例转绿，并扩大覆盖导航竞态、Run 缓存、ACP 事件路由与 reducer、侧栏选择和删除、右侧工作区、终态确认、权限卡片及输入锁。相关 Web 回归 27 个文件共 285 项全部通过，TypeScript 检查和 Web 生产构建通过，Rust 测试目标编译通过；Rust 实际执行 525 项中 524 项通过，唯一失败为仓库既有配置断言仍期望 `64,000`、而当前内置值为 `20,000`，与本修复无关。隔离 EXE 已构建并启动，但用户要求提交前不再执行编译或测试，因此未继续完成删除重建的客户端实操验收。
+- 权限、依赖、过度设计与性能评审：复用 `2934bf1 fix(acp): unify user prompt interactions` 已建立的权限展示和交互机制，只补齐会话身份边界，没有重复引入权限模型。实现复用既有 `taskUuid`、Vitest、内存 LRU 与导航/快照接口，不新增依赖、持久字段、aggregate、状态机、缓存、队列或兼容层；身份比较和缓存访问仍为 O(1)，LRU 上限、I/O、加载量、订阅范围、渲染范围和锁行为不变，无需专项 benchmark。
+
 ## 2026-08-26：AI-DYNAMIC PostTurn 分发规划后置
 
 - 根因与实现：PostTurn 两阶段设计正确，但 AI-DYNAMIC system prompt 渲染把现有 `OutputEmissionMode` 压缩为 `has_output_contract` 布尔值，导致 `PostTurnProjection` worker / acceptance 与没有控制协议的 merge 同时落入“执行型节点”分支，agent 无法得知正常结束业务 turn 后仍可由 hidden finalize 决定继续分发。现让 AI-DYNAMIC system prompt 直接消费既有 emission mode：InlineControl 保持当前 turn 内联控制；PostTurnProjection 明确 agent 可以直接完成任务，或在判断应继续分发时立即停止并自然结束，且不得在业务 turn 提前拆分任务、选择 Agent 或规划/执行后继节点；只有 hidden finalize 提供完整 artifact 协议与路由上下文后才规划并输出控制结果；无 emission mode 的 merge 保持纯执行语义。continue 规则同步收窄为处理当前节点任务而非继续来源节点旧任务。

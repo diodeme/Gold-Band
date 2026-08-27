@@ -62,13 +62,13 @@ interface WorkspaceShellProps {
   onToggleSidebar: () => void;
   onNewConversation: () => void;
   onSearch: () => void;
-  onSelectTask: (projectId: string, taskId: string) => void;
-  onSelectRun: (projectId: string, taskId: string, runId: string) => void;
+  onSelectTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
+  onSelectRun: (projectId: string, taskId: string, taskUuid: string | null | undefined, runId: string) => void;
   onPauseRun?: (projectId: string, taskId: string, runId: string) => void | Promise<void>;
   onPinTask: (projectId: string, taskId: string) => void;
   onUnpinTask: (projectId: string, taskId: string) => void;
   onRenameTask: (projectId: string, taskId: string, title: string) => void;
-  onDeleteTask: (projectId: string, taskId: string) => void;
+  onDeleteTask: (projectId: string, taskId: string, taskUuid?: string | null) => void;
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;

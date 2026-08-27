@@ -1042,6 +1042,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1070,6 +1071,7 @@ pub enum RuntimeLifecycleEvent {
         scheduled_occurrence_id: Option<String>,
         project_id: String,
         task_id: String,
+        task_uuid: Option<String>,
         run_id: String,
         round_id: String,
         node_id: String,
@@ -1206,6 +1208,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
 #[derive(Debug, Clone)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub run_id: String,
     pub round_id: String,
     pub node_id: String,

@@ -440,6 +440,7 @@ pub struct ConversationSidebarVm {
 pub struct ConversationTaskRowVm {
     pub project_id: String,
     pub task_id: String,
+    pub task_uuid: Option<String>,
     pub title: String,
     pub auto_title: bool,
     pub run_mode: String,
@@ -1173,6 +1174,7 @@ fn conversation_task_row_vm_from_task(
     ConversationTaskRowVm {
         project_id: project_id.to_string(),
         task_id: task_id.clone(),
+        task_uuid: task.uuid.clone(),
         title: task.title.clone().unwrap_or_else(|| task_id.clone()),
         auto_title: metadata
             .as_ref()
@@ -7024,6 +7026,11 @@ mod tests {
         assert!(serialized.get("autoTitle").is_none());
         let task = conversation_task_row_vm(&app, "project-001", "task-046", false, None).unwrap();
         assert_eq!(task.title, "中文节点资源回归");
+        assert_eq!(task.task_uuid.as_deref(), Some("task-046-fixture-uuid"));
+        assert_eq!(
+            serde_json::to_value(&task).unwrap()["taskUuid"],
+            "task-046-fixture-uuid"
+        );
 
         let leaf = vm.session_tree.rounds[0].nodes[0]
             .attempts

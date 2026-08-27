@@ -127,6 +127,7 @@ export interface AcpSessionUpdatedEventVm {
   timelineRevision?: number | null;
   projectId?: string | null;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -143,6 +144,7 @@ export interface ConversationRunStateUpdatedEventVm {
   eventKind: 'node-started' | 'run-paused' | 'run-completed' | 'run-recovered';
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;

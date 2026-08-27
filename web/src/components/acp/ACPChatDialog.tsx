@@ -182,6 +182,7 @@ import {
   acpSessionEventsSignature,
   mergeAcpEventSnapshots,
   mergeAcpEventWindows,
+  mergeAcpEventWindowsForSession,
   mergeRawObject,
   permissionRequestIdFromEvent,
   projectLatestAcpUsageUpdate,
@@ -330,6 +331,7 @@ interface ACPChatDialogProps {
   sessionReferenceId?: string | null;
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   runId: string;
   roundId: string;
   nodeId: string;
@@ -797,6 +799,7 @@ export function ACPChatDialog(
     sessionReferenceId,
     projectId,
     taskId,
+    taskUuid,
     runId,
     roundId,
     nodeId,
@@ -839,6 +842,7 @@ export function ACPChatDialog(
   const attemptWorkspaceLocator = useMemo<AcpAttemptWorkspaceLocator>(() => ({
     projectId,
     taskId,
+    taskUuid,
     runId,
     roundId,
     nodeId,
@@ -846,7 +850,7 @@ export function ACPChatDialog(
     outerNodeId,
     outerAttemptId,
     branchId,
-  }), [attemptId, branchId, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId]);
+  }), [attemptId, branchId, nodeId, outerAttemptId, outerNodeId, projectId, roundId, runId, taskId, taskUuid]);
   const systemPromptWorkspaceKey = acpAttemptWorkspaceResourceKey('system-prompt', attemptWorkspaceLocator);
   const rawFramesWorkspaceKey = acpAttemptWorkspaceResourceKey('raw-frames', attemptWorkspaceLocator);
   const branchLiveSnapshot = useConversationBranchLiveSnapshot(
@@ -1772,6 +1776,7 @@ export function ACPChatDialog(
       reconcileConversationBranchSession({
         projectId,
         taskId,
+        taskUuid,
         runId,
         roundId,
         nodeId,
@@ -1787,7 +1792,13 @@ export function ACPChatDialog(
     if (!normalized) return;
     setLoadedEvents((events) => {
       setHasNewerEvents(normalized.eventPage.hasNewer);
-      const merged = mergeAcpEvents(events, normalized.events);
+      const merged = mergeAcpEventWindowsForSession(
+        previous?.sessionId,
+        normalized.sessionId,
+        events,
+        normalized.events,
+        alignAcpDisplaySeq,
+      );
       const limited = limitAcpEvents(
         merged,
         "start",
@@ -1801,7 +1812,7 @@ export function ACPChatDialog(
       loadedEventsRef.current = limited;
       return limited;
     });
-  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId]);
+  }, [attemptId, componentInstanceId, effectiveLoadedEventBufferLimit, eventWindowKey, nodeId, normalizeSessionUpdate, outerAttemptId, outerNodeId, projectId, roundId, runId, sessionIdentity, taskId, taskUuid]);
 
   const refreshSessionAfterConfigUnavailable = useCallback(async (error: unknown) => {
     if (!isAcpSessionConfigValueUnavailableError(error)) return;
@@ -2352,6 +2363,7 @@ export function ACPChatDialog(
     const branchLocator = {
       projectId,
       taskId,
+      taskUuid,
       runId,
       roundId,
       nodeId,

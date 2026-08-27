@@ -301,17 +301,22 @@ describe('ConversationSidebar run selection identity', () => {
     expect(conversationTaskActivityFromUpdate(event)).toBeUndefined();
   });
 
-  it('binds an active run to its parent project and task', () => {
-    const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003');
+  it('binds an active run to its canonical task entity', () => {
+    const activeRunKey = conversationSidebarRunKey('project-a', 'task-a', 'run-003', 'task-uuid-a');
 
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003')).toBe(true);
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-b', 'run-003')).toBe(false);
-    expect(isConversationSidebarRunActive(activeRunKey, 'project-b', 'task-a', 'run-003')).toBe(false);
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003', 'task-uuid-a')).toBe(true);
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-a', 'task-a', 'run-003', 'task-uuid-b')).toBe(false);
+    expect(isConversationSidebarRunActive(activeRunKey, 'project-b', 'task-a', 'run-003', 'task-uuid-a')).toBe(false);
   });
 
   it('uses distinct task keys for the single-expanded sidebar task state', () => {
     expect(conversationSidebarTaskKey('project-a', 'task-1')).not.toBe(conversationSidebarTaskKey('project-a', 'task-2'));
     expect(conversationSidebarTaskKey('project-a', 'task-1')).not.toBe(conversationSidebarTaskKey('project-b', 'task-1'));
+  });
+
+  it('does not reuse sidebar row state after a task locator is recreated', () => {
+    expect(conversationSidebarTaskKey('project-a', 'task-004', 'task-uuid-old'))
+      .not.toBe(conversationSidebarTaskKey('project-a', 'task-004', 'task-uuid-new'));
   });
 
   it('moves the active workspace to the top of the sidebar immediately', () => {

@@ -1925,6 +1925,7 @@ export type ConversationPage =
       kind: 'conversation-run';
       projectId: string;
       taskId: string;
+      taskUuid?: string | null;
       runId: string;
       roundId?: string;
       nodeId?: string;
@@ -2072,6 +2073,7 @@ export interface ConversationWorkspaceVm {
 export interface ConversationTaskRowVm {
   projectId: string;
   taskId: string;
+  taskUuid?: string | null;
   title: string;
   autoTitle: boolean;
   runMode: 'direct' | 'auto' | 'workflow';

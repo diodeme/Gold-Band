@@ -1024,6 +1024,7 @@ mod tests {
             scheduled_occurrence_id: scheduled_occurrence_id.map(str::to_string),
             project_id: "project-a".to_string(),
             task_id: "task-a".to_string(),
+            task_uuid: Some("task-uuid-a".to_string()),
             run_id: "run-a".to_string(),
             round_id: "round-a".to_string(),
             node_id: "node-a".to_string(),

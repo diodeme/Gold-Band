@@ -2355,6 +2355,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
     );
     let background_app = app.clone_for_background();
     let background_task_id = task_id.to_string();
+    let background_task_uuid = initial_run.task_uuid.clone();
     let background_run_id = run_id.to_string();
     let background_round_id = round_id.to_string();
     let background_outer_node_id = outer_node_id.to_string();
@@ -2494,6 +2495,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
                 if converged || outer_converged {
                     let _ = app.emit_acp_session_update(AcpLiveEventContext {
                         task_id: background_task_id.clone(),
+                        task_uuid: background_task_uuid.clone(),
                         run_id: background_run_id.clone(),
                         round_id: background_round_id.clone(),
                         node_id: background_dynamic_node_id.clone(),
@@ -2571,6 +2573,7 @@ pub(crate) fn run_continue_dynamic_inner_background(
         if matches!(convergence, Ok(AttemptRuntimePauseResult::Converged)) {
             let _ = app.emit_acp_session_update(AcpLiveEventContext {
                 task_id: task_id.to_string(),
+                task_uuid: initial_run.task_uuid.clone(),
                 run_id: run_id.to_string(),
                 round_id: round_id.to_string(),
                 node_id: dynamic_node_id.to_string(),
@@ -2672,6 +2675,7 @@ pub(crate) fn run_continue_background(
         runtime_candidate.commit();
     }
     let background_app = app.clone_for_background();
+    let task_uuid = initial_run.task_uuid.clone();
     let task_id = task_id.to_string();
     let run_id = run_id.to_string();
     let prompt_id = prompt_id.clone();
@@ -2735,6 +2739,7 @@ pub(crate) fn run_continue_background(
                 if !matches!(&convergence, Ok(AttemptRuntimePauseResult::Superseded)) {
                     let _ = app.emit_acp_session_update(AcpLiveEventContext {
                         task_id: task_id.clone(),
+                        task_uuid: task_uuid.clone(),
                         run_id: run_id.clone(),
                         round_id: round_id.clone(),
                         node_id: node_id.clone(),
@@ -3848,6 +3853,7 @@ fn emit_run_paused_lifecycle_event(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
@@ -3934,6 +3940,7 @@ fn emit_run_completed_lifecycle_event(
         scheduled_occurrence_id: None,
         project_id: app.paths.project_id.clone(),
         task_id: task_id.to_string(),
+        task_uuid: run.task_uuid.clone(),
         run_id: run.id.clone(),
         round_id: round.id.clone(),
         node_id: node.node_id.clone(),
@@ -3956,6 +3963,7 @@ fn emit_run_completed_lifecycle_event(
     let _ = app.notify_prompt_turn_finished(
         crate::app::AcpLiveEventContext {
             task_id: task_id.to_string(),
+            task_uuid: run.task_uuid.clone(),
             run_id: run.id.clone(),
             round_id: round.id.clone(),
             node_id: node.node_id.clone(),
@@ -4618,6 +4626,7 @@ fn apply_control_decision(
             emit_completed_acp_session_update_best_effort(
                 app,
                 task_id,
+                run.task_uuid.clone(),
                 &run.id,
                 &round.id,
                 &completed_node_id,
@@ -4941,6 +4950,7 @@ fn freeze_allowed_workflow_snapshots(
 fn emit_completed_acp_session_update_best_effort(
     app: &App,
     task_id: &str,
+    task_uuid: Option<String>,
     run_id: &str,
     round_id: &str,
     node_id: &str,
@@ -4948,6 +4958,7 @@ fn emit_completed_acp_session_update_best_effort(
 ) {
     let _ = app.emit_acp_session_update(AcpLiveEventContext {
         task_id: task_id.to_string(),
+        task_uuid,
         run_id: run_id.to_string(),
         round_id: round_id.to_string(),
         node_id: node_id.to_string(),
@@ -4964,6 +4975,7 @@ fn dynamic_acp_live_event_context(
 ) -> AcpLiveEventContext {
     AcpLiveEventContext {
         task_id: ctx.task_id.to_string(),
+        task_uuid: ctx.task_uuid.map(str::to_string),
         run_id: ctx.run_id.to_string(),
         round_id: ctx.round_id.to_string(),
         node_id: node_id.to_string(),

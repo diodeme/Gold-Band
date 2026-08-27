@@ -79,7 +79,7 @@ use crate::runtime_error::{
     RecoveryMode, RuntimeErrorDomain, RuntimeErrorInfo, blocked_runtime_error_info,
     manual_runtime_error_info, normalize_runtime_error, runtime_error,
 };
-use crate::storage::{append_jsonl, read_json, write_json};
+use crate::storage::{append_jsonl, read_json, with_file_lock, write_json};
 use crate::workflow_model_binding::{TaskAuthoringWorkflow, validate_and_inject};
 
 use super::ids::{
@@ -1090,8 +1090,12 @@ fn prepare_run_from_workflow(
     )?;
     write_json(&app.paths.task_provenance_file(task_id), &resolved_profiles)?;
 
-    let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
-    let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
+    let task_dir = app.paths.task_dir(task_id);
+    let (run_id, run_dir, task_uuid) = with_file_lock(&task_dir, || {
+        let task_uuid = read_json::<TaskState>(&app.paths.task_file(task_id))?.uuid;
+        let (run_id, run_dir) = reserve_next_run_dir(&app.paths.runs_dir(task_id))?;
+        Ok((run_id, run_dir, task_uuid))
+    })?;
     let run_uuid = generate_uuid();
     let mut prepared = PreparedRun {
         data: None,
@@ -14331,6 +14335,39 @@ mod tests {
         .unwrap()
         .task
         .id
+    }
+
+    #[test]
+    fn prepare_run_reserves_a_run_directory_before_releasing_the_task_lock() {
+        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
+        let task_id = create_direct_test_task(&app);
+        let task_dir = app.paths.task_dir(&task_id);
+        let runs_dir = app.paths.runs_dir(&task_id);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let app_for_prepare = app.with_repo_root(app.paths.repo_root.clone(), app.config.clone());
+        let task_id_for_prepare = task_id.clone();
+
+        let handle = crate::storage::with_file_lock(&task_dir, || {
+            let handle = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                prepare_run(&app_for_prepare, &task_id_for_prepare, None)
+            });
+            started_rx.recv().unwrap();
+            assert!(!handle.is_finished());
+            assert!(
+                !runs_dir.exists()
+                    || std::fs::read_dir(runs_dir.as_std_path())
+                        .unwrap()
+                        .next()
+                        .is_none()
+            );
+            Ok(handle)
+        })
+        .unwrap();
+
+        let prepared = handle.join().unwrap().unwrap();
+        assert!(prepared.run_dir.exists());
+        assert!(app.paths.run_file(&task_id, &prepared.run().id).is_file());
     }
 
     #[test]

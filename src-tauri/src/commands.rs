@@ -6550,6 +6550,131 @@ pub fn respond_acp_permission(
     Ok(session)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryDeletionStopSettlement {
+    OwnedTerminalSettled,
+    RuntimePausedNoWriterSettled,
+    TerminalRun,
+    NotSettled,
+}
+
+fn settle_history_deletion_run_stop(
+    app: &gold_band::app::App,
+    operation: &gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+) -> CommandResult<HistoryDeletionStopSettlement> {
+    let run = app
+        .run_status(&operation.task_id, &operation.run_id)
+        .map_err(command_error)?;
+    if run.status == RunStatus::Completed {
+        return Ok(HistoryDeletionStopSettlement::TerminalRun);
+    }
+    let runtime_locator = run.execution.locator.clone();
+    let round_id = runtime_locator
+        .as_ref()
+        .map(|locator| locator.round_id.clone())
+        .or(run.current_round)
+        .ok_or_else(|| {
+            CommandErrorVm::new("runtime.stop-locator-missing", serde_json::json!({}))
+        })?;
+    let node_id = runtime_locator
+        .as_ref()
+        .map(|locator| locator.node_id.clone())
+        .or(run.current_node)
+        .ok_or_else(|| {
+            CommandErrorVm::new("runtime.stop-locator-missing", serde_json::json!({}))
+        })?;
+    let attempt_id = runtime_locator
+        .as_ref()
+        .map(|locator| locator.attempt_id.clone())
+        .or(run.current_attempt)
+        .ok_or_else(|| {
+            CommandErrorVm::new("runtime.stop-locator-missing", serde_json::json!({}))
+        })?;
+    let locator = AttemptLocator::new(
+        operation.task_id.clone(),
+        operation.run_id.clone(),
+        round_id,
+        node_id,
+        attempt_id,
+        runtime_locator
+            .as_ref()
+            .and_then(|locator| locator.outer_node_id.clone()),
+        runtime_locator
+            .as_ref()
+            .and_then(|locator| locator.outer_attempt_id.clone()),
+    );
+    let (attempt_dir, stop_owner, _accepted) =
+        persist_active_session_stop(app, &locator, &operation.operation_id)?;
+    if stop_owner.is_some() {
+        return Ok(
+            if settle_active_session_stop_cleanup(app, &locator, &attempt_dir, stop_owner.as_ref())
+            {
+                HistoryDeletionStopSettlement::OwnedTerminalSettled
+            } else {
+                HistoryDeletionStopSettlement::NotSettled
+            },
+        );
+    }
+    let persisted_run = app
+        .run_status(&operation.task_id, &operation.run_id)
+        .map_err(command_error)?;
+    Ok(match persisted_run.status {
+        RunStatus::Completed => HistoryDeletionStopSettlement::TerminalRun,
+        RunStatus::Paused => HistoryDeletionStopSettlement::RuntimePausedNoWriterSettled,
+        _ => HistoryDeletionStopSettlement::NotSettled,
+    })
+}
+
+pub(crate) fn reconcile_history_deletion_stop(
+    app: &gold_band::app::App,
+    operation: &gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+) -> CommandResult<()> {
+    match settle_history_deletion_run_stop(app, operation) {
+        Ok(settlement) => {
+            match settlement {
+                HistoryDeletionStopSettlement::OwnedTerminalSettled
+                | HistoryDeletionStopSettlement::RuntimePausedNoWriterSettled => {
+                    gold_band::app::history_deletion::finalize_no_writer_run_history_deletion(
+                        app,
+                        &operation.scheduled_task_id,
+                        &operation.task_id,
+                        &operation.run_id,
+                    )
+                    .map_err(command_error)?;
+                }
+                HistoryDeletionStopSettlement::TerminalRun => {
+                    gold_band::app::history_deletion::finalize_terminal_run_history_deletion(
+                        app,
+                        &operation.scheduled_task_id,
+                        &operation.task_id,
+                        &operation.run_id,
+                    )
+                    .map_err(command_error)?;
+                }
+                HistoryDeletionStopSettlement::NotSettled => {}
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if let Ok(database) = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()) {
+                let structured = gold_band::scheduler::occurrence::ScheduledError::with_params(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed,
+                    serde_json::json!({
+                        "operation": "stop-execution-history-run",
+                        "projectId": operation.project_id,
+                        "scheduledTaskId": operation.scheduled_task_id,
+                        "taskId": operation.task_id,
+                        "runId": operation.run_id,
+                    }),
+                );
+                let _ =
+                    database.record_history_deletion_failure(&operation.operation_id, &structured);
+            }
+            Err(error)
+        }
+    }
+}
+
 fn persist_active_session_stop(
     app: &gold_band::app::App,
     locator: &AttemptLocator,
@@ -6666,77 +6791,7 @@ fn spawn_active_session_stop_cleanup(
     stop_owner: Option<(String, String, u64)>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
-        let Some((turn_id, operation_id, revision)) = stop_owner.as_ref() else {
-            return;
-        };
-        let owner = gold_band::acp::events::AcpLifecycleOwner {
-            turn_id: turn_id.clone(),
-            operation_id: operation_id.clone(),
-            revision: *revision,
-        };
-        let owner_is_current =
-            gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
-                .unwrap_or(false);
-        if !owner_is_current {
-            // The old turn may already be terminal and a newer turn may own
-            // this attempt. Never send an attempt-wide cancel in that case.
-            return;
-        }
-        match client::dispatch_attempt_prompt_cancel(&attempt_dir) {
-            Ok(_) => {}
-            Err(error) => {
-                warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
-            }
-        }
-        // request_session_stop transferred lifecycle ownership away from the
-        // provider runtime. The stop controller therefore owns terminal
-        // settlement after dispatch; the old provider owner can only no-op.
-        match gold_band::acp::events::persist_session_turn_terminal_owned(
-            &lifecycle_path,
-            turn_id,
-            Some(operation_id),
-            *revision,
-            gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
-            "cancelled",
-            &gold_band::acp::events::current_timestamp(),
-        ) {
-            Ok(Some(_)) => info!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                outer_node_id = ?locator.outer_node_id,
-                outer_attempt_id = ?locator.outer_attempt_id,
-                %turn_id,
-                %operation_id,
-                outcome = "cancelled",
-                "conversation session stop reached terminal state"
-            ),
-            Ok(None) => tracing::debug!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                turn_id = %turn_id,
-                "stale conversation session stop settlement skipped"
-            ),
-            Err(error) => warn!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                %error,
-                %turn_id,
-                "failed to settle accepted ACP stop ownership"
-            ),
-        }
-        if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
-            warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
-        }
+        settle_active_session_stop_cleanup(&app, &locator, &attempt_dir, stop_owner.as_ref());
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -6751,6 +6806,77 @@ fn spawn_active_session_stop_cleanup(
             None,
         );
     });
+}
+
+fn settle_active_session_stop_cleanup(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+) -> bool {
+    settle_active_session_stop_cleanup_with_dispatch(
+        app,
+        locator,
+        attempt_dir,
+        stop_owner,
+        client::dispatch_attempt_prompt_cancel,
+    )
+}
+
+fn settle_active_session_stop_cleanup_with_dispatch<F>(
+    app: &gold_band::app::App,
+    locator: &AttemptLocator,
+    attempt_dir: &Utf8PathBuf,
+    stop_owner: Option<&(String, String, u64)>,
+    dispatch_cancel: F,
+) -> bool
+where
+    F: FnOnce(&camino::Utf8Path) -> anyhow::Result<bool>,
+{
+    let Some((turn_id, operation_id, revision)) = stop_owner else {
+        return false;
+    };
+    let lifecycle_path = acp_lifecycle_path(attempt_dir);
+    let owner = gold_band::acp::events::AcpLifecycleOwner {
+        turn_id: turn_id.clone(),
+        operation_id: operation_id.clone(),
+        revision: *revision,
+    };
+    if !gold_band::acp::events::lifecycle_owner_still_cancelling(&lifecycle_path, &owner)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if let Err(error) = dispatch_cancel(attempt_dir) {
+        warn!(%error, %attempt_dir, "failed to dispatch accepted ACP stop request");
+        return false;
+    }
+    let settled = match gold_band::acp::events::persist_session_turn_terminal_owned(
+        &lifecycle_path,
+        turn_id,
+        Some(operation_id),
+        *revision,
+        gold_band::acp::events::AcpLatestTurnStatus::Cancelled,
+        "cancelled",
+        &gold_band::acp::events::current_timestamp(),
+    ) {
+        Ok(Some(_)) => {
+            info!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, %operation_id, outcome = "cancelled", "conversation session stop reached terminal state");
+            true
+        }
+        Ok(None) => {
+            tracing::debug!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %turn_id, "stale conversation session stop settlement skipped");
+            false
+        }
+        Err(error) => {
+            warn!(project_id = %app.paths.project_id, task_id = %locator.task_id, run_id = %locator.run_id, %error, %turn_id, "failed to settle accepted ACP stop ownership");
+            false
+        }
+    };
+    if let Err(error) = client::settle_attempt_prompt_interactions(attempt_dir) {
+        warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
+    }
+    settled
 }
 
 fn spawn_index_attempt(
@@ -9596,12 +9722,16 @@ fn parse_skill_source(source: &str) -> Result<gold_band::config::SkillSource, Co
 mod tests {
     use super::*;
     use camino::Utf8PathBuf;
+    use chrono::{Duration, Utc};
     use gold_band::app::{WorkflowTemplate, WorkflowTemplateStore};
     use gold_band::config::{ConversationWorkspaceEntry, ResolvedColorScheme, RuntimeConfig};
     use gold_band::dsl::{NodeDsl, WorkerNode, WorkflowDsl};
     use gold_band::dynamic::DynamicGraphState;
     use gold_band::runtime::RoundState;
     use gold_band::runtime::TaskState;
+    use gold_band::scheduler::db::{AcceptExecutionResult, HistoryDeletionStatus};
+    use gold_band::scheduler::execution::ScheduledExecutionSnapshot;
+    use gold_band::scheduler::occurrence::{ClaimResult, OccurrenceLinks, OccurrenceTriggerKind};
     use gold_band::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use gold_band::storage::write_json;
     use gold_band::workflow_model_binding::{
@@ -10628,6 +10758,363 @@ mod tests {
         assert_eq!(snapshot["liveTurnActivity"], "idle");
         assert_eq!(snapshot["latestTurnStatus"], "none");
         assert!(timeline_path.is_dir());
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatches_and_persists_cancelled_terminal_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        let submission = gold_band::acp::events::AcpPromptSubmission {
+            turn_id: "turn-1".to_string(),
+            operation_id: "prompt-operation-1".to_string(),
+            adapter_id: "test".to_string(),
+            adapter_display_name: "Test".to_string(),
+            cwd: attempt_dir.to_string(),
+            input: gold_band::provider::ConversationPromptInput {
+                display_text: "test".to_string(),
+                quotes: Vec::new(),
+            },
+            attachment_paths: Vec::new(),
+            admitted_at: "2026-08-26T00:00:00Z".to_string(),
+        };
+        gold_band::acp::events::begin_session_turn(&lifecycle_path, &submission).unwrap();
+        let stop = gold_band::acp::events::request_session_stop_outcome(
+            &lifecycle_path,
+            "history-delete-operation-1",
+            "2026-08-26T00:00:01Z",
+        )
+        .unwrap();
+
+        let owner = stop
+            .owner
+            .map(|owner| (owner.turn_id, owner.operation_id, owner.revision));
+        settle_active_session_stop_cleanup(&app, &locator, &attempt_dir, owner.as_ref());
+
+        assert_eq!(
+            gold_band::acp::events::read_lifecycle_header(&lifecycle_path)
+                .unwrap()
+                .unwrap()
+                .latest_turn_status,
+            gold_band::acp::events::AcpLatestTurnStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn active_stop_cleanup_dispatch_error_preserves_owner_and_history() {
+        let (_temp, app, database, stopping) = running_history_deletion_stop_fixture();
+        let locator = AttemptLocator::new(
+            "task-1".to_string(),
+            "run-1".to_string(),
+            "round-1".to_string(),
+            "node-1".to_string(),
+            "attempt-1".to_string(),
+            None,
+            None,
+        );
+        let attempt_dir = locator.attempt_dir(&app);
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        gold_band::acp::events::begin_session_turn(
+            &lifecycle_path,
+            &gold_band::acp::events::AcpPromptSubmission {
+                turn_id: "turn-dispatch-error".to_string(),
+                operation_id: "prompt-operation-dispatch-error".to_string(),
+                adapter_id: "test".to_string(),
+                adapter_display_name: "Test".to_string(),
+                cwd: attempt_dir.to_string(),
+                input: gold_band::provider::ConversationPromptInput {
+                    display_text: "test".to_string(),
+                    quotes: Vec::new(),
+                },
+                attachment_paths: Vec::new(),
+                admitted_at: "2026-08-26T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        let stop = gold_band::acp::events::request_session_stop_outcome(
+            &lifecycle_path,
+            &stopping.operation_id,
+            "2026-08-26T00:00:01Z",
+        )
+        .unwrap();
+        let owner = stop
+            .owner
+            .map(|owner| (owner.turn_id, owner.operation_id, owner.revision));
+
+        let settled = settle_active_session_stop_cleanup_with_dispatch(
+            &app,
+            &locator,
+            &attempt_dir,
+            owner.as_ref(),
+            |_| Err(anyhow::anyhow!("injected dispatch failure")),
+        );
+
+        assert!(!settled);
+        let (turn_id, operation_id, revision) = owner.as_ref().unwrap();
+        assert!(
+            gold_band::acp::events::lifecycle_owner_still_cancelling(
+                &lifecycle_path,
+                &gold_band::acp::events::AcpLifecycleOwner {
+                    turn_id: turn_id.clone(),
+                    operation_id: operation_id.clone(),
+                    revision: *revision,
+                },
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            database
+                .get_history_deletion(&stopping.operation_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            HistoryDeletionStatus::Stopping
+        );
+        assert!(app.paths.run_dir("task-1", "run-1").exists());
+        assert_eq!(
+            database
+                .list_execution_history(&app.paths.project_id, "scheduled-task-1", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    fn running_history_deletion_stop_fixture() -> (
+        tempfile::TempDir,
+        App,
+        ScheduledTaskDatabase,
+        gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root);
+        let database = ScheduledTaskDatabase::open(app.paths.scheduler_db_path()).unwrap();
+        let now = Utc::now();
+        let mut definition = ScheduledTaskDefinition::new(
+            &app.paths.project_id,
+            "scheduled-task-1",
+            "direct",
+            ScheduleSpec::at(now),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        definition.task_id = Some("task-1".to_string());
+        definition.content_snapshot.instruction = "history".to_string();
+        definition.recompute_content_fingerprint().unwrap();
+        let record = database.create_job(&definition, None).unwrap();
+        let occurrence = database
+            .create_or_get_occurrence_for_existing_job(
+                &app.paths.project_id,
+                "scheduled-task-1",
+                now,
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            database
+                .claim_occurrence(
+                    &app.paths.project_id,
+                    &occurrence.id,
+                    "history-delete-command-test",
+                    now - Duration::seconds(1),
+                    now + Duration::minutes(5),
+                )
+                .unwrap(),
+            ClaimResult::Claimed(_)
+        ));
+        let links = OccurrenceLinks {
+            task_id: Some("task-1".to_string()),
+            run_id: Some("run-1".to_string()),
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
+        };
+        let snapshot = ScheduledExecutionSnapshot {
+            accepted_at: now,
+            definition_revision: record.revision,
+            content_fingerprint: definition.content_fingerprint.clone(),
+            content: definition.content_snapshot.clone(),
+            instruction_summary: "history".to_string(),
+            automatic: None,
+        };
+        assert!(matches!(
+            database
+                .accept_occurrence_execution(
+                    &app.paths.project_id,
+                    &occurrence.id,
+                    "history-delete-command-test",
+                    record.revision,
+                    &links,
+                    &snapshot,
+                )
+                .unwrap(),
+            AcceptExecutionResult::Accepted(_)
+        ));
+        write_json(
+            &app.paths.run_file("task-1", "run-1"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": "run-1",
+                "task_id": "task-1",
+                "status": "running",
+                "outcome": null,
+                "started_at": "2026-08-26T00:00:00Z",
+                "updated_at": "2026-08-26T00:00:00Z",
+                "workflow_snapshot": "workflow.snapshot.json",
+                "current_round": "round-1",
+                "current_node": "node-1",
+                "current_attempt": "attempt-1",
+                "new_rounds_opened": 0,
+                "pause_reason": null
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths.round_file("task-1", "run-1", "round-1"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "id": "round-1",
+                "run_id": "run-1",
+                "index": 1,
+                "status": "running",
+                "outcome": null,
+                "trigger": "initial",
+                "started_at": "2026-08-26T00:00:00Z",
+                "trace": []
+            }),
+        )
+        .unwrap();
+        write_json(
+            &app.paths
+                .node_file("task-1", "run-1", "round-1", "node-1", "attempt-1"),
+            &serde_json::json!({
+                "version": gold_band::domain::VERSION,
+                "node_id": "node-1",
+                "node_type": "worker",
+                "run_id": "run-1",
+                "round_id": "round-1",
+                "attempt_id": "attempt-1",
+                "status": "running",
+                "outcome": null,
+                "started_at": "2026-08-26T00:00:00Z",
+                "finished_at": null,
+                "manual_check_pending": false,
+                "resolved_config": {}
+            }),
+        )
+        .unwrap();
+        let operation = database
+            .create_or_get_history_deletion(
+                &app.paths.project_id,
+                "scheduled-task-1",
+                "task-1",
+                "run-1",
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            gold_band::app::history_deletion::request_run_history_deletion(&app, &operation)
+                .unwrap(),
+            gold_band::app::history_deletion::HistoryDeletionAction::StopRequired
+        );
+        let stopping = database
+            .get_history_deletion(&operation.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stopping.status, HistoryDeletionStatus::Stopping);
+        (temp, app, database, stopping)
+    }
+
+    fn assert_real_run_history_deleted(
+        app: &App,
+        database: &ScheduledTaskDatabase,
+        operation_id: &str,
+    ) {
+        assert_eq!(
+            database
+                .get_history_deletion(operation_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            HistoryDeletionStatus::Completed
+        );
+        assert!(!app.paths.run_dir("task-1", "run-1").exists());
+        assert!(
+            database
+                .list_execution_history(&app.paths.project_id, "scheduled-task-1", 20)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn history_deletion_before_acp_admission_settles_paused_runtime_without_writer() {
+        let (_temp, app, database, stopping) = running_history_deletion_stop_fixture();
+
+        reconcile_history_deletion_stop(&app, &stopping).unwrap();
+
+        assert_real_run_history_deleted(&app, &database, &stopping.operation_id);
+    }
+
+    #[test]
+    fn history_deletion_replay_settles_persisted_paused_runtime_without_writer() {
+        let (_temp, app, database, stopping) = running_history_deletion_stop_fixture();
+        app.run_pause(
+            "task-1",
+            "run-1",
+            gold_band::domain::PauseReason::ProcessInterrupted,
+        )
+        .unwrap();
+
+        reconcile_history_deletion_stop(&app, &stopping).unwrap();
+
+        assert_real_run_history_deleted(&app, &database, &stopping.operation_id);
+    }
+
+    #[test]
+    fn history_deletion_stop_controller_settles_owner_and_deletes_real_run_history() {
+        let (_temp, app, database, stopping) = running_history_deletion_stop_fixture();
+        let attempt_dir =
+            app.paths
+                .attempt_dir("task-1", "run-1", "round-1", "node-1", "attempt-1");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let lifecycle_path = acp_lifecycle_path(&attempt_dir);
+        gold_band::acp::events::begin_session_turn(
+            &lifecycle_path,
+            &gold_band::acp::events::AcpPromptSubmission {
+                turn_id: "turn-1".to_string(),
+                operation_id: "prompt-operation-1".to_string(),
+                adapter_id: "test".to_string(),
+                adapter_display_name: "Test".to_string(),
+                cwd: attempt_dir.to_string(),
+                input: gold_band::provider::ConversationPromptInput {
+                    display_text: "test".to_string(),
+                    quotes: Vec::new(),
+                },
+                attachment_paths: Vec::new(),
+                admitted_at: "2026-08-26T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+
+        reconcile_history_deletion_stop(&app, &stopping).unwrap();
+
+        assert_real_run_history_deleted(&app, &database, &stopping.operation_id);
     }
 
     #[test]

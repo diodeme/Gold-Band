@@ -60,6 +60,14 @@ const historyItem = {
   error: null,
 };
 
+const activeHistoryItem = {
+  ...historyItem,
+  runId: 'run-active',
+  latestOccurrenceId: 'occurrence-active',
+  latestSummary: 'active summary',
+  run: { ...historyItem.run, runId: 'run-active', status: 'running', outcome: null },
+};
+
 const task = {
   id: 'scheduled-1', projectId: 'project-1', workspaceName: 'Project 1', title: 'Task', mode: 'direct', sessionPolicy: 'new',
   enabled: true, status: 'enabled', schedule: { kind: 'At', at: '2099-01-01T00:00:00Z', timezone: 'UTC' }, nextAt: null,
@@ -129,7 +137,7 @@ describe('ScheduledTaskDetailPage history lifecycle', () => {
 
     expect(host.textContent).toContain('scheduled.detail.deleted');
     expect(host.querySelector('[role="checkbox"]')).toBeNull();
-    expect(host.textContent).not.toContain('scheduled.detail.deleteSelected');
+    expect(host.textContent).not.toContain('scheduled.detail.removeSelected');
   });
 
   it('does not refresh an anchored Run when a newer occurrence event arrives', async () => {
@@ -155,7 +163,7 @@ describe('ScheduledTaskDetailPage history lifecycle', () => {
     await act(async () => undefined);
     const runCheckbox = host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="scheduled.detail.selectRun"]');
     await act(async () => runCheckbox?.click());
-    const deleteButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.deleteSelected'))!;
+    const deleteButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.removeSelected'))!;
     expect(deleteButton.disabled).toBe(false);
 
     const nextButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.nextPage'))!;
@@ -168,8 +176,37 @@ describe('ScheduledTaskDetailPage history lifecycle', () => {
     await act(async () => undefined);
   });
 
+  it('keeps active Runs openable but excludes them from history removal', async () => {
+    const onOpenOccurrence = vi.fn();
+    api.listTasks.mockResolvedValue([task]);
+    api.listHistory.mockResolvedValue({ items: [historyItem, activeHistoryItem], nextCursor: null });
+    api.deleteHistory.mockResolvedValue([{ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', throughOccurrenceId: 'occurrence-1', status: 'completed', code: null, params: {} }]);
+
+    await renderDetail({ onOpenOccurrence });
+    await act(async () => undefined);
+    const checkboxes = [...host.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')];
+    expect(checkboxes).toHaveLength(3);
+    expect(checkboxes[1]?.disabled).toBe(false);
+    expect(checkboxes[2]?.disabled).toBe(true);
+
+    await act(async () => checkboxes[0]?.click());
+    const removeButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.removeSelected'))!;
+    await act(async () => removeButton.click());
+    expect(api.deleteHistory).toHaveBeenCalledWith([{
+      projectId: 'project-1',
+      scheduledTaskId: 'scheduled-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      throughOccurrenceId: 'occurrence-1',
+    }]);
+
+    const openButtons = [...host.querySelectorAll<HTMLButtonElement>('button[aria-label="scheduled.detail.openRun"]')];
+    await act(async () => openButtons.at(-1)?.click());
+    expect(onOpenOccurrence).toHaveBeenCalledWith({ kind: 'conversation-run', projectId: 'project-1', taskId: 'task-1', runId: 'run-active' });
+  });
+
   it('coalesces duplicate history deletion clicks into one request', async () => {
-    const deletion = deferred<Array<{ projectId: string; scheduledTaskId: string; taskId: string; runId: string; operationId: null; status: 'completed'; code: null; params: {} }>>();
+    const deletion = deferred<Array<{ projectId: string; scheduledTaskId: string; taskId: string; runId: string; throughOccurrenceId: string; status: 'completed'; code: null; params: {} }>>();
     api.listTasks.mockResolvedValue([task]);
     api.listHistory.mockResolvedValue({ items: [historyItem], nextCursor: null });
     api.deleteHistory.mockReturnValue(deletion.promise);
@@ -177,11 +214,52 @@ describe('ScheduledTaskDetailPage history lifecycle', () => {
     await renderDetail();
     await act(async () => undefined);
     await act(async () => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="scheduled.detail.selectRun"]')?.click());
-    const deleteButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.deleteSelected'))!;
+    const deleteButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.removeSelected'))!;
     await act(async () => { deleteButton.click(); deleteButton.click(); });
     expect(api.deleteHistory).toHaveBeenCalledTimes(1);
 
-    deletion.resolve([{ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', operationId: null, status: 'completed', code: null, params: {} }]);
+    deletion.resolve([{ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', throughOccurrenceId: 'occurrence-1', status: 'completed', code: null, params: {} }]);
     await act(async () => undefined);
+  });
+
+  it('keeps a failed history removal selected for retry', async () => {
+    api.listTasks.mockResolvedValue([task]);
+    api.listHistory.mockResolvedValue({ items: [historyItem], nextCursor: null });
+    api.deleteHistory.mockResolvedValue([{ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', throughOccurrenceId: 'occurrence-1', status: 'failed', code: 'SCHEDULED_STORAGE_FAILED', params: {} }]);
+
+    await renderDetail();
+    await act(async () => undefined);
+    const checkbox = host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="scheduled.detail.selectRun"]')!;
+    await act(async () => checkbox.click());
+    const removeButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.removeSelected'))!;
+    await act(async () => removeButton.click());
+
+    expect(host.textContent).toContain('immutable summary');
+    expect(checkbox.getAttribute('data-state')).toBe('checked');
+    expect(host.textContent).toContain('errors.SCHEDULED_STORAGE_FAILED');
+  });
+
+  it('does not remove a newer occurrence projection with an older completed watermark', async () => {
+    const deletion = deferred<Array<{ projectId: string; scheduledTaskId: string; taskId: string; runId: string; throughOccurrenceId: string; status: 'completed'; code: null; params: {} }>>();
+    const newer = { ...historyItem, latestOccurrenceId: 'occurrence-2', occurrenceCount: 2, latestSummary: 'newer summary' };
+    api.listTasks.mockResolvedValue([task]);
+    api.listHistory
+      .mockResolvedValueOnce({ items: [historyItem], nextCursor: null })
+      .mockResolvedValueOnce({ items: [newer], nextCursor: null });
+    api.deleteHistory.mockReturnValue(deletion.promise);
+
+    await renderDetail();
+    await act(async () => undefined);
+    await act(async () => host.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label="scheduled.detail.selectRun"]')?.click());
+    const removeButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('scheduled.detail.removeSelected'))!;
+    await act(async () => removeButton.click());
+    await act(async () => api.occurrenceListener?.({ projectId: 'project-1', scheduledTaskId: 'scheduled-1' }));
+    await act(async () => undefined);
+    expect(host.textContent).toContain('newer summary');
+
+    deletion.resolve([{ projectId: 'project-1', scheduledTaskId: 'scheduled-1', taskId: 'task-1', runId: 'run-1', throughOccurrenceId: 'occurrence-1', status: 'completed', code: null, params: {} }]);
+    await act(async () => undefined);
+
+    expect(host.textContent).toContain('newer summary');
   });
 });

@@ -52,7 +52,7 @@ interface DetailSnapshotRefreshRequest {
 }
 
 interface HistoryDeleteState {
-  status: 'stopping' | 'deleting' | 'failed';
+  status: 'deleting' | 'failed';
   code?: string | null;
   params?: Record<string, unknown>;
 }
@@ -70,6 +70,10 @@ function initialHistoryLocations(taskId?: string, runId?: string): HistoryPageLo
 
 function executionHistoryKey(item: Pick<ScheduledExecutionHistoryVm, 'projectId' | 'scheduledTaskId' | 'taskId' | 'runId'>) {
   return `${item.projectId}\0${item.scheduledTaskId}\0${item.taskId}\0${item.runId}`;
+}
+
+function canRemoveExecutionHistory(item: ScheduledExecutionHistoryVm) {
+  return item.run?.status === 'completed';
 }
 
 export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, runId, occurrenceId, onBack, onOpenOccurrence }: { projectId: string; scheduledTaskId: string; taskId?: string; runId?: string; occurrenceId?: string; onBack: () => void; onOpenOccurrence?: (page: ConversationPage) => void }) {
@@ -316,19 +320,19 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
     }
   }, [loading, projectId, scheduledTaskId]);
 
-  const deleteSelectedHistory = useCallback(async () => {
+  const removeSelectedHistory = useCallback(async () => {
     if (loading || historyDeleteInFlightRef.current) return;
-    const candidates = history.filter((item) => selectedRuns.has(executionHistoryKey(item)));
+    const candidates = history.filter((item) => canRemoveExecutionHistory(item) && selectedRuns.has(executionHistoryKey(item)));
     if (!candidates.length) return;
     const generation = ++historyMutationGenerationRef.current;
     historyDeleteInFlightRef.current = true;
     setHistoryDeletePending(true);
     setHistoryDeleteStates((current) => ({ ...current, ...Object.fromEntries(candidates.map((item) => [executionHistoryKey(item), { status: 'deleting' as const }])) }));
     try {
-      const results = await deleteScheduledExecutionHistory(candidates.map((item) => ({ projectId: item.projectId, scheduledTaskId: item.scheduledTaskId, taskId: item.taskId, runId: item.runId })));
+      const results = await deleteScheduledExecutionHistory(candidates.map((item) => ({ projectId: item.projectId, scheduledTaskId: item.scheduledTaskId, taskId: item.taskId, runId: item.runId, throughOccurrenceId: item.latestOccurrenceId })));
       if (generation !== historyMutationGenerationRef.current) return;
-      const completed = new Set(results.filter((result) => result.status === 'completed').map(executionHistoryKey));
-      setHistory((current) => current.filter((item) => !completed.has(executionHistoryKey(item))));
+      const completed = new Map(results.filter((result) => result.status === 'completed').map((result) => [executionHistoryKey(result), result.throughOccurrenceId]));
+      setHistory((current) => current.filter((item) => completed.get(executionHistoryKey(item)) !== item.latestOccurrenceId));
       setSelectedRuns((current) => new Set([...current].filter((key) => !completed.has(key))));
       setHistoryDeleteStates((current) => {
         const next = { ...current };
@@ -336,7 +340,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
           const key = executionHistoryKey(result);
           if (result.status === 'completed') delete next[key];
           else next[key] = {
-            status: result.status === 'failed' ? 'failed' : result.status === 'stopping' ? 'stopping' : 'deleting',
+            status: 'failed',
             code: result.code,
             params: result.params,
           };
@@ -383,7 +387,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
       <main className="mx-auto flex h-full w-full max-w-4xl flex-col overflow-auto px-4 py-6 sm:px-6 sm:py-8">
         <Button variant="ghost" size="sm" className="w-fit gap-1.5" onClick={onBack}><ArrowLeft className="size-3.5" />{t('scheduled.detail.back')}</Button>
         <p className={`mt-5 text-sm ${error ? 'text-destructive' : 'text-muted-foreground'}`}>{error ?? (definitionLoading ? t('scheduled.detail.loading') : t('scheduled.detail.deleted'))}</p>
-        <RunHistorySection readOnly t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void deleteSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
+        <RunHistorySection readOnly t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void removeSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
       </main>
     );
   }
@@ -442,7 +446,7 @@ export function ScheduledTaskDetailPage({ projectId, scheduledTaskId, taskId, ru
 
       {diagnostics?.lastError ? <p className="mt-2 text-xs text-destructive">{errorCodeLabel(t, diagnostics.lastError)}</p> : null}
 
-      <RunHistorySection t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void deleteSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
+      <RunHistorySection t={t} history={history} loading={loading} historyError={historyError} deletePending={historyDeletePending} locationStack={historyLocationStack} nextCursor={historyNextCursor} selectedRuns={selectedRuns} deleteStates={historyDeleteStates} focusedTaskId={taskId} focusedRunId={runId} occurrenceId={occurrenceId} onToggle={(key, checked) => setSelectedRuns((current) => { const next = new Set(current); if (checked) next.add(key); else next.delete(key); return next; })} onDelete={() => void removeSelectedHistory()} onPage={(stack) => void loadHistoryPage(stack)} onOpen={onOpenOccurrence} />
 
       <Sheet open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
         <SheetContent className="gap-0 overflow-hidden p-0" resizeStorageKey="scheduled-task-detail/edit" defaultSize={720} minSize={520} maxSize={960} closeLabel={t('common.close')}>
@@ -530,12 +534,13 @@ function RunHistorySection({ t, history, loading, historyError, deletePending, l
   onPage: (stack: HistoryPageLocation[]) => void;
   onOpen?: (page: ConversationPage) => void;
 }) {
-  const allSelected = history.length > 0 && history.every((item) => selectedRuns.has(executionHistoryKey(item)));
+  const removableHistory = history.filter(canRemoveExecutionHistory);
+  const allSelected = removableHistory.length > 0 && removableHistory.every((item) => selectedRuns.has(executionHistoryKey(item)));
   const anchoredWindow = locationStack.some((location) => location.kind === 'anchor');
   return <section className="mt-6" aria-label={t('scheduled.detail.history')}>
-    <div className="mb-2 flex items-center justify-between gap-2"><div className="flex items-center gap-2"><ListChecks className="size-4 text-foreground" /><h2 className="text-sm font-semibold">{t('scheduled.detail.history')}</h2></div>{readOnly ? null : <Button size="sm" variant="outline" disabled={loading || selectedRuns.size === 0 || deletePending} onClick={onDelete}><Trash2 className="mr-1 size-3.5" />{t('scheduled.detail.deleteSelected')}</Button>}</div>
+    <div className="mb-2 flex items-center justify-between gap-2"><div className="flex items-center gap-2"><ListChecks className="size-4 text-foreground" /><h2 className="text-sm font-semibold">{t('scheduled.detail.history')}</h2></div>{readOnly ? null : <Button size="sm" variant="outline" disabled={loading || selectedRuns.size === 0 || deletePending} onClick={onDelete}><Trash2 className="mr-1 size-3.5" />{t('scheduled.detail.removeSelected')}</Button>}</div>
     {historyError ? <p className="mb-2 text-xs text-destructive">{t('scheduled.detail.historyLoadFailed')}</p> : null}
-    {loading && history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground" aria-busy="true">{t('scheduled.detail.loading')}</div> : history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground">{t('scheduled.detail.noHistory')}</div> : <div className="divide-y divide-border/60 border-y border-border/60">{readOnly ? null : <div className="flex items-center gap-3 px-3 py-2 text-xs text-muted-foreground"><Checkbox aria-label={t('scheduled.detail.selectAllRuns')} checked={allSelected} disabled={loading || deletePending} onCheckedChange={(checked) => history.forEach((item) => onToggle(executionHistoryKey(item), checked === true))} /><span>{history.length}</span></div>}{history.map((item) => { const key = executionHistoryKey(item); const state = deleteStates[key]; const focused = item.taskId === focusedTaskId && item.runId === focusedRunId; return <div key={key} data-focused={focused || undefined} className={`flex min-w-0 items-center gap-3 px-3 py-3 text-xs ${focused ? 'bg-accent/50' : ''}`}>{readOnly ? null : <Checkbox aria-label={t('scheduled.detail.selectRun', { summary: item.latestSummary })} checked={selectedRuns.has(key)} disabled={loading || deletePending || Boolean(state && state.status !== 'failed')} onCheckedChange={(checked) => onToggle(key, checked === true)} />}<button type="button" className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpen?.(scheduledHistoryTarget(item, focused && occurrenceId ? occurrenceId : item.latestOccurrenceId))}><div className="flex min-w-0 items-center justify-between gap-3"><span className="truncate font-medium">{item.latestSummary}</span><span className="shrink-0 text-muted-foreground">{formatTimestamp(item.lastAcceptedAt)}</span></div><div className="mt-1 flex min-w-0 gap-3 text-muted-foreground"><span>{item.occurrenceCount}</span><span className="truncate">{executionHistoryStatusLabel(t, item)}</span>{item.error ? <span className="truncate text-destructive">{displayAppError(t, item.error)}</span> : null}{state ? <span className={state.status === 'failed' ? 'text-destructive' : ''}>{state.status === 'failed' ? state.code ? displayAppError(t, { code: state.code, params: state.params ?? {} }) : t('scheduled.detail.actionFailed') : t('scheduled.detail.deleting')}</span> : null}</div></button><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => onOpen?.({ kind: 'conversation-run', projectId: item.projectId, taskId: item.taskId, runId: item.runId })} aria-label={t('scheduled.detail.openRun')}><ExternalLink className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('scheduled.detail.openRun')}</TooltipContent></Tooltip></div>; })}</div>}
+    {loading && history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground" aria-busy="true">{t('scheduled.detail.loading')}</div> : history.length === 0 ? <div className="border-y border-border/60 py-8 text-center text-sm text-muted-foreground">{t('scheduled.detail.noHistory')}</div> : <div className="divide-y divide-border/60 border-y border-border/60">{readOnly ? null : <div className="flex items-center gap-3 px-3 py-2 text-xs text-muted-foreground"><Checkbox aria-label={t('scheduled.detail.selectAllRuns')} checked={allSelected} disabled={loading || deletePending || removableHistory.length === 0} onCheckedChange={(checked) => removableHistory.forEach((item) => onToggle(executionHistoryKey(item), checked === true))} /><span>{history.length}</span></div>}{history.map((item) => { const key = executionHistoryKey(item); const state = deleteStates[key]; const focused = item.taskId === focusedTaskId && item.runId === focusedRunId; const removable = canRemoveExecutionHistory(item); return <div key={key} data-focused={focused || undefined} className={`flex min-w-0 items-center gap-3 px-3 py-3 text-xs ${focused ? 'bg-accent/50' : ''}`}>{readOnly ? null : <Checkbox aria-label={t('scheduled.detail.selectRun', { summary: item.latestSummary })} checked={selectedRuns.has(key)} disabled={loading || deletePending || !removable || Boolean(state && state.status !== 'failed')} onCheckedChange={(checked) => onToggle(key, checked === true)} />}<button type="button" className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onOpen?.(scheduledHistoryTarget(item, focused && occurrenceId ? occurrenceId : item.latestOccurrenceId))}><div className="flex min-w-0 items-center justify-between gap-3"><span className="truncate font-medium">{item.latestSummary}</span><span className="shrink-0 text-muted-foreground">{formatTimestamp(item.lastAcceptedAt)}</span></div><div className="mt-1 flex min-w-0 gap-3 text-muted-foreground"><span>{item.occurrenceCount}</span><span className="truncate">{executionHistoryStatusLabel(t, item)}</span>{item.error ? <span className="truncate text-destructive">{displayAppError(t, item.error)}</span> : null}{state ? <span className={state.status === 'failed' ? 'text-destructive' : ''}>{state.status === 'failed' ? state.code ? displayAppError(t, { code: state.code, params: state.params ?? {} }) : t('scheduled.detail.actionFailed') : t('scheduled.detail.deleting')}</span> : null}</div></button><Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={() => onOpen?.({ kind: 'conversation-run', projectId: item.projectId, taskId: item.taskId, runId: item.runId })} aria-label={t('scheduled.detail.openRun')}><ExternalLink className="size-3.5" /></Button></TooltipTrigger><TooltipContent>{t('scheduled.detail.openRun')}</TooltipContent></Tooltip></div>; })}</div>}
     <div className="mt-3 flex items-center justify-end gap-2"><Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || deletePending || locationStack.length === 1} onClick={() => onPage(locationStack.slice(0, -1))}><ChevronLeft className="size-3.5" />{t('scheduled.detail.previousPage')}</Button><span className="min-w-8 text-center text-xs text-muted-foreground">{anchoredWindow ? t('scheduled.detail.locatedHistory') : locationStack.length}</span><Button variant="outline" size="sm" className="h-8 gap-1" disabled={loading || deletePending || !nextCursor} onClick={() => nextCursor && onPage([...locationStack, { kind: 'cursor', cursor: nextCursor }])}>{t('scheduled.detail.nextPage')}<ChevronRight className="size-3.5" /></Button></div>
   </section>;
 }

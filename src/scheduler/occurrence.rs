@@ -94,6 +94,8 @@ pub enum ScheduledErrorCode {
     NotFound,
     #[serde(rename = "SCHEDULED_CONFLICT")]
     Conflict,
+    #[serde(rename = "SCHEDULED_HISTORY_NOT_REMOVABLE")]
+    HistoryNotRemovable,
     #[serde(rename = "SCHEDULED_VALIDATION_FAILED")]
     ValidationFailed,
     #[serde(rename = "SCHEDULED_STORAGE_FAILED")]
@@ -131,6 +133,7 @@ impl fmt::Display for ScheduledErrorCode {
         let value = match self {
             Self::NotFound => "SCHEDULED_NOT_FOUND",
             Self::Conflict => "SCHEDULED_CONFLICT",
+            Self::HistoryNotRemovable => "SCHEDULED_HISTORY_NOT_REMOVABLE",
             Self::ValidationFailed => "SCHEDULED_VALIDATION_FAILED",
             Self::StorageFailed => "SCHEDULED_STORAGE_FAILED",
             Self::AttachmentFailed => "SCHEDULED_ATTACHMENT_FAILED",
@@ -158,6 +161,7 @@ impl std::str::FromStr for ScheduledErrorCode {
         match value {
             "SCHEDULED_NOT_FOUND" => Ok(Self::NotFound),
             "SCHEDULED_CONFLICT" => Ok(Self::Conflict),
+            "SCHEDULED_HISTORY_NOT_REMOVABLE" => Ok(Self::HistoryNotRemovable),
             "SCHEDULED_VALIDATION_FAILED" => Ok(Self::ValidationFailed),
             "SCHEDULED_STORAGE_FAILED" => Ok(Self::StorageFailed),
             "SCHEDULED_ATTACHMENT_FAILED" => Ok(Self::AttachmentFailed),

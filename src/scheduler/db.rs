@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use uuid::Uuid;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT_MILLIS: u64 = 3_000;
 const SCHEMA_COMPONENT: &str = "scheduler";
 const SCHEMA_V2_OCCURRENCE_COLUMNS: [&str; 4] = [
@@ -147,53 +147,17 @@ pub enum ScheduledExecutionHistoryAnchor {
     After(ScheduledExecutionHistoryCursor),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveExecutionHistoryResult {
+    Removed(usize),
+    AlreadyRemoved,
+    WatermarkMismatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledExecutionHistoryPage {
     pub items: Vec<ScheduledExecutionHistoryRecord>,
     pub next_cursor: Option<ScheduledExecutionHistoryCursor>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HistoryDeletionStatus {
-    Accepted,
-    Stopping,
-    Deleting,
-    Completed,
-}
-
-impl HistoryDeletionStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Accepted => "accepted",
-            Self::Stopping => "stopping",
-            Self::Deleting => "deleting",
-            Self::Completed => "completed",
-        }
-    }
-
-    fn parse(value: &str) -> std::result::Result<Self, String> {
-        match value {
-            "accepted" => Ok(Self::Accepted),
-            "stopping" => Ok(Self::Stopping),
-            "deleting" => Ok(Self::Deleting),
-            "completed" => Ok(Self::Completed),
-            _ => Err(format!("invalid history deletion status: {value}")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScheduledHistoryDeletionOperation {
-    pub operation_id: String,
-    pub project_id: String,
-    pub scheduled_task_id: String,
-    pub task_id: String,
-    pub run_id: String,
-    pub status: HistoryDeletionStatus,
-    pub revision: u64,
-    pub attempt: u32,
-    pub last_error: Option<ScheduledError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1503,275 +1467,60 @@ impl ScheduledTaskDatabase {
         }
     }
 
-    pub fn delete_execution_history_run(
+    pub fn remove_execution_history_occurrences(
         &self,
         project_id: &str,
         scheduled_task_id: &str,
         task_id: &str,
         run_id: &str,
-    ) -> Result<usize> {
-        let connection = self.lock_connection()?;
-        connection
-            .execute(
-                "DELETE FROM scheduled_occurrences
-                 WHERE project_id = ?1 AND job_id = ?2 AND task_id = ?3 AND run_id = ?4
-                   AND accepted_at IS NOT NULL",
-                params![project_id, scheduled_task_id, task_id, run_id],
-            )
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn create_or_get_history_deletion(
-        &self,
-        project_id: &str,
-        scheduled_task_id: &str,
-        task_id: &str,
-        run_id: &str,
-    ) -> Result<Option<ScheduledHistoryDeletionOperation>> {
-        let operation_id = Uuid::new_v4().to_string();
-        let now = Utc::now().timestamp_millis();
+        through_occurrence_id: &str,
+    ) -> Result<RemoveExecutionHistoryResult> {
         let mut connection = self.lock_connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing = transaction
+        let watermark = transaction
             .query_row(
-                "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                        status, revision, attempt, last_error_json
-                 FROM scheduled_history_deletions
-                 WHERE project_id = ?1 AND scheduled_task_id = ?2
-                   AND task_id = ?3 AND run_id = ?4",
-                params![project_id, scheduled_task_id, task_id, run_id],
-                map_history_deletion_operation,
+                "SELECT job_id, task_id, run_id, accepted_at
+                 FROM scheduled_occurrences
+                 WHERE project_id = ?1 AND id = ?2 AND accepted_at IS NOT NULL",
+                params![project_id, through_occurrence_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
             )
             .optional()?;
-        if existing.is_some() {
+        let Some((watermark_job_id, watermark_task_id, watermark_run_id, accepted_at)) = watermark
+        else {
             transaction.commit()?;
-            return Ok(existing);
-        }
-        let history_exists = transaction.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM scheduled_occurrences
-                 WHERE project_id = ?1 AND job_id = ?2 AND task_id = ?3 AND run_id = ?4
-                   AND accepted_at IS NOT NULL
-             )",
-            params![project_id, scheduled_task_id, task_id, run_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !history_exists {
+            return Ok(RemoveExecutionHistoryResult::AlreadyRemoved);
+        };
+        if watermark_job_id != scheduled_task_id
+            || watermark_task_id != task_id
+            || watermark_run_id != run_id
+        {
             transaction.commit()?;
-            return Ok(None);
+            return Ok(RemoveExecutionHistoryResult::WatermarkMismatch);
         }
-        transaction.execute(
-            "INSERT INTO scheduled_history_deletions (
-                 operation_id, project_id, scheduled_task_id, task_id, run_id,
-                 status, revision, attempt, last_error_json, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'accepted', 1, 0, NULL, ?6, ?6)
-             ON CONFLICT(project_id, scheduled_task_id, task_id, run_id) DO NOTHING",
+        let removed = transaction.execute(
+            "DELETE FROM scheduled_occurrences
+             WHERE project_id = ?1 AND job_id = ?2 AND task_id = ?3 AND run_id = ?4
+               AND accepted_at IS NOT NULL
+               AND (accepted_at < ?5 OR (accepted_at = ?5 AND id <= ?6))",
             params![
-                operation_id,
                 project_id,
                 scheduled_task_id,
                 task_id,
                 run_id,
-                now
+                accepted_at,
+                through_occurrence_id,
             ],
         )?;
-        let operation = transaction.query_row(
-            "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                        status, revision, attempt, last_error_json
-                 FROM scheduled_history_deletions
-                 WHERE project_id = ?1 AND scheduled_task_id = ?2
-                   AND task_id = ?3 AND run_id = ?4",
-            params![project_id, scheduled_task_id, task_id, run_id],
-            map_history_deletion_operation,
-        )?;
         transaction.commit()?;
-        Ok(Some(operation))
-    }
-
-    pub fn get_history_deletion(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<ScheduledHistoryDeletionOperation>> {
-        let connection = self.lock_connection()?;
-        connection
-            .query_row(
-                "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                        status, revision, attempt, last_error_json
-                 FROM scheduled_history_deletions WHERE operation_id = ?1",
-                params![operation_id],
-                map_history_deletion_operation,
-            )
-            .optional()
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn get_history_deletion_for_run(
-        &self,
-        project_id: &str,
-        scheduled_task_id: &str,
-        task_id: &str,
-        run_id: &str,
-    ) -> Result<Option<ScheduledHistoryDeletionOperation>> {
-        let connection = self.lock_connection()?;
-        connection
-            .query_row(
-                "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                        status, revision, attempt, last_error_json
-                 FROM scheduled_history_deletions
-                 WHERE project_id = ?1 AND scheduled_task_id = ?2
-                   AND task_id = ?3 AND run_id = ?4",
-                params![project_id, scheduled_task_id, task_id, run_id],
-                map_history_deletion_operation,
-            )
-            .optional()
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn list_pending_history_deletions_for_run(
-        &self,
-        project_id: &str,
-        task_id: &str,
-        run_id: &str,
-    ) -> Result<Vec<ScheduledHistoryDeletionOperation>> {
-        let connection = self.lock_connection()?;
-        let mut statement = connection.prepare(
-            "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                    status, revision, attempt, last_error_json
-             FROM scheduled_history_deletions
-             WHERE project_id = ?1 AND task_id = ?2 AND run_id = ?3
-               AND status != 'completed'
-             ORDER BY scheduled_task_id, operation_id",
-        )?;
-        let rows = statement.query_map(
-            params![project_id, task_id, run_id],
-            map_history_deletion_operation,
-        )?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn list_pending_history_deletions(
-        &self,
-        project_id: &str,
-        limit: usize,
-    ) -> Result<Vec<ScheduledHistoryDeletionOperation>> {
-        if limit == 0 || limit > EXECUTION_HISTORY_BATCH_MAX {
-            return Err(SchedulerDatabaseError::InvalidValue(
-                "pending history deletion limit is out of range".to_string(),
-            ));
-        }
-        let connection = self.lock_connection()?;
-        let mut statement = connection.prepare(
-            "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                    status, revision, attempt, last_error_json
-             FROM scheduled_history_deletions
-             WHERE project_id = ?1 AND status != 'completed'
-             ORDER BY updated_at, operation_id
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(
-            params![project_id, limit as i64],
-            map_history_deletion_operation,
-        )?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn has_pending_history_deletions(&self, project_id: &str) -> Result<bool> {
-        let connection = self.lock_connection()?;
-        connection
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM scheduled_history_deletions
-                     WHERE project_id = ?1 AND status != 'completed'
-                     LIMIT 1
-                 )",
-                params![project_id],
-                |row| row.get(0),
-            )
-            .map_err(SchedulerDatabaseError::from)
-    }
-
-    pub fn transition_history_deletion(
-        &self,
-        operation_id: &str,
-        target: HistoryDeletionStatus,
-    ) -> Result<Option<ScheduledHistoryDeletionOperation>> {
-        let mut connection = self.lock_connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = transaction
-            .query_row(
-                "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                        status, revision, attempt, last_error_json
-                 FROM scheduled_history_deletions WHERE operation_id = ?1",
-                params![operation_id],
-                map_history_deletion_operation,
-            )
-            .optional()?;
-        let Some(current) = current else {
-            transaction.commit()?;
-            return Ok(None);
-        };
-        let allowed = current.status == target
-            || matches!(
-                (current.status, target),
-                (
-                    HistoryDeletionStatus::Accepted,
-                    HistoryDeletionStatus::Stopping
-                ) | (
-                    HistoryDeletionStatus::Accepted,
-                    HistoryDeletionStatus::Deleting
-                ) | (
-                    HistoryDeletionStatus::Stopping,
-                    HistoryDeletionStatus::Deleting
-                ) | (
-                    HistoryDeletionStatus::Deleting,
-                    HistoryDeletionStatus::Completed
-                )
-            );
-        if !allowed {
-            return Err(SchedulerDatabaseError::InvalidValue(format!(
-                "invalid history deletion transition: {} -> {}",
-                current.status.as_str(),
-                target.as_str()
-            )));
-        }
-        if current.status != target {
-            transaction.execute(
-                "UPDATE scheduled_history_deletions
-                 SET status = ?2, revision = revision + 1, last_error_json = NULL,
-                     updated_at = ?3
-                 WHERE operation_id = ?1",
-                params![operation_id, target.as_str(), Utc::now().timestamp_millis()],
-            )?;
-        }
-        let updated = transaction.query_row(
-            "SELECT operation_id, project_id, scheduled_task_id, task_id, run_id,
-                    status, revision, attempt, last_error_json
-             FROM scheduled_history_deletions WHERE operation_id = ?1",
-            params![operation_id],
-            map_history_deletion_operation,
-        )?;
-        transaction.commit()?;
-        Ok(Some(updated))
-    }
-
-    pub fn record_history_deletion_failure(
-        &self,
-        operation_id: &str,
-        error: &ScheduledError,
-    ) -> Result<Option<ScheduledHistoryDeletionOperation>> {
-        let error_json = serde_json::to_string(error)?;
-        let connection = self.lock_connection()?;
-        connection.execute(
-            "UPDATE scheduled_history_deletions
-             SET attempt = attempt + 1, revision = revision + 1,
-                 last_error_json = ?2, updated_at = ?3
-             WHERE operation_id = ?1 AND status != 'completed'",
-            params![operation_id, error_json, Utc::now().timestamp_millis()],
-        )?;
-        drop(connection);
-        self.get_history_deletion(operation_id)
+        Ok(RemoveExecutionHistoryResult::Removed(removed))
     }
 
     pub fn list_occurrence_page(
@@ -2003,6 +1752,7 @@ fn ensure_schema(connection: &mut Connection) -> Result<()> {
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             migrate_schema_v1_to_v2(&transaction)?;
             migrate_schema_v2_to_v3(&transaction)?;
+            migrate_schema_v3_to_v4(&transaction)?;
             transaction.execute(
                 "UPDATE core_schema SET version = ?2 WHERE component = ?1",
                 params![SCHEMA_COMPONENT, SCHEMA_VERSION],
@@ -2017,6 +1767,18 @@ fn ensure_schema(connection: &mut Connection) -> Result<()> {
                 migrate_schema_v1_to_v2(&transaction)?;
             }
             migrate_schema_v2_to_v3(&transaction)?;
+            migrate_schema_v3_to_v4(&transaction)?;
+            transaction.execute(
+                "UPDATE core_schema SET version = ?2 WHERE component = ?1",
+                params![SCHEMA_COMPONENT, SCHEMA_VERSION],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        }
+        Some(3) => {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            migrate_schema_v3_to_v4(&transaction)?;
             transaction.execute(
                 "UPDATE core_schema SET version = ?2 WHERE component = ?1",
                 params![SCHEMA_COMPONENT, SCHEMA_VERSION],
@@ -2032,6 +1794,7 @@ fn ensure_schema(connection: &mut Connection) -> Result<()> {
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             create_schema_v2(&transaction)?;
             migrate_schema_v2_to_v3(&transaction)?;
+            migrate_schema_v3_to_v4(&transaction)?;
             transaction.execute(
                 "INSERT INTO core_schema(component, version) VALUES (?1, ?2)",
                 params![SCHEMA_COMPONENT, SCHEMA_VERSION],
@@ -2256,36 +2019,14 @@ fn migrate_schema_v2_to_v3(transaction: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-fn map_history_deletion_operation(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<ScheduledHistoryDeletionOperation> {
-    let status =
-        HistoryDeletionStatus::parse(&row.get::<_, String>(5)?).map_err(to_conversion_error)?;
-    let revision = row
-        .get::<_, i64>(6)?
-        .try_into()
-        .map_err(to_conversion_error)?;
-    let attempt = row
-        .get::<_, i64>(7)?
-        .try_into()
-        .map_err(to_conversion_error)?;
-    let last_error = row
-        .get::<_, Option<String>>(8)?
-        .map(|value| serde_json::from_str(&value))
-        .transpose()
-        .map_err(to_conversion_error)?;
-    Ok(ScheduledHistoryDeletionOperation {
-        operation_id: row.get(0)?,
-        project_id: row.get(1)?,
-        scheduled_task_id: row.get(2)?,
-        task_id: row.get(3)?,
-        run_id: row.get(4)?,
-        status,
-        revision,
-        attempt,
-        last_error,
-    })
+fn migrate_schema_v3_to_v4(transaction: &Transaction<'_>) -> Result<()> {
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS idx_scheduled_history_deletions_pending;
+         DROP TABLE IF EXISTS scheduled_history_deletions;",
+    )?;
+    Ok(())
 }
+
 pub fn derived_next_run_at(definition: &ScheduledTaskDefinition) -> Option<DateTime<Utc>> {
     if !definition.enabled {
         return None;
@@ -2733,8 +2474,7 @@ mod tests {
         ScheduledExecutionSnapshot, instruction_summary,
     };
     use crate::scheduler::occurrence::{
-        ClaimResult, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind, ScheduledError,
-        ScheduledErrorCode,
+        ClaimResult, OccurrenceLinks, OccurrenceStatus, OccurrenceTriggerKind,
     };
     use crate::scheduler::{OverlapPolicy, ScheduleSpec, ScheduledTaskDefinition};
     use camino::Utf8PathBuf;
@@ -3072,7 +2812,7 @@ mod tests {
 
         let database = ScheduledTaskDatabase::open(&db_path).unwrap();
 
-        assert_eq!(database.schema_version().unwrap(), 3);
+        assert_eq!(database.schema_version().unwrap(), 4);
         assert!(
             database
                 .get_job_definition(TEST_PROJECT_ID, "job-v1")
@@ -3156,7 +2896,7 @@ mod tests {
 
         let migrated = ScheduledTaskDatabase::open(&path).unwrap();
 
-        assert_eq!(migrated.schema_version().unwrap(), 3);
+        assert_eq!(migrated.schema_version().unwrap(), 4);
         assert_eq!(
             migrated
                 .get_job_definition(TEST_PROJECT_ID, definition.id())
@@ -3187,7 +2927,6 @@ mod tests {
             assert!(columns.contains(column), "missing migrated column {column}");
         }
         for index_name in [
-            "idx_scheduled_history_deletions_pending",
             "idx_scheduled_execution_history",
             "idx_scheduled_execution_run_group",
         ] {
@@ -3733,194 +3472,6 @@ mod tests {
     }
 
     #[test]
-    fn history_deletion_operation_is_idempotent_and_retries_monotonically() {
-        let (_temp, database) = database();
-        let accepted_at = fixed_time();
-        let definition = definition(
-            TEST_PROJECT_ID,
-            "job-history-delete",
-            ScheduleSpec::at(accepted_at),
-        );
-        let record = database.create_job(&definition, None).unwrap();
-        let occurrence = database
-            .create_or_get_occurrence(definition.id(), accepted_at, OccurrenceTriggerKind::Manual)
-            .unwrap();
-        claim(&database, &occurrence.id, accepted_at);
-        let snapshot = execution_snapshot(&definition, record.revision, accepted_at, false);
-        assert!(matches!(
-            accept(
-                &database,
-                &occurrence.id,
-                &record,
-                &complete_links("run-history-delete"),
-                &snapshot,
-            ),
-            super::AcceptExecutionResult::Accepted(_)
-        ));
-
-        let first = database
-            .database
-            .create_or_get_history_deletion(
-                TEST_PROJECT_ID,
-                "job-history-delete",
-                "task-1",
-                "run-history-delete",
-            )
-            .unwrap()
-            .unwrap();
-        let repeated = database
-            .database
-            .create_or_get_history_deletion(
-                TEST_PROJECT_ID,
-                "job-history-delete",
-                "task-1",
-                "run-history-delete",
-            )
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(first.operation_id, repeated.operation_id);
-        assert_eq!(first.status, super::HistoryDeletionStatus::Accepted);
-        assert_eq!(database.database.schema_version().unwrap(), 3);
-
-        let stopping = database
-            .transition_history_deletion(
-                &first.operation_id,
-                super::HistoryDeletionStatus::Stopping,
-            )
-            .unwrap()
-            .unwrap();
-        let failed = database
-            .record_history_deletion_failure(
-                &first.operation_id,
-                &ScheduledError::with_params(
-                    ScheduledErrorCode::StorageFailed,
-                    serde_json::json!({ "operation": "delete-execution-history" }),
-                ),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(failed.status, super::HistoryDeletionStatus::Stopping);
-        assert_eq!(failed.attempt, 1);
-        assert!(failed.last_error.is_some());
-        let same_phase = database
-            .transition_history_deletion(
-                &first.operation_id,
-                super::HistoryDeletionStatus::Stopping,
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(same_phase.revision, failed.revision);
-        assert!(same_phase.last_error.is_some());
-        let deleting = database
-            .transition_history_deletion(
-                &first.operation_id,
-                super::HistoryDeletionStatus::Deleting,
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(deleting.revision, stopping.revision + 2);
-        assert!(deleting.last_error.is_none());
-        assert!(
-            database
-                .transition_history_deletion(
-                    &first.operation_id,
-                    super::HistoryDeletionStatus::Accepted,
-                )
-                .is_err()
-        );
-        database
-            .transition_history_deletion(
-                &first.operation_id,
-                super::HistoryDeletionStatus::Completed,
-            )
-            .unwrap()
-            .unwrap();
-        assert!(
-            !database
-                .has_pending_history_deletions(TEST_PROJECT_ID)
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn history_deletion_identity_includes_the_scheduled_task() {
-        let (_temp, database) = database();
-        let accepted_at = fixed_time();
-
-        for (offset, scheduled_task_id) in [(0, "scheduled-a"), (1, "scheduled-b")] {
-            let at = accepted_at + Duration::seconds(offset);
-            let definition = definition(TEST_PROJECT_ID, scheduled_task_id, ScheduleSpec::at(at));
-            let record = database.create_job(&definition, Some(at)).unwrap();
-            let occurrence = database
-                .create_or_get_occurrence(definition.id(), at, OccurrenceTriggerKind::Manual)
-                .unwrap();
-            claim(&database, &occurrence.id, at);
-            let links = complete_links("shared-run");
-            let snapshot = execution_snapshot(&definition, record.revision, at, false);
-            assert!(matches!(
-                accept(&database, &occurrence.id, &record, &links, &snapshot),
-                super::AcceptExecutionResult::Accepted(_)
-            ));
-        }
-
-        let first = database
-            .create_or_get_history_deletion(TEST_PROJECT_ID, "scheduled-a", "task-1", "shared-run")
-            .unwrap()
-            .unwrap();
-        let second = database
-            .create_or_get_history_deletion(TEST_PROJECT_ID, "scheduled-b", "task-1", "shared-run")
-            .unwrap()
-            .unwrap();
-
-        assert_ne!(first.operation_id, second.operation_id);
-        assert_eq!(
-            database
-                .get_history_deletion_for_run(
-                    TEST_PROJECT_ID,
-                    "scheduled-a",
-                    "task-1",
-                    "shared-run",
-                )
-                .unwrap()
-                .unwrap()
-                .operation_id,
-            first.operation_id
-        );
-        assert_eq!(
-            database
-                .get_history_deletion_for_run(
-                    TEST_PROJECT_ID,
-                    "scheduled-b",
-                    "task-1",
-                    "shared-run",
-                )
-                .unwrap()
-                .unwrap()
-                .operation_id,
-            second.operation_id
-        );
-    }
-
-    #[test]
-    fn history_deletion_requires_a_real_accepted_run() {
-        let (_temp, database) = database();
-
-        assert!(
-            database
-                .database
-                .create_or_get_history_deletion(
-                    TEST_PROJECT_ID,
-                    "job-without-history",
-                    "task-without-history",
-                    "run-without-history",
-                )
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
     fn schema_v2_upgrades_to_v3_without_changing_accepted_history() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("core.db");
@@ -4014,14 +3565,13 @@ mod tests {
             .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
             .unwrap();
 
-        assert_eq!(migrated.schema_version().unwrap(), 3);
+        assert_eq!(migrated.schema_version().unwrap(), 4);
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].latest_occurrence_id, "occurrence-v2");
         assert_eq!(after[0].run_id, "run-v2");
         assert_eq!(after[0].latest_summary, "history");
         let connection = migrated.lock_connection().unwrap();
         for index_name in [
-            "idx_scheduled_history_deletions_pending",
             "idx_scheduled_execution_history",
             "idx_scheduled_execution_run_group",
         ] {
@@ -4037,30 +3587,153 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing migrated v3 index {index_name}");
         }
-        drop(connection);
-        assert!(
-            migrated
-                .create_or_get_history_deletion(
-                    TEST_PROJECT_ID,
-                    definition.id(),
-                    "task-1",
-                    "run-v2",
-                )
-                .unwrap()
-                .is_some()
-        );
+        let deletion_table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'scheduled_history_deletions'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!deletion_table_exists);
     }
 
     #[test]
-    fn deleting_run_history_removes_only_matching_accepted_occurrences() {
+    fn schema_v3_upgrades_to_v4_by_removing_only_run_deletion_state() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("core.db");
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE core_schema (
+                         component TEXT PRIMARY KEY NOT NULL,
+                         version INTEGER NOT NULL
+                     );",
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            super::create_schema_v2(&transaction).unwrap();
+            super::migrate_schema_v2_to_v3(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO core_schema(component, version) VALUES ('scheduler', 3)",
+                    [],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO scheduled_history_deletions (
+                         operation_id, project_id, scheduled_task_id, task_id, run_id,
+                         status, revision, attempt, created_at, updated_at
+                     ) VALUES (
+                         'obsolete-operation', ?1, 'scheduled-1', 'task-1', 'run-1',
+                         'stopping', 2, 0, 1, 1
+                     )",
+                    params![TEST_PROJECT_ID],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+        }
+
+        let migrated = ScheduledTaskDatabase::open(&path).unwrap();
+
+        assert_eq!(migrated.schema_version().unwrap(), 4);
+        let connection = migrated.lock_connection().unwrap();
+        let deletion_table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = 'scheduled_history_deletions'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!deletion_table_exists);
+        for index_name in [
+            "idx_scheduled_execution_history",
+            "idx_scheduled_execution_run_group",
+        ] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master
+                         WHERE type = 'index' AND name = ?1
+                     )",
+                    params![index_name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing retained execution index {index_name}");
+        }
+    }
+
+    #[test]
+    fn remove_execution_history_occurrences_stops_at_the_selected_watermark() {
         let (_temp, database) = database();
         let accepted_at = fixed_time();
         let definition = definition(
             TEST_PROJECT_ID,
-            "job-delete-history",
+            "job-remove-history-watermark",
             ScheduleSpec::every(1, "hours", accepted_at).unwrap(),
         );
         let record = database.create_job(&definition, Some(accepted_at)).unwrap();
+        let mut occurrence_ids = Vec::new();
+        for offset in [0, 1] {
+            let at = accepted_at + Duration::seconds(offset);
+            let occurrence = database
+                .create_or_get_occurrence(definition.id(), at, OccurrenceTriggerKind::Manual)
+                .unwrap();
+            claim(&database, &occurrence.id, at);
+            let snapshot = execution_snapshot(&definition, record.revision, at, false);
+            assert!(matches!(
+                accept(
+                    &database,
+                    &occurrence.id,
+                    &record,
+                    &complete_links("run-shared"),
+                    &snapshot,
+                ),
+                super::AcceptExecutionResult::Accepted(_)
+            ));
+            occurrence_ids.push(occurrence.id);
+        }
+
+        assert_eq!(
+            database
+                .database
+                .remove_execution_history_occurrences(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-1",
+                    "run-shared",
+                    &occurrence_ids[0],
+                )
+                .unwrap(),
+            super::RemoveExecutionHistoryResult::Removed(1)
+        );
+        let remaining = database
+            .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].occurrence_count, 1);
+        assert_eq!(remaining[0].latest_occurrence_id, occurrence_ids[1]);
+    }
+
+    #[test]
+    fn remove_execution_history_occurrences_rejects_a_foreign_watermark() {
+        let (_temp, database) = database();
+        let accepted_at = fixed_time();
+        let definition = definition(
+            TEST_PROJECT_ID,
+            "job-remove-history-foreign-watermark",
+            ScheduleSpec::every(1, "hours", accepted_at).unwrap(),
+        );
+        let record = database.create_job(&definition, Some(accepted_at)).unwrap();
+        let mut occurrence_ids = Vec::new();
         for (offset, run_id) in [(0, "run-a"), (1, "run-b")] {
             let at = accepted_at + Duration::seconds(offset);
             let occurrence = database
@@ -4068,30 +3741,103 @@ mod tests {
                 .unwrap();
             claim(&database, &occurrence.id, at);
             let snapshot = execution_snapshot(&definition, record.revision, at, false);
-            database
-                .accept_occurrence_execution(
-                    TEST_PROJECT_ID,
+            assert!(matches!(
+                accept(
+                    &database,
                     &occurrence.id,
-                    "owner-1",
-                    record.revision,
+                    &record,
                     &complete_links(run_id),
                     &snapshot,
-                )
-                .unwrap();
+                ),
+                super::AcceptExecutionResult::Accepted(_)
+            ));
+            occurrence_ids.push(occurrence.id);
         }
 
         assert_eq!(
             database
                 .database
-                .delete_execution_history_run(TEST_PROJECT_ID, definition.id(), "task-1", "run-a",)
+                .remove_execution_history_occurrences(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-1",
+                    "run-a",
+                    &occurrence_ids[1],
+                )
                 .unwrap(),
-            1
+            super::RemoveExecutionHistoryResult::WatermarkMismatch
         );
-        let history = database
+        assert_eq!(
+            database
+                .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn remove_execution_history_occurrences_retries_without_deleting_newer_history() {
+        let (_temp, database) = database();
+        let accepted_at = fixed_time();
+        let definition = definition(
+            TEST_PROJECT_ID,
+            "job-remove-history-retry",
+            ScheduleSpec::every(1, "hours", accepted_at).unwrap(),
+        );
+        let record = database.create_job(&definition, Some(accepted_at)).unwrap();
+        let mut occurrence_ids = Vec::new();
+        for offset in [0, 1] {
+            let at = accepted_at + Duration::seconds(offset);
+            let occurrence = database
+                .create_or_get_occurrence(definition.id(), at, OccurrenceTriggerKind::Manual)
+                .unwrap();
+            claim(&database, &occurrence.id, at);
+            let snapshot = execution_snapshot(&definition, record.revision, at, false);
+            assert!(matches!(
+                accept(
+                    &database,
+                    &occurrence.id,
+                    &record,
+                    &complete_links("run-retry"),
+                    &snapshot,
+                ),
+                super::AcceptExecutionResult::Accepted(_)
+            ));
+            occurrence_ids.push(occurrence.id);
+        }
+
+        assert_eq!(
+            database
+                .database
+                .remove_execution_history_occurrences(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-1",
+                    "run-retry",
+                    &occurrence_ids[0],
+                )
+                .unwrap(),
+            super::RemoveExecutionHistoryResult::Removed(1)
+        );
+        assert_eq!(
+            database
+                .database
+                .remove_execution_history_occurrences(
+                    TEST_PROJECT_ID,
+                    definition.id(),
+                    "task-1",
+                    "run-retry",
+                    &occurrence_ids[0],
+                )
+                .unwrap(),
+            super::RemoveExecutionHistoryResult::AlreadyRemoved
+        );
+        let remaining = database
             .list_execution_history(TEST_PROJECT_ID, definition.id(), 20)
             .unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].run_id, "run-b");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].latest_occurrence_id, occurrence_ids[1]);
     }
 
     #[test]
@@ -4367,7 +4113,7 @@ mod tests {
             .query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))
             .unwrap();
 
-        assert_eq!(reopened.schema_version().unwrap(), 3);
+        assert_eq!(reopened.schema_version().unwrap(), 4);
         assert_eq!(reopened_schema_revision, schema_revision);
     }
 
@@ -4381,7 +4127,7 @@ mod tests {
                 "CREATE TABLE core_schema (
                      component TEXT PRIMARY KEY NOT NULL, version INTEGER NOT NULL
                  );
-                 INSERT INTO core_schema(component, version) VALUES ('scheduler', 4);",
+                 INSERT INTO core_schema(component, version) VALUES ('scheduler', 5);",
             )
             .unwrap();
         drop(connection);
@@ -4389,8 +4135,8 @@ mod tests {
         assert!(matches!(
             ScheduledTaskDatabase::open(&path),
             Err(super::SchedulerDatabaseError::UnsupportedSchemaVersion {
-                found: 4,
-                supported: 3
+                found: 5,
+                supported: 4
             })
         ));
         let connection = Connection::open(&path).unwrap();
@@ -4401,7 +4147,7 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -5698,7 +5444,7 @@ mod tests {
         );
         scheduler.create_job(&job, None).unwrap();
 
-        assert_eq!(scheduler.schema_version().unwrap(), 3);
+        assert_eq!(scheduler.schema_version().unwrap(), 4);
         assert_eq!(core.list_runtime_recovery_candidates().unwrap().len(), 1);
         let connection = Connection::open(core_path).unwrap();
         let components = connection
@@ -5720,7 +5466,7 @@ mod tests {
 
         let database = ScheduledTaskDatabase::open(&core_path).unwrap();
 
-        assert_eq!(database.schema_version().unwrap(), 3);
+        assert_eq!(database.schema_version().unwrap(), 4);
         assert_eq!(
             std::fs::read(legacy_path).unwrap(),
             b"not a sqlite database"

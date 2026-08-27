@@ -118,11 +118,14 @@ describe('browser scheduled task API', () => {
     expect(history.items[0]).toMatchObject({ taskId: first.taskId, runId: first.runId, occurrenceCount: 1, latestOccurrenceId: first.occurrence.id });
     await browserApi.deleteScheduledTask('default', task.id);
     expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(1);
-    const rejected = await browserApi.deleteScheduledExecutionHistory([{ projectId: 'another-project', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId! }]);
+    const rejected = await browserApi.deleteScheduledExecutionHistory([{ projectId: 'another-project', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId!, throughOccurrenceId: first.occurrence.id }]);
     expect(rejected[0]).toMatchObject({ status: 'failed', code: 'SCHEDULED_NOT_FOUND' });
     expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(1);
-    await browserApi.deleteScheduledExecutionHistory([{ projectId: 'default', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId! }]);
+    const removal = { projectId: 'default', scheduledTaskId: task.id, taskId: first.taskId!, runId: first.runId!, throughOccurrenceId: first.occurrence.id };
+    await browserApi.deleteScheduledExecutionHistory([removal]);
     expect((await browserApi.listScheduledExecutionHistory('default', task.id)).items).toHaveLength(0);
+    expect((await browserApi.deleteScheduledExecutionHistory([removal]))[0]).toMatchObject({ status: 'completed' });
+    expect(await browserApi.getConversationRun('default', first.taskId!, first.runId!)).toMatchObject({ projectId: 'default', taskId: first.taskId, runId: first.runId, runStatus: 'completed' });
   });
 
   it('keeps accepted history immutable when later executions use edited content', async () => {
@@ -164,7 +167,7 @@ describe('browser scheduled task API', () => {
     await expect(browserApi.listScheduledExecutionHistory('default', task.id, null, { taskId: 'missing-task', runId: 'missing-run' })).rejects.toMatchObject({ code: 'scheduled-task.not-found' });
 
     const deletion = await browserApi.deleteScheduledExecutionHistory([{
-      projectId: 'default', scheduledTaskId: task.id, taskId: 'missing-task', runId: 'missing-run',
+      projectId: 'default', scheduledTaskId: task.id, taskId: 'missing-task', runId: 'missing-run', throughOccurrenceId: 'missing-occurrence',
     }]);
     expect(deletion[0]).toMatchObject({ status: 'failed', code: 'SCHEDULED_NOT_FOUND' });
   });

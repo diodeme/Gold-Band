@@ -207,6 +207,7 @@ enum UserExecutionAction {
 - 基线快照独立于 `RunState`，不得为指标向 Workflow 状态增加字段或改变创建、继续、停止、恢复和 terminal 流程；已存在的基线不得被后续重启或工作区 HEAD 覆盖。
 - run terminal 调用现有 Git service 一次，按冻结基线覆盖 baseline 后的 commit、staged、unstaged 与未跟踪文件；编辑后恢复原状不计数。
 - rename 按一个最终文件计数；二进制文件计入 `changedFiles`，不虚构增删行；无变更固定为 `0/0/0`。
+- `git ls-files --others` 返回的嵌套 Git 仓库目录是独立 repository boundary，不作为根仓库文件计数且不得递归读取；未跟踪符号链接或其他非普通文件计入 `changedFiles`，但不得跟随链接或虚构增删行。
 - 结果先原子写入 run observability 的 `code-changes.json`，terminal fact 读取或复用该快照；重放不得重新扫描已经结束或清理的工作区。
 - Git 基线或工作区不可用时省略整个 `codeChanges` 并记录结构化诊断；不得用 terminal 时的 HEAD 代替缺失基线，采集失败不得改变 runtime terminal。
 - 删除 `completeness/limitationCodes`、turn-files delta 以及 collector 的跨 attempt code change accumulator。

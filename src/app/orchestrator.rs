@@ -14571,6 +14571,14 @@ mod tests {
         assert_eq!(baseline.workspace_path, repo_root);
         assert_eq!(baseline.baseline_commit, expected_head);
 
+        let embedded = repo_root.join("embedded");
+        std::fs::create_dir_all(embedded.as_std_path()).unwrap();
+        git(&embedded, &["init"]);
+        git(&embedded, &["config", "user.email", "nested@example.com"]);
+        git(&embedded, &["config", "user.name", "Nested Test"]);
+        std::fs::write(embedded.join("nested.txt").as_std_path(), "nested\n").unwrap();
+        git(&embedded, &["add", "nested.txt"]);
+        git(&embedded, &["commit", "-m", "nested"]);
         std::fs::write(
             repo_root.join("README.md").as_std_path(),
             "hello\nchanged\n",

@@ -7,9 +7,9 @@ use gold_band::app::history_deletion::request_run_history_deletion;
 use gold_band::app::observability::RuntimeLifecycleBus;
 use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID, RuntimeLifecycleEvent};
 use gold_band::scheduler::db::{
-    ScheduledExecutionHistoryCursor, ScheduledExecutionHistoryPage,
-    ScheduledHistoryDeletionOperation, ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult,
-    derived_next_run_at,
+    ScheduledExecutionHistoryAnchor, ScheduledExecutionHistoryCursor,
+    ScheduledExecutionHistoryPage, ScheduledHistoryDeletionOperation, ScheduledJobRecord,
+    ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
 };
 use gold_band::scheduler::fingerprint::canonical_content_json;
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
@@ -348,6 +348,58 @@ impl ScheduledTaskService {
                 &resolved_project_id,
                 scheduled_task_id,
                 cursor,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
+            .map_err(ScheduledServiceError::from_database)
+    }
+
+    pub fn list_execution_history_page_anchored(
+        &self,
+        project_id: &str,
+        scheduled_task_id: &str,
+        cursor: Option<&ScheduledExecutionHistoryCursor>,
+        anchor: Option<(&str, &str)>,
+    ) -> ScheduledServiceResult<ScheduledExecutionHistoryPage> {
+        let workspace = (self.resolve_workspace)(project_id)?;
+        let resolved_project_id = workspace.app.paths.project_id.clone();
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        let anchor_cursor = if cursor.is_none() {
+            match anchor {
+                Some((task_id, run_id)) => match database
+                    .execution_history_cursor_before_run(
+                        &resolved_project_id,
+                        scheduled_task_id,
+                        task_id,
+                        run_id,
+                    )
+                    .map_err(ScheduledServiceError::from_database)?
+                {
+                    ScheduledExecutionHistoryAnchor::Missing => {
+                        return Err(ScheduledServiceError::new(
+                            ScheduledErrorCode::NotFound,
+                            serde_json::json!({
+                                "operation": "list-execution-history",
+                                "projectId": project_id,
+                                "scheduledTaskId": scheduled_task_id,
+                                "taskId": task_id,
+                                "runId": run_id,
+                            }),
+                        ));
+                    }
+                    ScheduledExecutionHistoryAnchor::Newest => None,
+                    ScheduledExecutionHistoryAnchor::After(cursor) => Some(cursor),
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
+        database
+            .list_execution_history_page(
+                &resolved_project_id,
+                scheduled_task_id,
+                cursor.or(anchor_cursor.as_ref()),
                 gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
             )
             .map_err(ScheduledServiceError::from_database)
@@ -1667,6 +1719,28 @@ mod tests {
 
         assert_eq!(page.items.len(), 1);
         assert_eq!(page.items[0].run_id, "run-history");
+        let anchored = fixture
+            .service
+            .list_execution_history_page_anchored(
+                &fixture.app.paths.project_id,
+                definition.id(),
+                None,
+                Some(("task-history", "run-history")),
+            )
+            .unwrap();
+        assert_eq!(anchored.items[0].run_id, "run-history");
+        let missing = fixture
+            .service
+            .list_execution_history_page_anchored(
+                &fixture.app.paths.project_id,
+                definition.id(),
+                None,
+                Some(("task-missing", "run-missing")),
+            )
+            .unwrap_err();
+        assert_eq!(missing.code, ScheduledErrorCode::NotFound);
+        assert_eq!(missing.params["taskId"], "task-missing");
+        assert_eq!(missing.params["runId"], "run-missing");
     }
 
     #[test]

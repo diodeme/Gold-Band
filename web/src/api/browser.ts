@@ -36,14 +36,20 @@ function emptyWorkflowModelBindings(): WorkflowModelBindings {
   return { definitionRevision: '', bindingRevision: 0, bindings: [] };
 }
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
+const browserScheduledHistoryProjects = new Map<string, string>();
+const browserScheduledExecutionSnapshots = new Map<string, { acceptedAt: string; instructionSummary: string; contentFingerprint: string }>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
+
+async function browserContentFingerprint(content: string) {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
 let browserScheduledRuntimeSettings = {
   keepAwakeEnabled: false,
   keepAwakeEffective: false,
   completionNotificationsEnabled: true,
   enabledJobCount: 0,
-  occurrenceRetentionDays: 30,
   powerErrorCode: null,
 };
 
@@ -598,9 +604,6 @@ export const browserApi: RuntimeApi = {
     return structuredClone(browserScheduledRuntimeSettings);
   },
   async saveScheduledRuntimeSettings(input) {
-    if (input.occurrenceRetentionDays < 1 || input.occurrenceRetentionDays > 3650) {
-      throw { code: 'SCHEDULED_VALIDATION_FAILED', params: { field: 'occurrenceRetentionDays', minimum: 1, maximum: 3650, actual: input.occurrenceRetentionDays } };
-    }
     browserScheduledRuntimeSettings = {
       ...browserScheduledRuntimeSettings,
       ...input,
@@ -1755,6 +1758,7 @@ export const browserApi: RuntimeApi = {
     };
     browserScheduledTaskDefinitions.set(id, definition);
     browserScheduledOccurrences.set(id, []);
+    browserScheduledHistoryProjects.set(id, input.projectId);
     browserScheduledTasks.push(task);
     emitBrowserScheduledTaskUpdated(task);
     return Promise.resolve({ ...task });
@@ -1795,12 +1799,13 @@ export const browserApi: RuntimeApi = {
     }
     return Promise.resolve(structuredClone(next));
   },
-  deleteScheduledTask(_projectId, scheduledTaskId) {
-    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId);
+  deleteScheduledTask(projectId, scheduledTaskId) {
+    const index = browserScheduledTasks.findIndex((task) => task.id === scheduledTaskId && task.projectId === projectId);
     if (index < 0) return browserCommandError('scheduled-task.not-found');
     const [task] = browserScheduledTasks.splice(index, 1);
     browserScheduledTaskDefinitions.delete(scheduledTaskId);
-    browserScheduledOccurrences.delete(scheduledTaskId);
+    // Accepted execution history is owned by the Run lifecycle, not by the
+    // editable definition. Keep it addressable after definition deletion.
     emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
     return Promise.resolve();
   },
@@ -1814,6 +1819,74 @@ export const browserApi: RuntimeApi = {
     const items = all.slice(start, start + 20).map((occurrence) => structuredClone(occurrence));
     const hasMore = start + items.length < all.length;
     return Promise.resolve({ items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null });
+  },
+  listScheduledExecutionHistory(projectId, scheduledTaskId, cursor, anchor) {
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId);
+    const effectiveProjectId = task?.projectId ?? definition?.projectId ?? browserScheduledHistoryProjects.get(scheduledTaskId);
+    if (!effectiveProjectId || effectiveProjectId !== projectId) return browserCommandError('scheduled-task.not-found');
+    const grouped = new Map<string, ScheduledOccurrenceVm[]>();
+    for (const occurrence of browserScheduledOccurrences.get(scheduledTaskId) ?? []) {
+      if (!occurrence.taskId || !occurrence.runId) continue;
+      const key = `${occurrence.taskId}:${occurrence.runId}`;
+      const group = grouped.get(key);
+      if (group) group.push(occurrence);
+      else grouped.set(key, [occurrence]);
+    }
+    const all = [...grouped.values()].map((items) => {
+      const latest = items[0];
+      const latestSnapshot = browserScheduledExecutionSnapshots.get(latest.id);
+      const firstSnapshot = browserScheduledExecutionSnapshots.get(items.at(-1)?.id ?? latest.id);
+      return {
+        projectId,
+        scheduledTaskId,
+        taskId: latest.taskId!,
+        runId: latest.runId!,
+        firstAcceptedAt: firstSnapshot?.acceptedAt ?? items.at(-1)?.startedAt ?? latest.scheduledAt,
+        lastAcceptedAt: latestSnapshot?.acceptedAt ?? latest.startedAt ?? latest.scheduledAt,
+        occurrenceCount: items.length,
+        latestOccurrenceId: latest.id,
+        latestSummary: latestSnapshot?.instructionSummary ?? definition?.content.split(/\r?\n/)[0] ?? task?.title ?? '',
+        latestContentFingerprint: latestSnapshot?.contentFingerprint ?? `browser:${scheduledTaskId}`,
+        availability: 'available' as const,
+        run: {
+          runId: latest.runId!,
+          status: latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' ? 'running' : 'completed',
+          outcome: latest.status === 'succeeded' ? 'succeeded' : latest.status === 'failed' || latest.status === 'attention_required' ? 'failed' : null,
+          startedAt: latest.startedAt ?? latest.scheduledAt,
+          updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.scheduledAt,
+          resumable: latest.status === 'attention_required',
+        },
+      };
+    });
+    const anchoredStart = !cursor && anchor
+      ? all.findIndex((item) => item.taskId === anchor.taskId && item.runId === anchor.runId)
+      : -1;
+    if (anchor && !cursor && anchoredStart < 0) return browserCommandError('scheduled-task.not-found');
+    const start = cursor ? all.findIndex((item) => item.runId === cursor) + 1 : Math.max(0, anchoredStart);
+    if (cursor && start === 0) return browserCommandError('scheduled-task.validation-failed');
+    const items = all.slice(start, start + 20);
+    return Promise.resolve({ items: structuredClone(items), nextCursor: start + items.length < all.length ? items.at(-1)?.runId ?? null : null });
+  },
+  deleteScheduledExecutionHistory(items) {
+    const results = items.map((item) => {
+      if (browserScheduledHistoryProjects.get(item.scheduledTaskId) !== item.projectId) {
+        return { ...item, operationId: null, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+      }
+      const history = browserScheduledOccurrences.get(item.scheduledTaskId) ?? [];
+      const exists = history.some((occurrence) => occurrence.taskId === item.taskId && occurrence.runId === item.runId);
+      if (!exists) {
+        return { ...item, operationId: null, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+      }
+      for (const occurrence of history) {
+        if (occurrence.taskId === item.taskId && occurrence.runId === item.runId) {
+          browserScheduledExecutionSnapshots.delete(occurrence.id);
+        }
+      }
+      browserScheduledOccurrences.set(item.scheduledTaskId, history.filter((occurrence) => occurrence.taskId !== item.taskId || occurrence.runId !== item.runId));
+      return { ...item, operationId: null, status: 'completed' as const, code: null, params: {} };
+    });
+    return Promise.resolve(results);
   },
   getScheduledTaskDiagnostics(projectId, scheduledTaskId) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
@@ -1831,7 +1904,7 @@ export const browserApi: RuntimeApi = {
       occurrences: occurrences.slice(0, 200).map((occurrence) => structuredClone(occurrence)),
     });
   },
-  runScheduledTaskNow(projectId, scheduledTaskId) {
+  async runScheduledTaskNow(projectId, scheduledTaskId) {
     const task = browserScheduledTasks.find((item) => item.id === scheduledTaskId && item.projectId === projectId);
     if (!task) return browserCommandError('scheduled-task.not-found');
     const now = new Date().toISOString();
@@ -1855,6 +1928,13 @@ export const browserApi: RuntimeApi = {
       finishedAt: null,
     };
     const history = browserScheduledOccurrences.get(scheduledTaskId) ?? [];
+    const definition = browserScheduledTaskDefinitions.get(scheduledTaskId);
+    const acceptedContent = definition?.content ?? task.title;
+    browserScheduledExecutionSnapshots.set(occurrenceId, {
+      acceptedAt: now,
+      instructionSummary: acceptedContent.split(/\r?\n/).find((line) => line.trim())?.trim() ?? task.title,
+      contentFingerprint: await browserContentFingerprint(acceptedContent),
+    });
     browserScheduledOccurrences.set(scheduledTaskId, [running, ...history]);
     emitBrowserScheduledOccurrenceUpdated(running, task.projectId);
     const finished: ScheduledOccurrenceVm = { ...running, status: 'succeeded', finishedAt: new Date().toISOString() };
@@ -1866,13 +1946,13 @@ export const browserApi: RuntimeApi = {
     });
     emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);
     emitBrowserScheduledTaskUpdated(task);
-    return Promise.resolve({
+    return {
       occurrence: structuredClone(finished),
       taskId,
       runId,
       roundId: null,
       attemptId: null,
-    } satisfies RunScheduledTaskResultVm);
+    } satisfies RunScheduledTaskResultVm;
   },
   getConversationWorkspaces() {
     return Promise.resolve([{ projectId: 'default', workspacePath: '/default', name: 'Default Workspace' }]);

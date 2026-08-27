@@ -64,6 +64,9 @@ import type {
   WorkflowVm,
   ScheduledTaskEditVm,
   ScheduledOccurrenceVm,
+  ScheduledExecutionHistoryPageVm,
+  ScheduledExecutionHistoryDeleteInputVm,
+  ScheduledExecutionHistoryDeleteResultVm,
   ScheduledTaskDiagnosticsVm,
   ScheduledNotificationEventVm,
   ScheduledNativeNotificationInputVm,
@@ -378,6 +381,8 @@ export interface RuntimeApi {
   updateScheduledTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskEditVm>;
   deleteScheduledTask(projectId: string, scheduledTaskId: string): Promise<void>;
   listScheduledTaskOccurrences(projectId: string, scheduledTaskId: string, cursor?: string | null, status?: string | null): Promise<import('../types').ScheduledOccurrencePageVm>;
+  listScheduledExecutionHistory(projectId: string, scheduledTaskId: string, cursor?: string | null, anchor?: { taskId: string; runId: string } | null): Promise<ScheduledExecutionHistoryPageVm>;
+  deleteScheduledExecutionHistory(items: ScheduledExecutionHistoryDeleteInputVm[]): Promise<ScheduledExecutionHistoryDeleteResultVm[]>;
   getScheduledTaskDiagnostics(projectId: string, scheduledTaskId: string): Promise<ScheduledTaskDiagnosticsVm>;
   runScheduledTaskNow(projectId: string, scheduledTaskId: string): Promise<RunScheduledTaskResultVm>;
   getConversationWorkspaces(): Promise<ConversationWorkspaceVm[]>;

@@ -24,8 +24,13 @@ export function routeFromPath(pathname: string): AppRoute {
     if (segments[1] === 'run-modes') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'run-mode-management' } };
     if (segments[1] === 'scheduled-tasks') {
       if (segments[2] === 'new') return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-create' } };
-      if (segments[2]) return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: '', scheduledTaskId: segments[2] } };
       return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-tasks' } };
+    }
+    if (segments[1] === 'projects' && segments[2] && segments[3] === 'scheduled-tasks' && segments[4]) {
+      if (segments[5] === 'history' && segments[6] && segments[7] && segments[8] === 'occurrences' && segments[9]) {
+        return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: segments[2], scheduledTaskId: segments[4], taskId: segments[6], runId: segments[7], occurrenceId: segments[9] } };
+      }
+      return { uiMode: 'conversation', module: 'task-orchestration', taskPage: taskListPage, conversationPage: { kind: 'scheduled-task-detail', projectId: segments[2], scheduledTaskId: segments[4] } };
     }
     if (segments[1] === 'projects' && segments[3] === 'tasks' && segments[5] === 'runs' && segments[6]) {
       const roundId = segments[7] === 'rounds' ? segments[8] : undefined;
@@ -78,7 +83,12 @@ export function pathFromRoute(module: PrimaryModule, taskPage: TaskPage, convers
     if (conversationPage.kind === 'run-mode-management') return '/chat/run-modes';
     if (conversationPage.kind === 'scheduled-tasks') return '/chat/scheduled-tasks';
     if (conversationPage.kind === 'scheduled-task-create') return '/chat/scheduled-tasks/new';
-    if (conversationPage.kind === 'scheduled-task-detail') return `/chat/scheduled-tasks/${encodeURIComponent(conversationPage.scheduledTaskId)}`;
+    if (conversationPage.kind === 'scheduled-task-detail') {
+      const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/scheduled-tasks/${encodeURIComponent(conversationPage.scheduledTaskId)}`;
+      return conversationPage.taskId && conversationPage.runId && conversationPage.occurrenceId
+        ? `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/scheduled-tasks/${encodeURIComponent(conversationPage.scheduledTaskId)}/history/${encodeURIComponent(conversationPage.taskId)}/${encodeURIComponent(conversationPage.runId)}/occurrences/${encodeURIComponent(conversationPage.occurrenceId)}`
+        : base;
+    }
     if (conversationPage.kind === 'conversation-run') {
       const base = `/chat/projects/${encodeURIComponent(conversationPage.projectId)}/tasks/${encodeURIComponent(conversationPage.taskId)}/runs/${encodeURIComponent(conversationPage.runId)}`;
       if (!conversationPage.roundId) return base;

@@ -90,28 +90,60 @@ describe('ScheduledTaskManagementPage', () => {
 });
 
 describe('ScheduledTaskDetailPage', () => {
-  it('loads diagnostics and occurrence history scoped to a single task', async () => {
+  it('loads Run history with a complete locator and local deletion state', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const source = readFileSync(fileURLToPath(new URL('../src/pages/ScheduledTaskDetailPage.tsx', import.meta.url)), 'utf8');
-    expect(source).toContain('getScheduledTaskDiagnostics');
-    expect(source).toContain('listScheduledTaskOccurrences');
-    expect(source).toContain('subscribeScheduledTaskUpdates');
-    expect(source).toContain('subscribeScheduledOccurrenceUpdates');
+    expect(source).toContain('listScheduledExecutionHistory');
+    expect(source).toContain('deleteScheduledExecutionHistory');
     expect(source).toContain("t('scheduled.detail.back')");
     expect(source).toContain("t('scheduled.detail.history')");
-    expect(source).toContain('statusFilter');
-    expect(source).toContain('scheduledOccurrenceTarget');
-    expect(source).toContain('historyNextCursor');
-    expect(source).toContain('snapshotRefreshCoordinatorRef');
-    expect(source).toContain('createScheduledTaskDetailRefreshCoordinator');
-    expect(source).toContain('coordinator.beginForegroundRequest()');
-    expect(source).toContain('coordinator.isCurrent(generation)');
-    expect(source).toContain("status === 'all' ? null : status");
-    expect(source).not.toContain('occurrences.filter((occurrence) => occurrence.status === statusFilter)');
-    expect(source).not.toContain('}, [t, task]);');
-    // Event handlers only react to the matching task id
-    expect(source).toContain("event.scheduledTaskId !== scheduledTaskId");
+    expect(source).toContain('scheduledHistoryTarget');
+    expect(source).toContain('ScheduledExecutionHistoryVm');
+    expect(source).toContain("t('scheduled.detail.deleted')");
+    expect(source).toContain('const [selectedRuns, setSelectedRuns]');
+    expect(source).toContain("result.status === 'completed'");
+    expect(source).toContain('code: result.code');
+    expect(source).toContain('displayAppError(t, { code: state.code, params: state.params ?? {} })');
+    expect(source).toContain('setSelectedRuns(new Set());');
+    expect(source).not.toContain('listScheduledTaskOccurrences');
+    expect(source).not.toContain('occurrenceRetentionDays');
+    expect(source).toContain('<Sheet open={Boolean(editing)}');
+    expect(source).toContain('resizeStorageKey="scheduled-task-detail/edit"');
+    expect(source).toContain('<ScheduledTaskDialog');
+    expect(source).toContain('await updateScheduledTask({');
+    expect(source).toContain('setEditing(null);');
+    expect(source).toContain('getScheduledTaskDiagnostics');
+    expect(source).toContain('subscribeScheduledTaskUpdates');
+    expect(source).toContain('subscribeScheduledOccurrenceUpdates');
+    expect(source).toContain("getScheduledTaskDiagnostics(request.projectId, request.scheduledTaskId).catch(() => null)");
+    expect(source).not.toContain('Promise.allSettled');
+    expect(source).toContain('void listScheduledTasks(pid)');
+    expect(source).toContain("initialLocation.kind === 'anchor'");
+    expect(source).toContain('event.projectId !== (task?.projectId ?? projectId)');
+    expect(source).toContain('if (taskId && runId) return;');
+    expect(source).toContain('historyDeleteInFlightRef.current');
+    expect(source).toContain('generation !== historyMutationGenerationRef.current');
+    expect(source).toContain('executionHistoryKey(item)');
+    expect(source).toContain('displayAppError(t, item.error)');
+    expect(source).toContain('<RunHistorySection readOnly');
+    expect(source).toContain("aria-label={t('scheduled.detail.history')}");
+    expect(source).toContain("aria-label={t('scheduled.detail.selectAllRuns')}");
+    expect(source).toContain('executionHistoryStatusLabel(t, item)');
+    expect(source).toContain('const effectiveProjectId = task?.projectId ?? projectId;');
+    expect(source).toContain("type HistoryPageLocation =");
+    expect(source).not.toContain("pid || 'default'");
+  });
+
+  it('localizes execution history availability and selection controls', async () => {
+    await i18n.changeLanguage('zh-CN');
+    expect(i18n.t('scheduled.detail.historyAvailability.available')).toBe('可打开');
+    expect(i18n.t('scheduled.detail.historyAvailability.unavailable')).toBe('不可用');
+    expect(i18n.t('scheduled.detail.selectRun', { summary: '每日摘要' })).toBe('选择运行：每日摘要');
+
+    await i18n.changeLanguage('en');
+    expect(i18n.t('scheduled.detail.historyAvailability.available')).toBe('Available');
+    expect(i18n.t('scheduled.detail.selectAllRuns')).toBe('Select all runs on this page');
   });
 
   it('shows structured elicitation submission failures instead of silently reopening the question', async () => {

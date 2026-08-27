@@ -25,7 +25,6 @@ function makeSettings(overrides: Partial<ScheduledRuntimeSettingsVm> = {}): Sche
     keepAwakeEffective: false,
     completionNotificationsEnabled: true,
     enabledJobCount: 0,
-    occurrenceRetentionDays: 30,
     powerErrorCode: null,
     ...overrides,
   };
@@ -44,7 +43,7 @@ describe('scheduled runtime settings cache', () => {
     });
 
     it('写入后可读取，并在新鲜期内不视为过期', () => {
-      const settings = makeSettings({ occurrenceRetentionDays: 14 });
+      const settings = makeSettings({ enabledJobCount: 14 });
       writeScheduledRuntimeSettingsCache(settings, 1_000);
       expect(readScheduledRuntimeSettingsCache()).toEqual(settings);
       expect(isScheduledRuntimeSettingsStale(1_000)).toBe(false);
@@ -94,8 +93,8 @@ describe('scheduled runtime settings cache', () => {
     });
 
     it('does not let a late refresh overwrite a newer saved value', async () => {
-      const stale = makeSettings({ occurrenceRetentionDays: 30 });
-      const saved = makeSettings({ occurrenceRetentionDays: 90 });
+      const stale = makeSettings({ enabledJobCount: 30 });
+      const saved = makeSettings({ enabledJobCount: 90 });
       let resolve!: (value: ScheduledRuntimeSettingsVm) => void;
       mockedGet.mockReturnValue(new Promise<ScheduledRuntimeSettingsVm>((next) => {
         resolve = next;

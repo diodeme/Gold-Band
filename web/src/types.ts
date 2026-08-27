@@ -2017,11 +2017,11 @@ export interface ScheduledExecutionHistoryDeleteInputVm {
   scheduledTaskId: string;
   taskId: string;
   runId: string;
+  throughOccurrenceId: string;
 }
 
 export interface ScheduledExecutionHistoryDeleteResultVm extends ScheduledExecutionHistoryDeleteInputVm {
-  operationId?: string | null;
-  status: 'accepted' | 'stopping' | 'deleting' | 'completed' | 'failed';
+  status: 'completed' | 'failed';
   code?: string | null;
   params: Record<string, unknown>;
 }

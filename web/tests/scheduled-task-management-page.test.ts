@@ -129,6 +129,8 @@ describe('ScheduledTaskDetailPage', () => {
     expect(source).toContain('<RunHistorySection readOnly');
     expect(source).toContain("aria-label={t('scheduled.detail.history')}");
     expect(source).toContain("aria-label={t('scheduled.detail.selectAllRuns')}");
+    expect(source).toContain("item.run?.status === 'completed'");
+    expect(source).toContain('throughOccurrenceId: item.latestOccurrenceId');
     expect(source).toContain('executionHistoryStatusLabel(t, item)');
     expect(source).toContain('const effectiveProjectId = task?.projectId ?? projectId;');
     expect(source).toContain("type HistoryPageLocation =");
@@ -139,11 +141,12 @@ describe('ScheduledTaskDetailPage', () => {
     await i18n.changeLanguage('zh-CN');
     expect(i18n.t('scheduled.detail.historyAvailability.available')).toBe('可打开');
     expect(i18n.t('scheduled.detail.historyAvailability.unavailable')).toBe('不可用');
-    expect(i18n.t('scheduled.detail.selectRun', { summary: '每日摘要' })).toBe('选择运行：每日摘要');
+    expect(i18n.t('scheduled.detail.selectRun', { summary: '每日摘要' })).toBe('选择历史：每日摘要');
+    expect(i18n.t('scheduled.detail.removeSelected')).toBe('移除所选历史');
 
     await i18n.changeLanguage('en');
     expect(i18n.t('scheduled.detail.historyAvailability.available')).toBe('Available');
-    expect(i18n.t('scheduled.detail.selectAllRuns')).toBe('Select all runs on this page');
+    expect(i18n.t('scheduled.detail.selectAllRuns')).toBe('Select all removable history on this page');
   });
 
   it('shows structured elicitation submission failures instead of silently reopening the question', async () => {

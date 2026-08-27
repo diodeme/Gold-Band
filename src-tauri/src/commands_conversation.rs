@@ -422,87 +422,39 @@ fn execution_history_vm(
     }
 }
 
-fn delete_scheduled_execution_history_items<F, G>(
+fn delete_scheduled_execution_history_items<F>(
     items: Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm>,
-    mut delete: F,
-    mut stop: G,
+    mut remove: F,
 ) -> Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm>
 where
     F: FnMut(
         &crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm,
     ) -> crate::scheduled_service::ScheduledServiceResult<
-        gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
-    >,
-    G: FnMut(
-        &gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
-    ) -> crate::scheduled_service::ScheduledServiceResult<
-        gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+        gold_band::scheduler::db::RemoveExecutionHistoryResult,
     >,
 {
     use crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm as StatusVm;
-    use gold_band::scheduler::db::HistoryDeletionStatus;
 
     items
         .into_iter()
-        .map(|item| match delete(&item) {
-            Ok(operation) => {
-                let operation_id = operation.operation_id.clone();
-                let post_create_result = if operation.status == HistoryDeletionStatus::Stopping {
-                    stop(&operation)
-                } else {
-                    Ok(operation)
-                };
-                match post_create_result {
-                    Ok(operation) => {
-                        let (status, code, params) = match operation.last_error {
-                            Some(error) => (
-                                StatusVm::Failed,
-                                Some(error.code.to_string()),
-                                error.params.unwrap_or_else(|| serde_json::json!({})),
-                            ),
-                            None => (
-                                match operation.status {
-                                    HistoryDeletionStatus::Accepted => StatusVm::Accepted,
-                                    HistoryDeletionStatus::Stopping => StatusVm::Stopping,
-                                    HistoryDeletionStatus::Deleting => StatusVm::Deleting,
-                                    HistoryDeletionStatus::Completed => StatusVm::Completed,
-                                },
-                                None,
-                                serde_json::json!({}),
-                            ),
-                        };
-                        crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
-                            project_id: item.project_id,
-                            scheduled_task_id: item.scheduled_task_id,
-                            task_id: item.task_id,
-                            run_id: item.run_id,
-                            operation_id: Some(operation.operation_id),
-                            status,
-                            code,
-                            params,
-                        }
-                    }
-                    Err(error) => {
-                        crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
-                            project_id: item.project_id,
-                            scheduled_task_id: item.scheduled_task_id,
-                            task_id: item.task_id,
-                            run_id: item.run_id,
-                            operation_id: Some(operation_id),
-                            status: StatusVm::Failed,
-                            code: Some(error.code.to_string()),
-                            params: error.params,
-                        }
-                    }
-                }
-            }
+        .map(|item| match remove(&item) {
+            Ok(_) => crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                project_id: item.project_id,
+                scheduled_task_id: item.scheduled_task_id,
+                task_id: item.task_id,
+                run_id: item.run_id,
+                through_occurrence_id: item.through_occurrence_id,
+                status: StatusVm::Completed,
+                code: None,
+                params: serde_json::json!({}),
+            },
             Err(error) => {
                 crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
                     project_id: item.project_id,
                     scheduled_task_id: item.scheduled_task_id,
                     task_id: item.task_id,
                     run_id: item.run_id,
-                    operation_id: None,
+                    through_occurrence_id: item.through_occurrence_id,
                     status: StatusVm::Failed,
                     code: Some(error.code.to_string()),
                     params: error.params,
@@ -527,6 +479,26 @@ fn validate_execution_history_delete_batch(
             }),
         ));
     }
+    for (index, item) in items.iter().enumerate() {
+        for (field, value) in [
+            ("projectId", item.project_id.as_str()),
+            ("scheduledTaskId", item.scheduled_task_id.as_str()),
+            ("taskId", item.task_id.as_str()),
+            ("runId", item.run_id.as_str()),
+            ("throughOccurrenceId", item.through_occurrence_id.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(CommandErrorVm::new(
+                    gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed
+                        .to_string(),
+                    serde_json::json!({
+                        "field": format!("items[{index}].{field}"),
+                        "reason": "required",
+                    }),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -538,18 +510,15 @@ pub async fn delete_scheduled_execution_history(
     validate_execution_history_delete_batch(&items)?;
     let service = state.scheduled_service().map_err(command_error)?;
     spawn_blocking_command(move || {
-        Ok(delete_scheduled_execution_history_items(
-            items,
-            |item| {
-                service.request_execution_history_deletion(
-                    &item.project_id,
-                    &item.scheduled_task_id,
-                    &item.task_id,
-                    &item.run_id,
-                )
-            },
-            |operation| service.reconcile_history_deletion_stop(operation),
-        ))
+        Ok(delete_scheduled_execution_history_items(items, |item| {
+            service.remove_execution_history(
+                &item.project_id,
+                &item.scheduled_task_id,
+                &item.task_id,
+                &item.run_id,
+                &item.through_occurrence_id,
+            )
+        }))
     })
     .await
 }
@@ -2429,73 +2398,34 @@ mod tests {
     }
 
     #[test]
-    fn batch_history_delete_isolates_failures_and_keeps_operation_identity() {
-        use gold_band::scheduler::db::{HistoryDeletionStatus, ScheduledHistoryDeletionOperation};
-        use gold_band::scheduler::occurrence::ScheduledError;
-
+    fn batch_history_removal_isolates_failures_and_returns_terminal_results() {
         let input = |run_id: &str| {
             crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
                 project_id: "project-1".to_string(),
                 scheduled_task_id: "scheduled-1".to_string(),
                 task_id: "task-1".to_string(),
                 run_id: run_id.to_string(),
+                through_occurrence_id: format!("occurrence-{run_id}"),
             }
         };
-        let mut stop_requests = Vec::new();
         let results = delete_scheduled_execution_history_items(
-            vec![
-                input("run-not-found"),
-                input("run-failed"),
-                input("run-stopping"),
-                input("run-stop-error"),
-                input("run-completed"),
-            ],
+            vec![input("run-not-found"), input("run-completed")],
             |item| {
                 if item.run_id == "run-not-found" {
                     return Err(crate::scheduled_service::ScheduledServiceError::new(
                         ScheduledErrorCode::NotFound,
                         serde_json::json!({
-                            "operation": "delete-execution-history",
+                            "operation": "remove-execution-history",
                             "runId": item.run_id,
                         }),
                     ));
                 }
-                Ok(ScheduledHistoryDeletionOperation {
-                    operation_id: format!("operation-{}", item.run_id),
-                    project_id: item.project_id.clone(),
-                    scheduled_task_id: item.scheduled_task_id.clone(),
-                    task_id: item.task_id.clone(),
-                    run_id: item.run_id.clone(),
-                    status: match item.run_id.as_str() {
-                        "run-failed" => HistoryDeletionStatus::Deleting,
-                        "run-stopping" | "run-stop-error" => HistoryDeletionStatus::Stopping,
-                        _ => HistoryDeletionStatus::Completed,
-                    },
-                    revision: 2,
-                    attempt: u32::from(item.run_id == "run-failed"),
-                    last_error: (item.run_id == "run-failed").then(|| {
-                        ScheduledError::with_params(
-                            ScheduledErrorCode::StorageFailed,
-                            serde_json::json!({ "operation": "trash-run" }),
-                        )
-                    }),
-                })
-            },
-            |operation| {
-                stop_requests.push(operation.operation_id.clone());
-                if operation.run_id == "run-stop-error" {
-                    return Err(crate::scheduled_service::ScheduledServiceError::new(
-                        ScheduledErrorCode::StorageFailed,
-                        serde_json::json!({ "operation": "stop-execution-history-run" }),
-                    ));
-                }
-                Ok(operation.clone())
+                Ok(gold_band::scheduler::db::RemoveExecutionHistoryResult::Removed(1))
             },
         );
 
-        assert_eq!(results.len(), 5);
+        assert_eq!(results.len(), 2);
         assert_eq!(results[0].run_id, "run-not-found");
-        assert!(results[0].operation_id.is_none());
         assert_eq!(
             results[0].status,
             crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
@@ -2504,46 +2434,13 @@ mod tests {
             results[0].code.as_deref(),
             Some(ScheduledErrorCode::NotFound.to_string().as_str())
         );
-        assert_eq!(results[1].run_id, "run-failed");
-        assert_eq!(
-            results[1].operation_id.as_deref(),
-            Some("operation-run-failed")
-        );
+        assert_eq!(results[1].run_id, "run-completed");
+        assert_eq!(results[1].through_occurrence_id, "occurrence-run-completed");
         assert_eq!(
             results[1].status,
-            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
-        );
-        let storage_failed = ScheduledErrorCode::StorageFailed.to_string();
-        assert_eq!(results[1].code.as_deref(), Some(storage_failed.as_str()));
-        assert_eq!(
-            stop_requests,
-            vec![
-                "operation-run-stopping".to_string(),
-                "operation-run-stop-error".to_string(),
-            ]
-        );
-        assert_eq!(results[2].run_id, "run-stopping");
-        assert_eq!(
-            results[2].status,
-            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Stopping
-        );
-        assert_eq!(results[3].run_id, "run-stop-error");
-        assert_eq!(
-            results[3].operation_id.as_deref(),
-            Some("operation-run-stop-error")
-        );
-        assert_eq!(
-            results[3].status,
-            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
-        );
-        let stop_failed = ScheduledErrorCode::StorageFailed.to_string();
-        assert_eq!(results[3].code.as_deref(), Some(stop_failed.as_str()));
-        assert_eq!(results[4].run_id, "run-completed");
-        assert_eq!(
-            results[4].status,
             crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Completed
         );
-        assert!(results[4].code.is_none());
+        assert!(results[1].code.is_none());
     }
 
     #[test]
@@ -2555,6 +2452,7 @@ mod tests {
                     scheduled_task_id: "scheduled-1".to_string(),
                     task_id: "task-1".to_string(),
                     run_id: format!("run-{index}"),
+                    through_occurrence_id: format!("occurrence-{index}"),
                 },
             )
             .collect::<Vec<_>>();
@@ -2579,11 +2477,31 @@ mod tests {
                     scheduled_task_id: "scheduled-1".to_string(),
                     task_id: "task-1".to_string(),
                     run_id: format!("run-{index}"),
+                    through_occurrence_id: format!("occurrence-{index}"),
                 },
             )
             .collect::<Vec<_>>();
 
         assert!(validate_execution_history_delete_batch(&items).is_ok());
+    }
+
+    #[test]
+    fn batch_history_delete_rejects_an_empty_watermark() {
+        let items = vec![
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                project_id: "project-1".to_string(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "task-1".to_string(),
+                run_id: "run-1".to_string(),
+                through_occurrence_id: "  ".to_string(),
+            },
+        ];
+
+        let error = validate_execution_history_delete_batch(&items).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "items[0].throughOccurrenceId");
+        assert_eq!(error.params["reason"], "required");
     }
 
     #[test]

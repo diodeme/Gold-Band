@@ -37,9 +37,14 @@ function emptyWorkflowModelBindings(): WorkflowModelBindings {
 }
 const browserScheduledOccurrences = new Map<string, ScheduledOccurrenceVm[]>();
 const browserScheduledHistoryProjects = new Map<string, string>();
+const browserScheduledAcceptedRuns = new Set<string>();
 const browserScheduledExecutionSnapshots = new Map<string, { acceptedAt: string; instructionSummary: string; contentFingerprint: string }>();
 const browserScheduledOccurrenceListeners = new Set<(event: ScheduledOccurrenceUpdatedEventVm) => void>();
 let browserScheduledTaskSequence = 0;
+
+function browserScheduledRunKey(projectId: string, scheduledTaskId: string, taskId: string, runId: string) {
+  return `${projectId}\0${scheduledTaskId}\0${taskId}\0${runId}`;
+}
 
 async function browserContentFingerprint(content: string) {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
@@ -1804,8 +1809,8 @@ export const browserApi: RuntimeApi = {
     if (index < 0) return browserCommandError('scheduled-task.not-found');
     const [task] = browserScheduledTasks.splice(index, 1);
     browserScheduledTaskDefinitions.delete(scheduledTaskId);
-    // Accepted execution history is owned by the Run lifecycle, not by the
-    // editable definition. Keep it addressable after definition deletion.
+    // Accepted occurrences are scheduler history, not editable definition data.
+    // Keep both that history and its independent Run addressable.
     emitBrowserScheduledTaskUpdated({ ...task, status: 'deleted' });
     return Promise.resolve();
   },
@@ -1851,7 +1856,7 @@ export const browserApi: RuntimeApi = {
         availability: 'available' as const,
         run: {
           runId: latest.runId!,
-          status: latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' ? 'running' : 'completed',
+          status: latest.status === 'attention_required' ? 'paused' : latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' ? 'running' : 'completed',
           outcome: latest.status === 'succeeded' ? 'succeeded' : latest.status === 'failed' || latest.status === 'attention_required' ? 'failed' : null,
           startedAt: latest.startedAt ?? latest.scheduledAt,
           updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.scheduledAt,
@@ -1871,20 +1876,32 @@ export const browserApi: RuntimeApi = {
   deleteScheduledExecutionHistory(items) {
     const results = items.map((item) => {
       if (browserScheduledHistoryProjects.get(item.scheduledTaskId) !== item.projectId) {
-        return { ...item, operationId: null, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
       }
       const history = browserScheduledOccurrences.get(item.scheduledTaskId) ?? [];
-      const exists = history.some((occurrence) => occurrence.taskId === item.taskId && occurrence.runId === item.runId);
-      if (!exists) {
-        return { ...item, operationId: null, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
+      const runHistory = history.filter((occurrence) => occurrence.taskId === item.taskId && occurrence.runId === item.runId);
+      if (!runHistory.length) {
+        return browserScheduledAcceptedRuns.has(browserScheduledRunKey(item.projectId, item.scheduledTaskId, item.taskId, item.runId))
+          ? { ...item, status: 'completed' as const, code: null, params: {} }
+          : { ...item, status: 'failed' as const, code: 'SCHEDULED_NOT_FOUND', params: {} };
       }
-      for (const occurrence of history) {
-        if (occurrence.taskId === item.taskId && occurrence.runId === item.runId) {
-          browserScheduledExecutionSnapshots.delete(occurrence.id);
-        }
+      const latest = runHistory[0];
+      if (latest.status === 'running' || latest.status === 'retrying' || latest.status === 'pending' || latest.status === 'attention_required') {
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_HISTORY_NOT_REMOVABLE', params: { reason: 'run-not-completed', runStatus: latest.status === 'attention_required' ? 'paused' : 'running' } };
       }
-      browserScheduledOccurrences.set(item.scheduledTaskId, history.filter((occurrence) => occurrence.taskId !== item.taskId || occurrence.runId !== item.runId));
-      return { ...item, operationId: null, status: 'completed' as const, code: null, params: {} };
+      const watermark = history.find((occurrence) => occurrence.id === item.throughOccurrenceId);
+      if (!watermark) return { ...item, status: 'completed' as const, code: null, params: {} };
+      if (watermark.taskId !== item.taskId || watermark.runId !== item.runId) {
+        return { ...item, status: 'failed' as const, code: 'SCHEDULED_CONFLICT', params: { reason: 'watermark-mismatch' } };
+      }
+      const watermarkAcceptedAt = browserScheduledExecutionSnapshots.get(watermark.id)?.acceptedAt ?? watermark.startedAt ?? watermark.scheduledAt;
+      const removedIds = new Set(runHistory.filter((occurrence) => {
+        const acceptedAt = browserScheduledExecutionSnapshots.get(occurrence.id)?.acceptedAt ?? occurrence.startedAt ?? occurrence.scheduledAt;
+        return acceptedAt < watermarkAcceptedAt || (acceptedAt === watermarkAcceptedAt && occurrence.id <= watermark.id);
+      }).map((occurrence) => occurrence.id));
+      for (const occurrenceId of removedIds) browserScheduledExecutionSnapshots.delete(occurrenceId);
+      browserScheduledOccurrences.set(item.scheduledTaskId, history.filter((occurrence) => !removedIds.has(occurrence.id)));
+      return { ...item, status: 'completed' as const, code: null, params: {} };
     });
     return Promise.resolve(results);
   },
@@ -1911,6 +1928,7 @@ export const browserApi: RuntimeApi = {
     const occurrenceId = `occurrence-${Date.now()}-${++browserScheduledTaskSequence}`;
     const taskId = `browser-task-${scheduledTaskId}`;
     const runId = `browser-run-${Date.now()}-${browserScheduledTaskSequence}`;
+    browserScheduledAcceptedRuns.add(browserScheduledRunKey(projectId, scheduledTaskId, taskId, runId));
     const running: ScheduledOccurrenceVm = {
       id: occurrenceId,
       scheduledTaskId,
@@ -1943,6 +1961,27 @@ export const browserApi: RuntimeApi = {
       lastTriggerAt: finished.finishedAt,
       lastTriggerStatus: finished.status,
       updatedAt: finished.finishedAt ?? now,
+    });
+    browserConversationRuns.set(runId, {
+      projectId,
+      taskId,
+      runId,
+      runMode: task.mode === 'workflow' || task.mode === 'auto' ? task.mode : 'direct',
+      directConfig: definition?.directConfig ?? null,
+      agentIdentity: definition?.directConfig ? browserAgentIdentity(definition.directConfig.agentType) : null,
+      lastActivityAt: finished.finishedAt ?? now,
+      runStatus: 'completed',
+      runOutcome: 'success',
+      sessionTree: { rounds: [], selectedSessionKey: null },
+      selectedSession: null,
+      activeSessions: [],
+      inputAttachments: [],
+      workflowStatus: 'valid',
+      workflowValid: true,
+      workflowGraph: { nodes: [], edges: [] },
+      resumable: false,
+      runtimeErrorMessage: null,
+      worktree: null,
     });
     emitBrowserScheduledOccurrenceUpdated(finished, task.projectId);
     emitBrowserScheduledTaskUpdated(task);

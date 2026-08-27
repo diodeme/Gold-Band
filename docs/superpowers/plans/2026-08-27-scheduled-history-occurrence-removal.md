@@ -15,9 +15,9 @@
 **Files:**
 - Modify: `src/scheduler/db.rs`
 
-- [ ] Add a test where two accepted occurrences share one Run, delete through the first occurrence, and assert only the first row is removed.
-- [ ] Add tests for a foreign watermark and an already-removed watermark retry; assert no unrelated row changes and the retry reaches the same desired state.
-- [ ] Run `cargo test -p gold-band scheduler::db::tests::remove_execution_history --jobs 1 -- --test-threads=1` and confirm the new assertions fail because the current repository deletes the whole Run group without a watermark contract.
+- [x] Add a test where two accepted occurrences share one Run, delete through the first occurrence, and assert only the first row is removed.
+- [x] Add tests for a foreign watermark and an already-removed watermark retry; assert no unrelated row changes and the retry reaches the same desired state.
+- [x] Run `cargo test -p gold-band scheduler::db::tests::remove_execution_history --jobs 1 -- --test-threads=1` and confirm the new assertions fail because the current repository deletes the whole Run group without a watermark contract.
 
 ### Task 2: Replace durable Run deletion with occurrence removal
 
@@ -27,10 +27,10 @@
 - Modify: `src/app/mod.rs`
 - Modify: `src/storage/sqlite.rs`
 
-- [ ] Bump the scheduler component schema and remove `scheduled_history_deletions`, its index, mapping types, and repository methods.
-- [ ] Implement the immediate-transaction occurrence removal command scoped by project, scheduled task, Task, Run, and watermark.
-- [ ] Remove Run trash, empty Task cleanup, definition binding cleanup, and SearchIndex deletion from scheduled-history removal.
-- [ ] Run the focused scheduler and storage tests; confirm occurrence removal is green and no scheduled-history path mutates Run-owned storage.
+- [x] Bump the scheduler component schema and remove `scheduled_history_deletions`, its index, mapping types, and repository methods.
+- [x] Implement the immediate-transaction occurrence removal command scoped by project, scheduled task, Task, Run, and watermark.
+- [x] Remove Run trash, empty Task cleanup, definition binding cleanup, and SearchIndex deletion from scheduled-history removal.
+- [x] Run the focused scheduler and storage tests; confirm occurrence removal is green and no scheduled-history path mutates Run-owned storage.
 
 ### Task 3: Enforce terminal-only deletion at the service boundary
 
@@ -41,10 +41,10 @@
 - Modify: `src-tauri/src/scheduled_runtime.rs`
 - Modify: `src-tauri/src/view_models_conversation.rs`
 
-- [ ] Add failing interface tests for Completed, Running, Paused, and waiting-for-user-input Runs; assert only Completed reaches repository deletion.
-- [ ] Change the request DTO to include `throughOccurrenceId` and reduce item results to `completed | failed` with stable structured errors.
-- [ ] Delete stop reconciliation, lifecycle finalization, and startup replay wiring for history deletion.
-- [ ] Verify a completed deletion preserves `get_conversation_run` and the definition's continuous-session Task binding.
+- [x] Add failing interface tests for Completed, Running, Paused, and waiting-for-user-input Runs; assert only Completed reaches repository deletion.
+- [x] Change the request DTO to include `throughOccurrenceId` and reduce item results to `completed | failed` with stable structured errors.
+- [x] Delete stop reconciliation, lifecycle finalization, and startup replay wiring for history deletion.
+- [x] Verify a completed deletion preserves `get_conversation_run` and the definition's continuous-session Task binding.
 
 ### Task 4: Update the Web contract and interaction
 
@@ -56,10 +56,10 @@
 - Modify: `web/tests/scheduled-task-detail-page.test.tsx`
 - Modify: `web/tests/app-scheduled-task-detail.test.ts`
 
-- [ ] Add failing DOM tests that only Completed rows are selectable, the command carries the latest occurrence watermark, and successful removal does not navigate to or refresh a deleted Run.
-- [ ] Replace delete-Run wording and phase handling with remove-history wording and target-level pending state using existing shadcn controls.
-- [ ] Update browser parity to preserve Run data and delete only accepted occurrences through the watermark.
-- [ ] Run `npm run web:test -- web/tests/scheduled-task-detail-page.test.tsx web/tests/app-scheduled-task-detail.test.ts` and confirm the tests pass after the minimal implementation.
+- [x] Add failing DOM tests that only Completed rows are selectable, the command carries the latest occurrence watermark, and successful removal does not navigate to or refresh a deleted Run.
+- [x] Replace delete-Run wording and phase handling with remove-history wording and target-level pending state using existing shadcn controls.
+- [x] Update browser parity to preserve Run data and delete only accepted occurrences through the watermark.
+- [x] Run the focused scheduled-task detail and browser parity tests and confirm they pass after the minimal implementation.
 
 ### Task 5: Verify the complete behavior
 
@@ -68,10 +68,10 @@
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] Run focused Rust tests with `--jobs 1 -- --test-threads=1`, then run the relevant desktop command and view-model suites.
-- [ ] Run the focused Web tests, `npm run web:build`, `cargo fmt --all -- --check`, and `git diff --check`.
-- [ ] Start the frontend and use the in-app browser with a scheduled-task detail deep link to verify terminal removal, active-row disabled state, narrow layout, and continued interaction from ordinary conversation history.
-- [ ] Stop the test server and close test pages, then record exact fresh results in the Phase 23 development-plan section.
+- [x] Run focused Rust tests with `--jobs 1 -- --test-threads=1`, then run the relevant desktop command and view-model suites.
+- [x] Run the focused Web tests, TypeScript and Vite production builds without overwriting user-owned dirty theme outputs, `cargo fmt --all -- --check`, and `git diff --check`.
+- [x] Start the frontend and use the in-app browser with a scheduled-task detail deep link to verify terminal removal, active-row disabled state, narrow layout, and continued interaction from ordinary conversation history.
+- [x] Stop the test server and close test pages, then record exact fresh results in the Phase 23 development-plan section.
 
 ## Plan Self-Review
 

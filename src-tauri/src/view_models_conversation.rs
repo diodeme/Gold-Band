@@ -134,14 +134,12 @@ pub struct ScheduledExecutionHistoryDeleteInputVm {
     pub scheduled_task_id: String,
     pub task_id: String,
     pub run_id: String,
+    pub through_occurrence_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScheduledExecutionHistoryDeleteStatusVm {
-    Accepted,
-    Stopping,
-    Deleting,
     Completed,
     Failed,
 }
@@ -153,7 +151,7 @@ pub struct ScheduledExecutionHistoryDeleteResultVm {
     pub scheduled_task_id: String,
     pub task_id: String,
     pub run_id: String,
-    pub operation_id: Option<String>,
+    pub through_occurrence_id: String,
     pub status: ScheduledExecutionHistoryDeleteStatusVm,
     pub code: Option<String>,
     pub params: serde_json::Value,

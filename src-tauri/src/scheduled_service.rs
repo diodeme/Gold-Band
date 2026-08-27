@@ -3,10 +3,13 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use gold_band::app::history_deletion::request_run_history_deletion;
 use gold_band::app::observability::RuntimeLifecycleBus;
 use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID, RuntimeLifecycleEvent};
 use gold_band::scheduler::db::{
-    ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult, derived_next_run_at,
+    ScheduledExecutionHistoryCursor, ScheduledExecutionHistoryPage,
+    ScheduledHistoryDeletionOperation, ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult,
+    derived_next_run_at,
 };
 use gold_band::scheduler::fingerprint::canonical_content_json;
 use gold_band::scheduler::occurrence::{OccurrenceLinks, ScheduledErrorCode, ScheduledOccurrence};
@@ -328,6 +331,82 @@ impl ScheduledTaskService {
                 gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
             )
             .map_err(ScheduledServiceError::from_database)
+    }
+
+    pub fn list_execution_history_page(
+        &self,
+        project_id: &str,
+        scheduled_task_id: &str,
+        cursor: Option<&ScheduledExecutionHistoryCursor>,
+    ) -> ScheduledServiceResult<ScheduledExecutionHistoryPage> {
+        let workspace = (self.resolve_workspace)(project_id)?;
+        let resolved_project_id = workspace.app.paths.project_id.clone();
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        database
+            .list_execution_history_page(
+                &resolved_project_id,
+                scheduled_task_id,
+                cursor,
+                gold_band::scheduler::db::OCCURRENCE_HISTORY_PAGE_SIZE,
+            )
+            .map_err(ScheduledServiceError::from_database)
+    }
+
+    pub fn request_execution_history_deletion(
+        &self,
+        project_id: &str,
+        scheduled_task_id: &str,
+        task_id: &str,
+        run_id: &str,
+    ) -> ScheduledServiceResult<ScheduledHistoryDeletionOperation> {
+        let workspace = (self.resolve_workspace)(project_id)?;
+        let resolved_project_id = workspace.app.paths.project_id.clone();
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        let operation = database
+            .create_or_get_history_deletion(
+                &resolved_project_id,
+                scheduled_task_id,
+                task_id,
+                run_id,
+            )
+            .map_err(ScheduledServiceError::from_database)?
+            .ok_or_else(|| {
+                ScheduledServiceError::new(
+                    ScheduledErrorCode::NotFound,
+                    serde_json::json!({
+                        "operation": "delete-execution-history",
+                        "projectId": project_id,
+                        "scheduledTaskId": scheduled_task_id,
+                        "taskId": task_id,
+                        "runId": run_id,
+                    }),
+                )
+            })?;
+        let action_result = request_run_history_deletion(&workspace.app, &operation);
+        let operation = database
+            .get_history_deletion(&operation.operation_id)
+            .map_err(ScheduledServiceError::from_database)?
+            .ok_or_else(|| ScheduledServiceError::internal("load-history-deletion"))?;
+        if action_result.is_err() && operation.last_error.is_none() {
+            return Err(ScheduledServiceError::internal("delete-execution-history"));
+        }
+        Ok(operation)
+    }
+
+    pub(crate) fn reconcile_history_deletion_stop(
+        &self,
+        operation: &ScheduledHistoryDeletionOperation,
+    ) -> ScheduledServiceResult<ScheduledHistoryDeletionOperation> {
+        let workspace = (self.resolve_workspace)(&operation.project_id)?;
+        let database = ScheduledTaskDatabase::open(workspace.app.paths.scheduler_db_path())
+            .map_err(ScheduledServiceError::from_database)?;
+        let _ = crate::commands::reconcile_history_deletion_stop(&workspace.app, operation);
+        database
+            .get_history_deletion(&operation.operation_id)
+            .map_err(ScheduledServiceError::from_database)?
+            .ok_or_else(|| ScheduledServiceError::internal("load-history-deletion"))
     }
 
     pub fn occurrence_diagnostics(
@@ -1247,9 +1326,13 @@ mod tests {
     use gold_band::app::{App, DEFAULT_WORKFLOW_TEMPLATE_ID, RuntimeLifecycleEvent};
     use gold_band::config::{ProviderDiagnosticSnapshot, RuntimeConfig};
     use gold_band::dsl::NodeDsl;
-    use gold_band::scheduler::db::{ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult};
+    use gold_band::scheduler::db::{
+        AcceptExecutionResult, ScheduledJobRecord, ScheduledTaskDatabase, UpdateJobResult,
+    };
+    use gold_band::scheduler::execution::ScheduledExecutionSnapshot;
     use gold_band::scheduler::occurrence::{
-        ClaimResult, OccurrenceTriggerKind, ScheduledErrorCode, ScheduledOccurrence,
+        ClaimResult, OccurrenceLinks, OccurrenceTriggerKind, ScheduledErrorCode,
+        ScheduledOccurrence,
     };
     use gold_band::scheduler::{
         LocalTimeDisambiguation, OverlapPolicy, RepeatPreset, ScheduleKind, ScheduledMode,
@@ -1500,6 +1583,90 @@ mod tests {
                 other => panic!("expected updated projection, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn execution_history_service_works_after_definition_delete() {
+        let fixture = Fixture::new();
+        let now = Utc.with_ymd_and_hms(2026, 8, 25, 10, 0, 0).unwrap();
+        let mut definition = ScheduledTaskDefinition::new(
+            &fixture.app.paths.project_id,
+            "scheduled-history",
+            "direct",
+            gold_band::scheduler::ScheduleSpec::at(now),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        definition.task_id = Some("task-history".to_string());
+        definition.content_snapshot.instruction = "history".to_string();
+        definition.recompute_content_fingerprint().unwrap();
+        let record = fixture.database.create_job(&definition, None).unwrap();
+        let occurrence = fixture
+            .database
+            .create_or_get_occurrence_for_existing_job(
+                &fixture.app.paths.project_id,
+                definition.id(),
+                now,
+                OccurrenceTriggerKind::Manual,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            fixture
+                .database
+                .claim_occurrence(
+                    &fixture.app.paths.project_id,
+                    &occurrence.id,
+                    "history-service-test",
+                    now - Duration::seconds(1),
+                    now + Duration::minutes(5),
+                )
+                .unwrap(),
+            ClaimResult::Claimed(_)
+        ));
+        let links = OccurrenceLinks {
+            task_id: Some("task-history".to_string()),
+            run_id: Some("run-history".to_string()),
+            round_id: Some("round-1".to_string()),
+            node_id: Some("node-1".to_string()),
+            attempt_id: Some("attempt-1".to_string()),
+        };
+        let snapshot = ScheduledExecutionSnapshot {
+            accepted_at: now,
+            definition_revision: record.revision,
+            content_fingerprint: definition.content_fingerprint.clone(),
+            content: definition.content_snapshot.clone(),
+            instruction_summary: "history".to_string(),
+            automatic: None,
+        };
+        assert!(matches!(
+            fixture
+                .database
+                .accept_occurrence_execution(
+                    &fixture.app.paths.project_id,
+                    &occurrence.id,
+                    "history-service-test",
+                    record.revision,
+                    &links,
+                    &snapshot,
+                )
+                .unwrap(),
+            AcceptExecutionResult::Accepted(_)
+        ));
+        assert!(
+            fixture
+                .database
+                .delete_job(&fixture.app.paths.project_id, definition.id())
+                .unwrap()
+        );
+
+        let page = fixture
+            .service
+            .list_execution_history_page(&fixture.app.paths.project_id, definition.id(), None)
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].run_id, "run-history");
     }
 
     #[test]

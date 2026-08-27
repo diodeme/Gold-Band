@@ -656,7 +656,7 @@ git commit -m "feat: persist scheduled trigger timeline facts"
 - Modify: `docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md`
 - Modify: `docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md`
 
-- [ ] **Step 1: Write failing history and deletion interface tests**
+- [x] **Step 1: Write failing history and deletion interface tests**
 
 Add tests:
 
@@ -676,7 +676,7 @@ Add tests:
 #[tokio::test] async fn batch_delete_returns_one_structured_result_per_locator()
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```powershell
 cargo test -p gold-band app::history_deletion
@@ -687,7 +687,7 @@ cargo test -p gold-band-desktop scheduled_runtime
 
 Expected: history grouping, Run deletion, and durable operation APIs do not exist.
 
-- [ ] **Step 3: Add accepted-history paging and deletion-operation persistence**
+- [x] **Step 3: Add accepted-history paging and deletion-operation persistence**
 
 Add repository types:
 
@@ -718,11 +718,11 @@ pub struct ScheduledHistoryDeletionOperation {
 }
 ```
 
-Upgrade scheduler storage from schema v2 to schema v3 and add deletion-operation persistence with unique `(project_id, task_id, run_id)`. The migration test must first open a v1 fixture through Task 2 to produce a real v2 database, reopen that database with the v3 code, and assert accepted occurrences remain unchanged while the new table and indexes exist.
+Upgrade scheduler storage from schema v2 to schema v3 and add deletion-operation persistence with unique `(project_id, scheduled_task_id, task_id, run_id)`. The migration fixture must run the real v1 -> v2 schema path, seed immutable accepted v2 history, reopen through v3 code, and assert accepted occurrences plus execution and pending-operation indexes remain unchanged.
 
 Allowed monotonic phases are `accepted -> stopping -> deleting -> completed`. A failed attempt does not move the durable operation backward or into an unretryable terminal state: persist `last_error`, keep the current phase, and increment `attempt` when the user or startup reconciliation retries the same `operation_id`. Per-item command results may report `failed` for that attempt while the canonical operation remains resumable. Repeated requests for a completed operation return `completed` without touching the filesystem again.
 
-- [ ] **Step 4: Implement one Run deletion owner**
+- [x] **Step 4: Implement one Run deletion owner**
 
 `src/app/history_deletion.rs` owns:
 
@@ -741,7 +741,7 @@ pub fn finalize_terminal_run_history_deletion(
 
 For a terminal Run, move only `runs/<runId>` to trash, delete matching search-index sessions through a new `SearchIndex::delete_run(task_id, run_id)`, and remove accepted occurrence rows for that Run. If no Run remains, move the empty Task directory to trash and clear the scheduled definition's `task_id` binding with revision/CAS. For an active Run, persist the operation first, call the existing canonical stop path, and finish deletion from the scheduled runtime lifecycle subscriber after terminal settlement. Startup scans only pending deletion-operation rows, not every Run directory.
 
-- [ ] **Step 5: Expose paged list and batch delete commands**
+- [x] **Step 5: Expose paged list and batch delete commands**
 
 Define VMs and commands:
 
@@ -777,9 +777,9 @@ pub async fn delete_scheduled_execution_history(
 ) -> CommandResult<Vec<ScheduledExecutionHistoryDeleteResultVm>>;
 ```
 
-Each batch result contains the complete locator, `operationId`, and typed status/code/params. Backend code returns no localized message.
+Validate the maximum batch size of 20 before creating any operation. Each batch result contains the complete locator, a non-null `operationId` only after durable creation, and typed status/code/params. Backend code returns no localized message.
 
-- [ ] **Step 6: Run backend tests and verify GREEN**
+- [x] **Step 6: Run backend tests and verify GREEN**
 
 ```powershell
 cargo test -p gold-band app::history_deletion
@@ -790,9 +790,23 @@ cargo test -p gold-band-desktop scheduled_runtime
 cargo test -p gold-band-desktop scheduled_service
 ```
 
-Expected: history lists only accepted grouped Runs; active delete survives restart; batch partial failure is isolated.
+Expected: history lists only accepted grouped Runs; active delete survives restart; batch partial failure is isolated. The fixed 20-item history page selects candidates through execution-history anti-join indexes, then aggregates only selected Runs; a single very long continuous Run retains proportional exact-count work instead of adding an aggregate table.
 
-- [ ] **Step 7: Update docs and commit**
+Commands-layer acceptance also uses one real durable fixture across `reconcile_history_deletion_stop`: a Running Run/Round/Node, admitted ACP lifecycle owner, accepted scheduler occurrence, and `stopping` deletion operation must converge through cancel dispatch, owner-CAS terminal settlement, and no-writer history settlement to `completed`, with the Run directory and accepted history removed. Regression proof must run this fixture GREEN, temporarily disable only `finalize_no_writer_run_history_deletion` and observe `Stopping` instead of `Completed`, restore the call, then run GREEN again; fake stop closures do not satisfy this acceptance.
+
+The same controller must use a typed stop settlement rather than infer truth from an optional owner tuple. `OwnedTerminalSettled` and `RuntimePausedNoWriterSettled` both authorize the dedicated no-writer history finalizer; `TerminalRun` alone routes to the generic Completed-only finalizer; `NotSettled` preserves history. Cover both startup windows with real storage: a Running Runtime stopped before ACP admission must persist Paused and finish deletion immediately, while replay of a durable `stopping` operation with a persisted Paused Run and no ACP owner must also finish after restart. If a Paused Run still has an active ACP owner, owner cleanup remains authoritative and executes before the no-owner Paused check.
+
+Task 6 quality closure keeps those owners but tightens their handoff contracts. When a terminal lifecycle event still has an active occurrence registry entry, one async task must stop the guard, finish the occurrence and apply its projection/notification side effects before invoking history finalization; a failed or stale occurrence finish does not invoke the chained history finalizer, and only events without usable occurrence bookkeeping may finalize history independently. Every call to the module-private filesystem/index/history finalizer goes through one wrapper that records exactly one structured retryable failure for that attempt, including `deleting` replay and no-writer settlement. An ACP cancel dispatch `Err` returns `NotSettled` before terminal owner persistence or interaction settlement; `Ok(false)` retains the established no-live-control meaning and may continue through owner-CAS.
+
+Run deletion captures `normalize_workspace_path(run_dir)` while the path still exists and passes that immutable string to SearchIndex after the trash move. SearchIndex schema v6 rebuilds legacy session rows so `attempt_path` is canonical, then deletes prompts and sessions using direct `attempt_path = exact OR attempt_path in [run_path + '/', run_path + '0')` predicates. The primary-key indexes therefore remain usable and sibling prefixes such as `run-a-extra` stay outside the range. This adds no durable field, aggregate, cache, queue, worker, dependency, or general fault-injection framework.
+
+2026-08-26 fresh serial verification (`--jobs 1 -- --test-threads=1`) passed: history deletion 8/8, scheduler DB 59/59, SearchIndex 7/7, conversation commands 23/23, scheduled runtime 89/89, scheduled service 30/30, and the commands-layer durable stop integrations 3/3. The first reverse run failed at the intended operation assertion with actual `Stopping` versus expected `Completed`; after restoring the no-writer settlement call, the owned integration returned to GREEN. Before typed settlement, both startup-before-admission and Paused replay tests independently failed with actual `Stopping` versus expected `Completed`; after the typed fix all three integrations passed. `cargo fmt --all -- --check` and `git diff --check` both exited 0.
+
+2026-08-27 quality-closure verification ran strictly serial. The added focused regressions passed for one `deleting` retry failure/recovery, three indexed Run-deletion cases including `EXPLAIN QUERY PLAN`, one alias identity captured before target deletion, one real occurrence-database listener ordering case, and one injected cancel-dispatch failure preserving owner/history. The first desktop compile was RED because the tests referenced a missing `AtomicBool` import and a nonexistent `Cancelling` terminal enum; the corrected assertion reads the canonical `lifecycle_owner_still_cancelling` fact, after which both desktop tests were GREEN. Full suites passed: history deletion 10/10, scheduler DB 59/59, SearchIndex 10/10, conversation commands 23/23, scheduled runtime 90/90, scheduled service 30/30, and durable stop integrations 3/3.
+
+The SearchIndex v6 backfill/delete race is closed at the existing index mutex rather than with a queue or generation table. `index_session` first loads one private owned candidate outside the mutex: it freezes the normalized attempt identity while the directory exists and reads/parses snapshot plus timeline files. After acquiring the same mutex used by Run deletion, commit rechecks that `attempt_dir` still exists before opening the SQLite transaction or issuing any upsert. Therefore an earlier candidate commit is removed by the later Run delete, while a delete that wins first makes the late candidate a no-op. A deterministic regression loads the candidate, removes its source Run, commits it, and asserts that neither sessions nor prompts reappear; no sleep or test hook framework is used. Concurrent duplicate history finalizers remain a separate minor TOCTOU concern and are intentionally outside Task 6 quality-closure scope.
+
+- [x] **Step 7: Update docs and record verification**
 
 ```powershell
 git add src/app/history_deletion.rs src/app/mod.rs src/storage/sqlite.rs src/scheduler/db.rs src-tauri/src/scheduled_runtime.rs src-tauri/src/scheduled_service.rs src-tauri/src/commands_conversation.rs src-tauri/src/main.rs src-tauri/src/view_models_conversation.rs docs/gold-band/产品设计文档/runtime/scheduled-task-runtime-implementation.md docs/gold-band/开发计划/定时任务/定时任务完整设计与开发计划.md

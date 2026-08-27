@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use rusqlite::{Connection, params};
 use tracing::warn;
 
@@ -50,6 +50,28 @@ pub struct AttemptIndexContext {
     pub outer_attempt_id: Option<String>,
 }
 
+#[derive(Debug)]
+struct LoadedSessionIndexCandidate {
+    attempt_dir: Utf8PathBuf,
+    attempt_path: String,
+    context: AttemptIndexContext,
+    session_id: Option<String>,
+    status: &'static str,
+    title: String,
+    created_at: String,
+    updated_at: String,
+    prompts: Vec<LoadedPromptIndexCandidate>,
+}
+
+#[derive(Debug)]
+struct LoadedPromptIndexCandidate {
+    id: String,
+    prompt_id: Option<String>,
+    timestamp: String,
+    text: String,
+    normalized_text: String,
+}
+
 /// Convenience: index an attempt with retry, using the global search index.
 /// Call this from any `spawn_blocking` context after files are written.
 /// No-op if the search index hasn't been initialized.
@@ -83,7 +105,13 @@ pub fn delete_task(task_dir: &Utf8Path) {
 
 const MAX_RETRIES: u32 = 3;
 const RETRY_DELAYS_MS: [u64; 3] = [200, 500, 1500];
-const SEARCH_INDEX_SCHEMA_VERSION: i32 = 5;
+const SEARCH_INDEX_SCHEMA_VERSION: i32 = 6;
+const DELETE_RUN_PROMPTS_SQL: &str = "DELETE FROM session_prompts
+     WHERE attempt_path = ?1
+        OR (attempt_path >= ?2 AND attempt_path < ?3)";
+const DELETE_RUN_SESSIONS_SQL: &str = "DELETE FROM sessions
+     WHERE attempt_path = ?1
+        OR (attempt_path >= ?2 AND attempt_path < ?3)";
 
 /// Best-effort SQLite search index for cross-session prompt/timeline retrieval.
 ///
@@ -456,28 +484,30 @@ impl SearchIndex {
         attempt_dir: &Utf8Path,
         ctx: &AttemptIndexContext,
     ) -> Result<(), rusqlite::Error> {
-        let snapshot = read_snapshot(attempt_dir);
-        let conn = self.conn.lock().expect("search index lock poisoned");
-        let tx = conn.unchecked_transaction()?;
+        let candidate = load_session_index_candidate(attempt_dir, ctx);
+        self.commit_session_index_candidate(candidate)
+    }
 
-        let attempt_path = attempt_dir.to_string();
-        let (session_id, status, title, created_at, updated_at) = snapshot
-            .as_ref()
-            .map(|s| {
-                (
-                    s.session_id.as_deref(),
-                    match s.latest_turn_status {
-                        crate::acp::events::AcpLatestTurnStatus::None => "none",
-                        crate::acp::events::AcpLatestTurnStatus::Completed => "completed",
-                        crate::acp::events::AcpLatestTurnStatus::Cancelled => "cancelled",
-                        crate::acp::events::AcpLatestTurnStatus::Failed => "failed",
-                    },
-                    s.title.as_deref().unwrap_or(""),
-                    s.created_at.as_str(),
-                    s.updated_at.as_str(),
-                )
-            })
-            .unwrap_or((None, "", "", "", ""));
+    fn commit_session_index_candidate(
+        &self,
+        candidate: LoadedSessionIndexCandidate,
+    ) -> Result<(), rusqlite::Error> {
+        let LoadedSessionIndexCandidate {
+            attempt_dir,
+            attempt_path,
+            context,
+            session_id,
+            status,
+            title,
+            created_at,
+            updated_at,
+            prompts,
+        } = candidate;
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        if !attempt_dir.is_dir() {
+            return Ok(());
+        }
+        let tx = conn.unchecked_transaction()?;
 
         tx.execute(
             "INSERT INTO sessions
@@ -493,13 +523,13 @@ impl SearchIndex {
             params![
                 session_id,
                 attempt_path,
-                ctx.task_id,
-                ctx.run_id,
-                ctx.round_id,
-                ctx.node_id,
-                ctx.attempt_id,
-                ctx.outer_node_id,
-                ctx.outer_attempt_id,
+                context.task_id,
+                context.run_id,
+                context.round_id,
+                context.node_id,
+                context.attempt_id,
+                context.outer_node_id,
+                context.outer_attempt_id,
                 title,
                 status,
                 created_at,
@@ -507,25 +537,7 @@ impl SearchIndex {
             ],
         )?;
 
-        let timeline =
-            load_timeline_items(&attempt_dir.join("acp.timeline.jsonl")).unwrap_or_default();
-        for item in &timeline {
-            if item.kind != "userTextDelta" {
-                continue;
-            }
-            let Some(content) = &item.content else {
-                continue;
-            };
-            if content.trim().is_empty() {
-                continue;
-            }
-            let prompt_id = item
-                .raw
-                .as_ref()
-                .and_then(|r| r.get("promptId"))
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let normalized = normalize_for_search(content);
+        for prompt in prompts {
             tx.execute(
                 "INSERT INTO session_prompts
                     (id, attempt_path, session_id, prompt_id, timestamp, text, normalized_text)
@@ -535,13 +547,13 @@ impl SearchIndex {
                     text=excluded.text,
                     normalized_text=excluded.normalized_text",
                 params![
-                    item.id,
+                    prompt.id,
                     attempt_path,
                     session_id,
-                    prompt_id,
-                    item.timestamp,
-                    content,
-                    normalized
+                    prompt.prompt_id,
+                    prompt.timestamp,
+                    prompt.text,
+                    prompt.normalized_text,
                 ],
             )?;
         }
@@ -669,6 +681,28 @@ impl SearchIndex {
         tx.execute(
             "DELETE FROM tasks WHERE task_path = ?1",
             params![&task_path],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_run(&self, run_dir: &Utf8Path) -> Result<(), rusqlite::Error> {
+        let run_path = crate::storage::normalize_workspace_path(run_dir);
+        self.delete_run_by_normalized_path(&run_path)
+    }
+
+    pub fn delete_run_by_normalized_path(&self, run_path: &str) -> Result<(), rusqlite::Error> {
+        let descendant_start = format!("{run_path}/");
+        let descendant_end = format!("{run_path}0");
+        let conn = self.conn.lock().expect("search index lock poisoned");
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            DELETE_RUN_PROMPTS_SQL,
+            params![run_path, descendant_start, descendant_end],
+        )?;
+        tx.execute(
+            DELETE_RUN_SESSIONS_SQL,
+            params![run_path, descendant_start, descendant_end],
         )?;
         tx.commit()?;
         Ok(())
@@ -857,6 +891,68 @@ impl SearchIndex {
 
 // ── helpers ──────────────────────────────────────────────────────────
 
+fn load_session_index_candidate(
+    attempt_dir: &Utf8Path,
+    context: &AttemptIndexContext,
+) -> LoadedSessionIndexCandidate {
+    let attempt_path = crate::storage::normalize_workspace_path(attempt_dir);
+    let snapshot = read_snapshot(attempt_dir);
+    let (session_id, status, title, created_at, updated_at) = snapshot
+        .map(|snapshot| {
+            (
+                snapshot.session_id,
+                match snapshot.latest_turn_status {
+                    crate::acp::events::AcpLatestTurnStatus::None => "none",
+                    crate::acp::events::AcpLatestTurnStatus::Completed => "completed",
+                    crate::acp::events::AcpLatestTurnStatus::Cancelled => "cancelled",
+                    crate::acp::events::AcpLatestTurnStatus::Failed => "failed",
+                },
+                snapshot.title.unwrap_or_default(),
+                snapshot.created_at,
+                snapshot.updated_at,
+            )
+        })
+        .unwrap_or((None, "", String::new(), String::new(), String::new()));
+    let prompts = load_timeline_items(&attempt_dir.join("acp.timeline.jsonl"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            if item.kind != "userTextDelta" {
+                return None;
+            }
+            let text = item.content?;
+            if text.trim().is_empty() {
+                return None;
+            }
+            let prompt_id = item
+                .raw
+                .as_ref()
+                .and_then(|raw| raw.get("promptId"))
+                .and_then(|value| value.as_str())
+                .map(String::from);
+            Some(LoadedPromptIndexCandidate {
+                id: item.id,
+                prompt_id,
+                timestamp: item.timestamp,
+                normalized_text: normalize_for_search(&text),
+                text,
+            })
+        })
+        .collect();
+
+    LoadedSessionIndexCandidate {
+        attempt_dir: attempt_dir.to_path_buf(),
+        attempt_path,
+        context: context.clone(),
+        session_id,
+        status,
+        title,
+        created_at,
+        updated_at,
+        prompts,
+    }
+}
+
 fn read_snapshot(attempt_dir: &Utf8Path) -> Option<AcpSessionMetadata> {
     let snapshot_path = attempt_dir.join("acp.snapshot.json");
     if snapshot_path.exists() {
@@ -1013,7 +1109,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn rebuilds_outdated_search_index_schema() {
+    fn rebuilds_v5_search_index_schema_for_normalized_attempt_paths() {
         let dir = tempdir().unwrap();
         let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
 
@@ -1046,7 +1142,7 @@ mod tests {
                     text TEXT NOT NULL DEFAULT '',
                     normalized_text TEXT NOT NULL DEFAULT ''
                 );
-                PRAGMA user_version = 4;",
+                PRAGMA user_version = 5;",
             )
             .unwrap();
         }
@@ -1190,6 +1286,264 @@ mod tests {
         let remaining = index.search_tasks("shared", 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].task_path, task_b.as_str());
+    }
+
+    #[test]
+    fn delete_run_removes_only_matching_sessions_and_prompts() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        {
+            let conn = index.conn.lock().unwrap();
+            for (attempt_path, task_id, run_id) in [
+                (
+                    "/tmp/workspace-a/tasks/task-1/runs/run-a/attempt-a",
+                    "task-1",
+                    "run-a",
+                ),
+                (
+                    "/tmp/workspace-a/tasks/task-1/runs/run-b/attempt-b",
+                    "task-1",
+                    "run-b",
+                ),
+                (
+                    "/tmp/workspace-b/tasks/task-1/runs/run-a/attempt-c",
+                    "task-1",
+                    "run-a",
+                ),
+                (
+                    "/tmp/workspace-a/tasks/task-1/runs/run-a-extra/attempt-d",
+                    "task-1",
+                    "run-a-extra",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO sessions (
+                         attempt_path, task_id, run_id, round_id, node_id, attempt_id
+                     ) VALUES (?1, ?2, ?3, 'round-1', 'node-1', ?4)",
+                    params![attempt_path, task_id, run_id, format!("attempt-{run_id}")],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO session_prompts (
+                         id, attempt_path, timestamp, text, normalized_text
+                     ) VALUES (?1, ?2, '', ?1, ?1)",
+                    params![format!("prompt-{run_id}"), attempt_path],
+                )
+                .unwrap();
+            }
+        }
+
+        index
+            .delete_run(Utf8Path::new("/tmp/workspace-a/tasks/task-1/runs/run-a"))
+            .unwrap();
+
+        let conn = index.conn.lock().unwrap();
+        let remaining_sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let remaining_prompts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_prompts", [], |row| row.get(0))
+            .unwrap();
+        let remaining_run: String = conn
+            .query_row("SELECT run_id FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining_sessions, 3);
+        assert_eq!(remaining_prompts, 3);
+        assert_eq!(remaining_run, "run-b");
+    }
+
+    #[test]
+    fn delete_run_query_plan_uses_attempt_path_primary_key_indexes() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let run_path = "/tmp/workspace/tasks/task-1/runs/run-a";
+        let descendant_start = format!("{run_path}/");
+        let descendant_end = format!("{run_path}0");
+        let conn = index.conn.lock().unwrap();
+
+        for (sql, expected_index) in [
+            (DELETE_RUN_PROMPTS_SQL, "sqlite_autoindex_session_prompts_1"),
+            (DELETE_RUN_SESSIONS_SQL, "sqlite_autoindex_sessions_1"),
+        ] {
+            let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let details = statement
+                .query_map(params![run_path, descendant_start, descendant_end], |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                details.iter().any(|detail| detail.contains(expected_index)),
+                "query plan did not use {expected_index}: {details:?}"
+            );
+            assert!(
+                details.iter().all(|detail| !detail.contains("SCAN ")),
+                "query plan performed a scan: {details:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn captured_normalized_run_identity_survives_alias_target_deletion() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let canonical_workspace = dir.path().join("canonical-workspace");
+        let canonical_run = canonical_workspace
+            .join("tasks")
+            .join("task-1")
+            .join("runs")
+            .join("run-a");
+        let canonical_attempt = canonical_run.join("attempt-1");
+        std::fs::create_dir_all(&canonical_attempt).unwrap();
+        let alias_workspace = dir.path().join("workspace-alias");
+
+        #[cfg(windows)]
+        if let Err(error) =
+            std::os::windows::fs::symlink_dir(&canonical_workspace, &alias_workspace)
+        {
+            if error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(1314)
+            {
+                return;
+            }
+            panic!("failed to create directory symlink: {error}");
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&canonical_workspace, &alias_workspace).unwrap();
+
+        let alias_run = camino::Utf8PathBuf::from_path_buf(
+            alias_workspace
+                .join("tasks")
+                .join("task-1")
+                .join("runs")
+                .join("run-a"),
+        )
+        .unwrap();
+        let canonical_attempt = camino::Utf8PathBuf::from_path_buf(canonical_attempt).unwrap();
+        let captured_run_identity = crate::storage::normalize_workspace_path(&alias_run);
+        let indexed_attempt_identity = crate::storage::normalize_workspace_path(&canonical_attempt);
+        assert!(indexed_attempt_identity.starts_with(&format!("{captured_run_identity}/")));
+        {
+            let conn = index.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (
+                     attempt_path, task_id, run_id, round_id, node_id, attempt_id
+                 ) VALUES (?1, 'task-1', 'run-a', 'round-1', 'node-1', 'attempt-1')",
+                params![indexed_attempt_identity],
+            )
+            .unwrap();
+        }
+
+        std::fs::remove_dir_all(&canonical_run).unwrap();
+        index
+            .delete_run_by_normalized_path(&captured_run_identity)
+            .unwrap();
+
+        let remaining: i64 = index
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn loaded_session_candidate_does_not_reappear_after_source_run_deletion() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        let run_dir = camino::Utf8PathBuf::from_path_buf(dir.path().join("run-a")).unwrap();
+        let attempt_dir = run_dir.join("attempt-1");
+        std::fs::create_dir_all(attempt_dir.as_std_path()).unwrap();
+        let snapshot_path = attempt_dir.join("acp.snapshot.json");
+        crate::acp::events::begin_session_turn(
+            &snapshot_path,
+            &crate::acp::events::AcpPromptSubmission {
+                turn_id: "turn-stale".to_string(),
+                operation_id: "operation-stale".to_string(),
+                adapter_id: "test".to_string(),
+                adapter_display_name: "Test".to_string(),
+                cwd: attempt_dir.to_string(),
+                input: crate::provider::ConversationPromptInput {
+                    display_text: "stale prompt".to_string(),
+                    quotes: Vec::new(),
+                },
+                attachment_paths: Vec::new(),
+                admitted_at: "2026-08-27T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+        crate::acp::events::write_timeline_items(
+            &attempt_dir.join("acp.timeline.jsonl"),
+            &[crate::acp::events::user_prompt_event(
+                1,
+                "session-stale".to_string(),
+                "stale prompt".to_string(),
+                Some("prompt-stale".to_string()),
+                false,
+                Vec::new(),
+            )],
+        )
+        .unwrap();
+        let context = AttemptIndexContext {
+            task_id: "task-1".to_string(),
+            run_id: "run-a".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            outer_node_id: None,
+            outer_attempt_id: None,
+        };
+        let candidate = load_session_index_candidate(&attempt_dir, &context);
+        assert_eq!(candidate.prompts.len(), 1);
+
+        std::fs::remove_dir_all(run_dir.as_std_path()).unwrap();
+        index.commit_session_index_candidate(candidate).unwrap();
+
+        let conn = index.conn.lock().unwrap();
+        let sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        let prompts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_prompts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(sessions, 0);
+        assert_eq!(prompts, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_run_uses_normalized_windows_identity() {
+        let dir = tempdir().unwrap();
+        let db_path = camino::Utf8PathBuf::from_path_buf(dir.path().join("search.db")).unwrap();
+        let index = SearchIndex::open(&db_path).unwrap();
+        {
+            let conn = index.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO sessions (
+                     attempt_path, task_id, run_id, round_id, node_id, attempt_id
+                 ) VALUES (?1, 'task-1', 'run-a', 'round-1', 'node-1', 'attempt-1')",
+                params!["c:/workspace/tasks/task-1/runs/run-a/attempt-1"],
+            )
+            .unwrap();
+        }
+
+        index
+            .delete_run(Utf8Path::new("c:/workspace/tasks/task-1/runs/run-a"))
+            .unwrap();
+
+        let remaining: i64 = index
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]

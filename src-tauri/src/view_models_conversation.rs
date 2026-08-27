@@ -88,6 +88,77 @@ pub struct ScheduledOccurrencePageVm {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduledExecutionHistoryAvailabilityVm {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryItemErrorVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub first_accepted_at: String,
+    pub last_accepted_at: String,
+    pub occurrence_count: u32,
+    pub latest_occurrence_id: String,
+    pub latest_summary: String,
+    pub latest_content_fingerprint: String,
+    pub availability: ScheduledExecutionHistoryAvailabilityVm,
+    pub run: Option<ConversationRunSummaryVm>,
+    pub error: Option<ScheduledExecutionHistoryItemErrorVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryPageVm {
+    pub items: Vec<ScheduledExecutionHistoryVm>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryDeleteInputVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScheduledExecutionHistoryDeleteStatusVm {
+    Accepted,
+    Stopping,
+    Deleting,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledExecutionHistoryDeleteResultVm {
+    pub project_id: String,
+    pub scheduled_task_id: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub operation_id: Option<String>,
+    pub status: ScheduledExecutionHistoryDeleteStatusVm,
+    pub code: Option<String>,
+    pub params: serde_json::Value,
+}
+
 impl ScheduledOccurrenceVm {
     pub fn from_occurrence(
         occurrence: &gold_band::scheduler::occurrence::ScheduledOccurrence,

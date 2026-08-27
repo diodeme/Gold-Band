@@ -36,6 +36,7 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::commands::configure_conversation_runtime_callbacks;
+use crate::conversation_workspace::workspace_entry_for_project;
 use crate::scheduled_service::{ManualRunResult, ScheduledServiceError, ScheduledServiceResult};
 use crate::state::{DesktopState, provision_project_manifest_for_desktop};
 use crate::view_models_conversation::ConversationCreateInputVm;
@@ -1250,40 +1251,169 @@ impl ScheduledRuntime {
     }
 
     fn handle_lifecycle_event(&self, event: RuntimeLifecycleEvent) {
-        let Some(key) = scheduled_occurrence_key(&event) else {
-            // 终止事件未携带 occurrence_id（orchestrator 硬编码 None，依赖 App 注入）。
-            // 若这是某条 scheduled run 的完成事件，对应 occurrence 会因收不到事件卡 running，
-            // 只能靠主动对账收尾。这里记录便于定位。
-            if event_finishes_occurrence(&event) {
+        let (history_event_locator, occurrence_key) = lifecycle_event_routes(&event);
+        let history_locator = history_event_locator.map(|(project_id, task_id, run_id)| {
+            (
+                project_id.to_string(),
+                task_id.to_string(),
+                run_id.to_string(),
+            )
+        });
+        if event_finishes_occurrence(&event) {
+            if let Some(key) = occurrence_key {
+                if let Some(entry) = take_active_occurrence(&self.active, &key) {
+                    let occurrence_id = key.occurrence_id;
+                    let app_handle = self.app_handle.clone();
+                    let pending_guard_joins = self.pending_guard_joins.clone();
+                    let join = tauri::async_runtime::spawn(async move {
+                        let finish_app_handle = app_handle.clone();
+                        settle_lifecycle_occurrence_before_history(
+                            entry,
+                            occurrence_id,
+                            event,
+                            move |metadata, occurrence_id, event| {
+                                finish_lifecycle_occurrence(
+                                    finish_app_handle,
+                                    occurrence_id,
+                                    metadata,
+                                    event,
+                                )
+                            },
+                            move || async move {
+                                if let Some((project_id, task_id, run_id)) = history_locator {
+                                    finalize_history_deletion_for_event(
+                                        app_handle, project_id, task_id, run_id,
+                                    )
+                                    .await;
+                                }
+                            },
+                        )
+                        .await;
+                    });
+                    if let Ok(mut pending) = pending_guard_joins.lock() {
+                        pending.push(join);
+                    }
+                    return;
+                }
+                warn!(
+                    project_id = %key.project_id,
+                    occurrence_id = %key.occurrence_id,
+                    "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
+                );
+            } else {
+                // 终止事件未携带 occurrence_id（orchestrator 硬编码 None，依赖 App 注入）。
+                // 若这是某条 scheduled run 的完成事件，对应 occurrence 会因收不到事件卡 running，
+                // 只能靠主动对账收尾。这里记录便于定位。
                 warn!(
                     event = ?event,
                     "scheduled lifecycle terminal event has no occurrence id; occurrence may stick in running"
                 );
             }
-            return;
-        };
-        if !event_finishes_occurrence(&event) {
-            return;
         }
-        let Some(entry) = take_active_occurrence(&self.active, &key) else {
-            warn!(
-                project_id = %key.project_id,
-                occurrence_id = %key.occurrence_id,
-                "scheduled lifecycle terminal event arrived but no active occurrence registered (lease lost or already finished)"
-            );
-            return;
-        };
-        let occurrence_id = key.occurrence_id;
-        let app_handle = self.app_handle.clone();
-        let pending_guard_joins = self.pending_guard_joins.clone();
-        let join = tauri::async_runtime::spawn(async move {
-            entry.guard.stop().await;
-            finish_lifecycle_occurrence(app_handle, occurrence_id, entry.metadata, event);
-        });
-        if let Ok(mut pending) = pending_guard_joins.lock() {
-            pending.push(join);
+
+        if let Some((project_id, task_id, run_id)) = history_locator {
+            let app_handle = self.app_handle.clone();
+            let join = tauri::async_runtime::spawn(async move {
+                finalize_history_deletion_for_event(app_handle, project_id, task_id, run_id).await;
+            });
+            if let Ok(mut pending) = self.pending_guard_joins.lock() {
+                pending.push(join);
+            }
         }
     }
+}
+
+async fn settle_lifecycle_occurrence_before_history<Finish, History, HistoryFuture>(
+    entry: ActiveOccurrence,
+    occurrence_id: String,
+    event: RuntimeLifecycleEvent,
+    finish_occurrence: Finish,
+    finalize_history: History,
+) where
+    Finish: FnOnce(ActiveOccurrenceMetadata, String, RuntimeLifecycleEvent) -> bool,
+    History: FnOnce() -> HistoryFuture,
+    HistoryFuture: std::future::Future<Output = ()>,
+{
+    entry.guard.stop().await;
+    if finish_occurrence(entry.metadata, occurrence_id, event) {
+        finalize_history().await;
+    }
+}
+
+fn lifecycle_event_routes(
+    event: &RuntimeLifecycleEvent,
+) -> (Option<(&str, &str, &str)>, Option<ActiveOccurrenceKey>) {
+    (
+        history_deletion_event_locator(event),
+        scheduled_occurrence_key(event),
+    )
+}
+
+fn history_deletion_event_locator(event: &RuntimeLifecycleEvent) -> Option<(&str, &str, &str)> {
+    match event {
+        RuntimeLifecycleEvent::RunCompleted {
+            project_id,
+            task_id,
+            run_id,
+            ..
+        }
+        | RuntimeLifecycleEvent::AcpTurnFinished {
+            project_id,
+            task_id,
+            run_id,
+            ..
+        } => Some((project_id, task_id, run_id)),
+        RuntimeLifecycleEvent::ApplicationStarted
+        | RuntimeLifecycleEvent::UserActivityObserved
+        | RuntimeLifecycleEvent::ConversationRunStarted { .. }
+        | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::RunPaused { .. }
+        | RuntimeLifecycleEvent::InterventionRequested { .. }
+        | RuntimeLifecycleEvent::MetricsFact(_)
+        | RuntimeLifecycleEvent::NodeStarted { .. }
+        | RuntimeLifecycleEvent::NodeCompleted { .. } => None,
+    }
+}
+
+async fn finalize_history_deletion_for_event(
+    app_handle: AppHandle,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+) {
+    let app = match scheduled_workspace_app(&app_handle, &project_id) {
+        Ok(app) => app,
+        Err(error) => {
+            warn!(%error, %project_id, %task_id, %run_id, "failed to resolve history deletion workspace");
+            return;
+        }
+    };
+    match tokio::task::spawn_blocking(move || {
+        gold_band::app::history_deletion::finalize_terminal_run_history_deletions(
+            &app, &task_id, &run_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            warn!(%error, %project_id, "failed to finalize scheduled history deletion")
+        }
+        Err(error) => warn!(%error, %project_id, "scheduled history deletion task failed"),
+    }
+}
+
+fn scheduled_workspace_app(app_handle: &AppHandle, project_id: &str) -> anyhow::Result<App> {
+    let state = app_handle.state::<DesktopState>();
+    let global_app = state.app()?;
+    if global_app.paths.project_id == project_id {
+        return Ok(global_app);
+    }
+    let persisted = global_app.load_state()?;
+    let (workspace_path, _) = workspace_entry_for_project(&persisted, project_id)
+        .ok_or_else(|| anyhow::anyhow!("scheduled history workspace was not found"))?;
+    let context = state.context()?;
+    Ok(global_app.with_repo_root(Utf8PathBuf::from(workspace_path), context.config))
 }
 
 fn finish_lifecycle_occurrence(
@@ -1291,7 +1421,7 @@ fn finish_lifecycle_occurrence(
     occurrence_id: String,
     active: ActiveOccurrenceMetadata,
     event: RuntimeLifecycleEvent,
-) {
+) -> bool {
     match finish_occurrence_for_event(
         &active.database,
         &active.project_id,
@@ -1301,9 +1431,13 @@ fn finish_lifecycle_occurrence(
     ) {
         Ok(Some(occurrence)) => {
             apply_terminal_occurrence_side_effects(&app_handle, active, &occurrence);
+            true
         }
-        Ok(None) => {}
-        Err(error) => warn!(%error, %occurrence_id, "failed to finish scheduled occurrence"),
+        Ok(None) => false,
+        Err(error) => {
+            warn!(%error, %occurrence_id, "failed to finish scheduled occurrence");
+            false
+        }
     }
 }
 
@@ -1943,12 +2077,41 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         &mut self,
         workspace_path: &Utf8Path,
         registration: &WorkspaceRegistration,
-        _reason: ReconcileReason,
+        reason: ReconcileReason,
     ) -> anyhow::Result<()> {
         let now = self.runtime.now();
         registration
             .database
             .recover_expired(&registration.app.paths.project_id, now)?;
+        if reason == ReconcileReason::Startup
+            && registration
+                .database
+                .has_pending_history_deletions(&registration.app.paths.project_id)?
+        {
+            let history_app = registration.app.clone();
+            let completed_history_deletions = tokio::task::spawn_blocking(move || {
+                let reconciled =
+                    gold_band::app::history_deletion::reconcile_pending_run_history_deletions(
+                        &history_app,
+                    )?;
+                reconcile_startup_history_deletion_stops(reconciled.stop_required, |operation| {
+                    crate::commands::reconcile_history_deletion_stop(&history_app, operation)
+                        .map_err(|error| anyhow::anyhow!("{}", error.code))
+                });
+                Ok::<usize, anyhow::Error>(reconciled.completed)
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("history deletion reconcile task failed: {error}")
+            })??;
+            if completed_history_deletions > 0 {
+                info!(
+                    project_id = %registration.app.paths.project_id,
+                    completed = completed_history_deletions,
+                    "reconciled pending scheduled history deletions"
+                );
+            }
+        }
         let recoverable = registration
             .database
             .list_recoverable_jobs_for_project(&registration.app.paths.project_id)?;
@@ -2326,6 +2489,19 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
         self.deadlines.cancel(key);
         self.registered_deadlines.remove(key);
     }
+}
+
+fn reconcile_startup_history_deletion_stops<F>(
+    operations: Vec<gold_band::scheduler::db::ScheduledHistoryDeletionOperation>,
+    mut stop: F,
+) -> usize
+where
+    F: FnMut(&gold_band::scheduler::db::ScheduledHistoryDeletionOperation) -> anyhow::Result<()>,
+{
+    operations
+        .iter()
+        .filter(|operation| stop(operation).is_ok())
+        .count()
 }
 
 fn stale_deadline_retry_at(wake_at: DateTime<Utc>, now: DateTime<Utc>) -> DateTime<Utc> {
@@ -3521,7 +3697,7 @@ fn scheduled_workflow_authoring(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration as StdDuration;
 
@@ -3530,7 +3706,10 @@ mod tests {
     use gold_band::domain::{PauseReason, RunOutcome, RunStatus, VERSION};
     use gold_band::runtime::{RunState, RuntimeExecutionPhase, RuntimeExecutionState};
     use gold_band::scheduler::coordinator::{DeadlineRegistry, ReconcileReason, ScheduledJobKey};
-    use gold_band::scheduler::db::{DueMaterialization, ScheduledTaskDatabase, UpdateJobResult};
+    use gold_band::scheduler::db::{
+        DueMaterialization, HistoryDeletionStatus, ScheduledHistoryDeletionOperation,
+        ScheduledTaskDatabase, UpdateJobResult,
+    };
     use gold_band::scheduler::occurrence::{
         ClaimResult, LeaseConfig, OccurrenceStatus, OccurrenceTriggerKind, ScheduledErrorCode,
         ScheduledOccurrence,
@@ -3557,14 +3736,143 @@ mod tests {
         accept_current_occurrence_execution, accept_execution_authority,
         accept_occurrence_execution_then, active_execution_for_run, attempt_tree_has_active_prompt,
         create_manual_occurrence, ensure_definition_workspace, finish_occurrence_for_event,
-        finish_reconciled_occurrence, mark_past_points_missed, materialize_registered_deadline,
-        persist_runtime_projection, project_resumed_attention, reconcile_missed_deadlines,
-        recover_accepted_occurrence, release_pre_acceptance_conflict, reload_execution_authority,
-        scheduled_execution_action, scheduled_execution_action_for_fingerprint,
-        scheduled_occurrence_updated_event, scheduled_task_context_info,
-        shutdown_active_occurrences, task_has_active_execution,
+        finish_reconciled_occurrence, history_deletion_event_locator, lifecycle_event_routes,
+        mark_past_points_missed, materialize_registered_deadline, persist_runtime_projection,
+        project_resumed_attention, reconcile_missed_deadlines,
+        reconcile_startup_history_deletion_stops, recover_accepted_occurrence,
+        release_pre_acceptance_conflict, reload_execution_authority, scheduled_execution_action,
+        scheduled_execution_action_for_fingerprint, scheduled_occurrence_updated_event,
+        scheduled_task_context_info, settle_lifecycle_occurrence_before_history,
+        shutdown_active_occurrences, take_active_occurrence, task_has_active_execution,
         task_has_active_execution_with_prompt_probe,
     };
+
+    #[test]
+    fn startup_history_reconcile_dispatches_stop_required_to_shared_controller() {
+        let operation = ScheduledHistoryDeletionOperation {
+            operation_id: "operation-1".to_string(),
+            project_id: "project-1".to_string(),
+            scheduled_task_id: "scheduled-1".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            status: HistoryDeletionStatus::Stopping,
+            revision: 2,
+            attempt: 0,
+            last_error: None,
+        };
+        let mut dispatched = Vec::new();
+
+        let settled = reconcile_startup_history_deletion_stops(vec![operation], |operation| {
+            dispatched.push(operation.operation_id.clone());
+            Ok(())
+        });
+
+        assert_eq!(settled, 1);
+        assert_eq!(dispatched, vec!["operation-1".to_string()]);
+    }
+
+    #[test]
+    fn terminal_history_deletion_route_survives_missing_occurrence_bookkeeping() {
+        let event = RuntimeLifecycleEvent::RunCompleted {
+            event_id: "event-no-occurrence".to_string(),
+            occurred_at: "2026-08-26T00:00:00Z".to_string(),
+            scheduled_occurrence_id: None,
+            project_id: "project-1".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "node".to_string(),
+            outcome: RunOutcome::Success,
+            task_title: None,
+            completion_agent_label: None,
+        };
+
+        let (history_locator, occurrence_key) = lifecycle_event_routes(&event);
+
+        assert_eq!(history_locator, Some(("project-1", "task-1", "run-1")));
+        assert!(occurrence_key.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn history_listener_observes_terminal_occurrence_after_guard_stop() {
+        let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let active = Arc::new(Mutex::new(HashMap::new()));
+        let pending_stops = Arc::new(Mutex::new(Vec::new()));
+        let lease = ActiveOccurrenceMetadata {
+            database: database.clone(),
+            workspace_path: camino::Utf8PathBuf::from("C:/workspace"),
+            owner_id: owner_id.clone(),
+            project_id: "project-1".to_string(),
+            scheduled_task_id: "job-1".to_string(),
+            expected_revision: None,
+        };
+        let guard = ClaimToHandoffGuard::new_with_pending(
+            active.clone(),
+            pending_stops,
+            occurrence_id.clone(),
+            lease,
+        )
+        .unwrap();
+        guard.handoff();
+        let entry = take_active_occurrence(
+            &active,
+            &ActiveOccurrenceKey::new("project-1", &occurrence_id),
+        )
+        .unwrap();
+        let event = RuntimeLifecycleEvent::RunCompleted {
+            event_id: "event-ordering".to_string(),
+            occurred_at: "2026-08-26T00:00:00Z".to_string(),
+            scheduled_occurrence_id: Some(occurrence_id.clone()),
+            project_id: "project-1".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "node".to_string(),
+            outcome: RunOutcome::Success,
+            task_title: None,
+            completion_agent_label: None,
+        };
+        let listener_observed_terminal = Arc::new(AtomicBool::new(false));
+        let finish_database = database.clone();
+        let listener_database = database.clone();
+        let listener_occurrence_id = occurrence_id.clone();
+        let listener_observed_terminal_for_callback = listener_observed_terminal.clone();
+
+        settle_lifecycle_occurrence_before_history(
+            entry,
+            occurrence_id.clone(),
+            event,
+            move |metadata, occurrence_id, event| {
+                finish_occurrence_for_event(
+                    &finish_database,
+                    &metadata.project_id,
+                    &occurrence_id,
+                    &metadata.owner_id,
+                    &event,
+                )
+                .unwrap()
+                .is_some()
+            },
+            move || async move {
+                let occurrence = listener_database
+                    .get_occurrence("project-1", &listener_occurrence_id)
+                    .unwrap()
+                    .unwrap();
+                listener_observed_terminal_for_callback.store(
+                    occurrence.status == OccurrenceStatus::Succeeded,
+                    Ordering::SeqCst,
+                );
+            },
+        )
+        .await;
+
+        assert!(listener_observed_terminal.load(Ordering::SeqCst));
+        assert!(active.lock().unwrap().is_empty());
+    }
 
     #[derive(Default)]
     struct TestCoordinatorRuntime;
@@ -6096,26 +6404,28 @@ mod tests {
     #[test]
     fn scheduled_run_paused_keeps_occurrence_claimed_until_intervention() {
         let (database, occurrence_id, owner_id) = claimed_occurrence();
+        let paused_event = RuntimeLifecycleEvent::RunPaused {
+            event_id: "pause-1".to_string(),
+            occurred_at: "2026-08-03T12:01:00Z".to_string(),
+            scheduled_occurrence_id: Some(occurrence_id.clone()),
+            project_id: "project-1".to_string(),
+            task_id: "task-1".to_string(),
+            run_id: "run-1".to_string(),
+            round_id: "round-1".to_string(),
+            node_id: "node-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            node_label: "node".to_string(),
+            pause_reason: PauseReason::ProcessInterrupted,
+            task_title: None,
+        };
+        assert_eq!(history_deletion_event_locator(&paused_event), None);
         assert!(
             finish_occurrence_for_event(
                 &database,
                 "project-1",
                 &occurrence_id,
                 &owner_id,
-                &RuntimeLifecycleEvent::RunPaused {
-                    event_id: "pause-1".to_string(),
-                    occurred_at: "2026-08-03T12:01:00Z".to_string(),
-                    scheduled_occurrence_id: Some(occurrence_id.clone()),
-                    project_id: "project-1".to_string(),
-                    task_id: "task-1".to_string(),
-                    run_id: "run-1".to_string(),
-                    round_id: "round-1".to_string(),
-                    node_id: "node-1".to_string(),
-                    attempt_id: "attempt-1".to_string(),
-                    node_label: "node".to_string(),
-                    pause_reason: PauseReason::ProcessInterrupted,
-                    task_title: None,
-                },
+                &paused_event,
             )
             .unwrap()
             .is_none()

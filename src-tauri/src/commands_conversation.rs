@@ -312,6 +312,236 @@ fn decode_occurrence_cursor(
     })
 }
 
+fn encode_execution_history_cursor(
+    cursor: &gold_band::scheduler::db::ScheduledExecutionHistoryCursor,
+) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(cursor).expect("execution history cursor serialization is infallible"),
+    )
+}
+
+fn decode_execution_history_cursor(
+    cursor: &str,
+) -> CommandResult<gold_band::scheduler::db::ScheduledExecutionHistoryCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| invalid_occurrence_query("cursor", "invalid-cursor"))?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid_occurrence_query("cursor", "invalid-cursor"))
+}
+
+#[tauri::command]
+pub fn list_scheduled_execution_history(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    scheduled_task_id: String,
+    cursor: Option<String>,
+) -> CommandResult<crate::view_models_conversation::ScheduledExecutionHistoryPageVm> {
+    let cursor = cursor
+        .as_deref()
+        .map(decode_execution_history_cursor)
+        .transpose()?;
+    let page = state
+        .scheduled_service()
+        .map_err(command_error)?
+        .list_execution_history_page(&project_id, &scheduled_task_id, cursor.as_ref())
+        .map_err(scheduled_service_error)?;
+    let app = resolve_command_app(&state, Some(&project_id))?;
+    let items = page
+        .items
+        .into_iter()
+        .map(|record| execution_history_vm(&app, record))
+        .collect();
+    Ok(
+        crate::view_models_conversation::ScheduledExecutionHistoryPageVm {
+            items,
+            next_cursor: page
+                .next_cursor
+                .as_ref()
+                .map(encode_execution_history_cursor),
+        },
+    )
+}
+
+fn execution_history_vm(
+    app: &App,
+    record: gold_band::scheduler::db::ScheduledExecutionHistoryRecord,
+) -> crate::view_models_conversation::ScheduledExecutionHistoryVm {
+    use crate::view_models_conversation::{
+        ScheduledExecutionHistoryAvailabilityVm as AvailabilityVm,
+        ScheduledExecutionHistoryItemErrorVm,
+    };
+
+    let (availability, run, error) = match app.run_status(&record.task_id, &record.run_id) {
+        Ok(run) => (
+            AvailabilityVm::Available,
+            Some(crate::view_models_conversation::conversation_run_summary_vm(&run)),
+            None,
+        ),
+        Err(_) => (
+            AvailabilityVm::Unavailable,
+            None,
+            Some(ScheduledExecutionHistoryItemErrorVm {
+                code: gold_band::scheduler::occurrence::ScheduledErrorCode::StorageFailed
+                    .to_string(),
+                params: serde_json::json!({
+                    "operation": "load-execution-history-run",
+                    "projectId": &record.project_id,
+                    "scheduledTaskId": &record.scheduled_task_id,
+                    "taskId": &record.task_id,
+                    "runId": &record.run_id,
+                }),
+            }),
+        ),
+    };
+    crate::view_models_conversation::ScheduledExecutionHistoryVm {
+        project_id: record.project_id,
+        scheduled_task_id: record.scheduled_task_id,
+        task_id: record.task_id,
+        run_id: record.run_id,
+        first_accepted_at: record.first_accepted_at.to_rfc3339(),
+        last_accepted_at: record.last_accepted_at.to_rfc3339(),
+        occurrence_count: record.occurrence_count,
+        latest_occurrence_id: record.latest_occurrence_id,
+        latest_summary: record.latest_summary,
+        latest_content_fingerprint: record.latest_content_fingerprint,
+        availability,
+        run,
+        error,
+    }
+}
+
+fn delete_scheduled_execution_history_items<F, G>(
+    items: Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm>,
+    mut delete: F,
+    mut stop: G,
+) -> Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm>
+where
+    F: FnMut(
+        &crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm,
+    ) -> crate::scheduled_service::ScheduledServiceResult<
+        gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+    >,
+    G: FnMut(
+        &gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+    ) -> crate::scheduled_service::ScheduledServiceResult<
+        gold_band::scheduler::db::ScheduledHistoryDeletionOperation,
+    >,
+{
+    use crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm as StatusVm;
+    use gold_band::scheduler::db::HistoryDeletionStatus;
+
+    items
+        .into_iter()
+        .map(|item| match delete(&item) {
+            Ok(operation) => {
+                let operation_id = operation.operation_id.clone();
+                let post_create_result = if operation.status == HistoryDeletionStatus::Stopping {
+                    stop(&operation)
+                } else {
+                    Ok(operation)
+                };
+                match post_create_result {
+                    Ok(operation) => {
+                        let (status, code, params) = match operation.last_error {
+                            Some(error) => (
+                                StatusVm::Failed,
+                                Some(error.code.to_string()),
+                                error.params.unwrap_or_else(|| serde_json::json!({})),
+                            ),
+                            None => (
+                                match operation.status {
+                                    HistoryDeletionStatus::Accepted => StatusVm::Accepted,
+                                    HistoryDeletionStatus::Stopping => StatusVm::Stopping,
+                                    HistoryDeletionStatus::Deleting => StatusVm::Deleting,
+                                    HistoryDeletionStatus::Completed => StatusVm::Completed,
+                                },
+                                None,
+                                serde_json::json!({}),
+                            ),
+                        };
+                        crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                            project_id: item.project_id,
+                            scheduled_task_id: item.scheduled_task_id,
+                            task_id: item.task_id,
+                            run_id: item.run_id,
+                            operation_id: Some(operation.operation_id),
+                            status,
+                            code,
+                            params,
+                        }
+                    }
+                    Err(error) => {
+                        crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                            project_id: item.project_id,
+                            scheduled_task_id: item.scheduled_task_id,
+                            task_id: item.task_id,
+                            run_id: item.run_id,
+                            operation_id: Some(operation_id),
+                            status: StatusVm::Failed,
+                            code: Some(error.code.to_string()),
+                            params: error.params,
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm {
+                    project_id: item.project_id,
+                    scheduled_task_id: item.scheduled_task_id,
+                    task_id: item.task_id,
+                    run_id: item.run_id,
+                    operation_id: None,
+                    status: StatusVm::Failed,
+                    code: Some(error.code.to_string()),
+                    params: error.params,
+                }
+            }
+        })
+        .collect()
+}
+
+fn validate_execution_history_delete_batch(
+    items: &[crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm],
+) -> CommandResult<()> {
+    let max = gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX;
+    if items.len() > max {
+        return Err(CommandErrorVm::new(
+            gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
+            serde_json::json!({
+                "field": "items",
+                "reason": "batch-too-large",
+                "max": max,
+                "actual": items.len(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_scheduled_execution_history(
+    state: State<'_, DesktopState>,
+    items: Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm>,
+) -> CommandResult<Vec<crate::view_models_conversation::ScheduledExecutionHistoryDeleteResultVm>> {
+    validate_execution_history_delete_batch(&items)?;
+    let service = state.scheduled_service().map_err(command_error)?;
+    spawn_blocking_command(move || {
+        Ok(delete_scheduled_execution_history_items(
+            items,
+            |item| {
+                service.request_execution_history_deletion(
+                    &item.project_id,
+                    &item.scheduled_task_id,
+                    &item.task_id,
+                    &item.run_id,
+                )
+            },
+            |operation| service.reconcile_history_deletion_stop(operation),
+        ))
+    })
+    .await
+}
+
 fn invalid_occurrence_query(field: &str, reason: &str) -> CommandErrorVm {
     CommandErrorVm::new(
         gold_band::scheduler::occurrence::ScheduledErrorCode::ValidationFailed.to_string(),
@@ -2095,10 +2325,12 @@ pub fn get_supported_attachment_extensions() -> CommandResult<Vec<String>> {
 mod tests {
     use super::{
         MaterializeAttachmentFileInput, base64_encode, conversation_search_result_for_workspace,
-        conversation_search_task_roots, decode_occurrence_cursor, encode_occurrence_cursor,
-        materialize_attachment_files_to_dir, message_attachment_content_from_attempt_dir,
-        scheduled_occurrence_vms_from_occurrences, scheduled_runtime_settings_vm,
-        scheduled_service_error,
+        conversation_search_task_roots, decode_execution_history_cursor, decode_occurrence_cursor,
+        delete_scheduled_execution_history_items, encode_execution_history_cursor,
+        encode_occurrence_cursor, execution_history_vm, materialize_attachment_files_to_dir,
+        message_attachment_content_from_attempt_dir, scheduled_occurrence_vms_from_occurrences,
+        scheduled_runtime_settings_vm, scheduled_service_error,
+        validate_execution_history_delete_batch,
     };
     use camino::Utf8PathBuf;
     use gold_band::app::App;
@@ -2126,6 +2358,220 @@ mod tests {
         let error = decode_occurrence_cursor("not-a-cursor").unwrap_err();
         assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
         assert_eq!(error.params["field"], "cursor");
+    }
+
+    #[test]
+    fn execution_history_cursor_round_trips_and_rejects_invalid_input() {
+        use chrono::{TimeZone, Utc};
+
+        let cursor = gold_band::scheduler::db::ScheduledExecutionHistoryCursor {
+            last_accepted_at: Utc.with_ymd_and_hms(2026, 8, 25, 9, 30, 0).unwrap(),
+            latest_occurrence_id: "occurrence-20".to_string(),
+        };
+
+        assert_eq!(
+            decode_execution_history_cursor(&encode_execution_history_cursor(&cursor)).unwrap(),
+            cursor
+        );
+        let error = decode_execution_history_cursor("not-a-cursor").unwrap_err();
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "cursor");
+    }
+
+    #[test]
+    fn execution_history_projects_one_missing_run_as_unavailable() {
+        use chrono::{TimeZone, Utc};
+        use gold_band::scheduler::db::ScheduledExecutionHistoryRecord;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root);
+        let at = Utc.with_ymd_and_hms(2026, 8, 25, 9, 30, 0).unwrap();
+        let item = execution_history_vm(
+            &app,
+            ScheduledExecutionHistoryRecord {
+                project_id: app.paths.project_id.clone(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "missing-task".to_string(),
+                run_id: "missing-run".to_string(),
+                first_accepted_at: at,
+                last_accepted_at: at,
+                occurrence_count: 1,
+                latest_occurrence_id: "occurrence-1".to_string(),
+                latest_summary: "summary".to_string(),
+                latest_content_fingerprint: "fingerprint".to_string(),
+            },
+        );
+
+        assert_eq!(
+            item.availability,
+            crate::view_models_conversation::ScheduledExecutionHistoryAvailabilityVm::Unavailable
+        );
+        assert!(item.run.is_none());
+        let error = item
+            .error
+            .expect("unavailable item keeps a structured error");
+        assert_eq!(error.code, ScheduledErrorCode::StorageFailed.to_string());
+        assert_eq!(error.params["runId"], "missing-run");
+    }
+
+    #[test]
+    fn batch_history_delete_isolates_failures_and_keeps_operation_identity() {
+        use gold_band::scheduler::db::{HistoryDeletionStatus, ScheduledHistoryDeletionOperation};
+        use gold_band::scheduler::occurrence::ScheduledError;
+
+        let input = |run_id: &str| {
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                project_id: "project-1".to_string(),
+                scheduled_task_id: "scheduled-1".to_string(),
+                task_id: "task-1".to_string(),
+                run_id: run_id.to_string(),
+            }
+        };
+        let mut stop_requests = Vec::new();
+        let results = delete_scheduled_execution_history_items(
+            vec![
+                input("run-not-found"),
+                input("run-failed"),
+                input("run-stopping"),
+                input("run-stop-error"),
+                input("run-completed"),
+            ],
+            |item| {
+                if item.run_id == "run-not-found" {
+                    return Err(crate::scheduled_service::ScheduledServiceError::new(
+                        ScheduledErrorCode::NotFound,
+                        serde_json::json!({
+                            "operation": "delete-execution-history",
+                            "runId": item.run_id,
+                        }),
+                    ));
+                }
+                Ok(ScheduledHistoryDeletionOperation {
+                    operation_id: format!("operation-{}", item.run_id),
+                    project_id: item.project_id.clone(),
+                    scheduled_task_id: item.scheduled_task_id.clone(),
+                    task_id: item.task_id.clone(),
+                    run_id: item.run_id.clone(),
+                    status: match item.run_id.as_str() {
+                        "run-failed" => HistoryDeletionStatus::Deleting,
+                        "run-stopping" | "run-stop-error" => HistoryDeletionStatus::Stopping,
+                        _ => HistoryDeletionStatus::Completed,
+                    },
+                    revision: 2,
+                    attempt: u32::from(item.run_id == "run-failed"),
+                    last_error: (item.run_id == "run-failed").then(|| {
+                        ScheduledError::with_params(
+                            ScheduledErrorCode::StorageFailed,
+                            serde_json::json!({ "operation": "trash-run" }),
+                        )
+                    }),
+                })
+            },
+            |operation| {
+                stop_requests.push(operation.operation_id.clone());
+                if operation.run_id == "run-stop-error" {
+                    return Err(crate::scheduled_service::ScheduledServiceError::new(
+                        ScheduledErrorCode::StorageFailed,
+                        serde_json::json!({ "operation": "stop-execution-history-run" }),
+                    ));
+                }
+                Ok(operation.clone())
+            },
+        );
+
+        assert_eq!(results.len(), 5);
+        assert_eq!(results[0].run_id, "run-not-found");
+        assert!(results[0].operation_id.is_none());
+        assert_eq!(
+            results[0].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
+        );
+        assert_eq!(
+            results[0].code.as_deref(),
+            Some(ScheduledErrorCode::NotFound.to_string().as_str())
+        );
+        assert_eq!(results[1].run_id, "run-failed");
+        assert_eq!(
+            results[1].operation_id.as_deref(),
+            Some("operation-run-failed")
+        );
+        assert_eq!(
+            results[1].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
+        );
+        let storage_failed = ScheduledErrorCode::StorageFailed.to_string();
+        assert_eq!(results[1].code.as_deref(), Some(storage_failed.as_str()));
+        assert_eq!(
+            stop_requests,
+            vec![
+                "operation-run-stopping".to_string(),
+                "operation-run-stop-error".to_string(),
+            ]
+        );
+        assert_eq!(results[2].run_id, "run-stopping");
+        assert_eq!(
+            results[2].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Stopping
+        );
+        assert_eq!(results[3].run_id, "run-stop-error");
+        assert_eq!(
+            results[3].operation_id.as_deref(),
+            Some("operation-run-stop-error")
+        );
+        assert_eq!(
+            results[3].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Failed
+        );
+        let stop_failed = ScheduledErrorCode::StorageFailed.to_string();
+        assert_eq!(results[3].code.as_deref(), Some(stop_failed.as_str()));
+        assert_eq!(results[4].run_id, "run-completed");
+        assert_eq!(
+            results[4].status,
+            crate::view_models_conversation::ScheduledExecutionHistoryDeleteStatusVm::Completed
+        );
+        assert!(results[4].code.is_none());
+    }
+
+    #[test]
+    fn batch_history_delete_rejects_more_than_the_typed_batch_max() {
+        let items = (0..=gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX)
+            .map(
+                |index| crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                    project_id: "project-1".to_string(),
+                    scheduled_task_id: "scheduled-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    run_id: format!("run-{index}"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        let error = validate_execution_history_delete_batch(&items).unwrap_err();
+
+        assert_eq!(error.code, ScheduledErrorCode::ValidationFailed.to_string());
+        assert_eq!(error.params["field"], "items");
+        assert_eq!(error.params["reason"], "batch-too-large");
+        assert_eq!(
+            error.params["max"],
+            gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX
+        );
+    }
+
+    #[test]
+    fn batch_history_delete_accepts_the_typed_batch_max_before_creating_operations() {
+        let items = (0..gold_band::scheduler::db::EXECUTION_HISTORY_BATCH_MAX)
+            .map(
+                |index| crate::view_models_conversation::ScheduledExecutionHistoryDeleteInputVm {
+                    project_id: "project-1".to_string(),
+                    scheduled_task_id: "scheduled-1".to_string(),
+                    task_id: "task-1".to_string(),
+                    run_id: format!("run-{index}"),
+                },
+            )
+            .collect::<Vec<_>>();
+
+        assert!(validate_execution_history_delete_batch(&items).is_ok());
     }
 
     #[test]

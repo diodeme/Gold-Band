@@ -1608,3 +1608,14 @@ The final desktop regression audit also fixed a V7 index contract gap: canonical
 - [x] 产物与发布边界：工作流只上传保留 7 天的 `gold-band-devtools-macos-intel-<run>-<sha>` DMG Artifact，不调用 release action，不创建 tag、GitHub Release、`latest.json` 或 updater 资产。Apple 凭证完整时复用既有签名/公证配置，全部缺失时使用既有 ad-hoc identity，部分缺失时沿用配置脚本的 fail-fast 契约。
 - [x] 验证：契约测试固定仅手动触发、Intel runner、Node/Rust 安装、DevTools 构建命令、DMG Artifact 路径和禁止发布行为；工作流在上传前要求恰好一个 `.app` 与一个 DMG，并执行严格 codesign 校验和 `x86_64` 架构检查。`npm run test:macos-devtools-workflow` 1 项通过；实际 DMG 构建由首次 GitHub macOS runner 执行确认，Win11 本地不作为 macOS 打包有效验收环境。
 - 性能与过度设计评审：该能力只在人工触发的隔离 CI job 中消耗一次 macOS runner、依赖缓存和单次 release 构建资源，不改变应用运行时代码、I/O、内存、队列、锁或发布请求；复用现有渠道构建、Tauri DevTools feature、签名配置脚本和 GitHub Artifact action，不新增应用状态、持久字段、缓存层、并发机制或自研打包器，复杂度与低频诊断需求匹配。
+
+## 2026-08-28：WebView 能力门禁与分级降级
+
+- [x] 根因与启动边界：旧 Intel Mac 白屏源于完整业务入口在诊断安装前解析了系统 WKWebView 不支持的 lookbehind，产品又没有能力门禁。新增不依赖 React/Tailwind 的预检入口，按实际 API 派生 `unsupported / compatible / full`；不支持时不加载业务 chunk，支持档共用同一 React App。Vite 生产目标固定为 Safari 15.4，不按 macOS 版本写业务分支。
+- [x] Markdown 与高亮：升级 Streamdown/remend，移除本地 lookbehind，并对仍未修复的 GFM autolink 上游依赖维护单一可审计 patch；高亮切换到 Shiki Web WASM Oniguruma，首次代码块按需初始化、并发合并、128 项有界缓存，失败回退纯文本且不改变 Markdown/GFM 语义。
+- [x] 集中降级：兼容档通过独立 CSS 将自定义颜色混合、透明模糊材质与复杂装饰效果投影为实色 token；命名 container 通过共享 measured adapter 发布离散 Tailwind breakpoint token，每动画帧最多一次且不进入 React state。完整档继续使用原生 container query，不创建兼容 observer。
+- [x] 诊断边界：异步 command 上报有界 user agent、能力布尔值与派生策略；macOS 直接读取系统 plist 获取系统/WebKit bundle 事实，不执行 shell、不采集业务内容，并继续复用 runtime.log 现有有界异步 writer。
+- [x] 自动化验收：TypeScript、Web 生产构建、Rust WebView 诊断接口 3 项和 Web 全量 246 个文件/1660 项通过；AST 审计确认预检、主 App 和诊断 chunk 的原生 RegExp 字面量不含 lookbehind。预检 chunk 为 7.9 KiB，未包含 React、Streamdown、Shiki 或业务 App；构建仅保留既有动态/静态 import 与大 chunk warning。
+- [x] Windows 模拟 UI 验收：内置浏览器验证 unsupported 结构化启动页；compatible 在浅色/深色和 1280/620/420 宽度下无横向溢出，命名容器离散档位可收缩和恢复；full 继续使用原生 container query，容器没有 compatible tier 属性，控制台无新增 warning/error。测试页面、视口覆盖和开发服务已清理。
+- [ ] 真机边界：Intel Monterey/WebKit 613 仍必须使用 DevTools DMG 冒烟，Windows 能力 fixture 和 Chromium 页面结果不得替代 WKWebView 真机结论。
+- 性能与过度设计评审：启动探测 O(1)，诊断异步 best-effort；WASM 惰性单例且缓存有界；compatible 只观察当前挂载的少量登记容器，full 不新增 observer/state。生产 assets 为 261 个文件/10.20 MiB 未压缩，约 6.33 MiB 语言/主题资源和 622 KiB WASM 引擎资源均不进入首屏；原实现也基于 Shiki，安装包真实增量留给 CI artifact 前后对比。未引入第二套 App、版本矩阵、持久状态、轮询、事件总线、无界缓存、同步 I/O 或自研解析器；新增边界与实际兼容风险匹配。

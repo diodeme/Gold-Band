@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { isRunStoppable } from '@/lib/status';
 import { CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 
 interface RunDetailPageProps {
   vm: RunDetailVm | null;
@@ -19,11 +20,12 @@ interface RunDetailPageProps {
 }
 
 export function RunDetailPage({ vm, labels, busy, taskId, onNavigate, onContinueRun, onRetryRun, onStopRun }: RunDetailPageProps) {
+  const measuredRunDetailRef = useWebviewMeasuredContainer<HTMLElement>('run-detail');
   if (!vm) return <Page><EmptyState>Loading…</EmptyState></Page>;
   const canStopRun = isRunStoppable(vm.run.status);
 
   return (
-    <Page className="@container/run-detail space-y-6 p-5 xl:p-8">
+    <Page ref={measuredRunDetailRef} className="@container/run-detail space-y-6 p-5 xl:p-8">
       <PageHeader
         eyebrow="Run"
         title={vm.run.id}

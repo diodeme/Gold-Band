@@ -2130,6 +2130,7 @@ dependencies = [
  "nucleo-matcher",
  "open",
  "percent-encoding",
+ "plist",
  "reqwest 0.12.28",
  "resvg",
  "rusqlite",

@@ -67,6 +67,9 @@ tauri-winrt-notification = "0.7"
 # 用于区分 Win10 的应用轮廓降级与 Win11 的 DWM 原生圆角。
 windows-version = "0.1.7"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1.9.0"
+
 [features]
 default = ["native-notification"]
 # 鍚敤 OS 鍘熺敓閫氱煡锛圵indows Toast 濮嬬粓鍙敤锛沵acOS/Linux 缁?notify-rust锛夈€?

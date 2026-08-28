@@ -6,7 +6,7 @@ mod uploader;
 use std::io::Write;
 use std::sync::{Arc, OnceLock};
 
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone, Utc};
 use gold_band::app::RuntimeLifecycleEvent;
 use gold_band::app::observability::LifecycleTiming;
 use gold_band::config::RuntimeConfig;
@@ -44,30 +44,22 @@ fn metrics_log_path() -> Option<&'static str> {
 }
 
 pub(crate) fn metrics_log(message: &str) {
-    eprintln!("{message}");
+    let mut line = format_metrics_log_line(Utc::now(), message);
+    if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
+        let actual_bytes = line.len();
+        line = format_metrics_log_line(
+            Utc::now(),
+            &format!("[metrics] payload-too-large actualBytes={actual_bytes}"),
+        );
+    }
+    eprint!("{line}");
     let Some(log_path) = metrics_log_path() else {
         return;
-    };
-    let line = format!(
-        "[{}] {message}\n",
-        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
-    );
-    let line = if line.len() as u64 > METRICS_LOG_LIMIT_BYTES {
-        format!(
-            "[{}] payload-too-large actualBytes={}\n",
-            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-            line.len()
-        )
-    } else {
-        line
     };
     if let Ok(metadata) = std::fs::metadata(log_path)
         && metadata.len().saturating_add(line.len() as u64) > METRICS_LOG_LIMIT_BYTES
     {
-        let reset = format!(
-            "[{}] log-reset reason=size-limit\n",
-            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f")
-        );
+        let reset = format_metrics_log_line(Utc::now(), "[metrics] log-reset reason=size-limit");
         if let Err(error) = std::fs::write(log_path, reset) {
             eprintln!("[metrics] failed to reset log {log_path}: {error}");
         }
@@ -80,6 +72,13 @@ pub(crate) fn metrics_log(message: &str) {
     {
         eprintln!("[metrics] failed to write log {log_path}: {error}");
     }
+}
+
+fn format_metrics_log_line(timestamp: DateTime<Utc>, message: &str) -> String {
+    format!(
+        "{}  INFO {message}\n",
+        timestamp.to_rfc3339_opts(SecondsFormat::Micros, true)
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -380,6 +379,18 @@ mod tests {
         assert_eq!(
             normalize_metrics_base_url("ftp://metrics.example.com"),
             None
+        );
+    }
+
+    #[test]
+    fn metrics_log_line_uses_utc_runtime_style_prefix() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-07-24T09:01:35.307189Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            format_metrics_log_line(timestamp, "[heartbeat] request body={}"),
+            "2026-07-24T09:01:35.307189Z  INFO [heartbeat] request body={}\n"
         );
     }
 

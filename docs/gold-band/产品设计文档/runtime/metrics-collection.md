@@ -12,7 +12,7 @@ Gold Band 对 Direct、Workflow、AUTO 的 lifecycle 事件使用统一的 Task 
 
 1. `(projectId, executionId)` 唯一定位一个 Task 指标事件流；`eventRevision` 在 Task 全生命周期持久、严格递增。
 2. `runId/roundId/nodeId/attemptId` 定位事件实际描述的 Run、Round 和 attempt；事件主体与 `executionKind` 不得矛盾。
-3. attempt terminal 携带当前 attempt counters；task delivery terminal 携带 Task 累计 counters 和代码变更统计。
+3. Workflow node/AUTO unit terminal 携带当前节点 attempt counters；Direct turn/Workflow run/AUTO outer-run 作为 task delivery terminal，携带整个 Task 的累计 counters 和代码变更统计。
 4. Task 创建来源与本次 execution 触发来源分别冻结并逐事件携带。
 5. 已被 collector 接受的事实通过 SQLite transactional outbox 有限投递；单条事件总计最多发起 3 次 HTTP attempt，网络与数据库不阻塞 Runtime 热路径。
 
@@ -60,7 +60,7 @@ Runtime producer
 | `eventRevision` | SQLite `TaskMetricsState.last_revision` | 跨 Run/Round/attempt/重启 | 每事件必填 |
 | Task 来源 | Conversation authoring metadata | Task 创建后冻结 | 每事件必填 |
 | execution 触发来源 | scheduler occurrence 或用户动作快照 | 当前 Run/Turn | 每事件必填 |
-| attempt counters | `TaskMetricsState.active_attempts` | attempt started 至 terminal | attempt terminal |
+| node/unit attempt counters | `TaskMetricsState.active_attempts` | Workflow node/AUTO unit started 至 terminal | node/unit terminal |
 | task counters | `TaskMetricsState.task_counters` | Task 创建至当前 delivery terminal | delivery terminal |
 | 普通用户输入 | ACP canonical timeline 中已接受的非 Runtime 控制 `goldBandPrompt` 与 `raw.promptId` | 当前 attempt | attempt terminal 投影 counters |
 | 代码变更 | Run 首节点执行前冻结并由内部 ref 保护的 workspace tree、delivery terminal 的最终 workspace tree | Run 创建至 delivery terminal | delivery terminal |
@@ -137,7 +137,7 @@ struct PendingMetricsFact {
 | AUTO delivery | `outer-run` | 无 attempt 字段 |
 | AUTO attempt | `unit-attempt` | `nodeId/attemptId/attemptIndex/roundIndex/roleName/unitKind` |
 
-Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/unit-attempt`。找不到 durable active attempt locator 时不构造事件，记录 `METRICS_ACTIVE_ATTEMPT_MISSING`，业务恢复继续。
+Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/unit-attempt`。这三类事件禁止使用 Direct `turn`、Workflow `run` 或 AUTO `outer-run`；找不到 durable active attempt locator 时不构造事件，记录 `METRICS_ACTIVE_ATTEMPT_MISSING`，业务恢复继续。
 
 ### 5.2 来源与定时触发快照
 
@@ -174,6 +174,8 @@ Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/u
 
 六项 counters：`pauseCount/resumeCount/permissionRequestCount/elicitationCount/manualContinueCount/followUpCount`，均为非负整数。
 
+Workflow node 与 AUTO unit terminal 的 counters 只属于当前 `nodeId + attemptId`；Direct turn、Workflow run 与 AUTO outer-run terminal 的 counters 属于整个 Task。Task counters 是独立累计快照，不从 node/unit counters 求和，两类快照都不得跨 terminal 再次累加。
+
 ```rust
 enum UserExecutionAction {
     ManualContinue,
@@ -189,7 +191,7 @@ enum UserExecutionAction {
 - FollowUp：Workflow/AUTO attempt 内，canonical timeline 每接受一个 `kind=userTextDelta`、`raw.source=goldBandPrompt`、`raw.turnControlMode=non-runtime-controlled`、`hiddenFromChat=false` 且具有非空 `raw.promptId` 的普通用户 prompt，当前 attempt 与 Task 各 `followUp + 1`；Direct 后续用户 prompt 沿用相同 prompt identity 幂等口径。当前 timeline index format V9 在上游 V8 有界 runtime restore 投影上增加该指标 prompt ID 集合，旧 index 必须从 canonical timeline 完整重建，不能以 serde 默认值静默补齐。
 - Runtime 初始 prompt、hidden prompt、provider history、permission response、structured elicitation response、纯继续和 automatic recovery 不增加 follow-up。相同文本的不同 `promptId` 分别计数，同一 `promptId` 的 replay、patch、重试和 terminal 重放只计一次。
 - 同一次“带内容人工继续”产生独立的 resume/manual continue lifecycle fact；其中的内容只有被 canonical timeline 接受后才通过同一 prompt ID 投影 `followUp + 1`，resume transition 不再旁路推导 follow-up。
-- attempt terminal 从 active map 取快照后移除；task counters 不从 attempt terminal 求和。
+- node/unit terminal 从 active map 取当前节点快照后移除；task counters 不从 node/unit terminal 求和。
 
 ## 7. Task 代码变更
 
@@ -236,7 +238,7 @@ struct TaskMetricsState {
 }
 ```
 
-attempt 的 `started/paused/resumed/completed` 由 canonical runtime transition 产生稳定 factId。collector 只按该领域身份幂等，不使用 payload 内容指纹；重复投影不分配新 revision，不重复更新 counters。`started` 只允许来自 attempt 首次进入 Running，paused attempt 的继续只能产生 resumed。
+Workflow node 与 AUTO unit 的 `started/paused/resumed/completed` 由 canonical runtime transition 产生稳定 factId。Direct turn 只发布 started/completed，不发布 paused/resumed/intervention。collector 只按该领域身份幂等，不使用 payload 内容指纹；重复投影不分配新 revision，不重复更新 counters。`started` 只允许来自 attempt 首次进入 Running，paused attempt 的继续只能产生 resumed。
 
 Workflow continue 保持 Runtime 原有控制契约：在后台 drive 启动前，以 attempt locator 和 execution ID 校验当前 paused 事实，一次提交 `Run.status=Running`、清空 pause reason 并推进 `execution.revision`。metrics 不拥有 continue action，不得向 `RunState/RuntimeExecutionState` 增加 `pendingAction`、额外状态或消费分支，也不得改变 continue、stop、重启恢复和启动失败收敛的顺序。
 
@@ -310,8 +312,8 @@ collector 构造 wire event 前校验：
 
 - 同一 Task 跨 `run-001/round-001 -> round-002 -> run-002/round-001` 以及应用重启，revision 严格递增。
 - state cursor、counters/codeChanges 和 outbox insert 任一步失败都不产生半提交。
-- Workflow/AUTO 中间态使用 attempt subject；缺失 locator 不伪造事件且业务继续。
-- attempt/task counters 在 permission、elicitation、manual continue、follow-up、retry 与重复 request 下符合精确定义。
+- Workflow/AUTO 中间态分别使用 `node-attempt/unit-attempt`；Direct 与 delivery subject 不发布中间事件，缺失 locator 不伪造事件且业务继续。
+- node/unit terminal 携带当前节点 attempt counters，turn/run/outer-run terminal 携带整个 Task counters；两类 snapshot 在 permission、elicitation、manual continue、follow-up、retry 与重复 request 下符合精确定义且不互相求和。
 - user 来源省略 trigger；scheduled 来源的 once/repeat/cron shape 与冻结 ScheduleSpec 一致。
 - code changes 覆盖 commit/staged/unstaged/untracked、revert、rename、binary、无变更、快照重放与 Git 不可用；Direct 同一 Run 的第二轮必须生成不同快照，旧轮重放保持原值且 baseline ref 仍可供后续轮使用。
 - 关闭客户端后继续和停止后带文字继续均只产生 resumed，不重复 started；失败启动后再次 continue 不受任何 metrics 状态阻塞；run terminal counters 固定为对应 canonical action 的投影。

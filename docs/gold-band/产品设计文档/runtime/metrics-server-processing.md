@@ -62,15 +62,16 @@
 | auto | outer-run | 无 attempt 字段 | `nodeId,attemptId,attemptIndex,roundIndex,roleName,unitKind` |
 | auto | unit-attempt | `nodeId,attemptId,attemptIndex,roundIndex,roleName,unitKind` | 无 |
 
-`execution.paused/execution.resumed/intervention.requested` 必须使用 attempt 主体，Workflow/AUTO 不允许把中间态挂到 run/outer-run。
+`execution.paused/execution.resumed/intervention.requested` 是节点级事件，只允许 Workflow `node-attempt` 或 AUTO `unit-attempt`。禁止 Direct `turn`、Workflow `run` 和 AUTO `outer-run`；即使 delivery 事件夹带 node/attempt 字段，也不能替代正确的节点主体。
 
 ### 2.4 terminal 与统计字段
 
 - `outcome` 与 `terminalReason` 只允许且必须同时出现在 `execution.completed`。
-- attempt terminal：Workflow `node-attempt` 和 AUTO `unit-attempt` 必须带 attempt counters。
-- task delivery terminal：Direct `turn`、Workflow `run`、AUTO `outer-run` 必须带 task counters。
+- node terminal：Workflow `node-attempt` 和 AUTO `unit-attempt` 必须带当前 `nodeId + attemptId` 对应的节点 attempt counters。
+- task delivery terminal：Direct `turn`、Workflow `run`、AUTO `outer-run` 必须带整个 Task 从创建到当前 delivery terminal 的累计 counters。
 - 非 terminal、`acceptance.completed` 均禁止 counters。
 - node/unit terminal 的 `followUpCount` 必须为 0。
+- Task counters 是独立的 canonical snapshot，服务端不得从 node/unit terminal counters 求和；两种 counters 均按各自更高合法 revision 更新，不跨 terminal 再次累加。
 - `codeChanges` 只允许出现在 task delivery terminal。
 - `codeChanges` 只包含 `addedLines/deletedLines/changedFiles`，出现时三个字段必须同时存在且为非负整数；不可用时客户端省略整个对象。拒绝旧 `completeness/limitationCodes` 字段，不接收部分统计。
 - Direct 的每个 turn terminal 都是 task delivery terminal；后续 turn 的 `codeChanges` 是同一 Run 启动 workspace tree 到当前 turn terminal tree 的新快照。服务端按更高合法 terminal revision 覆盖 Task 投影，不累加各轮数字。
@@ -354,7 +355,8 @@ raw 是事实源，投影是可删除重建的数据。
 - 六类 eventType、五类 executionKind、三种 sessionMode 全矩阵。
 - 缺失/多余字段、未知枚举、user 携带 trigger、scheduled 缺 trigger、旧 `{kind: ...}` shape 与非法 repeat 字段组合逐项拒绝。
 - `taskTitle` 缺省/出现及更高 revision 更新投影；标题不参与 identity 与 immutable-field 冲突。
-- 三整数 codeChanges 与 counters scope 校验；旧 completeness/limitationCodes 和部分数字逐项拒绝。
+- paused/resumed/intervention 仅接受 Workflow `node-attempt` 与 AUTO `unit-attempt`；Direct `turn`、Workflow `run`、AUTO `outer-run` 逐项拒绝。
+- 三整数 codeChanges 与 counters scope 校验；node/unit terminal 固定为节点 attempt counters，turn/run/outer-run terminal 固定为整个 Task counters；旧 completeness/limitationCodes 和部分数字逐项拒绝。
 - 响应三集合精确覆盖，错误只含 code/params。
 
 ### 幂等与并发

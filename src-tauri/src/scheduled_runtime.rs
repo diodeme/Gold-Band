@@ -267,10 +267,13 @@ struct WorkspaceRegistration {
 
 fn scheduled_task_context_info(
     definition: &ScheduledTaskDefinition,
+    occurrence_id: &str,
     trigger_kind: &str,
     triggered_at: chrono::DateTime<chrono::Utc>,
 ) -> gold_band::provider::ScheduledTaskContextInfo {
     gold_band::provider::ScheduledTaskContextInfo {
+        scheduled_task_id: definition.id.clone(),
+        scheduled_occurrence_id: occurrence_id.to_string(),
         title: definition
             .instruction
             .lines()
@@ -288,7 +291,11 @@ fn scheduled_task_context_info(
             gold_band::scheduler::SessionPolicy::Continuous => "continuous".to_string(),
         },
         trigger_kind: trigger_kind.to_string(),
-        triggered_at: triggered_at.to_rfc3339(),
+        triggered_at: triggered_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%dT%H:%M:%S%.3f")
+            .to_string(),
+        schedule: definition.schedule.clone(),
         instruction: Some(definition.instruction.clone()),
     }
 }
@@ -2569,9 +2576,11 @@ fn scheduled_occurrence_key(event: &RuntimeLifecycleEvent) -> Option<ActiveOccur
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => None,
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => None,
     }
 }
 
@@ -2690,10 +2699,12 @@ pub(crate) fn finish_occurrence_for_event(
         | RuntimeLifecycleEvent::UserActivityObserved
         | RuntimeLifecycleEvent::ConversationRunStarted { .. }
         | RuntimeLifecycleEvent::ScheduledTaskCreated { .. }
+        | RuntimeLifecycleEvent::DirectTurnLifecycle(_)
+        | RuntimeLifecycleEvent::MetricsInterventionSource(_)
         | RuntimeLifecycleEvent::RunPaused { .. }
         | RuntimeLifecycleEvent::NodeStarted { .. }
         | RuntimeLifecycleEvent::NodeCompleted { .. }
-        | RuntimeLifecycleEvent::MetricsFact(_) => return Ok(None),
+        | RuntimeLifecycleEvent::PendingMetricsFact(_) => return Ok(None),
     };
     if !database.finish_occurrence(project_id, occurrence_id, owner_id, status, links, error)? {
         return Ok(None);
@@ -3137,6 +3148,7 @@ pub(super) fn execute_definition_with_action(
                     .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
                     .with_scheduled_task_context(Some(scheduled_task_context_info(
                         definition,
+                        occurrence_id,
                         trigger_kind,
                         scheduled_at,
                     )));
@@ -3204,6 +3216,7 @@ pub(super) fn execute_definition_with_action(
                 .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
                 .with_scheduled_task_context(Some(scheduled_task_context_info(
                     definition,
+                    occurrence_id,
                     trigger_kind,
                     scheduled_at,
                 )));
@@ -3257,6 +3270,7 @@ pub(super) fn execute_definition_with_action(
         .with_scheduled_occurrence_id(Some(occurrence_id.to_string()))
         .with_scheduled_task_context(Some(scheduled_task_context_info(
             definition,
+            occurrence_id,
             trigger_kind,
             scheduled_at,
         )));

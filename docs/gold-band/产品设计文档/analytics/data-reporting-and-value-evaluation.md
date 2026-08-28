@@ -164,6 +164,8 @@ appStarted 或 activity 成功后 15 分钟内不发送 activity；activity 失�
 
 userId 使用 `whoami::username()` 读取各系统用户名，trim 并小写化；失败、空值或 unknown 时跳过，禁止环境变量 fallback。heartbeat 不维护三种模式的 active execution，终局和执行明细全部由 metrics/batch 负责。
 
+每次 heartbeat HTTP attempt 在发送前只序列化一次请求对象，实际发送 body 与 `metrics.log` 中记录的完整 body 必须来自同一字符串，禁止日志与真实请求各自序列化。日志不记录 `X-Maling-Report-Key` 或响应体；每行统一使用 `UTC RFC 3339 六位小数 + 两个空格 + INFO` 前缀，例如 `2026-07-24T09:01:35.307189Z  INFO [heartbeat] request ... body={...}`。
+
 ### 2.4 控制台处理
 
 1. 限制 body 8 KiB，并校验 `X-Maling-Report-Key`。

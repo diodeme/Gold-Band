@@ -23,6 +23,8 @@ use crate::storage::{
 pub const DEFAULT_TIMELINE_COMPACT_MAX_SIZE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_TIMELINE_COMPACT_PATCH_RATIO: usize = 4;
 pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
+// V9 adds the canonical metrics follow-up prompt projection. Older indexes
+// must rebuild so terminal metrics never depend on a partially populated set.
 // V8 keeps Agent launch links as standalone semantic blocks and recognizes
 // their canonical Gold Band conversation identity. V7 indexes grouped these
 // links into ordinary activity when provider-only metadata was absent.
@@ -38,7 +40,7 @@ pub const TIMELINE_BLOB_MIN_BYTES: usize = 64 * 1024;
 // V4 adds the retry-prompt role and its current pending identity. Treating a V2
 // index as compatible would leave stop unable to settle a processing retry in
 // the crash window between the timeline append and session metadata rewrite.
-pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 8;
+pub const TIMELINE_INDEX_FORMAT_VERSION: u32 = 9;
 pub const DEFAULT_TIMELINE_CHECKPOINT_PATCH_INTERVAL: usize = 256;
 pub const DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT: usize = 256;
 // Internal result marker: tail replay exceeded its bound and the index was
@@ -134,6 +136,8 @@ struct TimelineItemLocator {
     runtime_control_candidate: bool,
     #[serde(default)]
     retry_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metric_follow_up_prompt_id: Option<String>,
     #[serde(default)]
     branch_id: String,
     #[serde(default)]
@@ -306,6 +310,8 @@ struct TimelineMaterializedIndex {
     agent_launches: HashMap<String, AcpUiEvent>,
     #[serde(default)]
     accepted_prompt_ids: HashSet<String>,
+    #[serde(default)]
+    metric_follow_up_prompt_ids: HashSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_runtime_control_candidate: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -338,6 +344,7 @@ impl Default for TimelineMaterializedIndex {
             latest_plan: None,
             agent_launches: HashMap::new(),
             accepted_prompt_ids: HashSet::new(),
+            metric_follow_up_prompt_ids: HashSet::new(),
             latest_runtime_control_candidate: None,
             pending_retry_prompt_id: None,
             timing_state_snapshot: None,
@@ -1110,7 +1117,12 @@ fn apply_index_event_inner(
     if !should_replace {
         return Ok(());
     }
+    let previous_metric_prompt_id = index
+        .item_locators
+        .get(&item.id)
+        .and_then(|locator| locator.metric_follow_up_prompt_id.clone());
     let locator = timeline_item_locator(item, revision, offset, line_length)?;
+    let metric_prompt_id = locator.metric_follow_up_prompt_id.clone();
     let previous_locator = index.item_locators.get(&item.id).cloned();
     index.covered_revision = index.covered_revision.max(revision).max(locator.ended_seq);
     apply_lightweight_projection(index, item);
@@ -1121,6 +1133,20 @@ fn apply_index_event_inner(
     let processing_retry = locator.retry_prompt && locator.status.as_deref() == Some("processing");
     let candidate_order = (locator.ended_seq, locator.seq, locator.revision);
     index.item_locators.insert(item.id.clone(), locator);
+    if previous_metric_prompt_id != metric_prompt_id {
+        if let Some(previous_prompt_id) = previous_metric_prompt_id
+            && !index.item_locators.values().any(|locator| {
+                locator.metric_follow_up_prompt_id.as_deref() == Some(previous_prompt_id.as_str())
+            })
+        {
+            index
+                .metric_follow_up_prompt_ids
+                .remove(&previous_prompt_id);
+        }
+        if let Some(prompt_id) = metric_prompt_id {
+            index.metric_follow_up_prompt_ids.insert(prompt_id);
+        }
+    }
     update_runtime_projection(
         index,
         &item.id,
@@ -1458,6 +1484,7 @@ fn timeline_item_locator(
             .and_then(|raw| raw.pointer("/retry/attempt"))
             .and_then(Value::as_u64)
             .is_some_and(|attempt| attempt > 0),
+        metric_follow_up_prompt_id: metric_follow_up_prompt_id(item),
         branch_id: item
             .raw
             .as_ref()
@@ -1475,6 +1502,25 @@ fn timeline_item_locator(
         provider_history_item_id: timeline_provider_history_item_id(item),
         prompt_id: timeline_prompt_id(item),
     })
+}
+
+fn metric_follow_up_prompt_id(item: &AcpUiEvent) -> Option<String> {
+    let raw = item.raw.as_ref()?;
+    if item.kind != "userTextDelta"
+        || raw.get("source").and_then(Value::as_str) != Some("goldBandPrompt")
+        || raw.get("turnControlMode").and_then(Value::as_str) != Some("non-runtime-controlled")
+        || raw
+            .get("hiddenFromChat")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    raw.get("promptId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|prompt_id| !prompt_id.is_empty())
+        .map(str::to_string)
 }
 
 fn is_agent_launch(item: &AcpUiEvent) -> bool {
@@ -2056,6 +2102,20 @@ pub fn read_indexed_accepted_prompt_ids(path: &Utf8Path) -> Result<HashSet<Strin
     with_jsonl_file_lock(path, || {
         let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
         Ok(index.accepted_prompt_ids)
+    })
+}
+
+pub fn read_indexed_metric_follow_up_prompt_ids(path: &Utf8Path) -> Result<Vec<String>> {
+    let policy = TimelineCheckpointPolicy::default();
+    let index_path = timeline_index_path(path);
+    with_jsonl_file_lock(path, || {
+        let (index, _) = load_or_rebuild_index_unlocked(path, &index_path, policy)?;
+        let mut prompt_ids = index
+            .metric_follow_up_prompt_ids
+            .into_iter()
+            .collect::<Vec<_>>();
+        prompt_ids.sort();
+        Ok(prompt_ids)
     })
 }
 
@@ -2924,7 +2984,8 @@ mod tests {
     use super::{
         DEFAULT_TIMELINE_TAIL_REPLAY_LIMIT, TIMELINE_BLOB_MIN_BYTES, TIMELINE_INDEX_FORMAT_VERSION,
         TimelineCompactionPolicy, TimelineRestoreMode, TimelineSettleOutcome, TimelineStore,
-        TimelineUpsertOutcome, read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
+        TimelineUpsertOutcome, read_indexed_metric_follow_up_prompt_ids,
+        read_indexed_prompt_anchor_events, read_indexed_runtime_restore,
         read_indexed_runtime_restore_for_branch, read_indexed_timeline_page,
         read_indexed_timeline_projection, settle_latest_processing_retry_prompt,
         settle_timeline_item_status, timeline_index_path,
@@ -2949,6 +3010,87 @@ mod tests {
             timing: None,
             raw: Some(json!({ "source": "providerHistory" })),
         }
+    }
+
+    fn metric_follow_up_event(id: &str, seq: u64, prompt_id: &str) -> AcpUiEvent {
+        let mut item = event(id, seq, "same answer");
+        item.kind = "userTextDelta".to_string();
+        item.raw = Some(json!({
+            "source": "goldBandPrompt",
+            "turnControlMode": "non-runtime-controlled",
+            "promptId": prompt_id,
+        }));
+        item
+    }
+
+    #[test]
+    fn metric_follow_up_projection_uses_canonical_prompt_identity_and_filters_sources() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+
+        store
+            .upsert(1, &metric_follow_up_event("prompt-a", 1, "prompt-2"))
+            .unwrap();
+        store
+            .upsert(2, &metric_follow_up_event("prompt-b", 2, "prompt-1"))
+            .unwrap();
+        store
+            .upsert(3, &metric_follow_up_event("prompt-a-replay", 3, "prompt-2"))
+            .unwrap();
+        let mut runtime_prompt = metric_follow_up_event("runtime-prompt", 4, "prompt-runtime");
+        runtime_prompt.raw.as_mut().unwrap()["turnControlMode"] = json!("runtime-controlled");
+        store.upsert(4, &runtime_prompt).unwrap();
+        let mut hidden_prompt = metric_follow_up_event("hidden-prompt", 5, "prompt-hidden");
+        hidden_prompt.raw.as_mut().unwrap()["hiddenFromChat"] = json!(true);
+        store.upsert(5, &hidden_prompt).unwrap();
+        let mut provider_history = metric_follow_up_event("provider-history", 6, "prompt-history");
+        provider_history.raw.as_mut().unwrap()["source"] = json!("providerHistory");
+        store.upsert(6, &provider_history).unwrap();
+        let mut missing_id = metric_follow_up_event("missing-id", 7, "");
+        missing_id.raw.as_mut().unwrap()["promptId"] = json!("   ");
+        store.upsert(7, &missing_id).unwrap();
+
+        assert_eq!(
+            read_indexed_metric_follow_up_prompt_ids(&path).unwrap(),
+            vec!["prompt-1".to_string(), "prompt-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn metric_follow_up_projection_rebuilds_old_index_and_removes_reclassified_item() {
+        let dir = tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("acp.timeline.jsonl")).unwrap();
+        let mut store =
+            TimelineStore::open(path.clone(), TimelineCompactionPolicy::default()).unwrap();
+        let visible = metric_follow_up_event("prompt-a", 1, "prompt-1");
+        store.upsert(1, &visible).unwrap();
+        store.force_checkpoint().unwrap();
+
+        let index_path = timeline_index_path(&path);
+        let mut legacy: serde_json::Value = crate::storage::read_json(&index_path).unwrap();
+        legacy["formatVersion"] = json!(TIMELINE_INDEX_FORMAT_VERSION - 1);
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("metricFollowUpPromptIds");
+        crate::storage::write_json(&index_path, &legacy).unwrap();
+        assert_eq!(
+            read_indexed_metric_follow_up_prompt_ids(&path).unwrap(),
+            vec!["prompt-1".to_string()]
+        );
+
+        let mut hidden = visible;
+        hidden.seq = 2;
+        hidden.ended_seq = Some(2);
+        hidden.raw.as_mut().unwrap()["hiddenFromChat"] = json!(true);
+        store.upsert(2, &hidden).unwrap();
+        assert!(
+            read_indexed_metric_follow_up_prompt_ids(&path)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

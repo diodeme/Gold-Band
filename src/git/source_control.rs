@@ -487,6 +487,84 @@ impl GitMachineRunner {
             Err(git_command_error(code, &output).into())
         }
     }
+
+    fn require_with_env(
+        &self,
+        cwd: &Utf8Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+        code: &'static str,
+    ) -> Result<MachineCommandOutput> {
+        let mut command = background_command("git");
+        command
+            .arg("-C")
+            .arg(cwd.as_str())
+            .args(args)
+            .env("LC_ALL", "C")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .envs(env.iter().copied());
+        let output = command
+            .output()
+            .map(MachineCommandOutput::from)
+            .with_context(|| format!("failed to execute Git in `{cwd}`"))?;
+        if output.success {
+            Ok(output)
+        } else {
+            Err(GitServiceError::command(code, &output).into())
+        }
+    }
+
+    fn require_with_input_and_env(
+        &self,
+        cwd: &Utf8Path,
+        args: &[&str],
+        input: &[u8],
+        env: &[(&str, &str)],
+        code: &'static str,
+    ) -> Result<MachineCommandOutput> {
+        let mut command = background_command("git");
+        command
+            .arg("-C")
+            .arg(cwd.as_str())
+            .args(args)
+            .env("LC_ALL", "C")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = ManagedProcessGroup::spawn(&mut command)
+            .with_context(|| format!("failed to execute Git in `{cwd}`"))?;
+        let mut stdin = process
+            .take_stdin()
+            .ok_or_else(|| GitServiceError::new("git.stdin-unavailable", serde_json::json!({})))?;
+        stdin.write_all(input)?;
+        drop(stdin);
+        let stdout = process
+            .take_stdout()
+            .ok_or_else(|| GitServiceError::new("git.stdout-unavailable", serde_json::json!({})))?;
+        let stderr = process
+            .take_stderr()
+            .ok_or_else(|| GitServiceError::new("git.stderr-unavailable", serde_json::json!({})))?;
+        let stdout_reader = std::thread::spawn(move || read_command_stream(stdout));
+        let stderr_reader = std::thread::spawn(move || read_command_stream(stderr));
+        let status = process.wait()?;
+        let output = MachineCommandOutput {
+            success: status.success(),
+            exit_code: status.code(),
+            stdout: stdout_reader.join().map_err(|_| {
+                GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
+            })??,
+            stderr: stderr_reader.join().map_err(|_| {
+                GitServiceError::new("git.output-reader-failed", serde_json::json!({}))
+            })??,
+        };
+        if output.success {
+            Ok(output)
+        } else {
+            Err(GitServiceError::command(code, &output).into())
+        }
+    }
 }
 
 fn read_command_stream(mut stream: impl Read) -> std::io::Result<Vec<u8>> {
@@ -1187,6 +1265,19 @@ pub struct GitDiffStats {
     pub deleted_lines: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBaselineDiffStats {
+    pub added_lines: u64,
+    pub deleted_lines: u64,
+    pub changed_files: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceTreeSnapshot {
+    pub tree_oid: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFileComparison {
@@ -1507,6 +1598,298 @@ impl GitSourceControlService {
         apply_workspace_stats(&mut status.conflicts, &unstaged_stats);
         apply_workspace_stats(&mut status.conflicts, &staged_stats);
         Ok(status)
+    }
+
+    pub fn baseline_diff_stats(
+        &self,
+        cwd: &Utf8Path,
+        baseline: &str,
+    ) -> Result<GitBaselineDiffStats> {
+        ensure!(!baseline.trim().is_empty(), "Git baseline cannot be empty");
+        self.runner.require(
+            cwd,
+            &["cat-file", "-e", &format!("{baseline}^{{commit}}")],
+            "git.baseline-not-found",
+        )?;
+        let output = self.runner.require(
+            cwd,
+            &[
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "-M",
+                "-C",
+                baseline,
+                "--",
+            ],
+            "git.baseline-diff-query-failed",
+        )?;
+        let mut files = parse_numstat(&output.stdout, "git.baseline-diff-parse-failed")?;
+        let untracked = self.runner.require(
+            cwd,
+            &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+            "git.untracked-files-query-failed",
+        )?;
+        for field in nul_fields(&untracked.stdout) {
+            let relative = text(&field);
+            if relative.is_empty() || files.contains_key(&relative) {
+                continue;
+            }
+            let path = Utf8Path::new(&relative);
+            ensure!(
+                path.is_relative()
+                    && !path
+                        .components()
+                        .any(|component| matches!(component, camino::Utf8Component::ParentDir)),
+                "Git returned an invalid untracked path"
+            );
+            if let Some(stats) = untracked_file_stats(&cwd.join(path))? {
+                files.insert(relative, stats);
+            }
+        }
+        Ok(GitBaselineDiffStats {
+            added_lines: files
+                .values()
+                .filter_map(|stats| stats.added_lines)
+                .fold(0, u64::saturating_add),
+            deleted_lines: files
+                .values()
+                .filter_map(|stats| stats.deleted_lines)
+                .fold(0, u64::saturating_add),
+            changed_files: files.len() as u64,
+        })
+    }
+
+    pub fn create_workspace_tree(
+        &self,
+        workspace_path: &Utf8Path,
+        temporary_index_path: &Utf8Path,
+    ) -> Result<WorkspaceTreeSnapshot> {
+        ensure!(
+            temporary_index_path.is_absolute(),
+            "temporary Git index path must be absolute"
+        );
+        let parent = temporary_index_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("temporary Git index parent is required"))?;
+        std::fs::create_dir_all(parent.as_std_path())?;
+        if temporary_index_path.exists() {
+            std::fs::remove_file(temporary_index_path.as_std_path())?;
+        }
+        let index_lock_path = Utf8PathBuf::from(format!("{temporary_index_path}.lock"));
+        if index_lock_path.exists() {
+            std::fs::remove_file(index_lock_path.as_std_path())?;
+        }
+        let index_path = temporary_index_path.as_str();
+        let env = [("GIT_INDEX_FILE", index_path)];
+        let result = (|| {
+            self.runner.require(
+                workspace_path,
+                &["cat-file", "-e", "HEAD^{tree}"],
+                "git.workspace-tree-head-unavailable",
+            )?;
+            self.runner.require_with_env(
+                workspace_path,
+                &["read-tree", "HEAD"],
+                &env,
+                "git.workspace-tree-index-init-failed",
+            )?;
+            self.runner.require_with_env(
+                workspace_path,
+                &["add", "-u", "--", "."],
+                &env,
+                "git.workspace-tree-tracked-update-failed",
+            )?;
+
+            let tracked = self.runner.require(
+                workspace_path,
+                &["ls-files", "--cached", "-z", "--"],
+                "git.workspace-tree-tracked-query-failed",
+            )?;
+            let untracked = self.runner.require(
+                workspace_path,
+                &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+                "git.workspace-tree-untracked-query-failed",
+            )?;
+            let mut paths = Vec::new();
+            for field in nul_fields(&tracked.stdout)
+                .into_iter()
+                .chain(nul_fields(&untracked.stdout))
+            {
+                let relative = text(&field);
+                if relative.is_empty() {
+                    continue;
+                }
+                let relative_path = Utf8Path::new(&relative);
+                ensure!(
+                    relative_path.is_relative()
+                        && !relative_path
+                            .components()
+                            .any(|component| matches!(component, camino::Utf8Component::ParentDir)),
+                    "Git returned an invalid workspace tree path"
+                );
+                let candidate = workspace_path.join(relative_path);
+                if candidate == temporary_index_path || candidate == index_lock_path {
+                    continue;
+                }
+                let Ok(metadata) = std::fs::symlink_metadata(candidate.as_std_path()) else {
+                    continue;
+                };
+                let file_type = metadata.file_type();
+                if !file_type.is_file() && !file_type.is_symlink() {
+                    continue;
+                }
+                paths.extend_from_slice(relative.as_bytes());
+                paths.push(0);
+            }
+            if !paths.is_empty() {
+                self.runner.require_with_input_and_env(
+                    workspace_path,
+                    &["update-index", "--add", "--remove", "-z", "--stdin"],
+                    &paths,
+                    &env,
+                    "git.workspace-tree-untracked-update-failed",
+                )?;
+            }
+            let tree_oid = self
+                .runner
+                .require_with_env(
+                    workspace_path,
+                    &["write-tree"],
+                    &env,
+                    "git.workspace-tree-write-failed",
+                )?
+                .stdout_text();
+            ensure!(!tree_oid.is_empty(), "Git workspace tree OID is required");
+            Ok(WorkspaceTreeSnapshot { tree_oid })
+        })();
+        let _ = std::fs::remove_file(temporary_index_path.as_std_path());
+        let _ = std::fs::remove_file(index_lock_path.as_std_path());
+        result
+    }
+
+    pub fn diff_tree_stats(
+        &self,
+        workspace_path: &Utf8Path,
+        baseline_tree: &str,
+        current_tree: &str,
+    ) -> Result<GitBaselineDiffStats> {
+        for tree in [baseline_tree, current_tree] {
+            ensure!(!tree.trim().is_empty(), "Git tree OID cannot be empty");
+            self.runner.require(
+                workspace_path,
+                &["cat-file", "-e", &format!("{tree}^{{tree}}")],
+                "git.workspace-tree-not-found",
+            )?;
+        }
+        let output = self.runner.require(
+            workspace_path,
+            &[
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-ext-diff",
+                "--no-textconv",
+                "-M",
+                "-C",
+                baseline_tree,
+                current_tree,
+                "--",
+            ],
+            "git.workspace-tree-diff-query-failed",
+        )?;
+        let files = parse_numstat(&output.stdout, "git.workspace-tree-diff-parse-failed")?;
+        Ok(GitBaselineDiffStats {
+            added_lines: files
+                .values()
+                .filter_map(|stats| stats.added_lines)
+                .fold(0, u64::saturating_add),
+            deleted_lines: files
+                .values()
+                .filter_map(|stats| stats.deleted_lines)
+                .fold(0, u64::saturating_add),
+            changed_files: files.len() as u64,
+        })
+    }
+
+    pub fn protect_tree_ref(
+        &self,
+        workspace_path: &Utf8Path,
+        ref_name: &str,
+        tree_oid: &str,
+    ) -> Result<()> {
+        ensure!(!ref_name.trim().is_empty(), "Git metrics ref is required");
+        self.runner.require(
+            workspace_path,
+            &["check-ref-format", ref_name],
+            "git.metrics-ref-invalid",
+        )?;
+        self.runner.require(
+            workspace_path,
+            &["cat-file", "-e", &format!("{tree_oid}^{{tree}}")],
+            "git.workspace-tree-not-found",
+        )?;
+        let current = self.runner.run(
+            workspace_path,
+            &["show-ref", "--verify", "--hash", ref_name],
+        )?;
+        if current.success {
+            ensure!(
+                current.stdout_text() == tree_oid,
+                "Git metrics ref points to another object"
+            );
+            return Ok(());
+        }
+        let zero_oid = "0".repeat(tree_oid.len());
+        let created = self.runner.run(
+            workspace_path,
+            &["update-ref", ref_name, tree_oid, &zero_oid],
+        )?;
+        if created.success {
+            return Ok(());
+        }
+        let raced = self.runner.require(
+            workspace_path,
+            &["show-ref", "--verify", "--hash", ref_name],
+            "git.metrics-ref-create-failed",
+        )?;
+        ensure!(
+            raced.stdout_text() == tree_oid,
+            "Git metrics ref points to another object"
+        );
+        Ok(())
+    }
+
+    pub fn delete_tree_ref(
+        &self,
+        workspace_path: &Utf8Path,
+        ref_name: &str,
+        expected_tree_oid: &str,
+    ) -> Result<()> {
+        self.runner.require(
+            workspace_path,
+            &["check-ref-format", ref_name],
+            "git.metrics-ref-invalid",
+        )?;
+        let current = self.runner.run(
+            workspace_path,
+            &["show-ref", "--verify", "--hash", ref_name],
+        )?;
+        if !current.success {
+            return Ok(());
+        }
+        ensure!(
+            current.stdout_text() == expected_tree_oid,
+            "Git metrics ref points to another object"
+        );
+        self.runner.require(
+            workspace_path,
+            &["update-ref", "-d", ref_name, expected_tree_oid],
+            "git.metrics-ref-delete-failed",
+        )?;
+        Ok(())
     }
 
     fn status_without_stats(&self, cwd: &Utf8Path) -> Result<GitWorkspaceStatus> {
@@ -4293,6 +4676,54 @@ fn parse_commit_numstat(bytes: &[u8]) -> Result<HashMap<String, CommitFileStats>
     parse_numstat(bytes, "git.commit-diff-parse-failed")
 }
 
+fn untracked_file_stats(path: &Utf8Path) -> Result<Option<CommitFileStats>> {
+    let file_type = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspect untracked entry `{path}` for Git metrics"))?
+        .file_type();
+    if file_type.is_dir() {
+        return Ok(None);
+    }
+    if !file_type.is_file() {
+        return Ok(Some(CommitFileStats {
+            binary: true,
+            added_lines: None,
+            deleted_lines: None,
+        }));
+    }
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("open untracked file `{path}` for Git metrics"))?;
+    let mut buffer = [0_u8; 8192];
+    let mut added_lines = 0_u64;
+    let mut any = false;
+    let mut last = 0_u8;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        if chunk.contains(&0) {
+            return Ok(Some(CommitFileStats {
+                binary: true,
+                added_lines: None,
+                deleted_lines: None,
+            }));
+        }
+        added_lines =
+            added_lines.saturating_add(chunk.iter().filter(|byte| **byte == b'\n').count() as u64);
+        any = true;
+        last = chunk[read - 1];
+    }
+    if any && last != b'\n' {
+        added_lines = added_lines.saturating_add(1);
+    }
+    Ok(Some(CommitFileStats {
+        binary: false,
+        added_lines: Some(added_lines),
+        deleted_lines: Some(0),
+    }))
+}
+
 fn parse_numstat(
     bytes: &[u8],
     error_code: &'static str,
@@ -6099,6 +6530,303 @@ mod tests {
             .unwrap();
         assert_eq!(unstaged.added_lines, Some(1));
         assert_eq!(unstaged.deleted_lines, Some(0));
+    }
+
+    #[test]
+    fn baseline_diff_stats_include_committed_index_workspace_and_untracked_state() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "tracked.txt", "one\ntwo\n", "baseline");
+        let service = GitSourceControlService::default();
+        assert_eq!(
+            service.baseline_diff_stats(&root, &baseline).unwrap(),
+            GitBaselineDiffStats::default()
+        );
+
+        std::fs::write(root.join("tracked.txt"), "one\nthree\nfour\n").unwrap();
+        std::fs::write(root.join("staged.txt"), "a\nb\n").unwrap();
+        assert!(
+            GitCommandRunner
+                .run(&root, &["add", "--", "staged.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("untracked.txt"), "x\ny\nz\n").unwrap();
+        std::fs::write(root.join("untracked.bin"), [0, 1, 2]).unwrap();
+
+        assert_eq!(
+            service.baseline_diff_stats(&root, &baseline).unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 7,
+                deleted_lines: 1,
+                changed_files: 4,
+            }
+        );
+    }
+
+    #[test]
+    fn baseline_diff_stats_skips_an_untracked_embedded_repository_directory() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "tracked.txt", "base\n", "baseline");
+        let nested = root.join("embedded");
+        std::fs::create_dir_all(&nested).unwrap();
+        let runner = GitCommandRunner;
+        assert!(runner.run(&nested, &["init"]).unwrap().success);
+        assert!(
+            runner
+                .run(&nested, &["config", "user.name", "Nested Test"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&nested, &["config", "user.email", "nested@gold-band.local"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(nested.join("nested.txt"), "nested repository\n").unwrap();
+        assert!(
+            runner
+                .run(&nested, &["add", "--", "nested.txt"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            runner
+                .run(&nested, &["commit", "-m", "nested"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("untracked.txt"), "one\ntwo\n").unwrap();
+
+        assert_eq!(
+            GitSourceControlService::default()
+                .baseline_diff_stats(&root, &baseline)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 2,
+                deleted_lines: 0,
+                changed_files: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn baseline_diff_stats_count_a_pure_rename_as_one_changed_file() {
+        let (_temp, root) = initialized_repository();
+        let baseline = commit_file(&root, "before.txt", "one\ntwo\n", "baseline");
+        assert!(
+            GitCommandRunner
+                .run(&root, &["mv", "--", "before.txt", "after.txt"])
+                .unwrap()
+                .success
+        );
+
+        assert_eq!(
+            GitSourceControlService::default()
+                .baseline_diff_stats(&root, &baseline)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 0,
+                deleted_lines: 0,
+                changed_files: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_tree_diff_excludes_preexisting_dirty_state_and_counts_only_run_delta() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "one\ntwo\n", "baseline");
+        std::fs::write(root.join("tracked.txt"), "one\ndirty\n").unwrap();
+        std::fs::write(root.join("staged-before.txt"), "staged before\n").unwrap();
+        assert!(
+            GitCommandRunner
+                .run(&root, &["add", "--", "staged-before.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::write(root.join("untracked-before.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(root.join("large-before.bin"), vec![0_u8; 5 * 1024 * 1024]).unwrap();
+        let service = GitSourceControlService::default();
+        let baseline = service
+            .create_workspace_tree(&root, &root.join("baseline-index.tmp"))
+            .unwrap();
+        let unchanged = service
+            .create_workspace_tree(&root, &root.join("unchanged-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &unchanged.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats::default()
+        );
+
+        std::fs::write(root.join("tracked.txt"), "one\ndirty\nnew\n").unwrap();
+        std::fs::write(root.join("created-during-run.txt"), "first\nsecond\n").unwrap();
+        let terminal = service
+            .create_workspace_tree(&root, &root.join("terminal-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &terminal.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 3,
+                deleted_lines: 0,
+                changed_files: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_tree_diff_is_independent_from_commits_and_skips_embedded_repositories() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "base\n", "baseline");
+        std::fs::write(root.join("tracked.txt"), "startup\n").unwrap();
+        let service = GitSourceControlService::default();
+        let baseline = service
+            .create_workspace_tree(&root, &root.join("baseline-index.tmp"))
+            .unwrap();
+
+        assert!(
+            GitCommandRunner
+                .run(&root, &["add", "--", "tracked.txt"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            GitCommandRunner
+                .run(&root, &["commit", "-m", "commit during run"])
+                .unwrap()
+                .success
+        );
+        let after_commit = service
+            .create_workspace_tree(&root, &root.join("after-commit-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &after_commit.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats::default()
+        );
+
+        let embedded = root.join("embedded");
+        std::fs::create_dir_all(&embedded).unwrap();
+        assert!(GitCommandRunner.run(&embedded, &["init"]).unwrap().success);
+        std::fs::write(embedded.join("nested.txt"), "nested\n").unwrap();
+        std::fs::write(root.join("root-file.txt"), "root\n").unwrap();
+        let terminal = service
+            .create_workspace_tree(&root, &root.join("terminal-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &terminal.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 1,
+                deleted_lines: 0,
+                changed_files: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_tree_ref_lifecycle_is_idempotent_and_expected_oid_guarded() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "tracked.txt", "base\n", "baseline");
+        let service = GitSourceControlService::default();
+        let baseline = service
+            .create_workspace_tree(&root, &root.join("baseline-index.tmp"))
+            .unwrap();
+        let ref_name = "refs/gold-band/metrics/task-1/run-1";
+
+        service
+            .protect_tree_ref(&root, ref_name, &baseline.tree_oid)
+            .unwrap();
+        service
+            .protect_tree_ref(&root, ref_name, &baseline.tree_oid)
+            .unwrap();
+        let protected = GitCommandRunner
+            .run(&root, &["show-ref", "--verify", "--hash", ref_name])
+            .unwrap();
+        assert!(protected.success);
+        assert_eq!(protected.stdout, baseline.tree_oid);
+
+        service
+            .delete_tree_ref(&root, ref_name, &baseline.tree_oid)
+            .unwrap();
+        service
+            .delete_tree_ref(&root, ref_name, &baseline.tree_oid)
+            .unwrap();
+        assert!(
+            !GitCommandRunner
+                .run(&root, &["show-ref", "--verify", ref_name])
+                .unwrap()
+                .success
+        );
+    }
+
+    #[test]
+    fn workspace_tree_diff_counts_rename_copy_binary_and_net_revert() {
+        let (_temp, root) = initialized_repository();
+        commit_file(&root, "before.txt", "one\ntwo\n", "baseline");
+        std::fs::write(root.join("copy-source.txt"), "copy\nsource\n").unwrap();
+        assert!(
+            GitCommandRunner
+                .run(&root, &["add", "--", "copy-source.txt"])
+                .unwrap()
+                .success
+        );
+        assert!(
+            GitCommandRunner
+                .run(&root, &["commit", "-m", "copy source"])
+                .unwrap()
+                .success
+        );
+        let service = GitSourceControlService::default();
+        let baseline = service
+            .create_workspace_tree(&root, &root.join("baseline-index.tmp"))
+            .unwrap();
+
+        assert!(
+            GitCommandRunner
+                .run(&root, &["mv", "--", "before.txt", "after.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::copy(root.join("copy-source.txt"), root.join("copy.txt")).unwrap();
+        std::fs::write(root.join("asset.bin"), [0_u8, 1, 2, 3]).unwrap();
+        let changed = service
+            .create_workspace_tree(&root, &root.join("changed-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &changed.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats {
+                added_lines: 2,
+                deleted_lines: 0,
+                changed_files: 3,
+            }
+        );
+
+        assert!(
+            GitCommandRunner
+                .run(&root, &["mv", "--", "after.txt", "before.txt"])
+                .unwrap()
+                .success
+        );
+        std::fs::remove_file(root.join("copy.txt")).unwrap();
+        std::fs::remove_file(root.join("asset.bin")).unwrap();
+        let reverted = service
+            .create_workspace_tree(&root, &root.join("reverted-index.tmp"))
+            .unwrap();
+        assert_eq!(
+            service
+                .diff_tree_stats(&root, &baseline.tree_oid, &reverted.tree_oid)
+                .unwrap(),
+            GitBaselineDiffStats::default()
+        );
     }
 
     #[test]

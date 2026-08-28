@@ -312,11 +312,14 @@ pub struct WorkerInvocation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduledTaskContextInfo {
+    pub scheduled_task_id: String,
+    pub scheduled_occurrence_id: String,
     pub title: String,
     pub mode: String,
     pub session_policy: String,
     pub trigger_kind: String,
     pub triggered_at: String,
+    pub schedule: crate::scheduler::ScheduleSpec,
     pub instruction: Option<String>,
 }
 

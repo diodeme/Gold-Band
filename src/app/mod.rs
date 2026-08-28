@@ -42,6 +42,7 @@ use crate::dynamic::{
     refresh_dynamic_current_leaf_ids, write_dynamic_node_state,
 };
 use crate::dynamic_store::load_dynamic_graph;
+use crate::git::GitSourceControlService;
 use crate::mcp::McpManager;
 use crate::process::recover_persisted_process_group;
 use crate::provider::{
@@ -911,6 +912,31 @@ pub enum AcpTurnOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectTurnLifecycleTransition {
+    Started,
+    Finished { outcome: AcpTurnOutcome },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectTurnLifecycleEvent {
+    pub project_id: String,
+    pub context: AcpLiveEventContext,
+    pub turn_id: String,
+    pub occurred_at: String,
+    pub repo_root: String,
+    pub transition: DirectTurnLifecycleTransition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricsInterventionSourceEvent {
+    pub context: AcpLiveEventContext,
+    pub request_id: String,
+    pub kind: RuntimeInterventionKind,
+    pub occurred_at: String,
+    pub repo_root: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpTurnBatchProgress {
     pub completed_reply_count: u32,
@@ -928,6 +954,7 @@ impl AcpTurnBatchProgress {
 
 #[derive(Debug, Clone)]
 pub struct ActiveMetricTurn {
+    pub turn_id: String,
     pub execution_id: String,
     pub attempt_id: String,
     pub attempt_index: u32,
@@ -936,12 +963,14 @@ pub struct ActiveMetricTurn {
 
 impl ActiveMetricTurn {
     pub fn new(
+        turn_id: String,
         execution_id: String,
         attempt_id: String,
         attempt_index: u32,
         usage_baseline_turn_seq: u64,
     ) -> Self {
         Self {
+            turn_id,
             execution_id,
             attempt_id,
             attempt_index,
@@ -971,7 +1000,9 @@ pub enum RuntimeLifecycleEvent {
         project_id: String,
         scheduled_task_id: String,
     },
-    MetricsFact(observability::MetricsLifecycleFact),
+    DirectTurnLifecycle(DirectTurnLifecycleEvent),
+    MetricsInterventionSource(MetricsInterventionSourceEvent),
+    PendingMetricsFact(observability::PendingMetricsFact),
     /// A node has started executing. The orchestrator is about to invoke the
     /// AI provider. `predecessor` carries the previous node's snapshot.
     NodeStarted {
@@ -1111,7 +1142,9 @@ fn lifecycle_event_kind(event: &RuntimeLifecycleEvent) -> &'static str {
         RuntimeLifecycleEvent::UserActivityObserved => "user-activity-observed",
         RuntimeLifecycleEvent::ConversationRunStarted { .. } => "conversation-run-started",
         RuntimeLifecycleEvent::ScheduledTaskCreated { .. } => "scheduled-task-created",
-        RuntimeLifecycleEvent::MetricsFact(_) => "metrics-fact",
+        RuntimeLifecycleEvent::DirectTurnLifecycle(_) => "direct-turn-lifecycle",
+        RuntimeLifecycleEvent::MetricsInterventionSource(_) => "metrics-intervention-source",
+        RuntimeLifecycleEvent::PendingMetricsFact(_) => "pending-metrics-fact",
         RuntimeLifecycleEvent::NodeStarted { .. } => "node-started",
         RuntimeLifecycleEvent::NodeCompleted { .. } => "node-completed",
         RuntimeLifecycleEvent::RunPaused { .. } => "run-paused",
@@ -1146,9 +1179,11 @@ impl RuntimeLifecycleEvent {
             | Self::UserActivityObserved
             | Self::ConversationRunStarted { .. }
             | Self::ScheduledTaskCreated { .. }
+            | Self::DirectTurnLifecycle(_)
+            | Self::MetricsInterventionSource(_)
             | Self::NodeStarted { .. }
             | Self::NodeCompleted { .. }
-            | Self::MetricsFact(_) => {}
+            | Self::PendingMetricsFact(_) => {}
         }
     }
 }
@@ -1203,7 +1238,7 @@ fn default_task_search_indexer() -> Arc<dyn Fn(&Utf8Path, &str) + Send + Sync> {
     Arc::new(sqlite::index_task_with_retry)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpLiveEventContext {
     pub task_id: String,
     pub run_id: String,
@@ -1221,7 +1256,7 @@ pub enum AcpPromptLifecycleEvent {
     },
     Finished {
         prompt_id: Option<String>,
-        successful: bool,
+        outcome: AcpTurnOutcome,
     },
 }
 
@@ -1727,15 +1762,12 @@ impl App {
         &self,
         context: AcpLiveEventContext,
         prompt_id: Option<String>,
-        successful: bool,
+        outcome: AcpTurnOutcome,
     ) -> Result<()> {
         if let Some(callback) = &self.prompt_turn_lifecycle {
             callback(
                 context,
-                AcpPromptLifecycleEvent::Finished {
-                    prompt_id,
-                    successful,
-                },
+                AcpPromptLifecycleEvent::Finished { prompt_id, outcome },
             )?;
         }
         Ok(())
@@ -1751,13 +1783,31 @@ impl App {
     pub fn create_metrics_fact_producer(&self) -> Arc<dyn Fn(RuntimeLifecycleEvent) + Send + Sync> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<RuntimeLifecycleEvent>(2048);
         let app = self.clone_for_background();
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("metrics-fact-producer".into())
             .spawn(move || {
                 while let Ok(event) = receiver.recv() {
-                    app.emit_derived_node_metrics_fact(&event);
+                    let event_kind = lifecycle_event_kind(&event);
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        app.emit_derived_metrics_fact(&event);
+                    }))
+                    .is_err()
+                    {
+                        tracing::error!(
+                            code = "METRICS_FACT_PRODUCER_PANIC",
+                            event_kind,
+                            "metrics lifecycle fact worker recovered from a producer panic"
+                        );
+                    }
                 }
-            });
+            })
+        {
+            tracing::error!(
+                code = "METRICS_FACT_PRODUCER_SPAWN_FAILED",
+                error = %error,
+                "failed to start metrics lifecycle fact worker"
+            );
+        }
         Arc::new(move |event| {
             if let Err(error) = sender.try_send(event) {
                 match error {
@@ -1784,6 +1834,140 @@ impl App {
 
     pub fn metrics_collection_enabled(&self) -> bool {
         self.metrics_collection_enabled
+    }
+
+    fn metrics_task_origin(&self) -> observability::MetricsTaskOrigin {
+        if self.scheduled_task_context.is_some() {
+            observability::MetricsTaskOrigin::Scheduled
+        } else {
+            observability::MetricsTaskOrigin::User
+        }
+    }
+
+    fn metrics_execution_trigger(&self) -> Option<observability::MetricsExecutionTrigger> {
+        use crate::scheduler::{RepeatPreset, ScheduleKind};
+        use observability::{MetricsExecutionTrigger as Trigger, MetricsRepeatKind};
+
+        let Some(context) = self.scheduled_task_context.as_ref() else {
+            return None;
+        };
+        let common = || {
+            (
+                context.scheduled_task_id.clone(),
+                context.scheduled_occurrence_id.clone(),
+                context.triggered_at.clone(),
+            )
+        };
+        Some(match &context.schedule.kind {
+            ScheduleKind::At { timezone, .. } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Once {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                }
+            }
+            ScheduleKind::Every {
+                every,
+                anchor_at,
+                timezone,
+            } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Repeat {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    repeat_kind: MetricsRepeatKind::Interval,
+                    value: Some(every.value),
+                    unit: Some(format!("{:?}", every.unit).to_ascii_lowercase()),
+                    anchor_at: Some(anchor_at.to_rfc3339()),
+                    hour: None,
+                    minute: None,
+                    weekdays: Vec::new(),
+                }
+            }
+            ScheduleKind::Repeat {
+                preset,
+                hour,
+                minute,
+                timezone,
+            } => {
+                let (repeat_kind, weekdays) = match preset {
+                    RepeatPreset::Hourly => (MetricsRepeatKind::Hourly, Vec::new()),
+                    RepeatPreset::Daily => (MetricsRepeatKind::Daily, Vec::new()),
+                    RepeatPreset::Weekdays => (MetricsRepeatKind::Weekdays, Vec::new()),
+                    RepeatPreset::Weekly { weekdays } => (
+                        MetricsRepeatKind::Weekly,
+                        weekdays
+                            .iter()
+                            .map(|weekday| weekday.to_string().to_ascii_lowercase())
+                            .collect(),
+                    ),
+                };
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Repeat {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    repeat_kind,
+                    value: None,
+                    unit: None,
+                    anchor_at: None,
+                    hour: Some(*hour),
+                    minute: Some(*minute),
+                    weekdays,
+                }
+            }
+            ScheduleKind::Cron {
+                expression,
+                timezone,
+            } => {
+                let (scheduled_task_id, scheduled_occurrence_id, scheduled_at) = common();
+                Trigger::Cron {
+                    scheduled_task_id,
+                    scheduled_occurrence_id,
+                    scheduled_at,
+                    timezone: timezone.clone(),
+                    expression: expression.clone(),
+                }
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn pending_metrics_fact(
+        &self,
+        task_id: &str,
+        task_uuid: String,
+        run_id: String,
+        round_id: String,
+        event_type: observability::LifecycleEventType,
+        occurred_at: String,
+        session_mode: observability::MetricsSessionMode,
+        subject: observability::MetricsSubject,
+    ) -> observability::PendingMetricsFact {
+        let mut fact = observability::PendingMetricsFact::new(
+            observability::TaskMetricsKey {
+                project_id: self.paths.project_id.clone(),
+                execution_id: task_uuid,
+            },
+            event_type,
+            occurred_at,
+            std::env::var("USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .unwrap_or_default(),
+            self.paths.repo_root.to_string(),
+            session_mode,
+            subject,
+            observability::MetricsRuntimeLocator { run_id, round_id },
+            self.metrics_task_origin(),
+            self.metrics_execution_trigger(),
+        );
+        fact.payload.task_title = self.task_show(task_id).ok().and_then(|task| task.title);
+        fact
     }
 
     pub fn begin_metrics_turn(&self, attempt_key: String, turn: ActiveMetricTurn) {
@@ -1818,23 +2002,6 @@ impl App {
             .last()
             .map(|segment| segment.turn_seq)
             .unwrap_or(0)
-    }
-
-    pub fn direct_metrics_is_follow_up(
-        &self,
-        attempt_key: &str,
-        attempt_dir: Option<&camino::Utf8Path>,
-        attempt_path: &camino::Utf8Path,
-    ) -> bool {
-        if self.active_metrics_turn(attempt_key).is_some() {
-            return true;
-        }
-        let has_usage_history = attempt_dir
-            .map(|dir| Self::direct_usage_baseline(Some(dir)))
-            .unwrap_or(0)
-            > 0;
-        has_usage_history
-            || observability::load_observability_snapshot(attempt_path).event_revision > 0
     }
 
     pub fn direct_usage_segments_after(
@@ -1875,6 +2042,264 @@ impl App {
             .collect()
     }
 
+    pub fn metrics_code_changes_snapshot(
+        &self,
+        task_id: &str,
+        run_id: &str,
+    ) -> Option<observability::TaskCodeChanges> {
+        let snapshot_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("code-changes.json");
+        self.metrics_code_changes_snapshot_at(task_id, run_id, &snapshot_path, true)
+    }
+
+    pub fn metrics_direct_turn_code_changes_snapshot(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        turn_id: &str,
+    ) -> Option<observability::TaskCodeChanges> {
+        let turn_key = blake3::hash(turn_id.as_bytes()).to_hex();
+        let snapshot_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("direct-turn-code-changes")
+            .join(format!("{turn_key}.json"));
+        self.metrics_code_changes_snapshot_at(task_id, run_id, &snapshot_path, false)
+    }
+
+    fn metrics_code_changes_snapshot_at(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        snapshot_path: &Utf8Path,
+        delete_baseline_ref: bool,
+    ) -> Option<observability::TaskCodeChanges> {
+        let baseline_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("code-change-baseline.json");
+        if let Ok(snapshot) = read_json::<observability::TaskCodeChanges>(&snapshot_path) {
+            if delete_baseline_ref
+                && let Ok(baseline) =
+                    read_json::<observability::RunCodeChangeBaseline>(&baseline_path)
+            {
+                self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
+            }
+            return Some(snapshot);
+        }
+        let baseline = match read_json::<observability::RunCodeChangeBaseline>(&baseline_path) {
+            Ok(baseline) => baseline,
+            Err(error) => {
+                tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    path = %baseline_path,
+                    error = %error,
+                    "failed to load terminal Git code change baseline"
+                );
+                return None;
+            }
+        };
+        let service = GitSourceControlService::default();
+        if let Err(error) = service.protect_tree_ref(
+            &baseline.workspace_path,
+            &baseline.baseline_ref,
+            &baseline.baseline_tree,
+        ) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                task_id,
+                run_id,
+                workspace_path = %baseline.workspace_path,
+                baseline_tree = %baseline.baseline_tree,
+                baseline_ref = %baseline.baseline_ref,
+                error = %error,
+                "failed to validate or restore terminal Git code change baseline ref"
+            );
+            return None;
+        }
+        let temporary_index_path =
+            baseline_path.with_file_name(format!("code-change-index-{}.tmp", uuid::Uuid::new_v4()));
+        let current_tree =
+            match service.create_workspace_tree(&baseline.workspace_path, &temporary_index_path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    tracing::warn!(
+                        code = "METRICS_CODE_CHANGES_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        workspace_path = %baseline.workspace_path,
+                        error = %error,
+                        "failed to capture terminal Git workspace tree"
+                    );
+                    return None;
+                }
+            };
+        let stats = match service.diff_tree_stats(
+            &baseline.workspace_path,
+            &baseline.baseline_tree,
+            &current_tree.tree_oid,
+        ) {
+            Ok(stats) => stats,
+            Err(error) => {
+                tracing::warn!(
+                    code = "METRICS_CODE_CHANGES_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    workspace_path = %baseline.workspace_path,
+                    baseline_tree = %baseline.baseline_tree,
+                    current_tree = %current_tree.tree_oid,
+                    error = %error,
+                    "failed to capture terminal Git code changes"
+                );
+                return None;
+            }
+        };
+        let snapshot = observability::TaskCodeChanges {
+            added_lines: stats.added_lines,
+            deleted_lines: stats.deleted_lines,
+            changed_files: stats.changed_files,
+        };
+        if let Err(error) = write_json(&snapshot_path, &snapshot) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGES_SNAPSHOT_FAILED",
+                task_id,
+                run_id,
+                error = %error,
+                "failed to persist terminal Git code changes"
+            );
+            return None;
+        }
+        if delete_baseline_ref {
+            self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
+        }
+        Some(snapshot)
+    }
+
+    fn delete_metrics_code_change_ref_best_effort(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        baseline: &observability::RunCodeChangeBaseline,
+    ) {
+        if let Err(error) = GitSourceControlService::default().delete_tree_ref(
+            &baseline.workspace_path,
+            &baseline.baseline_ref,
+            &baseline.baseline_tree,
+        ) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_REF_CLEANUP_FAILED",
+                task_id,
+                run_id,
+                baseline_ref = %baseline.baseline_ref,
+                error = %error,
+                "failed to clean up Git code change baseline ref"
+            );
+        }
+    }
+
+    pub fn record_metrics_code_change_baseline(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        task_uuid: &str,
+        run_uuid: &str,
+        workspace_path: Utf8PathBuf,
+    ) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let observability_dir = self.paths.run_dir(task_id, run_id).join("observability");
+        let snapshot_path = observability_dir.join("code-change-baseline.json");
+        if snapshot_path.is_file() {
+            match read_json::<observability::RunCodeChangeBaseline>(&snapshot_path) {
+                Ok(snapshot) if snapshot.workspace_path == workspace_path => {
+                    if let Err(error) = GitSourceControlService::default().protect_tree_ref(
+                        &snapshot.workspace_path,
+                        &snapshot.baseline_ref,
+                        &snapshot.baseline_tree,
+                    ) {
+                        tracing::warn!(
+                            code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                            task_id,
+                            run_id,
+                            error = %error,
+                            "failed to restore Git code change baseline ref"
+                        );
+                    }
+                }
+                Ok(_) => tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_WORKSPACE_MISMATCH",
+                    task_id,
+                    run_id,
+                    "existing Git code change baseline belongs to another workspace"
+                ),
+                Err(error) => tracing::warn!(
+                    code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                    task_id,
+                    run_id,
+                    error = %error,
+                    "existing Git code change baseline is invalid"
+                ),
+            }
+            return;
+        }
+        let service = GitSourceControlService::default();
+        let temporary_index_path =
+            observability_dir.join(format!("code-change-index-{}.tmp", uuid::Uuid::new_v4()));
+        let baseline_tree =
+            match service.create_workspace_tree(&workspace_path, &temporary_index_path) {
+                Ok(snapshot) => snapshot.tree_oid,
+                Err(error) => {
+                    tracing::warn!(
+                        code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        workspace_path = %workspace_path,
+                        error = %error,
+                        "failed to capture Git workspace tree baseline"
+                    );
+                    return;
+                }
+            };
+        let baseline_ref = format!("refs/gold-band/metrics/{task_uuid}/{run_uuid}");
+        let snapshot = observability::RunCodeChangeBaseline {
+            workspace_path: workspace_path.clone(),
+            baseline_tree: baseline_tree.clone(),
+            baseline_ref: baseline_ref.clone(),
+        };
+        if let Err(error) = write_json(&snapshot_path, &snapshot) {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_SNAPSHOT_FAILED",
+                task_id,
+                run_id,
+                path = %snapshot_path,
+                error = %error,
+                "failed to persist Git code change baseline"
+            );
+            return;
+        }
+        if let Err(error) = service.protect_tree_ref(&workspace_path, &baseline_ref, &baseline_tree)
+        {
+            tracing::warn!(
+                code = "METRICS_CODE_CHANGE_BASELINE_UNAVAILABLE",
+                task_id,
+                run_id,
+                workspace_path = %workspace_path,
+                baseline_tree = %baseline_tree,
+                baseline_ref = %baseline_ref,
+                error = %error,
+                "failed to protect Git code change baseline tree"
+            );
+        }
+    }
+
     /// Returns true when the run's current node is an AI-DYNAMIC node (AUTO mode).
     fn is_auto_run(&self, task_id: &str, run_id: &str) -> bool {
         let Ok(run) = self.run_status(task_id, run_id) else {
@@ -1894,16 +2319,510 @@ impl App {
             })
             .is_some_and(|node| node.node_type == crate::domain::NodeType::AiDynamic)
     }
+
+    fn emit_derived_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
+        match event {
+            RuntimeLifecycleEvent::DirectTurnLifecycle(event) => {
+                self.emit_derived_direct_turn_metrics_fact(event)
+            }
+            RuntimeLifecycleEvent::MetricsInterventionSource(event) => {
+                self.emit_derived_intervention_metrics_fact(event)
+            }
+            _ => self.emit_derived_node_metrics_fact(event),
+        }
+    }
+
+    fn emit_derived_direct_turn_metrics_fact(&self, event: &DirectTurnLifecycleEvent) {
+        use observability::{
+            ExecutionOutcome, LifecycleEventType, LifecycleTiming, MetricsSessionMode,
+            MetricsSubject, MetricsTransition, TerminalReason, TokenUsage,
+        };
+
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let mut scoped_app = self.clone_for_background();
+        scoped_app.paths = GoldBandPaths::new(Utf8PathBuf::from(&event.repo_root));
+        if scoped_app.paths.project_id != event.project_id {
+            tracing::warn!(
+                code = "METRICS_PROJECT_ID_MISMATCH",
+                expected_project_id = %event.project_id,
+                actual_project_id = %scoped_app.paths.project_id,
+                task_id = %event.context.task_id,
+                "Direct metrics event workspace identity changed; event dropped"
+            );
+            return;
+        }
+        if direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_none() {
+            tracing::warn!(
+                code = "METRICS_DIRECT_IDENTITY_MISSING",
+                project_id = %event.project_id,
+                task_id = %event.context.task_id,
+                "Direct metrics event has no durable Direct conversation identity; event dropped"
+            );
+            return;
+        }
+        if event.turn_id.trim().is_empty() {
+            tracing::warn!(
+                code = "METRICS_DIRECT_TURN_ID_MISSING",
+                task_id = %event.context.task_id,
+                run_id = %event.context.run_id,
+                "Direct metrics event has no turn identity; event dropped"
+            );
+            return;
+        }
+        let Ok(task) = scoped_app.task_show(&event.context.task_id) else {
+            tracing::warn!(
+                code = "METRICS_TASK_STATE_MISSING",
+                task_id = %event.context.task_id,
+                "Direct metrics task state is unavailable; event dropped"
+            );
+            return;
+        };
+        let Some(task_uuid) = task.uuid.clone() else {
+            tracing::warn!(
+                code = "METRICS_TASK_UUID_MISSING",
+                task_id = %event.context.task_id,
+                "Direct metrics task has no canonical UUID; event dropped"
+            );
+            return;
+        };
+        let attempt_dir = scoped_app.paths.attempt_dir(
+            &event.context.task_id,
+            &event.context.run_id,
+            &event.context.round_id,
+            &event.context.node_id,
+            &event.context.attempt_id,
+        );
+        let attempt_path = scoped_app
+            .paths
+            .run_dir(&event.context.task_id, &event.context.run_id)
+            .join("observability")
+            .join(&task_uuid)
+            .join(&task_uuid)
+            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
+        let attempt_key = format!("direct:{task_uuid}");
+        let active_turn = match &event.transition {
+            DirectTurnLifecycleTransition::Started => {
+                if let Some(active) = scoped_app.active_metrics_turn(&attempt_key) {
+                    let code = if active.turn_id == event.turn_id {
+                        "METRICS_DIRECT_TURN_DUPLICATE_START"
+                    } else {
+                        "METRICS_DIRECT_TURN_OVERLAP"
+                    };
+                    tracing::warn!(
+                        code,
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        active_turn_id = %active.turn_id,
+                        event_turn_id = %event.turn_id,
+                        "Direct metrics turn start was not applied"
+                    );
+                    return;
+                }
+                let usage_baseline = Self::direct_usage_baseline(Some(attempt_dir.as_path()));
+                let turn = ActiveMetricTurn::new(
+                    event.turn_id.clone(),
+                    task_uuid.clone(),
+                    task_uuid.clone(),
+                    1,
+                    usage_baseline,
+                );
+                scoped_app.begin_metrics_turn(attempt_key.clone(), turn.clone());
+                turn
+            }
+            DirectTurnLifecycleTransition::Finished { .. } => {
+                let Some(active) = scoped_app.active_metrics_turn(&attempt_key) else {
+                    tracing::warn!(
+                        code = "METRICS_DIRECT_TURN_START_MISSING",
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        turn_id = %event.turn_id,
+                        "Direct metrics terminal event has no accepted start; event dropped"
+                    );
+                    return;
+                };
+                if active.turn_id != event.turn_id {
+                    tracing::warn!(
+                        code = "METRICS_DIRECT_TURN_ID_MISMATCH",
+                        task_id = %event.context.task_id,
+                        run_id = %event.context.run_id,
+                        active_turn_id = %active.turn_id,
+                        event_turn_id = %event.turn_id,
+                        "Direct metrics terminal event does not match the active turn; event dropped"
+                    );
+                    return;
+                }
+                active
+            }
+        };
+        let provider = scoped_app.acp_turn_provider_id(&event.context);
+        let model = crate::acp::events::read_attempt_session_model_name(
+            &attempt_dir.join("acp.session.json"),
+        );
+        let terminal_outcome = match event.transition {
+            DirectTurnLifecycleTransition::Started => None,
+            DirectTurnLifecycleTransition::Finished { outcome } => Some(outcome),
+        };
+        let attempt_state =
+            scoped_app.update_observability_state(&active_turn.attempt_id, attempt_path, |state| {
+                if terminal_outcome.is_none() {
+                    state.record_started_at(event.occurred_at.clone());
+                    return;
+                }
+                let segments = Self::direct_usage_segments_after(
+                    Some(attempt_dir.as_path()),
+                    active_turn.usage_baseline_turn_seq,
+                );
+                for usage in Self::direct_model_usages_from_segments(
+                    &segments,
+                    provider.as_deref(),
+                    model.as_deref(),
+                ) {
+                    state.record_model_usage(usage);
+                }
+                if segments.is_empty()
+                    && let (Some(provider), Some(model)) = (provider.as_ref(), model.as_ref())
+                {
+                    let usage = crate::acp::events::read_attempt_metrics(
+                        &attempt_dir.join("acp.session.json"),
+                    );
+                    state.record_cumulative_model_usage(
+                        provider.clone(),
+                        model.clone(),
+                        TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            total_tokens: usage.total_tokens,
+                        },
+                        usage.elapsed_ms,
+                    );
+                }
+            });
+        let event_type = if terminal_outcome.is_some() {
+            LifecycleEventType::ExecutionCompleted
+        } else {
+            LifecycleEventType::ExecutionStarted
+        };
+        let mut fact = scoped_app.pending_metrics_fact(
+            &event.context.task_id,
+            task_uuid,
+            event.context.run_id.clone(),
+            event.context.round_id.clone(),
+            event_type,
+            event.occurred_at.clone(),
+            MetricsSessionMode::Direct,
+            MetricsSubject::DirectTurn {
+                attempt_id: active_turn.attempt_id.clone(),
+                attempt_index: active_turn.attempt_index,
+            },
+        );
+        fact.fact_id = format!(
+            "direct-turn:{}:{}",
+            event.turn_id,
+            if terminal_outcome.is_some() {
+                "completed"
+            } else {
+                "started"
+            }
+        );
+        fact.payload.task_title = task.title;
+        fact.payload.provider = provider;
+        fact.payload.model = model;
+        if event.turn_id != INITIAL_DIRECT_TURN_ID {
+            fact.transition = MetricsTransition::FollowUps {
+                action_ids: vec![event.turn_id.clone()],
+            };
+        }
+        if let Some(outcome) = terminal_outcome {
+            fact.payload.outcome = Some(match outcome {
+                AcpTurnOutcome::Completed => ExecutionOutcome::Completed,
+                AcpTurnOutcome::Failed => ExecutionOutcome::Failed,
+                AcpTurnOutcome::Cancelled => ExecutionOutcome::Cancelled,
+            });
+            fact.payload.terminal_reason = Some(match outcome {
+                AcpTurnOutcome::Completed => TerminalReason::Completed,
+                AcpTurnOutcome::Failed => TerminalReason::ProviderError,
+                AcpTurnOutcome::Cancelled => TerminalReason::UserCancelled,
+            });
+            let usages = attempt_state.model_usages();
+            let elapsed_sum = usages
+                .iter()
+                .filter_map(|usage| usage.acp_session_elapsed_ms)
+                .fold(None, |total, value| {
+                    Some(total.unwrap_or(0u64).saturating_add(value))
+                });
+            let sum = |get: fn(&observability::TokenUsage) -> Option<u64>| {
+                usages
+                    .iter()
+                    .filter_map(|usage| get(&usage.usage))
+                    .fold(None, |total, value| {
+                        Some(total.unwrap_or(0u64).saturating_add(value))
+                    })
+            };
+            if !usages.is_empty() {
+                fact.payload.usage = Some(TokenUsage {
+                    input_tokens: sum(|usage| usage.input_tokens),
+                    output_tokens: sum(|usage| usage.output_tokens),
+                    cache_read_tokens: sum(|usage| usage.cache_read_tokens),
+                    total_tokens: sum(|usage| usage.total_tokens),
+                });
+                fact.payload.model_usages = Some(usages);
+            }
+            fact.payload.timing = Some(LifecycleTiming {
+                started_at: attempt_state
+                    .started_at
+                    .clone()
+                    .unwrap_or_else(|| event.occurred_at.clone()),
+                ended_at: Some(event.occurred_at.clone()),
+                acp_session_elapsed_ms: elapsed_sum,
+            });
+            fact.payload.code_changes = scoped_app.metrics_direct_turn_code_changes_snapshot(
+                &event.context.task_id,
+                &event.context.run_id,
+                &event.turn_id,
+            );
+        }
+        if terminal_outcome.is_some() {
+            scoped_app.release_observability_state(&active_turn.execution_id);
+            scoped_app.end_metrics_turn(&attempt_key);
+        }
+        scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+    }
+
+    fn emit_derived_intervention_metrics_fact(&self, event: &MetricsInterventionSourceEvent) {
+        if !self.metrics_collection_enabled() {
+            return;
+        }
+        let mut scoped_app = self.clone_for_background();
+        scoped_app.paths = GoldBandPaths::new(Utf8PathBuf::from(&event.repo_root));
+        let Ok(run) = scoped_app.run_status(&event.context.task_id, &event.context.run_id) else {
+            return;
+        };
+        let (Some(task_uuid), Some(run_uuid)) = (run.task_uuid.clone(), run.uuid.clone()) else {
+            return;
+        };
+        let is_direct =
+            direct_conversation_agent_label(&scoped_app, &event.context.task_id).is_some();
+        let is_auto = !is_direct && event.context.outer_node_id.is_some();
+        let subject = if is_direct {
+            let Some(turn) = scoped_app.active_metrics_turn(&format!("direct:{task_uuid}")) else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %event.context.task_id,
+                    run_id = %event.context.run_id,
+                    "Direct intervention has no active metrics turn"
+                );
+                return;
+            };
+            observability::MetricsSubject::DirectTurn {
+                attempt_id: turn.attempt_id,
+                attempt_index: turn.attempt_index,
+            }
+        } else {
+            let Some(subject) =
+                scoped_app.intervention_metrics_subject(&event.context, &run_uuid, is_auto)
+            else {
+                tracing::warn!(
+                    code = "METRICS_ACTIVE_ATTEMPT_MISSING",
+                    task_id = %event.context.task_id,
+                    run_id = %event.context.run_id,
+                    "intervention has no canonical metrics attempt"
+                );
+                return;
+            };
+            subject
+        };
+        let session_mode = if is_direct {
+            observability::MetricsSessionMode::Direct
+        } else if is_auto {
+            observability::MetricsSessionMode::Auto
+        } else {
+            observability::MetricsSessionMode::Workflow
+        };
+        let mut fact = scoped_app.pending_metrics_fact(
+            &event.context.task_id,
+            task_uuid,
+            event.context.run_id.clone(),
+            event.context.round_id.clone(),
+            observability::LifecycleEventType::InterventionRequested,
+            event.occurred_at.clone(),
+            session_mode,
+            subject,
+        );
+        fact.payload.intervention_kind = Some(match event.kind {
+            RuntimeInterventionKind::PermissionRequested => {
+                observability::MetricsInterventionKind::Permission
+            }
+            RuntimeInterventionKind::ElicitationRequested => {
+                observability::MetricsInterventionKind::Elicitation
+            }
+            RuntimeInterventionKind::ManualDecisionRequired => {
+                observability::MetricsInterventionKind::ManualDecision
+            }
+            RuntimeInterventionKind::RuntimeAbnormal => {
+                observability::MetricsInterventionKind::RuntimeAbnormal
+            }
+            RuntimeInterventionKind::ErrorBlocked => {
+                observability::MetricsInterventionKind::ErrorBlocked
+            }
+            RuntimeInterventionKind::ProcessInterrupted => {
+                observability::MetricsInterventionKind::ProcessInterrupted
+            }
+        });
+        fact.transition = match event.kind {
+            RuntimeInterventionKind::PermissionRequested => {
+                observability::MetricsTransition::PermissionRequested {
+                    request_id: event.request_id.clone(),
+                }
+            }
+            RuntimeInterventionKind::ElicitationRequested => {
+                observability::MetricsTransition::ElicitationRequested {
+                    request_id: event.request_id.clone(),
+                }
+            }
+            _ => observability::MetricsTransition::None,
+        };
+        scoped_app.emit_lifecycle_event(RuntimeLifecycleEvent::PendingMetricsFact(fact));
+    }
+
+    fn intervention_metrics_subject(
+        &self,
+        context: &AcpLiveEventContext,
+        run_uuid: &str,
+        is_auto: bool,
+    ) -> Option<observability::MetricsSubject> {
+        let round_index = read_json::<RoundState>(&self.paths.round_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+        ))
+        .ok()
+        .map(|round| round.index)?;
+        if is_auto {
+            let (Some(outer_node_id), Some(outer_attempt_id)) = (
+                context.outer_node_id.as_deref(),
+                context.outer_attempt_id.as_deref(),
+            ) else {
+                return None;
+            };
+            let graph =
+                read_json::<crate::dynamic::DynamicGraphState>(&self.paths.dynamic_graph_file(
+                    &context.task_id,
+                    &context.run_id,
+                    &context.round_id,
+                    outer_node_id,
+                    outer_attempt_id,
+                ))
+                .ok()?;
+            let dynamic_node = graph.nodes.iter().find(|node| node.id == context.node_id)?;
+            let node_id = dynamic_node.uuid.clone()?;
+            let attempt_id = observability::derive_attempt_id(&node_id, &context.attempt_id)?;
+            let attempt_index = observability::attempt_index_from_local_id(&context.attempt_id)?;
+            return Some(observability::MetricsSubject::AutoUnitAttempt {
+                node_id,
+                attempt_id,
+                attempt_index,
+                round_index,
+                role_name: dynamic_node.title.clone(),
+                unit_kind: match dynamic_node.kind {
+                    crate::dynamic::DynamicNodeKind::Worker => observability::UnitKind::Worker,
+                    crate::dynamic::DynamicNodeKind::WorkflowInvocation => {
+                        observability::UnitKind::WorkflowInvocation
+                    }
+                    crate::dynamic::DynamicNodeKind::Merge => observability::UnitKind::Merge,
+                    crate::dynamic::DynamicNodeKind::Acceptance => {
+                        observability::UnitKind::Acceptance
+                    }
+                },
+            });
+        }
+        let node = read_json::<NodeState>(&self.paths.node_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+        ))
+        .ok()?;
+        let attempt_index = observability::attempt_index_from_local_id(&node.attempt_id)?;
+        let attempt_id = node.uuid.clone()?;
+        let node_id = observability::derive_execution_id(
+            run_uuid,
+            &format!("round:{round_index}:node:{}", node.node_id),
+        )
+        .unwrap_or_else(|| attempt_id.clone());
+        Some(observability::MetricsSubject::WorkflowNodeAttempt {
+            node_id,
+            attempt_id,
+            attempt_index,
+            round_index,
+            role_name: Self::node_intervention_role_name(&node),
+        })
+    }
+
+    fn node_intervention_role_name(node: &NodeState) -> String {
+        node.resolved_config
+            .get("profileName")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                node.resolved_config
+                    .get("profile")
+                    .and_then(|value| value.as_str())
+            })
+            .or_else(|| {
+                node.resolved_config
+                    .get("provider")
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or_else(|| node.node_id.as_str())
+            .to_string()
+    }
+
+    pub fn acp_turn_provider_id(&self, context: &AcpLiveEventContext) -> Option<String> {
+        if let (Some(outer_node_id), Some(outer_attempt_id)) = (
+            context.outer_node_id.as_deref(),
+            context.outer_attempt_id.as_deref(),
+        ) {
+            return read_json::<crate::dynamic::DynamicNodeState>(&self.paths.dynamic_node_file(
+                &context.task_id,
+                &context.run_id,
+                &context.round_id,
+                outer_node_id,
+                outer_attempt_id,
+                &context.node_id,
+            ))
+            .ok()
+            .and_then(|node| node.provider);
+        }
+        read_json::<NodeState>(&self.paths.node_file(
+            &context.task_id,
+            &context.run_id,
+            &context.round_id,
+            &context.node_id,
+            &context.attempt_id,
+        ))
+        .ok()
+        .and_then(|node| {
+            node.resolved_config
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+    }
+
     fn emit_derived_node_metrics_fact(&self, event: &RuntimeLifecycleEvent) {
         use observability::{
-            ExecutionKind, ExecutionOutcome, LifecycleEventType, LifecycleTiming,
-            MetricsLifecycleFact, MetricsSessionMode, ModelUsage, TerminalReason, TokenUsage,
-            UnitKind,
+            ExecutionOutcome, LifecycleEventType, LifecycleTiming, MetricsSessionMode,
+            MetricsSubject, MetricsTransition, ModelUsage, TerminalReason, TokenUsage, UnitKind,
         };
         let (
             event_type,
             task_id,
             run_id,
+            round_id,
             task_uuid,
             run_uuid,
             node_uuid,
@@ -1924,6 +2843,7 @@ impl App {
             RuntimeLifecycleEvent::NodeStarted {
                 task_id,
                 run_id,
+                round_id,
                 task_uuid,
                 run_uuid,
                 node_uuid,
@@ -1942,6 +2862,7 @@ impl App {
                 LifecycleEventType::ExecutionStarted,
                 task_id.clone(),
                 run_id.clone(),
+                round_id.clone(),
                 task_uuid.clone(),
                 run_uuid.clone(),
                 node_uuid.clone(),
@@ -1962,6 +2883,7 @@ impl App {
             RuntimeLifecycleEvent::NodeCompleted {
                 task_id,
                 run_id,
+                round_id,
                 task_uuid,
                 run_uuid,
                 node_uuid,
@@ -1983,6 +2905,7 @@ impl App {
                 LifecycleEventType::ExecutionCompleted,
                 task_id.clone(),
                 run_id.clone(),
+                round_id.clone(),
                 task_uuid.clone(),
                 run_uuid.clone(),
                 node_uuid.clone(),
@@ -2011,194 +2934,13 @@ impl App {
         if dynamic_kind.is_none()
             && direct_conversation_agent_label(&scoped_app, &task_id).is_some()
         {
-            // Direct: one stable task UUID for task/execution/attempt.
-            let execution_id = task_uuid.clone();
-            let turn_key = format!("direct:{task_uuid}");
-            let attempt_path = scoped_app
-                .paths
-                .run_dir(&task_id, &run_id)
-                .join("observability")
-                .join(&execution_id)
-                .join(&execution_id)
-                .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-            let is_follow_up = if event_type == LifecycleEventType::ExecutionStarted {
-                scoped_app.direct_metrics_is_follow_up(&turn_key, None, &attempt_path)
-            } else {
-                false
-            };
-            let active_turn = if event_type == LifecycleEventType::ExecutionStarted {
-                match scoped_app.active_metrics_turn(&turn_key) {
-                    Some(turn) => turn,
-                    None => {
-                        let usage_baseline = App::direct_usage_baseline(
-                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
-                        );
-                        let turn = ActiveMetricTurn::new(
-                            execution_id.clone(),
-                            execution_id.clone(),
-                            1,
-                            usage_baseline,
-                        );
-                        scoped_app.begin_metrics_turn(turn_key.clone(), turn.clone());
-                        turn
-                    }
-                }
-            } else {
-                let Some(turn) = scoped_app.active_metrics_turn(&turn_key) else {
-                    return;
-                };
-                turn
-            };
-            let mut fallback_model = model.clone();
-            if let Some(session_path) = attempt_dir
-                .as_ref()
-                .map(|dir| Utf8PathBuf::from(dir).join("acp.session.json"))
-            {
-                fallback_model = crate::acp::events::read_attempt_session_model_name(&session_path)
-                    .or_else(|| fallback_model);
-            }
-            let attempt_state = scoped_app.update_observability_state(
-                &active_turn.attempt_id,
-                attempt_path,
-                |state| {
-                    if event_type == LifecycleEventType::ExecutionStarted {
-                        state.record_started_at(started_at.clone());
-                        if is_follow_up {
-                            state.record_follow_up();
-                        }
-                    }
-                    if event_type == LifecycleEventType::ExecutionCompleted {
-                        let segments = App::direct_usage_segments_after(
-                            attempt_dir.as_ref().map(|dir| camino::Utf8Path::new(dir)),
-                            active_turn.usage_baseline_turn_seq,
-                        );
-                        let usages = App::direct_model_usages_from_segments(
-                            &segments,
-                            provider.as_deref(),
-                            fallback_model.as_deref(),
-                        );
-                        for usage in usages {
-                            state.record_model_usage(usage);
-                        }
-                        let usage_snapshot = attempt_dir.as_ref().map(|dir| {
-                            crate::acp::events::read_attempt_metrics(
-                                &Utf8PathBuf::from(dir).join("acp.session.json"),
-                            )
-                        });
-                        if segments.is_empty()
-                            && let (Some(usage), Some(p), Some(m)) =
-                                (usage_snapshot, provider.as_ref(), fallback_model.as_ref())
-                        {
-                            state.record_cumulative_model_usage(
-                                p.clone(),
-                                m.clone(),
-                                TokenUsage {
-                                    input_tokens: usage.input_tokens,
-                                    output_tokens: usage.output_tokens,
-                                    cache_read_tokens: usage.cache_read_tokens,
-                                    total_tokens: usage.total_tokens,
-                                },
-                                usage.elapsed_ms,
-                            );
-                        }
-                    }
-                    state.next_revision();
-                },
-            );
-            let direct_revision = attempt_state.event_revision;
-            let mut resolved_provider = provider.clone();
-            let mut resolved_model = fallback_model.clone();
-            if event_type == LifecycleEventType::ExecutionCompleted {
-                if let Some(first_usage) = attempt_state.model_usages().into_iter().next() {
-                    if resolved_provider.is_none() {
-                        resolved_provider = Some(first_usage.provider.clone());
-                    }
-                    if resolved_model.is_none() {
-                        resolved_model = Some(first_usage.model.clone());
-                    }
-                }
-            }
-            let mut turn_fact = MetricsLifecycleFact::new(
-                event_type,
-                direct_revision,
-                ended_at.clone().unwrap_or_else(|| started_at.clone()),
-                std::env::var("USERNAME")
-                    .or_else(|_| std::env::var("USER"))
-                    .unwrap_or_else(|_| "unknown".into()),
-                scoped_app.paths.repo_root.to_string(),
-                MetricsSessionMode::Direct,
-                task_uuid.clone(),
-                ExecutionKind::Turn,
-                active_turn.execution_id.clone(),
-            );
-            turn_fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
-            turn_fact.attempt_id = Some(active_turn.attempt_id.clone());
-            turn_fact.attempt_index = Some(active_turn.attempt_index);
-            turn_fact.provider = resolved_provider;
-            turn_fact.model = resolved_model;
-            turn_fact.collection_state_recovered = attempt_state.collection_state_recovered;
-            if event_type == LifecycleEventType::ExecutionCompleted {
-                if let Some(outcome_str) = &outcome {
-                    if outcome_str.eq_ignore_ascii_case("success") {
-                        turn_fact.outcome = Some(ExecutionOutcome::Completed);
-                        turn_fact.terminal_reason = Some(TerminalReason::Completed);
-                    } else if outcome_str.eq_ignore_ascii_case("killed") {
-                        turn_fact.outcome = Some(ExecutionOutcome::Cancelled);
-                        turn_fact.terminal_reason = Some(TerminalReason::ProcessKilled);
-                    } else {
-                        turn_fact.outcome = Some(ExecutionOutcome::Failed);
-                        turn_fact.terminal_reason = Some(TerminalReason::ProviderError);
-                    }
-                }
-                let usages = attempt_state.model_usages();
-                let sum_tokens = |get: fn(&TokenUsage) -> Option<u64>| {
-                    usages
-                        .iter()
-                        .filter_map(|u| get(&u.usage))
-                        .fold(None, |acc, v| Some(acc.unwrap_or(0u64).saturating_add(v)))
-                };
-                if !usages.is_empty() {
-                    turn_fact.usage = Some(TokenUsage {
-                        input_tokens: sum_tokens(|u| u.input_tokens),
-                        output_tokens: sum_tokens(|u| u.output_tokens),
-                        cache_read_tokens: sum_tokens(|u| u.cache_read_tokens),
-                        total_tokens: sum_tokens(|u| u.total_tokens),
-                    });
-                    turn_fact.model_usages = Some(usages);
-                }
-                turn_fact.timing = Some(LifecycleTiming {
-                    started_at: attempt_state
-                        .started_at
-                        .clone()
-                        .unwrap_or_else(|| started_at.clone()),
-                    ended_at: ended_at.clone(),
-                    acp_session_elapsed_ms: attempt_dir.as_ref().and_then(|dir| {
-                        crate::acp::events::read_attempt_metrics(
-                            &Utf8PathBuf::from(dir).join("acp.session.json"),
-                        )
-                        .elapsed_ms
-                    }),
-                });
-                turn_fact.counters = Some(attempt_state.counters.clone());
-            }
-            scoped_app
-                .lifecycle_bus
-                .emit(RuntimeLifecycleEvent::MetricsFact(turn_fact));
-            if event_type == LifecycleEventType::ExecutionCompleted {
-                scoped_app.release_observability_state(&active_turn.execution_id);
-                scoped_app.end_metrics_turn(&turn_key);
-            }
             return;
         }
         // Skip AUTO wrapper nodes (not dynamic units) — they are implementation detail.
         if dynamic_kind.is_none() && scoped_app.is_auto_run(&task_id, &run_id) {
             return;
         }
-        // executionId = taskId for all modes (Direct/AUTO/Workflow share the same identity).
-        let execution_id = task_uuid.clone();
-        // nodeId is the stable logical node identity; attemptId is unique per execution.
         let (node_metrics_id, metrics_attempt_id) = if dynamic_kind.is_some() {
-            // AUTO unit: nodeId = DynamicNodeState.uuid, attemptId derived from nodeUuid.
             let Some(metrics_attempt_id) =
                 observability::derive_attempt_id(&node_uuid, &attempt_id)
             else {
@@ -2206,8 +2948,6 @@ impl App {
             };
             (node_uuid.clone(), metrics_attempt_id)
         } else {
-            // Workflow node: nodeId = derived logical node (stable across retries),
-            // attemptId = NodeState.uuid (new per concrete attempt).
             let Some(round_index) = round_index else {
                 return;
             };
@@ -2226,7 +2966,7 @@ impl App {
             .paths
             .run_dir(&task_id, &run_id)
             .join("observability")
-            .join(&execution_id)
+            .join(&task_uuid)
             .join(&metrics_attempt_id)
             .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
         let usage_snapshot = attempt_dir
@@ -2300,66 +3040,65 @@ impl App {
                 }
             },
         );
-
-        // Global revision: all events for the same task share a single
-        // monotonically-increasing revision counter via the task_uuid
-        // observability state. Per-node state retains model_usages
-        // and per-node counters; only revision comes from the global state.
-        let outer_snapshot_path = scoped_app
-            .paths
-            .run_dir(&task_id, &run_id)
-            .join("observability")
-            .join(&task_uuid)
-            .join(observability::OBSERVABILITY_SNAPSHOT_FILE);
-        let outer_state = scoped_app.update_observability_state(
-            &task_uuid,
-            outer_snapshot_path.clone(),
-            |state| {
-                state.next_revision();
-            },
-        );
-        let revision = outer_state.event_revision;
-        let mut fact = MetricsLifecycleFact::new(
-            event_type,
-            revision,
-            ended_at.clone().unwrap_or_else(|| started_at.clone()),
-            std::env::var("USERNAME")
-                .or_else(|_| std::env::var("USER"))
-                .unwrap_or_else(|_| "unknown".into()),
-            scoped_app.paths.repo_root.to_string(),
-            if dynamic_kind.is_some() {
-                MetricsSessionMode::Auto
-            } else {
-                MetricsSessionMode::Workflow
-            },
+        let role_name = node_name.unwrap_or_else(|| logical_node_id.clone());
+        let Some(round_index) = round_index else {
+            return;
+        };
+        let subject = if let Some(kind) = dynamic_kind {
+            MetricsSubject::AutoUnitAttempt {
+                node_id: node_metrics_id.clone(),
+                attempt_id: metrics_attempt_id.clone(),
+                attempt_index,
+                round_index,
+                role_name,
+                unit_kind: match kind {
+                    crate::dynamic::DynamicNodeKind::Worker => UnitKind::Worker,
+                    crate::dynamic::DynamicNodeKind::WorkflowInvocation => {
+                        UnitKind::WorkflowInvocation
+                    }
+                    crate::dynamic::DynamicNodeKind::Merge => UnitKind::Merge,
+                    crate::dynamic::DynamicNodeKind::Acceptance => UnitKind::Acceptance,
+                },
+            }
+        } else {
+            MetricsSubject::WorkflowNodeAttempt {
+                node_id: node_metrics_id.clone(),
+                attempt_id: metrics_attempt_id.clone(),
+                attempt_index,
+                round_index,
+                role_name,
+            }
+        };
+        let session_mode = if dynamic_kind.is_some() {
+            MetricsSessionMode::Auto
+        } else {
+            MetricsSessionMode::Workflow
+        };
+        let mut fact = scoped_app.pending_metrics_fact(
+            &task_id,
             task_uuid.clone(),
-            if dynamic_kind.is_some() {
-                ExecutionKind::UnitAttempt
-            } else {
-                ExecutionKind::NodeAttempt
-            },
-            execution_id.clone(),
+            run_id.clone(),
+            round_id.clone(),
+            event_type,
+            ended_at.clone().unwrap_or_else(|| started_at.clone()),
+            session_mode,
+            subject.clone(),
         );
-        fact.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
-        fact.node_id = Some(node_metrics_id.clone());
-        fact.attempt_id = Some(metrics_attempt_id.clone());
-        fact.attempt_index = Some(attempt_index);
-        fact.role_name = node_name;
-        fact.round_index = round_index;
-        fact.provider = provider;
-        fact.model = if event_type == LifecycleEventType::ExecutionStarted {
+        fact.fact_id = format!(
+            "node-attempt:{metrics_attempt_id}:{}",
+            match event_type {
+                LifecycleEventType::ExecutionStarted => "started",
+                LifecycleEventType::ExecutionCompleted => "completed",
+                _ => "lifecycle",
+            }
+        );
+        fact.payload.provider = provider;
+        fact.payload.model = if event_type == LifecycleEventType::ExecutionStarted {
             None
         } else {
             metrics_model.clone()
         };
-        fact.collection_state_recovered = state.collection_state_recovered;
-        fact.unit_kind = dynamic_kind.map(|kind| match kind {
-            crate::dynamic::DynamicNodeKind::Worker => UnitKind::Worker,
-            crate::dynamic::DynamicNodeKind::WorkflowInvocation => UnitKind::WorkflowInvocation,
-            crate::dynamic::DynamicNodeKind::Merge => UnitKind::Merge,
-            crate::dynamic::DynamicNodeKind::Acceptance => UnitKind::Acceptance,
-        });
-        fact.child_run_id = child_run_id.and_then(|child_run_id| {
+        fact.payload.child_run_id = child_run_id.and_then(|child_run_id| {
             read_json::<RunState>(&scoped_app.paths.run_file(&task_id, &child_run_id))
                 .ok()
                 .and_then(|run| run.uuid)
@@ -2368,14 +3107,14 @@ impl App {
             let success = outcome.eq_ignore_ascii_case("success");
             let killed = outcome.eq_ignore_ascii_case("killed");
             let invalid = outcome.eq_ignore_ascii_case("invalid");
-            fact.outcome = Some(if success {
+            fact.payload.outcome = Some(if success {
                 ExecutionOutcome::Success
             } else if killed {
                 ExecutionOutcome::Killed
             } else {
                 ExecutionOutcome::Failure
             });
-            fact.terminal_reason = Some(if success {
+            fact.payload.terminal_reason = Some(if success {
                 TerminalReason::Completed
             } else if killed {
                 TerminalReason::ProcessKilled
@@ -2396,57 +3135,61 @@ impl App {
                     })
             };
             if !usages.is_empty() {
-                fact.usage = Some(TokenUsage {
+                fact.payload.usage = Some(TokenUsage {
                     input_tokens: sum(|u| u.input_tokens),
                     output_tokens: sum(|u| u.output_tokens),
                     cache_read_tokens: sum(|u| u.cache_read_tokens),
                     total_tokens: sum(|u| u.total_tokens),
                 });
-                fact.model_usages = Some(usages);
+                fact.payload.model_usages = Some(usages);
             }
-            fact.timing = Some(LifecycleTiming {
+            fact.payload.timing = Some(LifecycleTiming {
                 started_at: started_at.clone(),
                 ended_at: ended_at.clone(),
                 acp_session_elapsed_ms: usage_snapshot.and_then(|usage| usage.elapsed_ms),
             });
         }
+        if event_type == LifecycleEventType::ExecutionCompleted
+            && let Some(attempt_dir) = attempt_dir.as_ref()
+        {
+            match metrics_follow_up_transition(Utf8Path::new(attempt_dir)) {
+                Ok(transition) => fact.transition = transition,
+                Err(error) => {
+                    tracing::warn!(
+                        diagnostic_code = "METRICS_FOLLOW_UP_PROJECTION_UNAVAILABLE",
+                        task_id,
+                        run_id,
+                        round_id,
+                        attempt_id = metrics_attempt_id,
+                        error = %error,
+                        "metrics follow-up projection unavailable"
+                    );
+                }
+            }
+        }
         let acceptance_passed = (dynamic_kind == Some(crate::dynamic::DynamicNodeKind::Acceptance)
             && event_type == LifecycleEventType::ExecutionCompleted)
-            .then(|| fact.outcome == Some(ExecutionOutcome::Success));
+            .then(|| fact.payload.outcome == Some(ExecutionOutcome::Success));
         self.lifecycle_bus
-            .emit(RuntimeLifecycleEvent::MetricsFact(fact));
+            .emit(RuntimeLifecycleEvent::PendingMetricsFact(fact));
         if let Some(passed) = acceptance_passed {
-            let outer_state =
-                scoped_app.update_observability_state(&task_uuid, outer_snapshot_path, |state| {
-                    state.next_revision();
-                    state.next_acceptance_attempt();
-                });
-            let acceptance_revision = outer_state.event_revision;
-            let acceptance_attempt = outer_state.next_acceptance_attempt_value();
-            let mut acceptance = MetricsLifecycleFact::new(
-                LifecycleEventType::AcceptanceCompleted,
-                acceptance_revision,
-                ended_at.unwrap_or_else(|| started_at.clone()),
-                std::env::var("USERNAME")
-                    .or_else(|_| std::env::var("USER"))
-                    .unwrap_or_else(|_| "unknown".into()),
-                scoped_app.paths.repo_root.to_string(),
-                MetricsSessionMode::Auto,
+            let mut acceptance = scoped_app.pending_metrics_fact(
+                &task_id,
                 task_uuid,
-                ExecutionKind::UnitAttempt,
-                execution_id.clone(),
+                run_id,
+                round_id,
+                LifecycleEventType::AcceptanceCompleted,
+                ended_at.unwrap_or_else(|| started_at.clone()),
+                MetricsSessionMode::Auto,
+                subject,
             );
-            acceptance.attempt_id = Some(metrics_attempt_id.clone());
-            acceptance.attempt_index = Some(attempt_index);
-            acceptance.node_id = Some(node_metrics_id.clone());
-            acceptance.unit_kind = Some(UnitKind::Acceptance);
-            acceptance.passed = Some(passed);
-            acceptance.acceptance_attempt = Some(acceptance_attempt);
-            acceptance.first_pass = Some(passed && acceptance_attempt == 1);
-            acceptance.collection_state_recovered = outer_state.collection_state_recovered;
-            acceptance.task_title = scoped_app.task_show(&task_id).ok().and_then(|t| t.title);
+            acceptance.fact_id = format!("acceptance:{metrics_attempt_id}");
+            acceptance.transition = MetricsTransition::Acceptance {
+                action_id: format!("acceptance:{metrics_attempt_id}"),
+                passed,
+            };
             self.lifecycle_bus
-                .emit(RuntimeLifecycleEvent::MetricsFact(acceptance));
+                .emit(RuntimeLifecycleEvent::PendingMetricsFact(acceptance));
         }
         if event_type == LifecycleEventType::ExecutionCompleted {
             scoped_app.release_observability_state(&metrics_attempt_id);
@@ -4277,7 +5020,7 @@ impl App {
             let node_path = self
                 .paths
                 .node_file(task_id, run_id, &round_id, &node_id, &attempt_id);
-            if node_path.exists() {
+            let paused_node = if node_path.exists() {
                 let mut node: NodeState = read_json(&node_path)?;
                 if node.status != RunStatus::Completed {
                     node.status = RunStatus::Paused;
@@ -4287,9 +5030,15 @@ impl App {
                     validate_node_state(&node)?;
                     write_node_state(&node_path, &node)?;
                 }
-            }
+                Some(node)
+            } else {
+                None
+            };
             drop(guard);
 
+            if let Some(node) = paused_node.as_ref() {
+                orchestrator::emit_pause_side_effects(self, task_id, &run, &round, node);
+            }
             self.interrupt_run_descendants_best_effort(task_id, run_id, &run, reason);
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -4466,6 +5215,7 @@ impl App {
         }
 
         let round_path = self.paths.round_file(task_id, run_id, round_id);
+        let mut paused_round = None;
         if round_path.exists() {
             let mut round: RoundState = read_json(&round_path)?;
             if round.status == RunStatus::Running {
@@ -4473,6 +5223,7 @@ impl App {
                 validate_round_state(&round)?;
                 write_json(&round_path, &round)?;
             }
+            paused_round = Some(round);
         }
 
         if let Some(node) = node.as_mut() {
@@ -4488,10 +5239,17 @@ impl App {
 
         let run_became_inactive =
             active_attempt || matches!(policy, AttemptRuntimePausePolicy::PausedManualCheck);
+        let pause_metrics_snapshot = active_attempt
+            .then(|| run.as_ref().zip(paused_round.as_ref()).zip(node.as_ref()))
+            .flatten()
+            .map(|((run, round), node)| (run.clone(), round.clone(), node.clone()));
         let recovery_candidate_token = run
             .as_ref()
             .and_then(|run| run.execution.recovery_candidate_token.clone());
         drop(guard);
+        if let Some((run, round, node)) = pause_metrics_snapshot {
+            orchestrator::emit_pause_side_effects(self, task_id, &run, &round, &node);
+        }
         if run_became_inactive {
             self.finish_runtime_candidate_best_effort(
                 task_id,
@@ -5398,12 +6156,27 @@ impl App {
     }
 }
 
+fn metrics_follow_up_transition(
+    attempt_dir: &Utf8Path,
+) -> Result<observability::MetricsTransition> {
+    let action_ids = crate::acp::timeline::read_indexed_metric_follow_up_prompt_ids(
+        &attempt_dir.join("acp.timeline.jsonl"),
+    )?;
+    Ok(if action_ids.is_empty() {
+        observability::MetricsTransition::None
+    } else {
+        observability::MetricsTransition::FollowUps { action_ids }
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use super::observability;
     use super::{
-        AcpLiveEventContext, AcpPromptLifecycleEvent, App, AttemptRuntimePauseResult,
-        AutoTemplateStore, CreateTaskInput, OwnedTaskDirectory, RuntimeLifecycleEvent,
-        WorkflowTemplate, WorkflowTemplateStore, next_auto_template_id,
+        AcpLiveEventContext, AcpPromptLifecycleEvent, AcpTurnOutcome, App,
+        AttemptRuntimePauseResult, AutoTemplateStore, CreateTaskInput, DirectTurnLifecycleEvent,
+        DirectTurnLifecycleTransition, OwnedTaskDirectory, RuntimeLifecycleEvent, WorkflowTemplate,
+        WorkflowTemplateStore, metrics_follow_up_transition, next_auto_template_id,
     };
     use crate::acp::elicitation::{PendingElicitationState, pending_elicitation_file};
     use crate::config::{
@@ -5433,7 +6206,8 @@ mod tests {
     };
     use camino::Utf8PathBuf;
     use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -5525,7 +6299,7 @@ mod tests {
     }
 
     #[test]
-    fn background_continue_prelaunch_failure_converges_to_runtime_abnormal_pause() {
+    fn background_continue_prelaunch_failure_converges_and_allows_retry() {
         let temp = tempdir().unwrap();
         let app = App::new(Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap());
         write_fixed_attempt_fixture(
@@ -5550,6 +6324,24 @@ mod tests {
         assert_eq!(run.pause_reason, Some(PauseReason::RuntimeAbnormal));
         assert_eq!(run.execution.phase, RuntimeExecutionPhase::Paused);
         assert_eq!(run.execution.revision, 3);
+
+        let retry_error = app
+            .run_continue_background(
+                "task-001",
+                "run-001",
+                Some("prompt-002".to_string()),
+                Some("需要加至少一个测试案例".to_string()),
+            )
+            .unwrap_err();
+        assert!(
+            !format!("{retry_error:#}").contains("pending continue action"),
+            "a failed launch must not leave metrics state that blocks the next continue"
+        );
+        let retried_run: RunState = read_json(&app.paths.run_file("task-001", "run-001")).unwrap();
+        assert_eq!(retried_run.status, RunStatus::Paused);
+        assert_eq!(retried_run.pause_reason, Some(PauseReason::RuntimeAbnormal));
+        assert_eq!(retried_run.execution.phase, RuntimeExecutionPhase::Paused);
+        assert_eq!(retried_run.execution.revision, 5);
     }
 
     #[test]
@@ -5798,6 +6590,79 @@ mod tests {
     fn test_app(repo_root: Utf8PathBuf) -> App {
         set_test_home(&repo_root);
         App::with_config_and_path_config(repo_root, RuntimeConfig::default(), test_path_config())
+    }
+
+    fn direct_metrics_test_fixture(repo_root: Utf8PathBuf) -> (App, TaskState) {
+        std::fs::create_dir_all(repo_root.as_std_path()).unwrap();
+        let app = App::new(repo_root).with_metrics_collection_enabled(true);
+        let mut workflow = worker_workflow(None, None);
+        let NodeDsl::Worker(worker) = &mut workflow.nodes[0] else {
+            panic!("expected worker workflow")
+        };
+        worker.prompt_envelope = crate::dsl::PromptEnvelopeMode::RawAgent;
+        let task = app
+            .create_task_from_requirement(CreateTaskInput {
+                title: Some("Direct metrics".to_string()),
+                description: None,
+                requirement_file_name: None,
+                requirement_content: "report this Direct turn".to_string(),
+                workflow,
+                workflow_template_id: None,
+            })
+            .unwrap()
+            .task;
+        write_json(
+            &app.paths
+                .task_dir(&task.id)
+                .join("authoring")
+                .join("conversation.json"),
+            &serde_json::json!({
+                "runMode": "direct",
+                "agentIdentity": { "displayName": "Claude" },
+                "directConfig": { "agentType": "claude-acp" }
+            }),
+        )
+        .unwrap();
+        (app, task)
+    }
+
+    fn direct_metrics_source_event(
+        app: &App,
+        task_id: &str,
+        turn_id: &str,
+        occurred_at: &str,
+        transition: DirectTurnLifecycleTransition,
+    ) -> RuntimeLifecycleEvent {
+        RuntimeLifecycleEvent::DirectTurnLifecycle(DirectTurnLifecycleEvent {
+            project_id: app.paths.project_id.clone(),
+            context: AcpLiveEventContext {
+                task_id: task_id.to_string(),
+                run_id: "run-001".to_string(),
+                round_id: "round-001".to_string(),
+                node_id: "direct-agent".to_string(),
+                attempt_id: "attempt-001".to_string(),
+                outer_node_id: None,
+                outer_attempt_id: None,
+            },
+            turn_id: turn_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            repo_root: app.paths.repo_root.to_string(),
+            transition,
+        })
+    }
+
+    fn direct_metrics_fact_receiver(
+        app: &App,
+    ) -> mpsc::Receiver<crate::app::observability::PendingMetricsFact> {
+        app.lifecycle_bus
+            .subscribe_inline(app.create_metrics_fact_producer());
+        let (sender, receiver) = mpsc::channel();
+        app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
+                sender.send(fact).unwrap();
+            }
+        }));
+        receiver
     }
 
     fn test_app_with_provider_capabilities(
@@ -6553,11 +7418,15 @@ mod tests {
         let app = test_app(repo_root)
             .with_scheduled_occurrence_id(Some("occurrence-001".to_string()))
             .with_scheduled_task_context(Some(crate::provider::ScheduledTaskContextInfo {
+                scheduled_task_id: "scheduled-task-001".to_string(),
+                scheduled_occurrence_id: "occurrence-001".to_string(),
                 title: "Daily review".to_string(),
                 mode: "direct".to_string(),
                 session_policy: "continuous".to_string(),
                 trigger_kind: "cron".to_string(),
                 triggered_at: "2026-08-03T00:00:00Z".to_string(),
+                schedule: crate::scheduler::ScheduleSpec::cron("0 9 * * *", "Asia/Shanghai")
+                    .unwrap(),
                 instruction: Some("Review changes".to_string()),
             }));
 
@@ -6610,7 +7479,7 @@ mod tests {
         let disabled_callback = disabled_seen.clone();
         let disabled =
             test_app(repo_root.clone()).with_inline_lifecycle_subscriber(Arc::new(move |event| {
-                if matches!(event, RuntimeLifecycleEvent::MetricsFact(_)) {
+                if matches!(event, RuntimeLifecycleEvent::PendingMetricsFact(_)) {
                     disabled_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             }));
@@ -6622,7 +7491,7 @@ mod tests {
         app.lifecycle_bus
             .subscribe_inline(app.create_metrics_fact_producer());
         app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
-            if matches!(event, RuntimeLifecycleEvent::MetricsFact(_)) {
+            if matches!(event, RuntimeLifecycleEvent::PendingMetricsFact(_)) {
                 seen_callback.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }));
@@ -6651,7 +7520,7 @@ mod tests {
         app.lifecycle_bus
             .subscribe_inline(app.create_metrics_fact_producer());
         app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event {
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event {
                 seen_callback.lock().unwrap().push(fact);
             }
         }));
@@ -6690,7 +7559,13 @@ mod tests {
         let facts = seen.lock().unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].workspace, event_root.to_string());
-        assert_eq!(facts[0].attempt_index, Some(2));
+        assert!(matches!(
+            &facts[0].subject,
+            crate::app::observability::MetricsSubject::WorkflowNodeAttempt {
+                attempt_index: 2,
+                ..
+            }
+        ));
         drop(facts);
         let event_snapshot = crate::storage::GoldBandPaths::new(event_root)
             .run_dir("task-001", "run-001")
@@ -6757,7 +7632,7 @@ mod tests {
         app.lifecycle_bus
             .subscribe_inline(app.create_metrics_fact_producer());
         app.lifecycle_bus.subscribe_inline(Arc::new(move |event| {
-            if let RuntimeLifecycleEvent::MetricsFact(fact) = event
+            if let RuntimeLifecycleEvent::PendingMetricsFact(fact) = event
                 && fact.event_type
                     == crate::app::observability::LifecycleEventType::ExecutionCompleted
             {
@@ -6797,16 +7672,25 @@ mod tests {
         }
         let facts = seen.lock().unwrap();
         assert_eq!(facts.len(), 1);
-        let usages = facts[0].model_usages.as_ref().unwrap();
-        assert_eq!(facts[0].attempt_id.as_deref(), Some(execution_id.as_str()));
-        assert_eq!(facts[0].attempt_index, Some(1));
-        assert_ne!(facts[0].execution_id, execution_id);
+        let usages = facts[0].payload.model_usages.as_ref().unwrap();
+        assert!(matches!(
+            &facts[0].subject,
+            crate::app::observability::MetricsSubject::WorkflowNodeAttempt {
+                attempt_id,
+                attempt_index: 1,
+                ..
+            } if attempt_id == &execution_id
+        ));
+        assert_ne!(facts[0].key.execution_id, execution_id);
         assert_eq!(usages.len(), 2);
         assert_eq!(usages[0].model, "model-a");
         assert_eq!(usages[0].usage.total_tokens, Some(40));
         assert_eq!(usages[1].model, "model-b");
         assert_eq!(usages[1].usage.total_tokens, Some(20));
-        assert_eq!(facts[0].usage.as_ref().unwrap().total_tokens, Some(60));
+        assert_eq!(
+            facts[0].payload.usage.as_ref().unwrap().total_tokens,
+            Some(60)
+        );
     }
 
     #[test]
@@ -6855,78 +7739,259 @@ mod tests {
     }
 
     #[test]
-    fn direct_metrics_is_follow_up_detects_history_after_turn_ends() {
-        let _guard = env_guard();
-        let temp = tempdir().unwrap();
-        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
-        let app = test_app(repo_root).with_metrics_collection_enabled(true);
-        let task_uuid = uuid::Uuid::new_v4().to_string();
-        let attempt_key = format!("direct:{task_uuid}");
-        let attempt_path = app
-            .paths
-            .run_dir("task-001", "run-001")
-            .join("observability")
-            .join(&task_uuid)
-            .join(&task_uuid)
-            .join(super::observability::OBSERVABILITY_SNAPSHOT_FILE);
-
-        assert!(!app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
-        app.begin_metrics_turn(
-            attempt_key.clone(),
-            super::ActiveMetricTurn::new(task_uuid.clone(), task_uuid.clone(), 1, 0),
-        );
-        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
-        app.end_metrics_turn(&attempt_key);
-
-        let mut state = super::observability::ExecutionObservabilityState::default();
-        state.next_revision();
-        super::observability::persist_observability_snapshot_best_effort(
-            attempt_path.clone(),
-            state,
-        );
-        for _ in 0..100 {
-            if super::observability::load_observability_snapshot(&attempt_path).event_revision > 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(app.direct_metrics_is_follow_up(&attempt_key, None, &attempt_path));
-    }
-
-    #[test]
-    fn observability_update_starts_from_memory_without_reading_snapshot() {
-        let _guard = env_guard();
+    fn terminal_code_changes_reuses_persisted_snapshot() {
         let temp = tempdir().unwrap();
         let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
         let app = test_app(repo_root);
-        let snapshot_path = Utf8PathBuf::from_path_buf(
-            temp.path()
-                .join("observability")
-                .join("observability.snapshot.json"),
+        let snapshot = super::observability::TaskCodeChanges {
+            added_lines: 12,
+            deleted_lines: 4,
+            changed_files: 3,
+        };
+        let snapshot_path = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability")
+            .join("code-changes.json");
+        write_json(&snapshot_path, &snapshot).unwrap();
+
+        assert_eq!(
+            app.metrics_code_changes_snapshot("task-001", "run-001"),
+            Some(snapshot)
+        );
+    }
+
+    #[test]
+    fn terminal_code_changes_rejects_legacy_commit_baseline_without_fallback() {
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let app = test_app(repo_root.clone());
+        let observability_dir = app
+            .paths
+            .run_dir("task-001", "run-001")
+            .join("observability");
+        write_json(
+            &observability_dir.join("code-change-baseline.json"),
+            &serde_json::json!({
+                "workspacePath": repo_root,
+                "baselineCommit": "legacy-commit",
+            }),
         )
         .unwrap();
-        let mut persisted = super::observability::ExecutionObservabilityState::recovered();
-        persisted.event_revision = 41;
-        write_json(&snapshot_path, &persisted).unwrap();
 
-        let first = app.update_observability_state(
-            "execution-with-existing-snapshot",
-            snapshot_path.clone(),
-            |state| {
-                state.next_revision();
-            },
+        assert_eq!(
+            app.metrics_code_changes_snapshot("task-001", "run-001"),
+            None
         );
-        let second = app.update_observability_state(
-            "execution-with-existing-snapshot",
-            snapshot_path,
-            |state| {
-                state.next_revision();
+        assert!(!observability_dir.join("code-changes.json").exists());
+    }
+
+    #[test]
+    fn workflow_attempt_terminal_projects_five_canonical_user_prompts() {
+        let temp = tempdir().unwrap();
+        let attempt_dir = Utf8PathBuf::from_path_buf(temp.path().to_path_buf()).unwrap();
+        let timeline_path = attempt_dir.join("acp.timeline.jsonl");
+        let mut store = crate::acp::timeline::TimelineStore::open(
+            timeline_path,
+            crate::acp::timeline::TimelineCompactionPolicy::default(),
+        )
+        .unwrap();
+        for index in 0..=5_u64 {
+            let runtime_controlled = index == 0;
+            let prompt_id = if runtime_controlled {
+                "runtime-initial".to_string()
+            } else {
+                format!("prompt-{index}")
+            };
+            let event = crate::acp::events::AcpUiEvent {
+                id: format!("gold-band-user-prompt-{index}"),
+                seq: index + 1,
+                timestamp: format!("2026-08-27T00:00:0{index}Z"),
+                kind: "userTextDelta".to_string(),
+                session_id: Some("session-1".to_string()),
+                content: Some(format!("answer {index}")),
+                title: None,
+                tool_call_id: None,
+                status: Some("completed".to_string()),
+                started_seq: Some(index + 1),
+                ended_seq: Some(index + 1),
+                started_at: None,
+                ended_at: None,
+                timing: None,
+                raw: Some(serde_json::json!({
+                    "source": "goldBandPrompt",
+                    "turnControlMode": if runtime_controlled {
+                        "runtime-controlled"
+                    } else {
+                        "non-runtime-controlled"
+                    },
+                    "promptId": prompt_id,
+                })),
+            };
+            store.upsert(index + 1, &event).unwrap();
+        }
+
+        assert_eq!(
+            metrics_follow_up_transition(&attempt_dir).unwrap(),
+            observability::MetricsTransition::FollowUps {
+                action_ids: (1..=5).map(|index| format!("prompt-{index}")).collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn direct_metrics_producer_reports_initial_and_follow_up_turns() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, task) = direct_metrics_test_fixture(repo_root);
+        let bus = observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus);
+        let facts = direct_metrics_fact_receiver(&app);
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            super::INITIAL_DIRECT_TURN_ID,
+            "2026-08-26T08:00:00Z",
+            DirectTurnLifecycleTransition::Started,
+        ));
+        let initial_started = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            initial_started.event_type,
+            observability::LifecycleEventType::ExecutionStarted
+        );
+        assert_eq!(
+            initial_started.fact_id,
+            "direct-turn:initial-direct-turn:started"
+        );
+        assert_eq!(
+            initial_started.session_mode,
+            observability::MetricsSessionMode::Direct
+        );
+        assert_eq!(
+            initial_started.transition,
+            observability::MetricsTransition::None
+        );
+        assert_eq!(initial_started.key.execution_id, task.uuid.clone().unwrap());
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            super::INITIAL_DIRECT_TURN_ID,
+            "2026-08-26T08:00:01Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Cancelled,
             },
+        ));
+        let initial_finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            initial_finished.payload.outcome,
+            Some(observability::ExecutionOutcome::Cancelled)
+        );
+        assert_eq!(
+            initial_finished.payload.terminal_reason,
+            Some(observability::TerminalReason::UserCancelled)
         );
 
-        assert_eq!(first.event_revision, 1);
-        assert_eq!(first.collection_state_recovered, None);
-        assert_eq!(second.event_revision, 2);
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "queued-turn-002",
+            "2026-08-26T08:00:02Z",
+            DirectTurnLifecycleTransition::Started,
+        ));
+        let follow_up_started = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            follow_up_started.transition,
+            observability::MetricsTransition::FollowUps {
+                action_ids: vec!["queued-turn-002".to_string()],
+            }
+        );
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "queued-turn-002",
+            "2026-08-26T08:00:03Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Failed,
+            },
+        ));
+        let follow_up_finished = facts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            follow_up_finished.payload.outcome,
+            Some(observability::ExecutionOutcome::Failed)
+        );
+        assert_eq!(
+            follow_up_finished.payload.terminal_reason,
+            Some(observability::TerminalReason::ProviderError)
+        );
+    }
+
+    #[test]
+    fn direct_metrics_producer_rejects_duplicate_and_mismatched_transitions() {
+        let _guard = env_guard();
+        let temp = tempdir().unwrap();
+        let repo_root = Utf8PathBuf::from_path_buf(temp.path().join("repo")).unwrap();
+        let (app, task) = direct_metrics_test_fixture(repo_root);
+        let bus = observability::RuntimeLifecycleBus::new();
+        let app = app.with_lifecycle_bus(bus);
+        let facts = direct_metrics_fact_receiver(&app);
+        let started = direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-001",
+            "2026-08-26T08:10:00Z",
+            DirectTurnLifecycleTransition::Started,
+        );
+
+        app.emit_lifecycle_event(started.clone());
+        assert_eq!(
+            facts
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .event_type,
+            observability::LifecycleEventType::ExecutionStarted
+        );
+        app.emit_lifecycle_event(started);
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-other",
+            "2026-08-26T08:10:01Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Completed,
+            },
+        ));
+        assert!(facts.recv_timeout(Duration::from_millis(250)).is_err());
+        assert_eq!(
+            app.active_metrics_turn(&format!("direct:{}", task.uuid.clone().unwrap()))
+                .map(|turn| turn.turn_id),
+            Some("turn-001".to_string())
+        );
+
+        app.emit_lifecycle_event(direct_metrics_source_event(
+            &app,
+            &task.id,
+            "turn-001",
+            "2026-08-26T08:10:02Z",
+            DirectTurnLifecycleTransition::Finished {
+                outcome: AcpTurnOutcome::Completed,
+            },
+        ));
+        assert_eq!(
+            facts
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .payload
+                .outcome,
+            Some(observability::ExecutionOutcome::Completed)
+        );
+        assert!(
+            app.active_metrics_turn(&format!("direct:{}", task.uuid.unwrap()))
+                .is_none()
+        );
     }
 
     #[test]
@@ -7017,8 +8082,12 @@ mod tests {
         };
 
         app.acp_prompt_accepted_for(context.clone()).unwrap()("turn-queued-001").unwrap();
-        app.notify_prompt_turn_finished(context, Some("turn-queued-001".to_string()), false)
-            .unwrap();
+        app.notify_prompt_turn_finished(
+            context,
+            Some("turn-queued-001".to_string()),
+            AcpTurnOutcome::Failed,
+        )
+        .unwrap();
 
         let calls = seen.lock().unwrap();
         assert_eq!(calls.len(), 2);
@@ -7033,7 +8102,7 @@ mod tests {
             calls[1].1,
             AcpPromptLifecycleEvent::Finished {
                 prompt_id: Some("turn-queued-001".to_string()),
-                successful: false,
+                outcome: AcpTurnOutcome::Failed,
             }
         );
     }

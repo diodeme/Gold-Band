@@ -4203,6 +4203,209 @@ pub fn report_frontend_error(input: FrontendErrorReportInput) -> CommandResult<(
     Ok(())
 }
 
+const WEBVIEW_USER_AGENT_MAX_CHARS: usize = 2_048;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewSupportTierInput {
+    Unsupported,
+    Compatible,
+    Full,
+}
+
+impl WebviewSupportTierInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Compatible => "compatible",
+            Self::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewThemeRenderingInput {
+    FallbackTokens,
+    ModernCss,
+}
+
+impl WebviewThemeRenderingInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FallbackTokens => "fallback-tokens",
+            Self::ModernCss => "modern-css",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewResponsiveLayoutInput {
+    Measured,
+    ContainerQuery,
+}
+
+impl WebviewResponsiveLayoutInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Measured => "measured",
+            Self::ContainerQuery => "container-query",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewCodeHighlightingInput {
+    Plain,
+    Wasm,
+}
+
+impl WebviewCodeHighlightingInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Wasm => "wasm",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WebviewVisualMaterialInput {
+    Solid,
+    Native,
+}
+
+impl WebviewVisualMaterialInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Solid => "solid",
+            Self::Native => "native",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewCapabilitiesInput {
+    regexp_lookbehind: bool,
+    css_color_mix: bool,
+    css_container_queries: bool,
+    css_has_selector: bool,
+    css_backdrop_filter: bool,
+    css_oklch: bool,
+    css_grid: bool,
+    css_custom_properties: bool,
+    resize_observer: bool,
+    structured_clone: bool,
+    web_assembly: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewFeaturePolicyInput {
+    tier: WebviewSupportTierInput,
+    theme_rendering: WebviewThemeRenderingInput,
+    responsive_layout: WebviewResponsiveLayoutInput,
+    code_highlighting: WebviewCodeHighlightingInput,
+    visual_material: WebviewVisualMaterialInput,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebviewEnvironmentReportInput {
+    user_agent: String,
+    capabilities: WebviewCapabilitiesInput,
+    policy: WebviewFeaturePolicyInput,
+}
+
+impl WebviewEnvironmentReportInput {
+    fn normalize(mut self) -> Self {
+        self.user_agent =
+            truncate_frontend_error_field(self.user_agent, WEBVIEW_USER_AGENT_MAX_CHARS);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebviewRuntimeFactsVm {
+    platform: String,
+    architecture: String,
+    os_version: Option<String>,
+    webkit_bundle_version: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn system_plist_string(path: &Path, key: &str) -> Option<String> {
+    let value = plist::Value::from_file(path).ok()?;
+    value
+        .as_dictionary()?
+        .get(key)?
+        .as_string()
+        .map(ToOwned::to_owned)
+}
+
+fn webview_runtime_facts() -> WebviewRuntimeFactsVm {
+    #[cfg(target_os = "macos")]
+    let (os_version, webkit_bundle_version) = (
+        system_plist_string(
+            Path::new("/System/Library/CoreServices/SystemVersion.plist"),
+            "ProductVersion",
+        ),
+        system_plist_string(
+            Path::new("/System/Library/Frameworks/WebKit.framework/Resources/Info.plist"),
+            "CFBundleVersion",
+        ),
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (os_version, webkit_bundle_version) = (None, None);
+
+    WebviewRuntimeFactsVm {
+        platform: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        os_version,
+        webkit_bundle_version,
+    }
+}
+
+#[tauri::command]
+pub async fn report_webview_environment(
+    input: WebviewEnvironmentReportInput,
+) -> CommandResult<WebviewRuntimeFactsVm> {
+    let report = input.normalize();
+    let facts = spawn_blocking_command(|| Ok(webview_runtime_facts())).await?;
+    tracing::info!(
+        target: "gold_band::frontend",
+        code = "webview.environment.detected",
+        platform = %facts.platform,
+        architecture = %facts.architecture,
+        os_version = facts.os_version.as_deref().unwrap_or(""),
+        webkit_bundle_version = facts.webkit_bundle_version.as_deref().unwrap_or(""),
+        tier = report.policy.tier.as_str(),
+        theme_rendering = report.policy.theme_rendering.as_str(),
+        responsive_layout = report.policy.responsive_layout.as_str(),
+        code_highlighting = report.policy.code_highlighting.as_str(),
+        visual_material = report.policy.visual_material.as_str(),
+        regexp_lookbehind = report.capabilities.regexp_lookbehind,
+        css_color_mix = report.capabilities.css_color_mix,
+        css_container_queries = report.capabilities.css_container_queries,
+        css_has_selector = report.capabilities.css_has_selector,
+        css_backdrop_filter = report.capabilities.css_backdrop_filter,
+        css_oklch = report.capabilities.css_oklch,
+        css_grid = report.capabilities.css_grid,
+        css_custom_properties = report.capabilities.css_custom_properties,
+        resize_observer = report.capabilities.resize_observer,
+        structured_clone = report.capabilities.structured_clone,
+        web_assembly = report.capabilities.web_assembly,
+        user_agent = %report.user_agent,
+        "webview environment detected"
+    );
+    Ok(facts)
+}
+
 /// Frontend activity signal: pointerdown, keydown, or business command.
 #[tauri::command]
 pub fn record_activity(state: State<'_, DesktopState>) -> CommandResult<()> {
@@ -9709,6 +9912,70 @@ mod tests {
     #[test]
     fn frontend_error_command_accepts_bounded_structured_report() {
         assert!(report_frontend_error(frontend_error_input("render failed".to_string())).is_ok());
+    }
+
+    fn webview_environment_input(user_agent: String) -> WebviewEnvironmentReportInput {
+        WebviewEnvironmentReportInput {
+            user_agent,
+            capabilities: WebviewCapabilitiesInput {
+                regexp_lookbehind: false,
+                css_color_mix: false,
+                css_container_queries: false,
+                css_has_selector: true,
+                css_backdrop_filter: true,
+                css_oklch: true,
+                css_grid: true,
+                css_custom_properties: true,
+                resize_observer: true,
+                structured_clone: true,
+                web_assembly: true,
+            },
+            policy: WebviewFeaturePolicyInput {
+                tier: WebviewSupportTierInput::Compatible,
+                theme_rendering: WebviewThemeRenderingInput::FallbackTokens,
+                responsive_layout: WebviewResponsiveLayoutInput::Measured,
+                code_highlighting: WebviewCodeHighlightingInput::Wasm,
+                visual_material: WebviewVisualMaterialInput::Solid,
+            },
+        }
+    }
+
+    #[test]
+    fn webview_environment_report_normalization_enforces_user_agent_bound() {
+        let report =
+            webview_environment_input("W".repeat(WEBVIEW_USER_AGENT_MAX_CHARS + 7)).normalize();
+        assert_eq!(
+            report.user_agent.chars().count(),
+            WEBVIEW_USER_AGENT_MAX_CHARS
+        );
+        assert_eq!(report.policy.tier, WebviewSupportTierInput::Compatible);
+    }
+
+    #[test]
+    fn webview_environment_policy_rejects_unknown_values() {
+        let result = serde_json::from_value::<WebviewFeaturePolicyInput>(serde_json::json!({
+            "tier": "compatible",
+            "themeRendering": "legacy-css",
+            "responsiveLayout": "measured",
+            "codeHighlighting": "wasm",
+            "visualMaterial": "solid"
+        }));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn webview_environment_command_returns_platform_facts() {
+        let facts =
+            report_webview_environment(webview_environment_input("GoldBandWebView".to_string()))
+                .await
+                .expect("webview facts");
+        assert_eq!(facts.platform, std::env::consts::OS);
+        assert_eq!(facts.architecture, std::env::consts::ARCH);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(facts.os_version, None);
+            assert_eq!(facts.webkit_bundle_version, None);
+        }
     }
 
     fn direct_run_completed(outcome: RunOutcome) -> RuntimeLifecycleEvent {

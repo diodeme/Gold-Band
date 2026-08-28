@@ -63,6 +63,7 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useWebviewMeasuredContainer } from '@/hooks/use-webview-measured-container';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
@@ -414,6 +415,7 @@ interface WorkflowEditorProps {
 }
 
 export function WorkflowEditor({ className, value, modelBindings: modelBindingsValue, agentRegistry, profileCatalog, onOpenProfileManagement, onSave, onChange, onModelBindingsChange, onApplyDefaultTemplate, defaultWorkflow, workflowTemplates, currentTemplateId = null, currentTemplateName = null, validateTemplateDuplicateId = true, validateModelBindings = true, allowAiDynamic = false, saving, showSaveAction = true, validationRequestId = 0, focusNodeId = null, initialSessionDraft, onSessionDraftChange }: WorkflowEditorProps) {
+  const measuredWorkflowEditorRef = useWebviewMeasuredContainer<HTMLDivElement>('workflow-editor');
   const { t } = useTranslation();
   const initialWorkflow = useMemo(() => normalizeWorkflowEntryFromTopology(normalizeWorkflowSchemas(value)), [value]);
   const restoredWorkflow = initialSessionDraft?.workflow ?? initialWorkflow;
@@ -443,6 +445,10 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
   const handledFocusNodeIdRef = useRef<string | null>(null);
   const restoredDraftAppliedRef = useRef(Boolean(initialSessionDraft));
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
+  const setEditorContainerRef = useCallback((node: HTMLDivElement | null) => {
+    editorContainerRef.current = node;
+    measuredWorkflowEditorRef(node);
+  }, [measuredWorkflowEditorRef]);
   const workflowRef = useRef(workflow);
   const onChangeRef = useRef(onChange);
   const onSessionDraftChangeRef = useRef(onSessionDraftChange);
@@ -1189,7 +1195,7 @@ export function WorkflowEditor({ className, value, modelBindings: modelBindingsV
           <DialogFooter><Button onClick={() => closeValidationDialog(false)}>{t('workflowEditor.validationDialogClose')}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
-      <div ref={editorContainerRef} className={cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)} data-workflow-editor-layout={isCompact ? 'compact' : 'split'}>
+      <div ref={setEditorContainerRef} className={cn('@container/workflow-editor h-[clamp(520px,calc(100dvh-11rem),760px)] min-h-0', className)} data-workflow-editor-layout={isCompact ? 'compact' : 'split'}>
         {isCompact ? (
           <div className="flex size-full min-h-0 flex-col gap-2">
             <Tabs value={compactPane} onValueChange={(value) => setCompactPane(value as 'canvas' | 'inspector')} className="shrink-0">

@@ -1008,9 +1008,14 @@ export function ConversationComposer({
                 </span>
               ) : multicaBinding ? (
                 <span ref={committedInputLayout.adornmentRef} className="absolute left-0 top-2 z-10 inline-flex">
+                  {/* accent/accent-foreground is the theme contract's guaranteed-contrast pair for
+                      emphasized surfaces (same pairing as permission-card and recipe hover/selected
+                      states). Never tint this chip from `primary` alone: in themes like
+                      tech-neutral dark, primary (#2d2d2d) sits nearly on the composer background
+                      (#1b1b1b) and the chip becomes unreadable. */}
                   <Badge
                     variant="secondary"
-                    className="gap-1 h-6 rounded-md border-primary/30 bg-primary/10 px-2 text-[0.75rem] font-medium text-primary"
+                    className="gap-1 h-6 rounded-md border-accent-foreground/15 bg-accent px-2 text-[0.75rem] font-medium text-accent-foreground"
                   >
                     <Globe className="size-3 shrink-0" />
                     <span className="max-w-[260px] truncate">
@@ -1020,7 +1025,7 @@ export function ConversationComposer({
                       type="button"
                       aria-label={t('conversation.composer.removeMulticaBinding')}
                       onClick={handleUnbindMultica}
-                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-primary/20"
+                      className="ml-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm hover:bg-accent-foreground/15"
                     >
                       <X className="size-3" />
                     </button>

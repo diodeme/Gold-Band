@@ -15885,6 +15885,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn direct_turn_code_changes_keep_distinct_replayable_snapshots_from_the_run_start_tree() {
+        let (_temp, app) = test_app_with_provider_capabilities(serde_json::json!({}));
+        let repo_root = app.paths.repo_root.clone();
+        std::fs::write(
+            repo_root.join(".gitignore").as_std_path(),
+            ".gold-band/\n.gold-band-home/\n",
+        )
+        .unwrap();
+        git(&repo_root, &["add", ".gitignore"]);
+        git(&repo_root, &["commit", "-m", "ignore runtime state"]);
+        let app = app.with_metrics_collection_enabled(true);
+        let task_id = create_direct_test_task(&app);
+
+        let prepared = prepare_run(&app, &task_id, None).unwrap();
+        let run_id = prepared.run().id.clone();
+        let baseline_path = app
+            .paths
+            .run_dir(&task_id, &run_id)
+            .join("observability")
+            .join("code-change-baseline.json");
+        let baseline: super::super::observability::RunCodeChangeBaseline =
+            read_json(&baseline_path).unwrap();
+
+        std::fs::write(repo_root.join("a.rs").as_std_path(), "fn a() {}\n").unwrap();
+        let first = app
+            .metrics_direct_turn_code_changes_snapshot(&task_id, &run_id, "turn-1")
+            .unwrap();
+        assert_eq!(
+            first,
+            super::super::observability::TaskCodeChanges {
+                added_lines: 1,
+                deleted_lines: 0,
+                changed_files: 1,
+            }
+        );
+        assert!(
+            git_output(
+                &repo_root,
+                &["rev-parse", "--verify", &baseline.baseline_ref]
+            )
+            .unwrap()
+            .success
+        );
+
+        std::fs::write(repo_root.join("b.rs").as_std_path(), "fn b() {}\n").unwrap();
+        let second = app
+            .metrics_direct_turn_code_changes_snapshot(&task_id, &run_id, "turn-2")
+            .unwrap();
+        assert_eq!(
+            second,
+            super::super::observability::TaskCodeChanges {
+                added_lines: 2,
+                deleted_lines: 0,
+                changed_files: 2,
+            }
+        );
+        assert_ne!(first, second);
+        assert_eq!(
+            app.metrics_direct_turn_code_changes_snapshot(&task_id, &run_id, "turn-1"),
+            Some(first)
+        );
+        assert!(
+            git_output(
+                &repo_root,
+                &["rev-parse", "--verify", &baseline.baseline_ref]
+            )
+            .unwrap()
+            .success
+        );
+    }
+
     fn test_app_with_provider_capabilities(
         capabilities: serde_json::Value,
     ) -> (tempfile::TempDir, App) {

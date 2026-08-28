@@ -2,7 +2,7 @@
 
 > 状态：客户端已实现；本文是服务端仓库的实施输入。本仓库不包含服务端 controller、migration、storage 或 deployment 代码。
 >
-> 客户端字段与生命周期语义的唯一真源是 `metrics-collection.md`。服务端不得重新解释 `executionId`、revision、counters 或代码变更口径。
+> 客户端字段与生命周期语义的唯一真源是 `metrics-collection.md`。本文已按当前 wire DTO 校正；服务端不得重新解释 `executionId`、revision、来源、counters 或代码变更口径。
 
 ## 1. 目标与边界
 
@@ -40,7 +40,7 @@
 
 每条事件必须包含：
 
-`eventId/eventRevision/eventType/occurredAt/reportedAt/projectId/userId/workspace/clientVersion/sessionMode/executionKind/executionId/runId/roundId/taskOrigin/executionTrigger`。
+`eventId/eventRevision/eventType/occurredAt/reportedAt/projectId/userId/workspace/clientVersion/sessionMode/executionKind/executionId/runId/roundId/taskOrigin`。
 
 约束：
 
@@ -48,7 +48,9 @@
 - `projectId/executionId/runId/roundId` 非空并满足共享长度、字符集合同。
 - `eventType` 仅允许 `execution.started`、`execution.completed`、`execution.paused`、`execution.resumed`、`intervention.requested`、`acceptance.completed`。
 - `sessionMode` 仅允许 `direct/workflow/auto`。
-- 未知字段可保存到 raw，但不得参与当前投影；未知枚举必须拒绝，不能静默降级。
+- `taskOrigin` 是字符串，只允许 `user/scheduled`。`user` 事件必须省略 `executionTrigger`；`scheduled` 事件必须携带符合 2.5 的 `executionTrigger`。
+- `taskTitle` 是允许上传的可选字符串，来源是客户端创建该事件时冻结的 Task 标题；没有标题时省略。它不是 Task identity，也不参与幂等、revision 或 locator 校验。
+- 顶层未知扩展字段可保存到 raw，但不得参与当前投影；`executionTrigger`、`codeChanges` 等协议对象必须按当前 shape 严格校验并拒绝未知旧字段。未知枚举必须拒绝，不能静默降级。
 
 ### 2.3 主体矩阵
 
@@ -70,22 +72,26 @@
 - 非 terminal、`acceptance.completed` 均禁止 counters。
 - node/unit terminal 的 `followUpCount` 必须为 0。
 - `codeChanges` 只允许出现在 task delivery terminal。
-- `codeChanges.completeness=complete|partial` 时三个数值非负且非 null；`unavailable` 时三个数值必须为 null。
+- `codeChanges` 只包含 `addedLines/deletedLines/changedFiles`，出现时三个字段必须同时存在且为非负整数；不可用时客户端省略整个对象。拒绝旧 `completeness/limitationCodes` 字段，不接收部分统计。
+- Direct 的每个 turn terminal 都是 task delivery terminal；后续 turn 的 `codeChanges` 是同一 Run 启动 workspace tree 到当前 turn terminal tree 的新快照。服务端按更高合法 terminal revision 覆盖 Task 投影，不累加各轮数字。
 - `modelUsages` 只保存客户端给出的 attempt usage；服务端不得按 provider/model 再次猜测拆分。
 
 ### 2.5 来源联合类型
 
-`taskOrigin`：
+`taskOrigin` 不是 tagged object，而是扁平字符串：
 
-- `{ "kind": "user" }`
-- `{ "kind": "scheduled-task", "scheduledTaskId": "..." }`
+- `"user"`：必须省略 `executionTrigger`。
+- `"scheduled"`：必须携带 `executionTrigger`。
 
-`executionTrigger`：
+`executionTrigger` 使用 `type` 作为 discriminator，只允许以下三个 shape；所有 shape 都必须带非空 `scheduledTaskId/scheduledOccurrenceId/scheduledAt/timezone`：
 
-- `{ "kind": "user" }`
-- `{ "kind": "scheduled-occurrence", "scheduledTaskId": "...", "scheduledOccurrenceId": "...", "triggerKind": "scheduled|manual", "scheduledAt": "...", "sessionPolicy": "new|continuous" }`
+```json
+{ "type": "once", "scheduledTaskId": "...", "scheduledOccurrenceId": "...", "scheduledAt": "...", "timezone": "Asia/Shanghai" }
+{ "type": "cron", "scheduledTaskId": "...", "scheduledOccurrenceId": "...", "scheduledAt": "...", "timezone": "Asia/Shanghai", "expression": "0 0 10 * * MON-FRI" }
+{ "type": "repeat", "scheduledTaskId": "...", "scheduledOccurrenceId": "...", "scheduledAt": "...", "timezone": "Asia/Shanghai", "repeatKind": "daily", "hour": 10, "minute": 0 }
+```
 
-若两个联合类型都是 scheduled，`scheduledTaskId` 必须相等。`continuous` 只允许 Direct；Workflow/AUTO 必须使用 `new`。
+`repeatKind` 只允许 `interval/hourly/daily/weekdays/weekly`。`interval` 必须携带 `value/unit/anchorAt`；`hourly/daily/weekdays/weekly` 携带 `hour/minute`，其中 `weekly` 还必须携带非空 `weekdays`，其他 preset 不得伪造 interval 字段。拒绝旧 `{kind: ...}`、`triggerKind`、`sessionPolicy` 和 user trigger shape，不提供兼容解析。
 
 ## 3. 响应合同
 
@@ -245,7 +251,7 @@ CREATE TABLE analytics_metric_task (
 ) ENGINE=InnoDB;
 ```
 
-task counters/codeChanges 采用最高合法 task terminal revision 的 snapshot 覆盖，禁止把 attempt counters 求和后二次写入。
+task counters/codeChanges 采用最高合法 task terminal revision 的 snapshot 覆盖，禁止把 attempt counters 或 Direct 各轮 codeChanges 求和后二次写入。`task_title` 保存最高 revision 事件实际携带的最新标题；事件省略 `taskTitle` 时保留已有值，不以 null 清空。raw payload 仍保存每个事件当时的可选标题快照。
 
 ## 5. 单事件事务算法
 
@@ -297,10 +303,10 @@ terminal-first 和乱序合法：不存在投影行时可直接插入 terminal �
 
 ### 6.4 task
 
-- 每个 accepted event 更新 `last_event_revision=max(...)`、latest locator 和稳定来源字段。
+- 每个 accepted event 更新 `last_event_revision=max(...)`、latest locator 和稳定来源字段；更高 revision 的事件携带 `taskTitle` 时更新展示标题，缺省不清空。
 - 只有 task delivery `execution.completed` 且 revision 更大时覆盖 terminal outcome、task counters 和 codeChanges。
 - follow-up 后的新 run/turn 可以继续推进同一 task；旧 terminal 不是 task stream 的吸收态。
-- scheduled 来源第一次写入后不可变；后续不一致事件 rejected 为 `METRICS_IMMUTABLE_FIELD_CONFLICT`。
+- `taskOrigin` 第一次写入后不可变；scheduled 的 `scheduledTaskId` 第一次写入后不可变，后续不一致事件 rejected 为 `METRICS_IMMUTABLE_FIELD_CONFLICT`。occurrence、scheduledAt 和具体 schedule shape 是逐次 execution trigger 快照，不得错误提升为 Task 不可变字段。
 
 ## 7. 错误码
 
@@ -309,7 +315,7 @@ terminal-first 和乱序合法：不存在投影行时可直接插入 terminal �
 | `METRICS_EVENT_INVALID` | 字段缺失、格式或枚举非法 | 否 |
 | `METRICS_SUBJECT_INVALID` | mode/kind/主体矩阵不匹配 | 否 |
 | `METRICS_TERMINAL_FIELDS_INVALID` | terminal、counters、codeChanges 作用域错误 | 否 |
-| `METRICS_SCHEDULED_PROVENANCE_INVALID` | scheduled 联合类型不一致 | 否 |
+| `METRICS_SCHEDULED_PROVENANCE_INVALID` | origin/trigger 缺失、shape 或 repeat 字段组合不合法 | 否 |
 | `METRICS_EVENT_ID_CONFLICT` | 同 eventId 不同 payload | 否 |
 | `METRICS_REVISION_CONFLICT` | 同 task/revision 不同 eventId | 否 |
 | `METRICS_IMMUTABLE_FIELD_CONFLICT` | task 稳定字段发生变化 | 否 |
@@ -346,8 +352,9 @@ raw 是事实源，投影是可删除重建的数据。
 ### Contract
 
 - 六类 eventType、五类 executionKind、三种 sessionMode 全矩阵。
-- 缺失/多余字段、未知枚举、scheduled ID 不一致、continuous 非 Direct 逐项拒绝。
-- complete/partial/unavailable codeChanges 与 counters scope 校验。
+- 缺失/多余字段、未知枚举、user 携带 trigger、scheduled 缺 trigger、旧 `{kind: ...}` shape 与非法 repeat 字段组合逐项拒绝。
+- `taskTitle` 缺省/出现及更高 revision 更新投影；标题不参与 identity 与 immutable-field 冲突。
+- 三整数 codeChanges 与 counters scope 校验；旧 completeness/limitationCodes 和部分数字逐项拒绝。
 - 响应三集合精确覆盖，错误只含 code/params。
 
 ### 幂等与并发
@@ -372,7 +379,7 @@ raw 是事实源，投影是可删除重建的数据。
 
 - 100 条 batch 在生产配置下记录 p50/p95/p99、事务时间和锁等待；先以 p95 < 500 ms、单事件事务 p95 < 20 ms 为上线门槛，按真实基线调整。
 - 查询计划命中本文索引，无 raw 全表扫描、N+1 查询或长事务。
-- payload、日志和错误中不出现 prompt、回复、附件、源码、diff 或 logical path。
+- 除协议明确允许的 `taskTitle` 外，payload、日志和错误中不出现 prompt、回复、附件、源码、diff 或 logical path；错误 params 不得回显标题。
 - 限流按 report key 与 client identity 执行，不能把合法部分响应变为未覆盖结果。
 
 ## 11. 方案评审
@@ -381,4 +388,4 @@ raw 是事实源，投影是可删除重建的数据。
 
 性能：单事件短事务最多处理 100 次，换取严格部分成功和最小锁范围；先用压测数据判断是否需要按 Task 分组事务，禁止未经测量改为并行 writer。raw 不分区避免牺牲全局唯一性，保留 `reported_at` 索引和可验证归档入口。
 
-正确性：服务端不重新累计客户端 snapshot，不把 run terminal 当 task stream 终止，不按 attempt 分配 revision，也不通过名称反查 canonical identity。
+正确性：服务端不重新累计客户端 snapshot，不把 run/Direct turn terminal 当 task stream 终止，不按 attempt 分配 revision，也不通过 `taskTitle` 或其他名称反查 canonical identity。来源解析只接受当前 `taskOrigin` 字符串与 `executionTrigger.type` 合同。

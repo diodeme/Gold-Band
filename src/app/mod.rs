@@ -2052,13 +2052,41 @@ impl App {
             .run_dir(task_id, run_id)
             .join("observability")
             .join("code-changes.json");
+        self.metrics_code_changes_snapshot_at(task_id, run_id, &snapshot_path, true)
+    }
+
+    pub fn metrics_direct_turn_code_changes_snapshot(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        turn_id: &str,
+    ) -> Option<observability::TaskCodeChanges> {
+        let turn_key = blake3::hash(turn_id.as_bytes()).to_hex();
+        let snapshot_path = self
+            .paths
+            .run_dir(task_id, run_id)
+            .join("observability")
+            .join("direct-turn-code-changes")
+            .join(format!("{turn_key}.json"));
+        self.metrics_code_changes_snapshot_at(task_id, run_id, &snapshot_path, false)
+    }
+
+    fn metrics_code_changes_snapshot_at(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        snapshot_path: &Utf8Path,
+        delete_baseline_ref: bool,
+    ) -> Option<observability::TaskCodeChanges> {
         let baseline_path = self
             .paths
             .run_dir(task_id, run_id)
             .join("observability")
             .join("code-change-baseline.json");
         if let Ok(snapshot) = read_json::<observability::TaskCodeChanges>(&snapshot_path) {
-            if let Ok(baseline) = read_json::<observability::RunCodeChangeBaseline>(&baseline_path)
+            if delete_baseline_ref
+                && let Ok(baseline) =
+                    read_json::<observability::RunCodeChangeBaseline>(&baseline_path)
             {
                 self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
             }
@@ -2148,7 +2176,9 @@ impl App {
             );
             return None;
         }
-        self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
+        if delete_baseline_ref {
+            self.delete_metrics_code_change_ref_best_effort(task_id, run_id, &baseline);
+        }
         Some(snapshot)
     }
 
@@ -2548,8 +2578,11 @@ impl App {
                 ended_at: Some(event.occurred_at.clone()),
                 acp_session_elapsed_ms: elapsed_sum,
             });
-            fact.payload.code_changes = scoped_app
-                .metrics_code_changes_snapshot(&event.context.task_id, &event.context.run_id);
+            fact.payload.code_changes = scoped_app.metrics_direct_turn_code_changes_snapshot(
+                &event.context.task_id,
+                &event.context.run_id,
+                &event.turn_id,
+            );
         }
         if terminal_outcome.is_some() {
             scoped_app.release_observability_state(&active_turn.execution_id);

@@ -120,7 +120,8 @@ struct PendingMetricsFact {
 | `executionId` | Task UUID；同一 Task 全生命周期不变 |
 | `runId/roundId` | Runtime 本地 `run-NNN/round-NNN`；所有 lifecycle event 必填 |
 | `workspace/userId/clientVersion` | 在事实创建时冻结 |
-| `taskOrigin/executionTrigger` | 联合类型；逐事件携带 |
+| `taskOrigin/executionTrigger` | `taskOrigin` 逐事件携带；仅 scheduled 来源携带 trigger 快照 |
+| `taskTitle` | 可选；从事件创建时的 Task `title` 冻结，不存在标题时省略 |
 
 `occurredAt/reportedAt/timing.startedAt/timing.endedAt` 在 metrics wire 边界统一转换为无时区本地毫秒字符串 `YYYY-MM-DDTHH:mm:ss.SSS`。runtime 内部允许继续读取历史 `<unix-seconds>Z` 或 RFC 3339 值，但不得把这些格式直接透传到 wire；四个字段使用同一个 formatter。该合同按产品要求不携带 `Z` 或 offset，服务端不得把它们当作带时区 RFC 3339 字符串解析。可选的 `timing` 无法解析时省略整个 `timing` 并记录结构化诊断，不得因此丢弃 terminal 事件。
 
@@ -158,7 +159,7 @@ Workflow/AUTO 的 paused/resumed/intervention 必须分别使用 `node-attempt/u
 - scheduled 的 `executionTrigger.type` 只允许 `once/repeat/cron`，并始终携带 `scheduledTaskId/scheduledOccurrenceId/scheduledAt/timezone`。
 - `ScheduleKind::At` 映射 `once`；`Every/Repeat` 映射 `repeat`，通过 `repeatKind` 携带 interval/hourly/daily/weekdays/weekly 及对应 value/unit/anchorAt/hour/minute/weekdays；`Cron` 映射 `cron` 并携带 expression。
 - trigger 必须在 occurrence 创建时从 `ScheduledTaskDefinition.schedule` 冻结，后续编辑定时任务不得改写已经开始的 Run/Turn。
-- 删除 metrics wire 的 `triggerKind/sessionPolicy`，不上传 instruction、标题或其他任务内容。
+- 删除 metrics wire 的 `triggerKind/sessionPolicy`，不上传 instruction、prompt 或回复正文。`taskTitle` 是经确认允许上传的唯一 Task 展示文本字段；服务端 raw 保留事件快照，Task 投影仅在更高 revision 的事件实际携带该字段时更新，字段缺省不得清空已有标题。
 
 ## 6. Counters
 
@@ -211,7 +212,8 @@ enum UserExecutionAction {
 - run terminal 生成当前 workspace tree，并使用等价于 `git diff --numstat -z -M -C <baselineTree> <currentTree>` 的 Git service 接口统计。Run 内提交或 HEAD 变化不影响结果，编辑后恢复到启动内容固定为 `0/0/0`。
 - rename 按一个最终文件计数；二进制文件计入 `changedFiles`，不虚构增删行；无变更固定为 `0/0/0`。
 - `git ls-files --others` 返回的嵌套 Git 仓库目录是独立 repository boundary，不作为根仓库文件计数且不得递归读取；未跟踪符号链接或其他非普通文件计入 `changedFiles`，但不得跟随链接或虚构增删行。
-- 结果先原子写入 run observability 的 `code-changes.json`，再删除内部 baseline ref；terminal fact 读取或复用该快照，重放不得重新扫描已经结束或清理的工作区，并 best-effort 清理遗留 ref。
+- Workflow run/AUTO outer-run 结果先原子写入 run observability 的 `code-changes.json`，再删除内部 baseline ref；terminal fact 读取或复用该快照，重放不得重新扫描已经结束或清理的工作区，并 best-effort 清理遗留 ref。
+- Direct 每个 terminal turn 使用稳定 `turnId` 的 BLAKE3 摘要作为安全文件名，原子写入 `observability/direct-turn-code-changes/<turnKey>.json`。每轮都从同一 `startupWorkspaceTree` 计算到该轮 terminal workspace tree；不同轮不得复用 Run 级单例文件，同一轮重放必须复用原快照。Direct 后续轮仍需原始基线，因此每轮成功后保留 baseline ref；只有真正消费 Run 级 terminal snapshot 时才清理。
 - Git baseline JSON、ref、tree 或工作区不可用时省略整个 `codeChanges` 并记录结构化诊断；不得用 terminal 时的 HEAD、commit diff 或第二套基线替代，采集失败不得改变 runtime terminal。
 - 删除 `completeness/limitationCodes`、turn-files delta 以及 collector 的跨 attempt code change accumulator。
 
@@ -253,7 +255,9 @@ collector 使用单 SQLite writer 和短事务。HTTP 永不位于事务或锁�
 
 失败结算必须在单个 SQLite 事务内逐事件执行，并校验 `event_id + in_flight + lease_owner + attempt_count`；同一 HTTP batch 中不同 attempt 的事件可以分别进入“继续等待”和“立即删除”。应用升级后，claim 事务先恢复过期 lease，再物理删除历史 `pending && attempt_count >= 3` 的记录，避免旧的无限重试数据再次发送。claim 前计数保证任何事件不超过 3 次请求；进程在 claim 后、HTTP 请求前崩溃时，该次额度仍被消耗，因此实际请求可能少于 3 次，这是有限投递策略接受的数据丢失窗口。
 
-Task delivery terminal 不删除 state。只有 Task 明确删除/归档且没有未确认 outbox 时，才按统一保留策略清理。
+Task delivery terminal 不删除 state。当前 Task 删除不会级联清理 `metrics_task_state/metrics_fact_dedup/metrics_transition_dedup/metrics_outbox`；这是明确的 `Won't Fix` 决策，接受已删除 Task 的本地指标状态继续占用 SQLite，后续只有既有 outbox retention 能清理满足条件的 delivery 行。本期不增加跨存储删除事务或补偿队列。
+
+collector 在本地序列化后超过 64 KiB 的事件直接写为 `rejected + REPORT_EVENT_TOO_LARGE`，该路径没有 `acked_at`，而现有 retention 只删除 `acked_at` 早于阈值的 rejected 行，因此这些行不会自动过期。这同样标记为 `Won't Fix`：接受极少量永久占用，不修改清理条件、不补迁移，也不为此增加新的时间字段。
 
 ## 10. 生命周期
 
@@ -264,6 +268,8 @@ Task delivery terminal 不删除 state。只有 Task 明确删除/归档且没�
 ACP prompt dispatcher 是 Direct turn 的唯一源头：prompt 被 provider 接受时发布 typed `DirectTurnLifecycle::Started`，命令完成、provider 错误、用户取消或 join failure 时发布对应 `Finished(outcome)`。首轮使用固定内部 turn ID，后续轮使用持久化 prompt ID；started/terminal 必须使用同一 ID。
 
 Direct、Workflow 和 AUTO 的源头事实统一进入 `core.metrics-producer` FIFO worker，再产生 `PendingMetricsFact`。不为 Direct 保留独立 sender/worker/队列，避免队列未初始化、容量不一致或 `try_send` 失败导致只有 Direct 丢失日志。active turn 按 Task UUID 唯一管理并记录 turn ID：重复 started、重叠 turn、不匹配 terminal 和缺失 started 都丢弃异常事实并记录结构化诊断。terminal fact 构造完成后先清理 active turn 与运行期 observability state，再发布下游事实，保证 terminal 对观察者可见时旧状态已不可见。
+
+Direct terminal 的 `codeChanges` 是该轮结束时相对当前 Run 启动 workspace tree 的累计净差异。turn identity 同时决定 terminal fact identity 与持久快照 identity；后续轮生成新快照，历史轮重放读取历史快照，不能使用首轮文件覆盖后续轮，也不能在首轮后删除仍被后续轮依赖的 baseline ref。
 
 ### Workflow
 
@@ -294,8 +300,8 @@ collector 构造 wire event 前校验：
 - SQLite 工作在专用 blocking worker；同一时刻一个 writer，不持锁 await，不把 HTTP 放进事务。
 - active attempt terminal 后移除；outbox 有状态、lease、最多 3 次 attempt 和保留策略，失败事件不会形成无界积压。
 - follow-up timeline 写入为 HashSet 均摊 O(1)，attempt terminal 只读取当前 attempt 的已建索引并按 prompt 数线性写入 SQLite dedup。
-- codeChanges 每个启用指标的 Run 只在启动和 terminal 各生成一次 workspace tree 并执行一次 tree diff；未跟踪文件内容由 Git 流式 hash，Rust 侧只持有 NUL 分隔路径列表，不读取完整文件内容。
-- 不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
+- codeChanges 的基线 tree 每个启用指标的 Run 只生成一次；Workflow/AUTO 在 delivery terminal 生成一次 terminal tree，Direct 在每个 terminal turn 生成一次 terminal tree。每次都是一次 workspace tree 和一次 tree diff，复杂度与工作区文件规模线性；未跟踪文件内容由 Git 流式 hash，Rust 侧只持有 NUL 分隔路径列表，不读取完整文件内容。
+- 除明确允许的 `taskTitle` 外，不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
 - 每次 HTTP batch attempt 在统一发送边界记录 `requestId + attempt + url + body`；`body` 必须复用实际发送的序列化字符串，允许包含 metrics wire payload，但不得记录认证头。wire payload 继续禁止 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path；日志仍受 20 MB 总量上限保护。
 
 每次 claim 和失败结算仍为单批最多 100 条的 O(batch size) 点更新；历史超限清理复用 outbox claim 事务且只在 uploader 轮询时执行，不增加 Runtime 热路径 I/O、HTTP 次数、线程、缓存或锁范围。有限尝试会降低长期断网时的数据库行数、日志量和网络请求量。当前没有采样证据表明 CPU 或内存存在热点，因此不增加索引、并发 writer 或缓存；release 压测应覆盖连续事件、混合 100 条 batch、SQLite 慢和有限网络重试，并记录 lifecycle 延迟、队列丢弃与 batch 吞吐基线。
@@ -306,8 +312,8 @@ collector 构造 wire event 前校验：
 - state cursor、counters/codeChanges 和 outbox insert 任一步失败都不产生半提交。
 - Workflow/AUTO 中间态使用 attempt subject；缺失 locator 不伪造事件且业务继续。
 - attempt/task counters 在 permission、elicitation、manual continue、follow-up、retry 与重复 request 下符合精确定义。
-- scheduled new/continuous/manual/follow-up 的 origin/trigger 组合正确。
-- code changes 覆盖 commit/staged/unstaged/untracked、revert、rename、binary、无变更、快照重放与 Git 不可用。
+- user 来源省略 trigger；scheduled 来源的 once/repeat/cron shape 与冻结 ScheduleSpec 一致。
+- code changes 覆盖 commit/staged/unstaged/untracked、revert、rename、binary、无变更、快照重放与 Git 不可用；Direct 同一 Run 的第二轮必须生成不同快照，旧轮重放保持原值且 baseline ref 仍可供后续轮使用。
 - 关闭客户端后继续和停止后带文字继续均只产生 resumed，不重复 started；失败启动后再次 continue 不受任何 metrics 状态阻塞；run terminal counters 固定为对应 canonical action 的投影。
 - 人工确认节点严格按 started -> paused/manual-decision -> completed，terminal 后不得再出现 paused。
 - batch 100 条混合多个 Project/Task/Run/Round 不串 state；部分 rejected 不影响 accepted。
@@ -329,4 +335,6 @@ collector 构造 wire event 前校验：
 - [x] Direct prompt lifecycle 已收敛到共享 metrics producer，删除容量 512 的独立队列与 worker，并补齐 turn identity/outcome/重复转换接口测试。
 - [x] Workflow/AUTO 普通用户 prompt 已从 canonical timeline index 按 `raw.promptId` 批量投影，resume follow-up 旁路已删除，collector 在同一事务内逐 ID 幂等累计。
 - [x] Run codeChanges 已从 `baselineCommit` 破坏式切换到受内部 ref 保护的 `baselineTree`，terminal 使用 workspace tree diff 并在 snapshot 后清理 ref。
+- [x] Direct codeChanges 已按稳定 turn identity 独立持久化；后续轮从 Run 启动 tree 重新计算，历史轮重放不变，baseline ref 保留到 Run 级终态。
+- [x] 协议确认允许可选 `taskTitle`；Task 删除不清理 metrics SQLite、无 `acked_at` 的本地超限 rejected 行不过期均记录为 `Won't Fix`。
 - [ ] release 性能基线与服务端实现由发布/服务端仓库按 `metrics-server-processing.md` 完成。

@@ -1922,6 +1922,23 @@ resolved_via="parent" session_present=false run_status=Some(Paused) continuable=
 
 **验证**：`cargo check --workspace --all-targets` exit 0（余量 warning 为 main 既有）；`tsc` 零错；`web:build` 成功；全量 vitest **1684/1684**（CRLF 修复后；一次 `acp-session-reentry` 全量负载时序抖动单独重跑 12/12、全量重跑全绿，判 flake）；Rust 定向 `multica::` **83/83**。冲突分析报告：`.claude/docs/merge/merge-conflict-analysis-2026-08-27.md`。
 
+### 12.34 改动三十二：multica 绑定 chip 配色改 accent 配对——深色主题可辨识（M5-av，2026-08-28）
+
+**背景（用户反馈）**：切换深色主题后，composer 内 multica 绑定 chip「颜色和背景颜色相近导致难以辨认」。
+
+**根因（正确设计但实现不完整：违反 token 配对语义）**：chip 自 M5-aj 起（§12.22）用 primary 单 token 染色：`border-primary/30 bg-primary/10 text-primary`。主题契约中 `primary/primaryForeground` 是「表面 + 表面文字」配对（button-primary recipe 同源），**不保证 primary 单独作前景色时与背景有对比**：gold-band 是单色反转主题（light `#0d0d0d` / dark `#f0f0f0`），碰巧双 scheme 均高对比，掩盖了问题；tech-neutral 的 primary 是按钮表面深灰（light `#2f2f2f` / dark `#2d2d2d`），dark 下与 composer 背景 `#1b1b1b` 几乎重合——`text-primary` 对比度 ≈1.1:1，`/10` 背景、`/30` 边框同样融入背景。`styles.css` 兜底 dark（`#313131` on `#181818`）同病。
+
+**方案（对齐主题契约，非深色补丁）**：chip 改用契约中保证双 scheme 对比度的「强调表面」canonical 配对 `accent/accentForeground`（permission-card、recipe hover/selected、ui-interaction.md §6/§9 同源原则）：
+
+- chip：`border-accent-foreground/15 bg-accent … font-medium text-accent-foreground`
+- 关闭按钮 hover：`hover:bg-accent-foreground/15`（accent-foreground 半透明，light 下变深 / dark 下变亮，方向自然）
+
+四组合均对比安全：gold-band 浅绿底深绿字 / 深绿底亮绿字；tech-neutral 浅灰底深灰字 / 深灰底浅灰字。第三方主题遵守契约即自动适配。本节取代 §12.22 中 chip 配色描述（结构/文案/交互不变）。
+
+**验收固化**：`web/tests/conversation-composer-multica-chip.test.ts` 新增 `multica binding chip theme contrast` describe——chip 渲染段（`multicaBinding ? (` 至 `<PromptInputTextarea`）必须含 accent 配对三件套，且不得再匹配任何 primary 染色（`/-primary(?!-)/`，`primary-foreground` 豁免）；断言均为单行字符串（CRLF 安全）。
+
+**验证**：vitest 16/16（multica-chip + composer-context-alignment）；`tsc -p web/tsconfig.build.json` 零错；`web:build` 成功；浏览器 light/dark × gold-band/tech-neutral 四组合 chip 静态 + 关闭按钮 hover 截图验证通过。
+
 ---
 
 ## 附录 A：CLAUDE.md 合规自检

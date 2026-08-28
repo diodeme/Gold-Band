@@ -304,7 +304,7 @@ collector 构造 wire event 前校验：
 - follow-up timeline 写入为 HashSet 均摊 O(1)，attempt terminal 只读取当前 attempt 的已建索引并按 prompt 数线性写入 SQLite dedup。
 - codeChanges 的基线 tree 每个启用指标的 Run 只生成一次；Workflow/AUTO 在 delivery terminal 生成一次 terminal tree，Direct 在每个 terminal turn 生成一次 terminal tree。每次都是一次 workspace tree 和一次 tree diff，复杂度与工作区文件规模线性；未跟踪文件内容由 Git 流式 hash，Rust 侧只持有 NUL 分隔路径列表，不读取完整文件内容。
 - 除明确允许的 `taskTitle` 外，不记录 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path。
-- 每次 HTTP batch attempt 在统一发送边界记录 `requestId + attempt + url + body`；`body` 必须复用实际发送的序列化字符串，允许包含 metrics wire payload，但不得记录认证头。wire payload 继续禁止 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path；日志仍受 20 MB 总量上限保护。
+- 每次 HTTP batch attempt 在统一发送边界记录 `requestId + attempt + url + body`；`body` 必须复用实际发送的序列化字符串，允许包含 metrics wire payload，但不得记录认证头。heartbeat 同样记录实际发送的完整 body。`metrics.log` 每行统一使用 `UTC RFC 3339 六位小数 + 两个空格 + INFO` 前缀，例如 `2026-07-24T09:01:35.307189Z  INFO`。wire payload 继续禁止 prompt、回复、工具输入输出、附件正文、源码、diff 或 logical path；日志仍受 20 MB 总量上限保护。
 
 每次 claim 和失败结算仍为单批最多 100 条的 O(batch size) 点更新；历史超限清理复用 outbox claim 事务且只在 uploader 轮询时执行，不增加 Runtime 热路径 I/O、HTTP 次数、线程、缓存或锁范围。有限尝试会降低长期断网时的数据库行数、日志量和网络请求量。当前没有采样证据表明 CPU 或内存存在热点，因此不增加索引、并发 writer 或缓存；release 压测应覆盖连续事件、混合 100 条 batch、SQLite 慢和有限网络重试，并记录 lifecycle 延迟、队列丢弃与 batch 吞吐基线。
 

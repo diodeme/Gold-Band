@@ -851,8 +851,15 @@ impl ScheduledRuntime {
         ) {
             Ok(execution) => execution,
             Err(error) => {
-                self.finish_execution_failure(&database, &claimed, &mut handoff, &error)
-                    .await?;
+                self.finish_execution_failure(
+                    &database,
+                    &claimed,
+                    &mut handoff,
+                    &mut definition,
+                    &mut expected_revision,
+                    &error,
+                )
+                .await?;
                 return Err(error);
             }
         };
@@ -1016,8 +1023,15 @@ impl ScheduledRuntime {
         ) {
             Ok(execution) => execution,
             Err(error) => {
-                self.finish_execution_failure(database, &claimed, &mut handoff, &error)
-                    .await?;
+                self.finish_execution_failure(
+                    database,
+                    &claimed,
+                    &mut handoff,
+                    &mut definition,
+                    &mut expected_revision,
+                    &error,
+                )
+                .await?;
                 return Err(error);
             }
         };
@@ -1094,6 +1108,8 @@ impl ScheduledRuntime {
         database: &ScheduledTaskDatabase,
         occurrence: &ScheduledOccurrence,
         handoff: &mut ClaimToHandoffGuard,
+        definition: &mut ScheduledTaskDefinition,
+        expected_revision: &mut Option<i64>,
         execution_error: &anyhow::Error,
     ) -> anyhow::Result<()> {
         handoff.stop().await;
@@ -1126,6 +1142,20 @@ impl ScheduledRuntime {
             anyhow::bail!("failed to finish scheduled occurrence after execution handoff failure");
         }
         handoff.disarm();
+        persist_execution_failure_projection(
+            database,
+            occurrence,
+            definition,
+            expected_revision,
+            Utc::now(),
+            |record| {
+                emit_scheduled_task_updated(
+                    &self.app_handle,
+                    &record.definition,
+                    record.next_run_at,
+                );
+            },
+        )?;
         Ok(())
     }
 
@@ -1713,7 +1743,8 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 Ok(())
             }
             SchedulerCommand::SettingsChanged => {
-                self.reconcile_all(ReconcileReason::Explicit).await
+                self.refresh_registered_workspaces(ReconcileReason::Explicit)
+                    .await
             }
             SchedulerCommand::CleanupUnacceptedTerminalWorkspace { workspace_path } => {
                 self.cleanup_unaccepted_terminal_for_workspace(&workspace_path)
@@ -1747,6 +1778,30 @@ impl<R: CoordinatorRuntimeDriver> SchedulerCoordinator<R> {
                 self.schedule_workspace_registration_retry(workspace_path);
                 Err(error)
             }
+        }
+    }
+
+    async fn refresh_registered_workspaces(
+        &mut self,
+        reason: ReconcileReason,
+    ) -> anyhow::Result<()> {
+        let workspace_paths = self.workspaces.keys().cloned().collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        for workspace_path in workspace_paths {
+            if let Err(error) = self
+                .register_workspace_with_retry(workspace_path.clone(), reason)
+                .await
+            {
+                failures.push(format!("{workspace_path}: {error}"));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "failed to refresh scheduled workspace runtime config: {}",
+                failures.join("; ")
+            )
         }
     }
 
@@ -2412,6 +2467,32 @@ fn advance_definition_after_point(
     definition.retry_count = 0;
     definition.retry_at = None;
     definition.updated_at = now;
+}
+
+fn persist_execution_failure_projection<F>(
+    database: &ScheduledTaskDatabase,
+    occurrence: &ScheduledOccurrence,
+    definition: &mut ScheduledTaskDefinition,
+    expected_revision: &mut Option<i64>,
+    now: DateTime<Utc>,
+    notify: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&ScheduledJobRecord),
+{
+    advance_definition_after_point(definition, occurrence.scheduled_at, "failed", now);
+    definition.last_error = Some(ScheduledErrorCode::ExecutionFailed.to_string());
+    let Some(revision) = *expected_revision else {
+        return Ok(());
+    };
+    match persist_runtime_projection(database, definition, revision, notify)? {
+        Some(updated) => {
+            *definition = updated.definition;
+            *expected_revision = Some(updated.revision);
+        }
+        None => *expected_revision = None,
+    }
+    Ok(())
 }
 
 fn materialize_registered_deadline(
@@ -3528,7 +3609,7 @@ fn scheduled_workflow_authoring(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration as StdDuration;
 
@@ -3565,12 +3646,12 @@ mod tests {
         accept_occurrence_execution_then, active_execution_for_run, attempt_tree_has_active_prompt,
         create_manual_occurrence, ensure_definition_workspace, finish_occurrence_for_event,
         finish_reconciled_occurrence, mark_past_points_missed, materialize_registered_deadline,
-        persist_runtime_projection, project_resumed_attention, reconcile_missed_deadlines,
-        recover_accepted_occurrence, release_pre_acceptance_conflict, reload_execution_authority,
-        scheduled_execution_action, scheduled_execution_action_for_fingerprint,
-        scheduled_occurrence_updated_event, scheduled_task_context_info,
-        shutdown_active_occurrences, take_active_occurrence, task_has_active_execution,
-        task_has_active_execution_with_prompt_probe,
+        persist_execution_failure_projection, persist_runtime_projection,
+        project_resumed_attention, reconcile_missed_deadlines, recover_accepted_occurrence,
+        release_pre_acceptance_conflict, reload_execution_authority, scheduled_execution_action,
+        scheduled_execution_action_for_fingerprint, scheduled_occurrence_updated_event,
+        scheduled_task_context_info, shutdown_active_occurrences, take_active_occurrence,
+        task_has_active_execution, task_has_active_execution_with_prompt_probe,
     };
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3721,6 +3802,7 @@ mod tests {
 
     struct LoopCoordinatorRuntime {
         wall_now: Mutex<chrono::DateTime<Utc>>,
+        workspace_keep_awake_enabled: AtomicBool,
         remaining_workspace_failures: AtomicUsize,
         remaining_process_failures: AtomicUsize,
         remaining_release_failures: AtomicUsize,
@@ -3734,6 +3816,7 @@ mod tests {
         fn new(now: chrono::DateTime<Utc>, workspace_failures: usize) -> Self {
             Self {
                 wall_now: Mutex::new(now),
+                workspace_keep_awake_enabled: AtomicBool::new(false),
                 remaining_workspace_failures: AtomicUsize::new(workspace_failures),
                 remaining_process_failures: AtomicUsize::new(0),
                 remaining_release_failures: AtomicUsize::new(0),
@@ -3752,6 +3835,11 @@ mod tests {
             let duration = Duration::from_std(duration).unwrap();
             let mut now = self.wall_now.lock().unwrap();
             *now += duration;
+        }
+
+        fn set_workspace_keep_awake_enabled(&self, enabled: bool) {
+            self.workspace_keep_awake_enabled
+                .store(enabled, Ordering::SeqCst);
         }
 
         fn fail_next_processes(&self, count: usize) {
@@ -3780,7 +3868,13 @@ mod tests {
             {
                 anyhow::bail!("transient workspace registration failure");
             }
-            Ok(gold_band::app::App::new(workspace_path.to_path_buf()))
+            let mut config = gold_band::config::RuntimeConfig::default();
+            config.scheduled_keep_awake_enabled =
+                self.workspace_keep_awake_enabled.load(Ordering::SeqCst);
+            Ok(gold_band::app::App::with_config(
+                workspace_path.to_path_buf(),
+                config,
+            ))
         }
 
         fn now(&self) -> chrono::DateTime<Utc> {
@@ -3875,6 +3969,45 @@ mod tests {
         let handle = SchedulerCoordinatorHandle::new(sender.clone());
         let coordinator = SchedulerCoordinator::new_with_sender(runtime, sender, receiver);
         (handle, coordinator)
+    }
+
+    #[tokio::test]
+    async fn settings_changed_refreshes_registered_workspace_runtime_config() {
+        let directory = tempdir().unwrap();
+        let workspace_path =
+            camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf()).unwrap();
+        let runtime = Arc::new(LoopCoordinatorRuntime::new(Utc::now(), 0));
+        let (_, mut coordinator) = command_loop_coordinator(runtime.clone());
+
+        coordinator
+            .register_workspace(workspace_path.clone(), ReconcileReason::Startup)
+            .await
+            .unwrap();
+        assert!(
+            !coordinator
+                .workspaces
+                .get(&workspace_path)
+                .unwrap()
+                .app
+                .config
+                .scheduled_keep_awake_enabled
+        );
+
+        runtime.set_workspace_keep_awake_enabled(true);
+        coordinator
+            .handle_command(SchedulerCommand::SettingsChanged)
+            .await;
+
+        assert!(
+            coordinator
+                .workspaces
+                .get(&workspace_path)
+                .unwrap()
+                .app
+                .config
+                .scheduled_keep_awake_enabled
+        );
+        assert_eq!(runtime.registration_attempts.load(Ordering::SeqCst), 2);
     }
 
     async fn settle_command_loop() {
@@ -4674,6 +4807,91 @@ mod tests {
                 .lock()
                 .unwrap()
                 .contains_key(&ActiveOccurrenceKey::new("project-1", &occurrence_id))
+        );
+    }
+
+    #[test]
+    fn pre_accept_execution_failure_updates_latest_trigger_projection() {
+        let directory = tempdir().unwrap();
+        let database = ScheduledTaskDatabase::open(directory.path().join("scheduler.db")).unwrap();
+        let deadline = Utc.with_ymd_and_hms(2026, 8, 28, 6, 45, 54).unwrap();
+        let definition = ScheduledTaskDefinition::new(
+            "project-1",
+            "job-failure-projection",
+            "direct",
+            ScheduleSpec::every(6, "minutes", deadline - Duration::minutes(6)).unwrap(),
+            OverlapPolicy::SkipWhenRunning,
+        )
+        .unwrap();
+        let created = database.create_job(&definition, Some(deadline)).unwrap();
+        let DueMaterialization::Ready { job, occurrence } = database
+            .materialize_due_occurrence(
+                &definition.project_id,
+                definition.id(),
+                created.revision,
+                deadline,
+            )
+            .unwrap()
+        else {
+            panic!("due occurrence must materialize");
+        };
+        let owner_id = "failure-projection-owner";
+        assert!(
+            database
+                .claim_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    owner_id,
+                    deadline,
+                    Utc::now() + Duration::hours(1),
+                )
+                .unwrap()
+                .is_claimed()
+        );
+        assert!(
+            database
+                .finish_occurrence(
+                    &definition.project_id,
+                    &occurrence.id,
+                    owner_id,
+                    OccurrenceStatus::Failed,
+                    None,
+                    Some(
+                        gold_band::scheduler::occurrence::ScheduledError::with_params(
+                            ScheduledErrorCode::ExecutionFailed,
+                            serde_json::json!({ "reason": "agent is not configured" }),
+                        )
+                    ),
+                )
+                .unwrap()
+        );
+
+        let advanced_next_run_at = job.next_run_at;
+        let mut projected_definition = job.definition;
+        let mut expected_revision = Some(job.revision);
+        persist_execution_failure_projection(
+            &database,
+            &occurrence,
+            &mut projected_definition,
+            &mut expected_revision,
+            deadline + Duration::seconds(1),
+            |_| {},
+        )
+        .unwrap();
+
+        let persisted = database
+            .get_job_definition(&definition.project_id, definition.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.next_run_at, advanced_next_run_at);
+        assert_eq!(persisted.definition.last_trigger_at, Some(deadline));
+        assert_eq!(
+            persisted.definition.last_trigger_status.as_deref(),
+            Some("failed")
+        );
+        assert_eq!(
+            persisted.definition.last_error.as_deref(),
+            Some("SCHEDULED_EXECUTION_FAILED")
         );
     }
 

@@ -133,6 +133,10 @@ active 包括运行中、等待权限、等待 AskUserQuestion、等待用户恢
 
 定时任务不预判或映射 Agent 的无人值守能力，也不要求特定 permission mode。创建和编辑必须原样保存用户当前选择的 Agent、model、permission mode 和 config options；计划触发与手动立即执行都通过现有 ACP 会话创建链路应用这份冻结配置。不得因为内置或自定义 Agent 未提供已知的 full-auto 标识而阻止定义保存或 occurrence 进入执行。
 
+Agent、模型和其他运行设置的 canonical state 是 `DesktopContext.config`。Scheduler workspace registration 中的 `App` 只是运行快照；设置保存成功并更新 canonical config 后，`SettingsChanged` 必须通过既有 candidate registration 边界重建所有已注册 workspace，完成 reconcile 后再替换旧快照。单个 workspace 刷新失败时保留旧 registration 和 deadline，并进入现有有界重试；不得只对账 deadline 后继续使用设置变更前的 Agent registry。
+
+Occurrence 在 acceptance 前因 Agent 缺失、执行准备或同步启动失败而结束时，canonical occurrence 必须记录 `failed + SCHEDULED_EXECUTION_FAILED + params`。同一次收尾还要通过现有 revision CAS 推进 definition 的 `lastTriggerAt / lastTriggerStatus / lastError` runtime projection，管理列表据此显示真实失败而不是“尚未运行”；已由 materialization 推进的 `nextRunAt` 不得倒退。该投影不是第二份执行历史，详情和恢复判断仍以 occurrence 与 Task/Run canonical state 为准。
+
 运行时仍出现 permission request 时，本次 occurrence 结束为 `failed`，错误码为
 `SCHEDULED_PERMISSION_REQUIRED`。系统保留关联 Task、Run、ACP 会话和权限请求，并通过通知引导用户查看详情，不让调度器无限等待。
 
@@ -206,5 +210,7 @@ write target.
 ### 10.2 Deadline coordinator
 
 桌面进程只运行一个 scheduler coordinator，并通过 `DelayQueue` 为每个 enabled job 保存一个 wakeup。CRUD 提交、workspace 注册/移除、系统 resume 和应用退出都通过类型化命令更新 coordinator；不再周期扫描全部 workspace/job。注册和触发都会重新读取 SQLite revision 与 deadline，陈旧 timer 只重排、不创建 occurrence。
+
+`SettingsChanged` 属于 workspace runtime snapshot 刷新命令，不是普通 deadline reconcile。Coordinator 对当前已注册 workspace 逐项重新调用权威 `app_for_workspace()`，使用最新 `DesktopContext.config` 构造 candidate；candidate 完成 reconcile 后才替换旧 registration。该刷新只发生在低频设置写入，不进入 deadline 热路径，也不增加轮询或全量页面刷新。
 
 启动 reconcile 先处理 pending/retrying occurrence，再处理后续计划点。早于 `LATE_FIRE_GRACE` 的点写为 `missed`，grace 内近迟到点仍可执行。计划点只有到达 deadline 后才由事务物化；普通创建始终只保存定义。立即执行是独立 `RunNow` 命令，立即创建 manual occurrence，但不改变原计划 `next_run_at`。

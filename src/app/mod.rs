@@ -3551,7 +3551,17 @@ impl App {
         let summary = self.task_summary(&task_id)?;
         owned_task_dir.disarm();
         (self.task_search_indexer)(&self.paths.task_dir(&task_id), &task_id);
+        let created_at = crate::acp::events::current_timestamp();
+        sqlite::index_task_activity_with_retry(
+            &self.paths.task_dir(&task_id),
+            &task_id,
+            &created_at,
+        );
         Ok(summary)
+    }
+
+    pub fn record_task_activity_index(&self, task_id: &str, activity_at: &str) {
+        sqlite::index_task_activity_with_retry(&self.paths.task_dir(task_id), task_id, activity_at);
     }
 
     pub fn update_task_metadata(

@@ -119,7 +119,7 @@ describe('conversation visual hierarchy contract', () => {
     const sidebar = source('../src/components/conversation/ConversationSidebar.tsx');
     const fixedNavigation = sidebar.indexOf('data-conversation-sidebar-region="fixed-navigation"');
     const scrollRegion = sidebar.indexOf('data-conversation-sidebar-region="scrollable-conversations"');
-    const pinnedSection = sidebar.indexOf('{vm.pinnedTasks.length > 0 ? (', scrollRegion);
+    const pinnedSection = sidebar.indexOf('{vm.pinRefs.length > 0 || vm.pinnedTasks.length > 0 ? (', scrollRegion);
     const workspaceSection = sidebar.indexOf('{vm.workspaces.map((ws) => (', scrollRegion);
     const scrollRegionEnd = sidebar.indexOf('</ScrollArea>', scrollRegion);
 

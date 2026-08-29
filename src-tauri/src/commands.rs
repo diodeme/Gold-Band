@@ -510,7 +510,12 @@ fn settle_failed_prompt_submission(
         &gold_band::acp::events::current_timestamp(),
     ) {
         Ok(Some(header)) => {
-            header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed
+            let failed =
+                header.latest_turn_status == gold_band::acp::events::AcpLatestTurnStatus::Failed;
+            if failed {
+                touch_task_activity_best_effort(app, &locator.task_id, "prompt-turn-failed");
+            }
+            failed
         }
         Ok(None) => {
             tracing::debug!(%turn_id, "skipping stale ACP prompt terminal notification");
@@ -1092,6 +1097,7 @@ struct AcpSessionUpdatedEventVm {
     event: Option<AcpUiEvent>,
     lifecycle: Option<ConversationAttemptLifecycleVm>,
     activity: Option<ConversationTaskActivityVm>,
+    task_activity_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1490,6 +1496,7 @@ fn prompt_turn_lifecycle_callback(
         + Sync,
 > {
     Arc::new(move |context, event| {
+        let terminal = matches!(&event, AcpPromptLifecycleEvent::Finished { .. });
         let locator = AttemptLocator::new(
             context.task_id,
             context.run_id,
@@ -1499,17 +1506,50 @@ fn prompt_turn_lifecycle_callback(
             context.outer_node_id,
             context.outer_attempt_id,
         );
-        process_prompt_turn_lifecycle(&app, locator, event, |locator, successful, completion| {
-            schedule_direct_prompt_queue_drain(
-                app_handle.clone(),
+        let result = process_prompt_turn_lifecycle(
+            &app,
+            locator.clone(),
+            event,
+            |locator, successful, completion| {
+                schedule_direct_prompt_queue_drain(
+                    app_handle.clone(),
+                    project_id.clone(),
+                    direct_prompt_queue_drain_app(&app),
+                    locator,
+                    successful,
+                    completion,
+                );
+            },
+        );
+        if result.is_ok() && terminal {
+            emit_acp_session_update(
+                &app_handle,
+                &app,
                 project_id.clone(),
-                direct_prompt_queue_drain_app(&app),
-                locator,
-                successful,
-                completion,
+                &locator.task_id,
+                &locator.run_id,
+                &locator.round_id,
+                &locator.node_id,
+                &locator.attempt_id,
+                locator.outer_node_id.clone(),
+                locator.outer_attempt_id.clone(),
+                None,
             );
-        })
+        }
+        result
     })
+}
+
+fn touch_task_activity_best_effort(app: &App, task_id: &str, reason: &'static str) {
+    if let Err(error) = crate::view_models_conversation::touch_conversation_activity(app, task_id) {
+        warn!(
+            project_id = %app.paths.project_id,
+            %task_id,
+            %reason,
+            %error,
+            "failed to project durable Task conversation activity"
+        );
+    }
 }
 
 fn process_prompt_turn_lifecycle(
@@ -1526,6 +1566,7 @@ fn process_prompt_turn_lifecycle(
             prompt_id,
             successful,
         } => {
+            touch_task_activity_best_effort(app, &locator.task_id, "prompt-turn-finished");
             let completion = prompt_id.map(|turn_id| DeferredTurnCompletion {
                 turn_id,
                 agent_label: acp_turn_agent_label(app, &locator),
@@ -5118,6 +5159,9 @@ fn emit_acp_update(
         )
         .ok()
     });
+    let task_activity_at = app.and_then(|app| {
+        crate::view_models_conversation::conversation_task_last_activity_at(app, task_id)
+    });
     let _ = app_handle.emit(
         ACP_SESSION_EVENT,
         AcpSessionUpdatedEventVm {
@@ -5137,6 +5181,7 @@ fn emit_acp_update(
             event,
             lifecycle,
             activity,
+            task_activity_at,
         },
     );
 }
@@ -5892,8 +5937,6 @@ async fn submit_conversation_prompt_inner(
         outer_attempt_id,
     );
     validate_conversation_prompt_input(&input, attachment_paths.as_deref())?;
-    crate::view_models_conversation::touch_conversation_activity(&app, &locator.task_id)
-        .map_err(command_error)?;
     let run = app
         .run_status(&locator.task_id, &locator.run_id)
         .map_err(command_error)?;
@@ -5934,6 +5977,7 @@ async fn submit_conversation_prompt_inner(
     if direct_mode && (live_prompt_active || run.status == RunStatus::Running) {
         enqueue_prompt(&attempt_dir, input, attachment_paths.unwrap_or_default())
             .map_err(prompt_queue_command_error)?;
+        touch_task_activity_best_effort(&app, &locator.task_id, "user-prompt-queued");
         emit_acp_session_update(
             &app_handle,
             &app,
@@ -6013,6 +6057,22 @@ async fn submit_conversation_prompt_inner(
         .clone()
         .expect("admitted ACP turn must carry its stable turn identity");
     let lifecycle = lifecycle_for_locator(&app, &locator);
+    if admission.started() {
+        touch_task_activity_best_effort(&app, &locator.task_id, "user-prompt-admitted");
+        emit_acp_session_update(
+            &app_handle,
+            &app,
+            project_id.clone(),
+            &locator.task_id,
+            &locator.run_id,
+            &locator.round_id,
+            &locator.node_id,
+            &locator.attempt_id,
+            locator.outer_node_id.clone(),
+            locator.outer_attempt_id.clone(),
+            None,
+        );
+    }
     if admission.started() {
         let background_app = app.clone_for_background();
         let background_app_handle = app_handle.clone();
@@ -7019,7 +7079,7 @@ fn spawn_active_session_stop_cleanup(
         // request_session_stop transferred lifecycle ownership away from the
         // provider runtime. The stop controller therefore owns terminal
         // settlement after dispatch; the old provider owner can only no-op.
-        match gold_band::acp::events::persist_session_turn_terminal_owned(
+        let terminal_persisted = match gold_band::acp::events::persist_session_turn_terminal_owned(
             &lifecycle_path,
             turn_id,
             Some(operation_id),
@@ -7028,38 +7088,50 @@ fn spawn_active_session_stop_cleanup(
             "cancelled",
             &gold_band::acp::events::current_timestamp(),
         ) {
-            Ok(Some(_)) => info!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                outer_node_id = ?locator.outer_node_id,
-                outer_attempt_id = ?locator.outer_attempt_id,
-                %turn_id,
-                %operation_id,
-                outcome = "cancelled",
-                "conversation session stop reached terminal state"
-            ),
-            Ok(None) => tracing::debug!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                turn_id = %turn_id,
-                "stale conversation session stop settlement skipped"
-            ),
-            Err(error) => warn!(
-                project_id = %app.paths.project_id,
-                task_id = %locator.task_id,
-                run_id = %locator.run_id,
-                round_id = %locator.round_id,
-                node_id = %locator.node_id,
-                attempt_id = %locator.attempt_id,
-                %error,
-                %turn_id,
-                "failed to settle accepted ACP stop ownership"
-            ),
+            Ok(Some(_)) => {
+                info!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    outer_node_id = ?locator.outer_node_id,
+                    outer_attempt_id = ?locator.outer_attempt_id,
+                    %turn_id,
+                    %operation_id,
+                    outcome = "cancelled",
+                    "conversation session stop reached terminal state"
+                );
+                true
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    turn_id = %turn_id,
+                    "stale conversation session stop settlement skipped"
+                );
+                false
+            }
+            Err(error) => {
+                warn!(
+                    project_id = %app.paths.project_id,
+                    task_id = %locator.task_id,
+                    run_id = %locator.run_id,
+                    round_id = %locator.round_id,
+                    node_id = %locator.node_id,
+                    attempt_id = %locator.attempt_id,
+                    %error,
+                    %turn_id,
+                    "failed to settle accepted ACP stop ownership"
+                );
+                false
+            }
+        };
+        if terminal_persisted {
+            touch_task_activity_best_effort(&app, &locator.task_id, "user-stop-terminal");
         }
         if let Err(error) = client::settle_attempt_prompt_interactions(&attempt_dir) {
             warn!(%error, %attempt_dir, "failed to settle ACP interactions after accepted stop dispatch");
@@ -10892,6 +10964,7 @@ mod tests {
             activity: Some(conversation_task_activity_from_prompt(
                 client::PromptActivity::Running,
             )),
+            task_activity_at: Some("2026-08-29T12:00:00Z".to_string()),
         };
         let active_json = serde_json::to_value(active).unwrap();
         assert_eq!(
@@ -10900,6 +10973,7 @@ mod tests {
         );
         assert!(active_json["lifecycle"].is_null());
         assert_eq!(active_json["taskUuid"], "task-uuid-a");
+        assert_eq!(active_json["taskActivityAt"], "2026-08-29T12:00:00Z");
 
         let terminal = AcpSessionUpdatedEventVm {
             branch_id: None,
@@ -10918,6 +10992,7 @@ mod tests {
             event: None,
             lifecycle: None,
             activity: None,
+            task_activity_at: None,
         };
         assert!(serde_json::to_value(terminal).unwrap()["activity"].is_null());
     }

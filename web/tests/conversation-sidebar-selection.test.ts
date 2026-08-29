@@ -101,6 +101,45 @@ describe('ConversationSidebar run selection identity', () => {
     expect(sidebar.tasksByWorkspace['project-a'][0].activity).toEqual({ phase: 'running', stopping: false });
   });
 
+  it('moves only a newly active Task to the front while preserving pinned order', () => {
+    const older = {
+      projectId: 'project-a', taskId: 'task-001', title: 'Older', autoTitle: false,
+      runMode: 'direct' as const, runs: [], pinned: true, pinnedOrder: 0,
+      lastActivityAt: '2026-08-29T10:00:00Z',
+    };
+    const active = {
+      projectId: 'project-a', taskId: 'task-002', title: 'Active', autoTitle: false,
+      runMode: 'direct' as const, runs: [], pinned: true, pinnedOrder: 1,
+      lastActivityAt: '2026-08-29T09:00:00Z',
+    };
+    const sidebar = {
+      workspaces: [],
+      pinnedTasks: [older, active],
+      tasksByWorkspace: { 'project-a': [older, active] },
+    };
+
+    const unchanged = applyConversationSidebarTaskActivity(
+      sidebar,
+      'project-a',
+      'task-002',
+      null,
+      '2026-08-29T09:00:00Z',
+    );
+    expect(unchanged.tasksByWorkspace['project-a'].map((task) => task.taskId)).toEqual(['task-001', 'task-002']);
+
+    const next = applyConversationSidebarTaskActivity(
+      sidebar,
+      'project-a',
+      'task-002',
+      { phase: 'running', stopping: false },
+      '2026-08-29T12:00:00Z',
+    );
+
+    expect(next.tasksByWorkspace['project-a'].map((task) => task.taskId)).toEqual(['task-002', 'task-001']);
+    expect(next.tasksByWorkspace['project-a'][0].lastActivityAt).toBe('2026-08-29T12:00:00Z');
+    expect(next.pinnedTasks.map((task) => task.taskId)).toEqual(['task-001', 'task-002']);
+  });
+
   it('clears a background Direct activity globally without replacing unrelated sidebar data', () => {
     const workspaceA = { projectId: 'project-a', workspacePath: '/a', name: 'A' };
     const workspaceB = { projectId: 'project-b', workspacePath: '/b', name: 'B' };

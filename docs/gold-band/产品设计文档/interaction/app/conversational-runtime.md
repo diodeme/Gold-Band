@@ -19,6 +19,8 @@
 
 运行态身份以 `projectId + taskId + runId + session locator` 为后端操作定位；前端 ACP 消息窗口、乐观事件和事件分页缓存必须额外使用 task 生命周期 namespace（优先 `TaskState.uuid`）隔离。`taskId/runId/roundId/nodeId/attemptId` 是目录内可复用编号，用户删除最高编号 task 后重新创建会再次出现同一组编号，因此不能单独作为 UI 内存缓存身份。会话模式中查看、继续、停止、权限响应、模型/权限配置、raw frames、产物/附件读取都必须作用在该 `projectId` 对应 workspace；索引中残留的非 canonical 大小写 ID 不得借用当前 workspace 的名称或运行时入口。查看历史 run 不提升最后活跃 workspace。只有成功创建或重跑产生新 run 后，该 `projectId` 才成为最后活跃 workspace，并在从会话模式切回工作台时同步为旧 UI 当前 workspace。
 
+Task 最近对话活动只在三类 durable 边界推进：Task 创建成功、用户 Prompt 写入持久队列或新 turn admission 成功、Prompt Turn 写入 completed/failed/cancelled/interrupted terminal 状态成功。用户停止只有取得当前 turn ownership 且 terminal canonical 写入成功时才更新；重复停止和陈旧 owner no-op 不更新。Prompt 校验失败、重复 admission、标题或描述更新、Run 生命周期、stream/tool/token、启动恢复与索引维护不更新。`authoring/conversation.json.lastActivityAt` 先单调落盘，随后更新 SQLite `tasks.updated_at` 投影；canonical 元数据缺失、损坏或写入失败时必须 fail closed，不得单独推进 SQLite。投影失败不得反向改变 canonical Prompt/Turn 结果。
+
 ## 运行时数据与内存边界
 
 - `acp.timeline.jsonl` 是会话展示事件的规范索引，采用“canonical base + append patch journal”模型；活动 runtime 内存只保存当前 text/thought/plan 累计流、未终态 tool call、未决 permission/elicitation、session metadata、usage 与 timing aggregate。完成并已持久化的历史事件必须立即从热状态释放，不能按完整会话历史常驻 `HashMap`。

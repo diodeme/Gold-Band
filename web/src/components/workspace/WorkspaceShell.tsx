@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { GroupImperativeHandle, Layout, LayoutChangedMeta, PanelImperativeHandle } from 'react-resizable-panels';
-import type { AppConfigVm, ConversationPage, ConversationSidebarVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
+import type { AppConfigVm, ConversationPage, ConversationSidebarVm, ConversationTaskRowVm, DesktopPlatform, DesktopWindowFrameStyle } from '../../types';
 import { ConversationSidebar, type ConversationSidebarWorkspaceRevealRequest } from '../conversation/ConversationSidebar';
 import { saveConversationPreference } from '../../api';
 import { AppTitleBar } from '../AppTitleBar';
@@ -72,6 +72,10 @@ interface WorkspaceShellProps {
   onNewConversationInWorkspace?: (projectId: string) => void;
   onAddWorkspace?: () => void;
   onRemoveWorkspace?: (projectId: string) => Promise<void>;
+  onRetryBootstrap: () => void;
+  onRequestWorkspaceTasks: (projectId: string, cursor?: string | null) => void;
+  onRequestPinnedTasks: (cursor?: string | null) => void;
+  onRequestTaskRuns: (task: Pick<ConversationTaskRowVm, 'projectId' | 'taskId' | 'taskUuid'>, cursor?: string | null) => void;
   activeWorkspaceId?: string | null;
   defaultExpandedWorkspaceId?: string | null;
   workspaceRevealRequest?: ConversationSidebarWorkspaceRevealRequest | null;
@@ -280,6 +284,10 @@ function WorkspaceShellLayout({
   onNewConversationInWorkspace,
   onAddWorkspace,
   onRemoveWorkspace,
+  onRetryBootstrap,
+  onRequestWorkspaceTasks,
+  onRequestPinnedTasks,
+  onRequestTaskRuns,
   activeWorkspaceId: _activeWorkspaceId,
   defaultExpandedWorkspaceId,
   workspaceRevealRequest,
@@ -709,6 +717,10 @@ function WorkspaceShellLayout({
               onNewConversationInWorkspace={onNewConversationInWorkspace}
               onAddWorkspace={onAddWorkspace}
               onRemoveWorkspace={onRemoveWorkspace ? removeWorkspace : undefined}
+              onRetryBootstrap={onRetryBootstrap}
+              onRequestWorkspaceTasks={onRequestWorkspaceTasks}
+              onRequestPinnedTasks={onRequestPinnedTasks}
+              onRequestTaskRuns={onRequestTaskRuns}
             />
           ) : null}
         </ResizablePanel>

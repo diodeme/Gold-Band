@@ -427,6 +427,57 @@ pub struct ConversationWorkspaceVm {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConversationPinRefVm {
+    pub project_id: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSidebarBootstrapVm {
+    pub workspaces: Vec<ConversationWorkspaceVm>,
+    pub pin_refs: Vec<ConversationPinRefVm>,
+    pub last_active_workspace_id: Option<String>,
+    pub preferences: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationListItemErrorVm {
+    pub code: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTaskPageVm {
+    pub project_id: String,
+    pub tasks: Vec<ConversationTaskRowVm>,
+    pub next_cursor: Option<String>,
+    pub errors: Vec<ConversationListItemErrorVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationPinnedTaskPageVm {
+    pub tasks: Vec<ConversationTaskRowVm>,
+    pub next_cursor: Option<String>,
+    pub errors: Vec<ConversationListItemErrorVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRunSummaryPageVm {
+    pub project_id: String,
+    pub task_id: String,
+    pub task_uuid: Option<String>,
+    pub runs: Vec<ConversationRunSummaryVm>,
+    pub next_cursor: Option<String>,
+    pub errors: Vec<ConversationListItemErrorVm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationSidebarVm {
     pub workspaces: Vec<ConversationWorkspaceVm>,
     pub pinned_tasks: Vec<ConversationTaskRowVm>,
@@ -451,6 +502,8 @@ pub struct ConversationTaskRowVm {
     pub unread_terminal_result: Option<ConversationTerminalResultVm>,
     pub latest_run: Option<ConversationRunSummaryVm>,
     pub runs: Vec<ConversationRunSummaryVm>,
+    pub run_history_status: String,
+    pub runs_next_cursor: Option<String>,
     pub pinned: bool,
     pub pinned_order: Option<usize>,
     pub scheduled_task_id: Option<String>,
@@ -482,6 +535,29 @@ pub fn conversation_workspace_vms(state: &StateConfig) -> Vec<ConversationWorksp
         workspaces.sort_by_key(|workspace| usize::from(workspace.project_id != *last_workspace));
     }
     workspaces
+}
+
+pub fn conversation_sidebar_bootstrap_vm(state: &StateConfig) -> ConversationSidebarBootstrapVm {
+    let workspaces = conversation_workspace_vms(state);
+    let last_active_workspace_id = state.last_conversation_workspace.clone().or_else(|| {
+        workspaces
+            .first()
+            .map(|workspace| workspace.project_id.clone())
+    });
+    let mut pins = state.conversation_pins.clone();
+    pins.sort_by_key(|pin| pin.order);
+    ConversationSidebarBootstrapVm {
+        workspaces,
+        pin_refs: pins
+            .into_iter()
+            .map(|pin| ConversationPinRefVm {
+                project_id: pin.project_id,
+                task_id: pin.task_id,
+            })
+            .collect(),
+        last_active_workspace_id,
+        preferences: state.preferences.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -976,6 +1052,11 @@ fn read_conversation_metadata(app: &App, task_id: &str) -> Option<ConversationMe
     .ok()
 }
 
+pub(crate) fn conversation_task_last_activity_at(app: &App, task_id: &str) -> Option<String> {
+    let metadata = read_conversation_metadata(app, task_id)?;
+    latest_conversation_activity_at(Some(&metadata))
+}
+
 pub(crate) fn scheduled_content_fingerprint_for_task(app: &App, task_id: &str) -> Option<String> {
     read_conversation_metadata(app, task_id)
         .and_then(|metadata| metadata.scheduled_content_fingerprint)
@@ -1054,17 +1135,30 @@ fn direct_agent_identity(app: &App, agent_type: &str) -> Option<ConversationAgen
 }
 
 pub fn touch_conversation_activity(app: &App, task_id: &str) -> anyhow::Result<()> {
-    let Some(mut metadata) = read_conversation_metadata(app, task_id) else {
-        return Ok(());
-    };
-    metadata.last_activity_at = Some(chrono::Utc::now().to_rfc3339());
-    write_json(
-        &app.paths
-            .task_dir(task_id)
-            .join("authoring")
-            .join("conversation.json"),
-        &metadata,
-    )
+    touch_conversation_activity_at(app, task_id, &chrono::Utc::now().to_rfc3339())
+}
+
+fn touch_conversation_activity_at(
+    app: &App,
+    task_id: &str,
+    activity_at: &str,
+) -> anyhow::Result<()> {
+    let metadata_path = app
+        .paths
+        .task_dir(task_id)
+        .join("authoring")
+        .join("conversation.json");
+    let mut metadata: ConversationMetadata = read_json(&metadata_path)?;
+    let should_advance = metadata
+        .last_activity_at
+        .as_deref()
+        .is_none_or(|current| compare_conversation_timestamps(current, activity_at).is_lt());
+    if should_advance {
+        metadata.last_activity_at = Some(activity_at.to_string());
+        write_json(&metadata_path, &metadata)?;
+    }
+    app.record_task_activity_index(task_id, activity_at);
+    Ok(())
 }
 
 fn conversation_timestamp_millis(value: &str) -> Option<i64> {
@@ -1095,14 +1189,10 @@ fn compare_conversation_timestamps(left: &str, right: &str) -> Ordering {
     }
 }
 
-fn latest_conversation_activity_at(
-    metadata: Option<&ConversationMetadata>,
-    latest_run: Option<&ConversationRunSummaryVm>,
-) -> Option<String> {
+fn latest_conversation_activity_at(metadata: Option<&ConversationMetadata>) -> Option<String> {
     [
         metadata.and_then(|metadata| metadata.last_activity_at.as_deref()),
         metadata.map(|metadata| metadata.created_at.as_str()),
-        latest_run.map(|run| run.updated_at.as_str()),
     ]
     .into_iter()
     .flatten()
@@ -1165,7 +1255,7 @@ fn conversation_task_row_vm_from_task(
             .then_with(|| right.run_id.cmp(&left.run_id))
     });
     let latest_run = runs.first().cloned();
-    let last_activity_at = latest_conversation_activity_at(metadata.as_ref(), latest_run.as_ref());
+    let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
     let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
     let unread_terminal_result = (run_mode == "direct")
         .then(|| unread_terminal_result.cloned())
@@ -1189,6 +1279,12 @@ fn conversation_task_row_vm_from_task(
         unread_terminal_result,
         latest_run,
         runs,
+        run_history_status: if run_list.is_empty() {
+            "ready-empty".to_string()
+        } else {
+            "ready".to_string()
+        },
+        runs_next_cursor: None,
         pinned,
         pinned_order: pin_order,
         scheduled_task_id: metadata
@@ -1208,7 +1304,7 @@ pub fn conversation_task_row_vm(
         .task_show(task_id)
         .map_err(|error| anyhow::anyhow!("task not found: {task_id}: {error}"))?;
     let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
-    Ok(conversation_task_row_vm_from_task(
+    Ok(conversation_task_summary_vm_from_task(
         app,
         project_id,
         &task,
@@ -1216,6 +1312,357 @@ pub fn conversation_task_row_vm(
         pin_order,
         unread_terminal_results.get(task_id),
     ))
+}
+
+pub const CONVERSATION_TASK_PAGE_DEFAULT_LIMIT: usize = 24;
+pub const CONVERSATION_RUN_PAGE_DEFAULT_LIMIT: usize = 20;
+pub const CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT: usize = 100;
+
+fn entity_sequence(id: &str, prefix: &str) -> Option<u32> {
+    id.strip_prefix(prefix)?.parse::<u32>().ok()
+}
+
+fn canonical_entity_ids(
+    dir: &Utf8Path,
+    prefix: &str,
+    state_file_name: &str,
+) -> anyhow::Result<Vec<(u32, String)>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entities = Vec::new();
+    for entry in fs::read_dir(dir.as_std_path())? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let Some(id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        let Some(sequence) = entity_sequence(&id, prefix) else {
+            continue;
+        };
+        if dir.join(&id).join(state_file_name).exists() {
+            entities.push((sequence, id));
+        }
+    }
+    Ok(entities)
+}
+
+fn paged_entity_ids(
+    dir: &Utf8Path,
+    prefix: &str,
+    state_file_name: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let limit = limit.clamp(1, CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT);
+    let before_sequence = cursor
+        .map(|cursor| {
+            entity_sequence(cursor, prefix)
+                .ok_or_else(|| anyhow::anyhow!("invalid {prefix} cursor"))
+        })
+        .transpose()?;
+    let mut entities = canonical_entity_ids(dir, prefix, state_file_name)?;
+    entities.retain(|(sequence, _)| before_sequence.is_none_or(|cursor| *sequence < cursor));
+    entities.sort_unstable_by(|(left_sequence, left_id), (right_sequence, right_id)| {
+        right_sequence
+            .cmp(left_sequence)
+            .then_with(|| right_id.cmp(left_id))
+    });
+
+    let has_more = entities.len() > limit;
+    let ids = entities
+        .into_iter()
+        .take(limit)
+        .map(|(_, id)| id)
+        .collect::<Vec<_>>();
+    let next_cursor = has_more.then(|| ids.last().cloned()).flatten();
+    Ok((ids, next_cursor))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationTaskPageCursor {
+    activity_millis: i64,
+    sequence: u32,
+    task_id: String,
+}
+
+fn paged_task_ids_by_activity(
+    task_ids: Vec<String>,
+    activities: &HashMap<String, String>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let limit = limit.clamp(1, CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT);
+    let cursor = cursor
+        .map(serde_json::from_str::<ConversationTaskPageCursor>)
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("invalid task activity cursor"))?;
+    let mut tasks = task_ids
+        .into_iter()
+        .filter_map(|task_id| {
+            let sequence = entity_sequence(&task_id, "task-")?;
+            let activity_millis = activities
+                .get(&task_id)
+                .and_then(|value| conversation_timestamp_millis(value))
+                .unwrap_or(i64::MIN);
+            Some(ConversationTaskPageCursor {
+                activity_millis,
+                sequence,
+                task_id,
+            })
+        })
+        .filter(|task| {
+            cursor.as_ref().is_none_or(|cursor| {
+                task.activity_millis < cursor.activity_millis
+                    || (task.activity_millis == cursor.activity_millis
+                        && (task.sequence < cursor.sequence
+                            || (task.sequence == cursor.sequence && task.task_id < cursor.task_id)))
+            })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_unstable_by(|left, right| {
+        right
+            .activity_millis
+            .cmp(&left.activity_millis)
+            .then_with(|| right.sequence.cmp(&left.sequence))
+            .then_with(|| right.task_id.cmp(&left.task_id))
+    });
+
+    let has_more = tasks.len() > limit;
+    tasks.truncate(limit);
+    let next_cursor = has_more
+        .then(|| tasks.last())
+        .flatten()
+        .map(serde_json::to_string)
+        .transpose()?;
+    Ok((
+        tasks.into_iter().map(|task| task.task_id).collect(),
+        next_cursor,
+    ))
+}
+
+fn latest_conversation_run_summary(app: &App, task_id: &str) -> Option<ConversationRunSummaryVm> {
+    let runs_dir = app.paths.runs_dir(task_id);
+    let (ids, _) = paged_entity_ids(&runs_dir, "run-", "run.json", None, 1).ok()?;
+    ids.first()
+        .and_then(|run_id| read_json::<RunState>(&app.paths.run_file(task_id, run_id)).ok())
+        .map(|run| conversation_run_summary_vm(&run))
+}
+
+fn conversation_task_summary_vm_from_task(
+    app: &App,
+    project_id: &str,
+    task: &TaskState,
+    pinned: bool,
+    pin_order: Option<usize>,
+    unread_terminal_result: Option<&ConversationTerminalResultVm>,
+) -> ConversationTaskRowVm {
+    let task_id = &task.id;
+    let metadata = read_conversation_metadata(app, task_id);
+    let run_mode = metadata
+        .as_ref()
+        .map(|metadata| metadata.run_mode.clone())
+        .unwrap_or_else(|| "workflow".to_string());
+    let latest_run = latest_conversation_run_summary(app, task_id);
+    let last_activity_at = latest_conversation_activity_at(metadata.as_ref());
+    let activity = conversation_task_activity(&app.paths.task_dir(task_id), latest_run.as_ref());
+    let unread_terminal_result = (run_mode == "direct")
+        .then(|| unread_terminal_result.cloned())
+        .flatten();
+
+    ConversationTaskRowVm {
+        project_id: project_id.to_string(),
+        task_id: task_id.clone(),
+        task_uuid: task.uuid.clone(),
+        title: task.title.clone().unwrap_or_else(|| task_id.clone()),
+        auto_title: metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.title_auto_generated),
+        run_mode,
+        workflow_template_id: None,
+        agent_identity: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_identity.clone()),
+        last_activity_at,
+        activity,
+        unread_terminal_result,
+        latest_run,
+        runs: Vec::new(),
+        run_history_status: "not-loaded".to_string(),
+        runs_next_cursor: None,
+        pinned,
+        pinned_order: pin_order,
+        scheduled_task_id: metadata
+            .as_ref()
+            .and_then(|metadata| metadata.scheduled_task_id.clone()),
+    }
+}
+
+pub fn conversation_task_page_vm(
+    app: &App,
+    state: &StateConfig,
+    project_id: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<ConversationTaskPageVm> {
+    let tasks_dir = app.paths.tasks_dir();
+    let canonical_task_ids = canonical_entity_ids(&tasks_dir, "task-", "task.json")?
+        .into_iter()
+        .map(|(_, task_id)| task_id)
+        .collect::<Vec<_>>();
+    let activity_by_task = gold_band::storage::sqlite::task_activities_in_task_root(&tasks_dir)
+        .into_iter()
+        .map(|entry| (entry.task_id, entry.updated_at))
+        .collect::<HashMap<_, _>>();
+    let (task_ids, next_cursor) =
+        paged_task_ids_by_activity(canonical_task_ids, &activity_by_task, cursor, limit)?;
+    let unread_terminal_results = unread_terminal_results(app).unwrap_or_default();
+    let mut tasks = Vec::with_capacity(task_ids.len());
+    let mut errors = Vec::new();
+    for task_id in task_ids {
+        match app.task_show(&task_id) {
+            Ok(task) => {
+                let pin_order = state
+                    .conversation_pins
+                    .iter()
+                    .find(|pin| pin.project_id == project_id && pin.task_id == task_id)
+                    .map(|pin| pin.order);
+                tasks.push(conversation_task_summary_vm_from_task(
+                    app,
+                    project_id,
+                    &task,
+                    pin_order.is_some(),
+                    pin_order,
+                    unread_terminal_results.get(&task_id),
+                ));
+            }
+            Err(_) => errors.push(ConversationListItemErrorVm {
+                code: "conversation.task-summary-unavailable".to_string(),
+                params: serde_json::json!({ "projectId": project_id, "taskId": task_id }),
+            }),
+        }
+    }
+    Ok(ConversationTaskPageVm {
+        project_id: project_id.to_string(),
+        tasks,
+        next_cursor,
+        errors,
+    })
+}
+
+fn conversation_pin_cursor(project_id: &str, task_id: &str) -> String {
+    serde_json::to_string(&(project_id, task_id)).expect("pin cursor serialization cannot fail")
+}
+
+pub fn conversation_pinned_task_page_vm(
+    state: &StateConfig,
+    sources: &[ConversationWorkspaceSource],
+    cursor: Option<&str>,
+    limit: usize,
+) -> ConversationPinnedTaskPageVm {
+    let limit = limit.clamp(1, CONVERSATION_SIDEBAR_PAGE_MAX_LIMIT);
+    let mut pins = state.conversation_pins.iter().collect::<Vec<_>>();
+    pins.sort_by_key(|pin| pin.order);
+    let start = cursor
+        .and_then(|cursor| {
+            pins.iter()
+                .position(|pin| conversation_pin_cursor(&pin.project_id, &pin.task_id) == cursor)
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let page_pins = pins
+        .iter()
+        .skip(start)
+        .take(limit + 1)
+        .copied()
+        .collect::<Vec<_>>();
+    let has_more = page_pins.len() > limit;
+    let mut tasks = Vec::new();
+    let mut errors = Vec::new();
+    let mut unread_by_project = HashMap::new();
+    for pin in page_pins.iter().take(limit) {
+        let Some(source) = sources
+            .iter()
+            .find(|source| source.workspace.project_id == pin.project_id)
+        else {
+            errors.push(ConversationListItemErrorVm {
+                code: "workspace.not-found".to_string(),
+                params: serde_json::json!({ "projectId": pin.project_id }),
+            });
+            continue;
+        };
+        match source.app.task_show(&pin.task_id) {
+            Ok(task) => {
+                let unread = unread_by_project
+                    .entry(pin.project_id.clone())
+                    .or_insert_with(|| unread_terminal_results(&source.app).unwrap_or_default());
+                tasks.push(conversation_task_summary_vm_from_task(
+                    &source.app,
+                    &pin.project_id,
+                    &task,
+                    true,
+                    Some(pin.order),
+                    unread.get(&pin.task_id),
+                ));
+            }
+            Err(_) => errors.push(ConversationListItemErrorVm {
+                code: "conversation.task-summary-unavailable".to_string(),
+                params: serde_json::json!({ "projectId": pin.project_id, "taskId": pin.task_id }),
+            }),
+        }
+    }
+    let next_cursor = has_more
+        .then(|| page_pins.get(limit.saturating_sub(1)))
+        .flatten()
+        .map(|pin| conversation_pin_cursor(&pin.project_id, &pin.task_id));
+    ConversationPinnedTaskPageVm {
+        tasks,
+        next_cursor,
+        errors,
+    }
+}
+
+pub fn conversation_run_summary_page_vm(
+    app: &App,
+    project_id: &str,
+    task_id: &str,
+    cursor: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<ConversationRunSummaryPageVm> {
+    let task = app.task_show(task_id)?;
+    let (run_ids, next_cursor) = paged_entity_ids(
+        &app.paths.runs_dir(task_id),
+        "run-",
+        "run.json",
+        cursor,
+        limit,
+    )?;
+    let mut runs = Vec::with_capacity(run_ids.len());
+    let mut errors = Vec::new();
+    for run_id in run_ids {
+        match read_json::<RunState>(&app.paths.run_file(task_id, &run_id)) {
+            Ok(run) => runs.push(conversation_run_summary_vm(&run)),
+            Err(_) => errors.push(ConversationListItemErrorVm {
+                code: "conversation.run-summary-unavailable".to_string(),
+                params: serde_json::json!({
+                    "projectId": project_id,
+                    "taskId": task_id,
+                    "runId": run_id,
+                }),
+            }),
+        }
+    }
+    Ok(ConversationRunSummaryPageVm {
+        project_id: project_id.to_string(),
+        task_id: task_id.to_string(),
+        task_uuid: task.uuid,
+        runs,
+        next_cursor,
+        errors,
+    })
 }
 
 pub fn conversation_sidebar_vm_from_sources(
@@ -4333,6 +4780,8 @@ pub fn prepare_conversation_task_vm(
         }
     }
 
+    app.record_task_activity_index(&task_id, &meta.created_at);
+
     Ok(prepared)
 }
 
@@ -4527,6 +4976,7 @@ fn conversation_run_worktree_vm(
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         sync::{Arc, Mutex},
     };
@@ -4537,14 +4987,16 @@ mod tests {
         ConversationTaskActivityVm, ConversationWorkLocationVm, ConversationWorkspaceSource,
         ConversationWorkspaceVm, PromptActivity, attempt_control_mode, build_auto_workflow,
         build_direct_workflow, conversation_attempt_lifecycle_vm, conversation_auto_title,
-        conversation_run_vm, conversation_session_successors_from_state,
+        conversation_run_summary_page_vm, conversation_run_vm,
+        conversation_session_successors_from_state, conversation_sidebar_bootstrap_vm,
         conversation_sidebar_vm_from_sources, conversation_status_from_session,
-        conversation_task_activity, conversation_task_row_vm, conversation_workspace_vms,
-        create_conversation_run_vm, create_conversation_task_vm,
+        conversation_task_activity, conversation_task_page_vm, conversation_task_row_vm,
+        conversation_workspace_vms, create_conversation_run_vm, create_conversation_task_vm,
         derive_conversation_attempt_lifecycle, derive_conversation_attempt_lifecycle_with_facets,
-        find_leaf_by_key, lifecycle_is_active, rerun_conversation_task_vm,
-        scheduled_content_snapshot, scheduled_task_vms_from_sources, update_task_metadata_vm,
-        validate_conversation_create_vm, workflow_binding_missing_item,
+        find_leaf_by_key, lifecycle_is_active, paged_task_ids_by_activity,
+        rerun_conversation_task_vm, scheduled_content_snapshot, scheduled_task_vms_from_sources,
+        touch_conversation_activity_at, update_task_metadata_vm, validate_conversation_create_vm,
+        workflow_binding_missing_item,
     };
     use camino::{Utf8Path, Utf8PathBuf};
     use chrono::TimeZone;
@@ -6787,6 +7239,144 @@ mod tests {
     }
 
     #[test]
+    fn progressive_sidebar_bootstrap_and_task_page_keep_history_out_of_the_identity_path() {
+        let repo = temp_repo_root();
+        let app = App::new(repo.clone());
+        write_sidebar_task_fixture(
+            &app,
+            "task-001",
+            "Task 1",
+            "run-001",
+            "2026-08-01T00:00:00Z",
+        );
+        write_sidebar_task_fixture(
+            &app,
+            "task-002",
+            "Task 2",
+            "run-001",
+            "2026-08-02T00:00:00Z",
+        );
+        write_sidebar_task_fixture(
+            &app,
+            "task-003",
+            "Task 3",
+            "run-001",
+            "2026-08-03T00:00:00Z",
+        );
+        let mut state = gold_band::config::StateConfig::default();
+        state
+            .conversation_workspaces
+            .push(gold_band::config::ConversationWorkspaceEntry {
+                project_id: "workspace-a".to_string(),
+                workspace_path: repo.to_string(),
+                name: "Workspace A".to_string(),
+                added_at: "2026-08-01T00:00:00Z".to_string(),
+            });
+
+        let bootstrap = conversation_sidebar_bootstrap_vm(&state);
+        assert_eq!(bootstrap.workspaces.len(), 1);
+        assert!(bootstrap.pin_refs.is_empty());
+
+        let page = conversation_task_page_vm(&app, &state, "workspace-a", None, 2).unwrap();
+        assert_eq!(page.tasks.len(), 2, "the first task page must be bounded");
+        assert_eq!(page.tasks[0].task_id, "task-003");
+        assert_eq!(page.tasks[1].task_id, "task-002");
+        assert!(page.next_cursor.is_some());
+        assert!(page.tasks.iter().all(|task| task.runs.is_empty()));
+        assert!(page.tasks.iter().all(|task| task.latest_run.is_some()));
+    }
+
+    #[test]
+    fn progressive_sidebar_run_history_is_cursor_paginated() {
+        let repo = temp_repo_root();
+        let app = App::new(repo);
+        write_sidebar_task_fixture(&app, "task-001", "Task", "run-001", "2026-08-01T00:00:00Z");
+        write_sidebar_task_fixture(&app, "task-001", "Task", "run-002", "2026-08-02T00:00:00Z");
+        write_sidebar_task_fixture(&app, "task-001", "Task", "run-003", "2026-08-03T00:00:00Z");
+
+        let first =
+            conversation_run_summary_page_vm(&app, "workspace-a", "task-001", None, 2).unwrap();
+        assert_eq!(
+            first
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-003", "run-002"]
+        );
+        let second = conversation_run_summary_page_vm(
+            &app,
+            "workspace-a",
+            "task-001",
+            first.next_cursor.as_deref(),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            second
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-001"]
+        );
+        assert!(second.next_cursor.is_none());
+    }
+
+    #[test]
+    fn progressive_task_ids_are_cursor_paginated_by_activity_then_sequence() {
+        let task_ids = vec![
+            "task-001".to_string(),
+            "task-002".to_string(),
+            "task-003".to_string(),
+        ];
+        let activities = HashMap::from([
+            ("task-001".to_string(), "2026-08-29T12:00:00Z".to_string()),
+            ("task-002".to_string(), "2026-08-29T10:00:00Z".to_string()),
+            ("task-003".to_string(), "2026-08-29T11:00:00Z".to_string()),
+        ]);
+
+        let first = paged_task_ids_by_activity(task_ids.clone(), &activities, None, 2).unwrap();
+        assert_eq!(first.0, vec!["task-001", "task-003"]);
+        let second =
+            paged_task_ids_by_activity(task_ids, &activities, first.1.as_deref(), 2).unwrap();
+        assert_eq!(second.0, vec!["task-002"]);
+        assert!(second.1.is_none());
+    }
+
+    #[test]
+    fn task_activity_canonical_timestamp_only_moves_forward() {
+        let app = App::new(temp_repo_root());
+        write_sidebar_task_fixture(&app, "task-001", "Task", "run-001", "2026-08-29T09:00:00Z");
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-001",
+            "direct",
+            "2026-08-29T10:00:00Z",
+        );
+
+        touch_conversation_activity_at(&app, "task-001", "2026-08-29T12:00:00Z").unwrap();
+        touch_conversation_activity_at(&app, "task-001", "2026-08-29T11:00:00Z").unwrap();
+
+        let metadata: serde_json::Value = gold_band::storage::read_json(
+            &app.paths
+                .task_dir("task-001")
+                .join("authoring")
+                .join("conversation.json"),
+        )
+        .unwrap();
+        assert_eq!(metadata["lastActivityAt"], "2026-08-29T12:00:00Z");
+    }
+
+    #[test]
+    fn task_activity_projection_requires_readable_canonical_metadata() {
+        let app = App::new(temp_repo_root());
+        write_sidebar_task_fixture(&app, "task-001", "Task", "run-001", "2026-08-29T09:00:00Z");
+
+        assert!(touch_conversation_activity_at(&app, "task-001", "2026-08-29T12:00:00Z").is_err());
+    }
+
+    #[test]
     fn conversation_sidebar_sorts_all_task_modes_by_normalized_last_activity() {
         let repo = temp_repo_root();
         let app = App::new(repo.clone());
@@ -6805,6 +7395,12 @@ mod tests {
             "run-001",
             "2026-07-24T00:00:00Z",
             "2026-07-24T00:00:00Z",
+        );
+        write_sidebar_conversation_metadata_fixture(
+            &app,
+            "task-workflow",
+            "workflow",
+            "2000000000Z",
         );
         write_sidebar_conversation_metadata_fixture(
             &app,
@@ -6850,6 +7446,7 @@ mod tests {
             "2000000000Z",
             "2500000000Z",
         );
+        write_sidebar_conversation_metadata_fixture(&app, "task-a", "workflow", "2250000000Z");
         let state = gold_band::config::StateConfig::default();
         let sources = vec![ConversationWorkspaceSource {
             workspace: ConversationWorkspaceVm {
@@ -6874,7 +7471,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["run-001", "run-002"]
         );
-        assert_eq!(task.last_activity_at.as_deref(), Some("3000000000Z"));
+        assert_eq!(task.last_activity_at.as_deref(), Some("2250000000Z"));
     }
 
     #[test]

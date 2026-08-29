@@ -415,6 +415,11 @@ const NESTED_AGENT_TRANSCRIPT_CAPABILITY: &str = "subagent-transcript";
 pub const ACP_SESSION_RESTORE_UNSUPPORTED_CODE: &str = "acp.session-restore-unsupported";
 pub const ACP_SESSION_RESTORE_REFERENCE_MISSING_CODE: &str =
     "acp.session-restore-reference-missing";
+
+fn timeline_patch_flush_due(deadline: &mut Option<Instant>, now: Instant) -> bool {
+    let deadline = deadline.get_or_insert(now + LIVE_STREAM_UPDATE_INTERVAL);
+    now >= *deadline
+}
 pub const ACP_HISTORY_SYNC_UNSUPPORTED_CODE: &str = "acp.history-sync-unsupported";
 pub const ACP_SESSION_CONFIG_VALUE_UNAVAILABLE_CODE: &str = "acp.session-config-value-unavailable";
 
@@ -1906,7 +1911,7 @@ struct AcpRuntime<'a> {
     last_live_timing_update_at: Option<Instant>,
     last_live_timing: Option<crate::acp::events::AcpTimingPatch>,
     pending_timeline_patches: HashMap<String, PendingAcpTimelinePatch>,
-    last_timeline_patch_at: Option<Instant>,
+    timeline_patch_flush_deadline: Option<Instant>,
     raw_max_size: u64,
     raw_target_size: u64,
     control: Arc<ProviderControl>,
@@ -3377,7 +3382,7 @@ impl<'a> AcpRuntime<'a> {
             last_live_timing_update_at: None,
             last_live_timing: None,
             pending_timeline_patches: HashMap::new(),
-            last_timeline_patch_at: None,
+            timeline_patch_flush_deadline: None,
             raw_max_size,
             raw_target_size,
             control,
@@ -6345,10 +6350,8 @@ impl<'a> AcpRuntime<'a> {
                     item,
                 },
             );
-            let should_write = self
-                .last_timeline_patch_at
-                .map(|last| now.duration_since(last) >= LIVE_STREAM_UPDATE_INTERVAL)
-                .unwrap_or(true);
+            let should_write =
+                timeline_patch_flush_due(&mut self.timeline_patch_flush_deadline, now);
             if should_write {
                 return self.flush_pending_timeline_patches(Some(&item_id));
             }
@@ -6356,7 +6359,7 @@ impl<'a> AcpRuntime<'a> {
         }
 
         self.flush_pending_timeline_patches(None)?;
-        self.persist_timeline_item_patch_now(self.timeline_revision, &item, Instant::now())
+        self.persist_timeline_item_patch_now(self.timeline_revision, &item)
     }
 
     fn flush_pending_timeline_patches(
@@ -6364,29 +6367,90 @@ impl<'a> AcpRuntime<'a> {
         target_item_id: Option<&str>,
     ) -> Result<Option<(u64, u64)>> {
         if self.pending_timeline_patches.is_empty() {
+            self.timeline_patch_flush_deadline = None;
             return Ok(None);
         }
         let mut pending = std::mem::take(&mut self.pending_timeline_patches)
             .into_values()
             .collect::<Vec<_>>();
         pending.sort_by_key(|pending| pending.revision);
-        let flushed_at = Instant::now();
-        let mut target_watermark = None;
+        self.timeline_patch_flush_deadline = None;
+        let mut batches = BTreeMap::<String, Vec<PendingAcpTimelinePatch>>::new();
         for pending in pending {
-            let revision = pending.revision;
-            let item = pending.item;
-            let durable_watermark =
-                self.persist_timeline_item_patch_now(revision, &item, flushed_at)?;
-            if target_item_id == Some(item.id.as_str()) {
-                target_watermark = durable_watermark;
+            batches
+                .entry(event_branch_id(&pending.item))
+                .or_default()
+                .push(pending);
+        }
+        let mut target_watermark = None;
+        for (branch_id, batch) in batches {
+            let updates = batch
+                .iter()
+                .map(|pending| (pending.revision, pending.item.clone()))
+                .collect::<Vec<_>>();
+            let upsert_started_at = Instant::now();
+            let (watermarks, compaction_elapsed) = if branch_id == ROOT_BRANCH_ID {
+                self.timeline_store.upsert_batch(&updates)?;
+                let watermarks = batch
+                    .iter()
+                    .map(|pending| {
+                        self.timeline_store
+                            .durable_watermark_for_item_id(&pending.item.id)
+                    })
+                    .collect::<Vec<_>>();
+                let compaction_elapsed = self.timeline_store.take_last_compaction_elapsed();
+                (watermarks, compaction_elapsed)
+            } else {
+                let policy = self.runtime_policy.timeline_compaction;
+                let attempt_dir = self.paths.attempt_dir.clone();
+                let store = match self.branch_timeline_stores.entry(branch_id.clone()) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(TimelineStore::open(
+                            branch_timeline_path(&attempt_dir, &branch_id),
+                            policy,
+                        )?)
+                    }
+                };
+                store.upsert_batch(&updates)?;
+                let watermarks = batch
+                    .iter()
+                    .map(|pending| store.durable_watermark_for_item_id(&pending.item.id))
+                    .collect::<Vec<_>>();
+                let compaction_elapsed = store.take_last_compaction_elapsed();
+                (watermarks, compaction_elapsed)
+            };
+            let upsert_elapsed = upsert_started_at.elapsed();
+            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+                diagnostics.observe_timeline_upsert(upsert_elapsed, compaction_elapsed);
             }
-            if let Some(pending_live) = self.pending_live_updates.get_mut(&item.id)
-                && pending_live.revision <= revision
-            {
-                pending_live.durable_watermark = durable_watermark;
+            if let Some(compaction_elapsed) = compaction_elapsed {
+                self.append_pipeline_diagnostic(
+                    "info",
+                    "acp.pipeline-timeline-compaction",
+                    json!({
+                        "event": "acp_pipeline_timeline_compaction",
+                        "branchId": branch_id,
+                        "revision": batch.last().map(|pending| pending.revision),
+                        "batchSize": batch.len(),
+                        "upsertElapsedMs": upsert_elapsed.as_millis(),
+                        "compactionElapsedMs": compaction_elapsed.as_millis(),
+                    }),
+                );
+            }
+            for (pending, durable_watermark) in batch.into_iter().zip(watermarks) {
+                let revision = pending.revision;
+                let item = pending.item;
+                if target_item_id == Some(item.id.as_str()) {
+                    target_watermark = durable_watermark;
+                }
+                if let Some(pending_live) = self.pending_live_updates.get_mut(&item.id)
+                    && pending_live.revision <= revision
+                {
+                    pending_live.durable_watermark = durable_watermark;
+                }
             }
         }
-        self.last_timeline_patch_at = Some(flushed_at);
         Ok(target_watermark)
     }
 
@@ -6394,7 +6458,6 @@ impl<'a> AcpRuntime<'a> {
         &mut self,
         revision: u64,
         item: &crate::acp::events::AcpUiEvent,
-        now: Instant,
     ) -> Result<Option<(u64, u64)>> {
         let branch_id = event_branch_id(item);
         let upsert_started_at = Instant::now();
@@ -6406,13 +6469,12 @@ impl<'a> AcpRuntime<'a> {
         } else {
             let policy = self.runtime_policy.timeline_compaction;
             let attempt_dir = self.paths.attempt_dir.clone();
-            let store = self
-                .branch_timeline_stores
-                .entry(branch_id.clone())
-                .or_insert(TimelineStore::open(
-                    branch_timeline_path(&attempt_dir, &branch_id),
-                    policy,
-                )?);
+            let store = match self.branch_timeline_stores.entry(branch_id.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                    TimelineStore::open(branch_timeline_path(&attempt_dir, &branch_id), policy)?,
+                ),
+            };
             let outcome = store.upsert(revision, item)?;
             let watermark = store.durable_watermark_for_item_id(&item.id);
             let compaction_elapsed = store.take_last_compaction_elapsed();
@@ -6435,12 +6497,7 @@ impl<'a> AcpRuntime<'a> {
                 }),
             );
         }
-        if !matches!(
-            outcome,
-            crate::acp::timeline::TimelineUpsertOutcome::Unchanged
-        ) {
-            self.last_timeline_patch_at = Some(now);
-        }
+        let _ = outcome;
         Ok(durable_watermark)
     }
 
@@ -7691,8 +7748,34 @@ mod tests {
         session_config_fingerprint, session_load_params, session_new_params, session_prompt_params,
         session_prompt_text, session_resume_params, settle_attempt_prompt_interactions,
         settle_prompt_event, should_suppress_session_update, stable_message_item_id,
-        unregister_provider_control, validate_session_restore_target,
+        timeline_patch_flush_due, unregister_provider_control, validate_session_restore_target,
     };
+
+    #[test]
+    fn timeline_patch_deadline_is_not_expired_by_the_previous_slow_write() {
+        let started_at = Instant::now();
+        let mut deadline = None;
+
+        assert!(!timeline_patch_flush_due(&mut deadline, started_at));
+        assert!(!timeline_patch_flush_due(
+            &mut deadline,
+            started_at + super::LIVE_STREAM_UPDATE_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(timeline_patch_flush_due(
+            &mut deadline,
+            started_at + super::LIVE_STREAM_UPDATE_INTERVAL
+        ));
+
+        // Flushing clears the old window after the write completes. Even if
+        // that write took much longer than 75 ms, the next update opens a new
+        // window instead of immediately forcing another write.
+        let slow_write_completed_at = started_at + Duration::from_millis(500);
+        deadline = None;
+        assert!(!timeline_patch_flush_due(
+            &mut deadline,
+            slow_write_completed_at
+        ));
+    }
 
     #[test]
     fn permission_event_is_bound_to_the_active_prompt_turn() {

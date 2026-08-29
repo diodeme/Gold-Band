@@ -522,8 +522,20 @@ export function saveDesktopUiMode(mode: 'conversation' | 'workbench') {
   return getRuntimeApi().saveDesktopUiMode(mode);
 }
 
-export function getConversationSidebar() {
-  return getRuntimeApi().getConversationSidebar();
+export function getConversationSidebarBootstrap() {
+  return getRuntimeApi().getConversationSidebarBootstrap();
+}
+
+export function getConversationTaskPage(projectId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationTaskPage(projectId, cursor, limit);
+}
+
+export function getConversationPinnedTaskPage(cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationPinnedTaskPage(cursor, limit);
+}
+
+export function getConversationRunSummaryPage(projectId: string, taskId: string, cursor?: string | null, limit?: number) {
+  return getRuntimeApi().getConversationRunSummaryPage(projectId, taskId, cursor, limit);
 }
 
 export function acknowledgeConversationTerminalResult(projectId: string, taskId: string, eventId: string) {

@@ -405,7 +405,8 @@ describe('conversation sidebar navigation wiring', () => {
 
     expect(subscriptions).toHaveLength(1);
     expect(globalSubscription).toContain('conversationTaskActivityFromUpdate(event)');
-    expect(globalSubscription).toContain('applyConversationTaskActivity(projectId, event.taskId, sidebarActivity)');
+    expect(globalSubscription).toContain('applyConversationTaskActivity(');
+    expect(globalSubscription).toContain('event.taskActivityAt');
     expect(globalSubscription).toContain('conversationAcpSessionRefreshRef.current?.(event)');
     expect(globalSubscription).not.toContain('getConversationSidebar(');
     expect(selectedRunHandler).not.toContain('applyConversationTaskActivity(');

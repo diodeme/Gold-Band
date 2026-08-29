@@ -70,8 +70,9 @@ use commands::{
 use commands_conversation::{
     acknowledge_conversation_terminal_result, add_conversation_workspace,
     choose_conversation_workspace, create_conversation_run, create_scheduled_task,
-    delete_conversation_task, delete_scheduled_task, get_conversation_run,
-    get_conversation_run_mode, get_conversation_sidebar, get_conversation_workspaces,
+    delete_conversation_task, delete_scheduled_task, get_conversation_pinned_task_page,
+    get_conversation_run, get_conversation_run_mode, get_conversation_run_summary_page,
+    get_conversation_sidebar_bootstrap, get_conversation_task_page, get_conversation_workspaces,
     get_scheduled_runtime_settings, get_scheduled_task, get_scheduled_task_diagnostics,
     get_supported_attachment_extensions, list_scheduled_task_occurrences, list_scheduled_tasks,
     materialize_conversation_attachments, pin_conversation, remove_conversation_workspace,
@@ -461,7 +462,10 @@ fn run() -> anyhow::Result<()> {
             search_tasks,
             // Conversation UI
             save_desktop_ui_mode,
-            get_conversation_sidebar,
+            get_conversation_sidebar_bootstrap,
+            get_conversation_task_page,
+            get_conversation_pinned_task_page,
+            get_conversation_run_summary_page,
             list_scheduled_tasks,
             list_scheduled_task_occurrences,
             get_scheduled_task_diagnostics,

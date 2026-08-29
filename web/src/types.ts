@@ -2079,6 +2079,25 @@ export interface ConversationWorkspaceVm {
   name: string;
 }
 
+export type ConversationLoadStatus = 'not-loaded' | 'loading' | 'ready' | 'ready-empty' | 'error';
+
+export interface ConversationPageLoadVm {
+  status: ConversationLoadStatus;
+  nextCursor?: string | null;
+}
+
+export interface ConversationListItemErrorVm {
+  code: string;
+  params: Record<string, unknown>;
+}
+
+export interface ConversationSidebarBootstrapVm {
+  workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
+  lastActiveWorkspaceId?: string | null;
+  preferences: Record<string, unknown>;
+}
+
 export interface ConversationTaskRowVm {
   projectId: string;
   taskId: string;
@@ -2093,6 +2112,8 @@ export interface ConversationTaskRowVm {
   unreadTerminalResult?: ConversationTerminalResultVm | null;
   latestRun?: ConversationRunSummaryVm | null;
   runs: ConversationRunSummaryVm[];
+  runHistoryStatus: ConversationLoadStatus;
+  runsNextCursor?: string | null;
   pinned: boolean;
   pinnedOrder?: number | null;
   scheduledTaskId?: string | null;
@@ -2171,11 +2192,37 @@ export interface ConversationRunSummaryVm {
 }
 
 export interface ConversationSidebarVm {
+  loadStatus: ConversationLoadStatus;
   workspaces: ConversationWorkspaceVm[];
+  pinRefs: PinRef[];
   pinnedTasks: ConversationTaskRowVm[];
+  pinnedTaskPage: ConversationPageLoadVm;
   tasksByWorkspace: Record<string, ConversationTaskRowVm[]>;
+  workspaceTaskPages: Record<string, ConversationPageLoadVm>;
   lastActiveWorkspaceId?: string | null;
   preferences?: Record<string, unknown> | null;
+}
+
+export interface ConversationTaskPageVm {
+  projectId: string;
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationPinnedTaskPageVm {
+  tasks: ConversationTaskRowVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
+}
+
+export interface ConversationRunSummaryPageVm {
+  projectId: string;
+  taskId: string;
+  taskUuid?: string | null;
+  runs: ConversationRunSummaryVm[];
+  nextCursor?: string | null;
+  errors: ConversationListItemErrorVm[];
 }
 
 export interface PinRef {

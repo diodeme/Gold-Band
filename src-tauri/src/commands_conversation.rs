@@ -210,23 +210,145 @@ pub fn save_desktop_ui_mode(state: State<'_, DesktopState>, mode: String) -> Com
 }
 
 #[tauri::command]
-pub async fn get_conversation_sidebar(
+pub async fn get_conversation_sidebar_bootstrap(
     state: State<'_, DesktopState>,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let started = Instant::now();
     let context = state.context().map_err(command_error)?;
     let result = spawn_blocking_command(move || {
         let app = context.app();
         let state = app.load_state().map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        Ok(crate::view_models_conversation::conversation_sidebar_bootstrap_vm(&state))
     })
     .await;
     info!(
         target: "gold_band::perf",
-        command = "get_conversation_sidebar",
+        command = "get_conversation_sidebar_bootstrap",
         elapsed_ms = started.elapsed().as_millis(),
         status = if result.is_ok() { "ok" } else { "error" },
-        "conversation sidebar loaded"
+        "conversation sidebar identity loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_task_page(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let log_project_id = project_id.clone();
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let (workspace_path, resolved_project_id) =
+            workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        crate::view_models_conversation::conversation_task_page_vm(
+            &workspace_app,
+            &state,
+            &resolved_project_id,
+            cursor.as_deref(),
+            limit.unwrap_or(crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT),
+        )
+        .map_err(command_error)
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_task_page",
+        project_id = %log_project_id,
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_pinned_task_page(
+    state: State<'_, DesktopState>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationPinnedTaskPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let sources =
+            conversation_sidebar_sources(&context, &app, &state).map_err(command_error)?;
+        Ok(
+            crate::view_models_conversation::conversation_pinned_task_page_vm(
+                &state,
+                &sources,
+                cursor.as_deref(),
+                limit.unwrap_or(
+                    crate::view_models_conversation::CONVERSATION_TASK_PAGE_DEFAULT_LIMIT,
+                ),
+            ),
+        )
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_pinned_task_page",
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation pinned task page loaded"
+    );
+    result
+}
+
+#[tauri::command]
+pub async fn get_conversation_run_summary_page(
+    state: State<'_, DesktopState>,
+    project_id: String,
+    task_id: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+) -> CommandResult<crate::view_models_conversation::ConversationRunSummaryPageVm> {
+    let started = Instant::now();
+    let context = state.context().map_err(command_error)?;
+    let log_project_id = project_id.clone();
+    let log_task_id = task_id.clone();
+    let result = spawn_blocking_command(move || {
+        let app = context.app();
+        let state = app.load_state().map_err(command_error)?;
+        let (workspace_path, resolved_project_id) =
+            workspace_entry_for_project(&state, &project_id).ok_or_else(|| {
+                CommandErrorVm::new(
+                    "workspace.not-found",
+                    serde_json::json!({ "projectId": project_id }),
+                )
+            })?;
+        let workspace_app = app_for_workspace(&context, &workspace_path).map_err(command_error)?;
+        crate::view_models_conversation::conversation_run_summary_page_vm(
+            &workspace_app,
+            &resolved_project_id,
+            &task_id,
+            cursor.as_deref(),
+            limit.unwrap_or(crate::view_models_conversation::CONVERSATION_RUN_PAGE_DEFAULT_LIMIT),
+        )
+        .map_err(command_error)
+    })
+    .await;
+    info!(
+        target: "gold_band::perf",
+        command = "get_conversation_run_summary_page",
+        project_id = %log_project_id,
+        task_id = %log_task_id,
+        elapsed_ms = started.elapsed().as_millis(),
+        status = if result.is_ok() { "ok" } else { "error" },
+        "conversation run summary page loaded"
     );
     result
 }
@@ -798,7 +920,7 @@ pub async fn pin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
@@ -813,7 +935,7 @@ pub async fn pin_conversation(
         if state.conversation_pins.iter().any(|pin| {
             project_ids_match(&pin.project_id, &resolved_project_id) && pin.task_id == task_id
         }) {
-            return conversation_sidebar_for_state(&context, &app, &state);
+            return conversation_sidebar_bootstrap_for_state(&state);
         }
         let max_order = state
             .conversation_pins
@@ -827,7 +949,7 @@ pub async fn pin_conversation(
             order: max_order + 1,
         });
         app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }
@@ -837,7 +959,7 @@ pub async fn unpin_conversation(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
@@ -853,7 +975,7 @@ pub async fn unpin_conversation(
             !project_ids_match(&p.project_id, &resolved_project_id) || p.task_id != task_id
         });
         app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }
@@ -862,7 +984,7 @@ pub async fn unpin_conversation(
 pub async fn reorder_pinned_conversations(
     state: State<'_, DesktopState>,
     ordered: Vec<gold_band::config::ConversationPin>,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     spawn_blocking_command(move || {
         let app = context.app();
@@ -885,7 +1007,7 @@ pub async fn reorder_pinned_conversations(
             .collect::<CommandResult<Vec<_>>>()?;
         state.conversation_pins = normalized_pins;
         app.save_state(&state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }
@@ -1073,13 +1195,10 @@ fn workspace_name_for_project(state: &gold_band::config::StateConfig, project_id
         .unwrap_or_else(|| project_id.to_string())
 }
 
-fn conversation_sidebar_for_state(
-    context: &DesktopContext,
-    app: &App,
+fn conversation_sidebar_bootstrap_for_state(
     state: &gold_band::config::StateConfig,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
-    let sources = conversation_sidebar_sources(context, app, state).map_err(command_error)?;
-    Ok(crate::view_models_conversation::conversation_sidebar_vm_from_sources(state, &sources))
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
+    Ok(crate::view_models_conversation::conversation_sidebar_bootstrap_vm(state))
 }
 
 #[tauri::command]
@@ -1301,7 +1420,7 @@ pub fn choose_conversation_workspace(
 pub async fn add_conversation_workspace(
     state: State<'_, DesktopState>,
     path: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
@@ -1366,7 +1485,7 @@ pub async fn add_conversation_workspace(
             "conversation workspace added"
         );
 
-        conversation_sidebar_for_state(&context, &gold_band_app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }
@@ -1407,7 +1526,7 @@ pub fn save_last_conversation_workspace(
 pub async fn sync_conversation_workspace(
     state: State<'_, DesktopState>,
     workspace_path: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
@@ -1457,7 +1576,7 @@ pub async fn sync_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }
@@ -1467,7 +1586,7 @@ pub async fn delete_conversation_task(
     state: State<'_, DesktopState>,
     project_id: String,
     task_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let conversation_attention_write_lock = state.conversation_attention_write_lock();
     spawn_blocking_command(move || {
@@ -1519,7 +1638,7 @@ pub async fn delete_conversation_task(
             .conversation_pins
             .retain(|p| p.project_id != normalized_project_id || p.task_id != task_id);
         app.save_state(&app_state).map_err(command_error)?;
-        conversation_sidebar_for_state(&context, &app, &app_state)
+        conversation_sidebar_bootstrap_for_state(&app_state)
     })
     .await
 }
@@ -1528,7 +1647,7 @@ pub async fn delete_conversation_task(
 pub async fn remove_conversation_workspace(
     state: State<'_, DesktopState>,
     project_id: String,
-) -> CommandResult<crate::view_models_conversation::ConversationSidebarVm> {
+) -> CommandResult<crate::view_models_conversation::ConversationSidebarBootstrapVm> {
     let context = state.context().map_err(command_error)?;
     let coordinator = state.scheduler_coordinator().map_err(command_error)?;
     spawn_blocking_command(move || {
@@ -1562,7 +1681,7 @@ pub async fn remove_conversation_workspace(
             )
             .map_err(scheduled_service_error)?;
 
-        conversation_sidebar_for_state(&context, &app, &state)
+        conversation_sidebar_bootstrap_for_state(&state)
     })
     .await
 }

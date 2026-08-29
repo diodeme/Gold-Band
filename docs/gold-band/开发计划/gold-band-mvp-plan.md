@@ -1,5 +1,16 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-29：会话侧栏分层与渐进加载
+
+- 根因与规模：现有侧栏接口把 workspace identity、全部 Task 摘要和全部 Run 历史绑成一次原子返回；本地约 4 个 workspace、388 个 Task、666 个 Run 时，冷启动侧栏需约 12–20.7 秒。瓶颈不是 React 首屏绘制，而是返回任何可见数据前跨 workspace 扫描全部 `task.json/run.json`，属于接口重量和关键路径边界的根本设计缺陷。
+- 实现：破坏式移除旧 `get_conversation_sidebar` Tauri 入口，拆为轻量 bootstrap、workspace Task 页、置顶 Task 页和按需 Run 摘要页。bootstrap 先展示 workspace；当前 workspace 与 pin 各取首批 24 项；用户展开其他 workspace 时再加载对应 Task，展开 Workflow/AUTO Task 时每页读取 20 条 Run。各层使用显式加载/空/错误状态、原位重试与“加载更多”，单条损坏数据通过结构化错误隔离。前端按完整 Task identity 去重，使用 single-flight、generation fencing 和 mutation 前 invalidation 阻止迟到响应复活删除实体；Task/Run 内存窗口分别限制为 120/100。
+- 接口与排序：Task cursor 使用 `updatedAt + taskId`，同一 workspace 按最近对话活动递减、相同时间按递减 Task 序号稳定分页；Run cursor 继续使用递减 `runId`。Task 首批只读取当前页 `task.json` 及各项最新序号 Run，Task 摘要不携带完整 `runs`。canonical Task 目录仍由文件系统枚举，SQLite 活动投影缺行时 Task 不会消失，且禁止退回扫描全部 `run.json` 恢复排序。
+- 活动写入：复用 `authoring/conversation.json.lastActivityAt` 与现有 SQLite `tasks.updated_at`，不新增持久字段。Task 创建成功时初始化；用户消息进入 durable queue 或新 turn admission 后更新；Agent Turn 正常结束、失败、异常终止或用户停止成功写入 terminal canonical 后更新。标题、Run 启动/恢复、stream/tool/token、重复或失败操作、启动恢复均不更新。每次先单调写 canonical 活动时间，再单调更新 SQLite；canonical 元数据缺失、损坏或写入失败时 fail closed，不允许投影领先事实源，普通搜索索引刷新不得清空或回退时间。
+- 历史回填：启动时仅当 SQLite 存在空活动时间行，才在关键路径外读取 Task 级 `task.json/conversation.json` 回填；不读取 Run、Attempt、timeline 或消息正文。索引未完成、缺行或查询失败时，canonical Task 仍可见并按序号兜底，回填不得成为 bootstrap 或 Task 首批页面的前置条件。
+- 实时投影：durable accepted 和 terminal 后复用轻量 ACP session update 携带 `taskActivityAt`；前端仅在时间严格前进时更新目标 Task 并移动到 workspace 列表首位，置顶顺序不变。同值 update 与流式 timeline event 不重排，避免每个 delta 触发侧栏数组和根状态更新。
+- 验证：先增加最小失败测试，Rust 因分页 builder/DTO 不存在无法编译，Web 因渐进状态模块不存在稳定失败；实现后 bootstrap/Task 页不读取完整历史与 Run cursor 分页 2 项 Rust 测试通过，桌面 IPC 契约、渐进状态、分页合并、single-flight、generation fencing、workspace 未加载不误报空态、activity 不回退、canonical 缺失时拒绝更新投影、侧栏交互和 canonical identity 均由定向测试固定。全量 Web 249 个文件、1678 项测试全部通过，TypeScript 检查与 Web 生产构建通过。桌面端完整 534 项中 533 项通过；唯一失败是用户已有配置当前值 `20000` 与旧断言 `64000` 不一致，不经过本次侧栏代码。已启动 `/chat` 本地前端，但内置浏览器可用实例列表为空，无法执行页面实操；服务已清理，不把该项记为通过。
+- 依赖、性能与过度设计评审：复用现有 Tauri command、React state、shadcn 侧栏组件、canonical 会话元数据和 SQLite task 表，不新增第三方依赖、持久字段、后台队列或无界缓存。bootstrap 开销为 `O(workspaces + pins)`；Task/Run 正文读取分别受 24/20 页大小约束，非当前 workspace 和未展开 Run 不进入首屏关键路径。Task 页做一次 canonical 目录身份枚举和一次 workspace-scoped SQLite 轻量列查询，再只读取当前页摘要；每个正常 Turn 最多在用户 durable accepted 和 terminal 各写一次活动时间，stream 热路径零写入。Run 排序与读取量不变；置顶页的 unread map 按 workspace 单次读取，不产生逐 pin N+1。现有 canonical activity 与 SQLite 投影已足够，无需新增 aggregate、缓存或第二状态机。
+
 ## 2026-08-29：删除会话成功后误报 Run not found
 
 - 根因与实现：删除 command 在后端先将 Task 目录移入回收站，再完成清理并返回新侧栏；前端此前直到 command 成功后才增加 navigation request generation，导致这段窗口内当前 Run 的旧 `getConversationRun` 仍有权展示失败。该问题属于 canonical identity 设计正确、删除生命周期 fencing 实现不完整。现复用既有 request generation，在删除 IPC 发起前按 `projectId + taskUuid` 作废目标实体请求；详情错误展示也统一校验 request generation 与完整 Run identity。删除成功后再清理侧栏、Run/ACP/右侧工作区缓存并同步首页路由；删除失败且页面仍指向目标实体时重新触发权威详情读取。未按 `run not found` 文本特判，也不会误伤复用同 `taskId` 的新 UUID。

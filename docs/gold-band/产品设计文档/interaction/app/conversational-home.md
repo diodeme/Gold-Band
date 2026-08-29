@@ -176,6 +176,15 @@
 - 定时任务会话的 `AlarmClock` 标识属于静态来源标识，侧边栏与会话标题统一使用 `foreground` 随主题反色；会话标题中的说明提示复用 shadcn Tooltip，视觉提示不得使用浏览器原生 `title`。
 - 侧边栏宽度拖拽的交互热区与视觉分隔必须解耦：热区可以保留便于命中的透明宽度，但侧边栏与主内容区之间只显示主内容圆角边界自身的 1px 主题 `sidebar-border` 中性分隔线；hover / 拖动时不得把整段热区染成 primary 色带。
 
+### 渐进加载契约
+
+- 会话侧栏启动分为四层接口：`get_conversation_sidebar_bootstrap` 只返回工作空间 identity、置顶 locator、最近工作空间和偏好；当前或用户展开的工作空间再通过 `get_conversation_task_page` 读取首批 Task 摘要；置顶区通过独立 `get_conversation_pinned_task_page` 读取有界摘要；只有 Workflow/AUTO Task 被展开时，才通过 `get_conversation_run_summary_page` 读取 Run 历史。基础身份、首批可见数据和逐项历史不得重新合并成一个原子接口。
+- Task 页默认 24 项，使用 `updatedAt + taskId` 稳定 cursor；Run 页默认 20 项，继续使用递减 `runId` cursor。前端已合并 Task 最多保留 120 项、单 Task 已合并 Run 最多保留 100 项。继续加载只能追加去重后的下一页，不得形成无界 DOM、缓存或历史数组。
+- 每个层级必须独立表达 `not-loaded / loading / ready / ready-empty / error`。尚未请求不得显示“暂无会话/暂无运行”，已有可用数据的后台刷新不得清空内容；错误只影响对应 workspace、置顶区或 Run 历史，并在原位置提供重试。
+- 同一资源同时只允许一个请求；所有异步提交都按资源 generation 校验。删除 Task、移除 workspace、置顶关系变化或 bootstrap 重置必须在发起 mutation 时作废相关 generation，迟到页不得把已删除实体或旧 pin 投影写回。Task 合并按 `projectId + taskUuid` 去重，只有历史缺少 UUID 时才退回 `taskId`；Run 合并在 Task identity 内按 `runId` 去重。
+- 单条损坏 Task/Run 通过结构化 `errors` 隔离，不能阻断同页其他条目。反馈会话选择器等非侧栏消费者也只能组合轻量 bootstrap 与每个 workspace 的有界首批 Task 摘要，不得借用全量历史接口。
+- Task 页从 SQLite `tasks.updated_at` 读取轻量活动投影，按活动时间递减、再按递减 `taskId` 稳定分页；canonical Task 目录身份仍由文件系统枚举，索引缺行或不可用不得隐藏 Task，缺少活动投影的历史 Task 暂按递减 `taskId` 排在已有活动时间之后。Task 摘要只读取当前页 `task.json` 和各项最新序号 Run，不扫描页外 `run.json`。Run 分页继续只按递减 `runId`，不建立 Run 活动索引。
+
 ### 工作空间管理
 - 侧边栏底部提供"添加工作空间"入口，通过系统目录选择器添加
 - 添加时校验不重复，已有历史对话的工作空间自动加载 task 列表
@@ -199,7 +208,7 @@
 ### 会话行展示
 - 标题（自动生成或手动修改）
 - Workflow/AUTO 使用状态小圆点（绿/红/黄）；Direct 使用 Agent icon。两种标识必须占用相同宽度的身份槽位，使标题文字起点严格对齐；Direct icon 使用紧凑尺寸，不得挤占标题空间。Direct 存在当前活跃 turn 时，让既有 Agent icon 使用遵守 reduced-motion 的低强度呼吸效果，结束后立即恢复静态 icon；不增加旋转环，也不使用成功/暂停/失败颜色表达单轮结果。
-- 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段由后端在会话元数据活动时间、创建时间和所有 run 的 `updatedAt` 中取真实时间最大值，不能由前端按运行模式重新选择时间源。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
+- 相对时间统一来自 task 行的 `lastActivityAt`（分/时/天/周/月/年；Workflow/AUTO 运行中不显示）。该字段只取 Task 创建时间或会话元数据 `lastActivityAt`，不再聚合 Run `updatedAt`。紧凑时间区间必须连续：不足 1 分钟显示“刚刚”，1–59 分钟显示 `m`，1–23 小时显示 `h`，1–6 天显示 `d`，7–29 天显示 `w`，30–364 天显示 `mo`，365 天起显示 `y`；不得在周/月或月/年边界产生 `0mo`、`0y`。
 - hover 时在行尾显示重命名 / 置顶 / 删除操作；未 hover 时不为操作按钮预留占位，长标题只占用标题和时间可用区域
 - 删除会话前必须弹出不可撤销确认；确认文案明确说明将删除 `~/.gold-band` 下对应 task 目录，并在系统支持时优先移入回收站
 - 如果会话仍有运行中的 run，后端拒绝删除并提示用户先停止
@@ -208,8 +217,10 @@
 - run 选中态必须使用 `projectId + taskId + runId` 组合身份判断，不能只比较 `runId`；不同会话中同名 run 只允许当前会话对应项显示选中态
 
 ### 排序规则
-- 最近排序：同一 workspace 内所有 Direct、Workflow、AUTO task 统一按 `lastActivityAt` 倒序。run 列表也按 `updatedAt` 倒序，task 的 `latestRun` 指向最近有活动的 run，保证排序、状态点和界面相对时间使用同一份活动事实。
-- 时间比较必须先把内部 Unix 秒时间戳（如 `1780000000Z`）、RFC 3339 和历史本地日期时间归一化为时间值；禁止直接按原始字符串排序，否则混合格式会产生错误顺序。
+- 最近对话活动排序：同一 workspace 内所有 Direct、Workflow、AUTO Task 按 `updatedAt DESC, taskId DESC` 分页。Task 创建成功时初始化活动时间；用户 Prompt 成功写入持久队列或 durable turn admission 后更新一次；Agent Turn 正常结束、失败、异常中断或用户停止并成功写入 terminal canonical 状态后再更新一次。重复提交、校验/持久化失败、仅查看、标题更新、Run 启动/恢复、流式 delta、工具进度、诊断、迁移和启动恢复不得推进活动时间。
+- `authoring/conversation.json.lastActivityAt` 是 Task 最近对话活动的 canonical 字段，SQLite `tasks.updated_at` 是其可重建排序投影。写入顺序固定为先成功写 canonical，再以单调时间更新 SQLite；迟到事件不得把两者任一时间回退。索引失败只造成排序暂时陈旧，不改变 Prompt/终态操作的成功事实。
+- durable accepted 或 terminal 写入后的轻量 ACP session update 可携带 `taskActivityAt`；前端仅在该时间严格前进时更新 Task 相对时间并把工作空间内该 Task 移到首位，置顶区仍保持手动顺序。普通 timeline/stream event 不读取 Task 元数据且不携带该字段，同值 session update 不重排、不扩大渲染范围。
+- Run 历史继续按稳定递减 `runId` 分页，`latestRun` 指向最新序号 Run；Run `updatedAt` 不参与 Task 排序。时间展示、SQLite 投影合并和 cursor 生成必须先把内部 Unix 秒时间戳（如 `1780000000Z`）、RFC 3339 和历史本地日期时间归一化为时间值，禁止直接比较原始字符串。
 - 置顶排序：手动拖拽可调
 - 置顶会话在原工作空间下重复展示
 

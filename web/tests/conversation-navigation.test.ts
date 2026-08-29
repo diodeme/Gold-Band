@@ -4,11 +4,13 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationPageTargetsTask,
   conversationSourceControlWorkspacePath,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
+  shouldSurfaceConversationNavigationError,
 } from '@/lib/conversation-navigation';
 import type { ConversationPage, ConversationRunVm, ConversationSessionTreeVm } from '@/types';
 import fs from 'node:fs';
@@ -104,6 +106,32 @@ describe('conversation navigation presentation transaction', () => {
     expect(shouldCommitConversationNavigation(2, 2, requested, staleRun)).toBe(false);
   });
 
+  it('scopes deletion retirement to the canonical task entity', () => {
+    const currentPage: ConversationPage = {
+      kind: 'conversation-run',
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'current-task-uuid',
+      runId: 'run-001',
+    };
+
+    expect(conversationPageTargetsTask(currentPage, {
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'current-task-uuid',
+    })).toBe(true);
+    expect(conversationPageTargetsTask(currentPage, {
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'recreated-task-uuid',
+    })).toBe(false);
+    expect(conversationPageTargetsTask({ ...currentPage, taskUuid: undefined }, {
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'current-task-uuid',
+    })).toBe(true);
+  });
+
   it('switches non-conversation destinations immediately', () => {
     const requested: ConversationPage = { kind: 'conversation-home' };
     expect(isConversationRunNavigationLoading(requested, oldRun)).toBe(false);
@@ -177,6 +205,30 @@ describe('conversation navigation presentation transaction', () => {
     const targetRun = { ...oldRun, taskId: 'task-new', taskUuid: 'task-uuid-new', runId: 'run-2' } as ConversationRunVm;
     expect(shouldCommitConversationNavigation(1, 2, requested, targetRun)).toBe(false);
     expect(shouldCommitConversationNavigation(2, 2, requested, targetRun)).toBe(true);
+  });
+
+  it('does not surface a retired or replaced run request as a global error', () => {
+    const requested: ConversationPage = {
+      kind: 'conversation-run',
+      projectId: 'project-1',
+      taskId: 'task-004',
+      taskUuid: 'deleted-task-uuid',
+      runId: 'run-001',
+    };
+    const recreated: ConversationPage = {
+      ...requested,
+      taskUuid: 'recreated-task-uuid',
+    };
+
+    expect(shouldSurfaceConversationNavigationError(3, 3, requested, requested)).toBe(true);
+    expect(shouldSurfaceConversationNavigationError(3, 4, requested, requested)).toBe(false);
+    expect(shouldSurfaceConversationNavigationError(3, 3, requested, recreated)).toBe(false);
+    expect(shouldSurfaceConversationNavigationError(
+      3,
+      3,
+      { ...requested, taskUuid: undefined },
+      requested,
+    )).toBe(true);
   });
 
   it('builds and resolves a fully qualified dynamic attempt locator', () => {
@@ -278,6 +330,17 @@ describe('conversation navigation presentation transaction', () => {
 });
 
 describe('conversation sidebar navigation wiring', () => {
+  it('invalidates the active run request before deleting its task from disk', () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
+    const deletion = source.match(/onConversationDeleteTask=\{[\s\S]*?onConversationPinTask=/)?.[0] ?? '';
+    const deleteRequest = deletion.indexOf('deleteConversationTask(projectId, taskId)');
+    const requestInvalidation = deletion.indexOf('conversationNavigationRequestRef.current += 1;');
+
+    expect(deleteRequest).toBeGreaterThanOrEqual(0);
+    expect(requestInvalidation).toBeGreaterThanOrEqual(0);
+    expect(requestInvalidation).toBeLessThan(deleteRequest);
+  });
+
   it('routes run exits plus task and run selections through the cache-aware conversation navigation entry', () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), 'web/src/App.tsx'), 'utf8');
     const quickChatSelection = source.match(/onConversationNew=\{[\s\S]*?onConversationSearch=/)?.[0] ?? '';

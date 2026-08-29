@@ -12,6 +12,7 @@ import { findConversationTask } from '@/lib/conversation-task-state';
 import {
   conversationRunLocatorResolvesTo,
   sameConversationRunEntity,
+  sameConversationTaskEntity,
 } from '@/lib/conversation-run-identity';
 
 type ConversationSessionLocator = Pick<
@@ -37,6 +38,22 @@ export function conversationPageMatchesRun(
   return page.kind === 'conversation-run'
     && run != null
     && sameConversationRunEntity(page, run);
+}
+
+export function conversationPageTargetsTask(
+  page: ConversationPage,
+  task: Pick<ConversationRunVm, 'projectId' | 'taskId' | 'taskUuid'>,
+): page is Extract<ConversationPage, { kind: 'conversation-run' }> {
+  if (page.kind !== 'conversation-run'
+    || page.projectId !== task.projectId
+    || page.taskId !== task.taskId) {
+    return false;
+  }
+  const pageTaskUuid = page.taskUuid?.trim();
+  const targetTaskUuid = task.taskUuid?.trim();
+  return !pageTaskUuid
+    || !targetTaskUuid
+    || sameConversationTaskEntity(page, task);
 }
 
 export function conversationSourceControlWorkspacePath(
@@ -149,6 +166,18 @@ export function shouldCommitConversationNavigation(
   return requestId === currentRequestId
     && requested.kind === 'conversation-run'
     && conversationRunLocatorResolvesTo(requested, run);
+}
+
+export function shouldSurfaceConversationNavigationError(
+  requestId: number,
+  currentRequestId: number,
+  requested: ConversationPage,
+  currentPage: ConversationPage,
+) {
+  return requestId === currentRequestId
+    && requested.kind === 'conversation-run'
+    && currentPage.kind === 'conversation-run'
+    && conversationRunLocatorResolvesTo(requested, currentPage);
 }
 
 export function conversationTerminalResultAcknowledgementTarget(

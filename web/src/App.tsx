@@ -171,12 +171,14 @@ import {
   conversationPageForSession,
   conversationPageForIntervention,
   conversationPageMatchesRun,
+  conversationPageTargetsTask,
   conversationSourceControlWorkspacePath,
   conversationTerminalResultAcknowledgementTarget,
   findConversationLeafForPage,
   isConversationRunNavigationLoading,
   resolveConversationHomeWorkspaceId,
   shouldCommitConversationNavigation,
+  shouldSurfaceConversationNavigationError,
 } from '@/lib/conversation-navigation';
 import { preloadConversationTurnFileChangeSets } from '@/lib/turn-file-change-set-cache';
 import { ConversationRunCache, conversationRunCacheKey } from '@/lib/conversation-run-cache';
@@ -1191,11 +1193,13 @@ export function App() {
         void preloadConversationTurnFileChangeSets(run);
       })
       .catch((err: unknown) => {
-        if (cancelled || requestId !== conversationNavigationRequestRef.current) return;
-        if (conversationPageRef.current.kind === 'conversation-run'
-          && conversationPageRef.current.projectId === projectId
-          && conversationPageRef.current.taskId === taskId
-          && conversationPageRef.current.runId === runId) {
+        if (cancelled) return;
+        if (shouldSurfaceConversationNavigationError(
+          requestId,
+          conversationNavigationRequestRef.current,
+          conversationPage,
+          conversationPageRef.current,
+        )) {
           setError(displayAppError(t, err));
         }
       });
@@ -2279,6 +2283,11 @@ export function App() {
           .catch((err) => setError(displayAppError(t, err)));
       }}
       onConversationDeleteTask={(projectId, taskId, taskUuid) => {
+        const deletionTarget = { projectId, taskId, taskUuid };
+        if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
+          conversationNavigationRequestRef.current += 1;
+        }
+        setError(null);
         deleteConversationTask(projectId, taskId)
           .then((sidebar) => {
             conversationWorkspaceStore.deleteConversation(projectId, taskId);
@@ -2286,10 +2295,7 @@ export function App() {
               conversationRunCache.deleteTask({ projectId, taskId, taskUuid });
             }
             applyConversationSidebar(sidebar);
-            if (conversationPage.kind === 'conversation-run'
-              && conversationPage.projectId === projectId
-              && conversationPage.taskId === taskId
-              && (!taskUuid || conversationPage.taskUuid === taskUuid)) {
+            if (conversationPageTargetsTask(conversationPageRef.current, deletionTarget)) {
               conversationNavigationRequestRef.current += 1;
               conversationRunRef.current = null;
               conversationSelectedSessionKeyRef.current = null;
@@ -2303,9 +2309,16 @@ export function App() {
               const homePage: ConversationPage = { kind: 'conversation-home' };
               conversationPageRef.current = homePage;
               setConversationPage(homePage);
+              pushRoute(primaryModule, taskPage, homePage);
             }
           })
-          .catch((err) => setError(displayAppError(t, err)));
+          .catch((err) => {
+            const currentPage = conversationPageRef.current;
+            if (conversationPageTargetsTask(currentPage, deletionTarget)) {
+              setConversationPage({ ...currentPage });
+            }
+            setError(displayAppError(t, err));
+          });
       }}
       onConversationPinTask={(projectId, taskId) => {
         pinConversation(projectId, taskId).then((sidebar) => applyConversationSidebar(sidebar)).catch(() => {});

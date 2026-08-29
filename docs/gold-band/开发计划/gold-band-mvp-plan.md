@@ -1,5 +1,11 @@
 # Gold Band Rust MVP 实现方案
 
+## 2026-08-29：删除会话成功后误报 Run not found
+
+- 根因与实现：删除 command 在后端先将 Task 目录移入回收站，再完成清理并返回新侧栏；前端此前直到 command 成功后才增加 navigation request generation，导致这段窗口内当前 Run 的旧 `getConversationRun` 仍有权展示失败。该问题属于 canonical identity 设计正确、删除生命周期 fencing 实现不完整。现复用既有 request generation，在删除 IPC 发起前按 `projectId + taskUuid` 作废目标实体请求；详情错误展示也统一校验 request generation 与完整 Run identity。删除成功后再清理侧栏、Run/ACP/右侧工作区缓存并同步首页路由；删除失败且页面仍指向目标实体时重新触发权威详情读取。未按 `run not found` 文本特判，也不会误伤复用同 `taskId` 的新 UUID。
+- 失败证据与验收：最小测试固定删除调用与请求作废的执行顺序；修复前删除调用位于片段偏移 69、请求作废直到偏移 648 才发生，20 项中仅该断言失败。修复后同一用例转绿，并增加当前 UUID、复用 UUID、无 UUID deep link 以及旧失败不得显示为全局错误的接口断言；定向导航测试 22 项全部通过，扩大回归 6 个测试文件共 87 项全部通过，TypeScript、Web 生产构建与隔离 WB/MALING 桌面构建通过。
+- 依赖、过度设计与性能评审：复用 React 事件链、现有 navigation request generation、canonical `taskUuid` 与 Tauri command Promise，不新增依赖、状态机、持久字段、缓存、队列、轮询或后端兼容层。每次删除只增加常数次 O(1) 身份比较和 generation 自增；正常详情加载、事件订阅、LRU 上限、I/O、请求数量与渲染范围不变，无需专项 benchmark。
+
 ## 2026-08-28：AI-DYNAMIC 外层交接与跨 group 协调投影
 
 - 根因与实现：canonical `DynamicGraphState` 已完整保存节点、group、workspace 与 accepted proposal，但既没有对外层普通后继节点发布业务结果，内部 prompt 也只有当前位置的最小投影，无法按需获知其他并行 group 的最新任务与 workspace。这属于原设计缺少受控发布/协调投影，不是单点解析 Bug。现由 Runtime 从 canonical graph 派生三类只读视图：成功时生成小型 `ai-dynamic-result.json` 和完整 `ai-dynamic-report-manifest.json`，普通 predecessor 接口只注入前者；运行期间在 graph 同锁原子持久化后生成 `dynamic/coordination-snapshot.json`。顶层 acceptance 或无 group 的最终 `next=end` completion 直接提供唯一权威业务摘要，不增加总结 Agent；manifest 自动保留所有内部 accepted summary、节点/group 时间关系、依赖、workspace、attachments 与 child workflow 引用。

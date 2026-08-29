@@ -352,7 +352,7 @@ use crate::acp::events::{
     AcpAttemptPaths, AcpLatestTurnStatus, AcpLifecycleOwner, AcpLifecycleTerminalGuard,
     AcpLiveTurnActivity, AcpPromptRetryState, AcpSessionAvailability, AcpSessionMetadata,
     AcpSessionTiming, AcpTimingState, AcpUiEvent, RawFrameAppendOutcome, append_diagnostic,
-    append_raw_frame, append_raw_frame_observed, append_structured_diagnostic,
+    append_raw_frame, append_raw_frames_observed, append_structured_diagnostic,
     cancel_latest_processing_prompt_retry, current_timestamp, is_semantically_empty_agent_content,
     load_session_metadata, normalize_session_update, permission_request_event,
     read_lifecycle_header, user_prompt_event_with_quotes, write_session_metadata,
@@ -401,7 +401,8 @@ const DOCTOR_DIAGNOSTIC_TARGET_SIZE: u64 = 384 * 1024;
 const DOCTOR_COMMAND_DISCOVERY_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_TITLE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PROMPT_CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
-const PROMPT_ACTIVE_DRAIN_FRAME_BUDGET: usize = 256;
+const PROMPT_ACTIVE_DRAIN_FRAME_BUDGET: usize = 128;
+const PROMPT_ACTIVE_DRAIN_BYTE_BUDGET: usize = 4 * 1024 * 1024;
 const PROMPT_ACTIVE_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
 const PROMPT_CANCEL_DRAIN_FRAME_BUDGET: usize = 64;
 const PROMPT_CANCEL_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(25);
@@ -638,6 +639,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn drain_frames_until_route_watermark<Frame, Reached, Receive, Observe>(
     timeout: Duration,
     mut reached: Reached,
@@ -689,6 +691,81 @@ where
 struct BoundedDrainOutcome {
     drained_frames: usize,
     budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservedInboundBatchBoundary {
+    BudgetExhausted,
+    QueueEmpty,
+    Disconnected,
+    WatermarkReached,
+}
+
+struct ObservedInboundBatch {
+    frames: Vec<SessionObservedFrame>,
+    boundary: ObservedInboundBatchBoundary,
+}
+
+fn collect_available_observed_inbound_batch(
+    receiver: Option<&Arc<SessionEventPump>>,
+    first: Option<SessionObservedFrame>,
+    max_sequence: Option<u64>,
+    frame_budget: usize,
+    byte_budget: usize,
+    time_budget: Duration,
+) -> ObservedInboundBatch {
+    let started_at = Instant::now();
+    let mut frames = Vec::with_capacity(frame_budget);
+    let mut batch_bytes = 0usize;
+    if let Some(frame) = first {
+        batch_bytes = frame.bytes;
+        frames.push(frame);
+    }
+    loop {
+        if max_sequence.is_some_and(|max_sequence| {
+            frames
+                .last()
+                .is_some_and(|frame| frame.sequence >= max_sequence)
+        }) {
+            return ObservedInboundBatch {
+                frames,
+                boundary: ObservedInboundBatchBoundary::WatermarkReached,
+            };
+        }
+        if frames.len() >= frame_budget
+            || batch_bytes >= byte_budget
+            || started_at.elapsed() >= time_budget
+        {
+            return ObservedInboundBatch {
+                frames,
+                boundary: ObservedInboundBatchBoundary::BudgetExhausted,
+            };
+        }
+        let Some(receiver) = receiver else {
+            return ObservedInboundBatch {
+                frames,
+                boundary: ObservedInboundBatchBoundary::QueueEmpty,
+            };
+        };
+        match receiver.try_recv_observed() {
+            Ok(frame) => {
+                batch_bytes = batch_bytes.saturating_add(frame.bytes);
+                frames.push(frame);
+            }
+            Err(SessionRouteTryRecvError::Empty) => {
+                return ObservedInboundBatch {
+                    frames,
+                    boundary: ObservedInboundBatchBoundary::QueueEmpty,
+                };
+            }
+            Err(SessionRouteTryRecvError::Disconnected) => {
+                return ObservedInboundBatch {
+                    frames,
+                    boundary: ObservedInboundBatchBoundary::Disconnected,
+                };
+            }
+        }
+    }
 }
 
 fn drain_available_frames_with_budget<Frame, Receive, Observe>(
@@ -1326,14 +1403,14 @@ fn append_raw_frame_best_effort(
     }
 }
 
-fn append_raw_frame_observed_best_effort(
+fn append_raw_frames_observed_best_effort<'a>(
     path: &Utf8Path,
     direction: &str,
-    frame: Value,
+    frames: impl IntoIterator<Item = &'a Value>,
     max_size: u64,
     target_size: u64,
 ) -> Option<RawFrameAppendOutcome> {
-    match append_raw_frame_observed(path, direction, frame, max_size, target_size) {
+    match append_raw_frames_observed(path, direction, frames, max_size, target_size) {
         Ok(outcome) => Some(outcome),
         Err(error) => {
             debug!(
@@ -1341,7 +1418,7 @@ fn append_raw_frame_observed_best_effort(
                 %path,
                 %direction,
                 %error,
-                "failed to append observed ACP raw frame; continuing runtime"
+                "failed to append observed ACP Raw frame batch; continuing runtime"
             );
             None
         }
@@ -5791,21 +5868,23 @@ impl<'a> AcpRuntime<'a> {
 
     fn drain_available_inbound_fair(&mut self) -> Result<BoundedDrainOutcome> {
         let receiver = self.rx.as_ref().cloned();
-        let outcome = drain_available_frames_with_budget(
+        let batch = collect_available_observed_inbound_batch(
+            receiver.as_ref(),
+            None,
+            None,
             PROMPT_ACTIVE_DRAIN_FRAME_BUDGET,
+            PROMPT_ACTIVE_DRAIN_BYTE_BUDGET,
             PROMPT_ACTIVE_DRAIN_TIME_BUDGET,
-            || match receiver
-                .as_ref()
-                .map(|receiver| receiver.try_recv_observed())
-            {
-                Some(Ok(frame)) => Ok(Some(frame)),
-                Some(Err(SessionRouteTryRecvError::Empty)) | None => Ok(None),
-                Some(Err(SessionRouteTryRecvError::Disconnected)) => {
-                    Err(anyhow!(AcpTransportInterrupted))
-                }
-            },
-            |frame| self.process_observed_inbound(frame),
-        )?;
+        );
+        let drained_frames = batch.frames.len();
+        self.process_observed_inbound_batch(batch.frames)?;
+        if batch.boundary == ObservedInboundBatchBoundary::Disconnected {
+            return Err(anyhow!(AcpTransportInterrupted));
+        }
+        let outcome = BoundedDrainOutcome {
+            drained_frames,
+            budget_exhausted: batch.boundary == ObservedInboundBatchBoundary::BudgetExhausted,
+        };
         if !outcome.budget_exhausted {
             self.flush_pending_timeline_patches(None)?;
             self.flush_pending_live_updates()?;
@@ -5848,12 +5927,35 @@ impl<'a> AcpRuntime<'a> {
             }));
         }
         let started_at = Instant::now();
-        let drained_frames = drain_frames_until_route_watermark(
-            timeout,
-            || receiver.has_consumed(watermark),
-            |wait_for| receiver.recv_timeout_observed(wait_for),
-            |frame| self.process_observed_inbound(frame),
-        )?;
+        let mut drained_frames = 0usize;
+        while !receiver.has_consumed(watermark) {
+            let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
+                return Err(anyhow!(AcpPromptRouteDrainTimeout { timeout }));
+            };
+            let first = match receiver.recv_timeout_observed(remaining.min(STOP_CHECK_INTERVAL)) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(AcpTransportInterrupted));
+                }
+            };
+            let batch = collect_available_observed_inbound_batch(
+                Some(&receiver),
+                Some(first),
+                Some(watermark.sequence()),
+                PROMPT_ACTIVE_DRAIN_FRAME_BUDGET,
+                PROMPT_ACTIVE_DRAIN_BYTE_BUDGET,
+                PROMPT_ACTIVE_DRAIN_TIME_BUDGET,
+            );
+            let batch_frames = batch.frames.len();
+            self.process_observed_inbound_batch(batch.frames)?;
+            drained_frames = drained_frames.saturating_add(batch_frames);
+            if batch.boundary == ObservedInboundBatchBoundary::Disconnected
+                && !receiver.has_consumed(watermark)
+            {
+                return Err(anyhow!(AcpTransportInterrupted));
+            }
+        }
         if drained_frames > 0 {
             self.append_timing_diagnostic(
                 "acp_prompt_terminal_route_drained",
@@ -5963,21 +6065,35 @@ impl<'a> AcpRuntime<'a> {
     }
 
     fn process_observed_inbound(&mut self, frame: SessionObservedFrame) -> Result<()> {
+        self.process_observed_inbound_batch(vec![frame])
+    }
+
+    fn process_observed_inbound_batch(&mut self, frames: Vec<SessionObservedFrame>) -> Result<()> {
+        if frames.is_empty() {
+            return Ok(());
+        }
+        let receiver = self
+            .rx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow!(AcpTransportInterrupted))?;
         let dequeued_at = Instant::now();
-        let kind = PipelineUpdateKind::from_frame(&frame.value);
-        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
-            diagnostics.observe_frame(
-                frame.bytes,
-                frame.sequence,
-                dequeued_at.saturating_duration_since(frame.received_at),
-                kind,
-            );
+        for frame in &frames {
+            let kind = PipelineUpdateKind::from_frame(&frame.value);
+            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+                diagnostics.observe_frame(
+                    frame.bytes,
+                    frame.sequence,
+                    dequeued_at.saturating_duration_since(frame.received_at),
+                    kind,
+                );
+            }
         }
 
-        let raw_outcome = append_raw_frame_observed_best_effort(
+        let raw_outcome = append_raw_frames_observed_best_effort(
             &self.paths.raw,
             "inbound",
-            frame.value.clone(),
+            frames.iter().map(|frame| &frame.value),
             self.raw_max_size,
             self.raw_target_size,
         );
@@ -6000,13 +6116,18 @@ impl<'a> AcpRuntime<'a> {
             }
         }
 
-        let processing_started_at = Instant::now();
-        let result = self.handle_inbound(frame.value);
-        if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
-            diagnostics.observe_processed(processing_started_at.elapsed());
+        for frame in frames {
+            let sequence = frame.sequence;
+            let processing_started_at = Instant::now();
+            let result = self.handle_inbound(frame.value);
+            if let Some(diagnostics) = self.pipeline_diagnostics.as_mut() {
+                diagnostics.observe_processed(processing_started_at.elapsed());
+            }
+            self.maybe_emit_pipeline_diagnostics(Instant::now());
+            result?;
+            receiver.acknowledge_consumed(sequence)?;
         }
-        self.maybe_emit_pipeline_diagnostics(Instant::now());
-        result
+        Ok(())
     }
 
     fn maybe_emit_pipeline_diagnostics(&mut self, now: Instant) {

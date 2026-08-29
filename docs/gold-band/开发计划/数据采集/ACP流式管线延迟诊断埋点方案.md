@@ -37,13 +37,31 @@
 
 task-320 的新埋点在第二轮 prompt 记录到 `queueWaitMs = 846708`、`promptElapsedMs = 1014945`：Gold Band 正在处理约 14 分钟前已经进入 session route 的 frame。Raw 保留窗口中 2,277 个 inbound frame 有 2,045 个属于 terminal output delta；同期 13 次 Timeline compaction 合计约 12.3 秒，Raw roll 合计 4ms，不能解释队列延迟。代码回溯确认 text/thought/plan 使用 75ms 合并，但非终态 tool update 被当作普通事件逐帧 Timeline upsert 和 live emit，持续 drain 又只在队列完全清空后观察 RPC response。
 
-- [x] Raw 与 session route 继续逐帧 FIFO，不合并、不重排，保留完整协议审计。
+- [x] Raw 与 session route 继续以逐帧 record 保持 FIFO、不合并 payload、不重排；Raw 物理写入允许有界 group commit，保留完整协议审计。
 - [x] runtime 对 text/thought/plan 和带稳定 `toolCallId` 的非终态工具投影使用按 identity 的 latest-wins batch。
 - [x] Timeline 与 live batch 每 75ms、队列暂时清空、关键事件或 session 收尾时按 revision 顺序 flush。
 - [x] 权限、错误、usage、工具终态与 session terminal 先 flush pending，再立即提交自身。
-- [x] Prompt 活跃 drain 限定为每批 256 帧或 25ms；批次之间检查 response/cancel，有 backlog 时零等待继续。
+- [x] Prompt 活跃 drain 限定为每批最多 128 帧、约 4 MiB 或 25ms 预取；完成当前有界 Raw/canonical batch 后检查 response/cancel，有 backlog 时零等待继续。
 - [x] 成功 response 直接按 route watermark 收敛，不再先执行无限 available drain；RPC error 仅有界读取。
 - [x] 新增非终态工具合并/终态立即提交和 drain 公平性单元测试。
+
+## Raw group commit 第一轮优化
+
+task-320 最后一个新版本 turn 的独立窗口包含 13,245 帧、69,752,109 bytes，其中 12,283 帧为工具更新；现场诊断显示 Raw append 累计 23.697 秒，说明 Timeline group commit 已消除主要写放大后，Raw 每帧同步 lock/open/flush/roll check 成为新的确定性吞吐瓶颈。根因属于既有“逐帧审计”设计正确，但物理提交实现不完整：审计 record 与文件 commit 被错误绑定为一一对应。
+
+- [x] `append_raw_frames` 将连续 FIFO frame 编码为独立 JSONL record，但一批只执行一次文件锁、open、缓冲 flush 和 roll check；单帧入口复用批量入口。
+- [x] 活跃 drain 使用 128 帧、约 4 MiB、25ms 三重边界，未新增后台线程、持久队列或并行写入。
+- [x] event pump 出队不再推进 `last_consumed_sequence`；每帧完成 runtime canonical 处理后显式 ack，乱序 ack 返回结构化内部错误，避免批量预取越过 terminal watermark。
+- [x] 新增 roll/FIFO 正确性测试、prefetch/ack watermark 回归和 ignored Release 大数据压测。
+
+同一 13,245 帧 / 69,752,109 bytes / 19 个工具 identity / 2 MiB max / 1 MiB target 输入的 Windows Release A/B 为：
+
+| 版本 | 物理文件操作 | 总耗时 | 观察批次 P99 | 最大观察批次 |
+| --- | ---: | ---: | ---: | ---: |
+| 逐帧基线 | 13,245 | 13.804s | 101.48ms（每 64 帧统计） | 109.90ms |
+| 128 帧 group commit | 104 | 2.336s | 32.48ms | 36.10ms |
+
+总耗时改善约 5.9 倍并通过 3 秒门槛。256 帧版本曾达到 1.765 秒，但第一轮最终选择 128 帧，因为它已经满足吞吐目标且将 response/cancel 检查前的最大 frame 工作量减半；这是吞吐与控制面公平性的有数据取舍，不为追求 benchmark 峰值扩大批次。
 
 ## Timeline group commit 与长尾优化
 
@@ -83,10 +101,12 @@ Release 最终压测在 Windows 本机执行两组各 1,000,000 条 update，每
 - 10,000 帧输入后聚合器对象大小不变，bucket 总数正确。
 - direct route 和 early-session route 都保留原始 receipt time。
 - Raw 日志未重写时没有 roll stats，真实重写后提供 before/after bytes 与 duration。
+- 13,245 帧 / 69,752,109 bytes Raw Release 压测在 3 秒内完成；roll 后逐帧 record 保持 FIFO、握手帧策略与尾帧完整。
 - 编译检查和上述定向单元测试通过；若仓库其他既有测试夹具阻断 lib-test 编译，需将阻断项与本次测试结果分开记录。
 - 2,000 个同一 `toolCallId` 的 terminal delta 突发后，pending Timeline/live 数量按 identity 有界，最终快照完整收敛，工具终态不延迟。
-- session-update 持续堆积时，prompt response/cancel 的观察间隔不超过单个 25ms drain 预算加当前正在处理的一帧，不再等待队列清空。
+- session-update 持续堆积时，prompt response/cancel 在 25ms 预取加一个最多 128 帧/约 4 MiB 的有界 Raw/canonical batch 后重新观察，不再等待队列清空。
 - 成功 response 的 route watermark 已消费后，watermark 之后的 backlog 不会被前置无限 drain 纳入终态关键路径。
+- 已预取但尚未 canonical 处理的 frame 不得计入 consumed watermark；只处理首帧时水位不得越过同批第二帧。
 
 ## 性能与过度设计评审
 
@@ -96,3 +116,4 @@ Release 最终压测在 Windows 本机执行两组各 1,000,000 条 update，每
 - 吞吐修复新增的 pending map 上限等于当前窗口内活跃 stream/tool identity 数，替代按 Raw frame 增长的同步写入/IPC 次数；每批排序规模为活跃 identity 数，不扫描历史 Timeline。没有新增线程、持久字段、队列或依赖。
 - Timeline group commit 的普通路径为 O(batch identities)，V9 compaction 为 O(canonical items)，不再为每批 identity N 次打开文件，也不再按历史 patch 数全量 replay。写缓冲和 batch 暂存受当前窗口 distinct identity/编码量约束，持久文件受 4,096 patch ratio 门槛与 8 MiB 上限约束。
 - 未新增异步持久化线程、后台 compaction 队列、数据库或第二套 canonical state；继续复用现有 JSONL/index/atomic write。相较引入并发状态机，本方案直接消除 I/O 与算法放大，复杂度与现有数据规模、崩溃一致性风险匹配，不属于过度设计。
+- Raw 编码暂存受 128 帧和约 4 MiB 边界约束，时间复杂度仍为 O(frames + bytes)，文件锁/open/flush/roll 次数降为 O(batches)。显式 route ack 复用现有 sequence/watermark，不新增持久字段或 aggregate；它修复批量预取暴露的生命周期语义缺口，不是第二套状态机。

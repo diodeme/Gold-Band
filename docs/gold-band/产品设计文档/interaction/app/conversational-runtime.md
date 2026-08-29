@@ -655,14 +655,16 @@ Direct 在运行中的输入不是第二条并发 prompt，而是 attempt 级待
 - 文件变更详情继续通过独立受控接口读取，不扩充 Conversation 主 DTO。页面目标快照提交后再后台预取当前 selected branch 时间线尾部最近 12 个 change set，并写入 96 项有界 LRU；预取不属于导航关键路径，失败也不影响会话内容，`TurnFileChangesCard` 回到稳定占位与原接口错误处理。
 
 - 每个可见 prompt 使用稳定 `turnId/promptId`；hidden repair 继承最近可见 turn，不生成第二张用户可见文件卡。prompt 完成、失败和取消都会触发结算，但只有工具调用到达 `completed/success/succeeded` 成功终态后，其已捕获 diff 才能进入本轮文件变化；`failed/error/cancelled/canceled` 或只停留在 `pending/in_progress` 的工具调用必须排除。
-- 文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]` 与同一 `toolCallId` 的 canonical 工具终态。中间 diff 只作为工具卡片预览和候选版本证据，不能单独证明文件已经提交。permission request/response 只管理用户交互与等待，不读取 `optionId`、不参与文件变化判断；运行时也不扫描目录、不读取 live 文件、不调用 Git，不按 write/edit/shell 等工具名猜测。
+- 普通文件变化的唯一事实源是当前 prompt 生命周期内 ACP `toolCall/toolCallUpdate` 的标准 `content[type=diff]` 与同一 `toolCallId` 的 canonical 工具终态。节点交付附件的唯一事实源则是同一 turn 开始与结束时 attempt `attachments/` 下普通文件相对路径集合的差集；只扫描这个受控目录，不扫描 workspace、`artifacts/` 或其他运行目录，也不使用 mtime、watcher 事件、工具名或命令文本猜测 create/modify。两类证据必须在同一次 turn finalize 中分类，不能先各自产生列表再由前端去重。
 - 同一个 `toolCallId + path` 的多次 update 是同一工具操作的流式修订，必须先取最后一个 event revision，不能误当成顺序 mutation；不同 tool call 才按 `eventSeq + contentIndex` 折叠。相邻 hash 不连续时保留证据并标记 partial，最终恢复原版本时不展示。
-- 每份 old/new 正文先写入 attempt 级 BLAKE3 CAS，再追加 durable mutation journal；工具终态继续以 canonical timeline 为权威，运行期只为本 turn 实际出现 diff 的 `branchId + toolCallId` 保留有界增量投影并在结算后清理，不复制持久生命周期。finalized change set 独立保存，timeline 只追加 summary 与 `changeSetId` 指针。历史 change set schema 变更时必须从 canonical timeline 重建终态过滤；重建后没有成功工具变更则持久化空集合，让旧错误卡片收敛消失。历史查看只读取捕获版本，不受磁盘后续修改或删除影响。
-- 变更卡是 prompt turn 末尾无头像的结构化行，持久化事件的 `startedSeq` 必须等于卡片自身终态 seq；历史读取发现旧指针仍绑定 prompt 起始 seq 时统一修正到终态位置，保证实时与重载顺序一致。修改打开右栏 unified diff，新增打开该轮 after 原文，删除行不提供点击或键盘焦点；无变化不渲染空卡。
+- 每份 old/new 正文先写入 attempt 级 BLAKE3 CAS，再追加 durable mutation journal；工具终态继续以 canonical timeline 为权威。turn 开始时对稳定 `turnId` 只写一次 attachment baseline，自动重试或 hidden repair 不覆盖；turn 结束时只做一次有界扫描并计算新增集合。finalized `TurnFileChangeSet` 同时持久化互斥的 `changes[]` 与 `attachments[]`，timeline 只追加 summary、attachmentCount 与 `changeSetId` 指针。历史 `changes` 读取捕获版本，不受磁盘后续修改或删除影响；历史附件 membership 固定，但附件正文是受 revision/CAS 保护的 live 文件。
+- finalize 先折叠成功 tool mutations，再以 canonical path 对 `Added` 候选做一次分流：属于本轮新增 attachment 的条目只进入 `attachments[]`，不得进入 `changes[]`；`Modified` 即使位于 `attachments/` 也仍进入普通 `changes[]`。附件在 turn 内创建后删除时两边都不展示；baseline 缢失、扫描失败或超过有界条目上限时失败关闭附件识别，不把既有文件误报为新增附件。
+- 同一 `fileChangeSet` 指针按同一份详情先渲染附件卡、再渲染普通变更卡，前端不得根据路径再次分类或去重。附件卡默认展示 `appConfig.turnFiles.attachmentCardPreviewLimit` 条（默认 1），更多项在卡内展开；普通变更卡继续使用 `cardPreviewLimit`。两个集合都为空时不渲染卡片。持久化事件的 `startedSeq` 必须等于卡片自身终态 seq，保证实时与重载顺序一致。
+- 普通修改打开右栏 unified diff，普通新增打开该轮 after 原文，删除行不提供点击或键盘焦点。新增附件点击后立即创建 `turn-attachment` Tab，再通过受控 `attempt locator + branchId + changeSetId + attachmentId` 解析 manifest 成员、校验 canonical attachments root 与 symlink 边界并签发精确外部读写 grant；Markdown 默认渲染，可切换源码并编辑，保存继续复用 `FileContentStore` 的 revision、原子写入、自动保存、冲突和 watcher 契约。
 - 用户点击停止、provider cancel 或 prompt 失败都属于 turn 终态，必须结算已经收到的标准 diff。直接杀进程只能依赖已落盘 mutation journal，不能承诺生成尚未来得及写入的终态卡片。
-- shell/Bash 命令本身不是文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计；若 `rm`、重定向或脚本写入只返回普通 stdout/完成状态，Gold Band 不解析命令文本、不读取磁盘补偿，也不会把该操作猜成文件变化。
+- shell/Bash 命令本身不是普通文件变化事实源。只有 provider 对该 tool call 返回标准 `content[type=diff]` 才能统计普通修改/删除；唯一例外是受控 `attachments/` 路径集合差分可确认“结束时新存在的节点附件”，但不据此推断已有附件修改或 workspace 文件变化。
 - 用户消息附件和 canonical artifact 保持各自消息归属，点击后打开右侧会话资源，不进入文件变化卡。Conversation 主 DTO 不再聚合当前 session 的 artifacts/attachments，composer 上方也不再显示独立资产展开栏。
-- 根会话和 Agent branch 按持久化 branch ownership 各自查询 change set。前端不根据路径或自然语言推断归属，也不把 sibling branch 的变化投影到当前会话。
+- 根会话和 Agent branch 按持久化 branch ownership 各自查询普通 changes。attempt 级新增附件只挂到 root change set；同一新增附件对应的 `Added` mutation 即使来自 Agent branch，也在该 branch finalize 中被同一 attachment delta 排除，避免跨卡重复。前端不根据路径或自然语言推断归属。
 
 ## 2026-08-20 会话停止继续与 Timeline 运行态恢复
 

@@ -16,7 +16,8 @@ use gold_band::acp::prompt_queue::{
     settle_dispatching_prompt, suspend_auto_dispatch, take_queued_prompt,
 };
 use gold_band::acp::turn_files::{
-    CHANGE_SET_NOT_FOUND, TurnFileChangeSet, TurnFileStore, VERSION_NOT_FOUND,
+    ATTACHMENT_ACCESS_DENIED, ATTACHMENT_NOT_FOUND, CHANGE_SET_NOT_FOUND, TurnFileChangeSet,
+    TurnFileStore, VERSION_NOT_FOUND,
 };
 use gold_band::app::{
     AcpPromptLifecycleEvent, AcpTurnBatchProgress, AcpTurnOutcome, App, AutoTemplate,
@@ -5375,10 +5376,72 @@ pub fn get_file_comparison(
         .map_err(turn_file_command_error)
 }
 
+#[tauri::command]
+pub async fn resolve_turn_attachment_file(
+    app_handle: AppHandle,
+    state: State<'_, DesktopState>,
+    workspace_file_runtime: State<'_, crate::workspace_files::WorkspaceFileRuntime>,
+    workspace_file_watch_runtime: State<'_, crate::workspace_files::WorkspaceFileWatchRuntime>,
+    project_id: String,
+    task_id: String,
+    run_id: String,
+    round_id: String,
+    node_id: String,
+    attempt_id: String,
+    branch_id: String,
+    change_set_id: String,
+    attachment_id: String,
+    outer_node_id: Option<String>,
+    outer_attempt_id: Option<String>,
+) -> CommandResult<crate::workspace_files::ResolvedWorkspaceFileLinkVm> {
+    gold_band::acp::branches::validate_conversation_branch_id(&branch_id).map_err(|_| {
+        CommandErrorVm::new(ATTACHMENT_ACCESS_DENIED, serde_json::json!({}))
+    })?;
+    let app = resolve_command_app(state.inner(), Some(&project_id))?.clone_for_background();
+    let locator = AttemptLocator::new(
+        task_id,
+        run_id,
+        round_id,
+        node_id,
+        attempt_id,
+        outer_node_id,
+        outer_attempt_id,
+    );
+    let path = spawn_blocking_command(move || {
+        let store = TurnFileStore::new(locator.attempt_dir(&app), app.config.turn_files.into());
+        let change_set = store
+            .load_change_set(&change_set_id)
+            .map_err(turn_file_command_error)?;
+        if change_set.branch_id != branch_id {
+            return Err(CommandErrorVm::new(
+                ATTACHMENT_ACCESS_DENIED,
+                serde_json::json!({}),
+            ));
+        }
+        store
+            .resolve_attachment_path(&change_set_id, &attachment_id)
+            .map(|path| path.into_std_path_buf())
+            .map_err(turn_file_command_error)
+    })
+    .await?;
+    crate::workspace_files::resolve_trusted_file(
+        app_handle,
+        state.inner(),
+        workspace_file_runtime.inner(),
+        workspace_file_watch_runtime.inner(),
+        &project_id,
+        path,
+    )
+}
+
 fn turn_file_command_error(error: anyhow::Error) -> CommandErrorVm {
     let message = error.to_string();
     let code = if message.starts_with(VERSION_NOT_FOUND) {
         VERSION_NOT_FOUND
+    } else if message.starts_with(ATTACHMENT_NOT_FOUND) {
+        ATTACHMENT_NOT_FOUND
+    } else if message.starts_with(ATTACHMENT_ACCESS_DENIED) {
+        ATTACHMENT_ACCESS_DENIED
     } else if message.starts_with("turn-files.blob-corrupted") {
         "turn-files.blob-corrupted"
     } else {

@@ -354,6 +354,9 @@ export const desktopApi: RuntimeApi = {
   getFileComparison(locator, changeSetId, changeId) {
     return invokeCommand<import('../types').FileComparisonVm>('get_file_comparison', { ...locator, changeSetId, changeId });
   },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    return invokeCommand<import('../types').ResolvedWorkspaceFileLinkVm>('resolve_turn_attachment_file', { ...locator, changeSetId, attachmentId });
+  },
   renewAcpSessionLease(projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId) {
     return invokeCommand<number>('renew_acp_session_lease', { projectId, taskId, runId, roundId, nodeId, attemptId, outerNodeId, outerAttemptId });
   },

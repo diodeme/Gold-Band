@@ -30,6 +30,7 @@ describe('browserApi', () => {
   });
 
   it('serves the authoritative hidden-prompt fixture for right-workspace deep-link verification', async () => {
+    const run = await browserApi.getConversationRun('default', 'mock-task', 'run-052');
     const session = await browserApi.getAcpSession(
       'default',
       'mock-task',
@@ -39,6 +40,7 @@ describe('browserApi', () => {
       'attempt-001',
     );
 
+    expect(run.taskUuid).toBe('browser-mock-task-uuid');
     expect(session?.events[0]?.content).toContain('Gold Band stable system prompt');
     expect(session?.events[0]?.content).toContain('Gold Band runtime context');
     expect(session?.systemPromptAppend).toContain('**system prompt**');

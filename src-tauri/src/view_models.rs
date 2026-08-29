@@ -101,6 +101,7 @@ pub struct AppConfigVm {
 #[serde(rename_all = "camelCase")]
 pub struct TurnFilesVm {
     pub card_preview_limit: usize,
+    pub attachment_card_preview_limit: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1251,6 +1252,7 @@ fn app_config_vm(config: &RuntimeConfig) -> AppConfigVm {
         conversation_inline_image_max_dimension: config.conversation_inline_image_max_dimension,
         turn_files: TurnFilesVm {
             card_preview_limit: config.turn_files.card_preview_limit,
+            attachment_card_preview_limit: config.turn_files.attachment_card_preview_limit,
         },
         workspace_layout: WorkspaceLayoutVm {
             shell_min_width: config.workspace_layout.shell_min_width,

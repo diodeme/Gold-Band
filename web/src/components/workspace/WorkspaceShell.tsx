@@ -132,6 +132,7 @@ function workspacePanelGroupWidth(element: HTMLDivElement | null) {
 
 const LazyFileWorkspacePanel = lazy(() => import('./files/FileWorkspacePanel').then((module) => ({ default: module.FileWorkspacePanel })));
 const LazyTurnFileWorkspacePanel = lazy(() => import('./files/TurnFileWorkspacePanel').then((module) => ({ default: module.TurnFileWorkspacePanel })));
+const LazyTurnAttachmentWorkspacePanel = lazy(() => import('./files/TurnAttachmentWorkspacePanel').then((module) => ({ default: module.TurnAttachmentWorkspacePanel })));
 const LazyConversationAssetWorkspacePanel = lazy(() => import('./files/ConversationAssetWorkspacePanel').then((module) => ({ default: module.ConversationAssetWorkspacePanel })));
 const LazyDraftAttachmentWorkspacePanel = lazy(() => import('./files/DraftAttachmentWorkspacePanel').then((module) => ({ default: module.DraftAttachmentWorkspacePanel })));
 const LazyConversationDirectoryWorkspacePanel = lazy(() => import('./ConversationDirectoryWorkspacePanel').then((module) => ({ default: module.ConversationDirectoryWorkspacePanel })));
@@ -180,6 +181,11 @@ function FileWorkspaceIntegration({
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyConversationAssetWorkspacePanel resource={resource} /></Suspense>
       : null
   )), [workspace.registerResourceRenderer]);
+  useEffect(() => workspace.registerResourceRenderer('turn-attachment', (resource: RightWorkspaceResource) => (
+    resource.kind === 'turn-attachment'
+      ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyTurnAttachmentWorkspacePanel resource={resource} /></Suspense>
+      : null
+  )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceRenderer('draft-attachment', (resource: RightWorkspaceResource) => (
     resource.kind === 'draft-attachment'
       ? <Suspense fallback={<div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">…</div>}><LazyDraftAttachmentWorkspacePanel resource={resource} /></Suspense>
@@ -192,6 +198,11 @@ function FileWorkspaceIntegration({
   )), [workspace.registerResourceRenderer]);
   useEffect(() => workspace.registerResourceCloseResolver('file', (resource, reason) => (
     resource.kind === 'file'
+      ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
+      : true
+  )), [workspace.registerResourceCloseResolver]);
+  useEffect(() => workspace.registerResourceCloseResolver('turn-attachment', (resource, reason) => (
+    resource.kind === 'turn-attachment'
       ? (reason === 'close' ? fileContentStore.close(resource.key) : fileContentStore.flush(resource.key))
       : true
   )), [workspace.registerResourceCloseResolver]);

@@ -146,6 +146,45 @@ pub async fn resolve_workspace_file_link(
     })
 }
 
+pub(crate) fn resolve_trusted_file(
+    app_handle: AppHandle,
+    state: &DesktopState,
+    runtime: &WorkspaceFileRuntime,
+    watch_runtime: &WorkspaceFileWatchRuntime,
+    project_id: &str,
+    path: PathBuf,
+) -> CommandResult<ResolvedWorkspaceFileLinkVm> {
+    let root = resolve_workspace_root(state, project_id)?;
+    let path = canonicalize_file(&path, "read")?;
+    let locator = locator_for_path(&root, &path);
+    let external_access_grant = if locator.scope == "external" {
+        let grant = runtime.issue_external_grant(
+            root.project_id.clone(),
+            path.clone(),
+            root.config.external_access_grant_ttl_seconds,
+        )?;
+        if let Err(error) = watch_runtime.start_external(
+            app_handle,
+            runtime.clone(),
+            grant.token.clone(),
+            root.project_id,
+            path,
+            root.config.watch_debounce_ms,
+        ) {
+            let _ = runtime.release_external_grant(&grant.token);
+            return Err(error);
+        }
+        Some(grant)
+    } else {
+        None
+    };
+    Ok(ResolvedWorkspaceFileLinkVm {
+        locator,
+        target: None,
+        external_access_grant,
+    })
+}
+
 #[tauri::command]
 pub async fn read_file_resource(
     app_handle: AppHandle,

@@ -183,6 +183,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
   const worktreePath = '/preview/gold-band/worktrees/browser-completed-run';
   const worktreeBranch = 'gold-band/conversation/browser-completed-run';
   run.runId = 'run-052';
+  run.taskUuid = 'browser-mock-task-uuid';
   run.runMode = 'direct';
   run.directConfig = { agentType: 'claude-acp' };
   run.agentIdentity = browserAgentIdentity('claude-acp');
@@ -301,6 +302,7 @@ function browserCompletedConversationRun(): ConversationRunVm {
         raw: {
           changeSetId: browserTurnFileChangeSet.id,
           summary: browserTurnFileChangeSet.summary,
+          attachmentCount: browserTurnFileChangeSet.attachments.length,
         },
       },
       {
@@ -539,6 +541,20 @@ const browserTurnFileChangeSet = {
       deletedLines: 1,
     },
   ],
+  attachments: [
+    {
+      id: 'browser-turn-attachment-report',
+      relativePath: 'report.md',
+      name: 'report.md',
+      byteLength: 62,
+    },
+    {
+      id: 'browser-turn-attachment-summary',
+      relativePath: 'summary.txt',
+      name: 'summary.txt',
+      byteLength: 28,
+    },
+  ],
   limitationCodes: [],
 };
 
@@ -548,6 +564,8 @@ const browserWorkspaceFiles = new Map<string, string>([
   ['/default/src/main.rs', 'fn main() {\n    println!("Gold Band");\n}\n'],
   ['/default/src/config.json', '{\n  "workspace": "default"\n}\n'],
   ['/default/assets/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" rx="24" fill="#b9922e"/><text x="120" y="70" text-anchor="middle" fill="#18140a" font-size="24">Gold Band</text></svg>'],
+  ['/browser-attempt/attachments/report.md', '# Turn report\n\nThis attachment is editable in the workspace.\n'],
+  ['/browser-attempt/attachments/summary.txt', 'Browser attachment summary.\n'],
 ]);
 const browserFileRevisions = new Map<string, number>();
 const browserWorkspaceFileListeners = new Set<(event: WorkspaceFileChangedEventVm) => void>();
@@ -1338,6 +1356,7 @@ export const browserApi: RuntimeApi = {
       finishedAt: '',
       summary: { fileCount: 0, addedFiles: 0, modifiedFiles: 0, deletedFiles: 0, addedLines: 0, deletedLines: 0 },
       changes: [],
+      attachments: [],
       limitationCodes: [],
     });
   },
@@ -1381,6 +1400,23 @@ export const browserApi: RuntimeApi = {
       before: null,
       after: null,
       limitationCode: null,
+    });
+  },
+  resolveTurnAttachmentFile(locator, changeSetId, attachmentId) {
+    const attachment = changeSetId === browserTurnFileChangeSet.id
+      ? browserTurnFileChangeSet.attachments.find((candidate) => candidate.id === attachmentId)
+      : null;
+    if (!attachment) return Promise.reject({ code: 'turn-files.attachment-not-found', params: {} });
+    const canonicalPath = `/browser-attempt/attachments/${attachment.relativePath}`;
+    return Promise.resolve({
+      locator: {
+        projectId: locator.projectId,
+        canonicalPath,
+        relativePath: null,
+        scope: 'external' as const,
+      },
+      target: null,
+      externalAccessGrant: issueBrowserExternalFileGrant(canonicalPath),
     });
   },
   subscribeAcpSessionUpdates() {

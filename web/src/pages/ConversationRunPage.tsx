@@ -588,6 +588,7 @@ export function ConversationRunPage({
             eventPageSize={appConfig.acpChatEventPageSize}
             inlineContentMaxBytes={appConfig.conversationInlineContentMaxBytes}
             turnFileCardPreviewLimit={appConfig.turnFiles.cardPreviewLimit}
+            turnAttachmentCardPreviewLimit={appConfig.turnFiles.attachmentCardPreviewLimit}
             onLifecycleSnapshot={onLifecycleSnapshot}
             onAtBottomChange={handleAtBottomChange}
             onInitialSessionQueryStateChange={handleInitialSessionQueryStateChange}

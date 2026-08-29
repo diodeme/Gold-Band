@@ -1318,6 +1318,11 @@ const resources = {
       },
       turnFiles: {
         title: "本轮变更 {{count}} 个文件",
+        attachmentsTitle: "本轮生成 {{count}} 个附件",
+        attachmentList: "本轮新增附件",
+        showMoreAttachments: "展开其余 {{count}} 个附件",
+        openAttachment: "在工作区打开附件 {{path}}",
+        attachmentLoadFailed: "无法打开该附件",
         fileList: "本轮文件变化",
         additionalFiles: "本轮其余文件变化",
         loading: "正在加载文件变化…",
@@ -3569,6 +3574,11 @@ const resources = {
       },
       turnFiles: {
         title: "{{count}} files changed in this turn",
+        attachmentsTitle: "{{count}} attachments created in this turn",
+        attachmentList: "Attachments created in this turn",
+        showMoreAttachments: "Show {{count}} more attachments",
+        openAttachment: "Open attachment {{path}} in the workspace",
+        attachmentLoadFailed: "Unable to open this attachment",
         fileList: "File changes in this turn",
         additionalFiles: "Additional file changes in this turn",
         loading: "Loading file changes…",

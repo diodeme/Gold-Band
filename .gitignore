@@ -23,6 +23,7 @@ node_modules/
 !.claude/CLAUDE.md
 !.claude/settings.json
 draft/*
-.agents
+.agents/*
+!.agents/skills
 .codex-*/
 coverage
